@@ -11,3 +11,6 @@
 | L5 | `gpu`, `ui-egui`, `mcp` | compute-shader evaluation of display tessellation plans; the swappable desktop front end; the MCP server (headless or bridged to the app) |
 | apps | `solidcraft`, `solidcraft-cli` | desktop app, headless CLI |
 <!-- ANCHOR_END: architecture -->
+
+[Mastra workflow hosting](mastra-runtime.md) defines the proposed desktop runtime,
+shared AI interfaces, guarded document writes and snapshot-validation contract.
