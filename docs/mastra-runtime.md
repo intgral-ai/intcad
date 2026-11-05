@@ -6,8 +6,11 @@ The code baseline is `06749ac464e16357d0375b78e6b3cac214066493`.
 The modules and wire methods below are proposed unless the baseline table says otherwise.
 This document specifies interfaces; it does not announce an installed runtime.
 
-The product owner approved two decisions during T01: the narrow desktop TypeScript
-distribution exception, and live modeling with validation-gated verified success.
+The product owner approved the narrow desktop TypeScript distribution exception,
+live modeling with validation-gated verified success, and keeping the desktop host
+and runtime source in one repository. The owner also selected adapting Vector
+Studio's existing orchestration and multi-round authoring to native SolidCraft
+commands, parameters and feature history (section 1.5).
 The remaining implementation choices below are T01's selected design, not additional
 claims of product-owner approval. Dependent tasks implement this contract and link
 their deviations here for review, rather than defining local protocol variants.
@@ -22,13 +25,16 @@ dependencies. This is an explicit exception to the Rust-only distribution policy
 putting code in a subprocess or another repository is not, by itself, an exception.
 The exception does not relax independence, licensing, credentials or document rules.
 
-The selected source location is a new, independently versioned repository named
-`intgral-ai/solidcraft-mastra-runtime`, with one private npm package
-`@intgral-ai/solidcraft-mastra-runtime` at its root. Repository provisioning belongs
-to [#7](https://github.com/intgral-ai/open-skyfall-desktop/issues/7); this name is a
-decision, not a claim that the repository already exists. `intgral-ai` owns the
-repository and releases; the desktop maintainers own the host contract and approve
-runtime versions admitted by desktop packaging. Original runtime code uses the
+The runtime source lives in this desktop repository under `packages/mastra-runtime/`,
+as the private npm workspace package `@intgral-ai/solidcraft-mastra-runtime`.
+Workspace and build integration belong to
+[#7](https://github.com/intgral-ai/open-skyfall-desktop/issues/7). The Rust Cargo
+workspace and TypeScript package workspace share the repository, pull requests and
+release source revision. The runtime remains a separate process and build artifact.
+`intgral-ai` owns the repository and releases; desktop maintainers own the host
+contract and the runtime versions admitted by packaging. Packaging binds host,
+runtime and contract artifacts to the same reviewed repository revision while
+retaining explicit runtime and protocol versions. Original runtime code uses the
 desktop project's `MIT OR Apache-2.0` license.
 
 The native host, engine, MCP server and local validation runner remain Rust. The
@@ -50,7 +56,19 @@ to application implementation in this repository. T01 itself adds documentation 
 | This repository's `agent_chat/api_client.rs`, `acp.rs`, `acp_client.rs`, `process.rs`, `discover.rs` | Extract/reuse Rust model invocation, ACP session mechanics, authentication and process lifecycle. Preserve provider behavior and original connection identities. |
 | This repository's MCP, engine commands, schemas, native design writer and safe writes | Reuse existing Rust implementations through their interfaces; discover command schemas instead of copying a TypeScript command catalog. |
 | Mastra's public workflow SDK | Use permissively licensed entry points after the exact locked release and distributed files pass #15's inventory. No enterprise modules. |
-| Existing external product workflows, prompts, templates, `ModelLanguageClient` implementations, account/database/route bootstrap | No source modules are approved for copying in contract 1.0. Implement the native workflow and HostAi client originally at equivalent interfaces. A future reuse proposal must name source paths, commit, rights, dependencies and attribution before import. |
+| Vector Studio authoring workflow and agent loop | Selected orchestration baseline at the fixed revision in section 1.5. Adapt its stages and tool-turn logic to native modeling. Source imports require the per-file rights and policy record below; this is not a blanket license for the product server. |
+| Vector Studio provider/account/database/route bootstrap, script executor and script-specific prompts/skills | Replace with the desktop ports and native command guidance described in section 1.5. These implementations are outside the selected migration. |
+
+The source repository is private; this desktop repository is public. No root source
+license was identified during the source audit. Before copying or adapting source
+files into this public repository, #15 must record the exact source path/revision,
+rights-holder authorization for public distribution, applicable license, required
+notices and transitive dependencies, and reconcile the independence policy for this
+specific migration. Organization ownership and the option-A decision alone do not
+establish every file's redistribution rights. Imported files retain their applicable
+notices; the project's dual license is not automatically applied to them. The source
+map below is a migration specification, not a claim that private code has been
+published or is already licensed here. This documentation change imports no code.
 
 The [Mastra root license](https://github.com/mastra-ai/mastra/blob/main/LICENSE.md)
 was checked during T01: it assigns Apache-2.0 to eligible content and excludes every
@@ -78,7 +96,8 @@ access; availability in an ordinary tarball does not prove Flatpak or Snap suppo
 Use an application-relative `mastra/` resource directory containing `runtime.json`,
 the JS entry point, production dependencies and `node`/`node.exe`. `runtime.json`
 records the runtime version, protocol versions, target triple, Node version,
-artifact digests and provenance inventory. The host resolves resources from the
+repository source revision, contract digest, artifact digests and provenance inventory.
+The host resolves resources from the
 installed application, not the development checkout, a shell, `npx` or the user's
 Node installation. Missing/mismatched files fail before a session starts.
 
@@ -109,6 +128,94 @@ The independently deliverable foundation is #11's immutable snapshot plus #12's
 local runner, callable without Mastra. Remote CI vendors, deployment credentials
 and production-specific profiles are subsequent integrations. Here, “validation”
 means checks on a design candidate; repository `cargo xtask ci` is a different gate.
+
+### 1.5 Vector Studio orchestration adapted to native modeling
+
+The selected source baseline is
+[`intgral-ai/intgral-vector-studio` at `acb5048120b53ae1b4502724b70d1283e8c9daf4`](https://github.com/intgral-ai/intgral-vector-studio/tree/acb5048120b53ae1b4502724b70d1283e8c9daf4).
+That link requires source-repository access. Paths in the table are relative to
+that revision; their descriptions make the intended desktop behavior reviewable
+without access to the private source. #7 and #10 record migrated paths and semantic
+deviations against this baseline, rather than silently following its moving branch.
+
+| Source module / responsibility | Desktop adaptation and owner |
+|---|---|
+| `apps/server/src/mastra/workflows/query-proposal.ts`: `read-query → draft-script → validate-proposal`, optionally using the agent loop | #10 keeps staged authoring, explicit decisions and bounded model/tool rounds. Read the frozen turn and native design; plan native operations; apply/check them; then request snapshot validation through #13. Source proposal validation checks script/parameter shape, not this contract's design-quality gate. |
+| `apps/server/src/mastra/agent-loop/agent-loop.ts` and its tool, read, parameter-edit and continuity modules | #10 adapts ordered tool calls, matching results, decision state, distinct budgets, cancellation and unknown outcomes. #9 supplies native reads and guarded writes; the tool mapping below replaces script execution and candidate adoption. |
+| `packages/ai-runtime/src/models/model-runtime.ts`: `ModelRuntime.createAgent`, model interface and lifecycle | #7 provides a desktop Agent factory backed by HostAi at the Mastra model seam. The source factory is not a direct `model.generate` client. Keep compatible Agent/tool-call behavior; replace provider routing, admission and trace storage with desktop scope/capability/budget handling. |
+| `packages/ai-runtime/src/workflows/cad-generation.ts` and `src/tools/cad-execution.ts`: prepared-script execution using an injected `CadExecutionPort` | Use the separation of workflow and injected executor as a reference. This wrapper is not the complete authoring loop. Replace SCRIPT inputs, script hashes and the remote executor with #9's discovered native schemas and `WriteOutcome`; no Python/script-execution dependency is introduced by this migration. |
+| `apps/server/src/mastra/services/product-generation-runtime.ts`: admission, claims, product persistence, replies and recovery | #5/#6 bind runtime sessions to host turns and cancellation; #7 owns session-local normalized history; #12 owns durable validation records. Replace PostgreSQL, account/quota services, product routes and publication with these ports. Do not import the product-server bootstrap. |
+| Source transcript/trace ports and CAD skills | #7/#10 preserve model-call/tool-result correlation and stage diagnostics under host IDs. Use native command schemas and native modeling guidance instead of script prompts or `anatomy-smlibpy`. Persisted desktop projections remain host-owned as described below. |
+
+#### Model and conversation seam
+
+The runtime's Agent adapter must expose the capabilities the migrated authoring
+stages actually consume. A BYOK Agent invocation performs **one model step** through
+`HostAi.model.generate`; the outer workflow validates and dispatches returned tool
+calls and feeds their matching results into the next explicit step. Override SDK
+multi-step/retry defaults. Neither the SDK nor HostAi may execute another hidden
+CAD loop, model retry or provider fallback. Each actual invocation consumes the
+section 4 budget and keeps the frozen connection/model. #7 verifies this with an
+actual Mastra Agent using deterministic HostAi replies, not only a mock factory.
+
+Adapt the locked SDK's messages, tool IDs/arguments, finish reason and available
+usage to section 6. Preserve opaque continuation handles without inspecting their
+provider state. A buffered reply may be wrapped in the SDK's stream shape for
+compatibility, but must remain advertised as buffered. Missing tool/structured/image
+capabilities fail explicitly. `agent.run` is a separate proposal-only ACP operation;
+it is not a LanguageModel implementation or a way around the workflow's tool gate.
+
+The runtime holds normalized conversation, tool results, decision state and repair
+accounting within the active session, bounded by section 4. Stage/text/plan/tool
+events in section 5 project progress to the existing host chat history. They retain
+session/turn/workflow/request identities and redact credentials/provider-private
+state. The host's bridge outcomes and validation records remain authoritative.
+Version 1.0 adds no durable workflow/transcript resume service: process replacement
+retires the session and its continuation handles, while host chat projections and
+durable candidate/run/report records can remain available. Reading such records
+does not resume an old tool loop or authorize replay of an unresolved write.
+
+#### Native tool and outcome mapping
+
+The source tool names below explain migration semantics; they are not new SolidCraft
+engine commands or an extra wire protocol. #10 builds its workflow-facing tools over
+#9's discovered command/schema interface.
+
+| Source concept | Required native behavior |
+|---|---|
+| Read tools and `record_decision` | Read the bound document, selection, capabilities, fixed requirements and exact baselines. An edit decision permits planning, not permission bypass. Ask/decline stops further mutations; any earlier live edits are reported and retain undo. |
+| `run_cad` | Validate native command parameters, capabilities and source stamp, then apply through guarded execute/batch. Preserve command failure, rollback, expectation mismatch, pending and unknown facts. A returned tool call is a proposal, not proof of an applied edit. |
+| `set_params` | Resolve existing native parameters/features and use discovered parameter-change commands. Recompute/inspect and check protected dimensions; do not replace the document with a regenerated script artifact. |
+| `probe_cad` | Inspection of the current design may be read-only. A speculative candidate-building probe has no equivalent in 1.0: return `UNSUPPORTED_CAPABILITY` before writes. Never simulate isolation by editing and undoing the live design. Such a probe needs a separately designed isolated workspace. |
+| `check_continuity` | Verify fixed protected dimensions/requirements using exact native evidence bound to the relevant document stamp or snapshot. Missing evidence cannot count as a pass. The model cannot change the baseline or tolerances; #13 carries these checks into the required profile. |
+| Passing-run selection and publication | Replace source adoption with host-verified `validated_success` for the matching current snapshot. A previously passing candidate cannot approve later edits, a cancelled turn or an unknown mutation. No fallback adoption/publication of an earlier run is implied. |
+
+The desktop stage flow is inspect/freeze requirements → plan/decision → ordered
+native apply/check rounds → capture immutable candidate → submit/status/report →
+host verification. A quality failure may return to planning within the repair budget,
+with a new candidate/run for every changed design. #10 supplies native stage checks;
+#11–#13 supply the snapshot gate. An LLM end-of-turn or a source proposal-schema pass
+alone never produces verified success.
+
+Preserve the source loop's intent to reserve time and tool-result capacity before
+starting work, using the negotiated desktop limits rather than copying its server
+timeout constants. Model calls, ACP tasks, native command applications, repairs and
+validation submissions are distinct counters, including batch command applications.
+Cancellation is checked before dispatch and after replies; host cancellation closes
+write admission independently. Unknown write effects stop further modeling until
+the original request is reconciled (section 7); do not run a replacement command.
+Source stop labels map to section 5's existing terminal states and truthful `changes`
+facts. Budget exhaustion, failure or cancellation never selects an old passing run
+as a substitute for the host gate.
+
+For this modeling workflow, ask/decline or a text-only answer without a result to
+validate emits the answer text and proposes `task_failed`, with a reason explaining
+that clarification is needed, the task was declined, or no modeling result was
+produced. It does not start validation just to finish the conversation. Earlier
+edits are reported as `changes: "applied"` when confirmed; undo remains available.
+Cancellation, transport loss and unresolved write effects take their corresponding
+terminal states instead. These outcomes do not add a conversational-success state
+to protocol 1.0.
 
 ## 2. Modules, ownership and existing guarantees
 
@@ -795,12 +902,16 @@ against `call-1` before any later model call using `cont-1`. A final text-only m
 call is optional; the workflow can proceed directly to capture and validation.
 
 Capture returns candidate `cand-1`, source revision `42`. The workflow follows the
-validation trace below. After the host accepts its passing report and current stamp,
-the runtime proposes the terminal event (`runtime.ready` used sequence 1):
+validation trace below. After observing the passing report, the runtime proposes
+the terminal event (`runtime.ready` used sequence 1):
 
 ```json
 {"protocolVersion":"1.0","kind":"event","sequence":2,"event":"turn.finished","requestId":"h:2","scope":{"sessionId":"s-1","turnId":"t-1","workflowRunId":"w-1"},"data":{"state":"validated_success","reason":"Required checks passed for cand-1.","document":{"documentId":"doc-demo","revision":"42"},"changes":"applied","validationRunId":"v-1","report":{"artifactId":"report-1","digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","sizeBytes":3200,"mediaType":"application/json"}}}
 ```
+
+The host then performs section 9.3's verification and atomic terminal acceptance
+before publishing the authoritative outcome. The runtime stops this turn after
+its proposal; it does not wait for a terminal-confirmation message.
 
 ### 10.2 ACP task and authentication
 
@@ -920,9 +1031,10 @@ This document is the semantic authority. #5 owns the machine-readable contract
 bundle under a new `schema/mastra-runtime/v1/` directory in this repository: JSON
 Schema Draft 2020-12 envelopes/data types, valid/invalid fixtures and expected
 state-machine transcripts. Its files form one versioned artifact with a SHA-256
-manifest. #7 consumes that exact artifact by pinned commit/digest; it does not
-maintain an independently edited schema copy. The root location is outside engine
-command schemas because the IPC contract belongs to the host layer.
+manifest. #7 consumes that exact workspace artifact from the same repository
+revision, verified by digest; it does not maintain an independently edited schema
+copy. The root location is outside engine command schemas because the IPC contract
+belongs to the host layer.
 
 Rust serde types and TypeScript types/validators must both validate the same fixture
 bytes and agree on acceptance, error category and terminal-state transcript. A
@@ -930,6 +1042,14 @@ successful type check in each language is insufficient. Serialize accepted fixtu
 in both directions and compare canonical JSON; compare preserved decimal revisions
 and digest bytes, not JavaScript numeric approximations. The release pins host,
 runtime and contract artifact versions together.
+
+[#17](https://github.com/intgral-ai/open-skyfall-desktop/issues/17) owns fork-specific
+branch governance and CI wiring: path-aware Rust/TypeScript checks, shared-schema
+consumers, host/runtime integration, real runner evidence and release gates. Its
+proposed `develop`/stable-`main` branch model is not an approved product decision.
+It blocks #14's final release acceptance, not independent #5/#7 development. The
+2026-11-05 audit found no recorded Actions runs and no branch protection/rulesets;
+inherited workflow files and an empty checks list are not passing CI evidence.
 
 Required compatibility cases, owned by the linked implementation tasks:
 
@@ -939,13 +1059,16 @@ Required compatibility cases, owned by the linked implementation tasks:
 | Hello exact-version success/refusal; unknown method/capability; nested HostAi callback while awaiting runtime work; bounded queue/EOF cleanup | #5 |
 | Revision `9007199254740993` and max-u64 round trips; overflow/leading-zero rejection; `document_id` normalization | #5, #8 |
 | Buffered result versus genuine deltas; tool-call identity, provider continuation branch/reset, cancelled HTTP still occupying its physical slot | #3, #7 |
+| Real Mastra Agent backed by deterministic HostAi: exactly one model step, no hidden retry/tool execution, tool-result identity and capability rejection; process replacement cannot resume old transcript/continuation | #5, #7 |
 | ACP auth-required versus ready, independent sessions, unsupported model selection, permission denial and invalid proposals; late task-A text/tools/permissions during task B cannot enter B's output or UI | #4, #6 |
 | Cancel/reset/late terminal races; exactly one host-owned turn terminal outcome; a proposed success cannot bypass host acceptance; no stale turn writes | #5, #6, #9 |
 | Guarded execute/batch application interleavings, tab changes, deferred evaluation, failed rollback, expectation failure, same-connection pending and lost-connection unknown | #8, #9 |
+| Adapted authoring: native editable create/parameter edit, protected dimensions, ask/decline, unsupported speculative probe with zero writes, bounded repairs, stop after unknown effects; old passing candidate cannot certify a later failed edit | #9, #10, #13 |
 | JCS known vectors and byte/identity/dependency changes; candidate artifacts survive live edits/restart; active references survive cleanup | #11 |
 | Duplicate submit keys with reordered/whitespace-different JSON return the same run; changed candidate/profile fields conflict; ownership cannot transfer; expiry, worker crash/restart, timeout/cancel race, queue/store exhaustion | #12 |
 | A report for A cannot approve B; missing required check/evidence, profile or runner mismatch, changed live stamp, old cancelled turn; a cancelled run with passing checks cannot approve even an active turn | #12, #13 |
 | Installed runtime without developer Node/PATH; Codex missing/authenticated paths; unsupported targets; licensed artifact inventory | #14, #15 |
+| Same-source host/runtime/schema manifest; runtime-only and shared-schema changes select all affected checks; fork runner and release dry-run evidence | #5, #7, #14, #17 |
 
 These are obligations for implementation, not test results claimed by this document.
 Tests use existing area test files on the Rust side. Native analytic fixtures use
@@ -960,15 +1083,16 @@ product's source, templates or expected results.
 | [#4 ACP tasks](https://github.com/intgral-ai/open-skyfall-desktop/issues/4) | 5–6: workflow-owned task sessions, authentication and proposal-only mode. |
 | [#5 IPC/lifecycle](https://github.com/intgral-ai/open-skyfall-desktop/issues/5) | 3–5, 11: bounded transport, lifecycle and authoritative schema/fixture bundle. |
 | [#6 Panel backend](https://github.com/intgral-ai/open-skyfall-desktop/issues/6) | 2, 4–5: frozen binding, readiness/auth split, permissions, queue/cancel/reset/undo presentation. |
-| [#7 Runtime](https://github.com/intgral-ai/open-skyfall-desktop/issues/7) | 1–6, 11: provision selected repository, build original runtime/clients and consume the contract bundle. |
+| [#7 Runtime](https://github.com/intgral-ai/open-skyfall-desktop/issues/7) | 1–6, 11: integrate the in-repository workspace, adapt the Agent/model and transcript seams, and consume the same-revision contract bundle. |
 | [#8 Guarded writes](https://github.com/intgral-ai/open-skyfall-desktop/issues/8) | 7: atomic `expectedDocument` checks through deferred application and result stamps. |
 | [#9 MCP adapter](https://github.com/intgral-ai/open-skyfall-desktop/issues/9) | 7: discovery, serialized guarded writes and honest outcome reconciliation. |
-| [#10 Native workflow](https://github.com/intgral-ai/open-skyfall-desktop/issues/10) | 4, 6–7: original native stages, externally fixed checks and bounded repair; no unapproved product-source copying. |
+| [#10 Native workflow](https://github.com/intgral-ai/open-skyfall-desktop/issues/10) | 1.5, 4, 6–7: adapt pinned Vector Studio orchestration to native stages, fixed checks and bounded repair, with a source/deviation record. |
 | [#11 Snapshots](https://github.com/intgral-ai/open-skyfall-desktop/issues/11) | 8: coherent native capture, dependency closure, manifests, hashing and retention. |
 | [#12 Local validation](https://github.com/intgral-ai/open-skyfall-desktop/issues/12) | 9: independently callable local jobs, profiles, idempotency and durable reports. |
 | [#13 Verified outcomes](https://github.com/intgral-ai/open-skyfall-desktop/issues/13) | 5, 9: host verification, repair/new candidate, historical evidence and terminal outcomes. |
-| [#14 Packaging](https://github.com/intgral-ai/open-skyfall-desktop/issues/14) | 1, 11: approved target/package matrix, private Node, discovered Codex and installed evidence; depends on #15. |
-| [#15 Distribution enforcement](https://github.com/intgral-ai/open-skyfall-desktop/issues/15) | 1: narrowly reconcile policy, license/provenance inventory and artifact checks before bundling. |
+| [#14 Packaging](https://github.com/intgral-ai/open-skyfall-desktop/issues/14) | 1, 11: same-revision target/package matrix, private Node, discovered Codex and installed evidence; depends on #15 and #17. |
+| [#15 Distribution enforcement](https://github.com/intgral-ai/open-skyfall-desktop/issues/15) | 1: reconcile the narrow policy exception and selected source-migration rights before import; enforce file/license/provenance checks before bundling. |
+| [#17 Fork governance/CI](https://github.com/intgral-ai/open-skyfall-desktop/issues/17) | 11: resolve branch policy, configure/test real fork CI and same-revision release gates; no settings are changed by T01. |
 
 T01 acceptance is traceable without this design conversation: section 10 covers a
 BYOK turn, ACP task and asynchronous run; sections 3–6 distinguish readiness,
