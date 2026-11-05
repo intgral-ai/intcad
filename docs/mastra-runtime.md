@@ -163,7 +163,7 @@ cannot affect 1.0 semantics. Unknown methods return `METHOD_NOT_FOUND`.
 | `Id` | ASCII string matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`; never a credential or filesystem path. Production generators use random 128-bit identities. |
 | `Digest` | `sha256:` followed by exactly 64 lowercase hex digits. |
 | `Timestamp` | UTC RFC 3339 string with millisecond precision, such as `2026-11-05T12:00:00.000Z`. Ordering and deadlines use a monotonic clock within a process. |
-| `Revision` | Canonical decimal string for an unsigned 64-bit integer: `0` or a nonzero digit followed by digits, at most `18446744073709551615`. Rust parses `u64`; TS preserves the string or uses `bigint`, never `Number`. |
+| `Revision` | Canonical decimal string for an unsigned 64-bit integer: exactly `0`, or a nonzero digit followed by digits, at most `18446744073709551615`. Reject leading zeros except the single `0`. Rust parses `u64`; TS preserves the string or uses `bigint`, never `Number`. |
 | Other integers | Nonnegative JSON integers at most `2147483647`, with the stricter field limits below. |
 | `runtimeInstanceId` | Runtime-generated at each process start; returned by hello. A transport is tied to exactly this instance. No session resumes on a replacement process. |
 | `sessionId` | Host-generated conversation identity. Reset creates a new one. |
@@ -203,7 +203,10 @@ for external I/O. Backpressure errors are explicit, never silent frame loss.
 `Error` has required `code`, `message`, `retry` and `details`. `message` is redacted
 human-readable text (at most 2,048 UTF-8 bytes). `retry` is `never`, `read_only` or
 `same_submission`; it is advice for the defined operation, not permission to repeat
-a mutation. `details` is an object with only the fields specified below, or `{}`.
+a mutation. `details` is either `{}` (permitted for every code), or a nonempty
+object containing the fields specified for that code below. In a nonempty object,
+fields without `?` are required and fields marked `?` may be omitted. Undeclared
+fields are rejected. Error handling must work without diagnostic details.
 
 | Code | Meaning / permitted detail fields |
 |---|---|
@@ -304,8 +307,9 @@ runtime; R→H means runtime to host. Calls use the envelopes in section 3.
 | `runtime.shutdown` / none / H→R | `reason: "app_exit"|"reconfigure"|"protocol_error"` | `state: "stopping"`, followed by EOF. |
 | `connection.describe` / session or turn / R→H | `connectionId: Id`, `modelId: string` | `state: "available"|"auth_required"|"unavailable"`, `capabilities: AiCapabilities`, `authMethods: AuthMethod[]` |
 
-`Limits` contains all IPC/resource ceilings above as named camelCase integer fields
-with these normative names: `frameBytes`, `jsonDepth`, `queueBytes`, `controlLaneBytes`,
+`Limits` contains all IPC/resource ceilings above as named camelCase fields.
+All are integers except `storeBytes`, as specified below. The normative names are:
+`frameBytes`, `jsonDepth`, `queueBytes`, `controlLaneBytes`,
 `pendingRequests`, `controlSlots`, `requestLedgerEntries`, `runtimeInstances`,
 `sessions`, `activeTurns`, `stderrLines`, `stderrLineScalars`, `stderrBytes`,
 `modelMessages`, `toolDefinitions`, `toolCalls`, `textBytes`, `toolJsonBytes`,
@@ -317,7 +321,8 @@ with these normative names: `frameBytes`, `jsonDepth`, `queueBytes`, `controlLan
 `validationSeconds`, `validationQueueSeconds`, `snapshotBytes`, `snapshotInputs`,
 `manifestBytes`, `reportBytes`, `checks`, `evidenceArtifacts`, `evidenceBytes`,
 `evidenceTotalBytes`, `storeBytes`, `jobRecords`, `retentionSeconds`.
-`storeBytes` is a decimal string because 8 GiB exceeds the integer range above.
+`storeBytes` uses the canonical decimal-string representation of `Revision`
+because 8 GiB exceeds the integer range above; it is the only string-typed limit.
 `Budgets` has `modelCalls`, `agentTasks`, `cadCommands`, `repairs`, `validationRuns`,
 `wallTimeSeconds`. It carries the turn-work limits separately from `Limits`.
 The runtime may only lower host limits; acceptance freezes the effective limits.
@@ -352,6 +357,13 @@ The host assigns a terminal state on runtime loss/deadline even if the child emi
 none. A child's `turn.finished` is a proposal until the host checks it. Repeated
 terminal events do not change the accepted terminal outcome. A normal end of an
 individual model or ACP task is not turn success.
+
+The runtime may propose `validated_success` after observing a passing report,
+before the host performs section 9.3. The authoritative outcome is the host's
+terminal record and UI publication, not the received event. Protocol 1.0 has no
+H→R terminal confirmation event. After emitting `turn.finished`, the runtime
+issues no further work for that turn and cannot infer host acceptance. The host
+admits a subsequent turn only after its own terminal transition completes.
 
 | Event | Direction / required `data` |
 |---|---|
@@ -659,6 +671,10 @@ length. The host accepts timestamps no more than five minutes in the future and
 less than seven days old. It records the key, exact candidate/profile identities,
 owner binding and run ID atomically before starting a worker. Same key/same payload
 returns the same run; same key/different payload returns `IDEMPOTENCY_CONFLICT`.
+Payload equality compares JCS bytes of `{candidate, profile}`, including every
+field of the supplied `CandidateRef` and `ProfileRef`. JSON whitespace, object-key
+order and the transport envelope's request ID do not affect equality. Authorization
+and original turn ownership still apply; replay cannot transfer job ownership.
 Expired keys return `REQUEST_EXPIRED`, including after cleanup, rather than create
 a second job. Persist mappings until the later of the key's expiry and seven days
 after job termination, within the host record cap. A lost submit response is retried
@@ -919,15 +935,15 @@ Required compatibility cases, owned by the linked implementation tasks:
 
 | Fixtures / assertions | Owners |
 |---|---|
-| Every request, response, error and event variant; required/null/unknown fields; malformed UTF-8, duplicate keys, depth/size limits | #5, #7 |
+| Every request, response, error and event variant; required/null/unknown fields; empty versus nonempty error details; integer limits versus string `storeBytes`; malformed UTF-8, duplicate keys, depth/size limits | #5, #7 |
 | Hello exact-version success/refusal; unknown method/capability; nested HostAi callback while awaiting runtime work; bounded queue/EOF cleanup | #5 |
 | Revision `9007199254740993` and max-u64 round trips; overflow/leading-zero rejection; `document_id` normalization | #5, #8 |
 | Buffered result versus genuine deltas; tool-call identity, provider continuation branch/reset, cancelled HTTP still occupying its physical slot | #3, #7 |
 | ACP auth-required versus ready, independent sessions, unsupported model selection, permission denial and invalid proposals; late task-A text/tools/permissions during task B cannot enter B's output or UI | #4, #6 |
-| Cancel/reset/late terminal races; exactly one accepted turn terminal outcome; no stale turn writes | #5, #6, #9 |
+| Cancel/reset/late terminal races; exactly one host-owned turn terminal outcome; a proposed success cannot bypass host acceptance; no stale turn writes | #5, #6, #9 |
 | Guarded execute/batch application interleavings, tab changes, deferred evaluation, failed rollback, expectation failure, same-connection pending and lost-connection unknown | #8, #9 |
 | JCS known vectors and byte/identity/dependency changes; candidate artifacts survive live edits/restart; active references survive cleanup | #11 |
-| Duplicate submit keys, changed payload, expiry, worker crash/restart, timeout/cancel race, queue/store exhaustion | #12 |
+| Duplicate submit keys with reordered/whitespace-different JSON return the same run; changed candidate/profile fields conflict; ownership cannot transfer; expiry, worker crash/restart, timeout/cancel race, queue/store exhaustion | #12 |
 | A report for A cannot approve B; missing required check/evidence, profile or runner mismatch, changed live stamp, old cancelled turn; a cancelled run with passing checks cannot approve even an active turn | #12, #13 |
 | Installed runtime without developer Node/PATH; Codex missing/authenticated paths; unsupported targets; licensed artifact inventory | #14, #15 |
 
