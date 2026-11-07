@@ -20,8 +20,10 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-TEST_JOBS = frozenset(("rust", "contract-rust", "runtime", "contract-ts", "integration", "packages"))
-COMMAND_JOBS = frozenset(("repo", "pr-policy", "wasm", "artifact-policy"))
+# Runtime/contract-ts consume Node's own reports; their evidence is the real
+# npm argv/exit codes, not a fabricated nextest listing.
+TEST_JOBS = frozenset(("rust", "contract-rust", "integration", "packages"))
+COMMAND_JOBS = frozenset(("repo", "pr-policy", "wasm", "artifact-policy", "runtime", "contract-ts"))
 JOBS = TEST_JOBS | COMMAND_JOBS
 ROOT = Path(__file__).resolve().parents[2]
 KNOWN_FAILING = ROOT / "tests/KNOWN_FAILING_TESTS"

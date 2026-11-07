@@ -47,9 +47,16 @@ checks (owning xtask binary tests, web-offline build and packaging suites). The
 `Format and repository checks` job keeps the fast format, asset, licence, layer,
 list, locale, mesh, skills, selector and bot checks on every PR. When #5's
 contract bundle/consumers are present, the `Mastra contract (Rust)` job runs the
-owned `mastra_` fixture/protocol/host tests through nextest and emits a counted
-receipt; it is selected for contract or shared-input changes and full/release
-validation, and fails closed if the tests are absent or fail.
+owned `mastra_` value/codec/bundle/state/retirement conformance tests through
+nextest and emits a counted receipt; it is selected for contract or shared-input
+changes and full/release validation, and fails closed if the tests are absent or
+fail. Process-lifecycle `mastra_peer_` coverage stays in the full native run.
+When #7's runtime package is present, `Mastra runtime (Node)` installs exactly
+Node 22.23.4 and npm 11.19.0, runs `npm ci` from the committed root lockfile and
+the package's typecheck/test/build/verify:schema/check:deps scripts, while
+`Mastra contract (TypeScript)` runs the TypeScript side of the shared fixture
+bundle. Both are command-evidence jobs: their real npm argv/exit codes form the
+receipt, and a present runtime can no longer use the foundation deferral.
 
 The always-evaluated `ci` aggregate in `.github/workflows/ci.yml` checks actual
 selected `needs` via `scripts/ci/main_merge.py` and `scripts/ci/gate.py`. Inspect:

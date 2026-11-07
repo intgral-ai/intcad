@@ -243,12 +243,35 @@ def repository_commands(*, full=True):
     return commands + [["node", "--test", *bot_tests]]
 
 
+RUNTIME_PACKAGE = "@intgral-ai/solidcraft-mastra-runtime"
+# Bundle/value/codec/state conformance groups owned by #5. Process-lifecycle
+# `mastra_peer_` tests stay in the full native suite; they exercise #7's host.
+CONTRACT_RUST_FILTER = "test(/mastra_(values|codec|bundle|state|retirement|canonical|schema)_/)"
+
+
 def contract_commands():
-    """Run #5's Rust contract/fixture/host tests exactly once, by their owned prefix."""
+    """Run #5's Rust contract/fixture conformance tests exactly once, by prefix."""
     common = ["-p", "solidcraft-ui-egui", "--cargo-profile", "ci", "--locked", "--profile", "ci",
-              "--ignore-default-filter", "-E", "test(/mastra_/)"]
+              "--ignore-default-filter", "-E", CONTRACT_RUST_FILTER]
     return [["cargo", "nextest", "list", *common, "--message-format", "json"],
             ["cargo", "nextest", "run", *common, "--test-threads", "2"]]
+
+
+def runtime_commands():
+    """Reproducible install from the committed lockfile, then the owned checks."""
+    return [["npm", "ci", "--no-audit", "--no-fund"],
+            ["npm", "run", "typecheck", "-w", RUNTIME_PACKAGE],
+            ["npm", "test", "-w", RUNTIME_PACKAGE],
+            ["npm", "run", "build", "-w", RUNTIME_PACKAGE],
+            ["npm", "run", "verify:schema", "-w", RUNTIME_PACKAGE],
+            ["npm", "run", "check:deps", "-w", RUNTIME_PACKAGE]]
+
+
+def contract_ts_commands():
+    """The TypeScript side of the shared fixture bundle; no Rust execution here."""
+    return [["npm", "ci", "--no-audit", "--no-fund"],
+            ["npm", "run", "typecheck", "-w", RUNTIME_PACKAGE],
+            ["npm", "run", "verify:schema", "-w", RUNTIME_PACKAGE]]
 
 
 def wasm_commands():
@@ -285,6 +308,10 @@ def execute_workflow(plan_file, job, out, *, full=False):
         argvs = native_commands(plan, full=full or plan["scope"] == "full" or plan["releaseRequired"])
     elif job == "contract-rust":
         argvs = contract_commands()
+    elif job == "runtime":
+        argvs = runtime_commands()
+    elif job == "contract-ts":
+        argvs = contract_ts_commands()
     elif job == "wasm":
         argvs = wasm_commands()
     else:

@@ -110,10 +110,28 @@ class ForkExecution(unittest.TestCase):
         self.assertEqual(listing[:3], ["cargo", "nextest", "list"])
         self.assertEqual(run[:3], ["cargo", "nextest", "run"])
         self.assertIn("solidcraft-ui-egui", listing)
-        self.assertEqual(listing[listing.index("-E") + 1], "test(/mastra_/)")
+        self.assertEqual(listing[listing.index("-E") + 1], main_merge.CONTRACT_RUST_FILTER)
+        self.assertIn("bundle", main_merge.CONTRACT_RUST_FILTER)
+        self.assertNotIn("peer", main_merge.CONTRACT_RUST_FILTER)
         self.assertEqual(listing[3:-2], run[3:-2])
         self.assertEqual(listing[-2:], ["--message-format", "json"])
         self.assertEqual(run[-2:], ["--test-threads", "2"])
+
+    def test_runtime_and_contract_ts_commands_are_real_npm_argv(self):
+        runtime = self.adapter("runtime_commands")
+        contract = self.adapter("contract_ts_commands")
+        package = "@intgral-ai/solidcraft-mastra-runtime"
+        expected = ["npm", "ci", "--no-audit", "--no-fund"]
+        self.assertEqual(runtime()[0], expected)
+        self.assertEqual(contract()[0], expected)
+        self.assertEqual(runtime()[1:], [
+            ["npm", "run", "typecheck", "-w", package],
+            ["npm", "test", "-w", package],
+            ["npm", "run", "build", "-w", package],
+            ["npm", "run", "verify:schema", "-w", package],
+            ["npm", "run", "check:deps", "-w", package],
+        ])
+        self.assertIn(["npm", "run", "verify:schema", "-w", package], contract())
 
     def test_empty_rust_package_scope_is_an_error_not_workspace_fallback(self):
         build = self.adapter("native_commands")
@@ -239,12 +257,12 @@ else:
 
     def test_present_but_unwired_consumer_cannot_get_a_success_stub(self):
         value = self.plan(["README.md"])
-        value["jobs"]["runtime"] = {"decision": "run", "reason": "selected_change", "missingInputs": []}
-        value["openObligations"].remove("runtime")
+        value["jobs"]["integration"] = {"decision": "run", "reason": "selected_change", "missingInputs": []}
+        value["openObligations"].remove("integration")
         self.plan_file.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, "handoff"):
-            main_merge.execute_workflow(self.plan_file, "runtime", self.root / "evidence/runtime")
-        self.assertFalse((self.root / "evidence/runtime/receipt.json").exists())
+            main_merge.execute_workflow(self.plan_file, "integration", self.root / "evidence/integration")
+        self.assertFalse((self.root / "evidence/integration/receipt.json").exists())
 
     def test_selection_uses_real_diff_including_both_names_and_actual_checkout(self):
         base = self.source

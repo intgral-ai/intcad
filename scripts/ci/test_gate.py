@@ -2,7 +2,8 @@
 """Counted execution tests; fixtures describe formats, not actual native runs.
 
 Format facts: nexte.st/docs/machine-readable/list/ and /junit/, plus the
-repository's xtask/src/known_failing.rs. No Node/runtime adapter is fabricated.
+repository's xtask/src/known_failing.rs. Runtime/contract-ts evidence is the
+real npm argv/exit pair; fixtures do not claim a runtime run.
 Run: PYTHONDONTWRITEBYTECODE=1 python3 -I scripts/ci/test_gate.py
 """
 import copy
@@ -270,11 +271,20 @@ class ExecutionEvidence(unittest.TestCase):
         self.value = planner.make_plan(META, ["packages/mastra-runtime/src/main.ts"], inventory,
             source_revision=SHA, event_name="pull_request", base_ref="develop", head_ref="task",
             full=True, release_required=True, diff_complete=True)
-        for job in ("contract-rust", "runtime", "contract-ts", "integration", "packages"):
+        for job in ("contract-rust", "integration", "packages"):
             with self.subTest(job=job):
                 self.receipts = {job: command_receipt(self.value, job)}
                 self.needs = {job: "success"}
                 self.assertIn(job + ": test-bearing", "\n".join(self.evaluate()))
+        for job in ("runtime", "contract-ts"):
+            with self.subTest(job=job):
+                receipt = self.gate.record_receipt(plan_bytes(self.value), job,
+                    [{"argv": ["npm", "ci", "--no-audit", "--no-fund"], "exitCode": 0}], None, None, set())
+                self.assertIsNone(receipt["tests"])
+                self.receipts = {job: receipt}
+                self.needs = {job: "success"}
+                problems = self.evaluate()
+                self.assertNotIn(job, "\n".join(problems))
 
     def test_wasm_command_only_receipt_is_distinct_from_test_jobs(self):
         self.assertIsNone(self.receipts["wasm"]["tests"])

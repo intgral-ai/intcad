@@ -184,6 +184,18 @@ class MonorepoSelection(unittest.TestCase):
                 for job in ("rust", "wasm", "contract-rust", "runtime", "contract-ts", "integration", "artifact-policy"):
                     self.decision(result, job, "run", "selected_change")
 
+    def test_present_runtime_selects_runtime_and_ts_contract_consumers(self):
+        self.inventory.update(runtimePresent=True, missingRuntimeInputs=[])
+        for path in ("packages/mastra-runtime/src/main.ts", "package-lock.json", ".nvmrc"):
+            with self.subTest(path=path):
+                result = self.select(path)
+                self.decision(result, "runtime", "run", "selected_change")
+                self.decision(result, "contract-ts", "run", "selected_change")
+                self.decision(result, "contract-rust", "run", "selected_change")
+        schema = self.select("schema/mastra-runtime/v1/manifest.json")
+        for job in ("contract-rust", "runtime", "contract-ts"):
+            self.decision(schema, job, "run", "selected_change")
+
     def test_xtask_and_packaging_mastra_changes_select_xtask_tests(self):
         for path in ("xtask/src/runtime_inventory.rs", "packaging/mastra/policy.json",
                      "packaging/mastra/source-records.json"):
@@ -649,7 +661,7 @@ class ForkWorkflowContract(unittest.TestCase):
         self.assertIn('SOLIDCRAFT_REQUIRE_GPU: "1"', self.job("rust"))
 
     def test_exact_plan_and_required_consumers_have_evidence_edges(self):
-        for job in ("repo", "pr-policy", "contract-rust", "rust", "wasm"):
+        for job in ("repo", "pr-policy", "contract-rust", "runtime", "contract-ts", "rust", "wasm"):
             self.assertIn("scripts/ci/main_merge.py execute", self.job(job))
             self.assertIn("selection-plan", self.job(job))
         for command in ("validation_mode:", "release_required:", "test_gate.py", "test_kernel_rig_plan.py"):
