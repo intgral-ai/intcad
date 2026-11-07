@@ -133,7 +133,7 @@ class MonorepoSelection(unittest.TestCase):
             self.decision(result, job, "not_applicable", "no_relevant_change")
         self.assertEqual(set(result), {"version", "sourceRevision", "eventName", "baseRef", "headRef", "scope",
                                        "releaseRequired", "rustFull", "rustPackages", "rustTestPackages",
-                                       "jobs", "openObligations"})
+                                       "rustTestShard", "jobs", "openObligations"})
         self.assertEqual((result["version"], result["sourceRevision"], result["scope"]), (1, "a" * 40, "affected"))
 
     def test_pr_policy_does_not_run_on_ordinary_push(self):
@@ -146,6 +146,7 @@ class MonorepoSelection(unittest.TestCase):
         # The bounded PR test lane owns the changed crate; reverse dependents are
         # built by Clippy/wasm and fully tested by the nightly run.
         self.assertEqual(result["rustTestPackages"], ["solidcraft-engine"])
+        self.assertEqual(result["rustTestShard"], "count:1/8")
         self.assertFalse(result["rustFull"])
         for job in ("rust", "wasm"):
             self.decision(result, job, "run", "selected_change")

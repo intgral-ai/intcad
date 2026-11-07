@@ -118,7 +118,9 @@ def test_scope(plan, *, full):
         return ["--workspace"], []
     packages = plan.get("rustTestPackages") or plan["rustPackages"]
     gate.require(packages, "selected bounded Rust test scope is empty")
-    return [arg for package in packages for arg in ("-p", package)], ["--partition", "count:1/2"]
+    shard = plan.get("rustTestShard") or "count:1/8"
+    gate.require(re.fullmatch(r"count:1/[1-9][0-9]*", shard), "invalid bounded Rust shard: " + str(shard))
+    return [arg for package in packages for arg in ("-p", package)], ["--partition", shard]
 
 
 def native_commands(plan, *, full):

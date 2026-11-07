@@ -93,7 +93,7 @@ class ForkExecution(unittest.TestCase):
                     self.assertIn("--workspace", run)
                     self.assertNotIn("--partition", run)
                 else:
-                    self.assertEqual(run[run.index("--partition") + 1], "count:1/2")
+                    self.assertEqual(run[run.index("--partition") + 1], "count:1/8")
 
     def test_bounded_test_lane_ignores_workspace_wide_packages(self):
         build = self.adapter("native_commands")

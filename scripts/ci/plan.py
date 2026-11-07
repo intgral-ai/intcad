@@ -33,6 +33,9 @@ TOOLING_PREFIXES = ("xtask/", "packaging/mastra/")
 # smoke owner is always present and proves the toolchain even for shared-only
 # inputs whose tests belong to the nightly full run.
 PR_TEST_SMOKE = "xtask"
+# Deterministic slice of the bounded PR test selection. Compilation is the floor
+# (~19 min cold for solidcraft-ui-egui); 1/8 keeps the run well inside 30 min.
+PR_TEST_SHARD = "count:1/8"
 # Only these reviewed metadata/owning utility inputs are payload-free. Unknown
 # packaging paths still require the real package consumers, never a prefix waiver.
 PACKAGING_FOUNDATION = frozenset(("packaging/mastra/policy.json", "packaging/mastra/source-records.json",
@@ -248,6 +251,7 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
                 releaseRequired=release_required, rustFull=rust_full,
                 rustPackages=sorted(set(rust_packages)),
                 rustTestPackages=sorted(set(rust_test_packages)),
+                rustTestShard=PR_TEST_SHARD,
                 jobs=jobs, openObligations=sorted(obligations))
 
 
