@@ -282,6 +282,7 @@ def contract_ts_commands():
     """The TypeScript side of the shared fixture bundle; no Rust execution here."""
     return VERSION_CHECKS + [["npm", "ci", "--no-audit", "--no-fund"],
             ["npm", "run", "typecheck", "-w", RUNTIME_PACKAGE],
+            ["npm", "run", "build", "-w", RUNTIME_PACKAGE],
             ["npm", "run", "verify:schema", "-w", RUNTIME_PACKAGE]]
 
 
