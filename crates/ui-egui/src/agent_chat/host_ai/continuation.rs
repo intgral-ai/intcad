@@ -100,7 +100,7 @@ impl Generation {
 
 fn add_atomic(counter: &AtomicUsize, bytes: usize, limit: u32, resource: &'static str) -> Result<(), AiError> {
     counter
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| used.checked_add(bytes).filter(|n| *n <= limit as usize))
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |used| used.checked_add(bytes).filter(|n| *n <= limit as usize))
         .map(|_| ())
         .map_err(|_| AiError::exhausted(resource, limit))
 }

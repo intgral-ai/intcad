@@ -119,7 +119,8 @@ The [architecture page](docs/architecture.md) has the layer table. The short ver
    open-source application to get reference values for a test is fine; reading its source is
    not.) Permissive
    dependencies are fine. Note which one you're adding and why in the PR. THIRD-PARTY-LICENSES.txt
-   lists it once the change lands: the Generated files workflow rewrites it on `main`.
+   lists it once the change lands: in this fork the Generated files workflow runs on
+   `develop` and opens a draft PR to `develop`.
    Nightly/manual CI also scans advisories, bans and sources with cargo-deny, and a PR that
    changes Cargo.lock or a Cargo.toml checks the advisories; see
    [the local command and coverage limits](docs/book/src/dev/testing.md#dependency-advisories).
@@ -221,21 +222,26 @@ override; this limit does not change test filters, timeouts or baselines.
 Tests run beside each other on a busy machine, so a test must not depend on wall-clock timing.
 
 **Ready pull requests test what they touch.** CI maps changed files to workspace packages and
-runs Clippy, the test build and tests for those and their dependents. The
-[package selector](scripts/ci/affected.py) and [CI workflow](.github/workflows/ci.yml) define
-which changes require native checks; documentation, packaging, other-workflow and bot-script-only
-changes run the repository checks only, on pull requests and on `main`. Workspace-wide changes,
-merge-queue groups, nightly runs and Run workflow select the full workspace. A push to `main`
-reuses a successful merge-queue run for the same commit, and runs only the repository checks
-when no code changed since the last push to `main` that passed; otherwise it runs the full
-suite. Doc tests, reference tests and the Windows jobs run on `main` and nightly only.
+runs the format/repository policy, Clippy and the wasm check for every selected consumer. The
+[package selector](scripts/ci/plan.py) and [CI workflow](.github/workflows/ci.yml) define which
+changes require native checks; documentation, packaging, other-workflow and bot-script-only
+changes run the fast repository checks only. Pull requests also run the contract/runtime
+consumers when present and a bounded native lane over packages whose cold test build fits the
+30-minute cap (`-p xtask` smoke plus `--partition count:1/8`).
 
-**CI shards the tests.** One job builds them into a cargo-nextest archive; two shards run on
-pull requests and four during full validation. Every test runs in its own process: don't rely
-on state left by another test.
+The heavy UI/app/engine suite does **not** run on pull requests: a cold test codegen cannot fit
+the cap on these runners. The plan names those packages in `rustDeferredPackages` and points at
+[`native-baseline.yml`](.github/workflows/native-baseline.yml), which runs the complete workspace
+suite nightly/manually with a four-hour budget, and blocks release. There is no merge queue in
+this fork; pushes to `develop`/`main` run the full selected/full policy directly, and doc tests,
+reference tests, properties and the Windows jobs stay in full/nightly mode. See the
+[testing page](docs/book/src/dev/testing.md) and [fork governance](docs/fork-governance.md).
+
+**Tests run in isolated processes.** Every test runs in its own process: don't rely on state
+left by another test.
 Pull requests skip a few heavy tests (one to twelve minutes each), which run in full validation
-(the merge queue, nightly, manual runs and pushes to `main` not already tested by the queue).
-Check that validation after merging. They are listed in
+(nightly, manual runs and full pushes), not on merges through a queue. Check that validation
+after merging. They are listed in
 `.config/nextest.toml` and the [testing page](docs/book/src/dev/testing.md):
 
 - `solidcraft-engine`: `tests::hostile_params_never_panic`, everything in `tests::robustness`,
@@ -317,25 +323,37 @@ and a fresh CI run:
   row.
 - **Languages** (`crates/ui-egui/src/i18n.rs`): one per line, English first, then by id (a test
   checks it).
-- **Generated files**: `THIRD-PARTY-LICENSES.txt` and `docs/features.md` are rewritten on `main`
-  after each merge by the Generated files workflow (`cargo xtask licences`, `cargo xtask
-  features`). Don't regenerate or edit them in a pull request.
+- **Generated files**: in this fork the Generated files workflow runs on `develop` and opens a
+  draft PR to `develop` (`cargo xtask licences`, `cargo xtask features`); after that PR lands it
+  rewrites `THIRD-PARTY-LICENSES.txt` and `docs/features.md`. Don't regenerate or edit them in an
+  ordinary pull request.
 - **Design format**: one file per change, never an edit to a shared number (above).
 - **New UI strings and attribution rows**: one new file per change, `assets/locales/pending/<slug>.json`
   and `attribution/pending/<slug>.md`, instead of editing the catalogs or the ATTRIBUTION.md table;
-  `cargo xtask fold-pending` folds them on `main` (see the README in each folder). A new English
+  in this fork the Generated files workflow runs `cargo xtask fold-pending` on `develop` and opens a
+  draft PR to `develop` (see the README in each folder). A new English
   message also needs every catalog delivered complete (`COMPLETE` in `crates/ui-egui/src/i18n.rs`:
   today ar, he, ja, vi, and zh) in the same pending file; `cargo xtask i18n --check` reports any gap.
 
 ## Sending a change
+
+> **Fork override (this repository):** the branch policy below is the proposed
+> fork policy and awaits owner sign-off, but the CI mechanics are active. Task PRs
+> branch from and target `develop`, not `main`; there is no `approved-for-ci`
+> gate and no merge queue — every PR runs its selected checks immediately.
+> Promotion uses a temporary `release/vX.Y.Z` branch. See
+> [docs/fork-governance.md](docs/fork-governance.md). The upstream `main` and
+> merge-queue instructions below describe the upstream repository and do not
+> override this fork's `develop` target.
 
 1. Work is tracked in [GitHub issues](https://github.com/tangency-labs/solidcraft/issues), labelled
    by area (`area:kernel`, `area:sketch`, `area:doc`, `area:ui`, `area:infra`). For anything
    bigger than a bug fix that has no issue yet, open one first. **Claim the issue with a draft
    PR** before you start, so two people don't build the same thing:
    - Check nobody has it: `gh pr list -R tangency-labs/solidcraft --state open --search "#N"`.
-   - Branch from the latest `main`, commit `git commit --allow-empty -m "claim: #N"`, push, and
-     open a **draft** PR titled `<summary> (#N)`, e.g. `Fillet: variable radius along a chain (#123)`.
+   - Branch from the latest `develop` in this fork (upstream: `main`), commit
+     `git commit --allow-empty -m "claim: #N"`, push, and open a **draft** PR titled
+     `<summary> (#N)`, e.g. `Fillet: variable radius along a chain (#123)`.
    - **The lowest-numbered open PR for an issue wins.** If yours lost, close it (or offer to help
      on the other one).
    - The bot records the claim when the PR is opened: it assigns you, adds `in progress` and
@@ -345,18 +363,18 @@ and a fresh CI run:
    - Push work in progress at least daily. A draft with no pushes for 72 hours may be taken over:
      comment on it first, then open your own claim.
    - Mark the PR ready for review when it is done.
-2. Branch from `main` and keep the PR to one topic.
+2. Branch from `develop` in this fork and keep the PR to one topic.
 3. Run `cargo xtask ci` before pushing. It runs fmt, the asset, licence and layer checks,
    clippy (`-D warnings`), then the tests with the wasm build check alongside. A PR has to pass it.
-   Heavy CI runs after review: a pull request gets the formatting and repository checks and a
-   quick compile (`cargo check`) when you push. Once a maintainer has reviewed it they add the
-   `approved-for-ci` label when the PR is ready to merge, which runs the full CI (build, tests,
-   goldens, Clippy); every push after that runs the full set again. Maintainers merge approved
-   PRs in groups by area, so PRs that touch the same code meet a conflict at most once.
+   **Fork override:** every PR runs its selected checks immediately — there is no
+   `approved-for-ci` gate and no merge queue. The upstream text for maintainers is
+   unchanged: upstream still uses that label, groups merges by area and runs the
+   full CI after review.
 4. Reference the issue (`Fixes #12`). In the PR, say what you tested and how. For geometry work, include the measured numbers (and
    the expected ones).
 5. Write the PR title and first sentence for someone who hasn't seen your chat, the issue or the
-   code. Maintainers pick what to review from the title, and it becomes the commit on `main`. Say
+   code. Maintainers pick what to review from the title, and in this fork it becomes the squash
+   commit on `develop` (upstream: `main`). Say
    which part of the app changes and what a user now sees or can do, and name things rather than
    leaning on "there", "it" or "this".
    - Unclear: `Send to Slicer: pick one print face per body there, and show print faces only while it is open`

@@ -11,6 +11,13 @@ and the [skills index](../README.md) first. Follow their current rules; use this
 help a first-time contributor apply them. This skill concerns the repository,
 not modelling a part through MCP.
 
+> **Fork override (this repository):** task PRs branch from and target `develop`,
+> not `main`; there is no `approved-for-ci` gate and no merge queue — every PR runs
+> its selected checks immediately. The proposed branch policy awaits owner sign-off
+> and CI mechanics are active. See [docs/fork-governance.md](../../docs/fork-governance.md).
+> Commands below that say `main`, `origin/main` or `--base main` apply to the
+> upstream repository; use `develop` here.
+
 ## Rules for every PR
 
 - **Look at what is open first.** Pull the whole list, drafts included:
@@ -20,13 +27,13 @@ not modelling a part through MCP.
   (`gh pr list ... --json number,title,files`). If someone has it, comment on their PR or issue
   instead of opening a second one: two PRs for one change cannot both land.
 - **Claim with a draft PR.** `gh pr list -R tangency-labs/solidcraft --state open --search "#N"`; if none,
-  branch from the latest `origin/main`, `git commit --allow-empty -m "claim: #N"`, push, and open a
+  branch from the latest `origin/develop` in this fork (upstream: `origin/main`), `git commit --allow-empty -m "claim: #N"`, push, and open a
   draft PR titled `<summary> (#N)`. The lowest-numbered open PR for an issue wins; close yours if it
   lost. The bot assigns you and labels the issue `in progress`. Do not claim by editing files; comment
   `/claim` only to stake a claim before you have a branch.
 - **Write the title and first sentence for a reader who has seen nothing else.** Not your chat, not the
-  issue, not the code. Maintainers pick what to review from the title, and it becomes the commit on
-  `main`. Say which part of the app changes and what a user now sees or can do, in everyday words. Don't
+  issue, not the code. In this fork a task PR squash-lands on `develop`; upstream it becomes the
+  commit on `main`. Say which part of the app changes and what a user now sees or can do, in everyday words. Don't
   paste the issue's title unless it passes this too. Before opening the PR, and again before marking it
   ready, read both with everything else closed: if "there", "it", "this" or "that" has nothing to point
   at, or a term only makes sense after reading the diff, rewrite it. Keep the terms a user sees in the
@@ -46,13 +53,15 @@ not modelling a part through MCP.
 - **One topic and one issue per PR.** Never commit `plan/`, build directories (`target*/`) or generated
   reference data; check `git ls-files` before pushing. Run `cargo xtask ci` before every commit.
   Commit after every feature arc that builds.
-- **Merge flow.** The heavy CI jobs start when a maintainer adds `approved-for-ci`; approved PRs go
-  through the merge queue (`gh pr merge N -R tangency-labs/solidcraft --squash --auto`), which runs the
-  full suite on each group before it lands on `main`. Never force-push `main`.
-- **Do not push only to catch up with `main`** (no merge of `main`, no Update branch, no rebase for
-  that alone): every push restarts the whole CI run, and `main`'s own run catches what lands in between.
-  When you push anyway, or GitHub reports a conflict, rebase onto the latest `main` and push your own
-  branch with `--force-with-lease`; never merge `main` into a PR. Resolve conflicts without discarding
+- **Merge flow.** In this fork every PR runs its selected checks immediately; do not wait for
+  `approved-for-ci` and do not use a merge queue (neither exists here). The upstream repository still
+  starts heavy CI with that label and merges groups through its queue. Never force-push `main` or
+  `develop`.
+- **Do not push only to catch up with `develop`** (fork; upstream: `main`) — no merge of the base, no
+  Update branch, no rebase for that alone: every push restarts the whole CI run, and the base branch's
+  own run catches what lands in between. When you push anyway, or GitHub reports a conflict, rebase
+  onto the latest base and push your own branch with `--force-with-lease`; never merge the base into a
+  PR. Resolve conflicts without discarding
   others' work. Do not re-run CI on an unchanged commit: re-run only a job that runner trouble
   cancelled, with "Re-run failed jobs".
 - **Evidence.** For observable CAD, UI or model behaviour (kernel, geometry, assembly and backend
@@ -119,7 +128,8 @@ git remote add upstream https://github.com/tangency-labs/solidcraft.git
 ```
 
 Never push to upstream. If cloning an existing fork instead, check the same remote
-layout. With a clean working tree, sync local `main` before starting work:
+layout. In this repository the integration branch is `develop`; the upstream
+commands below sync `main` and apply when working against upstream.
 
 ```sh
 git fetch upstream
@@ -162,11 +172,11 @@ publishing. Recheck availability immediately before claiming. Follow the claim
 rules in CONTRIBUTING.md; substitute the chosen summary and fork owner below:
 
 ```sh
-git fetch upstream
-git switch -c "fix-$N" upstream/main
+git fetch origin
+git switch -c "fix-$N" origin/develop
 git commit --allow-empty -m "claim: #$N"
 git push -u origin "fix-$N"
-gh pr create --repo tangency-labs/solidcraft --head "FORK_OWNER:fix-$N" --base main --draft --title "SUMMARY (#$N)" --body-file /tmp/solidcraft-pr-body.md
+gh pr create --repo tangency-labs/solidcraft --head "FORK_OWNER:fix-$N" --base develop --draft --title "SUMMARY (#$N)" --body-file /tmp/solidcraft-pr-body.md
 ```
 
 Write the body file first, describing the intended fix and referencing `Fixes #N`.
@@ -240,8 +250,9 @@ updating the PR. After their approval, mark the draft ready:
 gh pr ready PR_NUMBER -R tangency-labs/solidcraft
 ```
 
-Explain that a maintainer reviews the change and adds `approved-for-ci` to start
-heavy checks; do not add that label yourself. Monitor checks and merge status,
+Explain that in this fork every PR runs its selected checks immediately, with no
+`approved-for-ci` gate and no merge queue; the upstream repository still uses that
+label. Monitor checks and merge status,
 address review comments, rerun affected checks for fixes, and ask before public
 replies or pushes. Report whether it merged or remains pending; do not promise a
 merge or rerun an unchanged failing check without evidence of infrastructure trouble.
