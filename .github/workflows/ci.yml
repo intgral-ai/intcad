@@ -91,7 +91,8 @@ jobs:
     runs-on: ubuntu-24.04
     # Bounded pull-request policy/format checks; the complete repository evidence
     # (owning xtask tests, web-offline build, packaging suites) runs in full mode.
-    timeout-minutes: ${{ fromJSON(needs.changes.outputs.plan || '{}').scope == 'full' && 90 || 20 }}
+    # The fast lane measured 14-20 minutes on the 2-vCPU runner; keep headroom.
+    timeout-minutes: ${{ fromJSON(needs.changes.outputs.plan || '{}').scope == 'full' && 90 || 30 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

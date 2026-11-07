@@ -34,9 +34,11 @@ additional consumers. Scheduled/full validation selects existing full consumers;
 main-target promotion additionally sets `releaseRequired`.
 
 Pull requests use a bounded deterministic lane so a standard two-vCPU runner
-finishes inside 30 minutes. The counted native job tests the directly affected
-packages (with reverse dependents) plus the `xtask` tooling smoke owner, and runs
-one deterministic half of that selection (`--partition count:1/2`). Clippy and
+finishes inside 30 minutes. The counted native job tests the packages that
+directly own a changed Rust file plus the `xtask` tooling smoke owner, and runs
+one deterministic half of that selection (`--partition count:1/2`). Reverse
+dependents are still built by Clippy and the wasm check and are fully tested by
+the nightly/full workflow. Clippy and
 the wasm compile still cover the complete selected consumer scope, including
 shared lockfile, toolchain, `.github/workflows/**`, `.github/actions/**` and `scripts/**`
 inputs. Those inputs

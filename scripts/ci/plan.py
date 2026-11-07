@@ -183,16 +183,22 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
         _, rust_packages = affected.select(meta, rust_paths + [HOST + "mastra_protocol.rs"])
     if rust_full:
         rust_packages = sorted(p["name"] for p in meta["packages"])
-    # Pull requests run a bounded, deterministic lane: the directly affected
-    # packages (with their reverse dependents) plus the tooling smoke owner.
-    # Shared build inputs and full runs keep the complete rustPackages scope for
-    # Clippy and wasm; only the counted test lane is bounded, and the nightly
-    # workflow runs the complete set. Tests excluded here are never reported as
-    # passing evidence.
+    # Pull requests run a bounded, deterministic lane: the packages that directly
+    # own a changed Rust file plus the tooling smoke owner. Reverse dependents are
+    # still built by Clippy/wasm and fully tested by the nightly/full workflow;
+    # including their test binaries overflowed the 30-minute PR cap. Only this
+    # counted test lane is bounded. Excluded tests are never reported as passing.
     direct_paths = [path for path in rust_paths if not shared_path(path)]
-    _, direct_tests = affected.select(meta, direct_paths)
+    root = meta["workspace_root"].replace("\\", "/").rstrip("/") + "/"
+    dirs = {p["name"]: p["manifest_path"].replace("\\", "/")[len(root):].rsplit("/", 1)[0] + "/"
+            for p in meta["packages"]}
+    direct_tests = set()
+    for path in direct_paths:
+        owners = [name for name, directory in dirs.items() if path.startswith(directory)]
+        if owners:
+            direct_tests.add(max(owners, key=lambda name: len(dirs[name])))
     if tooling:
-        direct_tests = sorted(set(direct_tests) | {PR_TEST_SMOKE})
+        direct_tests = set(direct_tests) | {PR_TEST_SMOKE}
     rust_test_packages = sorted(set(direct_tests))
     if not rust_test_packages and (rust_packages or rust_full):
         fallback = [PR_TEST_SMOKE] if PR_TEST_SMOKE in available else sorted(rust_packages)
