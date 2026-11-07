@@ -181,6 +181,39 @@ fn valid_revision(text: &str) -> bool {
         && text.parse::<u64>().is_ok()
 }
 
+/// RFC3339 UTC with exactly milliseconds (`2026-11-07T12:00:00.000Z`).
+fn valid_captured_at(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() != 24
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'.'
+        || bytes[23] != b'Z'
+    {
+        return false;
+    }
+    let number = |range: std::ops::Range<usize>| -> Option<u32> {
+        if bytes.get(range.clone())?.iter().all(u8::is_ascii_digit) { std::str::from_utf8(&bytes[range]).ok()?.parse().ok() } else { None }
+    };
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second), Some(millis)) =
+        (number(0..4), number(5..7), number(8..10), number(11..13), number(14..16), number(17..19), number(20..23))
+    else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day) && hour <= 23 && minute <= 59 && second <= 59 && millis <= 999
+}
+
 fn exact_keys(object: &serde_json::Map<String, Value>, allowed: &[&str]) -> bool {
     object.len() == allowed.len() && object.keys().all(|key| allowed.contains(&key.as_str()))
 }
@@ -212,6 +245,9 @@ fn manifest_inputs(candidate_id: &str, manifest: &Value) -> Result<Vec<(String, 
             return Err(invalid(format!("manifest {key} must be non-empty text")));
         }
     }
+    if !object.get("capturedAt").and_then(Value::as_str).is_some_and(valid_captured_at) {
+        return Err(invalid("manifest capturedAt must be RFC3339 UTC with milliseconds"));
+    }
     let inputs = object.get("inputs").and_then(Value::as_array).ok_or_else(|| invalid("manifest inputs must be an array"))?;
     if inputs.is_empty() || inputs.len() > MAX_INPUTS {
         return Err(invalid(format!("manifest must have 1..={MAX_INPUTS} inputs")));
@@ -230,8 +266,14 @@ fn manifest_inputs(candidate_id: &str, manifest: &Value) -> Result<Vec<(String, 
         if !valid_path(path) || previous.is_some_and(|previous| previous >= path) {
             return Err(invalid(format!("input paths must be unique, sorted relative POSIX paths: {path:?}")));
         }
+        if path == MANIFEST_ENTRY {
+            return Err(invalid("manifest.json is reserved for the manifest, not an input"));
+        }
         previous = Some(path);
         match input.get("kind").and_then(Value::as_str) {
+            Some("design") if path != "design.sc" => {
+                return Err(invalid("the design input must be design.sc"));
+            }
             Some("design") => designs += 1,
             Some("component" | "import" | "requirements") => {}
             _ => return Err(invalid(format!("input {path} has an unknown kind"))),
@@ -350,6 +392,11 @@ pub fn write(root: &Path, candidate_id: &str, files: &[CandidateFile], manifest:
     if manifest_bytes.len() > MAX_MANIFEST_BYTES {
         return Err(invalid("manifest exceeds 1 MiB"));
     }
+    // Refuse before allocating the container: each entry adds headers and the central directory.
+    let estimated = total.saturating_add(manifest_bytes.len() as u64).saturating_add(4096).saturating_add((sorted.len() as u64).saturating_mul(512));
+    if estimated > MAX_CONTAINER_BYTES {
+        return Err(invalid("container would exceed the snapshot ceiling"));
+    }
     let container = zip_bytes(&manifest_bytes, &sorted)?;
     if container.len() as u64 > MAX_CONTAINER_BYTES {
         return Err(invalid("container exceeds the snapshot ceiling"));
@@ -358,9 +405,9 @@ pub fn write(root: &Path, candidate_id: &str, files: &[CandidateFile], manifest:
     if store_bytes(root).saturating_add(container.len() as u64) > MAX_STORE_BYTES {
         return Err(invalid("the artifact store is full: remove expired candidates first"));
     }
-    fs::create_dir_all(root).map_err(|e| invalid(format!("store {}: {e}", root.display())))?;
+    fs::create_dir_all(root).map_err(|_| invalid("the candidate store could not be created"))?;
     let path = container_path(root, candidate_id);
-    crate::safe_write::create_atomic(&path, &container).map_err(|e| invalid(format!("publishing {}: {e}", path.display())))?;
+    crate::safe_write::create_atomic(&path, &container).map_err(|error| invalid(format!("publishing the candidate container: {error}")))?;
     let record = StoredCandidate {
         artifact: StoredArtifact {
             artifact_id: artifact_id.to_string(),
@@ -375,7 +422,7 @@ pub fn write(root: &Path, candidate_id: &str, files: &[CandidateFile], manifest:
     if let Err(error) = crate::safe_write::create_atomic(&record_path(root, candidate_id), &bytes) {
         // Never leave a container without its lookup record.
         let _ = fs::remove_file(&path);
-        return Err(invalid(format!("publishing record: {error}")));
+        return Err(invalid(format!("publishing the candidate record: {error}")));
     }
     Ok(record)
 }
@@ -455,7 +502,7 @@ fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
 /// Pin a candidate while a validation run refers to it. Pinning is idempotent.
 pub fn pin(root: &Path, candidate_id: &str) -> Result<()> {
     checked_candidate_id(candidate_id)?;
-    fs::create_dir_all(root).map_err(|e| invalid(format!("store {}: {e}", root.display())))?;
+    fs::create_dir_all(root).map_err(|_| invalid("the candidate store could not be created"))?;
     match crate::safe_write::create_atomic(&pin_path(root, candidate_id), b"active\n") {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
@@ -656,6 +703,35 @@ mod tests {
         bad["source"]["revision"] = json!("01");
         assert!(
             write(&root, "cand-hostile", &[CandidateFile { path: "design.sc".into(), bytes: design.to_vec() }], &bad, "artifact-hostile").is_err()
+        );
+        let mut bad = manifest("cand-hostile", design);
+        bad["inputs"][0]["path"] = json!("other.sc");
+        assert!(
+            write(&root, "cand-hostile", &[CandidateFile { path: "design.sc".into(), bytes: design.to_vec() }], &bad, "artifact-hostile").is_err(),
+            "the design input must be design.sc"
+        );
+        let mut bad = manifest("cand-hostile", design);
+        bad["inputs"] = json!([]);
+        assert!(write(&root, "cand-hostile", &[], &bad, "artifact-hostile").is_err(), "at least one input is required");
+        let mut bad = manifest("cand-hostile", design);
+        bad["capturedAt"] = json!("2026-11-07 12:00:00");
+        assert!(
+            write(&root, "cand-hostile", &[CandidateFile { path: "design.sc".into(), bytes: design.to_vec() }], &bad, "artifact-hostile").is_err(),
+            "capturedAt is RFC3339 with milliseconds"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manifest_json_is_reserved_and_never_an_input() {
+        let root = scratch("reserved");
+        let design = b"x";
+        let mut bad = manifest("cand-reserved", design);
+        bad["inputs"][0]["path"] = json!("manifest.json");
+        bad["inputs"][0]["kind"] = json!("import");
+        assert!(
+            write(&root, "cand-reserved", &[CandidateFile { path: "manifest.json".into(), bytes: design.to_vec() }], &bad, "artifact-reserved")
+                .is_err()
         );
         let _ = fs::remove_dir_all(root);
     }

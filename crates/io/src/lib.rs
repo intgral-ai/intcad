@@ -19,7 +19,7 @@ pub use design::{
     DesignCompression, DesignContainerReader, DesignPreview, FileKind, THUMBNAIL_SIZE, file_kind, is_design_container, read_design_file,
     read_design_geometry, read_design_preview, read_design_thumbnail, read_design_thumbnail_file, read_drawing, read_drawing_file,
     write_design_container, write_design_container_with_cache, write_design_container_with_compression, write_design_container_with_preview,
-    write_design_container_with_thumbnail, write_drawing_container,
+    write_design_container_with_thumbnail, write_design_container_within, write_drawing_container,
 };
 mod legacy_dir;
 pub mod limits;

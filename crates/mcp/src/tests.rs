@@ -4108,6 +4108,45 @@ fn guarded_mcp_native_reply_decode_preserves_results_and_refusals() {
         Err(crate::GuardedCallError::CommandFailed(message)) if message == "native command failed"));
 }
 
+// A snapshot capture is a supported guarded command: the MCP guard admits it and sends it to the
+// app instead of refusing it before the connection.
+#[test]
+fn guarded_snapshot_capture_is_admitted_and_reaches_the_peer() {
+    use crate::Backend;
+    use solidcraft_engine::schema::ParamCheck;
+    let digest = format!("sha256:{}", "1".repeat(64));
+    let candidate = json!({
+        "candidateId":"cand-1",
+        "source":{"documentId":"doc-A","revision":"9007199254740993"},
+        "candidateDigest":digest,
+        "manifestDigest":digest,
+        "artifact":{"artifactId":"artifact-cand-1","digest":digest,"sizeBytes":16,"mediaType":"application/zip"}
+    });
+    let peer = GuardPeer::new(move |_, request| {
+        if request["method"] == "control.capabilities" {
+            return GuardAnswer::Reply(guard_capabilities());
+        }
+        GuardAnswer::Reply(json!({
+            "ok":true,
+            "result":{"candidate":candidate},
+            "documentStamp":{"documentId":"doc-A","revision":"9007199254740993"}
+        }))
+    });
+    let mut remote = peer.remote(ParamCheck::Off);
+    let mut request = guard_request("engine.execute");
+    request["command"] = json!("document.snapshot.capture");
+    request["params"] = json!({});
+    let reply = remote.call_guarded("engine.execute", request).unwrap();
+    assert_eq!(reply.result["candidate"]["candidateId"], "cand-1");
+    assert_eq!(reply.document_stamp.revision, 9_007_199_254_740_993);
+    let (connections, wire) = peer.finish_counted(remote);
+    assert_eq!(connections, 1, "the guard sent the snapshot capture to the app");
+    assert!(
+        wire.iter().any(|(_, request)| { request["method"] == "engine.execute" && request["params"]["command"] == "document.snapshot.capture" }),
+        "{wire:?}"
+    );
+}
+
 // Catches thin validation being bypassed in the actual network backend. Invalid envelopes and
 // unsupported routes must not even open a socket or touch legacy script/step dispatch.
 #[test]
@@ -4129,7 +4168,7 @@ fn guarded_remote_validation_refuses_before_connection() {
             matches!(remote.call_guarded(method, guard_request(method)), Err(crate::GuardedCallError::Rejected { error_details, .. }) if error_details["code"] == "UNSUPPORTED_CAPABILITY")
         );
     }
-    for command in ["file.new", "component.edit_in_place", "timeline.play", "document.snapshot.capture", "panel.open"] {
+    for command in ["file.new", "component.edit_in_place", "timeline.play", "panel.open"] {
         let mut request = guard_request("engine.execute");
         request["command"] = json!(command);
         assert!(matches!(remote.call_guarded("engine.execute", request), Err(crate::GuardedCallError::Rejected { .. })), "{command}");

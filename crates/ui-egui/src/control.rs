@@ -1588,6 +1588,36 @@ mod tests {
         app
     }
 
+    #[test]
+    fn guarded_snapshot_capture_rejects_a_stale_stamp_and_creates_a_current_candidate() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-control-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = dir.join("candidates");
+        solidcraft_engine::cmd::set_candidate_store(Some(store.clone()));
+        let mut app = guard_app();
+        let stale = guard_stamp(&mut app);
+        app.run("parameters.change", json!({"name":"width","expression":"30 mm"})).unwrap();
+        let response = panel_control(&mut app, "engine.execute", json!({"command":"document.snapshot.capture","params":{},"expectedDocument":stale}));
+        assert_eq!(response["errorDetails"]["code"], "STALE_DOCUMENT", "{response}");
+        let zips = |dir: &std::path::Path| {
+            std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "zip")).count()
+        };
+        assert_eq!(zips(&store), 0, "a stale capture writes no candidate");
+
+        let current = guard_stamp(&mut app);
+        let response =
+            panel_control(&mut app, "engine.execute", json!({"command":"document.snapshot.capture","params":{},"expectedDocument":current}));
+        assert_eq!(response["ok"], true, "{response}");
+        assert_eq!(response["documentStamp"], current, "the guarded executor reports the captured source stamp");
+        let candidate = &response["result"]["candidate"];
+        assert_eq!(candidate["source"]["revision"], current["revision"].as_str().unwrap());
+        assert_eq!(zips(&store), 1, "the current capture writes one candidate");
+        let id = candidate["candidateId"].as_str().unwrap();
+        assert_eq!(solidcraft_engine::io::candidate::lookup(&store, id).unwrap().candidate.manifest_digest, candidate["manifestDigest"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn guard_resolver_call(app: &mut SolveApp, method: &str, params: Value, queued: bool) -> Value {
         if !queued {
             return panel_control(app, method, params);
@@ -1950,7 +1980,6 @@ mod tests {
             ("engine.execute", json!({"command":"appearance.favorite"})),
             ("engine.execute", json!({"command":"panel.open"})),
             ("engine.execute", json!({"command":"layout.get"})),
-            ("engine.execute", json!({"command":"document.snapshot.capture"})),
             ("engine.execute", json!({"command":"parameters.change","params":{"path":"secret","name":"width","expression":"50 mm"}})),
             ("engine.batch", json!({"commands":[steps[0].clone(),{"command":"timeline.play"}]})),
         ];

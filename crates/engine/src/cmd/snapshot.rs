@@ -10,13 +10,16 @@
 //! has changed since this design last read it, cannot be read, or itself links to another design
 //! is refused with `DEPENDENCY_CHANGED`; the live path is never kept as a mutable input.
 
+use std::hash::{BuildHasher, Hasher};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use solidcraft_doc::Document;
+use solidcraft_doc::{Document, FeatureKind};
 use solidcraft_io::candidate::{self, CandidateFile, StoredCandidate};
+use solidcraft_sketch::LinkSource;
 
 use super::{CommandSpec, design_link};
 use crate::schema::snapshot::{
@@ -40,9 +43,29 @@ pub static COMMANDS: &[CommandSpec] =
         )];
 
 static NEXT_CANDIDATE: AtomicU64 = AtomicU64::new(0);
+/// A host embedding or test may choose the store root without touching the process environment.
+static HOST_CANDIDATE_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+thread_local! {
+    /// A per-test root, so parallel tests never share a store directory.
+    static TEST_CANDIDATE_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
 
-/// The host store: `SOLIDCRAFT_CANDIDATE_DIR`, the per-user data folder in a build, or a
-/// per-process scratch folder under the test recovery folder. The browser has no such store.
+/// Choose the candidate store root for this process (`None`: the default location). Hosts and
+/// tests use it instead of `SOLIDCRAFT_CANDIDATE_DIR`; it is not part of a design.
+pub fn set_candidate_store(root: Option<PathBuf>) {
+    if let Ok(mut slot) = HOST_CANDIDATE_ROOT.lock() {
+        *slot = root;
+    }
+}
+
+#[cfg(test)]
+fn set_test_candidate_store(root: PathBuf) {
+    TEST_CANDIDATE_ROOT.with(|slot| *slot.borrow_mut() = Some(root));
+}
+
+/// The host store: a test thread's root, an embedding's choice, `SOLIDCRAFT_CANDIDATE_DIR`, the
+/// per-user data folder in a build, or a per-process scratch folder under the test recovery
+/// folder. The browser has no such store.
 fn candidate_root() -> Option<PathBuf> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -50,6 +73,12 @@ fn candidate_root() -> Option<PathBuf> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if let Some(dir) = TEST_CANDIDATE_ROOT.with(|slot| slot.borrow().clone()) {
+            return Some(dir);
+        }
+        if let Some(dir) = HOST_CANDIDATE_ROOT.lock().ok().and_then(|slot| slot.clone()) {
+            return Some(dir);
+        }
         if let Some(dir) = std::env::var_os("SOLIDCRAFT_CANDIDATE_DIR").filter(|dir| !dir.is_empty()) {
             return Some(PathBuf::from(dir));
         }
@@ -64,11 +93,21 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)).unwrap_or(0)
 }
 
-/// A durable host identity. The process-local document ID is deliberately not used.
-fn new_candidate_id(captured_ms: u64) -> String {
+/// A durable host identity with 128 bits from the standard library's randomly seeded hasher.
+/// The process-local document ID is deliberately not used.
+fn new_candidate_id() -> String {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let serial = NEXT_CANDIDATE.fetch_add(1, Ordering::Relaxed);
-    format!("cand-{captured_ms}-{nanos:x}-{:x}-{serial:x}", std::process::id())
+    let pid = u64::from(std::process::id());
+    let seed = std::collections::hash_map::RandomState::new();
+    let mut first = seed.build_hasher();
+    first.write_u128(nanos);
+    first.write_u64(serial);
+    let mut second = seed.build_hasher();
+    second.write_u64(pid);
+    second.write_u128(nanos.rotate_left(64));
+    second.write_u64(serial);
+    format!("cand-{:016x}{:016x}", first.finish(), second.finish())
 }
 
 /// RFC3339 UTC with milliseconds, from Unix milliseconds.
@@ -104,57 +143,135 @@ fn invalid_candidate(message: impl std::fmt::Display) -> EngineError {
     EngineError::Other(format!("INVALID_CANDIDATE: document.snapshot.capture: {message}"))
 }
 
-/// Freeze every supported external design link into `design`, rewriting the captured links to
-/// the container's relative paths. Returns the frozen files and their manifest rows.
-fn capture_dependencies(s: &Session, design: &mut Document) -> Result<(Vec<CandidateFile>, Vec<ManifestInput>)> {
+/// `is_path` in `solidcraft_sketch::fonts`: separators or a font-file extension name a file.
+fn font_is_file(name: &str) -> bool {
+    let name = name.trim();
+    let lower = name.to_ascii_lowercase();
+    name.contains(['/', '\\']) || [".ttf", ".otf", ".ttc", ".otc"].iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Text may name an installed font family (not a file) or the built-in font. A font file is a
+/// mutable external path; 1.0 refuses it rather than keeping it unfrozen.
+fn reject_font_file_dependencies(design: &Document) -> Result<()> {
+    for feature in &design.features {
+        let FeatureKind::Sketch { sketch, .. } = &feature.kind else { continue };
+        for link in &sketch.links {
+            if let LinkSource::Text { font: Some(font), .. } = &link.source
+                && font_is_file(font)
+            {
+                return Err(invalid_candidate(format!(
+                    "sketch feature {} uses a font file; external font files are not frozen in a candidate",
+                    feature.id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One design-link dependency, planned before any bytes are read.
+struct LinkPlan {
+    component: u64,
+    file: PathBuf,
+    expected_digest: Option<String>,
+}
+
+/// Count and measure the design's links and rewrite them to container-relative paths. Nothing
+/// here reads a dependency, so the ceilings are enforced before the first read.
+fn plan_links(s: &Session, design: &mut Document) -> Result<(Vec<LinkPlan>, u64)> {
     let mut components: Vec<u64> = design.links.keys().copied().collect();
     components.sort_unstable();
-    let mut files = Vec::with_capacity(components.len());
-    let mut inputs = Vec::with_capacity(components.len());
+    if components.len() > candidate::MAX_INPUTS - 1 {
+        return Err(invalid_candidate(format!("a snapshot holds at most {} inputs", candidate::MAX_INPUTS)));
+    }
+    let mut plans = Vec::with_capacity(components.len());
+    let mut declared_total = 0_u64;
     for component in components {
         let Some(link) = design.links.get(&component).cloned() else { continue };
         let file = design_link::resolve(s.path.as_deref(), &link.path);
-        let shown = file.display().to_string();
-        let bytes = solidcraft_io::vfs::read_design_path(&shown, s.path.as_deref(), solidcraft_io::limits::max_design_bytes())
-            .map_err(|error| dependency_changed(format!("{shown}: {error}")))?;
-        let actual = candidate::digest_hex(&bytes);
-        if let Some(expected) = link.file_sha256.as_deref()
-            && expected != actual
-        {
-            return Err(dependency_changed(format!("{shown}: the linked design changed since this design last read it")));
-        }
-        let linked = solidcraft_io::read_design(&bytes).map_err(|error| dependency_changed(format!("{shown}: {error}")))?;
-        if !linked.links.is_empty() {
-            return Err(dependency_changed(format!("{shown}: nested design links are not supported")));
+        let path = file.to_string_lossy().into_owned();
+        solidcraft_io::vfs::check_design_path(&path, s.path.as_deref())
+            .map_err(|_| dependency_changed(format!("linked design for component {component} cannot be read")))?;
+        let declared_size = solidcraft_io::vfs::stamp(&path).map(|(_, size)| size);
+        if let Some(size) = declared_size {
+            declared_total = declared_total
+                .checked_add(size)
+                .filter(|total| *total <= candidate::MAX_INPUT_BYTES)
+                .ok_or_else(|| invalid_candidate("linked designs exceed the 1 GiB snapshot ceiling"))?;
         }
         let dependency_id = format!("design-link-{component}");
-        let path = format!("inputs/{dependency_id}.sc");
-        let digest = candidate::digest(&bytes);
-        let size_bytes = bytes.len() as u64;
         if let Some(link) = design.links.get_mut(&component) {
-            link.path = path.clone();
+            link.path = format!("inputs/{dependency_id}.sc");
         }
-        files.push(CandidateFile { path: path.clone(), bytes });
-        inputs.push(ManifestInput { path, kind: InputKind::Component, dependency_id, dependency_version: None, digest, size_bytes });
+        plans.push(LinkPlan { component, file, expected_digest: link.file_sha256 });
     }
-    Ok((files, inputs))
+    Ok((plans, declared_total))
+}
+
+fn read_link(plan: &LinkPlan, s: &Session, remaining: u64) -> Result<Vec<u8>> {
+    let path = plan.file.to_string_lossy();
+    let limit = u64::try_from(solidcraft_io::limits::max_design_bytes()).unwrap_or(u64::MAX);
+    let max = usize::try_from(remaining.min(limit)).unwrap_or(usize::MAX);
+    solidcraft_io::vfs::read_design_path(&path, s.path.as_deref(), max)
+        .map_err(|_| dependency_changed(format!("linked design for component {} cannot be read within the snapshot ceiling", plan.component)))
 }
 
 fn capture(s: &mut Session, _: &Value) -> Result<Value> {
     let Some(root) = candidate_root() else {
         return Err(EngineError::Other("document.snapshot.capture: this build has no candidate store".into()));
     };
-    // Pin the coherent state first: a copy of the design (with what is shown), and the bytes of
-    // every dependency. Serialization below works only from that copy.
+    // Pin the coherent state first: a copy of the design (with what is shown), and the plan for
+    // every dependency. No dependency bytes are read before the count and declared ceilings pass.
     let source = s.document_stamp();
     let captured_ms = now_ms();
-    let candidate_id = new_candidate_id(captured_ms);
+    let candidate_id = new_candidate_id();
     let mut design = s.design_at(None).into_owned();
-    let (dependency_files, dependency_inputs) = capture_dependencies(s, &mut design)?;
-    let design_bytes = solidcraft_io::write_design_container_with_compression(&design, solidcraft_io::DesignCompression::Fast)
-        .map_err(|error| invalid_candidate(format!("serializing the design: {error}")))?;
+    reject_font_file_dependencies(&design)?;
+    let (plans, declared_total) = plan_links(s, &mut design)?;
+    let design_budget =
+        candidate::MAX_INPUT_BYTES.checked_sub(declared_total).ok_or_else(|| invalid_candidate("dependencies exceed the 1 GiB snapshot ceiling"))?;
+    if !plans.is_empty() && design_budget == 0 {
+        return Err(invalid_candidate("dependencies leave no room for the design within the 1 GiB snapshot ceiling"));
+    }
+    let design_bytes = solidcraft_io::write_design_container_within(
+        &design,
+        solidcraft_io::DesignCompression::Fast,
+        usize::try_from(design_budget).unwrap_or(usize::MAX),
+    )
+    .map_err(|error| invalid_candidate(format!("serializing the design within the snapshot ceiling: {error}")))?;
     let design_digest = candidate::digest(&design_bytes);
     let design_size = design_bytes.len() as u64;
+    let mut remaining =
+        candidate::MAX_INPUT_BYTES.checked_sub(design_size).ok_or_else(|| invalid_candidate("the design exceeds the 1 GiB snapshot ceiling"))?;
+    if declared_total > remaining {
+        return Err(invalid_candidate("linked designs and the design exceed the 1 GiB snapshot ceiling"));
+    }
+    let mut dependency_files = Vec::with_capacity(plans.len());
+    let mut dependency_inputs = Vec::with_capacity(plans.len());
+    for plan in plans {
+        let bytes = read_link(&plan, s, remaining)?;
+        let size_bytes = bytes.len() as u64;
+        remaining = remaining.checked_sub(size_bytes).ok_or_else(|| invalid_candidate("linked designs exceed the 1 GiB snapshot ceiling"))?;
+        let actual = candidate::digest_hex(&bytes);
+        if let Some(expected) = plan.expected_digest.as_deref()
+            && expected != actual
+        {
+            return Err(dependency_changed(format!("the linked design for component {} changed since this design last read it", plan.component)));
+        }
+        let linked = solidcraft_io::read_design(&bytes)
+            .map_err(|_| dependency_changed(format!("the linked design for component {} is not a readable design", plan.component)))?;
+        if !linked.links.is_empty() {
+            return Err(dependency_changed(format!(
+                "the linked design for component {} links to another design; nested dependencies are not supported",
+                plan.component
+            )));
+        }
+        let dependency_id = format!("design-link-{}", plan.component);
+        let path = format!("inputs/{dependency_id}.sc");
+        let digest = candidate::digest(&bytes);
+        dependency_files.push(CandidateFile { path: path.clone(), bytes });
+        dependency_inputs.push(ManifestInput { path, kind: InputKind::Component, dependency_id, dependency_version: None, digest, size_bytes });
+    }
     let mut files = Vec::with_capacity(1 + dependency_files.len());
     files.push(CandidateFile { path: "design.sc".into(), bytes: design_bytes });
     files.extend(dependency_files);
@@ -230,6 +347,7 @@ mod tests {
 
     #[test]
     fn capture_pins_the_design_and_does_not_mark_it_saved_or_add_history() {
+        set_test_candidate_store(scratch("store-immutable"));
         let mut s = Session::default();
         run(&mut s, "parameters.add", json!({"name": "width", "expression": "10 mm"}));
         run(&mut s, "solid.box", json!({"length": "width", "width": 10, "height": 5}));
@@ -268,6 +386,7 @@ mod tests {
 
     #[test]
     fn a_stale_stamp_fails_before_pinning_and_leaves_history_alone() {
+        set_test_candidate_store(scratch("store-stale"));
         let mut s = Session::default();
         run(&mut s, "parameters.add", json!({"name": "width", "expression": "10 mm"}));
         let base = s.document_stamp();
@@ -290,6 +409,7 @@ mod tests {
 
     #[test]
     fn a_changed_linked_design_is_rejected_explicitly_but_a_fresh_one_is_frozen() {
+        set_test_candidate_store(scratch("store-dependency"));
         let dir = scratch("dependency");
         let mut part = Session::default();
         run(&mut part, "solid.box", json!({"length": 20, "width": 10, "height": 5}));
@@ -314,6 +434,33 @@ mod tests {
         std::fs::write(&part_path, changed).unwrap();
         let refused = assembly.execute("document.snapshot.capture", &json!({})).unwrap_err().to_string();
         assert!(refused.contains("DEPENDENCY_CHANGED"), "{refused}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_text_font_file_is_refused_as_an_unfrozen_dependency() {
+        set_test_candidate_store(scratch("store-font"));
+        let font = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/biz-udp-gothic/BIZUDPGothic-Regular.ttf");
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        run(&mut s, "sketch.text", json!({"text": "Hi", "at": [0, 20], "height": 5, "font": font}));
+        let error = s.execute("document.snapshot.capture", &json!({})).unwrap_err().to_string();
+        assert!(error.contains("INVALID_CANDIDATE") && error.contains("font file"), "{error}");
+    }
+
+    #[test]
+    fn a_declared_large_link_is_refused_before_its_bytes_are_read() {
+        set_test_candidate_store(scratch("store-large"));
+        let dir = scratch("large");
+        let huge = dir.join("Huge.sc");
+        let file = std::fs::File::create(&huge).unwrap();
+        file.set_len(candidate::MAX_INPUT_BYTES + 1).unwrap();
+        let mut s = Session::default();
+        s.doc_mut().links.insert(7, solidcraft_doc::DesignLink { path: huge.to_string_lossy().into_owned(), feature: 0, ..Default::default() });
+        let started = std::time::Instant::now();
+        let error = s.execute("document.snapshot.capture", &json!({})).unwrap_err().to_string();
+        assert!(error.contains("1 GiB") || error.contains("snapshot ceiling"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "refused without reading the file");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -48,7 +48,7 @@ const READ_METHODS: &[&str] = &[
 
 /// Commands that write a file and leave the design as it is. `file.save` and `file.save_as`
 /// count: they mark the design saved, but change nothing in it.
-const FILE_COMMANDS: &[&str] = &["file.export", "file.save", "file.save_as", "file.save_mesh"];
+const FILE_COMMANDS: &[&str] = &["document.snapshot.capture", "file.export", "file.save", "file.save_as", "file.save_mesh"];
 
 /// Commands that only read the design (inspection, lists, measurements).
 pub fn command_reads_only(id: &str) -> bool {
@@ -156,6 +156,7 @@ mod tests {
             ("engine.execute", json!({"command": "file.save", "params": {}})),
             ("engine.execute", json!({"command": "file.save_as", "params": {"path": "/tmp/a.solidcraft"}})),
             ("engine.execute", json!({"command": "file.save_mesh", "params": {"path": "/tmp/a.stl"}})),
+            ("engine.execute", json!({"command": "document.snapshot.capture", "params": {}})),
             ("engine.execute", json!({"command": "sketch.export_dxf", "params": {"path": "/tmp/a.dxf"}})),
             ("ui.render", json!({"path": "/tmp/a.png"})),
             ("ui.screenshot", json!({"path": "/tmp/a.png"})),
