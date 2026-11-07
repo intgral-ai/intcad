@@ -23,7 +23,7 @@ impl ModelCallBudget {
 
     pub(super) fn debit(&self) -> Result<(), AiError> {
         self.remaining
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| remaining.checked_sub(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| remaining.checked_sub(1))
             .map(|_| ())
             .map_err(|_| AiError::exhausted("model_calls", self.limit))
     }

@@ -1634,6 +1634,25 @@ mod mastra_worker_support {
     pub fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
+    /// A peer may create a marker file before it writes the value, so existence
+    /// alone is not enough: wait for content that parses and report what was
+    /// there if the deadline passes.
+    pub fn wait_for_pid(marker: &std::path::Path, deadline: Instant, what: &str) -> u32 {
+        loop {
+            if let Ok(text) = std::fs::read_to_string(marker)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                return pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what} marker {} never held a pid; last content: {:?}",
+                marker.display(),
+                std::fs::read_to_string(marker).unwrap_or_else(|e| format!("<{e}>"))
+            );
+            std::thread::yield_now();
+        }
+    }
     pub fn step(op: &str, value: Value) -> String {
         format!("{op} {}\n", hex(format!("{value}\n").as_bytes()))
     }
@@ -2011,12 +2030,7 @@ fn mastra_peer_launch_and_drop_cleanup() {
         program.directory.join("worker-never-release").display()
     );
     let r = start(&program, "drop", &script, Limits::default(), services(pool.clone(), |_, _| {})).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !marker.exists() {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
-    let helper_pid: u32 = std::fs::read_to_string(marker).unwrap().parse().unwrap();
+    let helper_pid = wait_for_pid(&marker, Instant::now() + Duration::from_secs(15), "worker helper");
     drop(r);
     // Actual cleanup must release this reservation; lower_limit cannot fake it.
     let deadline = Instant::now() + Duration::from_secs(15);
