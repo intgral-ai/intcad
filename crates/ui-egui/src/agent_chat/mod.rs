@@ -972,8 +972,12 @@ fn assistant_mark_for(state: State, login: &str, configured: bool, waiting: usiz
 
 pub(crate) fn assistant_mark(app: &SolveApp) -> AssistantMark {
     let chat = &app.agent_chat;
-    // Runtime readiness is not authentication: a ready workflow runtime whose selected AI
-    // connection still needs a sign-in shows the sign-in state, not a ready one.
+    // A stopped or failed runtime outranks an authentication hint; otherwise runtime readiness
+    // is not authentication: a ready workflow runtime whose connection needs a sign-in shows the
+    // sign-in state, not a ready one.
+    if matches!(chat.state(), State::Exited | State::Failed) || chat.stopped || chat.ended.as_deref() == Some("error") {
+        return AssistantMark::Stopped;
+    }
     if chat.mastra && chat.connection_auth == Some(false) {
         return AssistantMark::NeedsAuth;
     }
@@ -1132,6 +1136,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 bridge,
                 instructions,
                 connection_auth: Arc::new(std::sync::Mutex::new(None)),
+                frozen_binding: Arc::new(std::sync::Mutex::new(None)),
                 wake: Arc::from(wake),
             };
             let launch = runtime_client::RuntimeLaunch {

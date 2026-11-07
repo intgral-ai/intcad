@@ -13259,6 +13259,7 @@ mod mastra_backend_tests {
             bridge: None,
             instructions: String::new(),
             connection_auth: auth,
+            frozen_binding: Arc::new(Mutex::new(None)),
             wake: Arc::new(|| {}),
         }
     }
@@ -13295,7 +13296,7 @@ mod mastra_backend_tests {
         log.lock().unwrap().inject_client(ClientNotice::RequestFinished { request_id, scope, result: Ok(reply) });
     }
 
-    fn finish_turn(log: &Arc<Mutex<test_support::Log>>, state: TurnTerminal) {
+    fn finish_turn_with(log: &Arc<Mutex<test_support::Log>>, state: TurnTerminal, validation: Option<&str>) {
         let scope = {
             let log = log.lock().unwrap();
             log.requests
@@ -13312,10 +13313,14 @@ mod mastra_backend_tests {
             reason: String::new(),
             document: document(),
             changes: Changes::None,
-            validation_run_id: RequiredNullable(None),
+            validation_run_id: RequiredNullable(validation.and_then(|id| Id::parse(id).ok())),
             report: RequiredNullable(None),
         };
         log.lock().unwrap().inject_client(ClientNotice::Event { scope: Scope::Turn(scope), event: RuntimeEvent::TurnFinished(finished) });
+    }
+
+    fn finish_turn(log: &Arc<Mutex<test_support::Log>>, state: TurnTerminal) {
+        finish_turn_with(log, state, None);
     }
 
     fn app() -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<Mutex<Option<bool>>>) {
@@ -13342,6 +13347,70 @@ mod mastra_backend_tests {
         poll(&mut app, &ctx);
         assert_eq!(app.agent_chat.state(), State::Ready, "the runtime session must be ready for this helper");
         (app, ctx, log, auth)
+    }
+
+    fn test_host() -> (Arc<host_ai::HostAi>, Arc<host_ai::AiShared>) {
+        let shared = Arc::new(host_ai::AiShared::default());
+        shared
+            .connections()
+            .replace(&[agents::AgentConfig {
+                id: "api-1".into(),
+                name: "Fixture".into(),
+                kind: agents::Kind::Api,
+                base_url: "http://localhost:18080/v1".into(),
+                model: "m1".into(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let http: crate::agent_chat::backend::HttpFn = Arc::new(|_| {
+            Ok((200, json!({"choices":[{"message":{"role":"assistant","content":"host answer"},"finish_reason":"stop"}]}).to_string().into_bytes()))
+        });
+        let host = Arc::new(host_ai::HostAi::new(host_ai::HostAiDependencies {
+            shared: Arc::clone(&shared),
+            http,
+            secrets: None,
+            artifacts: Arc::new(|_, _| panic!("the session test reads no artifact")),
+            clock: Arc::new(|| Duration::ZERO),
+            ids: Arc::new(|| Ok("00000000000000000000000000000001".into())),
+        }));
+        (host, shared)
+    }
+
+    fn host_request() -> host_ai::GenerateRequest {
+        host_ai::GenerateRequest {
+            connection_id: "api-1".into(),
+            model_id: "m1".into(),
+            messages: vec![host_ai::ModelMessage {
+                role: host_ai::MessageRole::User,
+                content: vec![host_ai::ContentPart::Text("hello".into())],
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            options: host_ai::GenerateOptions {
+                delivery: host_ai::Delivery::Buffered,
+                timeout_seconds: 30,
+                max_output_tokens: None,
+                temperature: None,
+                reasoning_effort: None,
+                output_schema: None,
+            },
+            continuation: None,
+        }
+    }
+
+    fn host_context(host: &host_ai::HostAi, session: &str) -> host_ai::CallContext {
+        host_ai::CallContext {
+            scope: host_ai::CallScope {
+                session: host_ai::SessionKey { runtime_instance_id: "instance".into(), session_id: session.into() },
+                turn_id: "turn".into(),
+                workflow_run_id: "run".into(),
+            },
+            control: host_ai::TurnControl::new().new_call().unwrap(),
+            deadline: host.deadline_after(Duration::from_secs(30)),
+            limits: host_ai::AiLimits::contract_defaults(),
+            model_budget: Arc::new(host_ai::ModelCallBudget::new(20).unwrap()),
+        }
     }
 
     fn settle(app: &mut SolveApp, ctx: &egui::Context, done: impl Fn(&SolveApp) -> bool) {
@@ -13419,6 +13488,9 @@ mod mastra_backend_tests {
         let first_session = first.session_id.clone();
         let first_turn = first.turn_id.clone();
         assert!(!first.workflow_id.is_empty() && !first.workflow_run_id.is_empty());
+        assert_eq!(backend.retarget_error_for_test("api-1", "m1"), None, "the frozen pair is allowed");
+        assert_eq!(backend.retarget_error_for_test("api-1", "m2"), Some(ErrorCode::ConnectionChanged));
+        assert_eq!(backend.retarget_error_for_test("api-2", "m1"), Some(ErrorCode::ConnectionChanged));
 
         // The model and connection pickers move while the turn runs.
         backend.set_model("m2");
@@ -13434,6 +13506,7 @@ mod mastra_backend_tests {
         backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("second".into())]);
         let second = backend.active_binding().expect("the next turn");
         assert_eq!((second.connection_id.as_str(), second.model_id.as_str()), ("api-2", "m2"), "the next turn uses the new pickers");
+        assert_eq!(backend.retarget_error_for_test("api-2", "m2"), None, "the next turn owns its own frozen pair");
         assert_eq!(second.session_id, first_session, "the session stayed");
         assert_ne!(second.turn_id, first_turn, "a new turn has a new identity");
     }
@@ -13453,6 +13526,9 @@ mod mastra_backend_tests {
         assert_eq!(app.agent_chat.connection_auth, Some(false));
         assert_eq!(app.agent_chat.login_results.get("api-1"), Some(&false));
         assert_eq!(agent_chat::assistant_mark(&app), agent_chat::AssistantMark::NeedsAuth, "the ready runtime does not hide a signed-out connection");
+        app.agent_chat.set_state(State::Failed);
+        assert_eq!(agent_chat::assistant_mark(&app), agent_chat::AssistantMark::Stopped, "a failed runtime outranks the auth hint");
+        app.agent_chat.set_state(State::Ready);
 
         *auth.lock().unwrap() = Some(true);
         poll(&mut app, &ctx);
@@ -13545,6 +13621,7 @@ mod mastra_backend_tests {
         // A deferred write from that stopped turn is refused before it can touch the document.
         send(&mut app, &ctx, "change it again".into());
         let active = app.agent_chat.turn.as_ref().expect("a turn").active.clone();
+        let stopped = active.clone();
         let stamp = app.session.document_stamp();
         agent_chat::cancel(&mut app);
         settle(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
@@ -13563,6 +13640,100 @@ mod mastra_backend_tests {
         assert!(crate::execution_guard::admit(&mut app, &mut deferred).is_err(), "a stopped turn's deferred write is refused");
         assert!(Arc::ptr_eq(&app.session.doc, &doc), "the refused write changed nothing");
         assert_eq!(app.session.document_stamp(), revision);
+
+        // Unguarded requests enforce the same trusted flag; they are not exempt because they
+        // carry no expected document.
+        let mut unguarded = ControlRequest::new("document.revision", json!({})).0;
+        unguarded.chat_turn = Some(stopped.clone());
+        assert!(crate::execution_guard::admit(&mut app, &mut unguarded).is_err(), "an unguarded stopped-turn request is refused");
+        assert!(Arc::ptr_eq(&app.session.doc, &doc));
+
+        // A late request from the replaced turn keeps its own old flag; it cannot inherit the new
+        // turn's still-live permission.
+        send(&mut app, &ctx, "fresh turn".into());
+        let current = app.agent_chat.turn.as_ref().expect("the new turn").active.clone();
+        assert!(current.load(std::sync::atomic::Ordering::Relaxed), "the new turn may write");
+        let mut late = ControlRequest::new("engine.execute", json!({"command":"parameters.change","params":{"name":"w","expression":"30 mm"}})).0;
+        late.chat_turn = Some(stopped.clone());
+        assert!(crate::execution_guard::admit(&mut app, &mut late).is_err(), "the old turn's flag cannot borrow the new turn's permission");
+        assert!(Arc::ptr_eq(&app.session.doc, &doc));
+    }
+
+    #[test]
+    fn mastra_new_chat_rebinds_the_host_session() {
+        let (mut backend, log, _) = backend();
+        let (host, shared) = test_host();
+        backend.attach_host_for_test(Arc::clone(&host));
+        inject_runtime_ready(&log);
+        let _ = backend.poll();
+        finish_session(&log, false);
+        let _ = backend.poll();
+        let old = backend.next_binding().unwrap().session_id;
+        assert_eq!(old, "id1");
+
+        backend.new_session();
+        let next = {
+            let log = log.lock().unwrap();
+            log.requests
+                .iter()
+                .rev()
+                .find_map(|r| match &r.request {
+                    HostRequest::SessionReset(params) => Some(params.next_session_id.to_string()),
+                    _ => None,
+                })
+                .expect("session.reset")
+        };
+        finish_session(&log, true);
+        let _ = backend.poll();
+        assert_ne!(next, old, "New chat uses a new runtime session identity");
+        assert!(backend.runtime_ready());
+
+        let binding = shared.connections().bind("api-1", "m1").unwrap();
+        assert!(host.generate(&binding, &host_context(&host, &old), host_request()).is_err(), "the retired session cannot answer");
+        assert!(host.generate(&binding, &host_context(&host, &next), host_request()).is_ok(), "the new session was opened for HostAi");
+    }
+
+    #[test]
+    fn mastra_terminal_auth_and_validation_signals_stay_honest() {
+        let (mut backend, log, _auth) = backend();
+        inject_runtime_ready(&log);
+        let _ = backend.poll();
+        finish_session(&log, false);
+        let _ = backend.poll();
+        backend.set_document("doc-main", 7);
+
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("sign in".into())]);
+        finish_turn(&log, TurnTerminal::AuthRequired);
+        let events = backend.poll();
+        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::ConnectionAuth { available: false })));
+        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { reason } if reason == "auth")));
+        assert!(backend.runtime_ready(), "the runtime stayed ready; only the connection needs a sign-in");
+
+        // A validationRunId does not become host acceptance: no report verification exists yet.
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("finish".into())]);
+        finish_turn_with(&log, TurnTerminal::ValidatedSuccess, Some("run-1"));
+        let events = backend.poll();
+        assert!(
+            events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Text { thought: true, text } if text == crate::i18n::tr("ui.mastra_validation_not_available"))),
+            "the validation disclaimer is always shown until #12"
+        );
+    }
+
+    #[test]
+    fn mastra_lower_limits_and_budget_errors_keep_their_documented_shapes() {
+        let lowered = Limits { model_messages: 7, tool_calls: 3, http_per_host: 1, call_max_seconds: 30, ..Limits::default() };
+        let mapped = MastraBackend::limits_for_test(&lowered).expect("negotiated limits map to HostAi limits");
+        assert_eq!((mapped.model_messages, mapped.tool_calls, mapped.http_per_host, mapped.call_max_seconds), (7, 3, 1, 30));
+        assert_eq!(MastraBackend::budget_error_for_test(), ErrorCode::ResourceExhausted);
+        assert!(!crate::agent_chat::settings::runtime_command_missing(&{
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+            app.preferences.chat_execution = agents::Execution::Mastra;
+            app.preferences.mastra_runtime_command = " /opt/mastra ".into();
+            app
+        }));
+        let mut empty = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        empty.preferences.chat_execution = agents::Execution::Mastra;
+        assert!(crate::agent_chat::settings::runtime_command_missing(&empty));
     }
 
     #[test]
@@ -13668,7 +13839,17 @@ mod mastra_backend_tests {
                     json!({"callId":"call1","name":"measure","state":"completed","output":null}),
                 ),
             )
-            + &step("WRITE_HEX", event(6, "turn.finished", Some("h:id7"), turn_scope, serde_json::to_value(&finished).unwrap()));
+            + &{
+                // A legal event above 1 MiB must not sit at the front of the notice queue and
+                // hide turn.finished behind it.
+                let scope = serde_json::to_string(&turn_scope).unwrap();
+                let prefix = format!(
+                    r#"{{"protocolVersion":"1.0","kind":"event","sequence":6,"event":"workflow.tool","requestId":"h:id7","scope":{scope},"data":{{"callId":"big","name":"big","state":"completed","output":{{"padding":""#,
+                );
+                let suffix = "\"}}}}\n";
+                format!("WRITE_HEX {}\nWRITE_HEX 41 1300000\nWRITE_HEX {}\n", hex(prefix.as_bytes()), hex(suffix.as_bytes()))
+            }
+            + &step("WRITE_HEX", event(7, "turn.finished", Some("h:id7"), turn_scope, serde_json::to_value(&finished).unwrap()));
 
         let admission = Arc::new(runtime_client::RuntimeAdmission::new(8).unwrap());
         program.track_runtime(Arc::clone(&admission));

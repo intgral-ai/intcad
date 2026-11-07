@@ -505,6 +505,10 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
 /// The execution choice is separate from the agent/model pickers: it decides who answers, not
 /// which connection or key is used. Direct keeps the behaviour of older preferences. It stays
 /// inside the Connecting section so the page's section rhythm does not move for it.
+pub(crate) fn runtime_command_missing(app: &SolveApp) -> bool {
+    app.preferences.mastra_runtime_command.trim().is_empty()
+}
+
 fn execution_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.separator();
     ui_kit::text(ui, tr("ui.mastra_execution"), ui_kit::Text::Hint("execution_heading"));
@@ -519,7 +523,9 @@ fn execution_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     if app.preferences.chat_execution == Execution::Mastra {
         ui_kit::text_row(ui, tr("ui.mastra_workflow"), &mut app.preferences.mastra_workflow_id, "modeling");
         ui_kit::text_row(ui, tr("ui.mastra_runtime_command"), &mut app.preferences.mastra_runtime_command, tr("ui.mastra_runtime_hint"));
-        ui_kit::text(ui, tr("ui.mastra_runtime_missing"), ui_kit::Text::Hint("runtime"));
+        if runtime_command_missing(app) {
+            ui_kit::text(ui, tr("ui.mastra_runtime_missing"), ui_kit::Text::Hint("runtime"));
+        }
     }
 }
 

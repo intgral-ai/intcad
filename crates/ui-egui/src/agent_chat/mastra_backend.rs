@@ -60,6 +60,8 @@ pub struct MastraConfig {
     /// Set on the host worker when a `connection.describe` call answers; polled by the panel as
     /// [`Event::ConnectionAuth`], never as runtime readiness.
     pub connection_auth: Arc<Mutex<Option<bool>>>,
+    /// The connection/model pair frozen for the turn in progress; host calls must match it.
+    pub frozen_binding: Arc<Mutex<Option<(String, String)>>>,
     /// Wakes the window when a runtime notice arrives.
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
@@ -110,6 +112,9 @@ pub(crate) trait Port: Send {
 struct LivePort {
     client: RuntimeClient,
     sender: RuntimeSender,
+    /// One notice is at most one framed protocol value. Draining below `frame_bytes` would leave
+    /// a legal large event at the queue front and wedge every notice behind it.
+    drain_bytes: usize,
 }
 
 impl Port for LivePort {
@@ -130,13 +135,13 @@ impl Port for LivePort {
     }
 
     fn drain(&mut self) -> Vec<PortNotice> {
-        self.client.drain(64, 1 << 20).into_iter().map(PortNotice::client).collect()
+        self.client.drain(128, self.drain_bytes).into_iter().map(PortNotice::client).collect()
     }
 
     fn wait_stopped(&mut self, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            let notices = self.client.drain(64, 1 << 20);
+            let notices = self.client.drain(128, self.drain_bytes);
             if notices.iter().any(|n| matches!(n, ClientNotice::TransportClosed { .. })) {
                 return;
             }
@@ -160,7 +165,6 @@ pub struct MastraBackend {
     next_model: String,
     next_connection: String,
     runtime_ready: bool,
-    runtime_version: String,
     session: Option<Id>,
     session_ready: bool,
     awaiting_session: Option<RequestId>,
@@ -170,7 +174,6 @@ pub struct MastraBackend {
     plan_set: bool,
     document: Option<DocumentStamp>,
     events: VecDeque<Event>,
-    auth_reported: Option<bool>,
     stopped: bool,
     models_sent: bool,
 }
@@ -186,6 +189,8 @@ impl MastraBackend {
         admission: Arc<RuntimeAdmission>,
     ) -> Result<Self, String> {
         let wake = Arc::clone(&config.wake);
+        // One framed value plus the notice's scope/enum overhead; never below one MiB.
+        let drain_bytes = usize::try_from(launch.limits.frame_bytes).unwrap_or(1 << 20).saturating_add(1 << 20).max(1 << 20);
         let runtime_instance = Arc::new(Mutex::new(None::<String>));
         let model_budget = Arc::new(AtomicU32::new(MODEL_CALLS_PER_TURN));
         let runtime = RuntimeClient::start(
@@ -197,6 +202,7 @@ impl MastraBackend {
                 Arc::clone(&config.connection_auth),
                 Arc::clone(&runtime_instance),
                 Arc::clone(&model_budget),
+                Arc::clone(&config.frozen_binding),
             ),
             Arc::new(move || wake()),
         )
@@ -205,7 +211,7 @@ impl MastraBackend {
         let connection = config.connection_id.clone();
         let model = config.model.clone();
         let auth = Arc::clone(&config.connection_auth);
-        let mut backend = Self::with_port(config, Box::new(LivePort { client: runtime, sender }), ids);
+        let mut backend = Self::with_port(config, Box::new(LivePort { client: runtime, sender, drain_bytes }), ids);
         backend.host = Some(host);
         backend.runtime_instance = Some(runtime_instance);
         backend.model_budget = Some(model_budget);
@@ -233,12 +239,11 @@ impl MastraBackend {
             ids,
             config,
             host: None,
-            runtime_instance: None,
+            runtime_instance: Some(Arc::new(Mutex::new(None))),
             model_budget: None,
             next_model,
             next_connection,
             runtime_ready: false,
-            runtime_version: String::new(),
             session: None,
             session_ready: false,
             awaiting_session: None,
@@ -248,7 +253,6 @@ impl MastraBackend {
             plan_set: false,
             document: None,
             events: VecDeque::new(),
-            auth_reported: None,
             stopped: false,
             models_sent: false,
         }
@@ -285,6 +289,28 @@ impl MastraBackend {
         self.runtime_ready && !self.stopped
     }
 
+    /// Test seam: the same callback-side pin check `handle_call` uses.
+    #[cfg(test)]
+    pub(crate) fn retarget_error_for_test(&self, connection: &str, model: &str) -> Option<ErrorCode> {
+        let frozen = self.config.frozen_binding.lock().ok().and_then(|frozen| frozen.clone());
+        reject_retarget(&frozen, connection, model).err().map(|error| error.code)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attach_host_for_test(&mut self, host: Arc<HostAi>) {
+        self.host = Some(host);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn limits_for_test(limits: &Limits) -> Option<AiLimits> {
+        ai_limits(limits).ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn budget_error_for_test() -> ErrorCode {
+        resource_exhausted("model_calls", MODEL_CALLS_PER_TURN).code
+    }
+
     fn push(&mut self, event: Event) {
         self.events.push_back(event);
     }
@@ -297,13 +323,9 @@ impl MastraBackend {
             self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
             return;
         };
-        if let Some(host) = self.host.as_ref() {
-            let instance = self.runtime_instance.as_ref().and_then(|id| id.lock().ok().and_then(|id| id.clone())).unwrap_or_default();
-            let key = SessionKey { runtime_instance_id: instance, session_id: session.to_string() };
-            if host.open_session(key, AiLimits::contract_defaults()).is_err() {
-                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
-                return;
-            }
+        if !self.rebind_host_session(self.session.as_ref(), &session) {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            return;
         }
         let bridge = if self.config.bridge.is_some() {
             let Ok(bridge_id) = self.ids.next_id() else {
@@ -400,6 +422,9 @@ impl MastraBackend {
         };
         match self.port.request(Scope::Turn(scope.clone()), HostRequest::TurnStart(Box::new(params)), TURN_TIMEOUT) {
             Ok(_) => {
+                if let Ok(mut frozen) = self.config.frozen_binding.lock() {
+                    *frozen = Some((binding.connection_id.clone(), binding.model_id.clone()));
+                }
                 self.active = Some(ActiveTurn { binding, scope });
                 self.stages.clear();
                 self.plan_set = false;
@@ -412,7 +437,21 @@ impl MastraBackend {
     }
 
     fn end_active(&mut self) -> Option<ActiveTurn> {
+        if let Ok(mut frozen) = self.config.frozen_binding.lock() {
+            *frozen = None;
+        }
         self.active.take()
+    }
+
+    /// A new runtime session needs its own HostAi session; the old key is retired so a late
+    /// model call for the previous conversation cannot resolve.
+    fn rebind_host_session(&self, old: Option<&Id>, next: &Id) -> bool {
+        let Some(host) = self.host.as_ref() else { return true };
+        let instance = self.runtime_instance.as_ref().and_then(|id| id.lock().ok().and_then(|id| id.clone())).unwrap_or_default();
+        if let Some(old) = old {
+            let _ = host.retire_session(&SessionKey { runtime_instance_id: instance.clone(), session_id: old.to_string() });
+        }
+        host.open_session(SessionKey { runtime_instance_id: instance, session_id: next.to_string() }, AiLimits::contract_defaults()).is_ok()
     }
 
     fn map_runtime_event(&mut self, scope: &Scope, event: RuntimeEvent) {
@@ -483,9 +522,17 @@ impl MastraBackend {
                 let Some(turn) = self.end_active() else { return };
                 log::debug!("mastra workflow turn {} ended", turn.binding.workflow_id);
                 let reason = terminal_reason(finished.state);
-                if finished.state == TurnTerminal::ValidatedSuccess && finished.validation_run_id.0.is_none() {
-                    // No validation port exists in this release (#11/#12), so the panel is told
-                    // the turn ended without claiming that a report passed.
+                if finished.state == TurnTerminal::AuthRequired {
+                    // A terminal auth failure belongs to the AI connection, never to runtime
+                    // readiness, so it updates the separate connection state.
+                    if let Ok(mut reported) = self.config.connection_auth.lock() {
+                        *reported = Some(false);
+                    }
+                    self.push(Event::ConnectionAuth { available: false });
+                }
+                if finished.state == TurnTerminal::ValidatedSuccess {
+                    // Host verification (§9.3 / #12) does not exist in this release, even when a
+                    // validationRunId is present, so never claim that a report passed.
                     self.push(Event::Text { thought: true, text: crate::i18n::tr("ui.mastra_validation_not_available").to_string() });
                 }
                 let _ = turn;
@@ -554,7 +601,6 @@ impl MastraBackend {
         match notice {
             ClientNotice::RuntimeReady(info) => {
                 self.runtime_ready = true;
-                self.runtime_version = info.runtime_version.clone();
                 if let Some(instance) = self.runtime_instance.as_ref()
                     && let Ok(mut id) = instance.lock()
                 {
@@ -569,7 +615,12 @@ impl MastraBackend {
                     match result {
                         Ok(_) => {
                             if let Some(next) = self.reset_target.take() {
-                                self.session = Some(next);
+                                let old = self.session.replace(next.clone());
+                                if !self.rebind_host_session(old.as_ref(), &next) {
+                                    self.session_ready = false;
+                                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                                    return;
+                                }
                             }
                             self.session_ready = true;
                             self.emit_ready();
@@ -658,13 +709,14 @@ fn runtime_services(
     connection_auth: Arc<Mutex<Option<bool>>>,
     runtime_instance: Arc<Mutex<Option<String>>>,
     budget: Arc<AtomicU32>,
+    frozen_binding: Arc<Mutex<Option<(String, String)>>>,
 ) -> RuntimeServices {
     RuntimeServices {
         clock: Arc::new(WallClock),
         ids,
         admission,
         lifecycle: Arc::new(ClosedLifecycle),
-        dispatch: Arc::new(HostCalls { host, connection_auth, budget, runtime_instance }),
+        dispatch: Arc::new(HostCalls { host, connection_auth, budget, runtime_instance, frozen_binding }),
     }
 }
 
@@ -688,6 +740,7 @@ struct HostCalls {
     connection_auth: Arc<Mutex<Option<bool>>>,
     budget: Arc<AtomicU32>,
     runtime_instance: Arc<Mutex<Option<String>>>,
+    frozen_binding: Arc<Mutex<Option<(String, String)>>>,
 }
 
 impl HostDispatch for HostCalls {
@@ -696,9 +749,10 @@ impl HostDispatch for HostCalls {
         let auth = Arc::clone(&self.connection_auth);
         let budget = Arc::clone(&self.budget);
         let instance = Arc::clone(&self.runtime_instance);
+        let frozen = Arc::clone(&self.frozen_binding);
         let spawned = std::thread::Builder::new().name("mastra-host-call".into()).spawn(move || {
             let cancelled = call.cancellation.is_cancelled();
-            let result = if cancelled { Err(cancelled_error("operation")) } else { handle_call(&host, &auth, &budget, &instance, call) };
+            let result = if cancelled { Err(cancelled_error("operation")) } else { handle_call(&host, &auth, &budget, &instance, &frozen, call) };
             let _ = reply.finish(result);
         });
         // On a failed spawn, dropping the reply port resolves the call with the machine's
@@ -712,11 +766,14 @@ fn handle_call(
     auth: &Mutex<Option<bool>>,
     budget: &AtomicU32,
     runtime_instance: &Mutex<Option<String>>,
+    frozen_binding: &Mutex<Option<(String, String)>>,
     call: CallbackCall,
 ) -> Result<HostReply, WireError> {
-    let CallbackCall { scope, call, cancellation, deadline: _deadline, limits: _limits, token: _token } = call;
+    let CallbackCall { scope, call, cancellation, deadline, limits, token: _token } = call;
+    let frozen = frozen_binding.lock().ok().and_then(|binding| binding.clone());
     match call {
         HostCall::ConnectionDescribe(params) => {
+            reject_retarget(&frozen, &params.connection_id.to_string(), &params.model_id)?;
             let binding = host
                 .bind(&params.connection_id.to_string(), &params.model_id)
                 .map_err(|error| ai_error(&params.connection_id.to_string(), &error))?;
@@ -747,8 +804,9 @@ fn handle_call(
         }
         HostCall::ModelGenerate(params) => {
             let ModelGenerateParams { connection_id, model_id, messages, tools, options, continuation } = params;
+            reject_retarget(&frozen, &connection_id.to_string(), &model_id)?;
             if budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1)).is_err() {
-                return Err(unsupported("model_calls"));
+                return Err(resource_exhausted("model_calls", MODEL_CALLS_PER_TURN));
             }
             let connection = connection_id.to_string();
             let binding = host.bind(&connection, &model_id).map_err(|error| ai_error(&connection, &error))?;
@@ -763,6 +821,8 @@ fn handle_call(
             if options.delivery == super::mastra_protocol::Delivery::Streaming {
                 return Err(unsupported("streaming"));
             }
+            let host_limits = ai_limits(&limits)?;
+            let timeout_seconds = options.timeout_seconds.clamp(1, limits.call_max_seconds.max(1)).min(600);
             let request = GenerateRequest {
                 connection_id: connection.clone(),
                 model_id,
@@ -770,7 +830,7 @@ fn handle_call(
                 tools,
                 options: GenerateOptions {
                     delivery: Delivery::Buffered,
-                    timeout_seconds: options.timeout_seconds.clamp(1, 600),
+                    timeout_seconds,
                     max_output_tokens: options.max_output_tokens.0,
                     temperature: options.temperature.0,
                     reasoning_effort: options.reasoning_effort.0,
@@ -785,8 +845,8 @@ fn handle_call(
             let context = CallContext {
                 scope: CallScope { session, turn_id: turn_id(&scope), workflow_run_id: workflow_run_id(&scope) },
                 control: Arc::clone(&control),
-                deadline: host.deadline_after(Duration::from_secs(u64::from(request.options.timeout_seconds.min(600)))),
-                limits: AiLimits::contract_defaults(),
+                deadline: host.deadline_after(deadline.saturating_duration_since(Instant::now())),
+                limits: host_limits,
                 model_budget: Arc::new(ModelCallBudget::new(MODEL_CALLS_PER_TURN).map_err(|error| ai_error(&connection, &error))?),
             };
             let cancelled = cancellation.clone();
@@ -831,7 +891,10 @@ fn handle_call(
                 Err(error) => Err(ai_error(&connection, &error)),
             }
         }
-        HostCall::AgentRun(_) => Err(unsupported("agent_tasks")),
+        HostCall::AgentRun(params) => {
+            reject_retarget(&frozen, &params.connection_id.to_string(), &params.model_id)?;
+            Err(unsupported("agent_tasks"))
+        }
         HostCall::ValidationSubmit(_) | HostCall::ValidationStatus(_) | HostCall::ValidationReport(_) | HostCall::ValidationCancel(_) => {
             Err(unsupported("validation"))
         }
@@ -893,6 +956,62 @@ fn workflow_run_id(scope: &Scope) -> String {
         Scope::Turn(turn) => turn.workflow_run_id.to_string(),
         _ => String::new(),
     }
+}
+
+/// The host pins the turn's connection and model. A runtime call naming another pair is a
+/// retarget attempt, never a picker change: the picker only affects the next turn.
+fn reject_retarget(frozen: &Option<(String, String)>, connection: &str, model: &str) -> Result<(), WireError> {
+    if let Some((pinned_connection, pinned_model)) = frozen
+        && (pinned_connection != connection || pinned_model != model)
+    {
+        return Err(connection_changed(pinned_connection));
+    }
+    Ok(())
+}
+
+fn connection_changed(connection_id: &str) -> WireError {
+    let details = match Id::parse(connection_id) {
+        Ok(id) => ErrorDetails::Connection(ConnectionDetails { connection_id: id }),
+        Err(_) => ErrorDetails::Empty(EmptyDetails {}),
+    };
+    WireError {
+        code: ErrorCode::ConnectionChanged,
+        message: "The frozen AI connection or model does not match this call.".into(),
+        retry: Retry::Never,
+        details,
+    }
+}
+
+fn resource_exhausted(resource: &str, limit: u32) -> WireError {
+    WireError {
+        code: ErrorCode::ResourceExhausted,
+        message: "The turn's budget is exhausted.".into(),
+        retry: Retry::Never,
+        details: ErrorDetails::Resource(ResourceDetails { resource: resource.into(), limit }),
+    }
+}
+
+/// The runtime negotiates lower limits in hello; a host model call must not widen them again to
+/// the contract defaults.
+fn ai_limits(limits: &Limits) -> Result<AiLimits, WireError> {
+    let limits = AiLimits {
+        model_messages: limits.model_messages,
+        tool_definitions: limits.tool_definitions,
+        tool_calls: limits.tool_calls,
+        text_bytes: limits.text_bytes,
+        tool_json_bytes: limits.tool_json_bytes,
+        attachments: limits.attachments,
+        attachment_bytes: limits.attachment_bytes,
+        attachment_total_bytes: limits.attachment_total_bytes,
+        continuation_handles: limits.continuation_handles,
+        continuation_bytes: limits.continuation_bytes,
+        continuation_ttl_seconds: limits.continuation_ttl_seconds,
+        http_per_connection: limits.http_per_connection,
+        http_per_host: limits.http_per_host,
+        call_max_seconds: limits.call_max_seconds,
+    };
+    limits.validate().map_err(|_| invalid_error("limits"))?;
+    Ok(limits)
 }
 
 fn unsupported(capability: &str) -> WireError {
@@ -979,7 +1098,6 @@ impl ChatBackend for MastraBackend {
         }
         let reported = self.config.connection_auth.lock().ok().and_then(|mut reported| reported.take());
         if let Some(available) = reported {
-            self.auth_reported = Some(available);
             self.push(Event::ConnectionAuth { available });
         }
         self.events.drain(..).collect()

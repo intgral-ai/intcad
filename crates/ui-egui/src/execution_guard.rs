@@ -197,7 +197,10 @@ fn check_nested_stamps(method: &str, envelope: &Value) -> Result<(), GuardRefusa
 }
 
 pub(crate) fn check_application(app: &mut SolveApp, req: &ControlRequest) -> Result<Option<DocumentStamp>, GuardRefusal> {
-    if (req.guarded.is_some() || req.params.get("expectedDocument").is_some()) && control::chat_turn_cancelled(req.chat_turn.as_deref()) {
+    // The trusted turn flag belongs to the request that carries it. Check it for every request,
+    // including unguarded reads and mutations, and never consult the current turn instead: a
+    // late request from a replaced turn must not inherit the new turn's permission.
+    if control::chat_turn_cancelled(req.chat_turn.as_deref()) {
         return Err(cancelled(&req.method));
     }
     check_nested_stamps(&req.method, &req.params)?;
