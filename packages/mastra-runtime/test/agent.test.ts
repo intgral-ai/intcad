@@ -40,7 +40,7 @@ const tools = [
   },
 ] as const;
 
-function client(transport: HostAiTransport, branch: ContinuationBranch): HostAiModelClient {
+function client(transport: HostAiTransport, branch: ContinuationBranch, modelId = "model-a"): HostAiModelClient {
   return new HostAiModelClient(
     transport,
     {
@@ -48,7 +48,7 @@ function client(transport: HostAiTransport, branch: ContinuationBranch): HostAiM
       turnId: "t",
       workflowRunId: "w",
       connectionId: "byok-1",
-      modelId: "model-a",
+      modelId,
       remainingSeconds: 1200,
     },
     DEFAULT_LIMITS,
@@ -202,10 +202,42 @@ test("images, documents and structured output fail before HostAi is called", asy
 
 test("a continuation handle is dropped when the normalized history branch does not extend", () => {
   const branch = new ContinuationBranch();
+  const scope = { connectionId: "byok-1", modelId: "model-a" };
   const base: ModelMessage[] = [{ role: "user", content: [{ type: "text", text: "a" }], toolCalls: [], toolCallId: null }];
-  branch.store("cont-1", base, 1000);
-  assert.equal(branch.take(base, 1001), "cont-1");
+  branch.store("cont-1", base, scope, 1000);
+  assert.equal(branch.take(base, scope, 1001), "cont-1");
   const other: ModelMessage[] = [{ role: "user", content: [{ type: "text", text: "b" }], toolCalls: [], toolCallId: null }];
-  assert.equal(branch.take(other, 1001), null);
+  assert.equal(branch.take(other, scope, 1001), null);
   assert.equal(branch.handle, null);
+});
+
+test("a continuation handle is dropped when the connection or model changes", async () => {
+  const branch = new ContinuationBranch();
+  const scopeA = { connectionId: "byok-1", modelId: "model-a" };
+  const scopeB = { connectionId: "byok-1", modelId: "model-b" };
+  const transport = new QueueTransport([
+    () => ({ content: [{ type: "text", text: "A1" }], toolCalls: [], finishReason: "stop", usage: null, continuation: "cont-1", delivery: "buffered" }),
+    () => ({ content: [{ type: "text", text: "B1" }], toolCalls: [], finishReason: "stop", usage: null, continuation: "cont-b", delivery: "buffered" }),
+    () => ({ content: [{ type: "text", text: "A2" }], toolCalls: [], finishReason: "stop", usage: null, continuation: "cont-a2", delivery: "buffered" }),
+  ]);
+  const prompt = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
+  const call = async (modelId: string): Promise<JsonObject> => {
+    const hostClient = client(transport, branch, modelId);
+    const model = createHostAiLanguageModel({
+      client: hostClient,
+      connectionId: "byok-1",
+      modelId,
+      timeoutSeconds: 300,
+      branch,
+    });
+    await (model.doGenerate as unknown as (options: JsonObject) => Promise<unknown>)({ prompt, mode: { type: "regular", tools: [] } });
+    return transport.calls.at(-1)?.params ?? {};
+  };
+
+  assert.equal((await call("model-a"))["continuation"], null);
+  assert.deepEqual(branch.scope, scopeA);
+  assert.equal((await call("model-b"))["continuation"], null, "model B must not receive model A's handle");
+  assert.deepEqual(branch.scope, scopeB);
+  assert.equal((await call("model-a"))["continuation"], null, "returning to model A must not reuse a stale handle");
+  assert.deepEqual(branch.scope, scopeA);
 });

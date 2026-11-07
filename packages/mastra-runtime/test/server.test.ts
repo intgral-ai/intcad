@@ -96,6 +96,12 @@ class Peer {
     this.child.stdin.write(`${JSON.stringify({ protocolVersion: "1.0", kind: "request", requestId, scope, method, params })}\n`);
   }
 
+  sendEvent(event: string, scope: Scope, sequence: number, data: JsonObject): void {
+    this.child.stdin.write(
+      `${JSON.stringify({ protocolVersion: "1.0", kind: "event", requestId: null, scope, sequence, event, data })}\n`,
+    );
+  }
+
   async request(method: string, scope: Scope, params: JsonObject, requestId: string): Promise<Frame> {
     this.send(method, scope, params, requestId);
     return this.waitFor((frame) => frame.kind === "response" && frame.requestId === requestId);
@@ -240,6 +246,13 @@ test("cancellation reaches the in-flight HostAi request and prevents a late repl
     await peer.request("session.start", sessionScope, sessionParams(), "h:2");
     await peer.request("turn.start", turnScope, turnParams(), "h:3");
     const model = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
+    const wrongRun = await peer.request(
+      "turn.cancel",
+      { ...turnScope, workflowRunId: "w-other" },
+      { reason: "user" },
+      "h:3b",
+    );
+    assert.deepEqual(wrongRun.result, { state: "terminal" }, "a different workflowRunId must not cancel the active turn");
     const cancel = peer.request("turn.cancel", turnScope, { reason: "user" }, "h:4");
     const cancelReply = await cancel;
     assert.deepEqual(cancelReply.result, { state: "cancelling" });
@@ -311,6 +324,20 @@ test("session.reset retires the old session identity", async () => {
     peer.replyModel(model, "ok");
     const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
     assert.equal((finished.scope as Scope).sessionId, "s-2");
+  } finally {
+    peer.kill();
+  }
+});
+
+test("duplicate or decreasing host event sequence is a protocol error", async () => {
+  const { peer } = await negotiatedPeer();
+  try {
+    await peer.request("session.start", sessionScope, sessionParams(), "h:2");
+    const data = { connectionId: "byok-1", state: "available", authMethods: [] };
+    peer.sendEvent("connection.state", sessionScope, 1, data);
+    peer.sendEvent("connection.state", sessionScope, 1, data);
+    assert.equal(await peer.exit, 2);
+    assert.match(peer.stderr.join(""), /host event sequence/u);
   } finally {
     peer.kill();
   }

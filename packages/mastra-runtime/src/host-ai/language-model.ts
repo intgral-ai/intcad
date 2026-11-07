@@ -9,6 +9,7 @@
 import { Agent, type MastraLegacyLanguageModel, type ToolsInput } from "@mastra/core/agent";
 
 import { invalidRequest, unsupportedCapability } from "../errors.js";
+import { monotonicClock } from "../clock.js";
 import { DEFAULT_LIMITS, isObject, type Limits } from "../limits.js";
 import { canonicalize } from "../jcs.js";
 import type { JsonObject } from "../protocol.js";
@@ -164,12 +165,19 @@ function toolDefinitions(mode: V1Mode | undefined): ToolDefinition[] {
 
 /**
  * Continuation handles belong to the runtime and are scoped to the normalized
- * history branch that produced them. A call after a mismatch restarts with
- * `continuation: null` instead of replaying provider-private state.
+ * history branch, connection and model that produced them. A call after a
+ * mismatch restarts with `continuation: null` instead of replaying
+ * provider-private state.
  */
+export interface ContinuationScope {
+  readonly connectionId: string;
+  readonly modelId: string;
+}
+
 export class ContinuationBranch {
   #handle: string | null = null;
   #history: readonly string[] = [];
+  #scope: ContinuationScope | null = null;
   #expiresAt = 0;
   readonly #ttlMillis: number;
 
@@ -177,11 +185,21 @@ export class ContinuationBranch {
     this.#ttlMillis = ttlSeconds * 1000;
   }
 
-  take(messages: readonly ModelMessage[], now = Date.now()): string | null {
+  #scopeMatches(scope: ContinuationScope): boolean {
+    return this.#scope !== null && this.#scope.connectionId === scope.connectionId && this.#scope.modelId === scope.modelId;
+  }
+
+  take(messages: readonly ModelMessage[], scope: ContinuationScope, now = monotonicClock.now()): string | null {
     if (this.#handle === null) {
       return null;
     }
     if (now >= this.#expiresAt) {
+      this.clear();
+      return null;
+    }
+    if (!this.#scopeMatches(scope)) {
+      // A different connection or model must never receive another branch's
+      // provider-private state, even inside one session.
       this.clear();
       return null;
     }
@@ -193,24 +211,30 @@ export class ContinuationBranch {
     return this.#handle;
   }
 
-  store(handle: string | null, messagesBeforeCall: readonly ModelMessage[], now = Date.now()): void {
+  store(handle: string | null, messagesBeforeCall: readonly ModelMessage[], scope: ContinuationScope, now = monotonicClock.now()): void {
     if (handle === null) {
       this.clear();
       return;
     }
     this.#handle = handle;
     this.#history = messagesBeforeCall.map((message) => canonicalize(message));
+    this.#scope = { connectionId: scope.connectionId, modelId: scope.modelId };
     this.#expiresAt = now + this.#ttlMillis;
   }
 
   clear(): void {
     this.#handle = null;
     this.#history = [];
+    this.#scope = null;
     this.#expiresAt = 0;
   }
 
   get handle(): string | null {
     return this.#handle;
+  }
+
+  get scope(): ContinuationScope | null {
+    return this.#scope === null ? null : { ...this.#scope };
   }
 }
 
@@ -318,7 +342,8 @@ export function createHostAiLanguageModel(config: HostAiModelConfig): MastraLega
       }
       const messages = promptMessages(options.prompt ?? []);
       const tools = toolDefinitions(options.mode);
-      const continuation = branch.take(messages);
+      const continuationScope = { connectionId: config.connectionId, modelId: config.modelId };
+      const continuation = branch.take(messages, continuationScope);
       const request: ModelGenerateRequest = {
         messages,
         tools,
@@ -334,7 +359,7 @@ export function createHostAiLanguageModel(config: HostAiModelConfig): MastraLega
       };
       const signal = options.abortSignal ?? config.signal ?? new AbortController().signal;
       const result = await config.client.generate(request, signal);
-      branch.store(result.continuation, messages);
+      branch.store(result.continuation, messages, continuationScope);
       const text = result.content.map((block) => block.text).join("");
       return {
         ...(text.length === 0 ? {} : { text }),
