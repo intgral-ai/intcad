@@ -649,7 +649,7 @@ class ForkWorkflowContract(unittest.TestCase):
         self.assertIn('SOLIDCRAFT_REQUIRE_GPU: "1"', self.job("rust"))
 
     def test_exact_plan_and_required_consumers_have_evidence_edges(self):
-        for job in ("repo", "pr-policy", "rust", "wasm"):
+        for job in ("repo", "pr-policy", "contract-rust", "rust", "wasm"):
             self.assertIn("scripts/ci/main_merge.py execute", self.job(job))
             self.assertIn("selection-plan", self.job(job))
         for command in ("validation_mode:", "release_required:", "test_gate.py", "test_kernel_rig_plan.py"):

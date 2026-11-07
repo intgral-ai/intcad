@@ -45,7 +45,11 @@ passing: the nightly/manual `native-baseline.yml` workflow calls this workflow i
 full mode and runs the complete workspace suite and the complete repository
 checks (owning xtask binary tests, web-offline build and packaging suites). The
 `Format and repository checks` job keeps the fast format, asset, licence, layer,
-list, locale, mesh, skills, selector and bot checks on every PR.
+list, locale, mesh, skills, selector and bot checks on every PR. When #5's
+contract bundle/consumers are present, the `Mastra contract (Rust)` job runs the
+owned `mastra_` fixture/protocol/host tests through nextest and emits a counted
+receipt; it is selected for contract or shared-input changes and full/release
+validation, and fails closed if the tests are absent or fail.
 
 The always-evaluated `ci` aggregate in `.github/workflows/ci.yml` checks actual
 selected `needs` via `scripts/ci/main_merge.py` and `scripts/ci/gate.py`. Inspect:

@@ -243,6 +243,14 @@ def repository_commands(*, full=True):
     return commands + [["node", "--test", *bot_tests]]
 
 
+def contract_commands():
+    """Run #5's Rust contract/fixture/host tests exactly once, by their owned prefix."""
+    common = ["-p", "solidcraft-ui-egui", "--cargo-profile", "ci", "--locked", "--profile", "ci",
+              "--ignore-default-filter", "-E", "test(/mastra_/)"]
+    return [["cargo", "nextest", "list", *common, "--message-format", "json"],
+            ["cargo", "nextest", "run", *common, "--test-threads", "2"]]
+
+
 def wasm_commands():
     # Read the same checked-in layering table as xtask::wasm_check; do not keep a
     # second manually maintained crate list. Compile exactly the layered crates + web.
@@ -275,12 +283,14 @@ def execute_workflow(plan_file, job, out, *, full=False):
                   "console.log(JSON.stringify(r)); process.exit(r.ok?0:1);"]]
     elif job == "rust":
         argvs = native_commands(plan, full=full or plan["scope"] == "full" or plan["releaseRequired"])
+    elif job == "contract-rust":
+        argvs = contract_commands()
     elif job == "wasm":
         argvs = wasm_commands()
     else:
         raise ValueError(job + ": executable owner handoff is not integrated; no placeholder receipt is permitted")
     selection = junit = None
-    if job == "rust":
+    if job in ("rust", "contract-rust"):
         junit = Path("target/nextest/ci/junit.xml")
         junit.unlink(missing_ok=True)
         selection = out / "selection.json"
