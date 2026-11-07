@@ -1590,6 +1590,7 @@ mod tests {
 
     #[test]
     fn guarded_snapshot_capture_rejects_a_stale_stamp_and_creates_a_current_candidate() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!("solidcraft-control-snapshot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

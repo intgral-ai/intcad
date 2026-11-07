@@ -604,6 +604,10 @@ impl SolveApp {
 pub(crate) mod test_support {
     use super::*;
 
+    /// The candidate store is process-global; tests that replace it take this lock so parallel
+    /// libtest threads cannot swap it under one another. A poisoned lock still runs the test.
+    pub(crate) static CANDIDATE_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A real copy reading, already computed, held just before the owner's answer path.
     pub(crate) fn completed_read(app: &mut SolveApp, req: ControlRequest, id: &'static str, params: Value) -> ControlJob {
         let source = req.guarded.as_ref().map(|_| app.session.document_stamp());
@@ -634,6 +638,7 @@ mod tests {
     /// relative design link resolves from the design's folder.
     #[test]
     fn snapshot_capture_answers_on_a_copy_with_the_callers_path() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut h = Harness::new();
         h.app.home.open = false;
         h.app.apply_off_thread = Some(std::time::Duration::ZERO);
