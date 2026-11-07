@@ -381,7 +381,11 @@ def print_summary(plan, receipts, problems):
                       f"{len(tests['failedIds'])} known failing; raw failures: {', '.join(tests['failedIds'])}")
             else:
                 print(f"{job}: {len(tests['passedIds'])} selected tests passed")
+    tested = plan.get("rustTestPackages") or []
     deferred = plan.get("rustDeferredPackages") or []
+    if tested or deferred:
+        print(f"rustTestShard: {plan.get('rustTestShard') or 'none'}")
+        print("rustTestPackages: " + (", ".join(tested) or "none"))
     if deferred:
         print(f"deferred to nightly ({plan.get('rustDeferredTo')}): {', '.join(deferred)}")
     print("open obligations: " + (", ".join(plan["openObligations"]) or "none"))

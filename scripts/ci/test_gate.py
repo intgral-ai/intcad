@@ -151,6 +151,15 @@ class ExecutionEvidence(unittest.TestCase):
                                   full=False, release_required=False, diff_complete=True)
         self.assertEqual(value["rustDeferredPackages"], ["solidcraft-ui-egui"])
         self.assertEqual(value["rustDeferredTo"], ".github/workflows/native-baseline.yml")
+        import contextlib
+        import io
+        summary = io.StringIO()
+        with contextlib.redirect_stdout(summary):
+            self.gate.print_summary(value, {}, [])
+        text = summary.getvalue()
+        self.assertIn("rustTestShard: count:1/8", text)
+        self.assertIn("rustTestPackages: xtask", text)
+        self.assertIn("deferred to nightly (.github/workflows/native-baseline.yml): solidcraft-ui-egui", text)
         broken = copy.deepcopy(value)
         broken["rustDeferredTo"] = ""
         with self.assertRaisesRegex(ValueError, "nightly"):

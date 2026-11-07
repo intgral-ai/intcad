@@ -119,7 +119,8 @@ The [architecture page](docs/architecture.md) has the layer table. The short ver
    open-source application to get reference values for a test is fine; reading its source is
    not.) Permissive
    dependencies are fine. Note which one you're adding and why in the PR. THIRD-PARTY-LICENSES.txt
-   lists it once the change lands: the Generated files workflow rewrites it on `main`.
+   lists it once the change lands: in this fork the Generated files workflow runs on
+   `develop` and opens a draft PR to `develop`.
    Nightly/manual CI also scans advisories, bans and sources with cargo-deny, and a PR that
    changes Cargo.lock or a Cargo.toml checks the advisories; see
    [the local command and coverage limits](docs/book/src/dev/testing.md#dependency-advisories).
@@ -221,21 +222,26 @@ override; this limit does not change test filters, timeouts or baselines.
 Tests run beside each other on a busy machine, so a test must not depend on wall-clock timing.
 
 **Ready pull requests test what they touch.** CI maps changed files to workspace packages and
-runs Clippy, the test build and tests for those and their dependents. The
-[package selector](scripts/ci/affected.py) and [CI workflow](.github/workflows/ci.yml) define
-which changes require native checks; documentation, packaging, other-workflow and bot-script-only
-changes run the repository checks only, on pull requests and on `main`. Workspace-wide changes,
-merge-queue groups, nightly runs and Run workflow select the full workspace. A push to `main`
-reuses a successful merge-queue run for the same commit, and runs only the repository checks
-when no code changed since the last push to `main` that passed; otherwise it runs the full
-suite. Doc tests, reference tests and the Windows jobs run on `main` and nightly only.
+runs the format/repository policy, Clippy and the wasm check for every selected consumer. The
+[package selector](scripts/ci/plan.py) and [CI workflow](.github/workflows/ci.yml) define which
+changes require native checks; documentation, packaging, other-workflow and bot-script-only
+changes run the fast repository checks only. Pull requests also run the contract/runtime
+consumers when present and a bounded native lane over packages whose cold test build fits the
+30-minute cap (`-p xtask` smoke plus `--partition count:1/8`).
 
-**CI shards the tests.** One job builds them into a cargo-nextest archive; two shards run on
-pull requests and four during full validation. Every test runs in its own process: don't rely
-on state left by another test.
+The heavy UI/app/engine suite does **not** run on pull requests: a cold test codegen cannot fit
+the cap on these runners. The plan names those packages in `rustDeferredPackages` and points at
+[`native-baseline.yml`](.github/workflows/native-baseline.yml), which runs the complete workspace
+suite nightly/manually with a four-hour budget, and blocks release. There is no merge queue in
+this fork; pushes to `develop`/`main` run the full selected/full policy directly, and doc tests,
+reference tests, properties and the Windows jobs stay in full/nightly mode. See the
+[testing page](docs/book/src/dev/testing.md) and [fork governance](docs/fork-governance.md).
+
+**Tests run in isolated processes.** Every test runs in its own process: don't rely on state
+left by another test.
 Pull requests skip a few heavy tests (one to twelve minutes each), which run in full validation
-(the merge queue, nightly, manual runs and pushes to `main` not already tested by the queue).
-Check that validation after merging. They are listed in
+(nightly, manual runs and full pushes), not on merges through a queue. Check that validation
+after merging. They are listed in
 `.config/nextest.toml` and the [testing page](docs/book/src/dev/testing.md):
 
 - `solidcraft-engine`: `tests::hostile_params_never_panic`, everything in `tests::robustness`,
@@ -317,13 +323,15 @@ and a fresh CI run:
   row.
 - **Languages** (`crates/ui-egui/src/i18n.rs`): one per line, English first, then by id (a test
   checks it).
-- **Generated files**: `THIRD-PARTY-LICENSES.txt` and `docs/features.md` are rewritten on `main`
-  after each merge by the Generated files workflow (`cargo xtask licences`, `cargo xtask
-  features`). Don't regenerate or edit them in a pull request.
+- **Generated files**: in this fork the Generated files workflow runs on `develop` and opens a
+  draft PR to `develop` (`cargo xtask licences`, `cargo xtask features`); after that PR lands it
+  rewrites `THIRD-PARTY-LICENSES.txt` and `docs/features.md`. Don't regenerate or edit them in an
+  ordinary pull request.
 - **Design format**: one file per change, never an edit to a shared number (above).
 - **New UI strings and attribution rows**: one new file per change, `assets/locales/pending/<slug>.json`
   and `attribution/pending/<slug>.md`, instead of editing the catalogs or the ATTRIBUTION.md table;
-  `cargo xtask fold-pending` folds them on `main` (see the README in each folder). A new English
+  in this fork the Generated files workflow runs `cargo xtask fold-pending` on `develop` and opens a
+  draft PR to `develop` (see the README in each folder). A new English
   message also needs every catalog delivered complete (`COMPLETE` in `crates/ui-egui/src/i18n.rs`:
   today ar, he, ja, vi, and zh) in the same pending file; `cargo xtask i18n --check` reports any gap.
 
@@ -365,7 +373,8 @@ and a fresh CI run:
 4. Reference the issue (`Fixes #12`). In the PR, say what you tested and how. For geometry work, include the measured numbers (and
    the expected ones).
 5. Write the PR title and first sentence for someone who hasn't seen your chat, the issue or the
-   code. Maintainers pick what to review from the title, and it becomes the commit on `main`. Say
+   code. Maintainers pick what to review from the title, and in this fork it becomes the squash
+   commit on `develop` (upstream: `main`). Say
    which part of the app changes and what a user now sees or can do, and name things rather than
    leaning on "there", "it" or "this".
    - Unclear: `Send to Slicer: pick one print face per body there, and show print faces only while it is open`

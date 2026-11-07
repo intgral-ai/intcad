@@ -32,8 +32,8 @@ not modelling a part through MCP.
   lost. The bot assigns you and labels the issue `in progress`. Do not claim by editing files; comment
   `/claim` only to stake a claim before you have a branch.
 - **Write the title and first sentence for a reader who has seen nothing else.** Not your chat, not the
-  issue, not the code. Maintainers pick what to review from the title, and it becomes the commit on
-  `main`. Say which part of the app changes and what a user now sees or can do, in everyday words. Don't
+  issue, not the code. In this fork a task PR squash-lands on `develop`; upstream it becomes the
+  commit on `main`. Say which part of the app changes and what a user now sees or can do, in everyday words. Don't
   paste the issue's title unless it passes this too. Before opening the PR, and again before marking it
   ready, read both with everything else closed: if "there", "it", "this" or "that" has nothing to point
   at, or a term only makes sense after reading the diff, rewrite it. Keep the terms a user sees in the
