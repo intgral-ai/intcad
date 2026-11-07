@@ -141,6 +141,25 @@ class ExecutionEvidence(unittest.TestCase):
     def test_complete_native_known_failure_set_satisfies_regression_gate(self):
         self.assertEqual(self.evaluate(), [])
 
+    def test_deferred_rust_tests_name_nightly_and_never_overlap_the_receipt(self):
+        meta = {"workspace_root": "/fixture", "packages": [
+            {"name": "solidcraft-ui-egui", "manifest_path": "/fixture/crates/ui-egui/Cargo.toml",
+             "dependencies": []},
+            {"name": "xtask", "manifest_path": "/fixture/xtask/Cargo.toml", "dependencies": []}]}
+        value = planner.make_plan(meta, ["crates/ui-egui/src/lib.rs"], ABSENT, source_revision=SHA,
+                                  event_name="pull_request", base_ref="develop", head_ref="task",
+                                  full=False, release_required=False, diff_complete=True)
+        self.assertEqual(value["rustDeferredPackages"], ["solidcraft-ui-egui"])
+        self.assertEqual(value["rustDeferredTo"], ".github/workflows/native-baseline.yml")
+        broken = copy.deepcopy(value)
+        broken["rustDeferredTo"] = ""
+        with self.assertRaisesRegex(ValueError, "nightly"):
+            self.gate.validate_plan(broken)
+        overlap = copy.deepcopy(value)
+        overlap["rustTestPackages"] = ["solidcraft-ui-egui"]
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            self.gate.validate_plan(overlap)
+
     def test_contract_test_failure_is_not_reported_as_infrastructure(self):
         tests = dict(expectedIds=[FAIL, PASS], passedIds=[PASS], failedIds=[FAIL], skippedIds=[],
                      knownFailingIds=[])

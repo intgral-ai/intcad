@@ -37,10 +37,15 @@ Pull requests use a bounded deterministic lane so a standard two-vCPU runner
 finishes inside 30 minutes. The counted native job tests the packages that
 directly own a changed Rust file plus the `xtask` tooling smoke owner, and runs
 one deterministic eighth of that selection (`--partition count:1/8`, reported in
-the plan as `rustTestShard`). The measured cold compile floor for the UI package
-is about 19 minutes; the 1/8 run leaves headroom inside the 30-minute cap.
-Reverse dependents are still built by Clippy and the wasm check and are fully
-tested by the nightly/full workflow. Clippy and
+the plan as `rustTestShard`). Only packages whose test closure fits the
+30-minute cap are in that lane (`PR_TEST_PACKAGES`); the heavy UI/app/engine
+closure cannot cold-codegen in time even at 1/8. The plan lists every deferred
+package in `rustDeferredPackages` and names
+`.github/workflows/native-baseline.yml` in `rustDeferredTo`; the aggregate prints
+the deferral and never counts it as a passing test. Reverse dependents are still
+built by Clippy and the wasm check and are fully tested by the nightly/full
+workflow. DQ-5 in `docs/fork-governance.md` records the owner decision needed to
+run the heavy suites on every PR instead. Clippy and
 the wasm compile still cover the complete selected consumer scope, including
 shared lockfile, toolchain, `.github/workflows/**`, `.github/actions/**` and `scripts/**`
 inputs. Those inputs

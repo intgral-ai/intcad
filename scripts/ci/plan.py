@@ -33,9 +33,16 @@ TOOLING_PREFIXES = ("xtask/", "packaging/mastra/")
 # smoke owner is always present and proves the toolchain even for shared-only
 # inputs whose tests belong to the nightly full run.
 PR_TEST_SMOKE = "xtask"
-# Deterministic slice of the bounded PR test selection. Compilation is the floor
-# (~19 min cold for solidcraft-ui-egui); 1/8 keeps the run well inside 30 min.
+# Deterministic slice of the bounded PR test selection.
 PR_TEST_SHARD = "count:1/8"
+# Packages whose test closure fits a cold 2/4-vCPU PR runner. Everything else
+# (UI/app/engine closure) needs full test codegen that does not fit 30 minutes;
+# its tests are explicitly deferred to the nightly full workflow, which blocks
+# release. Clippy and wasm still build every selected consumer on the PR.
+PR_TEST_PACKAGES = frozenset(("xtask", "solidcraft-derive", "solidcraft-doc", "solidcraft-geom",
+                              "solidcraft-io", "solidcraft-profile", "solidcraft-sketch",
+                              "solidcraft-step", "solidcraft-testkit"))
+NIGHTLY_WORKFLOW = ".github/workflows/native-baseline.yml"
 # Only these reviewed metadata/owning utility inputs are payload-free. Unknown
 # packaging paths still require the real package consumers, never a prefix waiver.
 PACKAGING_FOUNDATION = frozenset(("packaging/mastra/policy.json", "packaging/mastra/source-records.json",
@@ -202,10 +209,20 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
             direct_tests.add(max(owners, key=lambda name: len(dirs[name])))
     if tooling:
         direct_tests = set(direct_tests) | {PR_TEST_SMOKE}
-    rust_test_packages = sorted(set(direct_tests))
+    if full or release_required:
+        # Full/nightly/release executes the complete workspace; no test deferral.
+        rust_test_packages = sorted(set(direct_tests))
+        rust_deferred_packages = []
+    else:
+        rust_test_packages = sorted(p for p in direct_tests if p in PR_TEST_PACKAGES)
+        # Every selected consumer whose tests are not in this bounded receipt is
+        # explicitly deferred to the nightly full workflow, not silently treated
+        # as passing.
+        rust_deferred_packages = sorted((set(direct_tests) | set(rust_packages)) - set(rust_test_packages))
     if not rust_test_packages and (rust_packages or rust_full):
         fallback = [PR_TEST_SMOKE] if PR_TEST_SMOKE in available else sorted(rust_packages)
         rust_test_packages = fallback[:1] or sorted(available)[:1]
+        rust_deferred_packages = sorted(set(rust_deferred_packages) - set(rust_test_packages))
     selected = full or shared or contract_change or runtime_request
     # Current consumers do not disappear when a required input goes missing.
     required_contract_missing = bool(contract_missing) and contract_required
@@ -252,6 +269,8 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
                 rustPackages=sorted(set(rust_packages)),
                 rustTestPackages=sorted(set(rust_test_packages)),
                 rustTestShard=PR_TEST_SHARD,
+                rustDeferredPackages=sorted(set(rust_deferred_packages)),
+                rustDeferredTo=NIGHTLY_WORKFLOW if rust_deferred_packages else "",
                 jobs=jobs, openObligations=sorted(obligations))
 
 

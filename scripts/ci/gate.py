@@ -171,6 +171,18 @@ def validate_plan(plan):
         if plan["releaseRequired"] and job not in ("repo", "pr-policy"):
             require(decision != "not_applicable", f"{job}: required release consumer cannot be not_applicable")
     require(sorted(expected_obligations) == obligations, "openObligations do not match non-applicability")
+    deferred = plan.get("rustDeferredPackages", [])
+    require(isinstance(deferred, list) and all(nonempty(p) for p in deferred)
+            and deferred == sorted(set(deferred)), "invalid rustDeferredPackages")
+    require(not (set(deferred) & set(plan.get("rustTestPackages", []))),
+            "deferred and tested Rust packages overlap")
+    deferred_to = plan.get("rustDeferredTo", "")
+    if deferred:
+        require(deferred_to == ".github/workflows/native-baseline.yml",
+                "deferred Rust tests must name the nightly workflow")
+        require(jobs["rust"]["decision"] == "run", "deferred Rust tests need the bounded receipt")
+    else:
+        require(deferred_to == "", "rustDeferredTo without deferred packages")
     require(jobs["repo"]["decision"] == "run", "repo must always run")
     pr = plan.get("eventName") in ("pull_request", "pull_request_target", "merge_group")
     require(jobs["pr-policy"]["decision"] == ("run" if pr else "not_applicable"), "pr-policy applicability mismatch")
@@ -369,6 +381,9 @@ def print_summary(plan, receipts, problems):
                       f"{len(tests['failedIds'])} known failing; raw failures: {', '.join(tests['failedIds'])}")
             else:
                 print(f"{job}: {len(tests['passedIds'])} selected tests passed")
+    deferred = plan.get("rustDeferredPackages") or []
+    if deferred:
+        print(f"deferred to nightly ({plan.get('rustDeferredTo')}): {', '.join(deferred)}")
     print("open obligations: " + (", ".join(plan["openObligations"]) or "none"))
     for problem in problems:
         print("FAIL: " + problem)

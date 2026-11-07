@@ -133,7 +133,8 @@ class MonorepoSelection(unittest.TestCase):
             self.decision(result, job, "not_applicable", "no_relevant_change")
         self.assertEqual(set(result), {"version", "sourceRevision", "eventName", "baseRef", "headRef", "scope",
                                        "releaseRequired", "rustFull", "rustPackages", "rustTestPackages",
-                                       "rustTestShard", "jobs", "openObligations"})
+                                       "rustTestShard", "rustDeferredPackages", "rustDeferredTo",
+                                       "jobs", "openObligations"})
         self.assertEqual((result["version"], result["sourceRevision"], result["scope"]), (1, "a" * 40, "affected"))
 
     def test_pr_policy_does_not_run_on_ordinary_push(self):
@@ -143,10 +144,14 @@ class MonorepoSelection(unittest.TestCase):
     def test_engine_selects_reverse_dependents_and_wasm(self):
         result = self.select("crates/engine/src/lib.rs")
         self.assertEqual(result["rustPackages"], ["solidcraft", "solidcraft-engine", "solidcraft-ui-egui"])
-        # The bounded PR test lane owns the changed crate; reverse dependents are
-        # built by Clippy/wasm and fully tested by the nightly run.
-        self.assertEqual(result["rustTestPackages"], ["solidcraft-engine"])
+        # The engine test closure does not fit the 30-minute PR cap; its tests are
+        # explicitly deferred to the nightly full run, and the cheap xtask smoke
+        # still produces a real receipt.
+        self.assertEqual(result["rustTestPackages"], ["xtask"])
         self.assertEqual(result["rustTestShard"], "count:1/8")
+        self.assertEqual(result["rustDeferredPackages"],
+                         ["solidcraft", "solidcraft-engine", "solidcraft-ui-egui"])
+        self.assertEqual(result["rustDeferredTo"], ".github/workflows/native-baseline.yml")
         self.assertFalse(result["rustFull"])
         for job in ("rust", "wasm"):
             self.decision(result, job, "run", "selected_change")
@@ -213,10 +218,14 @@ class MonorepoSelection(unittest.TestCase):
                 result = self.select(path)
                 self.assertEqual(result["rustTestPackages"], ["xtask"])
                 self.assertNotEqual(result["rustPackages"], result["rustTestPackages"])
+                self.assertIn("solidcraft-ui-egui", result["rustDeferredPackages"])
+                self.assertEqual(result["rustDeferredTo"], ".github/workflows/native-baseline.yml")
         for options in ({"full": True}, {"event_name": "schedule"}, {"release_required": True}):
             with self.subTest(options=options):
                 result = self.select("crates/engine/src/lib.rs", **options)
                 self.assertEqual(result["rustTestPackages"], ["solidcraft-engine"])
+                self.assertEqual(result["rustDeferredPackages"], [])
+                self.assertEqual(result["rustDeferredTo"], "")
                 self.assertEqual(result["rustPackages"],
                                  ["solidcraft", "solidcraft-engine", "solidcraft-ui-egui", "xtask"])
 

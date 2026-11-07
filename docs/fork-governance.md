@@ -152,6 +152,27 @@ on but this policy does not use it; a later settings change may turn it off.
 Merge queue/auto-merge is unavailable in the observed state, so `merge_group`
 support in the workflows is readiness for a future queue, not an activated queue.
 
+## What a PR proves, and what nightly proves
+
+On the 2/4-vCPU standard runners, a cold test codegen of the
+`solidcraft-ui-egui`/app/engine closure takes longer than the 30-minute PR cap.
+PR CI therefore proves: format/repository policy, path selection, Clippy and wasm
+for every selected consumer, the contract/runtime consumers when present, and a
+bounded deterministic test lane over packages whose closure fits the cap
+(`scripts/ci/plan.py`, `PR_TEST_PACKAGES`) plus the `xtask` smoke owner.
+
+The plan names every selected package whose tests are **not** run on the PR in
+`rustDeferredPackages` and points `rustDeferredTo` at
+[`.github/workflows/native-baseline.yml`](../.github/workflows/native-baseline.yml).
+The aggregate `ci` prints that deferral and still requires a real bounded
+receipt; a deferred suite is never counted as a passing test. The nightly/full
+workflow runs the complete workspace suite (UI, app, engine, properties, rig,
+platform) with a four-hour budget, and native failure blocks release.
+
+**DQ-5 (owner decision):** provision larger runners or prebuilt test artifacts if
+the owner wants the full UI/app/engine suites on every PR. Until then the
+deferral above is the default policy under this proposal, not a silent waiver.
+
 ## Observed GitHub state (read-only, 2026-11-07)
 
 These facts were read with `gh api` and are **observations, not applied settings
