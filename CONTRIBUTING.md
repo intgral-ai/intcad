@@ -329,13 +329,23 @@ and a fresh CI run:
 
 ## Sending a change
 
+> **Fork override (this repository):** the branch policy below is the proposed
+> fork policy and awaits owner sign-off, but the CI mechanics are active. Task PRs
+> branch from and target `develop`, not `main`; there is no `approved-for-ci`
+> gate and no merge queue — every PR runs its selected checks immediately.
+> Promotion uses a temporary `release/vX.Y.Z` branch. See
+> [docs/fork-governance.md](docs/fork-governance.md). The upstream `main` and
+> merge-queue instructions below describe the upstream repository and do not
+> override this fork's `develop` target.
+
 1. Work is tracked in [GitHub issues](https://github.com/tangency-labs/solidcraft/issues), labelled
    by area (`area:kernel`, `area:sketch`, `area:doc`, `area:ui`, `area:infra`). For anything
    bigger than a bug fix that has no issue yet, open one first. **Claim the issue with a draft
    PR** before you start, so two people don't build the same thing:
    - Check nobody has it: `gh pr list -R tangency-labs/solidcraft --state open --search "#N"`.
-   - Branch from the latest `main`, commit `git commit --allow-empty -m "claim: #N"`, push, and
-     open a **draft** PR titled `<summary> (#N)`, e.g. `Fillet: variable radius along a chain (#123)`.
+   - Branch from the latest `develop` in this fork (upstream: `main`), commit
+     `git commit --allow-empty -m "claim: #N"`, push, and open a **draft** PR titled
+     `<summary> (#N)`, e.g. `Fillet: variable radius along a chain (#123)`.
    - **The lowest-numbered open PR for an issue wins.** If yours lost, close it (or offer to help
      on the other one).
    - The bot records the claim when the PR is opened: it assigns you, adds `in progress` and
@@ -345,14 +355,13 @@ and a fresh CI run:
    - Push work in progress at least daily. A draft with no pushes for 72 hours may be taken over:
      comment on it first, then open your own claim.
    - Mark the PR ready for review when it is done.
-2. Branch from `main` and keep the PR to one topic.
+2. Branch from `develop` in this fork and keep the PR to one topic.
 3. Run `cargo xtask ci` before pushing. It runs fmt, the asset, licence and layer checks,
    clippy (`-D warnings`), then the tests with the wasm build check alongside. A PR has to pass it.
-   Heavy CI runs after review: a pull request gets the formatting and repository checks and a
-   quick compile (`cargo check`) when you push. Once a maintainer has reviewed it they add the
-   `approved-for-ci` label when the PR is ready to merge, which runs the full CI (build, tests,
-   goldens, Clippy); every push after that runs the full set again. Maintainers merge approved
-   PRs in groups by area, so PRs that touch the same code meet a conflict at most once.
+   **Fork override:** every PR runs its selected checks immediately — there is no
+   `approved-for-ci` gate and no merge queue. The upstream text for maintainers is
+   unchanged: upstream still uses that label, groups merges by area and runs the
+   full CI after review.
 4. Reference the issue (`Fixes #12`). In the PR, say what you tested and how. For geometry work, include the measured numbers (and
    the expected ones).
 5. Write the PR title and first sentence for someone who hasn't seen your chat, the issue or the

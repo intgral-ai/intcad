@@ -1,14 +1,25 @@
 # Fork branch governance
 
-This page defines the branch flow for this fork of SolidCraft. `develop` is the
-integration branch and the intended default target for task PRs. `main` is the
-stable baseline. This flow takes precedence over inherited upstream instructions
-about branch targets, the merge queue and catch-up pushes. It does not change the
-licensing or source policies in CONTRIBUTING.md.
+> **Status: proposed policy, pending owner sign-off.**
+>
+> The `develop`/stable-`main` topology, the zero-mandatory-approval proposal and
+> the merge-method choices on this page are **not approved product decisions**.
+> [Mastra runtime contract §11](mastra-runtime.md) still records the topology as
+> proposed, and issue #17 still lists the branch policy as open.
+>
+> The CI mechanics described here are ready and reversible: path selection,
+> receipts, the `ci` aggregate and the runtime/contract jobs work from the
+> committed files. **No default-branch change, ruleset, required check or
+> repository setting is implied or applied by this page or PR.** Those need
+> separate owner authorization and read-back. Until then, the repository reports
+> `main` as its default branch and no protection as active.
 
-The long-term default branch is `develop`. The repository still reports `main` as
-its default branch until a separately authorized settings change is applied and
-read back. Nothing on this page asserts that the target state is already active.
+This page describes the proposed branch flow for this fork of SolidCraft.
+`develop` would be the integration branch and target for task PRs; `main` would
+be the stable baseline. The flow takes precedence over inherited upstream
+instructions about branch targets, the merge queue and catch-up pushes only once
+the owner authorizes it. It does not change the licensing or source policies in
+CONTRIBUTING.md.
 
 ## Admission and merge methods
 
@@ -38,8 +49,10 @@ on its constituent reviewed PRs. Its synthetic queue ref is not a task branch.
 ## Promote and reconcile without replacing history
 
 1. Create a temporary `release/vX.Y.Z` branch from the selected `develop` commit.
-   Put release-specific fixes through normal checked PRs. Freeze the candidate
-   while its full release gate runs.
+   Release-specific fixes go to `develop` first; after they land, delete and
+   recut the release branch from the fixed `develop` commit. Do not open fix PRs
+   against `release/vX.Y.Z`: admission and `ci.yml` support promotion and
+   reconciliation only. Freeze the candidate while its full release gate runs.
 2. Open the release PR to `main`. Require real, current-source native, platform,
    package, contract, runtime and provenance evidence where applicable. Missing
    required consumers block promotion; a host-only check is not release evidence.
@@ -124,12 +137,12 @@ back to another credential, or bypass the branch rules silently.
 
 ## Reviewer, check and merge policy
 
-The owner selected **zero mandatory independent approvals** and **no administrator
-bypass**. Zero required approvals does not waive checked PRs, real validation or
-the human review and CI-trigger step for generated changes. Independent review
+The **proposed** policy is **zero mandatory independent approvals** and **no
+administrator bypass**; it is pending owner sign-off. It does not waive checked
+PRs, real validation or the human review of generated changes. Independent review
 may still be requested.
 
-The intended settings are: PR-only changes to `develop` and `main`, conversation
+If approved, the intended settings would be: PR-only changes to `develop` and `main`, conversation
 resolution and up-to-date checks required, no force pushes or branch deletion,
 linear history off, and an empty bypass list. `develop` requires the stable `ci`
 context; `main` requires both `ci` and `release-gate`. Task PRs are squash-merged.

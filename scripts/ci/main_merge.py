@@ -257,9 +257,18 @@ def contract_commands():
             ["cargo", "nextest", "run", *common, "--test-threads", "2"]]
 
 
+VERSION_CHECKS = [
+    ["node", "-e", "const v=process.versions.node;console.log('node',v);"
+                   "if(v!=='22.23.4'){console.error('expected node 22.23.4');process.exit(1)}"],
+    ["node", "-e", "const {execFileSync}=require('node:child_process');"
+                   "const v=execFileSync('npm',['--version'],{encoding:'utf8'}).trim();console.log('npm',v);"
+                   "if(v!=='11.19.0'){console.error('expected npm 11.19.0');process.exit(1)}"],
+]
+
+
 def runtime_commands():
-    """Reproducible install from the committed lockfile, then the owned checks."""
-    return [["npm", "ci", "--no-audit", "--no-fund"],
+    """Pin proof, reproducible install from the committed lockfile, then the owned checks."""
+    return VERSION_CHECKS + [["npm", "ci", "--no-audit", "--no-fund"],
             ["npm", "run", "typecheck", "-w", RUNTIME_PACKAGE],
             ["npm", "test", "-w", RUNTIME_PACKAGE],
             ["npm", "run", "build", "-w", RUNTIME_PACKAGE],
@@ -269,7 +278,7 @@ def runtime_commands():
 
 def contract_ts_commands():
     """The TypeScript side of the shared fixture bundle; no Rust execution here."""
-    return [["npm", "ci", "--no-audit", "--no-fund"],
+    return VERSION_CHECKS + [["npm", "ci", "--no-audit", "--no-fund"],
             ["npm", "run", "typecheck", "-w", RUNTIME_PACKAGE],
             ["npm", "run", "verify:schema", "-w", RUNTIME_PACKAGE]]
 

@@ -118,20 +118,24 @@ class ForkExecution(unittest.TestCase):
         self.assertEqual(run[-2:], ["--test-threads", "2"])
 
     def test_runtime_and_contract_ts_commands_are_real_npm_argv(self):
-        runtime = self.adapter("runtime_commands")
-        contract = self.adapter("contract_ts_commands")
+        runtime = self.adapter("runtime_commands")()
+        contract = self.adapter("contract_ts_commands")()
         package = "@intgral-ai/solidcraft-mastra-runtime"
         expected = ["npm", "ci", "--no-audit", "--no-fund"]
-        self.assertEqual(runtime()[0], expected)
-        self.assertEqual(contract()[0], expected)
-        self.assertEqual(runtime()[1:], [
+        self.assertEqual(runtime[:2], main_merge.VERSION_CHECKS)
+        self.assertEqual(contract[:2], main_merge.VERSION_CHECKS)
+        self.assertIn("22.23.4", runtime[0][2])
+        self.assertIn("11.19.0", runtime[1][2])
+        self.assertEqual(runtime[2], expected)
+        self.assertEqual(runtime[3:], [
             ["npm", "run", "typecheck", "-w", package],
             ["npm", "test", "-w", package],
             ["npm", "run", "build", "-w", package],
             ["npm", "run", "verify:schema", "-w", package],
             ["npm", "run", "check:deps", "-w", package],
         ])
-        self.assertIn(["npm", "run", "verify:schema", "-w", package], contract())
+        self.assertEqual(contract[2], expected)
+        self.assertIn(["npm", "run", "verify:schema", "-w", package], contract)
 
     def test_empty_rust_package_scope_is_an_error_not_workspace_fallback(self):
         build = self.adapter("native_commands")

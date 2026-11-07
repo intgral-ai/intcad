@@ -252,6 +252,8 @@ def validate_commands(commands, job, tests, junit=None):
     require(nextest_configuration(commands[before]["argv"], "list") == nextest_configuration(commands[run]["argv"], "run"),
             "listing/run configuration mismatch (package/filter/profile/partition)")
     status = commands[run]["exitCode"]
+    if job == "contract-rust" and status == 100:
+        raise ValueError("contract test failure: nextest exit 100 (failed tests)")
     require(status in ((0, 100) if job == "rust" else (0,)), f"nextest infrastructure/unapproved exit: {status}")
     require(bool(tests["failedIds"]) == (status == 100), "nextest exit disagrees with raw failure outcomes")
     require(all(c["exitCode"] == 0 for i, c in enumerate(commands) if i != run), "command/list/grader exit is nonzero")

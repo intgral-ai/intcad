@@ -8,7 +8,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [develop, main]
   merge_group:
   push:
@@ -181,7 +181,9 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.plan).jobs.contract-rust.decision == 'run'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Measured 27m16s cold at 41628f6a5 (mostly test-binary compilation); keep
+    # the PR cap at 30 minutes now that the conformance filter is narrowed.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

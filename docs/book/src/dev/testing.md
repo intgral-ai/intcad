@@ -38,7 +38,8 @@ finishes inside 30 minutes. The counted native job tests the directly affected
 packages (with reverse dependents) plus the `xtask` tooling smoke owner, and runs
 one deterministic half of that selection (`--partition count:1/2`). Clippy and
 the wasm compile still cover the complete selected consumer scope, including
-shared lockfile, toolchain, `.github/**` and `scripts/**` inputs. Those inputs
+shared lockfile, toolchain, `.github/workflows/**`, `.github/actions/**` and `scripts/**`
+inputs. Those inputs
 select `xtask` as the bounded smoke owner; `xtask/**` and `packaging/mastra/**`
 changes always select the xtask tests. The excluded tests are **not** reported as
 passing: the nightly/manual `native-baseline.yml` workflow calls this workflow in

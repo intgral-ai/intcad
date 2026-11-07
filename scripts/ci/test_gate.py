@@ -141,6 +141,16 @@ class ExecutionEvidence(unittest.TestCase):
     def test_complete_native_known_failure_set_satisfies_regression_gate(self):
         self.assertEqual(self.evaluate(), [])
 
+    def test_contract_test_failure_is_not_reported_as_infrastructure(self):
+        tests = dict(expectedIds=[FAIL, PASS], passedIds=[PASS], failedIds=[FAIL], skippedIds=[],
+                     knownFailingIds=[])
+        with self.assertRaisesRegex(ValueError, "contract test failure"):
+            self.gate.validate_commands(commands(self.junit, status=100, grader=False), "contract-rust",
+                                        tests, self.junit)
+        with self.assertRaisesRegex(ValueError, "infrastructure"):
+            self.gate.validate_commands(commands(self.junit, status=102, grader=False), "contract-rust",
+                                        tests, self.junit)
+
     def test_zero_expected_tests_is_not_success(self):
         self.receipts["rust"]["tests"] = {key: [] for key in self.receipts["rust"]["tests"]}
         self.rejected("expected")

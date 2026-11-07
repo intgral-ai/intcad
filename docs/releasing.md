@@ -124,10 +124,11 @@ required before activation.
 
 #17 consumes #5's same-checkout `schema/mastra-runtime/v1/manifest.json` and bundle;
 it does not create a competing schema. Verify actual registered Rust contract and
-lifecycle selections before enabling owner filters. #7's later real
-`packages/mastra-runtime/ci.sh` must provide locked install/typecheck/test/build,
-contract and integration modes with the frozen source/contract/report arguments;
-there is no executable stub here.
+lifecycle selections before enabling owner filters. #7's real
+`packages/mastra-runtime/` workspace must provide locked install, typecheck, test,
+build, `verify:schema` and `check:deps` npm scripts; `scripts/ci/main_merge.py`
+invokes those scripts directly from the committed root lockfile. There is no
+`ci.sh` and no executable stub here.
 
 Only #15 implements `cargo xtask runtime-artifact`. Its approved modes are:
 
