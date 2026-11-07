@@ -123,6 +123,7 @@ mod sketch_inspect;
 mod sketch_modify;
 mod sketch_project;
 mod sketch_store;
+mod snapshot;
 mod surface;
 mod surface_analysis;
 mod surface_boundary;
@@ -355,6 +356,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(file::COMMANDS.iter());
     v.extend(print_face::COMMANDS.iter());
     v.extend(metadata::COMMANDS.iter());
+    v.extend(snapshot::COMMANDS.iter());
     v.extend(inspect::COMMANDS.iter());
     v.extend(compare::COMMANDS.iter());
     v.extend(compare_picture::COMMANDS.iter());
