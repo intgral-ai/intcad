@@ -1071,6 +1071,27 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
+/// A workflow backend's two independent facts, shown apart: the runtime process and the selected
+/// AI connection's authentication. A ready runtime never lights the sign-in line.
+#[cfg(not(target_arch = "wasm32"))]
+fn runtime_status(app: &SolveApp, ui: &mut egui::Ui) {
+    if !app.agent_chat.mastra {
+        return;
+    }
+    let t = Tokens::get();
+    if let Some(runtime) = app.agent_chat.runtime {
+        ui.label(RichText::new(runtime.label()).color(t.text_dim).size(t.font_small));
+    }
+    let connection = match app.agent_chat.connection_auth {
+        Some(true) => Some(tr("ui.mastra_connection_ready")),
+        Some(false) => Some(tr("ui.mastra_connection_signed_out")),
+        None => Some(tr("ui.mastra_connection_unknown")),
+    };
+    if let Some(connection) = connection {
+        ui.label(RichText::new(connection).color(t.text_dim).size(t.font_small));
+    }
+}
+
 /// The header's second row: the agent this conversation uses (a compact switcher), the agent's
 /// own mode when it has modes, and the state of its login.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1196,6 +1217,7 @@ fn switcher(app: &mut SolveApp, ui: &mut egui::Ui) {
     if let Some(warning) = settings::model_warning(app) {
         ui.add(egui::Label::new(RichText::new(warning).color(t.warning).size(t.font_small)).wrap());
     }
+    runtime_status(app, ui);
     if let Some(options) = app.agent_chat.config_options.clone() {
         config_selects(app, ui, &options);
     }

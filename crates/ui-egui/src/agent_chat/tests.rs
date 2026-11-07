@@ -13211,3 +13211,505 @@ fn a_picture_only_prompt_and_a_thought_have_no_copy_message_action() {
     assert!(crate::scenario::handle_at("agent_chat:copy:1").is_none(), "a thought has no copy action");
     assert!(h.widget("Copy message").is_none(), "nothing to click");
 }
+// Tests for the Mastra workflow backend: the execution/connection split, the frozen turn
+// binding, the panel paths (queue, Send now, Stop, New chat), the two readiness states, and the
+// same prompt normalization the other backends see.
+
+#[cfg(not(target_arch = "wasm32"))]
+mod mastra_backend_tests {
+    use crate::agent_chat::backend::ChatBackend;
+    use crate::agent_chat::context::{self, Context, Entry, Kind as ContextKind};
+    use crate::agent_chat::host_ai;
+    use crate::agent_chat::mastra_backend::{self, FrozenBinding, MastraBackend, MastraConfig, PortNotice, test_support};
+    use crate::agent_chat::mastra_protocol::*;
+    use crate::agent_chat::runtime_client;
+    use crate::agent_chat::runtime_client::{ClientNotice, IdSource};
+    use crate::agent_chat::{self, Item, RuntimeStatus, State, agents, poll, send, send_now};
+    use crate::{ControlRequest, SolveApp};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    struct SeqIds(AtomicU64);
+    impl SeqIds {
+        fn new() -> Self {
+            Self(AtomicU64::new(0))
+        }
+    }
+    impl IdSource for SeqIds {
+        fn next_id(&self) -> Result<Id, WireError> {
+            Id::parse(&format!("id{}", self.0.fetch_add(1, Ordering::Relaxed) + 1)).or_else(|_| Ok(Id::literal("id")))
+        }
+    }
+
+    fn ids() -> Arc<dyn IdSource> {
+        Arc::new(SeqIds::new())
+    }
+
+    fn document() -> DocumentStamp {
+        DocumentStamp { document_id: Id::literal("doc-main"), revision: Revision::from_u64(7) }
+    }
+
+    fn config(auth: Arc<Mutex<Option<bool>>>) -> MastraConfig {
+        MastraConfig {
+            connection_id: "api-1".into(),
+            model: "m1".into(),
+            workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
+            bridge: None,
+            instructions: String::new(),
+            connection_auth: auth,
+            wake: Arc::new(|| {}),
+        }
+    }
+
+    fn backend() -> (MastraBackend, Arc<Mutex<test_support::Log>>, Arc<Mutex<Option<bool>>>) {
+        let log = Arc::new(Mutex::new(test_support::Log::default()));
+        let auth = Arc::new(Mutex::new(None));
+        let backend = MastraBackend::with_port(config(Arc::clone(&auth)), Box::new(test_support::TestPort::new(Arc::clone(&log))), ids());
+        (backend, log, auth)
+    }
+
+    fn inject_runtime_ready(log: &Arc<Mutex<test_support::Log>>) {
+        log.lock().unwrap().inject_client(ClientNotice::RuntimeReady(test_support::runtime_info("1.2.3")));
+    }
+
+    fn finish_session(log: &Arc<Mutex<test_support::Log>>, reset: bool) {
+        let (request_id, session) = {
+            let log = log.lock().unwrap();
+            let record = log.requests.last().expect("a session request");
+            let session = match &record.scope {
+                Scope::Session(session) => session.clone(),
+                _ => Id::literal("s"),
+            };
+            (record.id.clone(), session)
+        };
+        let (reply, scope) = if reset {
+            (RuntimeReply::SessionReset(SessionResetResult { state: ReadyState::Ready, session_id: session.clone() }), Scope::Session(session))
+        } else {
+            (
+                RuntimeReply::SessionStart(SessionStartResult { state: ReadyState::Ready, workflow_id: Id::literal("modeling") }),
+                Scope::Session(session),
+            )
+        };
+        log.lock().unwrap().inject_client(ClientNotice::RequestFinished { request_id, scope, result: Ok(reply) });
+    }
+
+    fn finish_turn(log: &Arc<Mutex<test_support::Log>>, state: TurnTerminal) {
+        let scope = {
+            let log = log.lock().unwrap();
+            log.requests
+                .iter()
+                .rev()
+                .find_map(|r| match &r.scope {
+                    Scope::Turn(scope) => Some(scope.clone()),
+                    _ => None,
+                })
+                .expect("a turn request")
+        };
+        let finished = TurnFinished {
+            state,
+            reason: String::new(),
+            document: document(),
+            changes: Changes::None,
+            validation_run_id: RequiredNullable(None),
+            report: RequiredNullable(None),
+        };
+        log.lock().unwrap().inject_client(ClientNotice::Event { scope: Scope::Turn(scope), event: RuntimeEvent::TurnFinished(finished) });
+    }
+
+    fn app() -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<Mutex<Option<bool>>>) {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        app.preferences.agents = vec![agents::AgentConfig {
+            id: "api-1".into(),
+            name: "Fixture".into(),
+            kind: agents::Kind::Api,
+            base_url: "http://localhost:18080/v1".into(),
+            model: "m1".into(),
+            ..Default::default()
+        }];
+        app.preferences.agent_default = "api-1".into();
+        let (backend, log, auth) = backend();
+        let ctx = egui::Context::default();
+        app.agent_chat.backend = Some(Box::new(backend));
+        app.agent_chat.running_id = "api-1".into();
+        app.agent_chat.mastra = true;
+        app.agent_chat.runtime = Some(RuntimeStatus::Starting);
+        app.agent_chat.state = Some(State::Starting);
+        inject_runtime_ready(&log);
+        poll(&mut app, &ctx);
+        finish_session(&log, false);
+        poll(&mut app, &ctx);
+        assert_eq!(app.agent_chat.state(), State::Ready, "the runtime session must be ready for this helper");
+        (app, ctx, log, auth)
+    }
+
+    fn settle(app: &mut SolveApp, ctx: &egui::Context, done: impl Fn(&SolveApp) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done(app) {
+            assert!(Instant::now() < deadline, "the backend did not settle");
+            poll(app, ctx);
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn mastra_execution_choice_is_opt_in_and_resets_with_the_assistant_page() {
+        // Preferences written before this field existed keep the direct behaviour.
+        let old: crate::prefs::Prefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.chat_execution, agents::Execution::Direct);
+        assert!(old.mastra_workflow_id.is_empty() && old.mastra_runtime_command.is_empty());
+
+        let prefs = crate::prefs::Prefs {
+            chat_execution: agents::Execution::Mastra,
+            mastra_workflow_id: "modeling".into(),
+            mastra_runtime_command: "/opt/mastra-runtime".into(),
+            ..Default::default()
+        };
+        let back: crate::prefs::Prefs = serde_json::from_value(serde_json::to_value(&prefs).unwrap()).unwrap();
+        assert_eq!(back.chat_execution, agents::Execution::Mastra);
+        assert_eq!(back.mastra_workflow_id, "modeling");
+        assert_eq!(agents::Execution::parse("mastra"), Some(agents::Execution::Mastra));
+        assert_eq!(agents::Execution::parse("direct"), Some(agents::Execution::Direct));
+
+        // Restore Defaults on the Assistant page puts the direct choice and its knobs back.
+        for field in ["chat_execution", "mastra_workflow_id", "mastra_runtime_command"] {
+            assert!(crate::prefs::FIELD_PAGES.contains(&(field, Some(crate::prefs::PAGE_ASSISTANT))), "{field} must reset with the Assistant page");
+        }
+        let mut reset = prefs.clone();
+        crate::prefs::reset_preferences_for_test(&mut reset, crate::prefs::PAGE_ASSISTANT);
+        assert_eq!(reset.chat_execution, agents::Execution::Direct);
+        assert!(reset.mastra_workflow_id.is_empty() && reset.mastra_runtime_command.is_empty());
+    }
+
+    #[test]
+    fn mastra_prompt_parts_use_the_same_selection_context_as_the_direct_backends() {
+        let (mut app, ctx, log, _) = app();
+        let picked = Context { items: vec![Entry { kind: ContextKind::Body, label: "Body 1".into(), detail: String::new() }], omitted: 0 };
+        let expected = context::with_context("make a plate", &picked);
+        app.agent_chat.picked_context = picked;
+        let native = app.session.document_stamp();
+        let stamp = document_stamp_from_native(&native.document_id, native.revision).unwrap();
+        send(&mut app, &ctx, "make a plate".into());
+
+        let turn = log.lock().unwrap().turn_start().cloned().expect("a turn.start");
+        assert_eq!(turn.parts.len(), 1, "the same text part the other backends receive");
+        let ContentBlock::Text { text } = &turn.parts[0] else { panic!("the prompt is text") };
+        assert_eq!(text, &expected);
+        assert!(text.contains("Body 1"), "the selection travelled in the normalized text");
+        assert_eq!(turn.binding.connection_id.as_str(), "api-1");
+        assert_eq!(turn.binding.model_id, "m1");
+        assert_eq!(turn.binding.document, stamp);
+    }
+
+    #[test]
+    fn mastra_turn_binding_is_frozen_while_the_pickers_move() {
+        let (mut backend, log, _) = backend();
+        inject_runtime_ready(&log);
+        let _ = backend.poll();
+        finish_session(&log, false);
+        let _ = backend.poll();
+        assert!(backend.runtime_ready());
+
+        backend.set_document("doc-main", 7);
+        backend.set_model("m1");
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("first".into())]);
+        let first: FrozenBinding = backend.active_binding().expect("a frozen turn");
+        assert_eq!((first.connection_id.as_str(), first.model_id.as_str()), ("api-1", "m1"));
+        let first_session = first.session_id.clone();
+        let first_turn = first.turn_id.clone();
+        assert!(!first.workflow_id.is_empty() && !first.workflow_run_id.is_empty());
+
+        // The model and connection pickers move while the turn runs.
+        backend.set_model("m2");
+        backend.set_connection("api-2");
+        assert_eq!(backend.next_binding().unwrap().model_id, "m2");
+        assert_eq!(backend.active_binding().unwrap(), first, "an active turn keeps its binding");
+
+        finish_turn(&log, TurnTerminal::ValidatedSuccess);
+        let events = backend.poll();
+        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { reason } if reason.is_empty())));
+        assert!(backend.active_binding().is_none());
+
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("second".into())]);
+        let second = backend.active_binding().expect("the next turn");
+        assert_eq!((second.connection_id.as_str(), second.model_id.as_str()), ("api-2", "m2"), "the next turn uses the new pickers");
+        assert_eq!(second.session_id, first_session, "the session stayed");
+        assert_ne!(second.turn_id, first_turn, "a new turn has a new identity");
+    }
+
+    #[test]
+    fn mastra_runtime_ready_is_not_connection_authentication() {
+        let (mut app, ctx, _log, auth) = app();
+        assert_eq!(app.agent_chat.runtime, Some(RuntimeStatus::Ready));
+        assert_eq!(app.agent_chat.runtime_version.as_deref(), Some("1.2.3"));
+        assert_eq!(app.agent_chat.connection_auth, None, "runtime readiness authenticates no connection");
+        assert!(!app.agent_chat.login_results.contains_key("api-1"));
+
+        // The connection's own report arrives separately, and is distinct from runtime readiness.
+        *auth.lock().unwrap() = Some(false);
+        poll(&mut app, &ctx);
+        assert_eq!(app.agent_chat.runtime, Some(RuntimeStatus::Ready), "the runtime is still ready");
+        assert_eq!(app.agent_chat.connection_auth, Some(false));
+        assert_eq!(app.agent_chat.login_results.get("api-1"), Some(&false));
+        assert_eq!(agent_chat::assistant_mark(&app), agent_chat::AssistantMark::NeedsAuth, "the ready runtime does not hide a signed-out connection");
+
+        *auth.lock().unwrap() = Some(true);
+        poll(&mut app, &ctx);
+        assert_eq!(app.agent_chat.connection_auth, Some(true));
+        assert_eq!(app.agent_chat.login_results.get("api-1"), Some(&true));
+    }
+
+    #[test]
+    fn mastra_queue_send_now_stop_and_new_chat_keep_their_semantics() {
+        let (mut app, ctx, log, _) = app();
+
+        // Queue behind the running turn.
+        send(&mut app, &ctx, "first".into());
+        assert_eq!(app.agent_chat.state(), State::Busy);
+        send(&mut app, &ctx, "second".into());
+        assert_eq!(app.agent_chat.pending.len(), 1);
+
+        // Send now: cancel the running turn, then send the queue with the interruption note.
+        send_now(&mut app, &ctx);
+        settle(&mut app, &ctx, |app| app.agent_chat.state() == State::Busy && app.agent_chat.pending.is_empty());
+        {
+            let log = log.lock().unwrap();
+            assert_eq!(log.cancellations.len(), 1, "Send now stops the running turn first");
+            let turns: Vec<&TurnStartParams> = log
+                .requests
+                .iter()
+                .filter_map(|r| match &r.request {
+                    HostRequest::TurnStart(params) => Some(params.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(turns.len(), 2, "the queued message became the next turn");
+            let ContentBlock::Text { text } = &turns[1].parts[0] else { panic!("text") };
+            assert!(text.contains("second") && text.contains(agent_chat::INTERRUPT_NOTE), "{text}");
+        }
+
+        // Stop leaves the queue waiting for Send.
+        send(&mut app, &ctx, "third".into());
+        assert_eq!(app.agent_chat.pending.len(), 1);
+        agent_chat::cancel(&mut app);
+        settle(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
+        assert_eq!(app.agent_chat.pending.len(), 1, "Stop does not send the queue");
+        assert_eq!(log.lock().unwrap().cancellations.len(), 2);
+
+        // New chat clears the queue and starts a fresh runtime session, not a restart.
+        agent_chat::new_chat(&mut app);
+        assert!(app.agent_chat.items.is_empty() && app.agent_chat.pending.is_empty());
+        assert_eq!(app.agent_chat.state(), State::Starting);
+        let reset = {
+            let log = log.lock().unwrap();
+            log.requests
+                .iter()
+                .rev()
+                .find_map(|r| match &r.request {
+                    HostRequest::SessionReset(params) => Some(params.clone()),
+                    _ => None,
+                })
+                .expect("New chat resets the runtime session")
+        };
+        finish_session(&log, true);
+        settle(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
+        assert_ne!(reset.next_session_id.as_str(), "s");
+    }
+
+    #[test]
+    fn mastra_stopped_turn_writes_are_refused_but_completed_changes_undo_together() {
+        let (mut app, ctx, log, _) = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.agent_chat.tools_tx = Some(tx.clone());
+        app.agent_chat.tools_rx = Some(rx);
+        let before = app.session.doc.clone();
+        let undo = app.session.undo.len();
+
+        send(&mut app, &ctx, "add a width".into());
+        let (request, reply) =
+            ControlRequest::new("engine.execute", json!({"command": "parameters.add", "params": {"name": "w", "expression": "10 mm"}}));
+        tx.send(request).unwrap();
+        super::frame(&mut app);
+        assert_eq!(reply.recv_timeout(Duration::from_secs(30)).unwrap()["ok"], true, "the running turn may change the design");
+        assert_eq!(app.session.doc.param("w").unwrap().expr, "10 mm");
+
+        // The turn's completed changes become one undo step, as with the other backends.
+        finish_turn(&log, TurnTerminal::ValidatedSuccess);
+        settle(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
+        let changes = app.agent_chat.items.iter().rposition(|i| matches!(i, Item::Changes { .. })).expect("one undo entry");
+        assert_eq!(app.session.undo.len(), undo + 1);
+        agent_chat::undo_changes(&mut app, changes);
+        assert!(Arc::ptr_eq(&app.session.doc, &before), "the completed changes undo");
+
+        // A deferred write from that stopped turn is refused before it can touch the document.
+        send(&mut app, &ctx, "change it again".into());
+        let active = app.agent_chat.turn.as_ref().expect("a turn").active.clone();
+        let stamp = app.session.document_stamp();
+        agent_chat::cancel(&mut app);
+        settle(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
+        assert!(!active.load(std::sync::atomic::Ordering::Relaxed));
+        let doc = Arc::clone(&app.session.doc);
+        let revision = app.session.document_stamp();
+        let (mut deferred, _reply) = ControlRequest::new(
+            "engine.execute",
+            json!({
+                "command": "parameters.change",
+                "params": {"name": "w", "expression": "20 mm"},
+                "expectedDocument": {"documentId": stamp.document_id, "revision": stamp.revision.to_string()}
+            }),
+        );
+        deferred.chat_turn = Some(active);
+        assert!(crate::execution_guard::admit(&mut app, &mut deferred).is_err(), "a stopped turn's deferred write is refused");
+        assert!(Arc::ptr_eq(&app.session.doc, &doc), "the refused write changed nothing");
+        assert_eq!(app.session.document_stamp(), revision);
+    }
+
+    #[test]
+    fn mastra_agent_progress_uses_the_existing_text_tool_and_plan_presentation() {
+        let (mut backend, log, _) = backend();
+        inject_runtime_ready(&log);
+        let _ = backend.poll();
+        finish_session(&log, false);
+        let _ = backend.poll();
+        backend.set_document("doc-main", 7);
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("progress".into())]);
+        for content in [
+            AgentProgressContent::Text(ProgressText { text: "thinking".into() }),
+            AgentProgressContent::Tool(ToolProgress { call_id: Id::literal("call1"), title: "measure".into(), state: StageState::Completed }),
+            AgentProgressContent::Plan(WorkflowPlan {
+                steps: vec![PlanStep { id: Id::literal("one"), title: "Measure".into(), state: StepState::Completed }],
+            }),
+        ] {
+            log.lock().unwrap().inject(PortNotice::Progress(AgentProgress { agent_session_id: Id::literal("agent"), content }));
+        }
+        let events = backend.poll();
+        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Text { thought: false, text } if text == "thinking")));
+        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Tool { id, .. } if id == "call1")));
+        assert!(
+            events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Plan(steps) if steps.iter().any(|(title, _)| title == "Measure")))
+        );
+    }
+
+    #[test]
+    fn mastra_peer_events_arrive_on_the_existing_presentation() {
+        use super::mastra_worker_support::*;
+        let program = super::mastra_peer_program().unwrap();
+        let limits = Limits::default();
+        let document = DocumentStamp { document_id: Id::literal("doc-peer"), revision: Revision::from_u64(9) };
+        let mut config = config(Arc::new(Mutex::new(None)));
+        config.workflow_id = "w".into();
+        let session: Id = id("id3");
+        let turn: Id = id("id5");
+        let workflow_run: Id = id("id6");
+        let profile = ProfileRef {
+            profile_id: Id::literal(mastra_backend::NATIVE_PROFILE),
+            version: "1.0".into(),
+            digest: Digest::parse(mastra_backend::EMPTY_DIGEST).unwrap(),
+        };
+        let session_scope = Scope::Session(session.clone());
+        let turn_scope = Scope::Turn(TurnScope { session_id: session.clone(), turn_id: turn.clone(), workflow_run_id: workflow_run.clone() });
+
+        let session_params = SessionStartParams { workflow_id: Id::literal("w"), instructions: String::new(), bridge: RequiredNullable(None) };
+        let turn_params = TurnStartParams {
+            binding: TurnBinding {
+                workflow_id: Id::literal("w"),
+                connection_id: Id::literal("api-1"),
+                model_id: "m1".into(),
+                document: document.clone(),
+                profile,
+            },
+            parts: vec![ContentBlock::Text { text: "peer prompt".into() }],
+            context: TurnContext { selection: Vec::new(), requirements: RequiredNullable(None) },
+            budgets: Budgets::default(),
+        };
+        let finished = TurnFinished {
+            state: TurnTerminal::ValidatedSuccess,
+            reason: String::new(),
+            document,
+            changes: Changes::None,
+            validation_run_id: RequiredNullable(None),
+            report: RequiredNullable(None),
+        };
+        let script = bootstrap(&limits)
+            + &step("EXPECT_HEX", request("session.start", "h:id4", session_scope.clone(), serde_json::to_value(&session_params).unwrap()))
+            + &step(
+                "WRITE_HEX",
+                response(
+                    "h:id4",
+                    session_scope,
+                    serde_json::to_value(SessionStartResult { state: ReadyState::Ready, workflow_id: Id::literal("w") }).unwrap(),
+                ),
+            )
+            + &step("EXPECT_HEX", request("turn.start", "h:id7", turn_scope.clone(), serde_json::to_value(&turn_params).unwrap()))
+            + &step("WRITE_HEX", response("h:id7", turn_scope.clone(), json!({"state": "accepted"})))
+            + &step(
+                "WRITE_HEX",
+                event(
+                    2,
+                    "workflow.stage",
+                    Some("h:id7"),
+                    turn_scope.clone(),
+                    json!({"stageId":"plan","title":"Plan the change","state":"completed"}),
+                ),
+            )
+            + &step("WRITE_HEX", event(3, "workflow.text", Some("h:id7"), turn_scope.clone(), json!({"text":"working","channel":"answer"})))
+            + &step(
+                "WRITE_HEX",
+                event(4, "workflow.plan", Some("h:id7"), turn_scope.clone(), json!({"steps":[{"id":"one","title":"Measure","state":"completed"}]})),
+            )
+            + &step(
+                "WRITE_HEX",
+                event(
+                    5,
+                    "workflow.tool",
+                    Some("h:id7"),
+                    turn_scope.clone(),
+                    json!({"callId":"call1","name":"measure","state":"completed","output":null}),
+                ),
+            )
+            + &step("WRITE_HEX", event(6, "turn.finished", Some("h:id7"), turn_scope, serde_json::to_value(&finished).unwrap()));
+
+        let admission = Arc::new(runtime_client::RuntimeAdmission::new(8).unwrap());
+        program.track_runtime(Arc::clone(&admission));
+        let host_shared = Arc::new(host_ai::AiShared::default());
+        let host = Arc::new(host_ai::HostAi::new(host_ai::HostAiDependencies {
+            shared: host_shared,
+            http: Arc::new(|_| Err("the peer test makes no HTTP call".into())),
+            secrets: None,
+            artifacts: Arc::new(|_, _| panic!("the peer test reads no artifact")),
+            clock: Arc::new(|| Duration::ZERO),
+            ids: Arc::new(|| Ok("00000000000000000000000000000001".into())),
+        }));
+        let launch = runtime_client::RuntimeLaunch {
+            executable: program.executable.clone(),
+            args: vec![std::ffi::OsString::from(program.directory.join("backend-peer"))],
+            cwd: program.directory.clone(),
+            host_version: "1".into(),
+            limits,
+        };
+        std::fs::write(program.directory.join("backend-peer"), script).unwrap();
+        let mut backend = MastraBackend::start(config, launch, host, ids(), admission).unwrap();
+
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !seen.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Ready { .. })) {
+            assert!(Instant::now() < deadline, "the deterministic peer never got ready: {seen:?}");
+            seen.extend(backend.poll());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        backend.set_document("doc-peer", 9);
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("peer prompt".into())]);
+        while !seen.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { .. })) {
+            assert!(Instant::now() < deadline, "the deterministic peer never finished the turn: {seen:?}");
+            seen.extend(backend.poll());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(seen.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Text { text, .. } if text == "working")));
+        assert!(
+            seen.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Plan(steps) if steps.iter().any(|(title, _)| title == "Measure")))
+        );
+        assert!(seen.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Tool { id, .. } if id == "call1")));
+        backend.shutdown(true);
+    }
+}

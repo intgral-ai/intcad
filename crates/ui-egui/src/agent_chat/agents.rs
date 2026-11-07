@@ -75,6 +75,41 @@ impl Kind {
     }
 }
 
+/// How a chat turn executes. This is separate from the AI connection it uses: the connection and
+/// model stay the same, and only the thing that answers the message changes. The direct choice is
+/// the default, so preferences written before this choice existed keep their behaviour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Execution {
+    /// Talk to the selected AI connection (or ACP agent) directly, as before.
+    #[default]
+    Direct,
+    /// Hand the turn to a Mastra workflow running in the standalone runtime; the workflow uses
+    /// the same selected AI connection for its model calls.
+    Mastra,
+}
+
+impl Execution {
+    pub const ALL: [Execution; 2] = [Execution::Direct, Execution::Mastra];
+
+    /// The id written in preferences.
+    pub fn id(self) -> &'static str {
+        match self {
+            Execution::Direct => "direct",
+            Execution::Mastra => "mastra",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Execution> {
+        Execution::ALL.into_iter().find(|e| e.id() == s)
+    }
+    pub fn label(self) -> &'static str {
+        crate::i18n::tr(match self {
+            Execution::Direct => "ui.mastra_execution_direct",
+            Execution::Mastra => "ui.mastra_execution_workflow",
+        })
+    }
+}
+
 /// The wire protocol of an endpoint the user added.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Protocol {

@@ -1,0 +1,1152 @@
+//! The Mastra workflow backend: one [`ChatBackend`] that hands a turn to the standalone Mastra
+//! runtime over the versioned local protocol (`super::mastra_protocol`), while the model calls
+//! stay with the AI connection the user already has (`HostAi`). The runtime understands the
+//! workflow; the host owns the document, the chat's MCP bridge, permissions, cancellation and
+//! undo.
+//!
+//! Everything slow (process start, IPC, host model calls) happens on the runtime client's worker
+//! or a spawned host-call thread. [`MastraBackend::poll`] only drains already-decoded notices, so
+//! no egui frame waits on the runtime.
+//!
+//! The turn binding is frozen when [`ChatBackend::prompt`] is called: workflow, connection,
+//! model, session and turn ids are copied then. Picker changes reach the next turn only.
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use super::acp::McpBridge;
+use super::backend::{ChatBackend, Event, PromptPart, ToolStatus};
+use super::host_ai::{
+    self, AiError, AiErrorCode, AiErrorDetails, AiLimits, CallContext, CallScope, ContinuationId, Delivery, FinishReason, GenerateOptions,
+    GenerateRequest, HostAi, MessageRole, ModelCallBudget, ModelMessage, SessionKey, TurnControl,
+};
+use super::mastra_protocol::*;
+use super::runtime_client::{
+    CallbackCall, ClientError, ClientNotice, CloseReason, HostDispatch, IdSource, ReplyPort, RuntimeAdmission, RuntimeClient, RuntimeLaunch,
+    RuntimeSender, RuntimeServices, ScopeLifecycle, TransportCause,
+};
+
+/// The runtime protocol's own default workflow when the preference names none.
+pub(crate) const DEFAULT_WORKFLOW: &str = "modeling";
+/// The fixed validation profile reference used until #11/#12 provide candidate profiles.
+pub(crate) const NATIVE_PROFILE: &str = "solidcraft-native";
+/// SHA-256 of the empty input, a stable placeholder digest for that profile reference.
+pub(crate) const EMPTY_DIGEST: &str = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+/// Most tool output text kept for the conversation card.
+const MAX_TOOL_OUTPUT: usize = 64 << 10;
+/// How long a session or turn call may take before the runtime machine expires it.
+const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+const TURN_TIMEOUT: Duration = Duration::from_secs(1200);
+/// How long quitting waits for the runtime transport to close.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
+/// The model calls one workflow turn may make through this host.
+const MODEL_CALLS_PER_TURN: u32 = 20;
+
+/// What a Mastra backend is told before it starts. The execution choice is already made; this is
+/// only the connection, workflow and launch identity it uses.
+pub struct MastraConfig {
+    /// The existing AI connection (`AgentConfig.id`) the workflow's model calls use.
+    pub connection_id: String,
+    /// The model selected for that connection when the backend started.
+    pub model: String,
+    /// The workflow to ask the runtime to run.
+    pub workflow_id: String,
+    /// The chat's existing MCP bridge, if the window could open one.
+    pub bridge: Option<McpBridge>,
+    /// Chat instructions copied into every new session.
+    pub instructions: String,
+    /// Set on the host worker when a `connection.describe` call answers; polled by the panel as
+    /// [`Event::ConnectionAuth`], never as runtime readiness.
+    pub connection_auth: Arc<Mutex<Option<bool>>>,
+    /// Wakes the window when a runtime notice arrives.
+    pub wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+/// A frozen turn identity: created at [`ChatBackend::prompt`] and never changed by a later picker
+/// or preference edit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrozenBinding {
+    pub workflow_id: String,
+    pub connection_id: String,
+    pub model_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub workflow_run_id: String,
+}
+
+struct ActiveTurn {
+    binding: FrozenBinding,
+    scope: TurnScope,
+}
+
+/// A decoded notice for the backend; tests can inject host-origin progress the same way the live
+/// port delivers runtime notices.
+pub(crate) enum PortNotice {
+    Client(Box<ClientNotice>),
+    #[cfg(test)]
+    Progress(AgentProgress),
+}
+
+impl PortNotice {
+    fn client(notice: ClientNotice) -> Self {
+        Self::Client(Box::new(notice))
+    }
+}
+
+/// The narrow runtime seam: one implementation drives the real client, a deterministic one in
+/// tests records the exact protocol values that would have gone on the wire.
+pub(crate) trait Port: Send {
+    fn request(&mut self, scope: Scope, request: HostRequest, timeout: Duration) -> Result<RequestId, ClientError>;
+    fn cancel_turn(&mut self, scope: &TurnScope, reason: CancelReason) -> Result<(), ClientError>;
+    fn shutdown(&mut self) -> Result<(), ClientError>;
+    fn drain(&mut self) -> Vec<PortNotice>;
+    fn wait_stopped(&mut self, _timeout: Duration) {}
+}
+
+/// The live port over [`RuntimeClient`]. All calls are bounded nonblocking admissions; none waits
+/// for I/O.
+struct LivePort {
+    client: RuntimeClient,
+    sender: RuntimeSender,
+}
+
+impl Port for LivePort {
+    fn request(&mut self, scope: Scope, request: HostRequest, timeout: Duration) -> Result<RequestId, ClientError> {
+        let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
+        let prepared = self.sender.prepare_request(scope, request, deadline)?;
+        self.sender.try_submit(prepared)
+    }
+
+    fn cancel_turn(&mut self, scope: &TurnScope, reason: CancelReason) -> Result<(), ClientError> {
+        self.sender.cancel_turn(scope, reason)?;
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<(), ClientError> {
+        self.sender.shutdown(ShutdownReason::AppExit)?;
+        Ok(())
+    }
+
+    fn drain(&mut self) -> Vec<PortNotice> {
+        self.client.drain(64, 1 << 20).into_iter().map(PortNotice::client).collect()
+    }
+
+    fn wait_stopped(&mut self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let notices = self.client.drain(64, 1 << 20);
+            if notices.iter().any(|n| matches!(n, ClientNotice::TransportClosed { .. })) {
+                return;
+            }
+            if !notices.is_empty() {
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// The backend. Construct with [`MastraBackend::start`]; it starts the runtime off the window
+/// thread and reports readiness through [`Event::RuntimeReady`].
+pub struct MastraBackend {
+    port: Box<dyn Port>,
+    ids: Arc<dyn IdSource>,
+    config: MastraConfig,
+    host: Option<Arc<HostAi>>,
+    runtime_instance: Option<Arc<Mutex<Option<String>>>>,
+    model_budget: Option<Arc<AtomicU32>>,
+    next_model: String,
+    next_connection: String,
+    runtime_ready: bool,
+    runtime_version: String,
+    session: Option<Id>,
+    session_ready: bool,
+    awaiting_session: Option<RequestId>,
+    reset_target: Option<Id>,
+    active: Option<ActiveTurn>,
+    stages: Vec<(String, String, String)>,
+    plan_set: bool,
+    document: Option<DocumentStamp>,
+    events: VecDeque<Event>,
+    auth_reported: Option<bool>,
+    stopped: bool,
+    models_sent: bool,
+}
+
+impl MastraBackend {
+    /// Start the runtime and its bounded client. Returns an error text suitable for the panel
+    /// when the process cannot start at all; protocol failures arrive as events later.
+    pub fn start(
+        config: MastraConfig,
+        launch: RuntimeLaunch,
+        host: Arc<HostAi>,
+        ids: Arc<dyn IdSource>,
+        admission: Arc<RuntimeAdmission>,
+    ) -> Result<Self, String> {
+        let wake = Arc::clone(&config.wake);
+        let runtime_instance = Arc::new(Mutex::new(None::<String>));
+        let model_budget = Arc::new(AtomicU32::new(MODEL_CALLS_PER_TURN));
+        let runtime = RuntimeClient::start(
+            launch,
+            runtime_services(
+                Arc::clone(&host),
+                ids.clone(),
+                admission,
+                Arc::clone(&config.connection_auth),
+                Arc::clone(&runtime_instance),
+                Arc::clone(&model_budget),
+            ),
+            Arc::new(move || wake()),
+        )
+        .map_err(|error| crate::i18n::format("ui.mastra_runtime_failed", &[("error", &format!("{:?}", error.code))]))?;
+        let sender = runtime.sender();
+        let connection = config.connection_id.clone();
+        let model = config.model.clone();
+        let auth = Arc::clone(&config.connection_auth);
+        let mut backend = Self::with_port(config, Box::new(LivePort { client: runtime, sender }), ids);
+        backend.host = Some(host);
+        backend.runtime_instance = Some(runtime_instance);
+        backend.model_budget = Some(model_budget);
+        backend.events.push_back(Event::Documents(false));
+        backend.events.push_back(Event::ToolsAvailable(backend.config.bridge.is_some()));
+        // The connection's sign-in state is checked once, off the window thread, and kept apart
+        // from runtime readiness. A failure leaves it unknown rather than guessing.
+        let probe = backend.host.as_ref().map(Arc::clone);
+        let _ = std::thread::Builder::new().name("mastra-connection-probe".into()).spawn(move || {
+            let Some(host) = probe else { return };
+            let Ok(binding) = host.bind(&connection, &model) else { return };
+            let Ok(description) = host.describe(&binding) else { return };
+            if let Ok(mut reported) = auth.lock() {
+                *reported = Some(description.state == super::host_ai::ConnectionState::Available);
+            }
+        });
+        Ok(backend)
+    }
+
+    pub(crate) fn with_port(config: MastraConfig, port: Box<dyn Port>, ids: Arc<dyn IdSource>) -> Self {
+        let next_model = config.model.clone();
+        let next_connection = config.connection_id.clone();
+        Self {
+            port,
+            ids,
+            config,
+            host: None,
+            runtime_instance: None,
+            model_budget: None,
+            next_model,
+            next_connection,
+            runtime_ready: false,
+            runtime_version: String::new(),
+            session: None,
+            session_ready: false,
+            awaiting_session: None,
+            reset_target: None,
+            active: None,
+            stages: Vec::new(),
+            plan_set: false,
+            document: None,
+            events: VecDeque::new(),
+            auth_reported: None,
+            stopped: false,
+            models_sent: false,
+        }
+    }
+
+    /// The binding of the turn in progress, for tests and a future status line.
+    #[cfg(test)]
+    pub fn active_binding(&self) -> Option<FrozenBinding> {
+        self.active.as_ref().map(|turn| turn.binding.clone())
+    }
+
+    /// The binding the next prompt would use.
+    #[cfg(test)]
+    pub fn next_binding(&self) -> Option<FrozenBinding> {
+        Some(FrozenBinding {
+            workflow_id: self.config.workflow_id.clone(),
+            connection_id: self.next_connection.clone(),
+            model_id: self.next_model.clone(),
+            session_id: self.session.as_ref()?.to_string(),
+            turn_id: String::new(),
+            workflow_run_id: String::new(),
+        })
+    }
+
+    /// Change the connection used by the next turn. A turn already accepted keeps its binding.
+    #[cfg(test)]
+    pub(crate) fn set_connection(&mut self, connection_id: &str) {
+        self.next_connection = connection_id.to_owned();
+    }
+
+    /// Whether the runtime transport is ready (not whether its AI connection is authenticated).
+    #[cfg(test)]
+    pub fn runtime_ready(&self) -> bool {
+        self.runtime_ready && !self.stopped
+    }
+
+    fn push(&mut self, event: Event) {
+        self.events.push_back(event);
+    }
+
+    fn start_session(&mut self) {
+        if !self.runtime_ready || self.awaiting_session.is_some() {
+            return;
+        }
+        let Ok(session) = self.ids.next_id() else {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            return;
+        };
+        if let Some(host) = self.host.as_ref() {
+            let instance = self.runtime_instance.as_ref().and_then(|id| id.lock().ok().and_then(|id| id.clone())).unwrap_or_default();
+            let key = SessionKey { runtime_instance_id: instance, session_id: session.to_string() };
+            if host.open_session(key, AiLimits::contract_defaults()).is_err() {
+                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                return;
+            }
+        }
+        let bridge = if self.config.bridge.is_some() {
+            let Ok(bridge_id) = self.ids.next_id() else {
+                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                return;
+            };
+            Some(BridgeRef { name: BridgeName::SolidCraftApp, bridge_id })
+        } else {
+            None
+        };
+        let params = SessionStartParams {
+            workflow_id: Id::parse(&self.config.workflow_id).unwrap_or_else(|_| session.clone()),
+            instructions: self.config.instructions.chars().take(4000).collect(),
+            bridge: RequiredNullable(bridge),
+        };
+        match self.port.request(Scope::Session(session.clone()), HostRequest::SessionStart(params), SESSION_TIMEOUT) {
+            Ok(request) => {
+                self.awaiting_session = Some(request);
+                self.reset_target = None;
+                self.session = Some(session);
+                self.session_ready = false;
+            }
+            Err(_) => self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string())),
+        }
+    }
+
+    fn begin_turn(&mut self, parts: &[PromptPart]) {
+        if !self.session_ready || self.stopped {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_start_before_prompt").to_string()));
+            self.push(Event::TurnEnded { reason: "error".into() });
+            return;
+        }
+        if self.active.is_some() {
+            return;
+        }
+        if let Some(budget) = self.model_budget.as_ref() {
+            budget.store(MODEL_CALLS_PER_TURN, Ordering::Release);
+        }
+        let (Some(session), Some(document)) = (self.session.clone(), self.document.clone()) else {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_document_missing").to_string()));
+            self.push(Event::TurnEnded { reason: "error".into() });
+            return;
+        };
+        let (Ok(turn_id), Ok(workflow_run_id), Ok(workflow_id), Ok(connection_id)) =
+            (self.ids.next_id(), self.ids.next_id(), Id::parse(&self.config.workflow_id), Id::parse(&self.next_connection))
+        else {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::TurnEnded { reason: "error".into() });
+            return;
+        };
+        let mut blocks = Vec::with_capacity(parts.len());
+        for part in parts {
+            match part {
+                PromptPart::Text(text) => blocks.push(ContentBlock::Text { text: text.clone() }),
+                // Runtime attachments are host artifact references (#11). Until that store
+                // exists, refusing is honest; dropping one silently would change the prompt.
+                PromptPart::Image { .. } | PromptPart::Document { .. } => {
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_attachments_unsupported").to_string()));
+                    self.push(Event::TurnEnded { reason: "error".into() });
+                    return;
+                }
+            }
+        }
+        let binding = FrozenBinding {
+            workflow_id: workflow_id.to_string(),
+            connection_id: connection_id.to_string(),
+            model_id: self.next_model.clone(),
+            session_id: session.to_string(),
+            turn_id: turn_id.to_string(),
+            workflow_run_id: workflow_run_id.to_string(),
+        };
+        let scope = TurnScope { session_id: session.clone(), turn_id, workflow_run_id };
+        let Ok(profile_id) = Id::parse(NATIVE_PROFILE) else {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::TurnEnded { reason: "error".into() });
+            return;
+        };
+        let Ok(digest) = Digest::parse(EMPTY_DIGEST) else {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::TurnEnded { reason: "error".into() });
+            return;
+        };
+        let params = TurnStartParams {
+            binding: TurnBinding {
+                workflow_id,
+                connection_id,
+                model_id: self.next_model.clone(),
+                document,
+                profile: ProfileRef { profile_id, version: "1.0".into(), digest },
+            },
+            parts: blocks,
+            context: TurnContext { selection: Vec::new(), requirements: RequiredNullable(None) },
+            budgets: Budgets::default(),
+        };
+        match self.port.request(Scope::Turn(scope.clone()), HostRequest::TurnStart(Box::new(params)), TURN_TIMEOUT) {
+            Ok(_) => {
+                self.active = Some(ActiveTurn { binding, scope });
+                self.stages.clear();
+                self.plan_set = false;
+            }
+            Err(_) => {
+                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                self.push(Event::TurnEnded { reason: "error".into() });
+            }
+        }
+    }
+
+    fn end_active(&mut self) -> Option<ActiveTurn> {
+        self.active.take()
+    }
+
+    fn map_runtime_event(&mut self, scope: &Scope, event: RuntimeEvent) {
+        let Some(active) = self.active.as_ref() else { return };
+        if *scope != Scope::Turn(active.scope.clone()) {
+            return;
+        }
+        match event {
+            RuntimeEvent::RuntimeReady(_) => {}
+            RuntimeEvent::WorkflowStage(stage) => {
+                let status = match stage.state {
+                    StageState::Running => "in_progress",
+                    StageState::Completed => "completed",
+                    StageState::Failed => "failed",
+                };
+                let title = stage.title.chars().take(200).collect::<String>();
+                if let Some((_, _, state)) = self.stages.iter_mut().find(|(id, _, _)| id == stage.stage_id.as_str()) {
+                    *state = status.to_string();
+                } else if self.stages.len() < 64 {
+                    self.stages.push((stage.stage_id.to_string(), title, status.to_string()));
+                }
+                // A stage list is shown through the existing plan presentation; an explicit plan
+                // from the workflow, once it arrives, replaces it.
+                if !self.plan_set {
+                    self.push(Event::Plan(self.stages.iter().map(|(_, title, state)| (title.clone(), state.clone())).collect()));
+                }
+            }
+            RuntimeEvent::WorkflowText(text) => {
+                let thought = text.channel == TextChannel::Progress;
+                self.push(Event::Text { thought, text: text.text });
+            }
+            RuntimeEvent::WorkflowPlan(plan) => {
+                self.plan_set = true;
+                let steps = plan
+                    .steps
+                    .into_iter()
+                    .take(64)
+                    .map(|step| {
+                        let status = match step.state {
+                            StepState::Pending => "pending",
+                            StepState::Running => "in_progress",
+                            StepState::Completed => "completed",
+                            StepState::Failed => "failed",
+                        };
+                        (step.title.chars().take(200).collect::<String>(), status.to_string())
+                    })
+                    .collect();
+                self.push(Event::Plan(steps));
+            }
+            RuntimeEvent::WorkflowTool(tool) => {
+                let status = match tool.state {
+                    StageState::Running => Some(ToolStatus::InProgress),
+                    StageState::Completed => Some(ToolStatus::Completed),
+                    StageState::Failed => Some(ToolStatus::Failed),
+                };
+                let output =
+                    tool.output.0.and_then(|value| serde_json::to_string(&value).ok().map(|text| text.chars().take(MAX_TOOL_OUTPUT).collect()));
+                self.push(Event::Tool {
+                    id: tool.call_id.to_string(),
+                    title: Some(tool.name.chars().take(200).collect()),
+                    kind: None,
+                    status,
+                    input: None,
+                    output,
+                });
+            }
+            RuntimeEvent::TurnFinished(finished) => {
+                let Some(turn) = self.end_active() else { return };
+                log::debug!("mastra workflow turn {} ended", turn.binding.workflow_id);
+                let reason = terminal_reason(finished.state);
+                if finished.state == TurnTerminal::ValidatedSuccess && finished.validation_run_id.0.is_none() {
+                    // No validation port exists in this release (#11/#12), so the panel is told
+                    // the turn ended without claiming that a report passed.
+                    self.push(Event::Text { thought: true, text: crate::i18n::tr("ui.mastra_validation_not_available").to_string() });
+                }
+                let _ = turn;
+                self.push(Event::TurnEnded { reason });
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn map_progress(&mut self, progress: AgentProgress) {
+        match progress.content {
+            AgentProgressContent::Text(text) => self.push(Event::Text { thought: false, text: text.text }),
+            AgentProgressContent::Tool(tool) => {
+                let status = match tool.state {
+                    StageState::Running => Some(ToolStatus::InProgress),
+                    StageState::Completed => Some(ToolStatus::Completed),
+                    StageState::Failed => Some(ToolStatus::Failed),
+                };
+                self.push(Event::Tool { id: tool.call_id.to_string(), title: Some(tool.title), kind: None, status, input: None, output: None });
+            }
+            AgentProgressContent::Plan(plan) => {
+                let steps = plan
+                    .steps
+                    .into_iter()
+                    .take(64)
+                    .map(|step| {
+                        let status = match step.state {
+                            StepState::Pending => "pending",
+                            StepState::Running => "in_progress",
+                            StepState::Completed => "completed",
+                            StepState::Failed => "failed",
+                        };
+                        (step.title, status.to_string())
+                    })
+                    .collect();
+                self.push(Event::Plan(steps));
+            }
+            AgentProgressContent::Permission(permission) => {
+                // Approval itself belongs to the ACP task owner (#4). Until then this progress is
+                // shown as a card, never as a button that cannot answer the agent.
+                let status = match permission.state {
+                    PermissionState::Waiting => Some(ToolStatus::InProgress),
+                    PermissionState::Allowed | PermissionState::Denied => Some(ToolStatus::Completed),
+                };
+                self.push(Event::Tool {
+                    id: permission.permission_id.to_string(),
+                    title: Some(permission.title),
+                    kind: Some("permission".into()),
+                    status,
+                    input: None,
+                    output: None,
+                });
+            }
+        }
+    }
+
+    fn on_notice(&mut self, notice: PortNotice) {
+        match notice {
+            #[cfg(test)]
+            PortNotice::Progress(progress) => self.map_progress(progress),
+            PortNotice::Client(notice) => self.on_client_notice(*notice),
+        }
+    }
+
+    fn on_client_notice(&mut self, notice: ClientNotice) {
+        match notice {
+            ClientNotice::RuntimeReady(info) => {
+                self.runtime_ready = true;
+                self.runtime_version = info.runtime_version.clone();
+                if let Some(instance) = self.runtime_instance.as_ref()
+                    && let Ok(mut id) = instance.lock()
+                {
+                    *id = Some(info.runtime_instance_id.to_string());
+                }
+                self.push(Event::RuntimeReady { version: info.runtime_version });
+                self.start_session();
+            }
+            ClientNotice::RequestFinished { request_id, scope, result } => {
+                if self.awaiting_session.as_ref() == Some(&request_id) {
+                    self.awaiting_session = None;
+                    match result {
+                        Ok(_) => {
+                            if let Some(next) = self.reset_target.take() {
+                                self.session = Some(next);
+                            }
+                            self.session_ready = true;
+                            self.emit_ready();
+                        }
+                        Err(error) => {
+                            self.session_ready = false;
+                            self.push(Event::Error(protocol_note(error.code)));
+                        }
+                    }
+                } else if self.active.as_ref().is_some_and(|active| Scope::Turn(active.scope.clone()) == scope) && result.is_err() {
+                    self.end_active();
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::TurnEnded { reason: "error".into() });
+                }
+            }
+            ClientNotice::Event { scope, event } => self.map_runtime_event(&scope, event),
+            ClientNotice::TurnFinishedProposal { scope, proposal } => {
+                if self.active.as_ref().is_some_and(|active| active.scope == scope) {
+                    self.map_runtime_event(&Scope::Turn(scope), RuntimeEvent::TurnFinished(proposal));
+                }
+            }
+            ClientNotice::TurnClosed { scope, cause } => {
+                if self.active.as_ref().is_some_and(|active| active.scope == scope) {
+                    self.end_active();
+                    self.push(Event::TurnEnded { reason: close_reason(cause).into() });
+                }
+            }
+            ClientNotice::TransportClosed { cause, stderr_tail } => {
+                self.runtime_ready = false;
+                self.session_ready = false;
+                self.stopped = true;
+                if let Some(turn) = self.end_active() {
+                    let _ = turn;
+                    self.push(Event::TurnEnded { reason: "transport_error".into() });
+                }
+                self.push(Event::Exited { tail: stderr_tail });
+                if let TransportCause::Error(error) = cause {
+                    self.push(Event::Error(protocol_note(error.code)));
+                }
+            }
+        }
+    }
+
+    fn emit_ready(&mut self) {
+        if !self.models_sent {
+            self.models_sent = true;
+            let model = self.next_model.clone();
+            self.push(Event::Models {
+                current: model.clone(),
+                available: vec![super::acp::ModelInfo { id: model.clone(), name: model, description: String::new() }],
+            });
+        }
+        self.push(Event::Ready { agent: format!("Mastra · {}", self.config.workflow_id), images: false });
+    }
+}
+
+fn terminal_reason(state: TurnTerminal) -> String {
+    match state {
+        TurnTerminal::ValidatedSuccess => String::new(),
+        TurnTerminal::AuthRequired => "auth".into(),
+        TurnTerminal::Cancelled => "cancelled".into(),
+        TurnTerminal::BudgetExhausted => "budget_exhausted".into(),
+        TurnTerminal::TransportError | TurnTerminal::OutcomeUnknown => "transport_error".into(),
+        TurnTerminal::QualityFailed | TurnTerminal::TaskFailed => "error".into(),
+    }
+}
+
+fn close_reason(cause: CloseReason) -> &'static str {
+    match cause {
+        CloseReason::User | CloseReason::Reset | CloseReason::Shutdown => "cancelled",
+        CloseReason::TransportLoss => "transport_error",
+        CloseReason::Deadline | CloseReason::TerminalProposal | CloseReason::HostTerminal => "error",
+    }
+}
+
+fn protocol_note(code: ErrorCode) -> String {
+    crate::i18n::format("ui.mastra_protocol_error", &[("code", &format!("{code:?}"))])
+}
+
+/// Host services: clock, ids, admission, lifecycle and the callback dispatcher. The fixed
+/// validation profile used on the wire names what it is; it is not a claim that a report exists.
+fn runtime_services(
+    host: Arc<HostAi>,
+    ids: Arc<dyn IdSource>,
+    admission: Arc<RuntimeAdmission>,
+    connection_auth: Arc<Mutex<Option<bool>>>,
+    runtime_instance: Arc<Mutex<Option<String>>>,
+    budget: Arc<AtomicU32>,
+) -> RuntimeServices {
+    RuntimeServices {
+        clock: Arc::new(WallClock),
+        ids,
+        admission,
+        lifecycle: Arc::new(ClosedLifecycle),
+        dispatch: Arc::new(HostCalls { host, connection_auth, budget, runtime_instance }),
+    }
+}
+
+struct WallClock;
+impl super::runtime_client::Clock for WallClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+struct ClosedLifecycle;
+impl ScopeLifecycle for ClosedLifecycle {
+    fn close_turn(&self, _scope: &TurnScope, _reason: CloseReason) {}
+    fn retire_session(&self, _session_id: &Id) {}
+}
+
+/// Runs each host call on its own bounded thread. The IPC worker never waits for a model call,
+/// and no egui frame is involved.
+struct HostCalls {
+    host: Arc<HostAi>,
+    connection_auth: Arc<Mutex<Option<bool>>>,
+    budget: Arc<AtomicU32>,
+    runtime_instance: Arc<Mutex<Option<String>>>,
+}
+
+impl HostDispatch for HostCalls {
+    fn dispatch(&self, call: CallbackCall, reply: ReplyPort) {
+        let host = Arc::clone(&self.host);
+        let auth = Arc::clone(&self.connection_auth);
+        let budget = Arc::clone(&self.budget);
+        let instance = Arc::clone(&self.runtime_instance);
+        let spawned = std::thread::Builder::new().name("mastra-host-call".into()).spawn(move || {
+            let cancelled = call.cancellation.is_cancelled();
+            let result = if cancelled { Err(cancelled_error("operation")) } else { handle_call(&host, &auth, &budget, &instance, call) };
+            let _ = reply.finish(result);
+        });
+        // On a failed spawn, dropping the reply port resolves the call with the machine's
+        // cancellation completion.
+        let _ = spawned;
+    }
+}
+
+fn handle_call(
+    host: &HostAi,
+    auth: &Mutex<Option<bool>>,
+    budget: &AtomicU32,
+    runtime_instance: &Mutex<Option<String>>,
+    call: CallbackCall,
+) -> Result<HostReply, WireError> {
+    let CallbackCall { scope, call, cancellation, deadline: _deadline, limits: _limits, token: _token } = call;
+    match call {
+        HostCall::ConnectionDescribe(params) => {
+            let binding = host
+                .bind(&params.connection_id.to_string(), &params.model_id)
+                .map_err(|error| ai_error(&params.connection_id.to_string(), &error))?;
+            let description = host.describe(&binding).map_err(|error| ai_error(&params.connection_id.to_string(), &error))?;
+            if let Ok(mut reported) = auth.lock() {
+                *reported = Some(description.state == host_ai::ConnectionState::Available);
+            }
+            let capabilities = description.capabilities;
+            Ok(HostReply::ConnectionDescribe(ConnectionDescribeResult {
+                state: match description.state {
+                    host_ai::ConnectionState::Available => ConnectionAvailability::Available,
+                    host_ai::ConnectionState::AuthRequired => ConnectionAvailability::AuthRequired,
+                    host_ai::ConnectionState::Unavailable => ConnectionAvailability::Unavailable,
+                },
+                capabilities: AiCapabilities {
+                    model_generate: capabilities.model_generate,
+                    agent_run: capabilities.agent_run,
+                    tools: capabilities.tools,
+                    images: capabilities.images,
+                    documents: capabilities.documents,
+                    structured_output: capabilities.structured_output,
+                    model_selection: capabilities.model_selection,
+                    usage: capabilities.usage,
+                    delivery: super::mastra_protocol::Delivery::Buffered,
+                },
+                auth_methods: Vec::new(),
+            }))
+        }
+        HostCall::ModelGenerate(params) => {
+            let ModelGenerateParams { connection_id, model_id, messages, tools, options, continuation } = params;
+            if budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1)).is_err() {
+                return Err(unsupported("model_calls"));
+            }
+            let connection = connection_id.to_string();
+            let binding = host.bind(&connection, &model_id).map_err(|error| ai_error(&connection, &error))?;
+            let messages = host_messages(&messages)?;
+            let tools = tools
+                .into_iter()
+                .map(|tool| host_ai::ToolDefinition { name: tool.name, description: tool.description, input_schema: tool.input_schema })
+                .collect();
+            let Some(session) = session_from_scope(&scope, runtime_instance) else {
+                return Err(invalid_error("scope"));
+            };
+            if options.delivery == super::mastra_protocol::Delivery::Streaming {
+                return Err(unsupported("streaming"));
+            }
+            let request = GenerateRequest {
+                connection_id: connection.clone(),
+                model_id,
+                messages,
+                tools,
+                options: GenerateOptions {
+                    delivery: Delivery::Buffered,
+                    timeout_seconds: options.timeout_seconds.clamp(1, 600),
+                    max_output_tokens: options.max_output_tokens.0,
+                    temperature: options.temperature.0,
+                    reasoning_effort: options.reasoning_effort.0,
+                    output_schema: options.output_schema.0,
+                },
+                continuation: match continuation.0 {
+                    Some(id) => Some(ContinuationId::parse(id.as_str()).map_err(|_| invalid_error("continuation"))?),
+                    None => None,
+                },
+            };
+            let control = TurnControl::new().new_call().map_err(|error| ai_error(&connection, &error))?;
+            let context = CallContext {
+                scope: CallScope { session, turn_id: turn_id(&scope), workflow_run_id: workflow_run_id(&scope) },
+                control: Arc::clone(&control),
+                deadline: host.deadline_after(Duration::from_secs(u64::from(request.options.timeout_seconds.min(600)))),
+                limits: AiLimits::contract_defaults(),
+                model_budget: Arc::new(ModelCallBudget::new(MODEL_CALLS_PER_TURN).map_err(|error| ai_error(&connection, &error))?),
+            };
+            let cancelled = cancellation.clone();
+            let result = host.generate(&binding, &context, request);
+            if cancelled.is_cancelled() {
+                control.cancel();
+                return Err(cancelled_error("model.generate"));
+            }
+            match result {
+                Ok(reply) => {
+                    let mut tool_calls = Vec::with_capacity(reply.tool_calls.len());
+                    for tool in reply.tool_calls {
+                        tool_calls.push(ToolCall {
+                            id: Id::parse(&tool.id).map_err(|_| invalid_error("tool_call_id"))?,
+                            name: tool.name,
+                            arguments: tool.arguments,
+                        });
+                    }
+                    let continuation = match reply.continuation {
+                        Some(id) => Some(Id::parse(id.as_str()).map_err(|_| invalid_error("continuation"))?),
+                        None => None,
+                    };
+                    Ok(HostReply::ModelGenerate(ModelGenerateResult {
+                        content: reply.text.into_iter().map(|text| ContentBlock::Text { text }).collect(),
+                        tool_calls,
+                        finish_reason: match reply.finish_reason {
+                            FinishReason::Stop => FinishReasonWire::Stop,
+                            FinishReason::ToolCalls => FinishReasonWire::ToolCalls,
+                            FinishReason::Length => FinishReasonWire::Length,
+                            FinishReason::Refusal => FinishReasonWire::Refusal,
+                            FinishReason::Unknown => FinishReasonWire::Unknown,
+                        },
+                        usage: RequiredNullable(reply.usage.map(|usage| Usage {
+                            input_tokens: RequiredNullable(usage.input_tokens),
+                            output_tokens: RequiredNullable(usage.output_tokens),
+                            total_tokens: RequiredNullable(usage.total_tokens),
+                        })),
+                        continuation: RequiredNullable(continuation),
+                        delivery: super::mastra_protocol::Delivery::Buffered,
+                    }))
+                }
+                Err(error) => Err(ai_error(&connection, &error)),
+            }
+        }
+        HostCall::AgentRun(_) => Err(unsupported("agent_tasks")),
+        HostCall::ValidationSubmit(_) | HostCall::ValidationStatus(_) | HostCall::ValidationReport(_) | HostCall::ValidationCancel(_) => {
+            Err(unsupported("validation"))
+        }
+    }
+}
+
+fn host_messages(messages: &[ModelMessageWire]) -> Result<Vec<ModelMessage>, WireError> {
+    messages
+        .iter()
+        .map(|message| {
+            let content = message
+                .content
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text } => Ok(host_ai::ContentPart::Text(text.clone())),
+                    // The runtime sends host artifact references; the direct host has no artifact
+                    // store yet (#11), so this fails closed instead of inventing bytes.
+                    ContentBlock::Image { .. } | ContentBlock::Document { .. } => Err(unsupported("artifacts")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ModelMessage {
+                role: match message.role {
+                    Role::System => MessageRole::System,
+                    Role::User => MessageRole::User,
+                    Role::Assistant => MessageRole::Assistant,
+                    Role::Tool => MessageRole::Tool,
+                },
+                content,
+                tool_calls: message
+                    .tool_calls
+                    .iter()
+                    .map(|call| host_ai::ToolCall { id: call.id.to_string(), name: call.name.clone(), arguments: call.arguments.clone() })
+                    .collect(),
+                tool_call_id: message.tool_call_id.0.as_ref().map(ToString::to_string),
+            })
+        })
+        .collect()
+}
+
+fn session_from_scope(scope: &Scope, runtime_instance: &Mutex<Option<String>>) -> Option<SessionKey> {
+    let session_id = match scope {
+        Scope::Session(id) => id,
+        Scope::Turn(turn) => &turn.session_id,
+        Scope::Runtime => return None,
+    };
+    let runtime_instance_id = runtime_instance.lock().ok().and_then(|id| id.clone()).unwrap_or_default();
+    Some(SessionKey { runtime_instance_id, session_id: session_id.to_string() })
+}
+
+fn turn_id(scope: &Scope) -> String {
+    match scope {
+        Scope::Turn(turn) => turn.turn_id.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn workflow_run_id(scope: &Scope) -> String {
+    match scope {
+        Scope::Turn(turn) => turn.workflow_run_id.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn unsupported(capability: &str) -> WireError {
+    WireError {
+        code: ErrorCode::UnsupportedCapability,
+        message: "This host capability is not available yet.".into(),
+        retry: Retry::Never,
+        details: ErrorDetails::Capability(CapabilityDetails { capability: capability.into() }),
+    }
+}
+
+fn invalid_error(field: &str) -> WireError {
+    WireError {
+        code: ErrorCode::InvalidRequest,
+        message: "The runtime request is not valid.".into(),
+        retry: Retry::Never,
+        details: ErrorDetails::FieldMethod(FieldMethodDetails { field: Some(field.into()), method: None }),
+    }
+}
+
+fn cancelled_error(operation: &str) -> WireError {
+    WireError {
+        code: ErrorCode::Cancelled,
+        message: "The call was cancelled.".into(),
+        retry: Retry::Never,
+        details: ErrorDetails::Operation(OperationDetails { operation: Some(operation.into()) }),
+    }
+}
+
+fn ai_error(connection_id: &str, error: &AiError) -> WireError {
+    let (code, details) = match error.code() {
+        AiErrorCode::InvalidRequest => (ErrorCode::InvalidRequest, ErrorDetails::Empty(EmptyDetails {})),
+        AiErrorCode::UnsupportedCapability => {
+            (ErrorCode::UnsupportedCapability, ErrorDetails::Capability(CapabilityDetails { capability: "model_generate".into() }))
+        }
+        AiErrorCode::AuthRequired | AiErrorCode::ConnectionChanged => {
+            let connection = match error.details() {
+                AiErrorDetails::Connection { connection_id, .. } => connection_id.clone(),
+                _ => connection_id.to_owned(),
+            };
+            let details = match Id::parse(&connection) {
+                Ok(id) => ErrorDetails::Connection(ConnectionDetails { connection_id: id }),
+                Err(_) => ErrorDetails::Empty(EmptyDetails {}),
+            };
+            (if error.code() == AiErrorCode::AuthRequired { ErrorCode::AuthRequired } else { ErrorCode::ConnectionChanged }, details)
+        }
+        AiErrorCode::ModelError | AiErrorCode::MalformedResponse => {
+            let (connection, status) = match error.details() {
+                AiErrorDetails::Connection { connection_id, http_status } => (connection_id.clone(), http_status.map(u32::from)),
+                _ => (connection_id.to_owned(), None),
+            };
+            let details = match Id::parse(&connection) {
+                Ok(id) => ErrorDetails::Model(ModelErrorDetails { connection_id: id, http_status: status }),
+                Err(_) => ErrorDetails::Empty(EmptyDetails {}),
+            };
+            (if error.code() == AiErrorCode::ModelError { ErrorCode::ModelError } else { ErrorCode::MalformedResponse }, details)
+        }
+        AiErrorCode::ResourceExhausted => {
+            let (resource, limit) = match error.details() {
+                AiErrorDetails::Resource { resource, limit } => ((*resource).to_owned(), *limit),
+                _ => ("resource".into(), 0),
+            };
+            (ErrorCode::ResourceExhausted, ErrorDetails::Resource(ResourceDetails { resource, limit }))
+        }
+        AiErrorCode::Timeout => (ErrorCode::Timeout, ErrorDetails::Operation(OperationDetails { operation: Some("model.generate".into()) })),
+        AiErrorCode::Cancelled => (ErrorCode::Cancelled, ErrorDetails::Operation(OperationDetails { operation: Some("model.generate".into()) })),
+        AiErrorCode::TransportError => {
+            (ErrorCode::TransportError, ErrorDetails::Operation(OperationDetails { operation: Some("model.generate".into()) }))
+        }
+        AiErrorCode::InternalError => (ErrorCode::InternalError, ErrorDetails::Empty(EmptyDetails {})),
+    };
+    WireError { code, message: error.message().chars().take(2048).collect(), retry: Retry::Never, details }
+}
+
+// The wire and host modules both use the name `FinishReason`; alias the wire one where the host
+// own type is already in scope.
+use super::mastra_protocol::FinishReason as FinishReasonWire;
+use super::mastra_protocol::ModelMessage as ModelMessageWire;
+
+impl ChatBackend for MastraBackend {
+    fn poll(&mut self) -> Vec<Event> {
+        for notice in self.port.drain() {
+            self.on_notice(notice);
+        }
+        let reported = self.config.connection_auth.lock().ok().and_then(|mut reported| reported.take());
+        if let Some(available) = reported {
+            self.auth_reported = Some(available);
+            self.push(Event::ConnectionAuth { available });
+        }
+        self.events.drain(..).collect()
+    }
+
+    fn prompt(&mut self, parts: &[PromptPart]) {
+        self.begin_turn(parts);
+    }
+
+    fn cancel(&mut self) {
+        let Some(turn) = self.end_active() else { return };
+        let _ = self.port.cancel_turn(&turn.scope, CancelReason::User);
+        // The host owns the terminal transition: a runtime that never answers cannot leave the
+        // panel busy, and a late turn.finished is ignored by the empty active slot.
+        self.push(Event::TurnEnded { reason: "cancelled".into() });
+    }
+
+    fn new_session(&mut self) {
+        self.cancel();
+        if !self.runtime_ready || self.stopped {
+            return;
+        }
+        if !self.session_ready {
+            if self.awaiting_session.is_none() {
+                self.start_session();
+            }
+            return;
+        }
+        let Ok(next) = self.ids.next_id() else {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            return;
+        };
+        let params = SessionResetParams { next_session_id: next.clone(), instructions: self.config.instructions.chars().take(4000).collect() };
+        let scope = self.session.clone().map(Scope::Session).unwrap_or(Scope::Runtime);
+        match self.port.request(scope, HostRequest::SessionReset(params), SESSION_TIMEOUT) {
+            Ok(request) => {
+                self.awaiting_session = Some(request);
+                self.reset_target = Some(next);
+                self.session_ready = false;
+                self.stages.clear();
+                self.plan_set = false;
+                self.models_sent = false;
+            }
+            Err(_) => self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string())),
+        }
+    }
+
+    fn set_instructions(&mut self, text: &str) {
+        self.config.instructions = text.to_owned();
+    }
+
+    fn set_document(&mut self, document_id: &str, revision: u64) {
+        self.document = document_stamp_from_native(document_id, revision).ok();
+    }
+
+    fn answer_permission(&mut self, _key: u64, _option: Option<&str>) {
+        // Mastra turns run their own tools through the chat's MCP bridge, whose approvals pass
+        // the existing gate. There is no separate runtime permission channel in 1.0.
+    }
+
+    fn authenticate(&mut self, _method: &str) {
+        // The selected AI connection owns its sign-in (Settings → AI / its key). Runtime readiness
+        // never authenticates it.
+    }
+
+    fn set_model(&mut self, model: &str) {
+        if !model.is_empty() && !model.chars().any(char::is_control) && model.chars().count() <= super::MODEL_ID_CAP {
+            self.next_model = model.to_owned();
+        }
+    }
+
+    fn shutdown(&mut self, wait: bool) {
+        self.stopped = true;
+        let _ = self.port.shutdown();
+        if wait {
+            self.port.wait_stopped(SHUTDOWN_WAIT);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::super::runtime_client::RuntimeInfo;
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// One recorded backend request, with the exact protocol scope and method.
+    #[derive(Clone, Debug)]
+    pub struct Recorded {
+        pub scope: Scope,
+        pub request: HostRequest,
+        pub id: RequestId,
+    }
+
+    #[derive(Default)]
+    pub struct Log {
+        pub requests: Vec<Recorded>,
+        pub notices: VecDeque<PortNotice>,
+        pub cancellations: Vec<(TurnScope, CancelReason)>,
+        pub shutdowns: usize,
+        next: u32,
+    }
+
+    impl Log {
+        pub fn turn_start(&self) -> Option<&TurnStartParams> {
+            self.requests.iter().find_map(|r| match &r.request {
+                HostRequest::TurnStart(params) => Some(params.as_ref()),
+                _ => None,
+            })
+        }
+        pub fn inject_client(&mut self, notice: ClientNotice) {
+            self.notices.push_back(PortNotice::client(notice));
+        }
+        pub fn inject(&mut self, notice: PortNotice) {
+            self.notices.push_back(notice);
+        }
+    }
+
+    pub struct TestPort {
+        log: Arc<Mutex<Log>>,
+    }
+
+    impl TestPort {
+        pub fn new(log: Arc<Mutex<Log>>) -> Self {
+            Self { log }
+        }
+    }
+
+    impl Port for TestPort {
+        fn request(&mut self, scope: Scope, request: HostRequest, _timeout: Duration) -> Result<RequestId, ClientError> {
+            let mut log = self.log.lock().map_err(|_| ClientError { code: ErrorCode::InternalError })?;
+            log.next += 1;
+            let id = RequestId::parse(&format!("h:test{}", log.next), Sender::Host).map_err(|_| ClientError { code: ErrorCode::InternalError })?;
+            log.requests.push(Recorded { scope, request, id: id.clone() });
+            Ok(id)
+        }
+
+        fn cancel_turn(&mut self, scope: &TurnScope, reason: CancelReason) -> Result<(), ClientError> {
+            self.log.lock().map_err(|_| ClientError { code: ErrorCode::InternalError })?.cancellations.push((scope.clone(), reason));
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> Result<(), ClientError> {
+            self.log.lock().map_err(|_| ClientError { code: ErrorCode::InternalError })?.shutdowns += 1;
+            Ok(())
+        }
+
+        fn drain(&mut self) -> Vec<PortNotice> {
+            self.log.lock().map(|mut log| log.notices.drain(..).collect()).unwrap_or_default()
+        }
+    }
+
+    pub fn runtime_info(version: &str) -> RuntimeInfo {
+        RuntimeInfo {
+            selected_version: "1.0".into(),
+            runtime_instance_id: Id::literal("instance"),
+            runtime_version: version.into(),
+            capabilities: RuntimeCapabilities {
+                workflow_ids: Vec::new(),
+                host_model_calls: true,
+                host_agent_tasks: false,
+                guarded_execute: false,
+                guarded_batch: false,
+                snapshot_validation: false,
+            },
+            limits: Limits::default(),
+        }
+    }
+}

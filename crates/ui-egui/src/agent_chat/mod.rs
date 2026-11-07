@@ -32,6 +32,8 @@ pub mod gate;
 pub mod host_ai;
 mod markdown;
 mod markdown_view;
+#[cfg(not(target_arch = "wasm32"))]
+mod mastra_backend;
 pub mod mastra_protocol;
 mod panel;
 #[cfg(not(target_arch = "wasm32"))]
@@ -111,6 +113,25 @@ impl State {
     }
     fn running(self) -> bool {
         matches!(self, State::Starting | State::Ready | State::Busy | State::NeedsAuth)
+    }
+}
+
+/// The Mastra runtime's own lifecycle, kept apart from [`State`] (the conversation) and from the
+/// AI connection's authentication. A ready runtime authenticates nobody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeStatus {
+    Starting,
+    Ready,
+    Stopped,
+}
+
+impl RuntimeStatus {
+    pub fn label(self) -> &'static str {
+        tr(match self {
+            RuntimeStatus::Starting => "ui.mastra_runtime_starting",
+            RuntimeStatus::Ready => "ui.mastra_runtime_ready",
+            RuntimeStatus::Stopped => "ui.mastra_runtime_stopped",
+        })
     }
 }
 
@@ -407,6 +428,16 @@ pub struct AgentChat {
     pub agent_id: Option<String>,
     /// The agent the running backend is (for permissions and "always allow").
     running_id: String,
+    /// The Mastra runtime process this conversation uses (`None`: not a workflow backend), shown
+    /// apart from the AI connection's login state.
+    pub runtime: Option<RuntimeStatus>,
+    /// The runtime version as it reported itself.
+    pub runtime_version: Option<String>,
+    /// The selected AI connection's authentication as its own distinct state (`None`: not
+    /// checked yet). Never inferred from [`Event::RuntimeReady`].
+    pub connection_auth: Option<bool>,
+    /// The running backend hands turns to a Mastra workflow, so [`Event::Ready`] is not a sign-in.
+    mastra: bool,
     /// The popped-out chat window was given its saved place (it is open); see `panel::window_builder`.
     pub(crate) window_placed: bool,
     /// The agent's own modes, and the current one.
@@ -496,6 +527,10 @@ impl AgentChat {
         finish_turn(self, session);
         self.clear_config();
         self.stop_backend(wait);
+        self.runtime = None;
+        self.runtime_version = None;
+        self.connection_auth = None;
+        self.mastra = false;
         if self.state.is_some() {
             self.state = Some(State::Off);
         }
@@ -661,21 +696,39 @@ impl AgentChat {
 
     /// Take in what the backend reported.
     fn on_event(&mut self, e: Event) -> Option<Outcome> {
-        let signed_in = match &e {
-            Event::Ready { .. } => Some(true),
-            Event::AuthRequired { .. } => Some(false),
-            _ => None,
+        // A Mastra runtime's readiness says nothing about the AI connection: only the connection's
+        // own report (or a direct backend's Ready/AuthRequired) marks it signed in.
+        let signed_in = if self.mastra {
+            match &e {
+                Event::ConnectionAuth { available } => Some(*available),
+                _ => None,
+            }
+        } else {
+            match &e {
+                Event::Ready { .. } => Some(true),
+                Event::AuthRequired { .. } => Some(false),
+                _ => None,
+            }
         };
         if let Some(signed_in) = signed_in
             && !self.running_id.is_empty()
         {
             self.login_results.insert(self.running_id.clone(), signed_in);
+            self.connection_auth = Some(signed_in);
             // A newer chat result supersedes the old test, including one still in flight.
             self.settings.tests.remove(&self.running_id);
         }
         match e {
             Event::Documents(documents) => self.documents = documents,
             Event::ToolsAvailable(available) => self.tools_available = Some(available),
+            Event::RuntimeReady { version } => {
+                self.runtime = Some(RuntimeStatus::Ready);
+                self.runtime_version = Some(version);
+            }
+            Event::ConnectionAuth { available } => {
+                self.connection_auth = Some(available);
+                self.auth_status = Some(tr(if available { "ui.mastra_connection_ready" } else { "ui.mastra_connection_signed_out" }).to_string());
+            }
             Event::Ready { agent, images } => {
                 self.agent = agent;
                 self.images = images;
@@ -845,6 +898,9 @@ impl AgentChat {
             }
             Event::Exited { tail } => {
                 self.clear_config();
+                if self.mastra {
+                    self.runtime = Some(RuntimeStatus::Stopped);
+                }
                 self.state = Some(if matches!(self.state(), State::Starting | State::Failed) { State::Failed } else { State::Exited });
                 self.steering = false;
                 for item in &mut self.items {
@@ -916,6 +972,11 @@ fn assistant_mark_for(state: State, login: &str, configured: bool, waiting: usiz
 
 pub(crate) fn assistant_mark(app: &SolveApp) -> AssistantMark {
     let chat = &app.agent_chat;
+    // Runtime readiness is not authentication: a ready workflow runtime whose selected AI
+    // connection still needs a sign-in shows the sign-in state, not a ready one.
+    if chat.mastra && chat.connection_auth == Some(false) {
+        return AssistantMark::NeedsAuth;
+    }
     let current = agents::current(app);
     assistant_mark_for(
         chat.state(),
@@ -1000,12 +1061,18 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         chat.picking = Some(true);
         return;
     };
+    let execution = app.preferences.chat_execution;
+    let mastra_command = app.preferences.mastra_runtime_command.clone();
+    let mastra_workflow = app.preferences.mastra_workflow_id.clone();
+    let instructions = app.preferences.agent_instructions.clone();
     if let Err(error) = sync_ai_connections(app) {
         ai_sync_failed(app, error);
         app.agent_chat.state = Some(State::Failed);
         return;
     }
-    let host = if entry.kind.is_api() {
+    // A Mastra workflow uses HostAi for the connection's model calls, so it needs an endpoint
+    // connection even though the picker may show an ACP agent.
+    let host = if entry.kind.is_api() || execution == agents::Execution::Mastra {
         match direct_host_ai(app) {
             Ok(host) => Some(host),
             Err(error) => {
@@ -1043,10 +1110,46 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     chat.tools_available = Some(bridge.is_some());
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
-    let started: Result<Box<dyn ChatBackend>, String> = match entry.kind {
-        agents::Kind::Acp if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
-        agents::Kind::Acp => acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>),
-        agents::Kind::Api | agents::Kind::Anthropic => match host {
+    let started: Result<Box<dyn ChatBackend>, String> = match (execution, entry.kind) {
+        (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_needs_connection").to_string()),
+        (agents::Execution::Mastra, _) => (|| -> Result<Box<dyn ChatBackend>, String> {
+            let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
+            let backend::StartContext { cwd, bridge, wake, .. } = start;
+            let mut argv = acp::split_command(&mastra_command);
+            if argv.is_empty() {
+                return Err(tr("ui.mastra_runtime_missing").to_string());
+            }
+            let executable = std::path::PathBuf::from(argv.remove(0));
+            let workflow_id =
+                if mastra_workflow.trim().is_empty() { mastra_backend::DEFAULT_WORKFLOW.to_string() } else { mastra_workflow.trim().to_string() };
+            if mastra_protocol::Id::parse(&workflow_id).is_err() {
+                return Err(tr("ui.mastra_workflow_invalid").to_string());
+            }
+            let config = mastra_backend::MastraConfig {
+                connection_id: entry.id.clone(),
+                model: entry.model.clone(),
+                workflow_id,
+                bridge,
+                instructions,
+                connection_auth: Arc::new(std::sync::Mutex::new(None)),
+                wake: Arc::from(wake),
+            };
+            let launch = runtime_client::RuntimeLaunch {
+                executable,
+                args: argv.into_iter().map(std::ffi::OsString::from).collect(),
+                cwd,
+                host_version: env!("CARGO_PKG_VERSION").into(),
+                limits: mastra_protocol::Limits::default(),
+            };
+            let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);
+            let admission = runtime_client::RuntimeAdmission::new(8).map(Arc::new).map_err(|_| tr("ui.mastra_runtime_failed").to_string())?;
+            mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+        })(),
+        (agents::Execution::Direct, agents::Kind::Acp) if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
+        (agents::Execution::Direct, agents::Kind::Acp) => {
+            acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+        }
+        (agents::Execution::Direct, agents::Kind::Api | agents::Kind::Anthropic) => match host {
             Some(host_ai) => {
                 api_client::ApiBackend::start(api_client::ApiConfig { connection_id: entry.id.clone(), model: entry.model.clone(), host_ai }, start)
                     .map(|b| Box::new(b) as Box<dyn ChatBackend>)
@@ -1061,13 +1164,17 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             chat.backend = Some(b);
             chat.argv = entry.argv.clone();
             chat.running_id = entry.id.clone();
+            chat.mastra = execution == agents::Execution::Mastra;
+            chat.runtime = chat.mastra.then_some(RuntimeStatus::Starting);
+            chat.runtime_version = None;
+            chat.connection_auth = None;
             chat.modes.clear();
             chat.mode.clear();
             chat.models.clear();
             chat.model.clear();
             chat.models_note = None;
             chat.model_revert = None;
-            chat.running_endpoint = if entry.kind.is_api() { entry.base_url.clone() } else { String::new() };
+            chat.running_endpoint = if entry.kind.is_api() && !chat.mastra { entry.base_url.clone() } else { String::new() };
             // An endpoint's models from the last time, until the new list arrives.
             if let Some(list) = chat.models_cache.get(&chat.running_endpoint) {
                 chat.models = list.clone();
@@ -1596,7 +1703,9 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     app.agent_chat.stopped = false;
     app.agent_chat.steering = false;
     app.agent_chat.ended = None;
+    let stamp = app.session.document_stamp();
     if let Some(b) = app.agent_chat.backend.as_mut() {
+        b.set_document(&stamp.document_id, stamp.revision);
         b.prompt(&parts);
     }
 }
