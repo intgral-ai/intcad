@@ -10,8 +10,10 @@
  */
 
 import { DEFAULT_LIMITS, type Limits } from "./limits.js";
+import { canonicalize } from "./jcs.js";
 import {
   decodeFrameBytes,
+  encodeFrame,
   SchemaBundle,
   validateDataValue,
   type DecodeResult,
@@ -120,6 +122,20 @@ export function runConformance(bundle: SchemaBundle, limits: Limits = DEFAULT_LI
       const mapped = expectedHandling(outcome);
       handling = mapped.handling;
       code = mapped.code;
+      if (outcome.kind === "frame") {
+        // Accepted bytes must survive the wire encoder without changing values.
+        // Canonical JSON ignores whitespace and object-key order but keeps every
+        // revision and digest string exact.
+        try {
+          const original = canonicalize(parseStrictJson(raw.toString("utf8"), Number.MAX_SAFE_INTEGER));
+          const encoded = canonicalize(parseStrictJson(encodeFrame(outcome.frame).toString("utf8"), Number.MAX_SAFE_INTEGER));
+          if (original !== encoded) {
+            failures.push(`${item.id}: frame round-trip changed canonical JSON`);
+          }
+        } catch (error) {
+          failures.push(`${item.id}: frame round-trip failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     }
 
     if (handling !== item.handlingExpected || code !== item.errorCode) {
