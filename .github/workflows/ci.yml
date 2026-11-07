@@ -1,5 +1,7 @@
 # One immutable applicability plan, real execution receipts, and an always-reported ci.
-# PRs use the documented heavy filter; integration/full/release runs do not.
+# Pull requests run a bounded deterministic test/repository lane; integration,
+# scheduled, full and release runs execute the complete suite. The nightly entry
+# point is native-baseline.yml, which calls this workflow with validation_mode=full.
 # Standard-runner capacity is NOT established by these labels. Keep resource reports
 # and partition with matching listing/run evidence if actual measurements require it.
 name: CI
@@ -11,8 +13,6 @@ on:
   merge_group:
   push:
     branches: [main, develop]
-  schedule:
-    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       validation_mode:
@@ -89,7 +89,9 @@ jobs:
     name: Format and repository checks
     needs: changes
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Bounded pull-request policy/format checks; the complete repository evidence
+    # (owning xtask tests, web-offline build, packaging suites) runs in full mode.
+    timeout-minutes: ${{ fromJSON(needs.changes.outputs.plan || '{}').scope == 'full' && 90 || 20 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,9 +108,10 @@ jobs:
         with:
           key: repo-checks
           save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
-      # Includes fmt/assets/icons/licences/layers/ui-containers/lists/i18n/mesh/skills,
-      # format-pending/web-offline, test_affected.py/test_gate.py/test_main_merge.py,
-      # test_kernel_rig_plan.py and every existing bot suite, with real exit codes.
+      # Pull requests: fmt/assets/icons/licences/layers/ui-containers/lists/i18n/mesh/skills,
+      # format-pending, test_affected.py/test_gate.py/test_main_merge.py,
+      # test_kernel_rig_plan.py and every existing bot suite.
+      # Full mode adds the owning xtask binary tests, web-offline and packaging suites.
       - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job repo --out evidence/repo
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -178,7 +181,9 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Pull requests: directly affected packages plus the xtask smoke owner, half
+    # partition (bounded 30 min). Full/nightly: the complete workspace suite.
+    timeout-minutes: ${{ fromJSON(needs.changes.outputs.plan || '{}').scope == 'full' && 240 || 30 }}
     env:
       SOLIDCRAFT_GPU: software
       SOLIDCRAFT_REQUIRE_GPU: "1"

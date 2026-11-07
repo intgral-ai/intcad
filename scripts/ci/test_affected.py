@@ -132,7 +132,8 @@ class MonorepoSelection(unittest.TestCase):
         for job in ("rust", "wasm", "contract-rust", "runtime", "contract-ts", "integration", "packages"):
             self.decision(result, job, "not_applicable", "no_relevant_change")
         self.assertEqual(set(result), {"version", "sourceRevision", "eventName", "baseRef", "headRef", "scope",
-                                       "releaseRequired", "rustFull", "rustPackages", "jobs", "openObligations"})
+                                       "releaseRequired", "rustFull", "rustPackages", "rustTestPackages",
+                                       "jobs", "openObligations"})
         self.assertEqual((result["version"], result["sourceRevision"], result["scope"]), (1, "a" * 40, "affected"))
 
     def test_pr_policy_does_not_run_on_ordinary_push(self):
@@ -142,6 +143,7 @@ class MonorepoSelection(unittest.TestCase):
     def test_engine_selects_reverse_dependents_and_wasm(self):
         result = self.select("crates/engine/src/lib.rs")
         self.assertEqual(result["rustPackages"], ["solidcraft", "solidcraft-engine", "solidcraft-ui-egui"])
+        self.assertEqual(result["rustTestPackages"], result["rustPackages"])
         self.assertFalse(result["rustFull"])
         for job in ("rust", "wasm"):
             self.decision(result, job, "run", "selected_change")
@@ -176,8 +178,33 @@ class MonorepoSelection(unittest.TestCase):
                 result = self.select(path)
                 self.assertTrue(result["rustFull"])
                 self.assertEqual(result["rustPackages"], ["solidcraft", "solidcraft-engine", "solidcraft-ui-egui", "xtask"])
+                # Clippy/wasm keep the complete consumer scope; the counted pull-request
+                # test lane stays bounded and the nightly workflow runs everything.
+                self.assertEqual(result["rustTestPackages"], ["xtask"])
                 for job in ("rust", "wasm", "contract-rust", "runtime", "contract-ts", "integration", "artifact-policy"):
                     self.decision(result, job, "run", "selected_change")
+
+    def test_xtask_and_packaging_mastra_changes_select_xtask_tests(self):
+        for path in ("xtask/src/runtime_inventory.rs", "packaging/mastra/policy.json",
+                     "packaging/mastra/source-records.json"):
+            with self.subTest(path=path):
+                result = self.select(path)
+                self.decision(result, "rust", "run", "selected_change")
+                self.assertEqual(result["rustTestPackages"], ["xtask"])
+
+    def test_pr_test_lane_is_bounded_on_shared_inputs(self):
+        for path in ("Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/ci/plan.py"):
+            with self.subTest(path=path):
+                result = self.select(path)
+                self.assertEqual(result["rustTestPackages"], ["xtask"])
+                self.assertNotEqual(result["rustPackages"], result["rustTestPackages"])
+        for options in ({"full": True}, {"event_name": "schedule"}, {"release_required": True}):
+            with self.subTest(options=options):
+                result = self.select("crates/engine/src/lib.rs", **options)
+                self.assertEqual(result["rustTestPackages"],
+                                 ["solidcraft", "solidcraft-engine", "solidcraft-ui-egui"])
+                self.assertEqual(result["rustPackages"],
+                                 ["solidcraft", "solidcraft-engine", "solidcraft-ui-egui", "xtask"])
 
     def test_full_unknown_and_incomplete_diff_are_conservative(self):
         for paths, options in (([], {"full": True}), (["unowned/input.bin"], {}),
@@ -641,8 +668,11 @@ class NativeBaselineWorkflow(unittest.TestCase):
         self.assertTrue(path.is_file(), "missing independently visible raw native baseline")
         self.workflow = path.read_text()
 
-    def test_integration_schedule_and_manual_are_read_only_and_unmasked(self):
-        self.assertIn("branches: [develop, main]", self.workflow)
+    def test_schedule_and_manual_are_read_only_and_unmasked(self):
+        # Integration pushes already run the full suite through ci.yml; this
+        # workflow is the nightly/manual full entry point and must not duplicate it.
+        self.assertNotIn("pull_request", self.workflow)
+        self.assertNotIn("\n  push:", self.workflow)
         for trigger in ("schedule:", "workflow_dispatch:"):
             self.assertIn(trigger, self.workflow)
         for forbidden in ("continue-on-error", "--no-tests=pass", "secrets.", "pull_request_target", "|| true"):

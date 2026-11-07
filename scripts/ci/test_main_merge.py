@@ -89,6 +89,20 @@ class ForkExecution(unittest.TestCase):
                 self.assertEqual(expression, "all()" if full else
                                  "default() & not (binary(action_matrix) & test(=action_matrix_sample))")
                 self.assertEqual(grader, ["cargo", "xtask", "known-failing", "--junit", "target/nextest/ci/junit.xml"])
+                if full:
+                    self.assertIn("--workspace", run)
+                    self.assertNotIn("--partition", run)
+                else:
+                    self.assertEqual(run[run.index("--partition") + 1], "count:1/2")
+
+    def test_bounded_test_lane_ignores_workspace_wide_packages(self):
+        build = self.adapter("native_commands")
+        plan = {"rustFull": True, "rustPackages": ["top", "base"], "rustTestPackages": ["base"]}
+        listing, run, _ = build(plan, full=False)
+        self.assertIn("-p", run)
+        self.assertEqual(run[run.index("-p") + 1], "base")
+        self.assertNotIn("--workspace", run)
+        self.assertNotIn("-p", listing[listing.index("-p") + 2:], "only the bounded package is selected")
 
     def test_empty_rust_package_scope_is_an_error_not_workspace_fallback(self):
         build = self.adapter("native_commands")
@@ -262,6 +276,13 @@ else:
         self.assertIn(["python3", "-I", "scripts/ci/test_gate.py"], commands)
         self.assertIn(["bash", "scripts/test-format-pending.sh"], commands)
         self.assertEqual(commands[-1], ["node", "--test", "scripts/claim/fixture.test.js"])
+        fast = main_merge.repository_commands(full=False)
+        fast_names = {tuple(c[:7]) for c in fast}
+        self.assertIn(("cargo", "run", "--locked", "--package", "xtask", "--", "lists"), fast_names)
+        self.assertNotIn(("cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"), fast_names)
+        self.assertFalse([c for c in fast if c[-1].startswith("packaging/tests/")])
+        self.assertFalse([c for c in fast if c[:3] == ["cargo", "test", "-p"]])
+        self.assertEqual(fast[-1][:2], ["node", "--test"])
 
     def test_packaging_owning_commands_fail_on_nonempty_file_with_zero_tests(self):
         (self.root / "scripts/claim").mkdir(parents=True)

@@ -107,10 +107,25 @@ def package_scope(plan):
     return [arg for package in plan["rustPackages"] for arg in ("-p", package)]
 
 
+def test_scope(plan, *, full):
+    """The counted test lane. Only full validation compiles the whole workspace.
+
+    Pull requests use the plan's bounded directly-affected packages (plus the
+    xtask smoke owner) and a deterministic half-partition. The other half runs
+    in the nightly/full workflow; excluded tests are never counted as passing.
+    """
+    if full:
+        return ["--workspace"], []
+    packages = plan.get("rustTestPackages") or plan["rustPackages"]
+    gate.require(packages, "selected bounded Rust test scope is empty")
+    return [arg for package in packages for arg in ("-p", package)], ["--partition", "count:1/2"]
+
+
 def native_commands(plan, *, full):
     expression = "all()" if full else "default() & not (binary(action_matrix) & test(=action_matrix_sample))"
-    common = package_scope(plan) + ["--cargo-profile", "ci", "--locked", "--profile", "ci",
-                                    "--ignore-default-filter", "-E", expression]
+    scope, bound = test_scope(plan, full=full)
+    common = scope + ["--cargo-profile", "ci", "--locked", "--profile", "ci",
+                      "--ignore-default-filter", "-E", expression, *bound]
     return [["cargo", "nextest", "list", *common, "--message-format", "json"],
             ["cargo", "nextest", "run", *common, "--test-threads", "2"],
             ["cargo", "xtask", "known-failing", "--junit", "target/nextest/ci/junit.xml"]]
@@ -195,23 +210,33 @@ def select_workflow(event, mode, release_required, out):
     return result
 
 
-def repository_commands():
+def repository_commands(*, full=True):
+    """Fast policy/format checks on every run; full repository evidence nightly.
+
+    The pull-request lane keeps only checks that cannot mutate the checkout and
+    finish on a standard runner. The owning xtask binary tests, the web-offline
+    build and the packaging suites move to the full/nightly run. Nothing is
+    reported as passing unless it actually ran.
+    """
     commands = [["cargo", "fmt", "--all", "--", "--check"]]
     for args in (["assets"], ["icons"], ["licences", "--check"], ["layers"], ["ui-containers"], ["lists"],
-                 ["i18n", "--check"], ["mesh-decisions"], ["skills"], ["web-offline-test"]):
+                 ["i18n", "--check"], ["mesh-decisions"], ["skills"]):
         commands.append(["cargo", "run", "--locked", "--package", "xtask", "--", *args])
-    commands += [["cargo", "test", "-p", "xtask", name, "--locked"] for name in ("ui_containers", "mesh_decisions", "skills")]
     commands += [["bash", "scripts/test-format-pending.sh"]]
     commands += [["python3", "-I", "scripts/ci/" + name + ".py"] for name in
                  ("test_affected", "test_gate", "test_main_merge", "test_kernel_rig_plan")]
-    for name in ("apprun", "flatpak", "nightly", "windows_icon"):
-        path = Path("packaging/tests", name + "_test.py")
-        gate.require(path.is_file() and path.stat().st_size > 0, "missing/empty packaging owning test: " + str(path))
-        commands.append(["python3", "-I", "-c",
-                         "import pathlib,sys,unittest; p=pathlib.Path(sys.argv[1]); "
-                         "s=unittest.defaultTestLoader.discover(str(p.parent),pattern=p.name); "
-                         "s.countTestCases() or sys.exit('empty packaging owning test selection: '+str(p)); "
-                         "sys.exit(not unittest.TextTestRunner(verbosity=2).run(s).wasSuccessful())", str(path)])
+    if full:
+        commands += [["cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"]]
+        commands += [["cargo", "test", "-p", "xtask", name, "--locked"]
+                     for name in ("ui_containers", "mesh_decisions", "skills")]
+        for name in ("apprun", "flatpak", "nightly", "windows_icon"):
+            path = Path("packaging/tests", name + "_test.py")
+            gate.require(path.is_file() and path.stat().st_size > 0, "missing/empty packaging owning test: " + str(path))
+            commands.append(["python3", "-I", "-c",
+                             "import pathlib,sys,unittest; p=pathlib.Path(sys.argv[1]); "
+                             "s=unittest.defaultTestLoader.discover(str(p.parent),pattern=p.name); "
+                             "s.countTestCases() or sys.exit('empty packaging owning test selection: '+str(p)); "
+                             "sys.exit(not unittest.TextTestRunner(verbosity=2).run(s).wasSuccessful())", str(path)])
     bot_tests = sorted(str(path) for area in ("claim", "triage", "kernel-paused", "pr-checks")
                        for path in Path("scripts", area).glob("*.test.js"))
     gate.require(bot_tests, "bot test selection is empty")
@@ -239,7 +264,7 @@ def execute_workflow(plan_file, job, out, *, full=False):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     if job == "repo":
-        argvs = repository_commands()
+        argvs = repository_commands(full=full or plan["scope"] == "full" or plan["releaseRequired"])
     elif job == "pr-policy":
         # Event fields go through JSON, never executable shell interpolation.
         argvs = [["node", "-e", "const fs=require('node:fs'); const e=JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH)); "

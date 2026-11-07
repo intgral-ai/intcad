@@ -3,10 +3,10 @@
 name: Native baseline (raw)
 
 on:
-  push:
-    branches: [develop, main]
+  # Nightly/manual full validation. ci.yml no longer schedules a duplicate run;
+  # integration pushes already run the complete suite directly.
   schedule:
-    - cron: "47 6 * * *"
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -30,7 +30,9 @@ jobs:
   raw-native:
     name: Full native and heavy properties (raw)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The full native suite takes hours on a standard 2-vCPU runner; nightly
+    # budget is four hours.
+    timeout-minutes: 240
     env:
       CARGO_TARGET_DIR: target
       CARGO_INCREMENTAL: "0"

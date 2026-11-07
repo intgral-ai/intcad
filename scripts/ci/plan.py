@@ -25,6 +25,14 @@ NODE_PINS = (".node-version", ".nvmrc")
 NODE_LOCKS = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")
 NODE_FILES = (*NODE_PINS, *NODE_LOCKS, "package.json", "pnpm-workspace.yaml")
 VERIFIER_ENTRY = "xtask/src/main.rs"
+# Repository-tooling inputs run the xtask tests. Their Rust changes map to the
+# xtask package already; packaging/mastra metadata is ignored by the Rust
+# selector, so it needs an explicit owner.
+TOOLING_PREFIXES = ("xtask/", "packaging/mastra/")
+# The bounded pull-request test lane never compiles the whole workspace. This
+# smoke owner is always present and proves the toolchain even for shared-only
+# inputs whose tests belong to the nightly full run.
+PR_TEST_SMOKE = "xtask"
 # Only these reviewed metadata/owning utility inputs are payload-free. Unknown
 # packaging paths still require the real package consumers, never a prefix waiver.
 PACKAGING_FOUNDATION = frozenset(("packaging/mastra/policy.json", "packaging/mastra/source-records.json",
@@ -161,6 +169,13 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
     rust_paths = [path for path in paths if not runtime_path(path)
                   and not path.startswith("schema/mastra-runtime/") and path != "docs/mastra-runtime.md"]
     rust_full, rust_packages = affected.select(meta, rust_paths)
+    available = {p["name"] for p in meta["packages"]}
+    # xtask owns the repository/runtime artifact checks. A packaging/mastra
+    # metadata change must select its tests even though packaging/ is not a
+    # Rust package.
+    tooling = any(path.startswith(TOOLING_PREFIXES) for path in paths) and PR_TEST_SMOKE in available
+    if tooling and not rust_full:
+        rust_packages = sorted(set(rust_packages) | {PR_TEST_SMOKE})
     unknown = any(affected.select(meta, [path])[0] for path in rust_paths if not shared_path(path))
     full = full or event_name == "schedule" or not diff_complete or unknown
     rust_full = rust_full or shared or full or release_required
@@ -168,6 +183,20 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
         _, rust_packages = affected.select(meta, rust_paths + [HOST + "mastra_protocol.rs"])
     if rust_full:
         rust_packages = sorted(p["name"] for p in meta["packages"])
+    # Pull requests run a bounded, deterministic lane: the directly affected
+    # packages (with their reverse dependents) plus the tooling smoke owner.
+    # Shared build inputs and full runs keep the complete rustPackages scope for
+    # Clippy and wasm; only the counted test lane is bounded, and the nightly
+    # workflow runs the complete set. Tests excluded here are never reported as
+    # passing evidence.
+    direct_paths = [path for path in rust_paths if not shared_path(path)]
+    _, direct_tests = affected.select(meta, direct_paths)
+    if tooling:
+        direct_tests = sorted(set(direct_tests) | {PR_TEST_SMOKE})
+    rust_test_packages = sorted(set(direct_tests))
+    if not rust_test_packages and (rust_packages or rust_full):
+        fallback = [PR_TEST_SMOKE] if PR_TEST_SMOKE in available else sorted(rust_packages)
+        rust_test_packages = fallback[:1] or sorted(available)[:1]
     selected = full or shared or contract_change or runtime_request
     # Current consumers do not disappear when a required input goes missing.
     required_contract_missing = bool(contract_missing) and contract_required
@@ -211,7 +240,9 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
     return dict(version=1, sourceRevision=source_revision, eventName=event_name,
                 baseRef=base_ref, headRef=head_ref, scope="full" if full else "affected",
                 releaseRequired=release_required, rustFull=rust_full,
-                rustPackages=sorted(set(rust_packages)), jobs=jobs, openObligations=sorted(obligations))
+                rustPackages=sorted(set(rust_packages)),
+                rustTestPackages=sorted(set(rust_test_packages)),
+                jobs=jobs, openObligations=sorted(obligations))
 
 
 def main():

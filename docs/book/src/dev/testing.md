@@ -33,6 +33,20 @@ documentation does not require native tests, but policy or shared inputs may sel
 additional consumers. Scheduled/full validation selects existing full consumers;
 main-target promotion additionally sets `releaseRequired`.
 
+Pull requests use a bounded deterministic lane so a standard two-vCPU runner
+finishes inside 30 minutes. The counted native job tests the directly affected
+packages (with reverse dependents) plus the `xtask` tooling smoke owner, and runs
+one deterministic half of that selection (`--partition count:1/2`). Clippy and
+the wasm compile still cover the complete selected consumer scope, including
+shared lockfile, toolchain, `.github/**` and `scripts/**` inputs. Those inputs
+select `xtask` as the bounded smoke owner; `xtask/**` and `packaging/mastra/**`
+changes always select the xtask tests. The excluded tests are **not** reported as
+passing: the nightly/manual `native-baseline.yml` workflow calls this workflow in
+full mode and runs the complete workspace suite and the complete repository
+checks (owning xtask binary tests, web-offline build and packaging suites). The
+`Format and repository checks` job keeps the fast format, asset, licence, layer,
+list, locale, mesh, skills, selector and bot checks on every PR.
+
 The always-evaluated `ci` aggregate in `.github/workflows/ci.yml` checks actual
 selected `needs` via `scripts/ci/main_merge.py` and `scripts/ci/gate.py`. Inspect:
 
