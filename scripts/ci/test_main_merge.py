@@ -135,7 +135,11 @@ class ForkExecution(unittest.TestCase):
             ["npm", "run", "check:deps", "-w", package],
         ])
         self.assertEqual(contract[2], expected)
-        self.assertIn(["npm", "run", "verify:schema", "-w", package], contract)
+        self.assertEqual(contract[3:], [
+            ["npm", "run", "typecheck", "-w", package],
+            ["npm", "run", "build", "-w", package],
+            ["npm", "run", "verify:schema", "-w", package],
+        ])
 
     def test_empty_rust_package_scope_is_an_error_not_workspace_fallback(self):
         build = self.adapter("native_commands")
