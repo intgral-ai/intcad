@@ -126,6 +126,9 @@ export function validateModelResult(value: unknown, limits: Limits): ModelGenera
   if (content.length > 0 && content.some((block) => !isObject(block) || block["type"] !== "text" || typeof block["text"] !== "string")) {
     throw new ProtocolError("MALFORMED_RESPONSE", "HostAi returned non-text content in protocol 1.0.");
   }
+  if (content.some((block) => typeof block["text"] === "string" && utf8Bytes(block["text"]) > limits.textBytes)) {
+    throw new ProtocolError("MALFORMED_RESPONSE", "HostAi returned a text block over textBytes.");
+  }
   if (toolCalls.length > limits.toolCalls) {
     throw new ProtocolError("MALFORMED_RESPONSE", "HostAi returned too many tool calls.");
   }

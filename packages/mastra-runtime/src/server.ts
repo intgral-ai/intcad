@@ -863,7 +863,7 @@ export class RuntimeServer {
       toolCallId: null,
     };
     if (session.history.length + 2 > this.#limits.historyMessages) {
-      return;
+      throw resourceExhausted("historyMessages", this.#limits.historyMessages);
     }
     session.history.push(turn.userMessage, assistant);
   }
