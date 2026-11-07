@@ -14,6 +14,7 @@ import type { Agent } from "@mastra/core/agent";
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod/v4";
 
+import { monotonicClock, type Clock } from "./clock.js";
 import {
   asProtocolError,
   cancelled,
@@ -27,6 +28,7 @@ import {
   type RetryAdvice,
 } from "./errors.js";
 import { DEFAULT_LIMITS, isObject, limitsValid, narrowerLimits, type Budgets, type Limits } from "./limits.js";
+import { SessionHistory } from "./history.js";
 import { createHostAiAgent, ContinuationBranch, toMastraMessages } from "./host-ai/language-model.js";
 import {
   HostAiModelClient,
@@ -102,7 +104,7 @@ interface SessionState {
   readonly workflowId: string;
   readonly instructions: string;
   readonly bridge: JsonObject | null;
-  readonly history: ModelMessage[];
+  readonly history: SessionHistory;
   readonly branch: ContinuationBranch;
 }
 
@@ -151,6 +153,7 @@ export interface RuntimeServerOptions {
   readonly instanceId?: string;
   readonly runtimeVersion?: string;
   readonly onStopped?: (code: number) => void;
+  readonly clock?: Clock;
 }
 
 export class RuntimeServer {
@@ -160,6 +163,7 @@ export class RuntimeServer {
   readonly #instanceId: string;
   readonly #runtimeVersion: string;
   readonly #onStopped: ((code: number) => void) | undefined;
+  readonly #clock: Clock;
   readonly #pending = new Map<string, PendingCall>();
   readonly #tombstones = new Set<string>();
   readonly #seenIncoming = new Set<string>();
@@ -173,6 +177,7 @@ export class RuntimeServer {
   #session: SessionState | null = null;
   #turn: TurnState | null = null;
   #readyEmitted = false;
+  #hostSequence = 0;
 
   constructor(options: RuntimeServerOptions) {
     this.#diagnostic = options.diagnostic ?? ((line) => process.stderr.write(`${line}\n`));
@@ -182,10 +187,11 @@ export class RuntimeServer {
     this.#instanceId = options.instanceId ?? randomUUID().replaceAll("-", "");
     this.#runtimeVersion = options.runtimeVersion ?? RUNTIME_VERSION;
     this.#onStopped = options.onStopped;
+    this.#clock = options.clock ?? monotonicClock;
     this.#transport = new NdjsonTransport(
       options.input,
       options.output,
-      { frameBytes: this.#limits.frameBytes, queueBytes: this.#limits.queueBytes },
+      { frameBytes: this.#limits.frameBytes, queueBytes: this.#limits.queueBytes, controlLaneBytes: this.#limits.controlLaneBytes },
       {
         onFrame: (bytes) => this.#onFrame(bytes),
         onViolation: (reason) => this.#violation(reason),
@@ -312,7 +318,11 @@ export class RuntimeServer {
       this.#respondError(request.requestId, request.scope, invalidRequest("The offered limits are not internally consistent.", { field: "limits" }));
       return;
     }
-    this.#transport.setLimits({ frameBytes: this.#limits.frameBytes, queueBytes: this.#limits.queueBytes });
+    this.#transport.setLimits({
+      frameBytes: this.#limits.frameBytes,
+      queueBytes: this.#limits.queueBytes,
+      controlLaneBytes: this.#limits.controlLaneBytes,
+    });
     this.#negotiated = true;
     this.#phase = "ready";
     this.#respondOk(request.requestId, request.scope, {
@@ -364,7 +374,7 @@ export class RuntimeServer {
       workflowId,
       instructions,
       bridge: bridge as JsonObject | null,
-      history: [],
+      history: new SessionHistory(),
       branch: new ContinuationBranch(this.#limits.continuationTtlSeconds),
     };
     this.#respondOk(request.requestId, request.scope, { state: "ready", workflowId });
@@ -424,11 +434,12 @@ export class RuntimeServer {
       toolCalls: [],
       toolCallId: null,
     };
-    if (this.#session.history.length + 1 > this.#limits.historyMessages) {
-      this.#respondError(request.requestId, request.scope, resourceExhausted("historyMessages", this.#limits.historyMessages));
+    const historyBlock = this.#session.history.blockedBy([userMessage], this.#limits);
+    if (historyBlock !== null) {
+      this.#respondError(request.requestId, request.scope, resourceExhausted(historyBlock, this.#limits[historyBlock]));
       return;
     }
-    const now = Date.now();
+    const now = this.#clock.now();
     const turn: TurnState = {
       sessionId: request.scope.sessionId as string,
       turnId: request.scope.turnId as string,
@@ -456,7 +467,12 @@ export class RuntimeServer {
 
   #handleTurnCancel(request: RequestFrame): void {
     const turn = this.#turn;
-    if (turn !== null && turn.turnId === request.scope.turnId && turn.sessionId === request.scope.sessionId) {
+    if (
+      turn !== null &&
+      turn.turnId === request.scope.turnId &&
+      turn.sessionId === request.scope.sessionId &&
+      turn.workflowRunId === request.scope.workflowRunId
+    ) {
       if (!turn.cancelled) {
         turn.cancelled = true;
         this.#cancelPendingForTurn(turn);
@@ -503,7 +519,7 @@ export class RuntimeServer {
       workflowId: session.workflowId,
       instructions,
       bridge: session.bridge,
-      history: [],
+      history: new SessionHistory(),
       branch: new ContinuationBranch(this.#limits.continuationTtlSeconds),
     };
     this.#respondOk(request.requestId, request.scope, { state: "ready", sessionId: nextSessionId });
@@ -551,6 +567,15 @@ export class RuntimeServer {
   }
 
   #handleHostEvent(event: EventFrame): void {
+    if (event.sequence <= this.#hostSequence) {
+      this.#violation("host event sequence is duplicate or decreasing");
+      return;
+    }
+    if (this.#hostSequence === 0 && event.sequence !== 1) {
+      this.#violation("host event sequence must start at 1");
+      return;
+    }
+    this.#hostSequence = event.sequence;
     const session = this.#session;
     if (session === null || event.scope.sessionId !== session.id) {
       return;
@@ -600,6 +625,20 @@ export class RuntimeServer {
     try {
       this.#transport.write(frame);
     } catch (error) {
+      if (error instanceof ProtocolError && error.value.code === "RESOURCE_EXHAUSTED") {
+        if (frame.kind === "request") {
+          const pending = this.#pending.get(frame.requestId);
+          if (pending !== undefined) {
+            this.#pending.delete(frame.requestId);
+            clearTimeout(pending.timer);
+            pending.removeAbort();
+            pending.reject(error);
+          }
+          return;
+        }
+        this.#violation(error.message);
+        return;
+      }
       this.#violation(error instanceof Error ? error.message : "transport write failed");
     }
   }
@@ -625,7 +664,7 @@ export class RuntimeServer {
       if (turn.cancelled) {
         throw new TurnCancelled();
       }
-      if (Date.now() > turn.deadline) {
+      if (this.#clock.now() > turn.deadline) {
         throw new BudgetExhausted();
       }
       this.#appendHistory(session, turn);
@@ -668,7 +707,7 @@ export class RuntimeServer {
       execute: async () => {
         this.#checkCancelled(turn);
         this.#emitTurn(turn, "workflow.stage", { stageId: "model", title: "Ask HostAi for one model step", state: "running" });
-        const remainingSeconds = Math.max(1, Math.floor((turn.deadline - Date.now()) / 1000));
+        const remainingSeconds = Math.max(1, Math.floor((turn.deadline - this.#clock.now()) / 1000));
         const client = new HostAiModelClient(
           this.#hostTransport(),
           {
@@ -698,10 +737,10 @@ export class RuntimeServer {
           limits: this.#limits,
           branch: session.branch,
         }) as Agent;
-        const messages: ModelMessage[] = [...session.history, turn.userMessage];
+        const messages: ModelMessage[] = [...session.history.messages, turn.userMessage];
         const result = await agent.generateLegacy(toMastraMessages(messages) as Parameters<Agent["generateLegacy"]>[0], { maxSteps: 1 });
         this.#checkCancelled(turn);
-        if (Date.now() > turn.deadline) {
+        if (this.#clock.now() > turn.deadline) {
           throw new BudgetExhausted();
         }
         const steps = Array.isArray(result.steps) ? result.steps : [];
@@ -862,10 +901,7 @@ export class RuntimeServer {
       })),
       toolCallId: null,
     };
-    if (session.history.length + 2 > this.#limits.historyMessages) {
-      throw resourceExhausted("historyMessages", this.#limits.historyMessages);
-    }
-    session.history.push(turn.userMessage, assistant);
+    session.history.appendRound([turn.userMessage, assistant], this.#limits);
   }
 
   #finishFromError(turn: TurnState, error: unknown): void {
@@ -880,7 +916,7 @@ export class RuntimeServer {
       this.#finishTurn(turn, "budget_exhausted", "The turn budget was exhausted.");
       return;
     }
-    if (Date.now() > turn.deadline) {
+    if (this.#clock.now() > turn.deadline) {
       this.#finishTurn(turn, "budget_exhausted", "The turn wall-clock budget was exhausted.");
       return;
     }

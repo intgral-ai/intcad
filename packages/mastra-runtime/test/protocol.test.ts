@@ -11,6 +11,7 @@ const bundle = SchemaBundle.load();
 
 test("the repository schema bundle verifies and the TypeScript layer agrees with every owned case", () => {
   const report = runConformance(bundle);
+  assert.equal(report.bundleDigest, "sha256:f5e9ed0238da5b9f1ce5cf70bff4a23ed7134476cab5c43b717134c4a282662a");
   assert.equal(report.failures.length, 0, formatReport(report));
   assert.equal(report.total, 1002);
   assert.equal(report.checked, 899);

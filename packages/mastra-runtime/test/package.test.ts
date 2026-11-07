@@ -29,18 +29,26 @@ test("the package pins the intended Node line and keeps the lockfile in the repo
     dependencies: Record<string, string>;
     private: boolean;
   };
+  const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    packageManager: string;
+    dependencies?: Record<string, string>;
+  };
+  assert.equal(rootPkg.packageManager, "npm@11.19.0");
+  assert.equal(rootPkg.dependencies?.["zod"], undefined, "root package must not redeclare the workspace dependency");
   assert.equal(pkg.private, true);
   assert.equal(pkg.engines.node, ">=22.23.4 <23");
   assert.equal(readFileSync(join(repoRoot, ".nvmrc"), "utf8").trim(), "22.23.4");
   assert.equal(pkg.version, RUNTIME_VERSION);
   assert.equal(pkg.dependencies["@mastra/core"], "1.82.0");
   assert.equal(pkg.dependencies["ajv"], "8.20.0");
+  assert.equal(pkg.dependencies["zod"], "4.6.7");
   assert.ok(existsSync(join(repoRoot, "package-lock.json")), "the repository lockfile is committed");
   const lock = JSON.parse(readFileSync(join(repoRoot, "package-lock.json"), "utf8")) as {
-    packages: Record<string, { version?: string }>;
+    packages: Record<string, { version?: string; dependencies?: Record<string, string> }>;
   };
   assert.equal(lock.packages["node_modules/@mastra/core"]?.version, "1.82.0");
   assert.equal(lock.packages["packages/mastra-runtime"]?.version, "0.1.0");
+  assert.equal(lock.packages[""]?.dependencies?.["zod"], undefined);
 });
 
 test("the built entry point imports only declared production packages and no enterprise module", () => {

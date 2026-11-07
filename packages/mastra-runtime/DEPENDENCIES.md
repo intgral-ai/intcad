@@ -12,7 +12,7 @@ licence check does not cover this npm/Node artifact.
 | npm | `11.19.0` (`packageManager`) |
 | Package | `@intgral-ai/solidcraft-mastra-runtime@0.1.0`, private |
 | Package licence | `MIT OR Apache-2.0` (project dual licence) |
-| Lockfile | repository-root `package-lock.json`, SHA-256 `606fa320638cfe80cc81408023d2de21d00edbfa577297e97539ebbd07aafc3b` |
+| Lockfile | repository-root `package-lock.json`, SHA-256 `fd09e98344a3242c76056411a2dcca580c60120cc17bffeb6906ef99b34f48b0` |
 | Contract bundle | `schema/mastra-runtime/v1/manifest.json`, SHA-256 `f5e9ed0238da5b9f1ce5cf70bff4a23ed7134476cab5c43b717134c4a282662a` |
 | Built entry point | `dist/src/main.js` from `npm run build` |
 

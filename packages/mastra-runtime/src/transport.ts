@@ -8,6 +8,7 @@
 import type { Readable, Writable } from "node:stream";
 
 import { encodeFrame, type Frame } from "./protocol.js";
+import { resourceExhausted } from "./errors.js";
 
 export interface TransportHandlers {
   readonly onFrame: (bytes: Buffer) => void;
@@ -18,6 +19,18 @@ export interface TransportHandlers {
 export interface TransportOptions {
   readonly frameBytes: number;
   readonly queueBytes: number;
+  readonly controlLaneBytes: number;
+}
+
+/** Control frames keep their reserved lane even when data output is full. */
+export function isControlFrame(frame: Frame): boolean {
+  if (frame.kind === "request") {
+    return frame.method === "runtime.hello" || frame.method === "turn.cancel" || frame.method === "request.cancel" || frame.method === "runtime.shutdown";
+  }
+  if (frame.kind === "response") {
+    return true;
+  }
+  return frame.event === "turn.finished" || frame.event === "runtime.ready";
 }
 
 export class NdjsonTransport {
@@ -67,10 +80,11 @@ export class NdjsonTransport {
       throw new Error("transport is closed");
     }
     const bytes = encodeFrame(frame);
+    const control = isControlFrame(frame);
+    const limit = control ? this.#options.queueBytes : Math.max(0, this.#options.queueBytes - this.#options.controlLaneBytes);
     const queued = this.#output.writableLength ?? 0;
-    if (queued + bytes.length > this.#options.queueBytes) {
-      this.#violate("output queue exceeded queueBytes");
-      return;
+    if (queued + bytes.length > limit) {
+      throw resourceExhausted("queueBytes", limit);
     }
     if (!this.#output.write(bytes)) {
       this.#output.once("drain", () => undefined);
