@@ -223,8 +223,8 @@ mod tests {
     use super::*;
     use crate::runtime_artifact::{
         ErrorCode, GateError, GateStatus, Inventory, Metadata, Mode, ObservedFile, Policy, Request, RuntimeReceipt, SourceRecords, TreeKind,
-        check_repository_policy, evaluate, inspect_tree, parse_args, parse_metadata, read_metadata, read_policy, read_source_records, test_support,
-        write_result,
+        check_repository_policy, denied_license_expression, evaluate, inspect_tree, parse_args, parse_metadata, read_metadata, read_policy,
+        read_source_records, test_support, write_result,
     };
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
@@ -1936,6 +1936,8 @@ mod tests {
             ("a//b", ErrorCode::UnsafePath),
             ("a/./b", ErrorCode::UnsafePath),
             ("CON", ErrorCode::UnsafePath),
+            ("CONIN$", ErrorCode::UnsafePath),
+            ("CONOUT$", ErrorCode::UnsafePath),
             ("a/nul.txt", ErrorCode::UnsafePath),
             ("COM1.js", ErrorCode::UnsafePath),
             ("lpt9", ErrorCode::UnsafePath),
@@ -2034,6 +2036,8 @@ mod tests {
             for (path, want) in [
                 ("a\\b", ErrorCode::UnsafePath),
                 ("NUL.txt", ErrorCode::UnsafePath),
+                ("CONIN$", ErrorCode::UnsafePath),
+                ("CONOUT$", ErrorCode::UnsafePath),
                 ("a.", ErrorCode::UnsafePath),
                 ("a ", ErrorCode::UnsafePath),
                 ("ee/x", ErrorCode::EnterpriseInput),
@@ -2469,6 +2473,44 @@ mod tests {
     }
 
     #[test]
+    fn distribution_copyleft_license_is_denied_even_if_policy_allows_it() {
+        for expression in [
+            "AGPL-3.0-only",
+            "CC-BY-SA-4.0",
+            "CDDL-1.0",
+            "CeCILL-2.1",
+            "CPAL-1.0",
+            "EPL-2.0",
+            "EUPL-1.2",
+            "GPL-3.0-only",
+            "LGPL-2.1-only",
+            "MPL-2.0",
+            "OSL-3.0",
+            "SSPL-1.0",
+        ] {
+            assert!(denied_license_expression(expression), "copyleft expression not denied: {expression}");
+        }
+        for expression in ["MIT", "Apache-2.0", "MIT OR Apache-2.0", "BSD-3-Clause", "ISC", "Unlicense", "Zlib"] {
+            assert!(!denied_license_expression(expression), "permissive expression denied: {expression}");
+        }
+
+        // A future policy edit cannot admit copyleft by listing it.
+        let f = valid_artifact_case();
+        for expression in ["AGPL-3.0-only", "GPL-3.0-only", "CC-BY-SA-4.0"] {
+            let mut allowed = vec!["Apache-2.0", "MIT", "MIT OR Apache-2.0", expression];
+            allowed.sort();
+            rewrite_json(&f.repository, "packaging/mastra/policy.json", |p| {
+                p["allowedLicenseExpressions"] = json!(allowed);
+            });
+            assert_eq!(
+                read_policy(&f.repository).unwrap_err().code,
+                ErrorCode::SourceRightsUnverified,
+                "policy admitted copyleft expression: {expression}"
+            );
+        }
+    }
+
+    #[test]
     fn distribution_metadata_is_strict_and_bounded() {
         let f = valid_artifact_case();
         let policy_bytes = std::fs::read(f.repository.join("packaging/mastra/policy.json")).unwrap();
@@ -2541,6 +2583,8 @@ mod tests {
             "a//b",
             "a/",
             "a/NUL.txt",
+            "CONIN$",
+            "CONOUT$",
             "com1",
             "LPT9.x",
             "a.",

@@ -48,7 +48,7 @@ fallback or future-field tolerance apply.
 | `Version` | Exact SemVer core of three nonnegative decimal components, without leading zeros; optional nonempty dot-separated ASCII alphanumeric/hyphen prerelease identifiers, with no leading zeros for numeric identifiers. No build metadata, ranges, tags, `v` prefix or `latest`. |
 | `Text` | JSON string whose trimmed value is nonempty; no trimming or rewriting of the stored value. Names, rights holders, license expressions, audit text and lock integrity are not IDs. |
 | `HttpsUrl` | Provenance string beginning `https://`, with nonempty authority and no userinfo (`@` in authority), whitespace, control characters or backslashes. Never fetched; syntax is not proof of source existence or rights. |
-| `RelPath` | Nonempty ASCII relative `/`-separated string, at most 1,024 bytes. No absolute/drive/UNC form, backslash, control/NUL, `:<>"\|?*`, empty/`.`/`..` component or component ending in dot/space. Reject Windows device stems `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, including extensions, case-insensitively. Never repair hostile paths. |
+| `RelPath` | Nonempty ASCII relative `/`-separated string, at most 1,024 bytes. No absolute/drive/UNC form, backslash, control/NUL, `:<>"\|?*`, empty/`.`/`..` component or component ending in dot/space. Reject Windows device stems `CON`, `CONIN$`, `CONOUT$`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, including extensions, case-insensitively. Never repair hostile paths. |
 | `SizeBytes` | JSON unsigned integer (`u64`), 0 through 2,147,483,648 inclusive (2 GiB); no negative or fractional value. |
 | `Target` | `"aarch64-apple-darwin"`, `"x86_64-apple-darwin"`, `"x86_64-pc-windows-msvc"`, `"x86_64-unknown-linux-gnu"`. Other artifact targets fail; host-only accepts the common `Id` grammar without advertising support. |
 | `Role` / `ExcludedRole` | Role: `"agent-loop"`, `"model-runtime"`, `"orchestration"`. ExcludedRole: `"account"`, `"database"`, `"script-execution"`, `"server-bootstrap"`. |
@@ -59,8 +59,12 @@ fallback or future-field tolerance apply.
 All paths, including delivered, materialized and original upstream paths, reject
 a component equal to `ee`, case-insensitively, regardless of package name.
 License expressions are exact reviewed strings, not a home-grown SPDX evaluator;
-unknown expressions fail admission. A package's license string is not rights
-clearance. The current policy vocabulary is `Apache-2.0`, `MIT`, `MIT OR Apache-2.0`.
+unknown expressions fail admission. Copyleft and share-alike identifiers
+(`GPL`, `LGPL`, `AGPL`, `SSPL`, `CPAL`, `EUPL`, `OSL`, `MPL`, `EPL`, `CDDL`,
+`CeCILL`, `CC-BY-SA` and similar) are a hard deny independent of the policy's
+`allowedLicenseExpressions`, so a future policy edit cannot admit one. A package's
+license string is not rights clearance. The current policy vocabulary is
+`Apache-2.0`, `MIT`, `MIT OR Apache-2.0`.
 
 JSON is bounded to 16,777,216 bytes (16 MiB) per file, including BuildEvidence;
 serde's recursion limit remains enabled (128). Each array has at most 100,000
@@ -227,8 +231,11 @@ controls; input files equal all materializedPath entries.
 ### Array ordering and uniqueness
 
 All set arrays below are strictly ascending and duplicate-free, not build order.
-Strings/IDs use Rust lexical ordering; enum orders here coincide with the listed
-wire-string lexical order. JSON object field order is unrestricted.
+Strings/IDs use Rust lexical ordering. Enum arrays use the enum's derived Rust
+`Ord`, which follows declaration order. The enum declarations used as sorted array
+keys (`Target`, `Role`, `ExcludedRole`) happen to match wire-string lexical order.
+`AuditVerdict`, `OriginKind` and `OutputRole` use semantic declaration order and are
+not sorted array keys. JSON object field order is unrestricted.
 
 | Arrays | Required ordering/key |
 |---|---|

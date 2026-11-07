@@ -20,16 +20,18 @@ has been copied into this repository.
 
 ```bash
 # Exported bytes (read-only export outside the source repository)
-mkdir -p /tmp/opencode/vector-audit
-git -C /home/hyjing/Code/intgral/intgral-vector-studio archive \
-  acb5048120b53ae1b4502724b70d1283e8c9daf4 | tar -x -C /tmp/opencode/vector-audit
-sha256sum /tmp/opencode/vector-audit/<path>
-stat -c%s /tmp/opencode/vector-audit/<path>
+VECTOR_STUDIO=path/to/intgral-vector-studio
+AUDIT_EXPORT=path/to/read-only-export
+mkdir -p "$AUDIT_EXPORT"
+git -C "$VECTOR_STUDIO" archive \
+  acb5048120b53ae1b4502724b70d1283e8c9daf4 | tar -x -C "$AUDIT_EXPORT"
+sha256sum "$AUDIT_EXPORT/<path>"
+stat -c%s "$AUDIT_EXPORT/<path>"
 
 # Git object bytes, bypassing any working-tree state
-git -C /home/hyjing/Code/intgral/intgral-vector-studio show \
+git -C "$VECTOR_STUDIO" show \
   acb5048120b53ae1b4502724b70d1283e8c9daf4:<path> | sha256sum
-git -C /home/hyjing/Code/intgral/intgral-vector-studio cat-file -s \
+git -C "$VECTOR_STUDIO" cat-file -s \
   acb5048120b53ae1b4502724b70d1283e8c9daf4:<path>
 ```
 

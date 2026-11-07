@@ -1142,7 +1142,7 @@ fn path_check(value: &str) -> Result<(), &'static str> {
     }
     for component in value.split('/') {
         let stem = component.split('.').next().unwrap_or_default().to_ascii_uppercase();
-        let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        let device = matches!(stem.as_str(), "CON" | "CONIN$" | "CONOUT$" | "PRN" | "AUX" | "NUL")
             || ["COM", "LPT"]
                 .iter()
                 .any(|prefix| stem.strip_prefix(prefix).is_some_and(|n| n.len() == 1 && matches!(n.as_bytes().first(), Some(b'1'..=b'9'))));
@@ -1164,6 +1164,12 @@ fn identifier(s: &str) -> bool {
         && s.len() <= 128
         && s.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
         && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+}
+
+/// Copyleft/share-alike markers are a hard deny, independent of the editable policy list.
+pub(crate) fn denied_license_expression(expression: &str) -> bool {
+    let normalized: String = expression.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect();
+    ["AGPL", "CCBYSA", "CDDL", "CECILL", "CPAL", "EPL", "EUPL", "GPL", "LGPL", "MPL", "OSL", "SSPL"].iter().any(|marker| normalized.contains(marker))
 }
 scalar!(Id, |s: &str| require(identifier(s)));
 scalar!(Version, |s: &str| require(version(s)));
@@ -1343,6 +1349,11 @@ impl Metadata for Policy {
         sorted(&self.supported_targets)?;
         sorted(&self.allowed_license_expressions)?;
         valid(!self.supported_targets.0.is_empty() && !self.allowed_license_expressions.0.is_empty())?;
+        for expression in &self.allowed_license_expressions.0 {
+            if denied_license_expression(&expression.0) {
+                return Err(GateError { code: ErrorCode::SourceRightsUnverified, subject: Some(expression.0.clone()) });
+            }
+        }
         keys(self.approvals.0.iter().map(|a| &a.id))?;
         for approval in &self.approvals.0 {
             if !self.supported_targets.0.contains(&approval.target) {
@@ -1433,7 +1444,8 @@ impl Authorization {
 impl SourceRecords {
     fn validate_policy(&self, policy: &Policy) -> Result<(), GateError> {
         for record in &self.records.0 {
-            if record.license_expression.0.as_ref().is_some_and(|expression| policy.allowed_license_expressions.0.binary_search(expression).is_err())
+            if let Some(expression) = record.license_expression.0.as_ref()
+                && (denied_license_expression(&expression.0) || policy.allowed_license_expressions.0.binary_search(expression).is_err())
             {
                 return Err(GateError { code: ErrorCode::SourceRightsUnverified, subject: Some(record.id.0.clone()) });
             }
@@ -1497,7 +1509,7 @@ impl Inventory {
     /// Exact reviewed vocabulary only, not rights/provenance approval; run before payload reads.
     pub(crate) fn validate_licenses(&self, policy: &Policy) -> Result<(), GateError> {
         for license in &self.licenses.0 {
-            if !policy.allowed_license_expressions.0.contains(&license.expression) {
+            if denied_license_expression(&license.expression.0) || !policy.allowed_license_expressions.0.contains(&license.expression) {
                 return Err(GateError { code: ErrorCode::SourceRightsUnverified, subject: Some(license.id.0.clone()) });
             }
         }
