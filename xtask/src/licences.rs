@@ -365,6 +365,7 @@ mod tests {
             "sourceRepository":"https://fixture.invalid/source", "sourceRevision":revision, "sourcePath":"src/original.ts",
             "sourceDigest":null, "destinationPath":null, "destinationDigest":null, "adaptation":null,
             "rightsHolder":null, "licenseExpression":null, "requiredNotices":[], "dependencyIds":[],
+            "reviewer":"synthetic-fixture", "verdict":"needs-human", "reason":"Synthetic fixture candidate, not an import approval",
             "thirdPartyReview":{"status":"unverified","evidence":[]}, "verification":{"status":"unverified","evidence":[]}}]});
         let policy = json!({"schemaVersion":"1.0", "policyId":"fixture-policy", "sourceRecordsPath":"packaging/mastra/source-records.json",
             "supportedTargets":["aarch64-apple-darwin","x86_64-apple-darwin","x86_64-pc-windows-msvc",target],
@@ -1095,6 +1096,7 @@ mod tests {
             r["licenseExpression"] = json!("MIT");
             r["requiredNotices"] = json!([{"path":"licenses/source-notice.txt","digest":digest(notice)}]);
             r["dependencyIds"] = json!(["fixture-dependency"]);
+            r["verdict"] = json!("verified");
             r["thirdPartyReview"] = json!({"status":"verified","evidence":["Original synthetic independent third-party audit"]});
             r["verification"] = json!({"status":"verified","evidence":["Original synthetic per-file rights audit"]});
         });
@@ -1610,6 +1612,14 @@ mod tests {
             let f = migrated_artifact_case();
             rewrite_json(&f.repository, "packaging/mastra/source-records.json", |s| {
                 s["records"][0][review] = json!({"status":"unverified","evidence":[]});
+            });
+            refresh_fixture_receipt(&f);
+            artifact_error(&f, &artifact_request(&f), "SOURCE_RIGHTS_UNVERIFIED");
+        }
+        for verdict in ["needs-human", "rejected"] {
+            let f = migrated_artifact_case();
+            rewrite_json(&f.repository, "packaging/mastra/source-records.json", |s| {
+                s["records"][0]["verdict"] = json!(verdict);
             });
             refresh_fixture_receipt(&f);
             artifact_error(&f, &artifact_request(&f), "SOURCE_RIGHTS_UNVERIFIED");
@@ -2251,23 +2261,51 @@ mod tests {
         assert_eq!(real_value["authorizations"][0]["sourceRevision"], "acb5048120b53ae1b4502724b70d1283e8c9daf4");
         let records = real_value["records"].as_array().unwrap();
         assert_eq!(records.len(), 5);
-        for (record, (id, role, path)) in records.iter().zip([
-            ("agent-loop", "agent-loop", "apps/server/src/mastra/agent-loop/agent-loop.ts"),
-            ("cad-generation", "orchestration", "packages/ai-runtime/src/workflows/cad-generation.ts"),
-            ("model-runtime", "model-runtime", "packages/ai-runtime/src/models/model-runtime.ts"),
-            ("product-generation-runtime", "orchestration", "apps/server/src/mastra/services/product-generation-runtime.ts"),
-            ("query-proposal", "orchestration", "apps/server/src/mastra/workflows/query-proposal.ts"),
+        for (record, (id, role, path, verdict, license, dependencies)) in records.iter().zip([
+            ("agent-loop", "agent-loop", "apps/server/src/mastra/agent-loop/agent-loop.ts", "needs-human", Some("MIT OR Apache-2.0"), vec![]),
+            ("cad-generation", "orchestration", "packages/ai-runtime/src/workflows/cad-generation.ts", "rejected", None, vec!["mastra-core", "zod"]),
+            (
+                "model-runtime",
+                "model-runtime",
+                "packages/ai-runtime/src/models/model-runtime.ts",
+                "needs-human",
+                Some("MIT OR Apache-2.0"),
+                vec!["mastra-core", "zod"],
+            ),
+            (
+                "product-generation-runtime",
+                "orchestration",
+                "apps/server/src/mastra/services/product-generation-runtime.ts",
+                "rejected",
+                None,
+                vec!["mastra-core", "node-crypto"],
+            ),
+            (
+                "query-proposal",
+                "orchestration",
+                "apps/server/src/mastra/workflows/query-proposal.ts",
+                "needs-human",
+                Some("MIT OR Apache-2.0"),
+                vec!["mastra-core", "zod"],
+            ),
         ]) {
             assert_eq!(record["id"], id);
             assert_eq!(record["role"], role);
             assert_eq!(record["sourcePath"], path);
-            for field in ["sourceDigest", "destinationPath", "destinationDigest", "adaptation", "rightsHolder", "licenseExpression"] {
-                assert!(record[field].is_null(), "candidate {id} has invented {field}");
-            }
-            assert_eq!(record["requiredNotices"], json!([]));
-            assert_eq!(record["dependencyIds"], json!([]));
+            assert_eq!(record["verdict"], verdict, "{id}: wrong audit verdict");
+            assert_eq!(record["licenseExpression"], json!(license), "{id}: wrong license expression");
+            assert_eq!(record["dependencyIds"], json!(dependencies), "{id}: wrong dependency IDs");
+            assert!(record["sourceDigest"].as_str().is_some_and(|digest| digest.starts_with("sha256:")), "{id}: missing digest");
+            assert!(record["destinationPath"].is_null(), "{id}: candidate must not name a destination");
+            assert!(record["destinationDigest"].is_null(), "{id}: candidate must not name a destination digest");
+            assert!(record["adaptation"].as_str().is_some_and(|text| !text.trim().is_empty()), "{id}: missing adaptation note");
+            assert_eq!(record["rightsHolder"], "intgral-ai", "{id}: wrong rights holder");
+            assert_eq!(record["requiredNotices"], json!([]), "{id}: unexpected notice");
+            assert!(record["reviewer"].as_str().is_some_and(|text| !text.trim().is_empty()), "{id}: missing reviewer");
+            assert!(record["reason"].as_str().is_some_and(|text| !text.trim().is_empty()), "{id}: missing reason");
             for review in ["thirdPartyReview", "verification"] {
-                assert_eq!(record[review], json!({"status":"unverified", "evidence":[]}));
+                assert_eq!(record[review]["status"], "unverified", "{id}: review must stay unverified");
+                assert!(!record[review]["evidence"].as_array().unwrap().is_empty(), "{id}: review evidence is empty");
             }
         }
 
@@ -2358,6 +2396,7 @@ mod tests {
         record["licenseExpression"] = json!("MIT");
         record["requiredNotices"] = json!([{"path":"licenses/source-notice.txt", "digest":digest(notice)}]);
         record["dependencyIds"] = json!(["fixture-dependency"]);
+        record["verdict"] = json!("verified");
         record["thirdPartyReview"] =
             json!({"status":"verified", "evidence":["Synthetic independent audit: fixture dependency has its own MIT license and retained notice"]});
         record["verification"] = json!({"status":"verified", "evidence":["Synthetic per-file scope, ownership, license and adaptation audit"]});
@@ -2386,6 +2425,8 @@ mod tests {
             ("/records/0/thirdPartyReview/status", json!("unverified")),
             ("/records/0/thirdPartyReview/evidence", json!([])),
             ("/records/0/verification/evidence", json!([])),
+            ("/records/0/verdict", json!("needs-human")),
+            ("/records/0/verdict", json!("rejected")),
             ("/records/0/role", json!("account")),
             ("/records/0/sourceRepository", json!("https://fixture.invalid/other")),
             ("/records/0/sourceRevision", json!("0000000000000000000000000000000000000000")),
@@ -2467,6 +2508,9 @@ mod tests {
             "/records/0/adaptation",
             "/records/0/rightsHolder",
             "/records/0/licenseExpression",
+            "/records/0/reviewer",
+            "/records/0/verdict",
+            "/records/0/reason",
         ] {
             let mut changed = sources.clone();
             changed["records"][0].as_object_mut().unwrap().remove(pointer.rsplit('/').next().unwrap());

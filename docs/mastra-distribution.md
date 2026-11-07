@@ -52,7 +52,8 @@ fallback or future-field tolerance apply.
 | `SizeBytes` | JSON unsigned integer (`u64`), 0 through 2,147,483,648 inclusive (2 GiB); no negative or fractional value. |
 | `Target` | `"aarch64-apple-darwin"`, `"x86_64-apple-darwin"`, `"x86_64-pc-windows-msvc"`, `"x86_64-unknown-linux-gnu"`. Other artifact targets fail; host-only accepts the common `Id` grammar without advertising support. |
 | `Role` / `ExcludedRole` | Role: `"agent-loop"`, `"model-runtime"`, `"orchestration"`. ExcludedRole: `"account"`, `"database"`, `"script-execution"`, `"server-bootstrap"`. |
-| `ReviewStatus` / `PackageManagerName` | ReviewStatus: `"unverified"` or `"verified"`. PackageManagerName: `"npm"`, `"pnpm"` or `"yarn"`. |
+| `ReviewStatus` / `AuditVerdict` | ReviewStatus: `"unverified"` or `"verified"`. AuditVerdict: `"verified"`, `"needs-human"` or `"rejected"`. |
+| `PackageManagerName` | `"npm"`, `"pnpm"` or `"yarn"`. |
 | `OriginKind` / `OutputRole` | OriginKind: `"repository"`, `"dependency"`, `"node"`, `"tool"`, `"build-evidence"`. OutputRole: `"code"`, `"node"`, `"data"`, `"license"`, `"notice"`. |
 
 All paths, including delivered, materialized and original upstream paths, reject
@@ -108,6 +109,7 @@ SourceRecord {
   destinationDigest: Digest | null, adaptation: Text | null,
   rightsHolder: Text | null, licenseExpression: Text | null,
   requiredNotices: FileRef[], dependencyIds: Id[],
+  reviewer: Text, verdict: AuditVerdict, reason: Text,
   thirdPartyReview: Review, verification: Review
 }
 Review { status: ReviewStatus, evidence: Text[] }
@@ -122,9 +124,14 @@ declaration, proposition, repository, upstream revision, full eligible roles and
 evidence to the scoped instruction below. Each record must reference a matching
 authorization/repository/revision/eligible role. A verified third-party review
 needs nonempty evidence. Verified per-file status additionally requires all six
-nullable fields nonnull, rightsHolder `intgral-ai`, a verified third-party review
-and nonempty verification evidence. Any nonnull licenseExpression must belong to
-the policy vocabulary. Explicit unverified candidates are not artifact permission.
+nullable fields nonnull, rightsHolder `intgral-ai`, a verified third-party review,
+a verified per-file review, nonempty verification evidence and `verdict:
+"verified"`. A `"needs-human"` verdict records an otherwise eligible candidate that
+lacks a required human signature or review; a `"rejected"` verdict records an
+excluded-role file and requires `destinationPath` and `destinationDigest` to stay
+null. Every record carries a nonempty `reviewer` and `reason`. Any nonnull
+licenseExpression must belong to the policy vocabulary. Explicit unverified,
+needs-human or rejected candidates are not artifact permission.
 
 ```text
 Inventory {
@@ -289,27 +296,39 @@ or private npm package does not change those rules.
 Only these exact selected paths from contract section 1.5 are recorded, relative to
 the fixed upstream revision:
 
-| Record | Role | Upstream path |
-|---|---|---|
-| `agent-loop` | `agent-loop` | `apps/server/src/mastra/agent-loop/agent-loop.ts` |
-| `cad-generation` | `orchestration` | `packages/ai-runtime/src/workflows/cad-generation.ts` |
-| `model-runtime` | `model-runtime` | `packages/ai-runtime/src/models/model-runtime.ts` |
-| `product-generation-runtime` | `orchestration` | `apps/server/src/mastra/services/product-generation-runtime.ts` |
-| `query-proposal` | `orchestration` | `apps/server/src/mastra/workflows/query-proposal.ts` |
+| Record | Role | Upstream path | Audit verdict |
+|---|---|---|---|
+| `agent-loop` | `agent-loop` | `apps/server/src/mastra/agent-loop/agent-loop.ts` | `needs-human` |
+| `cad-generation` | `orchestration` | `packages/ai-runtime/src/workflows/cad-generation.ts` | `rejected` |
+| `model-runtime` | `model-runtime` | `packages/ai-runtime/src/models/model-runtime.ts` | `needs-human` |
+| `product-generation-runtime` | `orchestration` | `apps/server/src/mastra/services/product-generation-runtime.ts` | `rejected` |
+| `query-proposal` | `orchestration` | `apps/server/src/mastra/workflows/query-proposal.ts` | `needs-human` |
 
 `packages/ai-runtime/src/tools/cad-execution.ts` is deliberately not recorded:
 contract section 1.2 places the script executor outside the selected migration,
 and `script-execution` is an excluded role. Section 1.5 uses only the workflow /
-injected-executor separation as a reference. `product-generation-runtime.ts` is
-recorded only as the selected session-orchestration candidate; its product
-persistence, account/quota and server-bootstrap portions remain excluded and must
-not be imported. A matching role is not proof of ownership or scope.
+injected-executor separation as a reference.
 
-All five review statuses remain `unverified`. Source/destination digests, destination
-paths, adaptations, rights holders and applicable license expressions are
-explicitly null; notices, dependencies and audit evidence are empty. No private
-source was inspected or copied to fill these gaps. Additional associated modules
-need exact records, not directory-wide permission.
+The audit at the pinned revision records two rejected paths. `cad-generation.ts`
+is effectively script-execution: it accepts only `SCRIPT` input and imports
+`anatomy-smlibpy` plus a remote `CadExecutionPort`. `product-generation-runtime.ts`
+is effectively database/account/product-server persistence: it uses PostgreSQL,
+`app.*` SQL, execution claims, owner identity and product-run lifecycle. Neither is
+an import candidate; only their structural patterns may inform an original
+independent adapter. A matching declared role is not proof of ownership or scope.
+
+The other three records are `needs-human`, not importable yet. They have pinned
+digests and technical audit evidence, but no named human sign-off exists and no
+root license was identified at the pinned revision. `agent-loop.ts` still embeds
+product PostgreSQL/admission composition and candidate adoption; `query-proposal.ts`
+still embeds smlibpy prompts and `ConnectedStudioService` database/account seams;
+`model-runtime.ts` passes the technical scan but shares the missing-signature
+blocker. Original independent adapters remain the current route.
+
+No Vector Studio source has been copied into this repository. The summary table,
+digest commands, `ee/` and excluded-role scan results and verdict counts are in
+[`docs/mastra-source-audit.md`](mastra-source-audit.md). Additional associated
+modules need exact records, not directory-wide permission.
 
 Before copying or adapting a file, record its exact source path/revision/digest,
 destination path/digest, adaptation, applicable scoped authorization, verified
@@ -401,7 +420,8 @@ production closure, and complete real build evidence before release. These tests
 execute no Node, tool or package manager. Synthetic admission and Cargo checks do
 not establish real source audit, reproducibility, installed-package acceptance or
 trusted checkout identity; #17/#14 retain those release obligations. Real approvals
-remain empty and all five selected real source records remain unverified.
+remain empty and all five selected real source records now carry pinned digests
+and an explicit audit verdict: 0 verified, 3 needs-human, 2 rejected.
 
 ## CLI contract and #17 integration
 

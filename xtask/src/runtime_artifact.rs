@@ -1240,6 +1240,7 @@ choices!(Target { Aarch64Apple => "aarch64-apple-darwin", X86Apple => "x86_64-ap
 choices!(Role { AgentLoop => "agent-loop", ModelRuntime => "model-runtime", Orchestration => "orchestration" });
 choices!(ExcludedRole { Account => "account", Database => "database", ScriptExecution => "script-execution", ServerBootstrap => "server-bootstrap" });
 choices!(ReviewStatus { Unverified => "unverified", Verified => "verified" });
+choices!(AuditVerdict { Verified => "verified", NeedsHuman => "needs-human", Rejected => "rejected" });
 choices!(PackageManagerName { Npm => "npm", Pnpm => "pnpm", Yarn => "yarn" });
 choices!(OriginKind { Repository => "repository", Dependency => "dependency", Node => "node", Tool => "tool", BuildEvidence => "build-evidence" });
 choices!(OutputRole { Code => "code", Node => "node", Data => "data", License => "license", Notice => "notice" });
@@ -1263,7 +1264,8 @@ model!(SourceRecord {
     #[serde(deserialize_with = "required_nullable")] adaptation: RequiredNullable<Text>,
     #[serde(deserialize_with = "required_nullable")] rights_holder: RequiredNullable<Text>,
     #[serde(deserialize_with = "required_nullable")] license_expression: RequiredNullable<Text>,
-    required_notices: List<FileRef>, dependency_ids: List<Id>, third_party_review: Review, verification: Review,
+    required_notices: List<FileRef>, dependency_ids: List<Id>, reviewer: Text, verdict: AuditVerdict, reason: Text,
+    third_party_review: Review, verification: Review,
 });
 model!(Review { status: ReviewStatus, evidence: List<Text> });
 model!(FileRef { path: RelPath, digest: Digest });
@@ -1380,16 +1382,22 @@ impl Metadata for SourceRecords {
                     && a.eligible_roles.0.contains(&record.role)
             });
             let audited = record.third_party_review.status != ReviewStatus::Verified || !record.third_party_review.evidence.0.is_empty();
-            let verified = record.verification.status != ReviewStatus::Verified
-                || (record.source_digest.0.is_some()
-                    && record.destination_path.0.is_some()
-                    && record.destination_digest.0.is_some()
-                    && record.adaptation.0.is_some()
-                    && record.rights_holder.0.as_ref().is_some_and(|h| h.0 == "intgral-ai")
-                    && record.license_expression.0.is_some()
-                    && record.third_party_review.status == ReviewStatus::Verified
-                    && !record.verification.evidence.0.is_empty());
-            if !in_scope || !audited || !verified {
+            let fully_verified = record.source_digest.0.is_some()
+                && record.destination_path.0.is_some()
+                && record.destination_digest.0.is_some()
+                && record.adaptation.0.is_some()
+                && record.rights_holder.0.as_ref().is_some_and(|h| h.0 == "intgral-ai")
+                && record.license_expression.0.is_some()
+                && record.third_party_review.status == ReviewStatus::Verified
+                && record.verification.status == ReviewStatus::Verified
+                && !record.verification.evidence.0.is_empty();
+            let verification_ok = record.verification.status != ReviewStatus::Verified || fully_verified;
+            let verdict_ok = match record.verdict {
+                AuditVerdict::Verified => fully_verified,
+                AuditVerdict::NeedsHuman => !fully_verified,
+                AuditVerdict::Rejected => !fully_verified && record.destination_path.0.is_none() && record.destination_digest.0.is_none(),
+            };
+            if !in_scope || !audited || !verification_ok || !verdict_ok {
                 return Err(GateError { code: ErrorCode::SourceRightsUnverified, subject: Some(record.id.0.clone()) });
             }
         }
@@ -1505,7 +1513,10 @@ impl Inventory {
             let unverified = || GateError { code: ErrorCode::SourceRightsUnverified, subject: Some(id.0.clone()) };
             let record =
                 sources.records.0.binary_search_by(|r| r.id.cmp(id)).ok().and_then(|index| sources.records.0.get(index)).ok_or_else(unverified)?;
-            if record.verification.status != ReviewStatus::Verified || input.source_revision.0.as_ref() != Some(&record.source_revision) {
+            if record.verdict != AuditVerdict::Verified
+                || record.verification.status != ReviewStatus::Verified
+                || input.source_revision.0.as_ref() != Some(&record.source_revision)
+            {
                 return Err(unverified());
             }
             let dependencies_accounted = record.dependency_ids.0.iter().all(|id| self.dependencies.0.binary_search_by(|d| d.id.cmp(id)).is_ok());

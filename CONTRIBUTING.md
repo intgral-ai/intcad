@@ -145,8 +145,9 @@ The [architecture page](docs/architecture.md) has the layer table. The short ver
    content. Account/database/server-bootstrap/script-execution code and every `ee/`
    input remain excluded; it covers no CAD/UI assets. Record verified evidence before
    copying; admitted files retain applicable notices and need real pending attribution.
-   The five selected source records are audited (0 verified, 3 needs-human, 2 rejected);
-   no real artifact approval exists and nothing may be imported.
+   The five selected source records now carry pinned digests and audit verdicts:
+   0 `verified`, 3 `needs-human`, 2 `rejected`. None is importable yet, and real
+   artifact approvals remain empty.
    Nightly/manual CI also scans advisories, bans and sources with cargo-deny, and a PR that
    changes Cargo.lock or a Cargo.toml checks the advisories; see
    [the local command and coverage limits](docs/book/src/dev/testing.md#dependency-advisories).
