@@ -622,6 +622,7 @@ export class CadAdapter {
   readonly #pendingTimeoutMs: number;
   readonly #owned = new AbortController();
   readonly #signal: AbortSignal;
+  readonly #documentId: string;
   #stamp: DocumentStamp;
   #unresolved: PendingWriteContext | null = null;
   #writeChain: Promise<void> | null = null;
@@ -662,6 +663,7 @@ export class CadAdapter {
       });
     }
     this.#stamp = stamp;
+    this.#documentId = stamp.documentId;
     this.#signal =
       options.turn.signal === undefined
         ? this.#owned.signal
@@ -738,7 +740,7 @@ export class CadAdapter {
    * revision above 2^53 from the raw reply text.
    */
   async readDocumentStamp(): Promise<DocumentStamp> {
-    const command = await this.#client.describeCommand("document.revision");
+    const command = await this.#describeCommand("document.revision");
     this.#client.assertCommandArguments(command, {}, { allowMissingSchema: true });
     return this.#withRead(async () => {
       const reply = await this.#client.callTool(
@@ -772,6 +774,14 @@ export class CadAdapter {
           operation: "document.revision",
         });
       }
+      if (documentId !== this.#documentId) {
+        throw new ProtocolError(
+          "STALE_DOCUMENT",
+          "The open design is not the one this chat turn pinned.",
+          "never",
+          { expected: cloneStamp(this.#stamp), current: { documentId, revision } },
+        );
+      }
       return { documentId, revision };
     });
   }
@@ -782,6 +792,14 @@ export class CadAdapter {
       this.readDocumentStamp(),
       options.design === false ? Promise.resolve(null) : this.readTool("inspect_design", { measure: true, sketches: false }),
     ]);
+    if (stamp.documentId !== this.#documentId) {
+      throw new ProtocolError(
+        "STALE_DOCUMENT",
+        "Re-inspection returned another document; this turn cannot adopt it.",
+        "never",
+        { expected: cloneStamp(this.#stamp), current: stamp },
+      );
+    }
     if (this.#unresolved === null) {
       this.#stamp = cloneStamp(stamp);
     }
@@ -795,6 +813,14 @@ export class CadAdapter {
       throw new ProtocolError("INVALID_REQUEST", "The inspected document stamp is invalid.", "never", {
         field: "document",
       });
+    }
+    if (parsed.documentId !== this.#documentId) {
+      throw new ProtocolError(
+        "STALE_DOCUMENT",
+        "The inspected stamp belongs to another document; this turn cannot adopt it.",
+        "never",
+        { expected: cloneStamp(this.#stamp), current: parsed },
+      );
     }
     if (this.#unresolved !== null) {
       throw new ProtocolError(
@@ -814,12 +840,12 @@ export class CadAdapter {
       return this.#refuseUnresolved(reservation, false, 1);
     }
     if (this.#signal.aborted) {
-      return this.#cancelledOutcome(reservation, false, 1, false);
+      return this.#cancelledOutcome(reservation, false, 1);
     }
     let prepared: JsonObject;
     try {
       this.#assertGuarded("execute");
-      const descriptor = await this.#client.describeCommand(command);
+      const descriptor = await this.#describeCommand(command);
       this.#client.assertCommandArguments(descriptor, params, { allowMissingSchema: false });
       const args: JsonObject = { command, params };
       if (options.verbose !== undefined) {
@@ -855,7 +881,7 @@ export class CadAdapter {
       return this.#refuseUnresolved(reservation, true, count);
     }
     if (this.#signal.aborted) {
-      return this.#cancelledOutcome(reservation, true, count, false);
+      return this.#cancelledOutcome(reservation, true, count);
     }
     const rollbackRequested = options.rollback ?? true;
     let prepared: JsonObject;
@@ -947,7 +973,14 @@ export class CadAdapter {
     );
   }
 
-  /** Reconcile the original mutation on the same connection; never resend it. */
+  /**
+   * Reconcile the original mutation on the same connection; never resend it.
+   *
+   * While the outcome is unresolved, every new write is refused. 1.0 has no
+   * in-turn escape from `unknown`: if this connection cannot establish the
+   * effect, the turn ends `outcome_unknown` and the user starts a new turn and
+   * re-inspects. A future version may add an explicit host acknowledgement.
+   */
   async reconcile(): Promise<CadWriteResult | null> {
     const context = this.#unresolved;
     if (context === null) {
@@ -1084,6 +1117,19 @@ export class CadAdapter {
     }
   }
 
+  /**
+   * Discovery is a read: it shares the four-slot gate with `readTool` and waits
+   * behind an in-flight mutation, so a held read set plus a batch cannot exceed
+   * the section 4 ceiling. Cached descriptors do not consume a slot.
+   */
+  async #describeCommand(id: string): Promise<DiscoveredCommand> {
+    const cached = this.#client.cachedCommand(id);
+    if (cached !== null) {
+      return cached;
+    }
+    return this.#withRead(() => this.#client.describeCommand(id));
+  }
+
   async #discoverAll(commands: readonly string[]): Promise<Map<string, DiscoveredCommand>> {
     const out = new Map<string, DiscoveredCommand>();
     let next = 0;
@@ -1098,7 +1144,7 @@ export class CadAdapter {
         if (this.#signal.aborted) {
           throw cancelled("cad-discovery");
         }
-        out.set(command, await this.#client.describeCommand(command));
+        out.set(command, await this.#describeCommand(command));
       }
     };
     const workers = Array.from({ length: Math.min(this.#maxReads, commands.length) }, () => worker());
@@ -1122,10 +1168,14 @@ export class CadAdapter {
     pending: boolean,
   ): CadWriteEvidence {
     const native = body;
-    const applied =
+    let applied =
       native !== null && state !== "pending" && state !== "unknown"
         ? numberArray(native["applied"], context.steps)
         : [];
+    if (native !== null && state === "applied" && context.isBatch && applied.length === 0) {
+      const completed = Number.isInteger(native["completed"]) ? (native["completed"] as number) : context.steps;
+      applied = Array.from({ length: Math.max(0, Math.min(completed, context.steps)) }, (_, index) => index);
+    }
     const notRun =
       native !== null
         ? numberArray(native["not_run"], context.steps)
@@ -1142,32 +1192,6 @@ export class CadAdapter {
       native,
       expectationUnchecked,
       pending,
-    };
-  }
-
-  #outcome(
-    state: WriteState,
-    context: PendingWriteContext,
-    fields: {
-      readonly after: DocumentStamp | null;
-      readonly completed: number | null;
-      readonly rollback: Rollback;
-      readonly expectation: Expectation | null;
-      readonly error: WireErrorValue | null;
-    },
-  ): CadWriteResult {
-    return {
-      outcome: {
-        state,
-        request: this.#request(context.reservation),
-        before: cloneStamp(context.before),
-        after: fields.after,
-        completed: fields.completed,
-        rollback: fields.rollback,
-        expectation: fields.expectation,
-        error: fields.error,
-      },
-      evidence: this.#evidence(null, state, context, false, state === "pending"),
     };
   }
 
@@ -1193,7 +1217,7 @@ export class CadAdapter {
         state,
         request: this.#request(reservation),
         before: cloneStamp(context.before),
-        after: null,
+        after: cloneStamp(context.before),
         completed: 0,
         rollback: rollbackNone(isBatch),
         expectation: null,
@@ -1218,7 +1242,7 @@ export class CadAdapter {
         state: "command_failed",
         request: this.#request(reservation),
         before: cloneStamp(context.before),
-        after: null,
+        after: cloneStamp(context.before),
         completed: 0,
         rollback: rollbackNone(isBatch),
         expectation: null,
@@ -1236,7 +1260,6 @@ export class CadAdapter {
     reservation: McpReservedRequest,
     isBatch: boolean,
     steps: number,
-    sent: boolean,
   ): CadWriteResult {
     const context: PendingWriteContext = {
       reservation,
@@ -1252,8 +1275,8 @@ export class CadAdapter {
         state: "cancelled",
         request: this.#request(reservation),
         before: cloneStamp(context.before),
-        after: null,
-        completed: sent ? null : 0,
+        after: cloneStamp(context.before),
+        completed: 0,
         rollback: rollbackNone(isBatch),
         expectation: null,
         error: wireError("CANCELLED", "The chat turn was cancelled before another write was admitted.", {
@@ -1273,7 +1296,7 @@ export class CadAdapter {
           state: "cancelled",
           request: this.#request(context.reservation),
           before: cloneStamp(context.before),
-          after: null,
+          after: context.sent ? null : cloneStamp(context.before),
           completed: context.sent ? null : 0,
           rollback: rollbackNone(context.rollbackRequested),
           expectation: null,
@@ -1313,7 +1336,7 @@ export class CadAdapter {
             state: "command_failed",
             request: this.#request(context.reservation),
             before: cloneStamp(context.before),
-            after: null,
+            after: cloneStamp(context.before),
             completed: 0,
             rollback: rollbackNone(context.rollbackRequested),
             expectation: null,
@@ -1353,7 +1376,7 @@ export class CadAdapter {
           state: "command_failed",
           request: this.#request(context.reservation),
           before: cloneStamp(context.before),
-          after: null,
+          after: cloneStamp(context.before),
           completed: 0,
           rollback: rollbackNone(context.rollbackRequested),
           expectation: null,
@@ -1376,7 +1399,7 @@ export class CadAdapter {
           state,
           request: this.#request(context.reservation),
           before: cloneStamp(context.before),
-          after: null,
+          after: cloneStamp(context.before),
           completed: 0,
           rollback: rollbackNone(context.rollbackRequested),
           expectation: null,
@@ -1400,6 +1423,8 @@ export class CadAdapter {
     const code = typeof error["code"] === "string" ? error["code"] : "INTERNAL_ERROR";
     const normalized = normalizeWireError(error, "The SolidCraft bridge refused the write.");
     if (code === "STALE_DOCUMENT") {
+      // `after` carries the app's current stamp (or null when the target is
+      // closed) so the caller can re-inspect; the adapter never adopts it here.
       const details = isObject(error["details"]) ? error["details"] : {};
       const current = details["current"] === null ? null : parseDocumentStamp(details["current"]);
       this.#unresolved = null;
@@ -1424,7 +1449,7 @@ export class CadAdapter {
           state: "cancelled",
           request: this.#request(context.reservation),
           before: cloneStamp(context.before),
-          after: null,
+          after: context.sent ? null : cloneStamp(context.before),
           completed: context.sent ? null : 0,
           rollback: rollbackNone(context.rollbackRequested),
           expectation: null,
@@ -1443,7 +1468,7 @@ export class CadAdapter {
           state: "command_failed",
           request: this.#request(context.reservation),
           before: cloneStamp(context.before),
-          after: null,
+          after: cloneStamp(context.before),
           completed: 0,
           rollback: rollbackNone(context.rollbackRequested),
           expectation: null,

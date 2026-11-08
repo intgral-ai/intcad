@@ -51,10 +51,8 @@ test("numeric JSON-RPC ids map bijectively to protocol Ids", () => {
   assert.deepEqual(second, { jsonId: 2, wireId: "mcp-2" });
   assert.equal(client.wireIdFor(1), "mcp-1");
   assert.equal(client.wireIdFor(2), "mcp-2");
-  assert.equal(client.jsonIdFor("mcp-2"), 2);
-  assert.equal(client.jsonIdFor("mcp-0"), null);
-  assert.equal(client.jsonIdFor("mcp-999"), null);
   assert.equal(client.wireIdFor(999), null);
+  assert.notEqual(first.wireId, second.wireId);
 });
 
 test("the chat turn association never crosses the MCP wire", async (t) => {
@@ -253,6 +251,17 @@ test("a malformed inbound frame closes the bridge", async (t) => {
   );
 });
 
+test("connect does not return cached information after the bridge is closed", async () => {
+  const peer = new FakeMcpPeer();
+  const client = makeClient(peer);
+  await client.connect();
+  client.close("test close");
+  await assert.rejects(
+    () => client.connect(),
+    (error: unknown) => error instanceof ProtocolError && error.value.code === "TRANSPORT_ERROR",
+  );
+});
+
 test("an unsupported MCP version fails the handshake", async () => {
   const peer = new FakeMcpPeer();
   peer.protocolVersion = "9.9";
@@ -286,6 +295,57 @@ test("invalid bridge and turn identities are refused before connecting", () => {
       }),
     (error: unknown) => error instanceof ProtocolError && error.value.code === "INVALID_REQUEST",
   );
+});
+
+test("streamChannel refuses invalid UTF-8 instead of replacing it", async () => {
+  const { PassThrough } = await import("node:stream");
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const channel = streamChannel(input, output, { maxLineBytes: 64 });
+  let reason = "";
+  channel.receive(
+    () => undefined,
+    (closed) => {
+      reason = closed;
+    },
+  );
+  input.write(Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x7d, 0x0a]));
+  await tick();
+  assert.match(reason, /invalid UTF-8/u);
+});
+
+test("streamChannel refuses a line over the cap before a newline is seen", async () => {
+  const { PassThrough } = await import("node:stream");
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const channel = streamChannel(input, output, { maxLineBytes: 64 });
+  let reason = "";
+  channel.receive(
+    () => undefined,
+    (closed) => {
+      reason = closed;
+    },
+  );
+  input.write(Buffer.alloc(80, 0x61));
+  await tick();
+  assert.match(reason, /more than 64 bytes/u);
+});
+
+test("streamChannel refuses a terminated line longer than the cap", async () => {
+  const { PassThrough } = await import("node:stream");
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const channel = streamChannel(input, output, { maxLineBytes: 64 });
+  let reason = "";
+  channel.receive(
+    () => undefined,
+    (closed) => {
+      reason = closed;
+    },
+  );
+  input.write(Buffer.concat([Buffer.alloc(80, 0x61), Buffer.from("\n")]));
+  await tick();
+  assert.match(reason, /line longer than 64 bytes/u);
 });
 
 test("streamChannel frames lines and reports a closed output", async () => {

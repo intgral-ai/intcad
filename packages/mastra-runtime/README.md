@@ -71,13 +71,13 @@ npm run check:deps      # direct production licences and ee/ import check
 node dist/src/main.js   # start the built artifact on stdio
 ```
 
-`npm test` currently runs 79 tests. The schema suite checks **899 of 1002**
+`npm test` currently runs 87 tests. The schema suite checks **899 of 1002**
 catalog cases that this layer owns and agrees with the catalog on every one. The
 remaining 103 are reported, not claimed: 93 raw `guard-*` / `native-stamp-*`
 carriers whose decision belongs to the Rust component adapters, and 10 host
 state-machine transcripts owned by the Rust `RuntimeMachine`.
 
-48 of the 79 tests are the SolidCraft MCP adapter suites: a deterministic
+56 of the 87 tests are the SolidCraft MCP adapter suites: a deterministic
 in-memory MCP peer (`test/support/mcp-peer.ts`) supplies every guarded outcome
 class, and every produced `WriteOutcome` is validated against the repository's
 `#/$defs/WriteOutcome` schema rather than a TypeScript copy of it.
@@ -134,19 +134,26 @@ counts and any mismatch.
   mapped to protocol `Id`s, and exposes the existing `pending`/`running` query
   on the same connection.
 - `src/solidcraft/cad-adapter.ts` serializes one guarded mutation per turn,
-  bounds reads at four and serializes them behind a mutation, binds
-  `expectedDocument` at the execution envelope, and normalizes every outcome to
-  the contract's section 7 `WriteOutcome` (`applied`, `command_failed`,
-  `expectation_failed`, `pending`, `stale`, `cancelled`, `unknown`). It
-  reconciles a still-running write through `pending` on the same connection
-  without resending it, reports `unknown` after a disconnect, refuses further
-  writes until reconciliation, and returns `UNSUPPORTED_CAPABILITY` with zero
-  writes for a speculative candidate probe.
+  bounds every MCP read (including `describe_command` discovery) at four shared
+  slots and serializes reads behind a mutation, binds `expectedDocument` at the
+  execution envelope, and normalizes every outcome to the contract's section 7
+  `WriteOutcome` (`applied`, `command_failed`, `expectation_failed`, `pending`,
+  `stale`, `cancelled`, `unknown`). It reconciles a still-running write through
+  `pending` on the same connection without resending it, reports `unknown` after
+  a disconnect, refuses further writes until reconciliation, and returns
+  `UNSUPPORTED_CAPABILITY` with zero writes for a speculative candidate probe.
+  A definite no-write failure (`command_failed` or a pre-send `cancelled`)
+  reports `after` equal to `before`; `stale` carries the app's current stamp (or
+  null when closed) and is never adopted automatically. 1.0 has no in-turn
+  escape from `unknown`: writes stay refused, the turn ends `outcome_unknown`,
+  and the user starts a new turn and re-inspects.
 
-## Host bridge provisioning contract (owned by #6/#25)
+## Host bridge provisioning contract (new host follow-up, not in this PR)
 
-`src/solidcraft/mcp-client.ts` receives the bridge as an already-open channel,
-not a URL or a token it resolves itself. The host side must:
+This contract is not implemented by merged #25 and is not part of this PR. A
+new host follow-up must own it. `src/solidcraft/mcp-client.ts` receives the
+bridge as an already-open channel, not a URL or a token it resolves itself. The
+host side must:
 
 - resolve `session.start`'s `BridgeRef {name: "solidcraft-app", bridgeId}` to a
   channel bound to **this turn's** bridge (a fresh `solidcraft-cli mcp` bridge or
@@ -168,9 +175,12 @@ lacks `describe_command`, a usable command schema or the guarded
 ## Not in this package
 
 - The native authoring workflow, stage checks and repair scheduling (#10).
-- Host-side bridge provisioning: resolving `session.start`'s `BridgeRef` to a
-  channel, injecting the trusted turn association, and advertising
-  `guardedExecute`/`guardedBatch` in `runtime.hello` (owned by #6/#25).
+- Host-side bridge provisioning and the chat tool-event/undo projection:
+  resolving `session.start`'s `BridgeRef` to a per-turn channel, injecting the
+  trusted turn/cancel association, projecting the adapter's evidence and stamps
+  through the existing chat tool events and undo boundary, and advertising
+  `guardedExecute`/`guardedBatch` in `runtime.hello`. This is a new follow-up
+  host task; merged #25 does not provide it.
 - ACP task execution (#4).
 - Snapshot capture, local validation and report verification (#11–#13).
 - Installed packaging, Node bundling and the full dependency/licence inventory

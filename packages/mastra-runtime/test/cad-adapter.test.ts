@@ -178,6 +178,7 @@ test("a guarded batch is one host operation with the stamp at the envelope level
   assert.equal(result.outcome.completed, 3);
   assert.deepEqual(result.outcome.rollback, { requested: true, attempted: false, restored: null, undone: null });
   assert.equal(result.outcome.after?.revision, "42");
+  assert.deepEqual(result.evidence.applied, [0, 1, 2], "a successful batch reports its applied step indices");
   assert.equal(adapter.stamp.revision, "42");
 });
 
@@ -260,7 +261,7 @@ test("a command failure keeps the native failure and does not claim an effect", 
   assertConforms(result);
   assert.equal(result.outcome.state, "command_failed");
   assert.equal(result.outcome.completed, 0);
-  assert.equal(result.outcome.after, null);
+  assert.deepEqual(result.outcome.after, STAMP_41, "a definite command failure is known unchanged");
   assert.equal(result.outcome.error?.code, "INTERNAL_ERROR");
   assert.match(result.outcome.error?.message ?? "", /sketch is not closed/u);
   assert.equal(adapter.stamp.revision, "41");
@@ -538,6 +539,7 @@ test("cancellation while a read holds the connection stops the queued write befo
   assertConforms(result);
   assert.equal(result.outcome.state, "cancelled");
   assert.equal(result.outcome.completed, 0);
+  assert.deepEqual(result.outcome.after, STAMP_41, "a pre-send cancellation is known unchanged");
   assert.equal(result.outcome.error?.code, "CANCELLED");
   assert.equal(peer.toolCallsNamed("execute").length, 0);
   held.resolve();
@@ -573,6 +575,124 @@ test("cancelling a queued write does not send it, while an applied in-flight wri
   assertConforms(later);
   assert.equal(later.outcome.state, "cancelled");
   assert.equal(peer.toolCallsNamed("execute").length, 1, "no write is scheduled after a terminal turn");
+});
+
+test("discovery shares the four-read gate with readTool", async (t) => {
+  const { peer, adapter, setBatch } = await harness(t);
+  const release = deferred<void>();
+  peer.setHandler("inspect_design", async () => {
+    await release.promise;
+    return textReply({ name: "fixture" });
+  });
+  setBatch(() => guardedReply({ ok: true, completed: 3, results: [{}, {}, {}], documentStamp: STAMP_42 }));
+  const reads = Array.from({ length: 4 }, () => adapter.readTool("inspect_design"));
+  await waitFor(() => peer.toolCallsNamed("inspect_design").length === 4);
+  const batch = adapter.batch([
+    { command: "parameters.change", params: { name: "width" } },
+    { command: "solid.box", params: { length: 1, width: 1, height: 1 } },
+    { command: "solid.mismatch", params: { radius: 1 } },
+  ]);
+  await tick();
+  await tick();
+  assert.equal(peer.toolCallsNamed("describe_command").length, 0, "discovery waits for a free read slot");
+  assert.ok(peer.maxConcurrentToolCalls <= 4, `max in flight was ${peer.maxConcurrentToolCalls}`);
+  release.resolve();
+  const result = await batch;
+  await Promise.all(reads);
+  assertConforms(result);
+  assert.equal(result.outcome.state, "applied");
+  assert.equal(peer.toolCallsNamed("describe_command").length, 3);
+  assert.equal(peer.maxConcurrentToolCalls, 4, "held reads plus discovery must stay at the section 4 ceiling");
+});
+
+test("discovery waits behind an in-flight mutation", async (t) => {
+  const { peer, adapter, setExecute, setBatch } = await harness(t);
+  const arrived = deferred<void>();
+  const held = deferred<void>();
+  setBatch(async () => {
+    arrived.resolve();
+    await held.promise;
+    return guardedReply({ ok: true, completed: 1, results: [{}], documentStamp: STAMP_42 });
+  });
+  setExecute(() => guardedReply({ result: {}, documentStamp: STAMP_43 }));
+  const first = adapter.batch([{ command: "solid.box", params: { length: 1, width: 1, height: 1 } }]);
+  await arrived.promise;
+  const batchSequence = peer.toolCallsNamed("batch")[0]?.sequence ?? 0;
+  const second = adapter.execute("solid.mismatch", { radius: 1 });
+  await tick();
+  await tick();
+  const described = peer.toolCallsNamed("describe_command").some((call) => call.args["id"] === "solid.mismatch");
+  assert.equal(described, false, "discovery must not overtake the mutation");
+  held.resolve();
+  const firstResult = await first;
+  const secondResult = await second;
+  assertConforms(firstResult);
+  assertConforms(secondResult);
+  assert.equal(firstResult.outcome.state, "applied");
+  assert.equal(secondResult.outcome.state, "applied");
+  const describeSequence =
+    peer.toolCallsNamed("describe_command").find((call) => call.args["id"] === "solid.mismatch")?.sequence ?? 0;
+  assert.ok(describeSequence > batchSequence, "discovery ran after the mutation's call");
+  assert.equal(peer.maxConcurrentToolCalls, 1, "discovery and the mutation never overlap");
+});
+
+test("a batch timeout reconciles the original batch through pending", async (t) => {
+  const { peer, adapter, setBatch, setPending } = await harness(t, { writeTimeoutMs: 25, pendingTimeoutMs: 500 });
+  const arrived = deferred<void>();
+  const held = deferred<void>();
+  setBatch(async () => {
+    arrived.resolve();
+    await held.promise;
+    return guardedReply({ ok: true, completed: 2, results: [{}, {}], documentStamp: STAMP_42 });
+  });
+  let pendingCalls = 0;
+  setPending(() => {
+    pendingCalls += 1;
+    if (pendingCalls === 1) {
+      return textReply({ pending: "batch", done: false, running_s: 1 });
+    }
+    return textReply({
+      pending: "batch",
+      done: true,
+      result: { ok: true, completed: 2, results: [{}, {}], documentStamp: STAMP_42 },
+      expectation: null,
+    });
+  });
+  const first = await adapter.batch([
+    { command: "solid.box", params: { length: 1, width: 1, height: 1 } },
+    { command: "parameters.change", params: { name: "width" } },
+  ]);
+  assertConforms(first);
+  assert.equal(first.outcome.state, "pending");
+  assert.equal(first.outcome.completed, null);
+  assert.equal(peer.toolCallsNamed("batch").length, 1);
+  const batchId = peer.toolCallsNamed("batch")[0]?.id;
+  const reconciled = await adapter.reconcile();
+  assert.ok(reconciled !== null);
+  assertConforms(reconciled);
+  assert.equal(reconciled.outcome.state, "applied");
+  assert.equal(reconciled.outcome.completed, 2);
+  assert.equal(reconciled.outcome.request.requestId, `mcp-${String(batchId)}`);
+  assert.deepEqual(reconciled.evidence.applied, [0, 1]);
+  assert.equal(peer.toolCallsNamed("batch").length, 1, "the timed-out batch is never resent");
+  held.resolve();
+  await tick();
+  await tick();
+});
+
+test("inspection and adoption refuse another document identity", async (t) => {
+  const { adapter } = await harness(t, { documentId: "doc-B" });
+  await assert.rejects(
+    () => adapter.readDocumentStamp(),
+    (error: unknown) =>
+      error instanceof ProtocolError &&
+      error.value.code === "STALE_DOCUMENT" &&
+      error.value.details["current"] !== undefined,
+  );
+  assert.throws(
+    () => adapter.adoptStamp({ documentId: "doc-B", revision: "1" }),
+    (error: unknown) => error instanceof ProtocolError && error.value.code === "STALE_DOCUMENT",
+  );
 });
 
 test("reads are bounded to four at once", async (t) => {
@@ -691,6 +811,7 @@ test("missing, mismatched and untrusted command schemas never guess arguments", 
   assertConforms(missing);
   assert.equal(missing.outcome.state, "command_failed");
   assert.deepEqual(missing.outcome.error?.details, { capability: "command-schema:solid.unconverted" });
+  assert.deepEqual(missing.outcome.after, missing.outcome.before);
   assert.equal(peer.toolCallsNamed("execute").length, 0);
 
   const mismatch = await adapter.execute("solid.mismatch", { radius: "wide" });

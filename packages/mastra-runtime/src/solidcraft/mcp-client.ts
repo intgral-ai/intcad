@@ -145,36 +145,78 @@ interface PendingCall {
 }
 
 /** Adapter from Node streams (a child process's pipes) to the channel shape. */
-export function streamChannel(input: Readable, output: Writable): McpBridgeChannel {
+export interface StreamChannelOptions {
+  /** Inbound line ceiling, enforced before a newline is seen. */
+  readonly maxLineBytes?: number;
+}
+
+/**
+ * Adapter from Node streams (a child process's pipes) to the channel shape.
+ *
+ * The input must be a byte stream (no `setEncoding`): complete lines are
+ * decoded with `fatal: true`, so invalid UTF-8 closes the bridge instead of
+ * becoming U+FFFD. A line longer than `maxLineBytes` is refused before it is
+ * buffered in full.
+ */
+export function streamChannel(
+  input: Readable,
+  output: Writable,
+  options: StreamChannelOptions = {},
+): McpBridgeChannel {
+  const maxLineBytes = options.maxLineBytes ?? DEFAULT_MCP_FRAME_BYTES;
   const lineListeners = new Set<(line: string) => void>();
   const closeListeners = new Set<(reason: string) => void>();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let closed = false;
-  let buffered = "";
+  let buffered: Buffer = Buffer.alloc(0);
 
   const finish = (reason: string): void => {
     if (closed) {
       return;
     }
     closed = true;
+    buffered = Buffer.alloc(0);
     for (const listener of [...closeListeners]) {
       listener(reason);
     }
     closeListeners.clear();
   };
 
-  input.setEncoding("utf8");
-  input.on("data", (chunk: string) => {
+  input.on("data", (chunk: Buffer | string) => {
     if (closed) {
       return;
     }
-    buffered += chunk;
+    const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    if (buffered.length === 0 && bytes.indexOf(0x0a) === -1 && bytes.length > maxLineBytes) {
+      finish(`the SolidCraft bridge sent more than ${maxLineBytes} bytes without a line break`);
+      return;
+    }
+    buffered = buffered.length === 0 ? bytes : Buffer.concat([buffered, bytes]);
     for (;;) {
-      const newline = buffered.indexOf("\n");
-      if (newline === -1) {
+      if (closed) {
         return;
       }
-      const line = buffered.slice(0, newline).replace(/\r$/u, "");
-      buffered = buffered.slice(newline + 1);
+      const newline = buffered.indexOf(0x0a);
+      if (newline === -1) {
+        if (buffered.length > maxLineBytes) {
+          finish(`the SolidCraft bridge sent more than ${maxLineBytes} bytes without a line break`);
+        }
+        return;
+      }
+      if (newline > maxLineBytes) {
+        finish(`the SolidCraft bridge sent a line longer than ${maxLineBytes} bytes`);
+        return;
+      }
+      const lineBytes = buffered.subarray(0, newline);
+      buffered = buffered.subarray(newline + 1);
+      let line: string;
+      try {
+        line = decoder.decode(lineBytes);
+      } catch {
+        finish("the SolidCraft bridge sent invalid UTF-8");
+        return;
+      }
+      line = line.replace(/\r$/u, "");
       if (line.length > 0) {
         for (const listener of [...lineListeners]) {
           listener(line);
@@ -331,6 +373,7 @@ export class McpClient {
 
   /** Perform the MCP handshake and discover the tool list. */
   async connect(): Promise<McpConnectionInfo> {
+    this.#assertOpen();
     if (this.#connected) {
       return {
         protocolVersion: this.#protocolVersion ?? MCP_PROTOCOL_VERSION,
@@ -438,19 +481,6 @@ export class McpClient {
     return Number.isSafeInteger(jsonId) && jsonId >= 1 && jsonId <= this.#nextRequestId ? `mcp-${jsonId}` : null;
   }
 
-  /** The JSON-RPC transport id for a protocol `Id`, if this connection issued it. */
-  jsonIdFor(wireId: string): number | null {
-    const match = /^mcp-([1-9][0-9]*)$/u.exec(wireId);
-    if (match === null) {
-      return null;
-    }
-    const jsonId = Number(match[1]);
-    if (!Number.isSafeInteger(jsonId) || jsonId < 1 || jsonId > this.#nextRequestId) {
-      return null;
-    }
-    return jsonId;
-  }
-
   /** Call one discovered tool. A JSON-RPC error is thrown; `isError` is returned. */
   async callTool(
     name: string,
@@ -468,6 +498,11 @@ export class McpClient {
       reservation,
     );
     return this.#normalizeToolResult(name, reservation.wireId, result);
+  }
+
+  /** A command already discovered on this connection, without a new call. */
+  cachedCommand(id: string): DiscoveredCommand | null {
+    return this.#commands.get(id) ?? null;
   }
 
   /** `describe_command`: the bridge's authoritative parameter/result schemas. */

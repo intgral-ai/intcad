@@ -15,7 +15,7 @@
 
 import { spawn } from "node:child_process";
 
-import { CadAdapter } from "../dist/src/solidcraft/cad-adapter.js";
+import { CadAdapter, readTopLevelUnsignedInteger } from "../dist/src/solidcraft/cad-adapter.js";
 import { McpClient, streamChannel } from "../dist/src/solidcraft/mcp-client.js";
 
 const cli = process.env["SOLIDCRAFT_CLI"];
@@ -38,25 +38,42 @@ const client = new McpClient({
   requestTimeoutMs: 120_000,
   handshakeTimeoutMs: 20_000,
 });
-const adapter = new CadAdapter({
-  client,
-  turn: {
-    bridgeId: "bridge-live",
-    ...turn,
-    document: { documentId: "doc-live", revision: "0" },
-  },
-  writeTimeoutMs: 120_000,
-  readTimeoutMs: 120_000,
-});
+let adapter = null;
 
 function close(code) {
-  adapter.dispose();
+  if (adapter === null) {
+    client.close("live evidence finished");
+  } else {
+    adapter.dispose();
+  }
   child.kill();
   process.exitCode = code;
 }
 
 try {
   const connection = await client.connect();
+  // The host pins the turn's document before it starts the turn. Do the same
+  // here: the guarded adapter refuses to adopt another document identity.
+  const initial = await client.callTool(
+    "execute",
+    { command: "document.revision", params: {} },
+    { timeoutMs: 120_000 },
+  );
+  const documentId = initial.value?.["document_id"];
+  const revision = initial.text === null ? null : readTopLevelUnsignedInteger(initial.text, "revision");
+  if (typeof documentId !== "string" || revision === null) {
+    throw new Error("could not read the live document stamp");
+  }
+  adapter = new CadAdapter({
+    client,
+    turn: {
+      bridgeId: "bridge-live",
+      ...turn,
+      document: { documentId, revision },
+    },
+    writeTimeoutMs: 120_000,
+    readTimeoutMs: 120_000,
+  });
   const inspection = await adapter.inspect({ design: false });
   const batch = await adapter.batch([
     { command: "solid.box", params: { length: 40, width: 30, height: 20 } },
