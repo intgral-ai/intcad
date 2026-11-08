@@ -74,7 +74,8 @@ class Synthetic(unittest.TestCase):
         # What CI reads as "no code changed", on pull requests and pushes to main alike.
         for p in [".github/workflows/docker.yml", ".github/ISSUE_TEMPLATE/bug.yml", "scripts/claim/claim.js",
                   "scripts/triage/triage.test.js", "vendor/README.md", "SECURITY.md", ".gitignore", ".npmrc",
-                  "attribution/pending/mastra-runtime.md"]:
+                  "attribution/pending/mastra-runtime.md",
+                  "assets/locales/pending/host-bridge.json"]:
             self.assertEqual(affected.select(SYNTH, [p]), (False, []), p)
 
     def test_windows_metadata_selects_packages_and_preserves_triggers(self):
