@@ -151,7 +151,8 @@ export interface WorkflowResult {
   readonly changes: ChangeState;
   readonly answer: string;
   readonly validationRunId: string | null;
-  readonly report: JsonObject | null;
+  /** The host-owned report reference, never report bytes invented by the runtime. */
+  readonly report: ArtifactRef | null;
   readonly checks: readonly CheckResult[];
   readonly stages: readonly StageEvent[];
   readonly plan: readonly PlanStep[];
@@ -182,29 +183,91 @@ export type CadPort = Pick<
   | "cancel"
 >;
 
-export interface ValidationRequest {
-  readonly sessionId: string;
-  readonly turnId: string;
-  readonly workflowRunId: string;
-  readonly document: DocumentStamp;
+/** The host-owned reference to immutable report bytes. */
+export interface ArtifactRef {
+  readonly artifactId: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+  readonly mediaType: string;
+}
+
+/** Contract §8's immutable candidate identity. */
+export interface CandidateRef {
+  readonly candidateId: string;
+  readonly source: DocumentStamp;
+  readonly candidateDigest: string;
+  readonly manifestDigest: string;
+  readonly artifact: ArtifactRef;
+}
+
+/** One report check result (contract §9.3). */
+export interface ValidationCheckResult {
+  readonly checkId: string;
+  readonly required: boolean;
+  readonly state: "passed" | "failed" | "error" | "unsupported" | "not_run";
+  readonly expected: JsonObject;
+  readonly actual: JsonObject;
+  readonly evidence: readonly ArtifactRef[];
+}
+
+/** Contract §9.3's report. The host persists these exact bytes. */
+export interface ValidationReport {
+  readonly schemaVersion: string;
+  readonly runId: string;
+  readonly candidateId: string;
+  readonly candidateDigest: string;
+  readonly manifestDigest: string;
   readonly profile: ProfileRef;
-  readonly requirements: FixedRequirements;
-  readonly checks: readonly CheckResult[];
+  readonly runner: { readonly runnerId: string; readonly version: string; readonly engineVersion: string };
+  readonly state: "passed" | "quality_failed" | "infrastructure_error" | "cancelled" | "unknown";
+  readonly startedAt: string | null;
+  readonly finishedAt: string;
+  readonly checks: readonly ValidationCheckResult[];
+  readonly error: { readonly code: string; readonly message: string } | null;
+}
+
+export interface ValidationSubmitResult {
+  readonly runId: string;
+  readonly state: "queued" | "running" | "passed" | "quality_failed" | "infrastructure_error" | "cancelled" | "unknown";
+  readonly candidate: CandidateRef;
+  readonly profile: ProfileRef;
+}
+
+export interface ValidationStatusResult extends ValidationSubmitResult {
+  readonly updatedAt: string;
+  readonly reportAvailable: boolean;
+}
+
+export interface ValidationReportResult {
+  readonly report: ValidationReport;
+  readonly reference: ArtifactRef;
+}
+
+export interface ValidationCancelResult {
+  readonly runId: string;
+  readonly state: ValidationSubmitResult["state"];
+}
+
+/**
+ * The four host methods from contract §9.2. This is deliberately the wire
+ * surface: the runtime never implements profiles or checks locally.
+ */
+export interface ValidationPort {
+  submit(candidate: CandidateRef, profile: ProfileRef, requestId: string, signal: AbortSignal): Promise<ValidationSubmitResult>;
+  status(runId: string, signal: AbortSignal): Promise<ValidationStatusResult>;
+  report(runId: string, signal: AbortSignal): Promise<ValidationReportResult>;
+  cancel(runId: string, signal: AbortSignal): Promise<ValidationCancelResult>;
 }
 
 export interface ValidationOutcome {
   readonly state: "passed" | "quality_failed" | "infrastructure_error" | "cancelled" | "unknown";
   readonly runId: string | null;
-  readonly report: JsonObject | null;
+  readonly candidate: CandidateRef | null;
+  /** Host-owned report bytes reference; never an LLM-supplied object. */
+  readonly report: ArtifactRef | null;
+  readonly reportBody: ValidationReport | null;
   readonly reason: string;
-}
-
-/**
- * Host-owned snapshot/validation handoff (#13). The workflow only consumes a
- * host decision; it does not verify report bytes or LLM success text.
- */
-export interface ValidationHandoff {
-  submit(request: ValidationRequest, signal: AbortSignal): Promise<ValidationOutcome>;
+  readonly reasonCode: string;
 }
 
 export interface ProposalRequest {
@@ -228,8 +291,8 @@ export interface WorkflowOptions {
   readonly signal: AbortSignal;
   readonly clock?: Clock;
   readonly limits?: Limits;
-  /** Absent while #13 is not installed; a passed stage check is then not success. */
-  readonly validation?: ValidationHandoff | null;
+  /** Absent when the host has no local runner; a passed stage check is then not success. */
+  readonly validation?: ValidationPort | null;
   /** Absent while #4 is not installed; ACP mode then refuses without writes. */
   readonly proposalSource?: ProposalSource | null;
 }

@@ -6,6 +6,7 @@
 
 import type { TestContext } from "node:test";
 
+import { ProtocolError } from "../../src/errors.js";
 import type {
   ModelGenerateRequest,
   ModelGenerateResult,
@@ -18,6 +19,7 @@ import { CadAdapter, type DocumentStamp } from "../../src/solidcraft/cad-adapter
 import { McpClient } from "../../src/solidcraft/mcp-client.js";
 import {
   runNativeModelingWorkflow,
+  type CandidateRef,
   type CheckRequirement,
   type FixedRequirements,
   type ModelStep,
@@ -28,9 +30,11 @@ import {
   type StageEvent,
   type TextChannel,
   type ToolEvent,
-  type ValidationHandoff,
-  type ValidationOutcome,
-  type ValidationRequest,
+  type ValidationPort,
+  type ValidationReport,
+  type ValidationReportResult,
+  type ValidationStatusResult,
+  type ValidationSubmitResult,
   type WorkflowEvents,
   type WorkflowOptions,
   type WorkflowResult,
@@ -234,27 +238,114 @@ export class ScriptedModel implements ModelStep {
   }
 }
 
-export class FixedValidation implements ValidationHandoff {
-  readonly requests: ValidationRequest[] = [];
-  readonly #outcome: ValidationOutcome | ((request: ValidationRequest) => ValidationOutcome);
+export interface ValidationSubmission {
+  readonly candidate: CandidateRef;
+  readonly profile: ProfileRef;
+  readonly requestId: string;
+}
 
-  constructor(outcome: ValidationOutcome | ((request: ValidationRequest) => ValidationOutcome)) {
-    this.#outcome = outcome;
+type FixedState = Exclude<ValidationSubmitResult["state"], "queued" | "running">;
+
+/**
+ * Deterministic host validation state machine for workflow tests. It exercises
+ * the exact `validation.submit/status/report` order; report bytes are built
+ * from the submitted candidate and profile, never from model text.
+ */
+export class FixedValidation implements ValidationPort {
+  readonly submissions: ValidationSubmission[] = [];
+  readonly #state: FixedState | ((submission: ValidationSubmission, index: number) => FixedState);
+  readonly #runs = new Map<string, { submission: ValidationSubmission; statusCalls: number }>();
+  #next = 0;
+
+  readonly onStatus: (() => void) | undefined;
+  readonly tamper: ((report: ValidationReport) => ValidationReport) | undefined;
+
+  constructor(
+    state: FixedState | ((submission: ValidationSubmission, index: number) => FixedState) = "passed",
+    onStatus?: () => void,
+    tamper?: (report: ValidationReport) => ValidationReport,
+  ) {
+    this.#state = state;
+    this.onStatus = onStatus;
+    this.tamper = tamper;
   }
 
-  async submit(request: ValidationRequest): Promise<ValidationOutcome> {
-    this.requests.push(request);
-    return typeof this.#outcome === "function" ? this.#outcome(request) : this.#outcome;
+  get requests(): readonly ValidationSubmission[] {
+    return this.submissions;
+  }
+
+  async submit(candidate: CandidateRef, profile: ProfileRef, requestId: string): Promise<ValidationSubmitResult> {
+    const submission = { candidate, profile, requestId };
+    this.submissions.push(submission);
+    this.#next += 1;
+    const runId = `v-${this.#next}`;
+    this.#runs.set(runId, { submission, statusCalls: 0 });
+    return { runId, state: "queued", candidate, profile };
+  }
+
+  async status(runId: string): Promise<ValidationStatusResult> {
+    const run = this.#runs.get(runId);
+    if (run === undefined) {
+      throw new ProtocolError("NOT_FOUND", "No such test run.", "never");
+    }
+    run.statusCalls += 1;
+    this.onStatus?.();
+    const index = this.submissions.indexOf(run.submission);
+    const state = run.statusCalls === 1 ? "running" : typeof this.#state === "function" ? this.#state(run.submission, index) : this.#state;
+    return {
+      runId,
+      state,
+      candidate: run.submission.candidate,
+      profile: run.submission.profile,
+      updatedAt: "2026-11-07T12:00:00.000Z",
+      reportAvailable: state !== "running",
+    };
+  }
+
+  async report(runId: string): Promise<ValidationReportResult> {
+    const run = this.#runs.get(runId);
+    if (run === undefined) {
+      throw new ProtocolError("NOT_FOUND", "No such test run.", "never");
+    }
+    const index = this.submissions.indexOf(run.submission);
+    const state = typeof this.#state === "function" ? this.#state(run.submission, index) : this.#state;
+    const checkState = state === "passed" ? "passed" : state === "quality_failed" ? "failed" : "not_run";
+    const report: ValidationReport = {
+      schemaVersion: "1.0",
+      runId,
+      candidateId: run.submission.candidate.candidateId,
+      candidateDigest: run.submission.candidate.candidateDigest,
+      manifestDigest: run.submission.candidate.manifestDigest,
+      profile: run.submission.profile,
+      runner: { runnerId: "local-solidcraft", version: "1.0.0", engineVersion: "0.0.0-test" },
+      state,
+      startedAt: "2026-11-07T12:00:00.000Z",
+      finishedAt: "2026-11-07T12:00:01.000Z",
+      checks: [
+        {
+          checkId: "input.integrity",
+          required: true,
+          state: checkState,
+          expected: {},
+          actual: {},
+          evidence: [{ artifactId: `evidence-${runId}`, digest: `sha256:${"a".repeat(64)}`, sizeBytes: 1, mediaType: "application/json" }],
+        },
+      ],
+      error: state === "passed" || state === "quality_failed" ? null : { code: "CANCELLED", message: "The test run is terminal." },
+    };
+    return {
+      report: this.tamper?.(report) ?? report,
+      reference: { artifactId: `report-${runId}`, digest: `sha256:${"b".repeat(64)}`, sizeBytes: 1, mediaType: "application/json" },
+    };
+  }
+
+  async cancel(runId: string): Promise<{ runId: string; state: FixedState }> {
+    return { runId, state: "cancelled" };
   }
 }
 
-export function passedValidation(runId = "v-1"): FixedValidation {
-  return new FixedValidation({
-    state: "passed",
-    runId,
-    report: { schemaVersion: "1.0", runId, state: "passed" },
-    reason: "Required checks passed.",
-  });
+export function passedValidation(_runId?: string): FixedValidation {
+  return new FixedValidation("passed");
 }
 
 export class ScriptedProposalSource implements ProposalSource {
@@ -325,6 +416,7 @@ export class WorkflowHarness {
   expectationFailedOnce = false;
   partialFailureOnce = false;
   duringWrite: (() => void) | null = null;
+  #nextCandidate = 0;
 
   constructor(t: TestContext, state: NativeState = boxState()) {
     this.state = state;
@@ -406,6 +498,30 @@ export class WorkflowHarness {
     const command = typeof args["command"] === "string" ? args["command"] : "";
     if (command === "document.revision") {
       return textReply(`{\n  "document_id": "${this.peer.documentId}",\n  "revision": ${this.peer.revision.toString()}\n}`);
+    }
+    if (command === "document.snapshot.capture") {
+      this.#nextCandidate += 1;
+      const serial = this.#nextCandidate.toString(16).padStart(64, "0");
+      return {
+        body: {
+          ok: true,
+          applied: [0],
+          completed: 1,
+          candidate: {
+            candidateId: `cand-${this.#nextCandidate}`,
+            source: this.peer.stamp(),
+            candidateDigest: `sha256:${serial}`,
+            manifestDigest: `sha256:${serial.split("").reverse().join("")}`,
+            artifact: {
+              artifactId: `artifact-cand-${this.#nextCandidate}`,
+              digest: `sha256:${"c".repeat(64)}`,
+              sizeBytes: 1024,
+              mediaType: "application/zip",
+            },
+          },
+          documentStamp: this.peer.stamp(),
+        },
+      };
     }
     if (command === "edit.undo") {
       this.writes.push({ name: "execute", args });
@@ -648,7 +764,7 @@ export class WorkflowHarness {
   async run(
     overrides: Partial<NativeWorkflowInput> & {
       readonly modelReplies?: readonly ModelGenerateResult[];
-      readonly validation?: ValidationHandoff | null;
+      readonly validation?: ValidationPort | null;
       readonly proposalSource?: ProposalSource | null;
       readonly signal?: AbortSignal;
       readonly limits?: Limits;

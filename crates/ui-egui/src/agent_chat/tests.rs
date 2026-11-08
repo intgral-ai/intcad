@@ -13260,6 +13260,7 @@ mod mastra_backend_tests {
             instructions: String::new(),
             connection_auth: auth,
             frozen_binding: Arc::new(Mutex::new(None)),
+            validation: None,
             wake: Arc::new(|| {}),
         }
     }
@@ -13321,6 +13322,80 @@ mod mastra_backend_tests {
 
     fn finish_turn(log: &Arc<Mutex<test_support::Log>>, state: TurnTerminal) {
         finish_turn_with(log, state, None);
+    }
+
+    fn finish_turn_with_report(
+        log: &Arc<Mutex<test_support::Log>>,
+        state: TurnTerminal,
+        validation: Option<&str>,
+        report: Option<ArtifactRef>,
+        document: DocumentStamp,
+    ) {
+        let scope = {
+            let log = log.lock().unwrap();
+            log.requests
+                .iter()
+                .rev()
+                .find_map(|r| match &r.scope {
+                    Scope::Turn(scope) => Some(scope.clone()),
+                    _ => None,
+                })
+                .expect("a turn request")
+        };
+        let finished = TurnFinished {
+            state,
+            reason: String::new(),
+            document,
+            changes: Changes::None,
+            validation_run_id: RequiredNullable(validation.and_then(|id| Id::parse(id).ok())),
+            report: RequiredNullable(report),
+        };
+        log.lock().unwrap().inject_client(ClientNotice::TurnFinishedProposal { scope, proposal: finished });
+    }
+
+    fn scratch_validation(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("solidcraft-mastra-validation-{name}-{}-{nanos}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn captured_candidate(dir: &std::path::Path) -> (CandidateRef, DocumentStamp) {
+        let candidates = dir.join("candidates");
+        std::fs::create_dir_all(&candidates).unwrap();
+        solidcraft_engine::cmd::set_candidate_store(Some(candidates));
+        let mut session = solidcraft_engine::Session::default();
+        session.execute("solid.box", &json!({"length": 20, "width": 10, "height": 5})).unwrap();
+        let result = session.execute("document.snapshot.capture", &json!({})).unwrap();
+        let candidate: CandidateRef = serde_json::from_value(result["candidate"].clone()).unwrap();
+        let stamp = session.document_stamp();
+        let live = DocumentStamp { document_id: Id::parse(&stamp.document_id).unwrap(), revision: Revision::from_u64(stamp.revision) };
+        (candidate, live)
+    }
+
+    fn host_validation(dir: &std::path::Path) -> Arc<mastra_backend::HostValidation> {
+        Arc::new(mastra_backend::HostValidation::open(dir.join("validation"), dir.join("candidates")).expect("the host validation port opens"))
+    }
+
+    fn submit_validation(host: &mastra_backend::HostValidation, scope: &Scope, candidate: &CandidateRef, profile: &ProfileRef) -> (Id, ArtifactRef) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        let key = solidcraft_engine::validation::generate_submission_key(now);
+        let submitted = host
+            .submit(
+                scope,
+                ValidationSubmitParams { candidate: candidate.clone(), profile: profile.clone(), request_id: SubmissionKey::parse(&key).unwrap() },
+            )
+            .expect("validation.submit is routed");
+        for _ in 0..400 {
+            let status = host.status(scope, ValidationStatusParams { run_id: submitted.run_id.clone() }).expect("validation.status is routed");
+            if !matches!(status.state, ValidationState::Queued | ValidationState::Running) {
+                let report = host.report(scope, ValidationReportParams { run_id: submitted.run_id.clone() }).expect("validation.report is routed");
+                return (submitted.run_id, report.reference);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the local validation worker did not finish");
     }
 
     fn app() -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<Mutex<Option<bool>>>) {
@@ -13500,7 +13575,11 @@ mod mastra_backend_tests {
 
         finish_turn(&log, TurnTerminal::ValidatedSuccess);
         let events = backend.poll();
-        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { reason } if reason.is_empty())));
+        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { .. })));
+        assert!(
+            events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Text { thought: true, text } if text == crate::i18n::tr("ui.mastra_validation_unavailable"))),
+            "without a host runner the proposed success is rejected, not published"
+        );
         assert!(backend.active_binding().is_none());
 
         backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("second".into())]);
@@ -13709,13 +13788,14 @@ mod mastra_backend_tests {
         assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { reason } if reason == "auth")));
         assert!(backend.runtime_ready(), "the runtime stayed ready; only the connection needs a sign-in");
 
-        // A validationRunId does not become host acceptance: no report verification exists yet.
+        // A validationRunId does not become host acceptance: without a host runner there is no
+        // report to compare and the proposed success is refused.
         backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("finish".into())]);
         finish_turn_with(&log, TurnTerminal::ValidatedSuccess, Some("run-1"));
         let events = backend.poll();
         assert!(
-            events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Text { thought: true, text } if text == crate::i18n::tr("ui.mastra_validation_not_available"))),
-            "the validation disclaimer is always shown until #12"
+            events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Text { thought: true, text } if text == crate::i18n::tr("ui.mastra_validation_unavailable"))),
+            "the runtime's success proposal is never accepted without a host report"
         );
     }
 
@@ -13892,6 +13972,239 @@ mod mastra_backend_tests {
         );
         assert!(seen.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Tool { id, .. } if id == "call1")));
         backend.shutdown(true);
+    }
+    fn turn_scope(session: &str, turn: &str, workflow: &str) -> TurnScope {
+        TurnScope { session_id: Id::parse(session).unwrap(), turn_id: Id::parse(turn).unwrap(), workflow_run_id: Id::parse(workflow).unwrap() }
+    }
+
+    fn active_turn_scope(log: &Arc<Mutex<test_support::Log>>) -> TurnScope {
+        log.lock()
+            .unwrap()
+            .requests
+            .iter()
+            .rev()
+            .find_map(|record| match &record.scope {
+                Scope::Turn(scope) => Some(scope.clone()),
+                _ => None,
+            })
+            .expect("a turn request")
+    }
+
+    #[test]
+    fn mastra_validation_worker_stop_flag_is_set_on_drop_and_reconnect() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("worker-stop");
+        let first = host_validation(&dir);
+        let first_stop = first.worker_stop_flag();
+        assert!(!first_stop.load(std::sync::atomic::Ordering::Acquire), "the first host is pumping");
+        drop(first);
+        assert!(first_stop.load(std::sync::atomic::Ordering::Acquire), "dropping the backend stops its worker");
+
+        // A reconnect opens a fresh host; the retired worker's flag stays set, so no old loop
+        // keeps pumping in the background.
+        let second = host_validation(&dir);
+        let second_stop = second.worker_stop_flag();
+        assert!(!second_stop.load(std::sync::atomic::Ordering::Acquire), "the reconnected host has its own worker");
+        drop(second);
+        assert!(second_stop.load(std::sync::atomic::Ordering::Acquire));
+        assert!(first_stop.load(std::sync::atomic::Ordering::Acquire), "the old worker did not restart");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_host_accepts_only_the_matching_current_report() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("accept");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let profile = host.profile().expect("the native profile encodes");
+        let turn = turn_scope("s-validate", "t-validate", "w-validate");
+        let scope = Scope::Turn(turn.clone());
+        let (run_id, reference) = submit_validation(&host, &scope, &candidate, &profile);
+
+        let accepted = host.accept(&turn, &run_id, &reference, Some(&live));
+        assert!(accepted.accepted, "{}", accepted.reason);
+        assert!(!accepted.historical);
+        assert_eq!(accepted.identity.candidate_id, candidate.candidate_id.as_str());
+        assert_eq!(accepted.identity.report_artifact_id, reference.artifact_id.as_str());
+        assert!(!accepted.identity.live_changed);
+
+        let mut other_reference = reference.clone();
+        other_reference.digest = Digest::parse(&format!("sha256:{}", "1".repeat(64))).unwrap();
+        let wrong_run = host.accept(&turn, &run_id, &other_reference, Some(&live));
+        assert!(!wrong_run.accepted, "a runtime-supplied report reference cannot replace the host's own");
+
+        let foreign = turn_scope("s-validate", "t-other", "w-other");
+        let foreign_acceptance = host.accept(&foreign, &run_id, &reference, Some(&live));
+        assert!(!foreign_acceptance.accepted, "a report submitted for A cannot approve B");
+
+        let mut changed_live = live.clone();
+        changed_live.revision = Revision::from_u64(live.revision.as_u64() + 1);
+        let stale = host.accept(&turn, &run_id, &reference, Some(&changed_live));
+        assert!(!stale.accepted);
+        assert!(stale.historical, "a changed live stamp makes the passing report history");
+        assert!(stale.identity.live_changed);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_host_rejects_missing_check_evidence_profile_and_runner() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("verify");
+        let (candidate, _live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let profile = host.profile().expect("the native profile encodes");
+        let turn = turn_scope("s-verify", "t-verify", "w-verify");
+        let scope = Scope::Turn(turn);
+        let (run_id, _reference) = submit_validation(&host, &scope, &candidate, &profile);
+        let report = host.report(&scope, ValidationReportParams { run_id: run_id.clone() }).expect("report").report;
+        let engine_report: solidcraft_engine::validation::ValidationReport = serde_json::from_value(serde_json::to_value(report).unwrap()).unwrap();
+
+        assert!(host.verify_report_for_test(run_id.as_str(), &engine_report).is_ok());
+
+        let mut missing = engine_report.clone();
+        missing.checks.pop();
+        assert!(host.verify_report_for_test(run_id.as_str(), &missing).is_err(), "a missing required check cannot pass");
+
+        let mut no_evidence = engine_report.clone();
+        no_evidence.checks[0].evidence.clear();
+        assert!(host.verify_report_for_test(run_id.as_str(), &no_evidence).is_err(), "missing evidence cannot pass");
+
+        let mut wrong_profile = engine_report.clone();
+        wrong_profile.profile.digest = format!("sha256:{}", "2".repeat(64));
+        assert!(host.verify_report_for_test(run_id.as_str(), &wrong_profile).is_err(), "another profile cannot pass");
+
+        let mut wrong_runner = engine_report.clone();
+        wrong_runner.runner.version = "9.9.9".into();
+        assert!(host.verify_report_for_test(run_id.as_str(), &wrong_runner).is_err(), "an unapproved runner cannot pass");
+
+        let mut cancelled = engine_report.clone();
+        cancelled.state = solidcraft_engine::validation::ValidationState::Cancelled;
+        assert!(host.verify_report_for_test(run_id.as_str(), &cancelled).is_err(), "a cancelled run with passing checks cannot pass");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_panel_shows_identity_and_refuses_stale_or_cancelled_success() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("panel");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let profile = host.profile().expect("the native profile encodes");
+        let config = MastraConfig {
+            connection_id: "api-1".into(),
+            model: "m1".into(),
+            workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
+            bridge: None,
+            instructions: String::new(),
+            connection_auth: Arc::new(Mutex::new(None)),
+            frozen_binding: Arc::new(Mutex::new(None)),
+            validation: Some(Arc::clone(&host)),
+            wake: Arc::new(|| {}),
+        };
+        let log = Arc::new(Mutex::new(test_support::Log::default()));
+        let mut backend = MastraBackend::with_port(config, Box::new(test_support::TestPort::new(Arc::clone(&log))), ids());
+        inject_runtime_ready(&log);
+        let _ = backend.poll();
+        finish_session(&log, false);
+        let _ = backend.poll();
+        backend.set_document("doc-main", 7);
+
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("validate".into())]);
+        let first_scope = active_turn_scope(&log);
+        let (first_run, first_ref) = submit_validation(&host, &Scope::Turn(first_scope.clone()), &candidate, &profile);
+        let first_artifact = first_ref.artifact_id.to_string();
+        backend.set_document(live.document_id.as_str(), live.revision.as_u64());
+        finish_turn_with_report(&log, TurnTerminal::ValidatedSuccess, Some(first_run.as_str()), Some(first_ref), live.clone());
+        let events = backend.poll();
+        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { reason } if reason.is_empty())));
+        let card = events.iter().find_map(|event| match event {
+            crate::agent_chat::backend::Event::Tool { id, output, status, .. } if id.starts_with("validation:") => {
+                Some((output.clone().unwrap_or_default(), status))
+            }
+            _ => None,
+        });
+        let (card, status) = card.expect("the validation identity card is shown");
+        let identity: serde_json::Value = serde_json::from_str(&card).unwrap();
+        assert_eq!(status, &Some(crate::agent_chat::backend::ToolStatus::Completed));
+        assert_eq!(identity["stage"], "validate");
+        assert_eq!(identity["validationState"], "passed");
+        assert_eq!(identity["outcome"], "accepted");
+        assert_eq!(identity["candidateId"], candidate.candidate_id.as_str());
+        assert_eq!(identity["snapshot"]["revision"], live.revision.to_string());
+        assert_eq!(identity["report"]["artifactId"], first_artifact);
+        assert_eq!(identity["liveChanged"], false);
+        assert_eq!(identity["historical"], false);
+
+        // A passing report for the previous snapshot cannot approve a changed live design.
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("stale".into())]);
+        let second_scope = active_turn_scope(&log);
+        let (second_run, second_ref) = submit_validation(&host, &Scope::Turn(second_scope), &candidate, &profile);
+        backend.set_document(live.document_id.as_str(), live.revision.as_u64() + 1);
+        finish_turn_with_report(&log, TurnTerminal::ValidatedSuccess, Some(second_run.as_str()), Some(second_ref), live.clone());
+        let events = backend.poll();
+        assert!(events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { reason } if reason == "error")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, crate::agent_chat::backend::Event::Text { thought: true, text } if text.contains("historical evidence"))),
+            "the panel says the report is history, not approval"
+        );
+        let stale_card = events.iter().find_map(|event| match event {
+            crate::agent_chat::backend::Event::Tool { output: Some(output), .. } if output.contains("\"historical\":true") => {
+                serde_json::from_str::<serde_json::Value>(output).ok()
+            }
+            _ => None,
+        });
+        assert_eq!(stale_card.expect("stale identity")["liveChanged"], true);
+
+        // A cancelled turn is not promoted by a late passing report.
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("cancel".into())]);
+        let third_scope = active_turn_scope(&log);
+        let (third_run, third_ref) = submit_validation(&host, &Scope::Turn(third_scope), &candidate, &profile);
+        backend.set_document(live.document_id.as_str(), live.revision.as_u64());
+        backend.cancel();
+        let cancelled_events = backend.poll();
+        let cancelled_card = cancelled_events
+            .iter()
+            .find_map(|event| match event {
+                crate::agent_chat::backend::Event::Tool { output: Some(output), .. } if output.contains("\"historical\":true") => {
+                    serde_json::from_str::<serde_json::Value>(output).ok()
+                }
+                _ => None,
+            })
+            .expect("a cancelled validation is kept and shown as history");
+        assert_eq!(cancelled_card["outcome"], "cancelled");
+        assert_eq!(cancelled_card["stage"], "validate");
+        assert_ne!(cancelled_card["validationState"], "rejected", "the real validation state is not overwritten");
+        finish_turn_with_report(&log, TurnTerminal::ValidatedSuccess, Some(third_run.as_str()), Some(third_ref), live.clone());
+        let events = backend.poll();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, crate::agent_chat::backend::Event::Tool { id, status: Some(crate::agent_chat::backend::ToolStatus::Completed), .. } if id.starts_with("validation:"))),
+            "a cancelled turn cannot be promoted by a late report"
+        );
+
+        // A lost runtime connection is not a cancel, but it also closes the active turn. A late
+        // passing report must remain history rather than promote the dead turn.
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("lost".into())]);
+        let lost_scope = active_turn_scope(&log);
+        let (lost_run, lost_ref) = submit_validation(&host, &Scope::Turn(lost_scope.clone()), &candidate, &profile);
+        backend.set_document(live.document_id.as_str(), live.revision.as_u64());
+        log.lock()
+            .unwrap()
+            .inject_client(ClientNotice::TurnClosed { scope: lost_scope, cause: crate::agent_chat::runtime_client::CloseReason::TransportLoss });
+        let closed = backend.poll();
+        assert!(closed.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { reason } if reason == "transport_error")));
+        finish_turn_with_report(&log, TurnTerminal::ValidatedSuccess, Some(lost_run.as_str()), Some(lost_ref), live);
+        let late = backend.poll();
+        assert!(
+            !late.iter()
+                .any(|e| matches!(e, crate::agent_chat::backend::Event::Tool { id, status: Some(crate::agent_chat::backend::ToolStatus::Completed), .. } if id.starts_with("validation:"))),
+            "a lost connection cannot be promoted by a late passing report"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -14100,6 +14413,7 @@ done
             instructions: String::new(),
             connection_auth: Arc::clone(&auth),
             frozen_binding: Arc::new(std::sync::Mutex::new(None)),
+            validation: None,
             wake: Arc::new(|| {}),
         };
         let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);

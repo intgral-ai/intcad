@@ -7,6 +7,7 @@
  */
 
 export { runNativeModelingWorkflow } from "./workflow.js";
+export { captureCandidate, runValidationStageFor } from "./validation.js";
 export { BudgetMeter } from "./budget.js";
 export {
   evaluateFixedChecks,
@@ -29,8 +30,10 @@ export {
   type Decision,
 } from "./proposals.js";
 export type {
+  ArtifactRef,
   BudgetUsage,
   CadPort,
+  CandidateRef,
   ChangeState,
   CheckRequirement,
   CheckResult,
@@ -50,9 +53,14 @@ export type {
   TextChannel,
   ToolEvent,
   ToolState,
-  ValidationHandoff,
+  ValidationCancelResult,
+  ValidationCheckResult,
   ValidationOutcome,
-  ValidationRequest,
+  ValidationPort,
+  ValidationReport,
+  ValidationReportResult,
+  ValidationStatusResult,
+  ValidationSubmitResult,
   WorkflowEvents,
   WorkflowOptions,
   WorkflowResult,

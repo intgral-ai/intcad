@@ -42,6 +42,7 @@ async function handshake(peer: NativeRecordedPeer): Promise<void> {
   const capabilities = hello.result?.["capabilities"] as JsonObject | undefined;
   assert.equal(capabilities?.["guardedExecute"], false, "hello must not infer guarded writes from channel presence");
   assert.equal(capabilities?.["guardedBatch"], false);
+  assert.equal(capabilities?.["snapshotValidation"], true, "the runtime implements the snapshot validation stage");
   await peer.waitFor((frame) => frame.kind === "event" && frame.event === "runtime.ready");
   const start = await peer.request("session.start", SESSION_SCOPE, sessionParams(), "h:session");
   assert.equal(start.outcome, "ok");
@@ -80,11 +81,11 @@ test("a server turn runs the native workflow: create then parameter edit with pr
     (frame) => frame.kind === "event" && frame.event === "turn.finished" && frame.scope?.turnId === "t-create",
   );
   const createData = eventData(createFinish);
-  assert.equal(createData["state"], "task_failed", "no #13 gate exists, so stage checks never claim validated success");
-  assert.match(String(createData["reason"]), /snapshot validation is not installed/u);
+  assert.equal(createData["state"], "validated_success");
   assert.equal(createData["changes"], "applied");
   assert.deepEqual(createData["document"], { documentId: "doc-native", revision: "42" });
-  assert.equal(createData["validationRunId"], null);
+  assert.equal(createData["validationRunId"], "v-1");
+  assert.equal((createData["report"] as JsonObject | undefined)?.["artifactId"], "report-v-1");
 
   const createEvents = eventsFor(peer, "t-create");
   assert.equal(stage(createEvents, "inspect", "completed") !== undefined, true);
@@ -119,19 +120,77 @@ test("a server turn runs the native workflow: create then parameter edit with pr
     (frame) => frame.kind === "event" && frame.event === "turn.finished" && frame.scope?.turnId === "t-edit",
   );
   const editData = eventData(editFinish);
-  assert.equal(editData["state"], "task_failed");
-  assert.match(String(editData["reason"]), /snapshot validation is not installed/u);
+  assert.equal(editData["state"], "validated_success");
   assert.equal(editData["changes"], "applied");
+  assert.equal(editData["validationRunId"], "v-2");
   assert.deepEqual(editData["document"], { documentId: "doc-native", revision: "43" });
   assert.equal(peer.state.parameters.get("width")?.value, 40);
   assert.equal(peer.state.parameters.get("depth")?.value, 10);
   assert.equal(peer.state.parameters.get("height")?.value, 5);
   assert.equal(stage(eventsFor(peer, "t-edit"), "check", "completed") !== undefined, true);
-  assert.equal(stage(eventsFor(peer, "t-edit"), "validate", "completed"), undefined);
+  assert.equal(stage(eventsFor(peer, "t-edit"), "validate", "completed") !== undefined, true);
   assert.equal(
     peer.mcp.requests.filter((request) => request.method === "initialize").length >= 2,
     true,
     "each turn opened its own MCP session on the injected bridge lane",
+  );
+  const captures = peer.mcp
+    .toolCallsNamed("execute")
+    .filter((call) => call.args["command"] === "document.snapshot.capture");
+  assert.equal(captures.length, 2, "each successful turn captured its own candidate");
+  assert.equal(captures.every((call) => typeof call.args["expectedDocument"] === "object"), true);
+});
+
+test("a quality-failed report repairs with a new candidate, key and run before success", async (t) => {
+  const peer = new NativeRecordedPeer(t, editBase(), {
+    "p-repair": { checks: [] },
+  });
+  peer.validationStates.set("p-repair", ["quality_failed", "passed"]);
+  await handshake(peer);
+
+  const turn = turnParams("t-repair", "w-repair", "p-repair", "Make the box and adjust it.", peer.stamp());
+  await peer.request("turn.start", turnScope("t-repair", "w-repair"), turn, "h:turn-repair");
+
+  let request = await modelRequest(peer);
+  peer.replyTools(request, [decisionEdit()]);
+  request = await modelRequest(peer);
+  peer.replyTools(request, [
+    applyCall("call-box", [{ command: "solid.box", params: { length: 20, width: 10, height: 5 } }]),
+  ]);
+  request = await modelRequest(peer);
+  peer.replyText(request, "Created the box.");
+
+  // The failed report returns to planning; the model applies a corrected edit.
+  request = await modelRequest(peer);
+  const repairMessages = (request.params?.["messages"] as JsonObject[] | undefined) ?? [];
+  assert.equal(
+    repairMessages.some((message) => JSON.stringify(message["content"]).includes("Snapshot validation failed")),
+    true,
+    "the runtime feeds the failed report identity back into the repair round",
+  );
+  peer.replyTools(request, [
+    applyCall("call-repair", [{ command: "parameters.change", params: { name: "width", expression: "40" } }]),
+  ]);
+  request = await modelRequest(peer);
+  peer.replyText(request, "Adjusted the width; the new snapshot is validated.");
+
+  const finished = await peer.waitFor(
+    (frame) => frame.kind === "event" && frame.event === "turn.finished" && frame.scope?.turnId === "t-repair",
+  );
+  const data = eventData(finished);
+  assert.equal(data["state"], "validated_success");
+  assert.equal(data["validationRunId"], "v-2", "the repaired design has a new run");
+  assert.equal((data["report"] as JsonObject | undefined)?.["artifactId"], "report-v-2");
+  assert.equal(peer.validationSubmissions.length, 2);
+  assert.notEqual(
+    peer.validationSubmissions[0]?.["requestId"],
+    peer.validationSubmissions[1]?.["requestId"],
+    "every changed design gets a fresh durable submission key",
+  );
+  assert.notEqual(
+    (peer.validationSubmissions[0]?.["candidate"] as JsonObject | undefined)?.["candidateId"],
+    (peer.validationSubmissions[1]?.["candidate"] as JsonObject | undefined)?.["candidateId"],
+    "a failed report is history for the old candidate, never approval of the new one",
   );
 });
 

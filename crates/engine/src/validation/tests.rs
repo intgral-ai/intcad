@@ -214,6 +214,44 @@ fn the_local_runner_passes_the_analytic_profile_and_reports_evidence() {
 }
 
 #[test]
+fn a_real_local_runner_failure_repairs_to_a_new_candidate_and_passes() {
+    let root = scratch("local-repair");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, Arc::new(LocalRunner), Limits::default(), clock.clone());
+    let profile =
+        task_profile("task-width-25", "1.0.0", Some(vec![ParameterRequirement { name: "width".into(), value: 25.0, abs_tolerance: 1e-6 }]), None)
+            .unwrap();
+    let reference = port.register_profile(profile).unwrap();
+
+    let before = write_candidate(&candidates, "cand-before-repair", analytic_design());
+    let first = port.submit(&before, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    let failed = port.report(&first.run_id).unwrap().report;
+    assert_eq!(failed.state, ValidationState::QualityFailed);
+    assert!(failed.error.is_none(), "a measured mismatch is a quality report, not a runner error");
+    let failed_check = failed.checks.iter().find(|check| check.check_id == "parameters.required").unwrap();
+    assert_eq!(failed_check.state, CheckState::Failed);
+
+    // The repair is a different native design, a different candidate and a new submission key.
+    let mut repaired = Session::default();
+    repaired.execute("parameters.add", &json!({"name": "width", "expression": "25 mm"})).unwrap();
+    repaired.execute("solid.box", &json!({"length": "width", "width": 10, "height": 5})).unwrap();
+    let after = write_candidate(&candidates, "cand-after-repair", solidcraft_io::write_design_container(&repaired.doc).unwrap());
+    assert_ne!(before.candidate_digest, after.candidate_digest);
+    let second_key = generate_submission_key(clock.now_ms());
+    let second = port.submit(&after, &reference, &second_key).unwrap();
+    port.pump().unwrap();
+    assert_ne!(first.run_id, second.run_id, "a repair is a new run, not a retry of the failed one");
+    let passed = port.report(&second.run_id).unwrap().report;
+    assert_eq!(passed.state, ValidationState::Passed);
+    assert_eq!(passed.candidate_id, "cand-after-repair");
+    assert!(passed.checks.iter().all(|check| !check.required || check.state == CheckState::Passed));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_parameter_or_measurement_mismatch_is_a_quality_failure_not_an_infrastructure_one() {
     let root = scratch("local-quality");
     let candidates = root.join("candidates");

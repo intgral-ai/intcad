@@ -41,9 +41,15 @@ import { CadAdapter } from "./solidcraft/cad-adapter.js";
 import { McpClient, type McpBridgeChannel } from "./solidcraft/mcp-client.js";
 import {
   runNativeModelingWorkflow,
+  type ArtifactRef,
+  type CandidateRef,
   type ChangeState,
   type FixedRequirements,
   type ProfileRef,
+  type ValidationPort,
+  type ValidationReportResult,
+  type ValidationStatusResult,
+  type ValidationSubmitResult,
   type WorkflowEvents,
 } from "./workflows/index.js";
 import {
@@ -365,7 +371,7 @@ export class RuntimeServer {
         // The per-turn adapter checks guarded execute/batch before any write.
         guardedExecute: false,
         guardedBatch: false,
-        snapshotValidation: false,
+        snapshotValidation: true,
       },
       limits: this.#limits,
     });
@@ -823,7 +829,7 @@ export class RuntimeServer {
           events: this.#workflowEvents(turn),
           signal: turn.abort.signal,
           limits: this.#limits,
-          validation: null,
+          validation: this.#validationPort(turn),
         },
       );
       if (turn.cancelled && result.state !== "cancelled") {
@@ -947,6 +953,38 @@ export class RuntimeServer {
   #hostTransport(): HostAiTransport {
     return {
       call: (method, scope, params, timeoutSeconds, signal) => this.#callHost(method, scope, params, timeoutSeconds, signal),
+    };
+  }
+
+  /**
+   * The four §9.2 methods over the existing host transport. This class holds no
+   * profile, check or report implementation: the host's `ValidationPort` does.
+   */
+  #validationPort(turn: TurnState): ValidationPort {
+    const scope = turnScope(turn.sessionId, turn.turnId, turn.workflowRunId);
+    const call = (method: string, params: JsonObject, signal: AbortSignal): Promise<JsonObject> => {
+      const remainingSeconds = Math.max(1, Math.floor((turn.deadline - this.#clock.now()) / 1000));
+      const timeoutSeconds = Math.min(this.#limits.callDefaultSeconds, remainingSeconds);
+      return this.#callHost(method, scope, params, timeoutSeconds, signal);
+    };
+    const wire = (value: unknown): JsonObject => value as unknown as JsonObject;
+    return {
+      submit: async (candidate: CandidateRef, profile: ProfileRef, requestId: string, signal: AbortSignal) => {
+        const result = await call("validation.submit", wire({ candidate, profile, requestId }), signal);
+        return result as unknown as ValidationSubmitResult;
+      },
+      status: async (runId: string, signal: AbortSignal) => {
+        const result = await call("validation.status", { runId }, signal);
+        return result as unknown as ValidationStatusResult;
+      },
+      report: async (runId: string, signal: AbortSignal) => {
+        const result = await call("validation.report", { runId }, signal);
+        return result as unknown as ValidationReportResult;
+      },
+      cancel: async (runId: string, signal: AbortSignal) => {
+        const result = await call("validation.cancel", { runId }, signal);
+        return result as unknown as { runId: string; state: ValidationStatusResult["state"] };
+      },
     };
   }
 
@@ -1117,7 +1155,7 @@ export class RuntimeServer {
     reason: string,
     changes: ChangeState = "none",
     validationRunId: string | null = null,
-    report: JsonObject | null = null,
+    report: ArtifactRef | null = null,
   ): void {
     if (turn.finished || turn.retired) {
       return;

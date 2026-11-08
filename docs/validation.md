@@ -135,6 +135,33 @@ The directories default to `SOLIDCRAFT_CANDIDATE_DIR` (or the per-user
 `validation-candidates` directory) and `SOLIDCRAFT_VALIDATION_DIR` (or the per-user
 `validation` directory).
 
+## Verified turn outcomes (#13)
+
+The Mastra workflow captures a candidate only after its native stage checks pass,
+then submits it to the same `ValidationPort` under a new durable key. The runtime
+polls `status`, reads `report`, and checks the run/candidate/manifest/profile/
+runner/check identity before proposing `validated_success`. A quality failure
+returns to planning with a bounded repair and a new candidate/run; infrastructure
+errors, timeouts, cancellation and unknown outcomes are separate and never edit
+geometry.
+
+The Rust host is the final gate. The `validation.submit/status/report/cancel`
+callbacks route to this port, and the host caches the exact report reference it
+received. Before publishing `validated_success` it requires all of:
+
+1. the run was submitted by the active turn and uses the host-frozen profile;
+2. the host's cached report reference exactly equals the runtime's proposal;
+3. the report is `passed`, has no error, and its run/candidate/digest/profile/
+   runner/engine values match the admission record;
+4. the report covers exactly the profile's checks, every required result is
+   `passed`, and each has at least one digest-checked evidence reference;
+5. the turn is active and the current live `DocumentStamp` equals the captured
+   candidate's source stamp.
+
+A report that passes after the live design changed is retained as history and
+shown with its snapshot, report reference and `liveChanged: true`; it is never
+approval of the new content. A cancelled turn is not promoted by a late report.
+
 ## Not in this port
 
 A remote CI vendor adapter, deployment, a comprehensive production check suite and an
