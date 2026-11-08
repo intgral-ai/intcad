@@ -143,6 +143,33 @@ jobs:
           path: evidence/
           if-no-files-found: error
 
+  artifact-policy:
+    name: Mastra artifact policy
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.artifact-policy.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: artifact-policy
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job artifact-policy --out evidence/artifact-policy
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-artifact-policy
+          path: evidence/
+          if-no-files-found: error
+
   clippy:
     name: Native Linux Clippy
     needs: changes
@@ -657,7 +684,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, repo, pr-policy, clippy, contract-rust, runtime, contract-ts, rust, wasm, dependency-advisories, build-tests, property-tests, action-matrix, action-matrix-determinism, doc-tests, oracle, windows-fxc, windows-startup, riscv64-gates]
+    needs: [changes, repo, pr-policy, artifact-policy, clippy, contract-rust, runtime, contract-ts, rust, wasm, dependency-advisories, build-tests, property-tests, action-matrix, action-matrix-determinism, doc-tests, oracle, windows-fxc, windows-startup, riscv64-gates]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

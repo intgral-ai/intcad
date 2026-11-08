@@ -286,6 +286,11 @@ def contract_ts_commands():
             ["npm", "run", "verify:schema", "-w", RUNTIME_PACKAGE]]
 
 
+def artifact_commands():
+    """Validate the reviewed desktop runtime distribution policy and source records."""
+    return [["cargo", "xtask", "runtime-artifact", "--mode", "policy"]]
+
+
 def wasm_commands():
     # Read the same checked-in layering table as xtask::wasm_check; do not keep a
     # second manually maintained crate list. Compile exactly the layered crates + web.
@@ -326,6 +331,8 @@ def execute_workflow(plan_file, job, out, *, full=False):
         argvs = contract_ts_commands()
     elif job == "wasm":
         argvs = wasm_commands()
+    elif job == "artifact-policy":
+        argvs = artifact_commands()
     else:
         raise ValueError(job + ": executable owner handoff is not integrated; no placeholder receipt is permitted")
     selection = junit = None
