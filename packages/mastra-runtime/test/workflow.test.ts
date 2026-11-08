@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { JsonObject } from "../src/protocol.js";
+import { ProtocolError } from "../src/errors.js";
 import { DEFAULT_LIMITS } from "../src/limits.js";
+import type {
+  CandidateRef,
+  ProfileRef,
+  ValidationPort,
+  ValidationReportResult,
+  ValidationStatusResult,
+  ValidationSubmitResult,
+} from "../src/workflows/index.js";
 import { HostAiModelClient, type HostAiTransport } from "../src/host-ai/model-client.js";
 import { evaluateFixedChecks, runNativeModelingWorkflow } from "../src/workflows/index.js";
 import { textReply } from "./support/mcp-peer.js";
@@ -900,9 +909,39 @@ test("ACP task and validation budgets are distinct and reserved before dispatch"
   assert.equal(validation.submissions.length, 0);
 });
 
+class RetryValidation implements ValidationPort {
+  readonly submissionKeys: string[] = [];
+  readonly #delegate = new FixedValidation("passed");
+  readonly #alwaysTimeout: boolean;
+
+  constructor(alwaysTimeout = false) {
+    this.#alwaysTimeout = alwaysTimeout;
+  }
+
+  async submit(candidate: CandidateRef, profile: ProfileRef, requestId: string): Promise<ValidationSubmitResult> {
+    this.submissionKeys.push(requestId);
+    if (this.#alwaysTimeout || this.submissionKeys.length === 1) {
+      throw new ProtocolError("TIMEOUT", "The test submit timed out.", "same_submission", { operation: "validation.submit" });
+    }
+    return this.#delegate.submit(candidate, profile, requestId);
+  }
+
+  status(runId: string): Promise<ValidationStatusResult> {
+    return this.#delegate.status(runId);
+  }
+
+  report(runId: string): Promise<ValidationReportResult> {
+    return this.#delegate.report(runId);
+  }
+
+  cancel(runId: string) {
+    return this.#delegate.cancel(runId);
+  }
+}
+
 async function runOneValidation(
   t: import("node:test").TestContext,
-  validation: FixedValidation,
+  validation: ValidationPort,
   overrides: Partial<import("../src/workflows/index.js").NativeWorkflowInput> = {},
 ) {
   const harness = new WorkflowHarness(t, boxState());
@@ -971,6 +1010,85 @@ test("a cancelled run with passing checks cannot approve an active turn", async 
   assert.equal(result.reasonCode, "CANCELLED");
   assert.equal(result.validationRunId, "v-1");
   assert.notEqual(result.state, "validated_success");
+});
+
+test("validation-failure repairs consume the same repair cap as stage-check repairs", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  const validation = new FixedValidation("quality_failed");
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([applyCall("call-v1", boxCommands())]),
+      replyText("First attempt."),
+      replyToolCalls([applyCall("call-v2", widthCommands(40))]),
+      replyText("Second attempt."),
+      replyToolCalls([applyCall("call-v3", widthCommands(41))]),
+      replyText("Third attempt."),
+    ],
+    requirements: fixedRequirements(),
+    budgets: { ...DEFAULT_BUDGETS, repairs: 2, validationRuns: 3 },
+    validation,
+  });
+
+  assert.equal(result.state, "quality_failed");
+  assert.equal(result.reasonCode, "QUALITY_FAILED");
+  assert.equal(result.budgets.repairs, 2, "validation repairs share the two-repair cap");
+  assert.equal(result.budgets.validationRuns, 3, "the initial run plus two repair runs");
+  assert.equal(validation.submissions.length, 3);
+  assert.equal(harness.writes.length, 3);
+  assert.equal(harness.model?.requests.length, 7, "no extra model round after the cap is reached");
+});
+
+test("a text-only reply after a failed report does not recapture the unchanged design", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  const validation = new FixedValidation("quality_failed");
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([applyCall("call-box", boxCommands())]),
+      replyText("Created."),
+      replyText("I have no correction to make."),
+    ],
+    requirements: fixedRequirements(),
+    validation,
+  });
+
+  assert.equal(result.state, "quality_failed");
+  assert.equal(result.reasonCode, "NO_REPAIR_WRITE");
+  assert.equal(validation.submissions.length, 1, "the unchanged design was not captured again");
+  assert.equal(result.budgets.validationRuns, 1);
+  assert.match(result.reason, /no new native write/u);
+});
+
+test("infrastructure error and unknown are separate terminals and never edit geometry again", async (t) => {
+  const infrastructure = await runOneValidation(t, new FixedValidation("infrastructure_error"));
+  assert.equal(infrastructure.result.state, "task_failed");
+  assert.equal(infrastructure.result.reasonCode, "VALIDATION_INFRASTRUCTURE_ERROR");
+  assert.equal(infrastructure.harness.writes.length, 1, "no geometry repair after an infrastructure failure");
+  assert.equal(infrastructure.harness.model?.requests.length, 3, "no additional model round");
+
+  const unknown = await runOneValidation(t, new FixedValidation("unknown"));
+  assert.equal(unknown.result.state, "outcome_unknown");
+  assert.equal(unknown.result.reasonCode, "OUTCOME_UNKNOWN");
+  assert.equal(unknown.result.changes, "unknown");
+  assert.equal(unknown.harness.writes.length, 1);
+  assert.equal(unknown.harness.model?.requests.length, 3);
+});
+
+test("a lost submit is retried with the same durable key, and a permanent timeout does not repair geometry", async (t) => {
+  const retried = new RetryValidation();
+  const first = await runOneValidation(t, retried);
+  assert.equal(first.result.state, "validated_success");
+  assert.equal(retried.submissionKeys.length, 2);
+  assert.equal(retried.submissionKeys[0], retried.submissionKeys[1], "the lost submit keeps its submission key");
+
+  const timedOut = new RetryValidation(true);
+  const second = await runOneValidation(t, timedOut);
+  assert.equal(second.result.state, "task_failed");
+  assert.equal(second.result.reasonCode, "TIMEOUT");
+  assert.equal(second.harness.writes.length, 1, "a validation timeout never starts a replacement edit");
+  assert.equal(timedOut.submissionKeys.length, 2);
+  assert.equal(timedOut.submissionKeys[0], timedOut.submissionKeys[1]);
 });
 
 test("a passing report for a changed live stamp is historical, not validated success", async (t) => {

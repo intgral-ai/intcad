@@ -30,6 +30,7 @@ import type {
   ValidationReport,
   ValidationReportResult,
   ValidationStatusResult,
+  ValidationSubmitResult,
 } from "./types.js";
 
 const CANDIDATE_COMMAND = "document.snapshot.capture";
@@ -85,6 +86,16 @@ function isCandidate(value: unknown): value is CandidateRef {
   );
 }
 
+function isProfile(value: unknown): value is ProfileRef {
+  return (
+    isObject(value) &&
+    isId(value["profileId"]) &&
+    typeof value["version"] === "string" &&
+    value["version"].length > 0 &&
+    digest(value["digest"])
+  );
+}
+
 function sameStamp(a: { documentId: string; revision: string }, b: { documentId: string; revision: string }): boolean {
   return a.documentId === b.documentId && a.revision === b.revision;
 }
@@ -104,6 +115,39 @@ function sameCandidate(a: CandidateRef, b: CandidateRef): boolean {
     a.artifact.sizeBytes === b.artifact.sizeBytes &&
     a.artifact.mediaType === b.artifact.mediaType
   );
+}
+
+const VALIDATION_STATES = ["queued", "running", "passed", "quality_failed", "infrastructure_error", "cancelled", "unknown"] as const;
+const CHECK_STATES = ["passed", "failed", "error", "unsupported", "not_run"] as const;
+
+function isValidationState(value: unknown): value is ValidationStatusResult["state"] {
+  return typeof value === "string" && (VALIDATION_STATES as readonly string[]).includes(value);
+}
+
+function isSubmitResult(value: unknown): value is ValidationSubmitResult {
+  return (
+    isObject(value) &&
+    isId(value["runId"]) &&
+    isValidationState(value["state"]) &&
+    isCandidate(value["candidate"]) &&
+    isProfile(value["profile"])
+  );
+}
+
+function isStatusResult(value: unknown): value is ValidationStatusResult {
+  return (
+    isObject(value) &&
+    isId(value["runId"]) &&
+    isValidationState(value["state"]) &&
+    isCandidate(value["candidate"]) &&
+    isProfile(value["profile"]) &&
+    typeof value["updatedAt"] === "string" &&
+    typeof value["reportAvailable"] === "boolean"
+  );
+}
+
+function isReportResult(value: unknown): value is ValidationReportResult {
+  return isObject(value) && isObject(value["report"]) && isArtifact(value["reference"]);
 }
 
 function findCandidate(value: unknown, depth = 0): CandidateRef | null {
@@ -185,59 +229,69 @@ function retryableRead(error: unknown): boolean {
   return wire.value.code === "NOT_READY" || retryable(error);
 }
 
-function checkReport(
-  report: ValidationReport,
-  runId: string,
-  candidate: CandidateRef,
-  profile: ProfileRef,
-): string | null {
-  if (report.schemaVersion !== "1.0") {
+function checkReport(report: unknown, runId: string, candidate: CandidateRef, profile: ProfileRef): string | null {
+  if (!isObject(report)) {
+    return "the report is not an object";
+  }
+  if (report["schemaVersion"] !== "1.0") {
     return "the report schema version is not 1.0";
   }
-  if (report.runId !== runId) {
+  if (report["runId"] !== runId) {
     return "the report belongs to another run";
   }
-  if (report.candidateId !== candidate.candidateId) {
+  if (report["candidateId"] !== candidate.candidateId) {
     return "the report names another candidate";
   }
-  if (report.candidateDigest !== candidate.candidateDigest || report.manifestDigest !== candidate.manifestDigest) {
+  if (report["candidateDigest"] !== candidate.candidateDigest || report["manifestDigest"] !== candidate.manifestDigest) {
     return "the report binds different candidate bytes";
   }
-  if (!sameProfile(report.profile, profile)) {
+  if (!isProfile(report["profile"]) || !sameProfile(report["profile"], profile)) {
     return "the report binds another profile";
   }
+  const runner = report["runner"];
   if (
-    !isId(report.runner.runnerId) ||
-    report.runner.version.length === 0 ||
-    report.runner.engineVersion.length === 0
+    !isObject(runner) ||
+    !isId(runner["runnerId"]) ||
+    typeof runner["version"] !== "string" ||
+    runner["version"].length === 0 ||
+    typeof runner["engineVersion"] !== "string" ||
+    runner["engineVersion"].length === 0
   ) {
     return "the report has no approved runner identity";
   }
-  if (!["passed", "quality_failed", "infrastructure_error", "cancelled", "unknown"].includes(report.state)) {
+  if (!isValidationState(report["state"])) {
     return "the report has an unknown terminal state";
+  }
+  if (report["error"] !== null && !isObject(report["error"])) {
+    return "the report error is malformed";
+  }
+  const rawChecks = report["checks"];
+  if (!Array.isArray(rawChecks)) {
+    return "the report has no check list";
   }
   const seen = new Set<string>();
   const checks: ValidationCheckResult[] = [];
-  for (const result of report.checks) {
-    if (!isId(result.checkId) || typeof result.required !== "boolean") {
+  for (const entry of rawChecks) {
+    if (!isObject(entry) || !isId(entry["checkId"]) || typeof entry["required"] !== "boolean") {
       return "a report check is malformed";
     }
-    if (seen.has(result.checkId)) {
-      return `the report repeats check ${result.checkId}`;
+    const checkId = entry["checkId"];
+    if (seen.has(checkId)) {
+      return `the report repeats check ${checkId}`;
     }
-    seen.add(result.checkId);
-    if (!["passed", "failed", "error", "unsupported", "not_run"].includes(result.state)) {
-      return `check ${result.checkId} has an unknown state`;
+    seen.add(checkId);
+    if (typeof entry["state"] !== "string" || !(CHECK_STATES as readonly string[]).includes(entry["state"])) {
+      return `check ${checkId} has an unknown state`;
     }
-    if (!Array.isArray(result.evidence) || !result.evidence.every(isArtifact)) {
-      return `check ${result.checkId} has unusable evidence`;
+    if (!Array.isArray(entry["evidence"]) || !entry["evidence"].every(isArtifact)) {
+      return `check ${checkId} has unusable evidence`;
     }
-    checks.push(result);
+    checks.push(entry as unknown as ValidationCheckResult);
   }
-  if (report.state !== "passed") {
+  if (report["state"] !== "passed") {
     return null;
   }
-  if (report.error !== null) {
+  if (report["error"] !== null) {
     return "a passing report carries an error";
   }
   const required = checks.filter((result) => result.required);
@@ -320,10 +374,13 @@ async function validateCandidate(
       await sleep(pollMilliseconds);
     }
   }
-  if (submitted === null) {
-    throw asProtocolError(lastError ?? new Error("validation.submit failed"));
+  if (!isSubmitResult(submitted)) {
+    if (submitted === null) {
+      throw asProtocolError(lastError ?? new Error("validation.submit failed"));
+    }
+    return mismatch("the submission response is malformed");
   }
-  if (!sameCandidate(submitted.candidate, candidate) || !sameProfile(submitted.profile, profile) || !isId(submitted.runId)) {
+  if (!sameCandidate(submitted.candidate, candidate) || !sameProfile(submitted.profile, profile)) {
     return mismatch("the submission response does not echo the submitted candidate and profile");
   }
   const runId = submitted.runId;
@@ -357,6 +414,9 @@ async function validateCandidate(
         reason: `The validation status is unavailable: ${asProtocolError(statusError ?? new Error("not ready")).message}.`,
         reasonCode: "VALIDATION_STATUS_UNAVAILABLE",
       };
+    }
+    if (!isStatusResult(polled)) {
+      return { ...mismatch("the status response is malformed"), runId, candidate };
     }
     status = polled;
     if (!sameCandidate(status.candidate, candidate) || !sameProfile(status.profile, profile) || status.runId !== runId) {
@@ -404,20 +464,24 @@ async function validateCandidate(
       reasonCode: "VALIDATION_REPORT_UNAVAILABLE",
     };
   }
-  if (fetched.report.state !== status.state) {
-    return { ...mismatch("the terminal status and the report state disagree"), runId, candidate };
+  if (!isReportResult(fetched)) {
+    return { ...mismatch("the report response is malformed"), runId, candidate };
   }
   const problem = checkReport(fetched.report, runId, candidate, profile);
   if (problem !== null) {
     return { ...mismatch(problem), runId, candidate, report: fetched.reference };
   }
-  if (fetched.report.state === "passed") {
+  const report = fetched.report as ValidationReport;
+  if (report.state !== status.state) {
+    return { ...mismatch("the terminal status and the report state disagree"), runId, candidate, report: fetched.reference };
+  }
+  if (report.state === "passed") {
     return {
       state: "passed",
       runId,
       candidate,
       report: fetched.reference,
-      reportBody: fetched.report,
+      reportBody: report,
       reason: `Required checks passed for ${candidate.candidateId}.`,
       reasonCode: "VALIDATED_SUCCESS",
     };
@@ -428,14 +492,14 @@ async function validateCandidate(
     cancelled: { reason: "The validation run was cancelled.", reasonCode: "CANCELLED" },
     unknown: { reason: "The validation run's outcome is unknown.", reasonCode: "OUTCOME_UNKNOWN" },
   };
-  const mapped = reasonByState[fetched.report.state];
+  const mapped = reasonByState[report.state];
   return {
-    state: fetched.report.state,
+    state: report.state,
     runId,
     candidate,
     report: fetched.reference,
-    reportBody: fetched.report,
-    reason: fetched.report.error?.message ?? mapped.reason,
+    reportBody: report,
+    reason: report.error?.message ?? mapped.reason,
     reasonCode: mapped.reasonCode,
   };
 }

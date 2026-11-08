@@ -63,7 +63,7 @@ const PLAN_TEMPLATE: readonly Omit<PlanStep, "state">[] = Object.freeze([
   { id: "decide", title: "Record the edit, ask or decline decision" },
   { id: "apply", title: "Apply ordered native commands through the guarded adapter" },
   { id: "check", title: "Check the fixed requirements with exact native evidence" },
-  { id: "validate", title: "Hand the native snapshot to host validation" },
+  { id: "validate", title: "Capture and validate the native snapshot" },
 ]);
 
 class Recorder implements WorkflowEvents {
@@ -145,6 +145,8 @@ interface RunContext {
   appliedAny: boolean;
   checks: CheckResult[];
   checksPassed: boolean;
+  /** The source stamp of the last report that failed its required checks. */
+  lastValidationSource: DocumentStamp | null;
   readonly usedCallIds: Set<string>;
 }
 
@@ -168,6 +170,7 @@ export async function runNativeModelingWorkflow(
     appliedAny: false,
     checks: [],
     checksPassed: false,
+    lastValidationSource: null,
     usedCallIds: new Set<string>(),
   };
   const finish = (state: WorkflowTerminalState, reason: string, reasonCode: string, extra: Partial<WorkflowResult> = {}): WorkflowResult =>
@@ -797,6 +800,16 @@ async function validateAndFinish(
       ),
     };
   }
+  if (context.lastValidationSource !== null && documentStampEquals(context.lastValidationSource, context.document)) {
+    return {
+      kind: "terminal",
+      result: finish(
+        "quality_failed",
+        "The validation repair produced no new native write, so the unchanged design was not captured again and no additional validation run was spent.",
+        "NO_REPAIR_WRITE",
+      ),
+    };
+  }
   const gate = context.options.validation ?? null;
   if (gate === null) {
     return {
@@ -853,6 +866,7 @@ async function validateAndFinish(
   context.recorder.step("validate", "failed");
   switch (outcome.state) {
     case "quality_failed": {
+      context.lastValidationSource = cloneStamp(source);
       const reportNote =
         outcome.runId === null
           ? ""

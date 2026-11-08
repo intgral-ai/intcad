@@ -13991,6 +13991,27 @@ mod mastra_backend_tests {
     }
 
     #[test]
+    fn mastra_validation_worker_stop_flag_is_set_on_drop_and_reconnect() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("worker-stop");
+        let first = host_validation(&dir);
+        let first_stop = first.worker_stop_flag();
+        assert!(!first_stop.load(std::sync::atomic::Ordering::Acquire), "the first host is pumping");
+        drop(first);
+        assert!(first_stop.load(std::sync::atomic::Ordering::Acquire), "dropping the backend stops its worker");
+
+        // A reconnect opens a fresh host; the retired worker's flag stays set, so no old loop
+        // keeps pumping in the background.
+        let second = host_validation(&dir);
+        let second_stop = second.worker_stop_flag();
+        assert!(!second_stop.load(std::sync::atomic::Ordering::Acquire), "the reconnected host has its own worker");
+        drop(second);
+        assert!(second_stop.load(std::sync::atomic::Ordering::Acquire));
+        assert!(first_stop.load(std::sync::atomic::Ordering::Acquire), "the old worker did not restart");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn mastra_validation_host_accepts_only_the_matching_current_report() {
         let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = scratch_validation("accept");
@@ -14106,7 +14127,9 @@ mod mastra_backend_tests {
         let (card, status) = card.expect("the validation identity card is shown");
         let identity: serde_json::Value = serde_json::from_str(&card).unwrap();
         assert_eq!(status, &Some(crate::agent_chat::backend::ToolStatus::Completed));
+        assert_eq!(identity["stage"], "validate");
         assert_eq!(identity["validationState"], "passed");
+        assert_eq!(identity["outcome"], "accepted");
         assert_eq!(identity["candidateId"], candidate.candidate_id.as_str());
         assert_eq!(identity["snapshot"]["revision"], live.revision.to_string());
         assert_eq!(identity["report"]["artifactId"], first_artifact);
@@ -14141,12 +14164,45 @@ mod mastra_backend_tests {
         let (third_run, third_ref) = submit_validation(&host, &Scope::Turn(third_scope), &candidate, &profile);
         backend.set_document(live.document_id.as_str(), live.revision.as_u64());
         backend.cancel();
-        let _ = backend.poll();
-        finish_turn_with_report(&log, TurnTerminal::ValidatedSuccess, Some(third_run.as_str()), Some(third_ref), live);
+        let cancelled_events = backend.poll();
+        let cancelled_card = cancelled_events
+            .iter()
+            .find_map(|event| match event {
+                crate::agent_chat::backend::Event::Tool { output: Some(output), .. } if output.contains("\"historical\":true") => {
+                    serde_json::from_str::<serde_json::Value>(output).ok()
+                }
+                _ => None,
+            })
+            .expect("a cancelled validation is kept and shown as history");
+        assert_eq!(cancelled_card["outcome"], "cancelled");
+        assert_eq!(cancelled_card["stage"], "validate");
+        assert_ne!(cancelled_card["validationState"], "rejected", "the real validation state is not overwritten");
+        finish_turn_with_report(&log, TurnTerminal::ValidatedSuccess, Some(third_run.as_str()), Some(third_ref), live.clone());
         let events = backend.poll();
         assert!(
-            !events.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::Tool { id, status: Some(crate::agent_chat::backend::ToolStatus::Completed), .. } if id.starts_with("validation:"))),
+            !events
+                .iter()
+                .any(|e| matches!(e, crate::agent_chat::backend::Event::Tool { id, status: Some(crate::agent_chat::backend::ToolStatus::Completed), .. } if id.starts_with("validation:"))),
             "a cancelled turn cannot be promoted by a late report"
+        );
+
+        // A lost runtime connection is not a cancel, but it also closes the active turn. A late
+        // passing report must remain history rather than promote the dead turn.
+        backend.prompt(&[crate::agent_chat::backend::PromptPart::Text("lost".into())]);
+        let lost_scope = active_turn_scope(&log);
+        let (lost_run, lost_ref) = submit_validation(&host, &Scope::Turn(lost_scope.clone()), &candidate, &profile);
+        backend.set_document(live.document_id.as_str(), live.revision.as_u64());
+        log.lock()
+            .unwrap()
+            .inject_client(ClientNotice::TurnClosed { scope: lost_scope, cause: crate::agent_chat::runtime_client::CloseReason::TransportLoss });
+        let closed = backend.poll();
+        assert!(closed.iter().any(|e| matches!(e, crate::agent_chat::backend::Event::TurnEnded { reason } if reason == "transport_error")));
+        finish_turn_with_report(&log, TurnTerminal::ValidatedSuccess, Some(lost_run.as_str()), Some(lost_ref), live);
+        let late = backend.poll();
+        assert!(
+            !late.iter()
+                .any(|e| matches!(e, crate::agent_chat::backend::Event::Tool { id, status: Some(crate::agent_chat::backend::ToolStatus::Completed), .. } if id.starts_with("validation:"))),
+            "a lost connection cannot be promoted by a late passing report"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

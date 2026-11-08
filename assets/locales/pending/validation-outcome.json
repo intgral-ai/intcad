@@ -4,6 +4,13 @@
     "ui.mastra_validation_historical": "The passing report is historical evidence, not approval of the current design: {reason}",
     "ui.mastra_validation_no_report": "The workflow proposed verified success without a host report reference; the turn is not success.",
     "ui.mastra_validation_rejected": "Snapshotted validation did not approve this turn: {reason}",
+    "ui.mastra_validation_state_cancelled": "cancelled",
+    "ui.mastra_validation_state_infrastructure_error": "infrastructure error",
+    "ui.mastra_validation_state_passed": "passed",
+    "ui.mastra_validation_state_quality_failed": "quality failed",
+    "ui.mastra_validation_state_queued": "queued",
+    "ui.mastra_validation_state_running": "running",
+    "ui.mastra_validation_state_unknown": "unknown",
     "ui.mastra_validation_unavailable": "This build has no local validation runner; the workflow's proposed success was not accepted."
   },
   "ar": {
@@ -11,6 +18,13 @@
     "ui.mastra_validation_historical": "تقرير النجاح دليل تاريخي، وليس موافقة على التصميم الحالي: {reason}",
     "ui.mastra_validation_no_report": "اقترح سير العمل نجاحاً موثقاً دون مرجع تقرير من المضيف؛ هذه الجولة ليست ناجحة.",
     "ui.mastra_validation_rejected": "لم يوافق التحقق من اللقطة على هذه الجولة: {reason}",
+    "ui.mastra_validation_state_cancelled": "ملغاة",
+    "ui.mastra_validation_state_infrastructure_error": "خطأ في البنية التحتية",
+    "ui.mastra_validation_state_passed": "ناجحة",
+    "ui.mastra_validation_state_quality_failed": "فشل الجودة",
+    "ui.mastra_validation_state_queued": "في الانتظار",
+    "ui.mastra_validation_state_running": "قيد التشغيل",
+    "ui.mastra_validation_state_unknown": "غير معروفة",
     "ui.mastra_validation_unavailable": "لا يحتوي هذا الإصدار على مشغّل تحقق محلي؛ لم يتم قبول النجاح المقترح من سير العمل."
   },
   "he": {
@@ -18,6 +32,13 @@
     "ui.mastra_validation_historical": "דוח ההצלחה הוא ראיה היסטורית, לא אישור לעיצוב הנוכחי: {reason}",
     "ui.mastra_validation_no_report": "זרימת העבודה הציעה הצלחה מאומתת בלי הפניה לדוח מהמארח; התור אינו הצלחה.",
     "ui.mastra_validation_rejected": "אימות תמונת המצב לא אישר את התור הזה: {reason}",
+    "ui.mastra_validation_state_cancelled": "בוטל",
+    "ui.mastra_validation_state_infrastructure_error": "שגיאת תשתית",
+    "ui.mastra_validation_state_passed": "עבר",
+    "ui.mastra_validation_state_quality_failed": "איכות נכשלה",
+    "ui.mastra_validation_state_queued": "בתור",
+    "ui.mastra_validation_state_running": "פועל",
+    "ui.mastra_validation_state_unknown": "לא ידוע",
     "ui.mastra_validation_unavailable": "build זה אינו כולל מריץ אימות מקומי; ההצלחה המוצעת של זרימת העבודה לא התקבלה."
   },
   "ja": {
@@ -25,6 +46,13 @@
     "ui.mastra_validation_historical": "合格したレポートは履歴上の証拠であり、現在の設計の承認ではありません: {reason}",
     "ui.mastra_validation_no_report": "ワークフローはホストのレポート参照なしで検証済み成功を提案しました。このターンは成功ではありません。",
     "ui.mastra_validation_rejected": "スナップショット検証はこのターンを承認しませんでした: {reason}",
+    "ui.mastra_validation_state_cancelled": "キャンセル済み",
+    "ui.mastra_validation_state_infrastructure_error": "インフラストラクチャエラー",
+    "ui.mastra_validation_state_passed": "合格",
+    "ui.mastra_validation_state_quality_failed": "品質不合格",
+    "ui.mastra_validation_state_queued": "待機中",
+    "ui.mastra_validation_state_running": "実行中",
+    "ui.mastra_validation_state_unknown": "不明",
     "ui.mastra_validation_unavailable": "このビルドにはローカル検証ランナーがありません。ワークフローが提案した成功は受け入れられませんでした。"
   },
   "vi": {
@@ -32,6 +60,13 @@
     "ui.mastra_validation_historical": "Báo cáo đạt là bằng chứng lịch sử, không phải phê duyệt thiết kế hiện tại: {reason}",
     "ui.mastra_validation_no_report": "Quy trình đã đề xuất thành công đã xác thực mà không có tham chiếu báo cáo từ máy chủ; lượt này không thành công.",
     "ui.mastra_validation_rejected": "Xác thực ảnh chụp không phê duyệt lượt này: {reason}",
+    "ui.mastra_validation_state_cancelled": "đã hủy",
+    "ui.mastra_validation_state_infrastructure_error": "lỗi hạ tầng",
+    "ui.mastra_validation_state_passed": "đạt",
+    "ui.mastra_validation_state_quality_failed": "không đạt chất lượng",
+    "ui.mastra_validation_state_queued": "đang chờ",
+    "ui.mastra_validation_state_running": "đang chạy",
+    "ui.mastra_validation_state_unknown": "không rõ",
     "ui.mastra_validation_unavailable": "Bản dựng này không có trình chạy xác thực cục bộ; thành công do quy trình đề xuất đã không được chấp nhận."
   },
   "zh": {
@@ -39,6 +74,13 @@
     "ui.mastra_validation_historical": "通过的报告是历史证据，不是对当前设计的批准：{reason}",
     "ui.mastra_validation_no_report": "工作流在没有主机报告引用的情况下提出了已验证成功；此轮不算成功。",
     "ui.mastra_validation_rejected": "快照校验未批准此轮：{reason}",
+    "ui.mastra_validation_state_cancelled": "已取消",
+    "ui.mastra_validation_state_infrastructure_error": "基础设施错误",
+    "ui.mastra_validation_state_passed": "通过",
+    "ui.mastra_validation_state_quality_failed": "质量失败",
+    "ui.mastra_validation_state_queued": "排队中",
+    "ui.mastra_validation_state_running": "运行中",
+    "ui.mastra_validation_state_unknown": "未知",
     "ui.mastra_validation_unavailable": "此版本没有本地校验运行器；工作流提出的成功未被接受。"
   }
 }

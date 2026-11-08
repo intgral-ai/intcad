@@ -121,6 +121,7 @@ pub(crate) struct HostValidation {
 #[derive(Default)]
 struct ValidationBook {
     runs: HashMap<String, ValidationRunRecord>,
+    run_order: VecDeque<String>,
     reports: HashMap<String, CachedValidationReport>,
     report_order: VecDeque<String>,
 }
@@ -154,7 +155,10 @@ pub(crate) struct ValidationIdentity {
     pub profile_id: String,
     pub profile_version: String,
     pub profile_digest: String,
+    /// The real validation state. Never replaced by a presentation verdict.
     pub state: String,
+    /// `accepted`, `rejected`, `history` or `cancelled` — distinct from the state.
+    pub outcome: String,
     pub report_artifact_id: String,
     pub report_digest: String,
     pub live_document_id: Option<String>,
@@ -166,6 +170,7 @@ pub(crate) struct ValidationIdentity {
 impl ValidationIdentity {
     fn json(&self) -> serde_json::Value {
         serde_json::json!({
+            "stage": "validate",
             "runId": self.run_id,
             "candidateId": self.candidate_id,
             "candidateDigest": self.candidate_digest,
@@ -173,6 +178,7 @@ impl ValidationIdentity {
             "snapshot": {"documentId": self.source_document_id, "revision": self.source_revision},
             "profile": {"profileId": self.profile_id, "version": self.profile_version, "digest": self.profile_digest},
             "validationState": self.state,
+            "outcome": self.outcome,
             "report": {"artifactId": self.report_artifact_id, "digest": self.report_digest},
             "liveDocument": self.live_document_id.as_ref().zip(self.live_revision.as_ref()).map(|(document, revision)| serde_json::json!({"documentId": document, "revision": revision})),
             "liveChanged": self.live_changed,
@@ -227,6 +233,11 @@ impl HostValidation {
         HostValidation::open(store, candidates).ok().map(Arc::new)
     }
 
+    #[cfg(test)]
+    pub(crate) fn worker_stop_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.worker_stop)
+    }
+
     /// The profile reference frozen in every turn binding.
     pub(crate) fn profile(&self) -> Option<ProfileRef> {
         encode_wire(&self.profile).ok()
@@ -257,12 +268,7 @@ impl HostValidation {
                 profile: result.profile.clone(),
                 state: result.state,
             };
-            book.runs.insert(result.run_id.to_string(), record);
-            if book.runs.len() > 64
-                && let Some(oldest) = book.runs.keys().next().cloned()
-            {
-                book.runs.remove(&oldest);
-            }
+            book.insert_run(result.run_id.as_str(), record);
         }
         encode_wire(&result)
     }
@@ -351,6 +357,12 @@ impl HostValidation {
         {
             return self.rejected(run_id, live, "This run belongs to another turn; it cannot approve this one.".into(), true);
         }
+        if run.state == validation_port::ValidationState::Cancelled {
+            return self.rejected(run_id, live, "The run was cancelled; a late report cannot promote this turn.".into(), true);
+        }
+        if run.state == validation_port::ValidationState::Unknown {
+            return self.rejected(run_id, live, "The run's outcome is unknown; it cannot approve this turn.".into(), true);
+        }
         let Some(report) = report else {
             return self.rejected(run_id, live, "The host has not fetched and verified this run's report.".into(), false);
         };
@@ -384,7 +396,7 @@ impl HostValidation {
             accepted: true,
             historical: false,
             reason: format!("Required checks passed for candidate {}.", run.candidate.candidate_id),
-            identity: self.identity(&run, Some(&report), Some(live), false, false),
+            identity: self.identity(&run, Some(&report), Some(live), "accepted", false),
         }
     }
 
@@ -398,7 +410,7 @@ impl HostValidation {
             identity: match record {
                 Some(run) => {
                     let report = book.as_ref().and_then(|book| book.reports.get(run_id));
-                    self.identity(run, report, live, true, historical)
+                    self.identity(run, report, live, "rejected", historical)
                 }
                 None => ValidationIdentity {
                     run_id: run_id.to_owned(),
@@ -411,6 +423,7 @@ impl HostValidation {
                     profile_version: String::new(),
                     profile_digest: String::new(),
                     state: "unknown".into(),
+                    outcome: "rejected".into(),
                     report_artifact_id: String::new(),
                     report_digest: String::new(),
                     live_document_id: live.map(|stamp| stamp.document_id.to_string()),
@@ -427,7 +440,7 @@ impl HostValidation {
         run: &ValidationRunRecord,
         report: Option<&CachedValidationReport>,
         live: Option<&DocumentStamp>,
-        rejected: bool,
+        outcome: &str,
         historical: bool,
     ) -> ValidationIdentity {
         let state = report.map_or(run.state, |report| report.state);
@@ -441,7 +454,8 @@ impl HostValidation {
             profile_id: run.profile.profile_id.clone(),
             profile_version: run.profile.version.clone(),
             profile_digest: run.profile.digest.clone(),
-            state: if rejected { "rejected".into() } else { state.as_str().to_owned() },
+            state: state.as_str().to_owned(),
+            outcome: outcome.to_owned(),
             report_artifact_id: report.map(|report| report.reference.artifact_id.clone()).unwrap_or_default(),
             report_digest: report.map(|report| report.reference.digest.clone()).unwrap_or_default(),
             live_document_id: live.map(|stamp| stamp.document_id.to_string()),
@@ -518,35 +532,86 @@ impl HostValidation {
         let book = self.book.lock().ok()?;
         let run = book.runs.get(run_id)?;
         let report = book.reports.get(run_id);
-        Some(self.identity(run, report, live, true, true))
+        Some(self.identity(run, report, live, "history", true))
     }
 
-    pub(crate) fn retire_turn(&self, scope: &TurnScope) {
-        if let Ok(mut book) = self.book.lock() {
-            let runs: Vec<String> = book
+    /// Host cancellation: cancel this turn's outstanding local jobs, keep their records as
+    /// history, and return the identities the panel should show as cancelled rather than
+    /// approval. An already-passed report remains history because the active turn is gone.
+    pub(crate) fn cancel_turn(&self, scope: &TurnScope, live: Option<&DocumentStamp>) -> Vec<ValidationIdentity> {
+        let run_ids: Vec<String> = match self.book.lock() {
+            Ok(book) => book
                 .runs
                 .iter()
                 .filter(|(_, run)| {
                     run.session_id == scope.session_id.as_str()
                         && run.turn_id == scope.turn_id.as_str()
                         && run.workflow_run_id == scope.workflow_run_id.as_str()
+                        && !run.state.is_terminal()
                 })
                 .map(|(run_id, _)| run_id.clone())
-                .collect();
-            for run_id in runs {
-                book.runs.remove(&run_id);
-                book.reports.remove(&run_id);
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        for run_id in &run_ids {
+            if let Ok(result) = self.port.cancel(run_id)
+                && let Ok(mut book) = self.book.lock()
+                && let Some(record) = book.runs.get_mut(run_id)
+            {
+                record.state = result.state;
             }
         }
+        let Ok(book) = self.book.lock() else {
+            return Vec::new();
+        };
+        book.runs
+            .iter()
+            .filter(|(_, run)| {
+                run.session_id == scope.session_id.as_str()
+                    && run.turn_id == scope.turn_id.as_str()
+                    && run.workflow_run_id == scope.workflow_run_id.as_str()
+            })
+            .map(|(run_id, run)| self.identity(run, book.reports.get(run_id), live, "cancelled", true))
+            .collect()
+    }
+}
+
+impl Drop for HostValidation {
+    fn drop(&mut self) {
+        // The worker checks this every idle interval. A running `pump()` finishes its current
+        // job before observing it; the port's own cancellation still bounds that job. The flag
+        // is what prevents a reconnect from leaving a second 25 ms pump loop alive.
+        self.worker_stop.store(true, Ordering::Release);
     }
 }
 
 impl ValidationBook {
+    fn insert_run(&mut self, run_id: &str, record: ValidationRunRecord) {
+        self.runs.insert(run_id.to_owned(), record);
+        if !self.run_order.iter().any(|known| known == run_id) {
+            self.run_order.push_back(run_id.to_owned());
+        }
+        while self.run_order.len() > 64 {
+            // Never evict the run that was just admitted; evict the oldest other record.
+            let Some(index) = self.run_order.iter().position(|known| known != run_id) else {
+                break;
+            };
+            if let Some(oldest) = self.run_order.remove(index) {
+                self.runs.remove(&oldest);
+            }
+        }
+    }
+
     fn remember(&mut self, run_id: &str, report: CachedValidationReport) {
         self.reports.insert(run_id.to_owned(), report);
-        self.report_order.push_back(run_id.to_owned());
+        if !self.report_order.iter().any(|known| known == run_id) {
+            self.report_order.push_back(run_id.to_owned());
+        }
         while self.report_order.len() > 128 {
-            if let Some(oldest) = self.report_order.pop_front() {
+            let Some(index) = self.report_order.iter().position(|known| known != run_id) else {
+                break;
+            };
+            if let Some(oldest) = self.report_order.remove(index) {
                 self.reports.remove(&oldest);
             }
         }
@@ -1047,7 +1112,8 @@ impl MastraBackend {
     }
 
     fn push_validation_card(&mut self, identity: &ValidationIdentity, status: ToolStatus) {
-        let title = crate::i18n::format("ui.mastra_validation_card", &[("state", &identity.state)]);
+        let state = validation_state_label(&identity.state);
+        let title = crate::i18n::format("ui.mastra_validation_card", &[("state", &state)]);
         let output = serde_json::to_string(&identity.json()).ok();
         self.push(Event::Tool {
             id: format!("validation:{}", identity.run_id),
@@ -1342,6 +1408,20 @@ impl MastraBackend {
     }
 }
 
+fn validation_state_label(state: &str) -> String {
+    let key = match state {
+        "queued" => "ui.mastra_validation_state_queued",
+        "running" => "ui.mastra_validation_state_running",
+        "passed" => "ui.mastra_validation_state_passed",
+        "quality_failed" => "ui.mastra_validation_state_quality_failed",
+        "infrastructure_error" => "ui.mastra_validation_state_infrastructure_error",
+        "cancelled" => "ui.mastra_validation_state_cancelled",
+        "unknown" => "ui.mastra_validation_state_unknown",
+        _ => return state.to_owned(),
+    };
+    crate::i18n::tr(key).to_string()
+}
+
 fn terminal_reason(state: TurnTerminal) -> String {
     match state {
         TurnTerminal::ValidatedSuccess => String::new(),
@@ -1384,7 +1464,16 @@ fn runtime_services(
         ids,
         admission,
         lifecycle: Arc::new(ClosedLifecycle),
-        dispatch: Arc::new(HostCalls { host, connection_auth, budget, agent_budget, task_control, runtime_instance, frozen_binding, validation }),
+        dispatch: Arc::new(HostCalls {
+            host,
+            connection_auth,
+            budget,
+            agent_budget,
+            task_control,
+            runtime_instance,
+            frozen_binding,
+            validation: validation.map(|service| Arc::downgrade(&service)),
+        }),
     }
 }
 
@@ -1411,7 +1500,9 @@ struct HostCalls {
     task_control: Arc<TaskControlSlot>,
     runtime_instance: Arc<Mutex<Option<String>>>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
-    validation: Option<Arc<HostValidation>>,
+    /// Weak so dropping the backend drops the port and stops its worker even while the runtime
+    /// client thread still owns its services. A live callback upgrades for its own duration.
+    validation: Option<std::sync::Weak<HostValidation>>,
 }
 
 impl HostDispatch for HostCalls {
@@ -1423,7 +1514,7 @@ impl HostDispatch for HostCalls {
         let task_control = Arc::clone(&self.task_control);
         let instance = Arc::clone(&self.runtime_instance);
         let frozen = Arc::clone(&self.frozen_binding);
-        let validation = self.validation.as_ref().map(Arc::clone);
+        let validation = self.validation.as_ref().and_then(std::sync::Weak::upgrade);
         let spawned = std::thread::Builder::new().name("mastra-host-call".into()).spawn(move || {
             let cancelled = call.cancellation.is_cancelled();
             let result = if cancelled {
@@ -1959,10 +2050,12 @@ impl ChatBackend for MastraBackend {
         self.task_control.cancel();
         let Some(turn) = self.end_active() else { return };
         let _ = self.port.cancel_turn(&turn.scope, CancelReason::User);
-        // A late passing report remains history; clearing the active slot makes the terminal
-        // proposal unable to promote this cancelled turn.
+        // Cancel this turn's local jobs but keep their records: the panel shows them as history,
+        // and clearing the active slot makes a late terminal proposal unable to promote the turn.
         if let Some(service) = self.config.validation.as_ref() {
-            service.retire_turn(&turn.scope);
+            for identity in service.cancel_turn(&turn.scope, self.document.as_ref()) {
+                self.push_validation_history(&identity, ToolStatus::Failed);
+            }
         }
         // The host owns the terminal transition: a runtime that never answers cannot leave the
         // panel busy, and a late turn.finished is ignored by the empty active slot.
