@@ -73,7 +73,8 @@ class Synthetic(unittest.TestCase):
     def test_no_code_paths_select_nothing(self):
         # What CI reads as "no code changed", on pull requests and pushes to main alike.
         for p in [".github/workflows/docker.yml", ".github/ISSUE_TEMPLATE/bug.yml", "scripts/claim/claim.js",
-                  "scripts/triage/triage.test.js", "vendor/README.md", "SECURITY.md", ".gitignore", ".npmrc"]:
+                  "scripts/triage/triage.test.js", "vendor/README.md", "SECURITY.md", ".gitignore", ".npmrc",
+                  "attribution/pending/mastra-runtime.md"]:
             self.assertEqual(affected.select(SYNTH, [p]), (False, []), p)
 
     def test_windows_metadata_selects_packages_and_preserves_triggers(self):
