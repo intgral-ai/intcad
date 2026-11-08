@@ -301,6 +301,13 @@ function buildDependencyData() {
   return { dependencies, licenses, rootDependencyIds, packages };
 }
 
+function expectedPrunedMastraEe(output) {
+  return (
+    /^node_modules\/@mastra\/core\/dist\/(?:auth|agent-builder)\/ee\//u.test(output) ||
+    /^node_modules\/@mastra\/core\/dist\/_types\/[^/]+\/dist\/ee\//u.test(output)
+  );
+}
+
 function artifactPlan(dependencyData) {
   const plan = [];
   // Third-party production packages, pruned of every `ee` path component.
@@ -308,7 +315,10 @@ function artifactPlan(dependencyData) {
     for (const path of pkg.paths) {
       for (const absolute of listPackageFiles(join(repoRoot, path))) {
         const output = relative(repoRoot, absolute).split(sep).join("/");
-        if (eeComponent(output)) continue;
+        if (eeComponent(output)) {
+          if (pkg.name === "@mastra/core" && expectedPrunedMastraEe(output)) continue;
+          throw new Error(`unexpected ee path in shipped package: ${output}`);
+        }
         const enterprise = pkg.name === "@mastra/core" && /\/ee-[^/]+$/u.test(output);
         plan.push({
           source: absolute,

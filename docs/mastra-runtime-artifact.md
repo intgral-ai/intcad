@@ -66,8 +66,10 @@ runtime.json
 - The Rust artifact gate performs a content scan of shipped `@mastra/core`
   `.js`/`.cjs`/`.mjs`/`.map` files for `Mastra Enterprise License`,
   `@license Mastra Enterprise License` and `src/ee/`; a marker fails with
-  `ENTERPRISE_INPUT`. Because no approval exists, the gate already fails closed
-  with `UNAPPROVED_ARTIFACT`.
+  `ENTERPRISE_INPUT`. The npm generator also fails on any unexpected `ee/` path
+  outside the known pruned Mastra enterprise directories, instead of silently
+  dropping an injected file. Because no approval exists, the gate already fails
+  closed with `UNAPPROVED_ARTIFACT`.
 
 ## Reproduce
 
