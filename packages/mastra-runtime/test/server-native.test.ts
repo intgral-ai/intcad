@@ -53,6 +53,20 @@ function modelRequest(peer: NativeRecordedPeer): Promise<Frame> {
   return peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
 }
 
+test("hello advertises guarded paths only when the host probed them", async (t) => {
+  const plain = new NativeRecordedPeer(t, editBase(), {});
+  const hello = await plain.request("runtime.hello", RUNTIME_SCOPE, helloParams(), "h:hello");
+  const capabilities = hello.result?.["capabilities"] as JsonObject | undefined;
+  assert.equal(capabilities?.["guardedExecute"], false);
+  assert.equal(capabilities?.["guardedBatch"], false);
+
+  const probed = new NativeRecordedPeer(t, editBase(), {}, { bridgeCapabilities: "execute,batch" });
+  const guarded = await probed.request("runtime.hello", RUNTIME_SCOPE, helloParams(), "h:hello");
+  const guardedCapabilities = guarded.result?.["capabilities"] as JsonObject | undefined;
+  assert.equal(guardedCapabilities?.["guardedExecute"], true);
+  assert.equal(guardedCapabilities?.["guardedBatch"], true);
+});
+
 test("a server turn runs the native workflow: create then parameter edit with protected dimensions", async (t) => {
   const peer = new NativeRecordedPeer(t, editBase(), {
     "p-create": { checks: [volumeCheck(1_000)] },
