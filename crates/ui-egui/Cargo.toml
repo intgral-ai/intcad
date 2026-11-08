@@ -58,6 +58,9 @@ proc-macro2 = { workspace = true }
 # Pictures pasted into the agent chat; already in the tree, with the same features, through
 # egui-winit's clipboard.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The existing chat MCP server and its guarded document envelopes; the Mastra runtime's
+# inherited bridge lane is served by this same implementation (no second command catalog).
+solidcraft-mcp = { workspace = true }
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 # Opaque native HostAi continuation and routing identities (already locked).
 getrandom = "=0.3.4"

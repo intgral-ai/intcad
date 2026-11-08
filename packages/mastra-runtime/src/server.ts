@@ -178,6 +178,12 @@ export interface RuntimeServerOptions {
    */
   readonly cadBridge?: () => McpBridgeChannel;
   /**
+   * The host probed the actual bridge tool schemas before launch. These are the
+   * guarded paths it advertised; no capability is inferred from a channel's
+   * mere presence.
+   */
+  readonly bridgeCapabilities?: { readonly guardedExecute: boolean; readonly guardedBatch: boolean };
+  /**
    * Resolve the host-frozen check profile for a turn. #13 will replace this
    * launch seam with the host report/profile delivery; until then the runtime
    * never invents checks or marks a missing profile as validated.
@@ -194,6 +200,7 @@ export class RuntimeServer {
   readonly #onStopped: ((code: number) => void) | undefined;
   readonly #clock: Clock;
   readonly #cadBridge: (() => McpBridgeChannel) | undefined;
+  readonly #bridgeCapabilities: { readonly guardedExecute: boolean; readonly guardedBatch: boolean };
   readonly #fixedRequirements: ((profile: ProfileRef) => FixedRequirements | Promise<FixedRequirements>) | undefined;
   readonly #pending = new Map<string, PendingCall>();
   readonly #tombstones = new Set<string>();
@@ -220,6 +227,7 @@ export class RuntimeServer {
     this.#onStopped = options.onStopped;
     this.#clock = options.clock ?? monotonicClock;
     this.#cadBridge = options.cadBridge;
+    this.#bridgeCapabilities = options.bridgeCapabilities ?? { guardedExecute: false, guardedBatch: false };
     this.#fixedRequirements = options.fixedRequirements;
     this.#transport = new NdjsonTransport(
       options.input,
@@ -366,11 +374,10 @@ export class RuntimeServer {
         workflowIds: [...WORKFLOW_IDS],
         hostModelCalls: true,
         hostAgentTasks: AGENT_RUN_CAPABILITY.hostAgentTasks,
-        // The bridge schema is only known after session.start/turn.start; the
-        // hello capability must not be inferred from a provisioned channel.
-        // The per-turn adapter checks guarded execute/batch before any write.
-        guardedExecute: false,
-        guardedBatch: false,
+        // The host probed the actual bridge tool schemas before launch; no
+        // capability is inferred from a provisioned channel alone.
+        guardedExecute: this.#bridgeCapabilities.guardedExecute,
+        guardedBatch: this.#bridgeCapabilities.guardedBatch,
         snapshotValidation: true,
       },
       limits: this.#limits,

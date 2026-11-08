@@ -70,7 +70,15 @@ pub const TABLE: &[(&str, Class)] = &[
 /// Explicit orderings *within* a layer (earlier may be used by later).
 /// The viewport draws display plans the GPU crate evaluates and draws with its pipelines; the MCP
 /// server's tests draw screenshots with them. The kernel reads and writes STEP through `step`.
-pub const INTRA_LAYER_ORDER: &[&[&str]] = &[&["gpu", "ui-egui"], &["gpu", "mcp"], &["smlib", "kernel"], &["step", "kernel"]];
+pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
+    &["gpu", "ui-egui"],
+    &["gpu", "mcp"],
+    // The UI hosts the chat MCP server over the Mastra bridge lane (#9); the server never
+    // depends on the UI.
+    &["mcp", "ui-egui"],
+    &["smlib", "kernel"],
+    &["step", "kernel"],
+];
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {
     let (from, to) = (short_name(from), short_name(to));

@@ -1,0 +1,20 @@
+{
+  "en": {
+    "ui.mastra_bridge_unavailable": "The Mastra runtime needs this chat's tool bridge, but its control queue is unavailable. No turn was started."
+  },
+  "ar": {
+    "ui.mastra_bridge_unavailable": "يحتاج وقت تشغيل Mastra إلى جسر أدوات هذه الدردشة، لكن قائمة انتظار التحكم غير متاحة. لم تبدأ أي جولة."
+  },
+  "he": {
+    "ui.mastra_bridge_unavailable": "זמן הריצה של Mastra זקוק לגשר הכלים של הצ'אט הזה, אבל תור הבקרה אינו זמין. לא התחיל תור."
+  },
+  "ja": {
+    "ui.mastra_bridge_unavailable": "Mastra ランタイムにはこのチャットのツールブリッジが必要ですが、制御キューを利用できません。ターンは開始されていません。"
+  },
+  "vi": {
+    "ui.mastra_bridge_unavailable": "Máy chạy Mastra cần cầu nối công cụ của cuộc trò chuyện này, nhưng hàng đợi điều khiển không khả dụng. Không có lượt nào được bắt đầu."
+  },
+  "zh": {
+    "ui.mastra_bridge_unavailable": "Mastra 运行时需要此聊天的工具桥，但其控制队列不可用。未开始任何轮次。"
+  }
+}

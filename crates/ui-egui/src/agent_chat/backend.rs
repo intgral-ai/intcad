@@ -159,6 +159,9 @@ pub trait ChatBackend {
     /// The open document a turn is about to bind to: its identity and actual revision, read when
     /// the turn starts. Backends that pin a document use it; the others ignore it.
     fn set_document(&mut self, _document_id: &str, _revision: u64) {}
+    /// The trusted cancellation flag of the turn about to start. Backends that bridge tool calls
+    /// attach it at the host boundary; model/runtime arguments never supply it.
+    fn set_turn_control(&mut self, _active: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
     /// Answer an [`Event::Permission`] with one of its options (`None`: cancelled).
     fn answer_permission(&mut self, key: u64, option: Option<&str>);
     /// Ask the backend to sign in by itself with one of its methods (it opens the browser).

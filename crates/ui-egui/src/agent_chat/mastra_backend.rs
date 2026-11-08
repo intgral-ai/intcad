@@ -29,6 +29,7 @@ use super::host_ai::{
     GenerateRequest, HostAi, MessageRole, ModelCallBudget, ModelMessage, SessionKey, TaskControl, TaskPermissionState, TaskProgress, TaskRequest,
     TaskStamp, TaskToolState, TurnControl,
 };
+use super::host_bridge::{HostBridge, capability_argument};
 use super::mastra_protocol::*;
 use super::runtime_client::{
     CallbackCall, ClientError, ClientNotice, CloseReason, HostDispatch, IdSource, ReplyPort, RuntimeAdmission, RuntimeClient, RuntimeLaunch,
@@ -680,6 +681,9 @@ pub struct MastraConfig {
     pub workflow_id: String,
     /// The chat's existing MCP bridge, if the window could open one.
     pub bridge: Option<McpBridge>,
+    /// The chat's control queue, used to serve the runtime's inherited MCP lane with the same
+    /// gate, undo ownership and document state as every other chat tool call.
+    pub tools: Option<std::sync::mpsc::Sender<crate::control::ControlRequest>>,
     /// Chat instructions copied into every new session.
     pub instructions: String,
     /// Set on the host worker when a `connection.describe` call answers; polled by the panel as
@@ -806,6 +810,9 @@ pub struct MastraBackend {
     events: VecDeque<Event>,
     stopped: bool,
     models_sent: bool,
+    host_bridge: Option<HostBridge>,
+    bridge_generation: Option<u64>,
+    turn_active: Option<Arc<AtomicBool>>,
 }
 
 impl MastraBackend {
@@ -813,7 +820,7 @@ impl MastraBackend {
     /// when the process cannot start at all; protocol failures arrive as events later.
     pub fn start(
         config: MastraConfig,
-        launch: RuntimeLaunch,
+        mut launch: RuntimeLaunch,
         host: Arc<HostAi>,
         ids: Arc<dyn IdSource>,
         admission: Arc<RuntimeAdmission>,
@@ -825,6 +832,20 @@ impl MastraBackend {
         let model_budget = Arc::new(AtomicU32::new(MODEL_CALLS_PER_TURN));
         let agent_budget = Arc::new(AtomicU32::new(AGENT_TASKS_PER_TURN));
         let task_control: Arc<TaskControlSlot> = Arc::new(TaskControlSlot::default());
+        let mut host_bridge = None;
+        if config.bridge.is_some() {
+            let tools = config.tools.clone().ok_or_else(|| crate::i18n::tr("ui.mastra_bridge_unavailable").to_string())?;
+            let bridge = HostBridge::open(tools)?;
+            let fd = bridge.child_fd();
+            if fd < 0 {
+                return Err(crate::i18n::tr("ui.mastra_bridge_unavailable").to_string());
+            }
+            launch.args.push(std::ffi::OsString::from(format!("--bridge-fd={fd}")));
+            if let Some(argument) = capability_argument() {
+                launch.args.push(std::ffi::OsString::from(argument));
+            }
+            host_bridge = Some(bridge);
+        }
         let runtime = RuntimeClient::start(
             launch,
             runtime_services(
@@ -842,6 +863,9 @@ impl MastraBackend {
             Arc::new(move || wake()),
         )
         .map_err(|error| crate::i18n::format("ui.mastra_runtime_failed", &[("error", &format!("{:?}", error.code))]))?;
+        if let Some(bridge) = host_bridge.as_mut() {
+            bridge.release_child();
+        }
         let sender = runtime.sender();
         let connection = config.connection_id.clone();
         let model = config.model.clone();
@@ -852,6 +876,7 @@ impl MastraBackend {
         backend.model_budget = Some(model_budget);
         backend.agent_budget = Some(agent_budget);
         backend.task_control = task_control;
+        backend.host_bridge = host_bridge;
         backend.events.push_back(Event::Documents(false));
         backend.events.push_back(Event::ToolsAvailable(backend.config.bridge.is_some()));
         // The connection's sign-in state is checked once, off the window thread, and kept apart
@@ -894,6 +919,9 @@ impl MastraBackend {
             events: VecDeque::new(),
             stopped: false,
             models_sent: false,
+            host_bridge: None,
+            bridge_generation: None,
+            turn_active: None,
         }
     }
 
@@ -1069,6 +1097,14 @@ impl MastraBackend {
             context: TurnContext { selection: Vec::new(), requirements: RequiredNullable(None) },
             budgets: Budgets::default(),
         };
+        if let Some(bridge) = self.host_bridge.as_ref() {
+            let Some(active) = self.turn_active.clone() else {
+                self.push(Event::Error(crate::i18n::tr("ui.mastra_bridge_unavailable").to_string()));
+                self.push(Event::TurnEnded { reason: "error".into() });
+                return;
+            };
+            self.bridge_generation = Some(bridge.begin_turn(active));
+        }
         match self.port.request(Scope::Turn(scope.clone()), HostRequest::TurnStart(Box::new(params)), TURN_TIMEOUT) {
             Ok(_) => {
                 if let Ok(mut frozen) = self.config.frozen_binding.lock() {
@@ -1079,6 +1115,11 @@ impl MastraBackend {
                 self.plan_set = false;
             }
             Err(_) => {
+                if let Some(bridge) = self.host_bridge.as_ref()
+                    && let Some(generation) = self.bridge_generation.take()
+                {
+                    bridge.end_turn(generation);
+                }
                 self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
                 self.push(Event::TurnEnded { reason: "error".into() });
             }
@@ -1089,6 +1130,12 @@ impl MastraBackend {
         if let Ok(mut frozen) = self.config.frozen_binding.lock() {
             *frozen = None;
         }
+        if let Some(bridge) = self.host_bridge.as_ref()
+            && let Some(generation) = self.bridge_generation.take()
+        {
+            bridge.end_turn(generation);
+        }
+        self.turn_active = None;
         self.active.take()
     }
 
@@ -2032,8 +2079,14 @@ use super::mastra_protocol::ModelMessage as ModelMessageWire;
 
 impl ChatBackend for MastraBackend {
     fn poll(&mut self) -> Vec<Event> {
+        for event in self.host_bridge.as_ref().map(HostBridge::take_events).unwrap_or_default() {
+            self.push(event);
+        }
         for notice in self.port.drain() {
             self.on_notice(notice);
+        }
+        if let Some(error) = self.host_bridge.as_ref().and_then(HostBridge::take_error) {
+            self.push(Event::Error(error));
         }
         let reported = self.config.connection_auth.lock().ok().and_then(|mut reported| reported.take());
         if let Some(available) = reported {
@@ -2049,6 +2102,9 @@ impl ChatBackend for MastraBackend {
     fn cancel(&mut self) {
         self.task_control.cancel();
         let Some(turn) = self.end_active() else { return };
+        if let Some(bridge) = self.host_bridge.as_ref() {
+            bridge.cancel_turn();
+        }
         let _ = self.port.cancel_turn(&turn.scope, CancelReason::User);
         // Cancel this turn's local jobs but keep their records: the panel shows them as history,
         // and clearing the active slot makes a late terminal proposal unable to promote the turn.
@@ -2100,6 +2156,10 @@ impl ChatBackend for MastraBackend {
         self.document = document_stamp_from_native(document_id, revision).ok();
     }
 
+    fn set_turn_control(&mut self, active: Arc<AtomicBool>) {
+        self.turn_active = Some(active);
+    }
+
     fn answer_permission(&mut self, key: u64, option: Option<&str>) {
         let _ = self.task_control.answer(key, option);
     }
@@ -2131,6 +2191,7 @@ impl ChatBackend for MastraBackend {
         self.stopped = true;
         // A task in flight must see cancellation before its process is reaped.
         self.task_control.cancel();
+        self.host_bridge.take();
         let _ = self.port.shutdown();
         if wait {
             self.port.wait_stopped(SHUTDOWN_WAIT);
