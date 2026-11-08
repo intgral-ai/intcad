@@ -1543,7 +1543,7 @@ impl MastraBackend {
                 available: vec![super::acp::ModelInfo { id: model.clone(), name: model, description: String::new() }],
             });
         }
-        self.push(Event::Ready { agent: format!("Mastra · {}", self.config.workflow_id), images: false });
+        self.push(Event::Ready { agent: format!("SolidCraft workflow · {}", self.config.workflow_id), images: false });
     }
 }
 

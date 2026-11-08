@@ -150,17 +150,17 @@ deviations against this baseline, rather than silently following its moving bran
 
 #### Model and conversation seam
 
-The runtime's Agent adapter must expose the capabilities the migrated authoring
-stages actually consume. A BYOK Agent invocation performs **one model step** through
+The runtime's model client must expose the capabilities the migrated authoring
+stages actually consume. A BYOK model invocation performs **one model step** through
 `HostAi.model.generate`; the outer workflow validates and dispatches returned tool
-calls and feeds their matching results into the next explicit step. Override SDK
-multi-step/retry defaults. Neither the SDK nor HostAi may execute another hidden
-CAD loop, model retry or provider fallback. Each actual invocation consumes the
-section 4 budget and keeps the frozen connection/model. #7 verifies this with an
-the native workflow using deterministic HostAi replies, not only a mock factory;
-the legacy Mastra Agent adapter was removed by BM-1.
+calls and feeds their matching results into the next explicit step. The native
+workflow owns multi-step/retry behavior. Neither the model client nor HostAi may
+execute another hidden CAD loop, model retry or provider fallback. Each actual
+invocation consumes the section 4 budget and keeps the frozen connection/model.
+#7 verifies this with the native workflow using deterministic HostAi replies, not
+only a mock factory; the legacy Mastra Agent adapter was removed by BM-1.
 
-Adapt the locked SDK's messages, tool IDs/arguments, finish reason and available
+Adapt the provider messages, tool IDs/arguments, finish reason and available
 usage to section 6. Preserve opaque continuation handles without inspecting their
 provider state. A buffered reply may be wrapped in the SDK's stream shape for
 compatibility, but must remain advertised as buffered. Missing tool/structured/image

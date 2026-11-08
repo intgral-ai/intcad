@@ -1,4 +1,4 @@
-//! The Mastra workflow runtime installed with the application.
+//! The SolidCraft workflow runtime installed with the application.
 //!
 //! The runtime lives in an application-relative `mastra/` directory: `runtime.json`, the built
 //! JavaScript entry point, its production dependencies and a pinned `node`/`node.exe`. This
@@ -68,34 +68,39 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::NotInstalled { searched } => write!(
                 f,
-                "the installed application has no mastra/runtime.json (looked in {}); reinstall SolidCraft from a package that includes the Mastra runtime",
+                "the installed application has no mastra/runtime.json (looked in {}); reinstall SolidCraft from a package that includes the SolidCraft workflow runtime",
                 searched.display()
             ),
             Self::UnsupportedTarget { target } => write!(
                 f,
-                "the built-in Mastra workflow is not available for {target}; Windows x86/arm64, Linux arm64 and other targets do not ship it in 1.0"
+                "the built-in SolidCraft workflow is not available for {target}; Windows x86/arm64, Linux arm64 and other targets do not ship it in 1.0"
             ),
             Self::InvalidManifest { detail } => write!(f, "mastra/runtime.json is invalid: {detail}"),
-            Self::MissingFile { path } => write!(f, "the installed Mastra runtime is incomplete: mastra/{path} is missing; reinstall SolidCraft"),
+            Self::MissingFile { path } => {
+                write!(f, "the installed SolidCraft workflow runtime is incomplete: mastra/{path} is missing; reinstall SolidCraft")
+            }
             Self::DigestMismatch { path } => write!(f, "mastra/{path} does not match its recorded SHA-256 digest; reinstall SolidCraft"),
             Self::UnsafePath { path } => write!(f, "mastra/runtime.json names an unsafe path ({path}); the package is damaged"),
             Self::RevisionMismatch { expected, found } => write!(
                 f,
-                "the Mastra runtime was built from repository revision {found}, but this SolidCraft is {expected}; install the matching package"
+                "the SolidCraft workflow runtime was built from repository revision {found}, but this SolidCraft is {expected}; install the matching package"
             ),
             Self::UnboundHostRevision => write!(
                 f,
-                "this SolidCraft build has no Git revision, so it cannot verify the installed Mastra runtime; use a release package or rebuild with SOLIDCRAFT_GIT_REVISION_OVERRIDE"
+                "this SolidCraft build has no Git revision, so it cannot verify the installed SolidCraft workflow runtime; use a release package or rebuild with SOLIDCRAFT_GIT_REVISION_OVERRIDE"
             ),
             Self::ContractMismatch { expected, found } => {
-                write!(f, "the Mastra runtime carries contract digest {found}, but this SolidCraft requires {expected}; install the matching package")
+                write!(
+                    f,
+                    "the SolidCraft workflow runtime carries contract digest {found}, but this SolidCraft requires {expected}; install the matching package"
+                )
             }
             Self::VersionMismatch { field, expected, found } => {
-                write!(f, "the Mastra runtime's {field} is {found}, but this SolidCraft requires {expected}")
+                write!(f, "the SolidCraft workflow runtime's {field} is {found}, but this SolidCraft requires {expected}")
             }
             Self::UnapprovedArtifact { inventory } => write!(
                 f,
-                "the installed Mastra runtime inventory {inventory} has no distribution approval; it is not a releasable artifact until the legal and license review in #15 approves it"
+                "the installed SolidCraft workflow runtime inventory {inventory} has no distribution approval; it is not a releasable artifact until the legal and license review in #15 approves it"
             ),
             Self::Io { path } => write!(f, "could not read mastra/{path}; the installed package is incomplete or damaged"),
         }

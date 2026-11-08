@@ -1,4 +1,4 @@
-//! The host half of #9: one MCP lane from the Mastra runtime to this window's chat document.
+//! The host half of #9: one MCP lane from the workflow runtime to this window's chat document.
 //!
 //! The runtime opens `--bridge-fd <fd>` as a duplex stream and starts one MCP session per turn.
 //! This side owns the other end, serves the existing `solidcraft_mcp::Server` over it, and sends
@@ -175,21 +175,21 @@ impl HostBridge {
         #[cfg(not(unix))]
         {
             let _ = tools;
-            return Err("the Mastra bridge lane is unavailable on this platform".into());
+            return Err("the SolidCraft workflow bridge lane is unavailable on this platform".into());
         }
         #[cfg(unix)]
         {
-            let (host, child) = UnixStream::pair().map_err(|error| format!("the Mastra bridge lane could not be created: {error}"))?;
+            let (host, child) = UnixStream::pair().map_err(|error| format!("the SolidCraft workflow bridge lane could not be created: {error}"))?;
             if !inheritable(child.as_raw_fd()) {
-                return Err("the Mastra bridge descriptor is below fd 3 and cannot be inherited safely".into());
+                return Err("the SolidCraft workflow bridge descriptor is below fd 3 and cannot be inherited safely".into());
             }
             clear_cloexec(&child)?;
             host.set_nonblocking(false).map_err(|error| error.to_string())?;
             child.set_nonblocking(false).map_err(|error| error.to_string())?;
             let state = Arc::new(BridgeState { turn: Mutex::new(None), generation: AtomicU64::new(0) });
             let error = Arc::new(Mutex::new(None));
-            let reader = host.try_clone().map_err(|error| format!("the Mastra bridge lane could not be cloned: {error}"))?;
-            let writer = host.try_clone().map_err(|error| format!("the Mastra bridge lane could not be cloned: {error}"))?;
+            let reader = host.try_clone().map_err(|error| format!("the SolidCraft workflow bridge lane could not be cloned: {error}"))?;
+            let writer = host.try_clone().map_err(|error| format!("the SolidCraft workflow bridge lane could not be cloned: {error}"))?;
             let events = Arc::new(Mutex::new(VecDeque::new()));
             let backend = ChatBackend { tools, state: Arc::clone(&state), events: Arc::clone(&events), next_call: Arc::new(AtomicU64::new(0)) };
             let reported = Arc::clone(&error);
@@ -201,8 +201,8 @@ impl HostBridge {
                     let failure = match server.serve(BufReader::new(reader), BufWriter::new(writer)) {
                         // EOF after the runtime normally retired its turn is not an error.
                         Ok(()) if close_state.current().is_err() => None,
-                        Ok(()) => Some("the Mastra bridge lane closed during a turn".to_string()),
-                        Err(failure) => Some(format!("the Mastra bridge stopped: {failure}")),
+                        Ok(()) => Some("the SolidCraft workflow bridge lane closed during a turn".to_string()),
+                        Err(failure) => Some(format!("the SolidCraft workflow bridge stopped: {failure}")),
                     };
                     if let Some(failure) = failure
                         && let Ok(mut slot) = reported.lock()
@@ -210,7 +210,7 @@ impl HostBridge {
                         *slot = Some(failure);
                     }
                 })
-                .map_err(|error| format!("the Mastra bridge server could not start: {error}"))?;
+                .map_err(|error| format!("the SolidCraft workflow bridge server could not start: {error}"))?;
             Ok(Self { host, child: Some(child), state, error, events })
         }
     }
@@ -316,7 +316,7 @@ fn clear_cloexec(stream: &UnixStream) -> Result<(), String> {
     use nix::fcntl::{FcntlArg, FdFlag, fcntl};
     fcntl(stream, FcntlArg::F_SETFD(FdFlag::empty()))
         .map(|_| ())
-        .map_err(|error| format!("the Mastra bridge descriptor could not be inherited: {error}"))
+        .map_err(|error| format!("the SolidCraft workflow bridge descriptor could not be inherited: {error}"))
 }
 
 /// Whether the actual MCP tool schemas advertise the guarded `expectedDocument` path.
