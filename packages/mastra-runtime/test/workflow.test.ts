@@ -90,8 +90,8 @@ test("create produces editable native features and preserves tool-result identit
     (message) => message.role === "tool" && message.toolCallId === "call-apply-1",
   );
   assert.equal(applyTool?.toolCallId, "call-apply-1");
-  assert.match(applyTool?.content[0]?.text ?? "", /"state":"applied"/u);
-  assert.match(applyTool?.content[0]?.text ?? "", /"checkId":"geometry.exact"/u);
+  assert.match(applyTool?.content.find((block) => block.type === "text")?.text ?? "", /"state":"applied"/u);
+  assert.match(applyTool?.content.find((block) => block.type === "text")?.text ?? "", /"checkId":"geometry.exact"/u);
 
   assert.deepEqual(result.plan.map((step) => step.id), ["inspect", "decide", "apply", "check", "validate"]);
   assert.equal(result.plan.find((step) => step.id === "apply")?.state, "completed");
@@ -773,10 +773,11 @@ test("prior session history is carried into the next native model round", async 
   assert.equal(result.state, "task_failed");
   const messages = harness.model?.requests[0]?.messages ?? [];
   assert.equal(messages[1]?.role, "user");
-  assert.equal(messages[1]?.content[0]?.text, "Earlier user request.");
+  assert.equal(messages[1]?.content[0]?.type === "text" ? messages[1]?.content[0]?.text : undefined, "Earlier user request.");
   assert.equal(messages[2]?.role, "assistant");
-  assert.equal(messages[2]?.content[0]?.text, "Earlier assistant answer.");
-  assert.equal(messages.at(-1)?.content[0]?.text, "Make the requested native model change.");
+  assert.equal(messages[2]?.content[0]?.type === "text" ? messages[2]?.content[0]?.text : undefined, "Earlier assistant answer.");
+  const lastBlock = messages.at(-1)?.content[0];
+  assert.equal(lastBlock?.type === "text" ? lastBlock.text : undefined, "Make the requested native model change.");
 });
 
 test("tool-call identities are unique across rounds, not only within one reply", async (t) => {

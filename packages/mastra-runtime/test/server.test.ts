@@ -269,26 +269,84 @@ test("cancellation reaches the in-flight HostAi request and prevents a late repl
   }
 });
 
-test("unsupported content is refused before a model call, and a zero model budget ends explicitly", async () => {
+test("image and document parts reach HostAi as artifact references", async () => {
   const { peer } = await negotiatedPeer();
   try {
     await peer.request("session.start", sessionScope, sessionParams(), "h:2");
-    const imageTurn = turnParams();
-    imageTurn["parts"] = [
+    const attached = turnParams();
+    const image = {
+      artifactId: "image-1",
+      digest: `sha256:${"c".repeat(64)}`,
+      sizeBytes: 10,
+      mediaType: "image/png",
+    };
+    const document = {
+      artifactId: "doc-1",
+      digest: `sha256:${"d".repeat(64)}`,
+      sizeBytes: 20,
+      mediaType: "application/pdf",
+    };
+    attached["parts"] = [
+      { type: "text", text: "Use the attached picture and brief." },
+      { type: "image", artifact: image },
+      { type: "document", name: "brief.pdf", artifact: document },
+    ];
+    const accepted = await peer.request("turn.start", turnScope, attached, "h:3");
+    assert.deepEqual(accepted.result, { state: "accepted" });
+
+    const model = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
+    const messages = (model.params as JsonObject)["messages"] as JsonObject[];
+    assert.deepEqual(messages.at(-1)?.["content"], [
+      { type: "text", text: "Use the attached picture and brief." },
+      { type: "image", artifact: image },
+      { type: "document", name: "brief.pdf", artifact: document },
+    ]);
+    assert.equal(JSON.stringify(model.params).includes("data:"), false, "the runtime never forwards attachment bytes");
+    peer.replyModel(model, "The attachments describe the requested change.", null);
+    const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
+    assert.equal((finished.data as JsonObject)["state"], "task_failed");
+  } finally {
+    peer.kill();
+  }
+});
+
+test("unsupported attachment type or size is refused before a model call", async () => {
+  const { peer } = await negotiatedPeer();
+  try {
+    await peer.request("session.start", sessionScope, sessionParams(), "h:2");
+    const badType = turnParams();
+    badType["parts"] = [
       {
         type: "image",
-        artifact: { artifactId: "image-1", digest: `sha256:${"c".repeat(64)}`, sizeBytes: 10, mediaType: "image/png" },
+        artifact: { artifactId: "image-1", digest: `sha256:${"c".repeat(64)}`, sizeBytes: 10, mediaType: "image/gif" },
       },
     ];
-    const refused = await peer.request("turn.start", turnScope, imageTurn, "h:3");
-    assert.equal(refused.outcome, "error");
-    assert.equal(refused.error?.["code"], "UNSUPPORTED_CAPABILITY");
-    assert.equal((refused.error?.["details"] as JsonObject)["capability"], "images");
+    const refusedType = await peer.request("turn.start", turnScope, badType, "h:3");
+    assert.equal(refusedType.outcome, "error");
+    assert.equal(refusedType.error?.["code"], "INVALID_REQUEST");
+
+    const tooLarge = turnParams();
+    tooLarge["parts"] = [
+      {
+        type: "document",
+        name: "brief.pdf",
+        artifact: {
+          artifactId: "doc-1",
+          digest: `sha256:${"d".repeat(64)}`,
+          sizeBytes: DEFAULT_LIMITS.attachmentBytes + 1,
+          mediaType: "application/pdf",
+        },
+      },
+    ];
+    const refusedSize = await peer.request("turn.start", turnScope, tooLarge, "h:4");
+    assert.equal(refusedSize.outcome, "error");
+    // The wire schema caps artifact size at 4 MiB before the handler sees it.
+    assert.equal(refusedSize.error?.["code"], "INVALID_REQUEST");
     assert.equal(peer.frames.filter((frame) => frame.kind === "request" && frame.method === "model.generate").length, 0);
 
     const noBudget = turnParams();
     noBudget["budgets"] = { modelCalls: 0, agentTasks: 0, cadCommands: 0, repairs: 0, validationRuns: 0, wallTimeSeconds: 120 };
-    const accepted = await peer.request("turn.start", turnScope, noBudget, "h:4");
+    const accepted = await peer.request("turn.start", turnScope, noBudget, "h:5");
     assert.deepEqual(accepted.result, { state: "accepted" });
     const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
     assert.equal((finished.data as JsonObject)["state"], "budget_exhausted");

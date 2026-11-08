@@ -13442,13 +13442,14 @@ mod mastra_backend_tests {
         let http: crate::agent_chat::backend::HttpFn = Arc::new(|_| {
             Ok((200, json!({"choices":[{"message":{"role":"assistant","content":"host answer"},"finish_reason":"stop"}]}).to_string().into_bytes()))
         });
+        let next = Arc::new(AtomicU64::new(1));
         let host = Arc::new(host_ai::HostAi::new(host_ai::HostAiDependencies {
             shared: Arc::clone(&shared),
             http,
             secrets: None,
             artifacts: Arc::new(|_, _| panic!("the session test reads no artifact")),
             clock: Arc::new(|| Duration::ZERO),
-            ids: Arc::new(|| Ok("00000000000000000000000000000001".into())),
+            ids: Arc::new(move || Ok(format!("{:032x}", next.fetch_add(1, Ordering::SeqCst)))),
         }));
         (host, shared)
     }
@@ -14427,6 +14428,262 @@ mod mastra_backend_tests {
             "a lost connection cannot be promoted by a late passing report"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        vec![
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01,
+            0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ]
+    }
+
+    fn tiny_pdf() -> Vec<u8> {
+        b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n".to_vec()
+    }
+
+    fn attachment_parts() -> Vec<crate::agent_chat::backend::PromptPart> {
+        use crate::agent_chat::backend::{PromptPart, base64};
+        vec![
+            PromptPart::Text("use these".into()),
+            PromptPart::Image { mime: "image/png".into(), base64: base64(&tiny_png()) },
+            PromptPart::Document {
+                name: "brief.pdf".into(),
+                uri: "file:///tmp/brief.pdf".into(),
+                mime: "application/pdf".into(),
+                base64: base64(&tiny_pdf()),
+            },
+        ]
+    }
+
+    fn turn_start(log: &Arc<Mutex<test_support::Log>>) -> Option<TurnStartParams> {
+        log.lock().ok()?.requests.iter().find_map(|record| match &record.request {
+            HostRequest::TurnStart(params) => Some((**params).clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn mastra_turn_start_carries_attachment_references_and_exact_bytes() {
+        use sha2::{Digest, Sha256};
+
+        let (mut backend, log, _) = backend();
+        let (host, _) = test_host();
+        backend.attach_host_for_test(Arc::clone(&host));
+        inject_runtime_ready(&log);
+        let _ = backend.poll();
+        finish_session(&log, false);
+        let _ = backend.poll();
+        backend.set_document("doc-main", 7);
+        backend.prompt(&attachment_parts());
+        let params = turn_start(&log).expect("turn.start with attachments");
+        let (image, document) = match params.parts.as_slice() {
+            [ContentBlock::Text { text }, ContentBlock::Image { artifact }, ContentBlock::Document { name, artifact: doc }] => {
+                assert_eq!(text, "use these");
+                (artifact.clone(), (name.clone(), doc.clone()))
+            }
+            other => panic!("unexpected parts: {other:?}"),
+        };
+        let png = tiny_png();
+        assert_eq!(image.size_bytes as usize, png.len());
+        assert_eq!(image.media_type, "image/png");
+        assert_eq!(image.digest.to_string(), format!("sha256:{:x}", Sha256::digest(&png)));
+        assert_eq!(document.0, "brief.pdf");
+        assert_eq!(document.1.size_bytes as usize, tiny_pdf().len());
+        assert_eq!(document.1.media_type, "application/pdf");
+        let wire = serde_json::to_string(&params).unwrap();
+        assert!(!wire.contains(&crate::agent_chat::backend::base64(&png)), "attachment bytes never enter the runtime frame");
+
+        // The backend's runtime session id and HostAi instance are the same fixture pair.
+        let binding = backend.next_binding().unwrap();
+        let session = host_ai::SessionKey { runtime_instance_id: "instance".into(), session_id: binding.session_id };
+        let host_ref = host_ai::ArtifactRef {
+            artifact_id: image.artifact_id.to_string(),
+            digest: {
+                let text = image.digest.to_string();
+                let mut bytes = [0u8; 32];
+                for (index, byte) in bytes.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&text[7 + index * 2..7 + index * 2 + 2], 16).unwrap();
+                }
+                bytes
+            },
+            size_bytes: image.size_bytes,
+            media_type: image.media_type.clone(),
+        };
+        assert_eq!(host.read_attachment_for_test(&session, &host_ref).as_deref(), Some(png.as_slice()));
+    }
+
+    #[test]
+    fn mastra_attachment_type_size_and_count_errors_precede_turn_start() {
+        use crate::agent_chat::backend::{Event, PromptPart, base64};
+
+        let cases: Vec<(Vec<PromptPart>, &str)> = vec![
+            (vec![PromptPart::Image { mime: "image/gif".into(), base64: base64(&tiny_png()) }], "ui.mastra_attachment_type"),
+            ((0..5).map(|_| PromptPart::Image { mime: "image/png".into(), base64: base64(&tiny_png()) }).collect(), "ui.mastra_attachment_count"),
+            (vec![PromptPart::Image { mime: "image/png".into(), base64: base64(&vec![0u8; (4 << 20) + 1]) }], "ui.mastra_attachment_size"),
+        ];
+        for (parts, key) in cases {
+            let (mut backend, log, _) = backend();
+            let (host, _) = test_host();
+            backend.attach_host_for_test(host);
+            inject_runtime_ready(&log);
+            let _ = backend.poll();
+            finish_session(&log, false);
+            let _ = backend.poll();
+            backend.set_document("doc-main", 7);
+            backend.prompt(&parts);
+            let events = backend.poll();
+            assert!(events.iter().any(|event| matches!(event, Event::Error(text) if text == crate::i18n::tr(key))), "{events:?}");
+            assert!(events.iter().any(|event| matches!(event, Event::TurnEnded { .. })));
+            assert!(turn_start(&log).is_none(), "a refused attachment never reaches turn.start");
+        }
+    }
+
+    #[test]
+    fn host_ai_reads_images_and_pdfs_and_refuses_documents_for_openai() {
+        use crate::agent_chat::backend::HttpFn;
+        use crate::agent_chat::host_ai::{
+            AiLimits, CallContext, CallScope, ContentPart, GenerateOptions, GenerateRequest, HostAi, HostAiDependencies, ModelCallBudget,
+            ModelMessage, SessionKey, TurnControl,
+        };
+        use crate::agent_chat::{agents, host_ai as ha};
+
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let body = Arc::clone(&captured);
+        let http: HttpFn = Arc::new(move |request| {
+            body.lock().unwrap().push(String::from_utf8_lossy(request.body.as_deref().unwrap_or(&[])).into_owned());
+            Ok((200, json!({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}).to_string().into_bytes()))
+        });
+        let shared = Arc::new(ha::AiShared::default());
+        shared
+            .connections()
+            .replace(&[agents::AgentConfig {
+                id: "anthropic-1".into(),
+                name: "Anthropic fixture".into(),
+                kind: agents::Kind::Anthropic,
+                base_url: "http://localhost:18080".into(),
+                model: "claude".into(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let next = Arc::new(std::sync::atomic::AtomicU64::new(9));
+        let host = Arc::new(HostAi::new(HostAiDependencies {
+            shared,
+            http,
+            secrets: None,
+            artifacts: Arc::new(|_, _| panic!("the attachment store answers first")),
+            clock: Arc::new(|| Duration::ZERO),
+            ids: Arc::new(move || Ok(format!("{:032x}", next.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))),
+        }));
+        let session = SessionKey { runtime_instance_id: "runtime".into(), session_id: "session".into() };
+        host.open_session(session.clone(), AiLimits::contract_defaults()).unwrap();
+        let binding = host.bind("anthropic-1", "claude").unwrap();
+        let png = tiny_png();
+        let pdf = tiny_pdf();
+        let image = host.store_attachment(&session, std::sync::Arc::from(png.clone()), "image/png").unwrap();
+        let document = host.store_attachment(&session, std::sync::Arc::from(pdf.clone()), "application/pdf").unwrap();
+        let context = CallContext {
+            scope: CallScope { session: session.clone(), turn_id: "t".into(), workflow_run_id: "w".into() },
+            control: TurnControl::new().new_call().unwrap(),
+            deadline: host.deadline_after(Duration::from_secs(30)),
+            limits: AiLimits::contract_defaults(),
+            model_budget: Arc::new(ModelCallBudget::new(20).unwrap()),
+        };
+        let request = GenerateRequest {
+            connection_id: "anthropic-1".into(),
+            model_id: "claude".into(),
+            messages: vec![ModelMessage {
+                role: ha::MessageRole::User,
+                content: vec![
+                    ContentPart::Text("attached".into()),
+                    ContentPart::Image(image),
+                    ContentPart::Document { name: "brief.pdf".into(), artifact: document },
+                ],
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            options: GenerateOptions {
+                delivery: ha::Delivery::Buffered,
+                timeout_seconds: 30,
+                max_output_tokens: None,
+                temperature: None,
+                reasoning_effort: None,
+                output_schema: None,
+            },
+            continuation: None,
+        };
+        assert!(host.generate(&binding, &context, request).is_ok());
+        let body = captured.lock().unwrap().join("\n");
+        assert!(body.contains("\"type\":\"image\"") && body.contains("image/png"), "{body}");
+        assert!(body.contains("\"type\":\"document\"") && body.contains("application/pdf"), "{body}");
+        assert!(body.contains(&crate::agent_chat::backend::base64(&png)) && body.contains(&crate::agent_chat::backend::base64(&pdf)));
+
+        let openai_shared = Arc::new(ha::AiShared::default());
+        openai_shared
+            .connections()
+            .replace(&[agents::AgentConfig {
+                id: "openai-1".into(),
+                name: "OpenAI fixture".into(),
+                kind: agents::Kind::Api,
+                base_url: "http://localhost:18080/v1".into(),
+                model: "gpt".into(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let openai_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = Arc::clone(&openai_calls);
+        let next = Arc::new(std::sync::atomic::AtomicU64::new(0x0a));
+        let openai = Arc::new(HostAi::new(HostAiDependencies {
+            shared: openai_shared,
+            http: Arc::new(move |_| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok((200, b"{}".to_vec()))
+            }),
+            secrets: None,
+            artifacts: Arc::new(|_, _| panic!("the attachment store answers first")),
+            clock: Arc::new(|| Duration::ZERO),
+            ids: Arc::new(move || Ok(format!("{:032x}", next.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))),
+        }));
+        let openai_session = SessionKey { runtime_instance_id: "runtime".into(), session_id: "openai".into() };
+        openai.open_session(openai_session.clone(), AiLimits::contract_defaults()).unwrap();
+        let openai_binding = openai.bind("openai-1", "gpt").unwrap();
+        let document = openai.store_attachment(&openai_session, std::sync::Arc::from(pdf), "application/pdf").unwrap();
+        let context = CallContext {
+            scope: CallScope { session: openai_session, turn_id: "t".into(), workflow_run_id: "w".into() },
+            control: TurnControl::new().new_call().unwrap(),
+            deadline: openai.deadline_after(Duration::from_secs(30)),
+            limits: AiLimits::contract_defaults(),
+            model_budget: Arc::new(ModelCallBudget::new(20).unwrap()),
+        };
+        let error = openai
+            .generate(
+                &openai_binding,
+                &context,
+                GenerateRequest {
+                    connection_id: "openai-1".into(),
+                    model_id: "gpt".into(),
+                    messages: vec![ModelMessage {
+                        role: ha::MessageRole::User,
+                        content: vec![ContentPart::Document { name: "brief.pdf".into(), artifact: document }],
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
+                    }],
+                    tools: Vec::new(),
+                    options: GenerateOptions {
+                        delivery: ha::Delivery::Buffered,
+                        timeout_seconds: 30,
+                        max_output_tokens: None,
+                        temperature: None,
+                        reasoning_effort: None,
+                        output_schema: None,
+                    },
+                    continuation: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), ha::AiErrorCode::UnsupportedCapability);
+        assert_eq!(openai_calls.load(std::sync::atomic::Ordering::SeqCst), 0, "a capability mismatch makes no HTTP call");
     }
 }
 

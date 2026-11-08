@@ -32,6 +32,7 @@ import { SessionHistory } from "./history.js";
 import { createHostAiAgent, ContinuationBranch, toMastraMessages } from "./host-ai/language-model.js";
 import {
   HostAiModelClient,
+  type ContentBlock,
   type HostAiTransport,
   type ModelMessage,
   type ModelGenerateResult,
@@ -189,6 +190,26 @@ export interface RuntimeServerOptions {
    * never invents checks or marks a missing profile as validated.
    */
   readonly fixedRequirements?: (profile: ProfileRef) => FixedRequirements | Promise<FixedRequirements>;
+}
+
+function contentArtifact(value: unknown): { readonly artifactId: string; readonly digest: string; readonly sizeBytes: number; readonly mediaType: string } | null {
+  if (
+    !isObject(value) ||
+    typeof value["artifactId"] !== "string" ||
+    typeof value["digest"] !== "string" ||
+    typeof value["sizeBytes"] !== "number" ||
+    typeof value["mediaType"] !== "string" ||
+    !Number.isInteger(value["sizeBytes"]) ||
+    value["sizeBytes"] <= 0
+  ) {
+    return null;
+  }
+  return {
+    artifactId: value["artifactId"],
+    digest: value["digest"],
+    sizeBytes: value["sizeBytes"],
+    mediaType: value["mediaType"],
+  };
 }
 
 export class RuntimeServer {
@@ -461,19 +482,81 @@ export class RuntimeServer {
       this.#respondError(request.requestId, request.scope, invalidRequest("turn.start needs content parts."));
       return;
     }
+    const content: ContentBlock[] = [];
+    let attachmentCount = 0;
+    let attachmentBytes = 0;
     for (const part of parts) {
       if (!isObject(part)) {
         this.#respondError(request.requestId, request.scope, invalidRequest("A content part is invalid."));
         return;
       }
+      if (part["type"] === "text" && typeof part["text"] === "string") {
+        content.push({ type: "text", text: part["text"] });
+        continue;
+      }
       if (part["type"] === "image") {
-        this.#respondError(request.requestId, request.scope, unsupportedCapability("images"));
-        return;
+        const artifact = contentArtifact(part["artifact"]);
+        if (artifact === null || (artifact.mediaType !== "image/png" && artifact.mediaType !== "image/jpeg")) {
+          this.#respondError(request.requestId, request.scope, invalidRequest("An image artifact reference is invalid."));
+          return;
+        }
+        if (artifact.sizeBytes > this.#limits.attachmentBytes) {
+          this.#respondError(
+            request.requestId,
+            request.scope,
+            resourceExhausted("attachmentBytes", this.#limits.attachmentBytes),
+          );
+          return;
+        }
+        attachmentCount += 1;
+        attachmentBytes += artifact.sizeBytes;
+        if (attachmentCount > this.#limits.attachments || attachmentBytes > this.#limits.attachmentTotalBytes) {
+          this.#respondError(
+            request.requestId,
+            request.scope,
+            resourceExhausted(
+              attachmentCount > this.#limits.attachments ? "attachments" : "attachmentTotalBytes",
+              attachmentCount > this.#limits.attachments ? this.#limits.attachments : this.#limits.attachmentTotalBytes,
+            ),
+          );
+          return;
+        }
+        content.push({ type: "image", artifact });
+        continue;
       }
       if (part["type"] === "document") {
-        this.#respondError(request.requestId, request.scope, unsupportedCapability("documents"));
-        return;
+        const name = part["name"];
+        const artifact = contentArtifact(part["artifact"]);
+        if (typeof name !== "string" || name.length === 0 || artifact === null || artifact.mediaType !== "application/pdf") {
+          this.#respondError(request.requestId, request.scope, invalidRequest("A document part is invalid."));
+          return;
+        }
+        if (artifact.sizeBytes > this.#limits.attachmentBytes) {
+          this.#respondError(
+            request.requestId,
+            request.scope,
+            resourceExhausted("attachmentBytes", this.#limits.attachmentBytes),
+          );
+          return;
+        }
+        attachmentCount += 1;
+        attachmentBytes += artifact.sizeBytes;
+        if (attachmentCount > this.#limits.attachments || attachmentBytes > this.#limits.attachmentTotalBytes) {
+          this.#respondError(
+            request.requestId,
+            request.scope,
+            resourceExhausted(
+              attachmentCount > this.#limits.attachments ? "attachments" : "attachmentTotalBytes",
+              attachmentCount > this.#limits.attachments ? this.#limits.attachments : this.#limits.attachmentTotalBytes,
+            ),
+          );
+          return;
+        }
+        content.push({ type: "document", name, artifact });
+        continue;
       }
+      this.#respondError(request.requestId, request.scope, invalidRequest("A content part type is unsupported."));
+      return;
     }
     const text = parts
       .filter((part): part is JsonObject => isObject(part))
@@ -482,7 +565,7 @@ export class RuntimeServer {
       .join("\n");
     const userMessage: ModelMessage = {
       role: "user",
-      content: [{ type: "text", text }],
+      content,
       toolCalls: [],
       toolCallId: null,
     };
@@ -821,7 +904,8 @@ export class RuntimeServer {
           connectionId: String(turn.binding["connectionId"]),
           modelId: String(turn.binding["modelId"]),
           instructions: session.instructions,
-          parts: turn.userMessage.content.map((block) => block.text),
+          parts: turn.userMessage.content.flatMap((block) => (block.type === "text" ? [block.text] : [])),
+          content: turn.userMessage.content,
           history: session.history.messages,
           selection: selectionOf(turn.context),
           requirements,
@@ -925,31 +1009,68 @@ export class RuntimeServer {
           branch: session.branch,
         }) as Agent;
         const messages: ModelMessage[] = [...session.history.messages, turn.userMessage];
-        const result = await agent.generateLegacy(toMastraMessages(messages) as Parameters<Agent["generateLegacy"]>[0], { maxSteps: 1 });
-        this.#checkCancelled(turn);
-        if (this.#clock.now() > turn.deadline) {
-          throw new BudgetExhausted();
+        const hasAttachments = turn.userMessage.content.some((block) => block.type !== "text");
+        if (hasAttachments) {
+          // The Mastra Agent prompt language has no host artifact reference. Send the normalized
+          // messages directly so image/PDF blocks reach HostAi unchanged.
+          const result = await client.generate(
+            {
+              messages,
+              tools: [],
+              options: {
+                delivery: "buffered",
+                timeoutSeconds: Math.min(this.#limits.callDefaultSeconds, remainingSeconds),
+                maxOutputTokens: null,
+                temperature: null,
+                reasoningEffort: null,
+                outputSchema: null,
+              },
+              continuation: null,
+            },
+            turn.abort.signal,
+          );
+          this.#checkCancelled(turn);
+          if (this.#clock.now() > turn.deadline) {
+            throw new BudgetExhausted();
+          }
+          turn.outcome = {
+            type: result.toolCalls.length > 0 ? "tool-calls" : "text",
+            text: result.content.map((block) => block.text).join(""),
+            toolCalls: result.toolCalls.map((call) => ({
+              id: call.id,
+              name: call.name,
+              arguments: call.arguments,
+            })),
+            finishReason: result.finishReason,
+          };
+        } else {
+          const result = await agent.generateLegacy(toMastraMessages(messages) as Parameters<Agent["generateLegacy"]>[0], { maxSteps: 1 });
+          this.#checkCancelled(turn);
+          if (this.#clock.now() > turn.deadline) {
+            throw new BudgetExhausted();
+          }
+          const steps = Array.isArray(result.steps) ? result.steps : [];
+          if (steps.length > 1) {
+            throw new ProtocolError("INTERNAL_ERROR", "Mastra executed more than one model step.");
+          }
+          const toolCalls = Array.isArray(result.toolCalls)
+            ? result.toolCalls.map((call) => ({
+                id: String(call.toolCallId),
+                name: String(call.toolName),
+                arguments: isObject(call.args) ? call.args : {},
+              }))
+            : [];
+          turn.outcome = {
+            type: toolCalls.length > 0 ? "tool-calls" : "text",
+            text: typeof result.text === "string" ? result.text : "",
+            toolCalls,
+            finishReason: String(result.finishReason),
+          };
         }
-        const steps = Array.isArray(result.steps) ? result.steps : [];
-        if (steps.length > 1) {
-          throw new ProtocolError("INTERNAL_ERROR", "Mastra executed more than one model step.");
-        }
-        const toolCalls = Array.isArray(result.toolCalls)
-          ? result.toolCalls.map((call) => ({
-              id: String(call.toolCallId),
-              name: String(call.toolName),
-              arguments: isObject(call.args) ? call.args : {},
-            }))
-          : [];
-        turn.outcome = {
-          type: toolCalls.length > 0 ? "tool-calls" : "text",
-          text: typeof result.text === "string" ? result.text : "",
-          toolCalls,
-          finishReason: String(result.finishReason),
-        };
         this.#emitTurn(turn, "workflow.stage", { stageId: "model", title: "Ask HostAi for one model step", state: "completed" });
-        if (toolCalls.length === 0 && turn.outcome.text.length > 0) {
-          this.#emitTurn(turn, "workflow.text", { text: turn.outcome.text, channel: "answer" });
+        const outcome = turn.outcome;
+        if (outcome !== null && outcome.toolCalls.length === 0 && outcome.text.length > 0) {
+          this.#emitTurn(turn, "workflow.text", { text: outcome.text, channel: "answer" });
         }
         return { ok: true };
       },
