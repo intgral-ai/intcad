@@ -37,6 +37,15 @@ import {
   type ModelGenerateResult,
 } from "./host-ai/model-client.js";
 import { AGENT_RUN_CAPABILITY } from "./host-ai/agent-client.js";
+import { CadAdapter } from "./solidcraft/cad-adapter.js";
+import { McpClient, type McpBridgeChannel } from "./solidcraft/mcp-client.js";
+import {
+  runNativeModelingWorkflow,
+  type ChangeState,
+  type FixedRequirements,
+  type ProfileRef,
+  type WorkflowEvents,
+} from "./workflows/index.js";
 import {
   decodeFrameBytes,
   isId,
@@ -131,7 +140,8 @@ interface TurnState {
   readonly workflowRunId: string;
   readonly requestId: string;
   readonly binding: JsonObject;
-  readonly document: { readonly documentId: string; readonly revision: string };
+  readonly context: JsonObject;
+  document: { readonly documentId: string; readonly revision: string };
   readonly budgets: Budgets;
   readonly abort: AbortController;
   readonly startedAt: number;
@@ -142,6 +152,8 @@ interface TurnState {
   finished: boolean;
   modelCalls: number;
   outcome: TurnOutcome | null;
+  /** Truthful live-edit fact already observed before a terminal event. */
+  changes: ChangeState;
 }
 
 export interface RuntimeServerOptions {
@@ -154,6 +166,17 @@ export interface RuntimeServerOptions {
   readonly runtimeVersion?: string;
   readonly onStopped?: (code: number) => void;
   readonly clock?: Clock;
+  /**
+   * Host-provisioned SolidCraft MCP bridge. One call opens one turn's MCP
+   * session; the host owns the underlying transport and its lifetime.
+   */
+  readonly cadBridge?: () => McpBridgeChannel;
+  /**
+   * Resolve the host-frozen check profile for a turn. #13 will replace this
+   * launch seam with the host report/profile delivery; until then the runtime
+   * never invents checks or marks a missing profile as validated.
+   */
+  readonly fixedRequirements?: (profile: ProfileRef) => FixedRequirements | Promise<FixedRequirements>;
 }
 
 export class RuntimeServer {
@@ -164,6 +187,8 @@ export class RuntimeServer {
   readonly #runtimeVersion: string;
   readonly #onStopped: ((code: number) => void) | undefined;
   readonly #clock: Clock;
+  readonly #cadBridge: (() => McpBridgeChannel) | undefined;
+  readonly #fixedRequirements: ((profile: ProfileRef) => FixedRequirements | Promise<FixedRequirements>) | undefined;
   readonly #pending = new Map<string, PendingCall>();
   readonly #tombstones = new Set<string>();
   readonly #seenIncoming = new Set<string>();
@@ -188,6 +213,8 @@ export class RuntimeServer {
     this.#runtimeVersion = options.runtimeVersion ?? RUNTIME_VERSION;
     this.#onStopped = options.onStopped;
     this.#clock = options.clock ?? monotonicClock;
+    this.#cadBridge = options.cadBridge;
+    this.#fixedRequirements = options.fixedRequirements;
     this.#transport = new NdjsonTransport(
       options.input,
       options.output,
@@ -333,8 +360,8 @@ export class RuntimeServer {
         workflowIds: [...WORKFLOW_IDS],
         hostModelCalls: true,
         hostAgentTasks: AGENT_RUN_CAPABILITY.hostAgentTasks,
-        guardedExecute: false,
-        guardedBatch: false,
+        guardedExecute: this.#cadBridge !== undefined,
+        guardedBatch: this.#cadBridge !== undefined,
         snapshotValidation: false,
       },
       limits: this.#limits,
@@ -404,6 +431,15 @@ export class RuntimeServer {
       return;
     }
     const budgets = request.params["budgets"] as unknown as Budgets;
+    const context = request.params["context"];
+    if (!isObject(context)) {
+      this.#respondError(request.requestId, request.scope, invalidRequest("turn.start needs a turn context."));
+      return;
+    }
+    if (context["selection"] !== undefined && !Array.isArray(context["selection"])) {
+      this.#respondError(request.requestId, request.scope, invalidRequest("The turn selection must be an array."));
+      return;
+    }
     const parts = request.params["parts"];
     if (!Array.isArray(parts)) {
       this.#respondError(request.requestId, request.scope, invalidRequest("turn.start needs content parts."));
@@ -446,6 +482,7 @@ export class RuntimeServer {
       workflowRunId: request.scope.workflowRunId as string,
       requestId: request.requestId,
       binding,
+      context,
       document: { documentId: document["documentId"], revision: document["revision"] },
       budgets,
       abort: new AbortController(),
@@ -457,6 +494,7 @@ export class RuntimeServer {
       finished: false,
       modelCalls: 0,
       outcome: null,
+      changes: "none",
     };
     this.#turn = turn;
     this.#respondOk(request.requestId, request.scope, { state: "accepted" });
@@ -479,7 +517,9 @@ export class RuntimeServer {
         turn.abort.abort();
       }
       this.#respondOk(request.requestId, request.scope, { state: "cancelling" });
-      this.#finishTurn(turn, "cancelled", "The turn was cancelled.");
+      // The workflow/placeholder observes the abort and publishes the truthful
+      // terminal with any changes already applied. Do not claim an early end
+      // before the current step settles.
       return;
     }
     this.#respondOk(request.requestId, request.scope, { state: "terminal" });
@@ -655,6 +695,10 @@ export class RuntimeServer {
       if (session === null || session.id !== turn.sessionId || turn.retired) {
         return;
       }
+      if (session.bridge !== null) {
+        await this.#runNativeTurn(session, turn);
+        return;
+      }
       const workflow = this.#workflow(session, turn);
       const run = await workflow.createRun();
       const result = await run.start({ inputData: {} });
@@ -684,6 +728,132 @@ export class RuntimeServer {
     } catch (error) {
       this.#finishFromError(turn, error);
     }
+  }
+
+  async #runNativeTurn(session: SessionState, turn: TurnState): Promise<void> {
+    const bridge = session.bridge;
+    const bridgeId = isObject(bridge) && typeof bridge["bridgeId"] === "string" ? bridge["bridgeId"] : null;
+    if (bridgeId === null || !isId(bridgeId)) {
+      throw invalidRequest("The session's SolidCraft bridge reference is invalid.", { field: "bridge" });
+    }
+    if (this.#cadBridge === undefined) {
+      this.#finishTurn(
+        turn,
+        "task_failed",
+        "The SolidCraft bridge is configured but the host did not provision a CAD channel; no command was executed.",
+        "none",
+      );
+      return;
+    }
+    const profile = profileRef(turn.binding["profile"]);
+    if (profile === null) {
+      throw invalidRequest("The turn binding has no valid check profile.", { field: "profile" });
+    }
+    const requirements =
+      this.#fixedRequirements === undefined
+        ? { checks: [] }
+        : await this.#fixedRequirements(profile);
+    const channel = this.#cadBridge();
+    const client = new McpClient({
+      channel,
+      bridge: { name: "solidcraft-app", bridgeId },
+      turn: {
+        sessionId: turn.sessionId,
+        turnId: turn.turnId,
+        workflowRunId: turn.workflowRunId,
+      },
+      requestTimeoutMs: Math.max(1, this.#limits.callDefaultSeconds) * 1000,
+      handshakeTimeoutMs: Math.max(1, this.#limits.handshakeSeconds) * 1000,
+      diagnostic: this.#diagnostic,
+    });
+    const adapter = new CadAdapter({
+      client,
+      turn: {
+        bridgeId,
+        sessionId: turn.sessionId,
+        turnId: turn.turnId,
+        workflowRunId: turn.workflowRunId,
+        document: turn.document,
+        signal: turn.abort.signal,
+      },
+      diagnostic: this.#diagnostic,
+    });
+    try {
+      await client.connect();
+      this.#checkCancelled(turn);
+      const remainingSeconds = Math.max(1, Math.floor((turn.deadline - this.#clock.now()) / 1000));
+      const model = new HostAiModelClient(
+        this.#hostTransport(),
+        {
+          sessionId: session.id,
+          turnId: turn.turnId,
+          workflowRunId: turn.workflowRunId,
+          connectionId: String(turn.binding["connectionId"]),
+          modelId: String(turn.binding["modelId"]),
+          remainingSeconds,
+        },
+        this.#limits,
+        () => {
+          turn.modelCalls += 1;
+        },
+      );
+      let result = await runNativeModelingWorkflow(
+        {
+          sessionId: turn.sessionId,
+          turnId: turn.turnId,
+          workflowRunId: turn.workflowRunId,
+          connectionId: String(turn.binding["connectionId"]),
+          modelId: String(turn.binding["modelId"]),
+          instructions: session.instructions,
+          parts: turn.userMessage.content.map((block) => block.text),
+          selection: selectionOf(turn.context),
+          requirements,
+          profile,
+          document: turn.document,
+          budgets: turn.budgets,
+          mode: "byok",
+        },
+        {
+          model,
+          cad: adapter,
+          events: this.#workflowEvents(turn),
+          signal: turn.abort.signal,
+          limits: this.#limits,
+          validation: null,
+        },
+      );
+      if (turn.cancelled && result.state !== "cancelled") {
+        result = { ...result, state: "cancelled", reason: "The turn was cancelled." };
+      }
+      turn.changes = result.changes;
+      turn.document = { documentId: result.document.documentId, revision: result.document.revision };
+      if (result.answer.length > 0) {
+        turn.outcome = { type: "text", text: result.answer, toolCalls: [], finishReason: "stop" };
+        this.#appendHistory(session, turn);
+      }
+      this.#finishTurn(turn, result.state, result.reason, result.changes, result.validationRunId, result.report);
+    } finally {
+      adapter.dispose();
+    }
+  }
+
+  #workflowEvents(turn: TurnState): WorkflowEvents {
+    return {
+      stage: (stageId, title, state) => {
+        this.#emitTurn(turn, "workflow.stage", { stageId, title, state });
+      },
+      plan: (steps) => {
+        this.#emitTurn(turn, "workflow.plan", {
+          steps: steps.map((step) => ({ id: step.id, title: step.title, state: step.state })),
+        });
+      },
+      text: (text, channel) => {
+        this.#emitTurn(turn, "workflow.text", { text, channel });
+      },
+      tool: (callId, name, state, output) => {
+        this.#emitTurn(turn, "workflow.tool", { callId, name, state, output: output ?? null });
+      },
+    };
   }
 
   #workflow(session: SessionState, turn: TurnState) {
@@ -909,15 +1079,15 @@ export class RuntimeServer {
       return;
     }
     if (turn.cancelled || error instanceof TurnCancelled) {
-      this.#finishTurn(turn, "cancelled", "The turn was cancelled.");
+      this.#finishTurn(turn, "cancelled", "The turn was cancelled.", turn.changes);
       return;
     }
     if (error instanceof BudgetExhausted) {
-      this.#finishTurn(turn, "budget_exhausted", "The turn budget was exhausted.");
+      this.#finishTurn(turn, "budget_exhausted", "The turn budget was exhausted.", turn.changes);
       return;
     }
     if (this.#clock.now() > turn.deadline) {
-      this.#finishTurn(turn, "budget_exhausted", "The turn wall-clock budget was exhausted.");
+      this.#finishTurn(turn, "budget_exhausted", "The turn wall-clock budget was exhausted.", turn.changes);
       return;
     }
     const wire = asProtocolError(error);
@@ -926,18 +1096,25 @@ export class RuntimeServer {
       return;
     }
     if (wire.value.code === "CANCELLED") {
-      this.#finishTurn(turn, "cancelled", wire.value.message);
+      this.#finishTurn(turn, "cancelled", wire.value.message, turn.changes);
       return;
     }
     if (wire.value.code === "RESOURCE_EXHAUSTED") {
-      this.#finishTurn(turn, "budget_exhausted", wire.value.message);
+      this.#finishTurn(turn, "budget_exhausted", wire.value.message, turn.changes);
       return;
     }
     this.#emitTurn(turn, "workflow.stage", { stageId: "model", title: "Ask HostAi for one model step", state: "failed" });
     this.#finishTurn(turn, "task_failed", wire.value.message);
   }
 
-  #finishTurn(turn: TurnState, state: TerminalState, reason: string): void {
+  #finishTurn(
+    turn: TurnState,
+    state: TerminalState,
+    reason: string,
+    changes: ChangeState = "none",
+    validationRunId: string | null = null,
+    report: JsonObject | null = null,
+  ): void {
     if (turn.finished || turn.retired) {
       return;
     }
@@ -946,9 +1123,9 @@ export class RuntimeServer {
       state,
       reason,
       document: turn.document,
-      changes: "none",
-      validationRunId: null,
-      report: null,
+      changes,
+      validationRunId,
+      report,
     });
     if (this.#turn === turn) {
       this.#turn = null;
@@ -1014,3 +1191,29 @@ export class RuntimeServer {
 }
 
 export { HostAiModelClient, type ModelGenerateResult };
+
+function profileRef(value: unknown): ProfileRef | null {
+  if (!isObject(value)) {
+    return null;
+  }
+  const profileId = value["profileId"];
+  const version = value["version"];
+  const digest = value["digest"];
+  if (typeof profileId !== "string" || typeof version !== "string" || typeof digest !== "string") {
+    return null;
+  }
+  if (!isId(profileId) || !/^sha256:[0-9a-f]{64}$/u.test(digest)) {
+    return null;
+  }
+  return { profileId, version, digest };
+}
+
+function selectionOf(context: JsonObject): JsonObject[] {
+  const raw = context["selection"];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((entry): entry is JsonObject => isObject(entry))
+    .map((entry) => JSON.parse(JSON.stringify(entry)) as JsonObject);
+}

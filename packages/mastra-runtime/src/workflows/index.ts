@@ -31,6 +31,7 @@ export {
 export type {
   BudgetUsage,
   CadPort,
+  ChangeState,
   CheckRequirement,
   CheckResult,
   ExactMeasurement,
