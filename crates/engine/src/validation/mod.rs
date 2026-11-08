@@ -932,8 +932,14 @@ impl ValidationPort {
         })?;
         let report: ValidationReport =
             serde_json::from_slice(&bytes).map_err(|_| ValidationError::not_ready("the validation run's report is not verifiable"))?;
-        self.verify_report(run_id, &admission, &state, &report)
-            .map_err(|error| ValidationError::not_ready(format!("the validation run's report is not verifiable: {}", error.message)))?;
+        if let Err(error) = self.verify_report(run_id, &admission, &state, &report) {
+            // Candidate/input-byte integrity failures keep their permanent §3.2 codes. Only
+            // report/profile/evidence/state verification failures mean "no report available".
+            return Err(match error.code {
+                ErrorCode::InvalidCandidate | ErrorCode::DependencyChanged | ErrorCode::NotFound => error,
+                _ => ValidationError::not_ready(format!("the validation run's report is not verifiable: {}", error.message)),
+            });
+        }
         let reference = ArtifactRef {
             artifact_id: format!("report-{run_id}"),
             digest: ids::digest(&bytes),
@@ -955,11 +961,13 @@ impl ValidationPort {
         {
             return Err(ValidationError::report_mismatch("the report does not bind this run's admission"));
         }
-        let profile = self.store.read_profile(run_id)?;
-        if profile.profile_id != report.profile.profile_id
-            || profile.version != report.profile.version
-            || profile_digest(&profile)? != report.profile.digest
-        {
+        let profile = self
+            .store
+            .read_profile(run_id)
+            .map_err(|error| ValidationError::report_mismatch(format!("the frozen profile is unavailable: {error}")))?;
+        let frozen_digest =
+            profile_digest(&profile).map_err(|error| ValidationError::report_mismatch(format!("the frozen profile is not digestible: {error}")))?;
+        if profile.profile_id != report.profile.profile_id || profile.version != report.profile.version || frozen_digest != report.profile.digest {
             return Err(ValidationError::report_mismatch("the frozen profile does not match the report"));
         }
         if report.checks.len() != profile.checks.len() {

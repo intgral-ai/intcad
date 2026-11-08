@@ -633,7 +633,10 @@ fn a_changed_input_byte_after_a_pass_rejects_the_report() {
     *bytes.last_mut().unwrap() ^= 0xff;
     std::fs::write(&container, bytes).unwrap();
     let error = port.report(&run.run_id).unwrap_err();
-    assert_eq!(error.code, ErrorCode::NotReady, "an unverifiable terminal report is unavailable");
+    assert!(
+        matches!(error.code, ErrorCode::InvalidCandidate | ErrorCode::DependencyChanged | ErrorCode::NotFound),
+        "a changed input byte keeps its permanent code, not NOT_READY: {error}"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
