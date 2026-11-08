@@ -75,18 +75,21 @@ npm run check:deps      # direct production licences and ee/ import check
 node dist/src/main.js   # start the built artifact on stdio
 ```
 
-`npm test` currently runs 105 tests. The schema suite checks **899 of 1002**
+`npm test` currently runs 108 tests. The schema suite checks **899 of 1002**
 catalog cases that this layer owns and agrees with the catalog on every one. The
 remaining 103 are reported, not claimed: 93 raw `guard-*` / `native-stamp-*`
 carriers whose decision belongs to the Rust component adapters, and 10 host
 state-machine transcripts owned by the Rust `RuntimeMachine`.
 
-56 of the 105 tests are the SolidCraft MCP adapter suites: a deterministic
+56 of the 108 tests are the SolidCraft MCP adapter suites: a deterministic
 in-memory MCP peer (`test/support/mcp-peer.ts`) supplies every guarded outcome
 class, and every produced `WriteOutcome` is validated against the repository's
 `#/$defs/WriteOutcome` schema rather than a TypeScript copy of it. The 18
 workflow tests in `test/workflow.test.ts` drive a real `McpClient` + `CadAdapter`
-over that peer with scripted HostAi replies and analytic 20×10×5 geometry.
+over that peer with scripted HostAi replies and analytic 20×10×5 geometry. Three
+`test/server-native.test.ts` cases spawn the built `dist/src/main.js` with an
+inherited `--bridge-fd`, drive real protocol 1.0 turns and cover create, edit,
+bounded repair, cancellation and ask.
 
 ## Contract bundle
 
@@ -125,9 +128,18 @@ counts and any mismatch.
   no hidden retry, provider fallback or tool execution.
 - Tool calls returned by the model are surfaced to the workflow and never
   executed by the SDK. The outer workflow owns native tool execution and the
-  next explicit model call. `src/server.ts` still contains the #7 single-step
-  placeholder and does not yet invoke the #10 workflow module; wiring the module
-  into the turn runner is the remaining integration step.
+  next explicit model call. When `session.start` has a `solidcraft-app` bridge
+  and the host injected a CAD channel, the turn runner calls
+  `runNativeModelingWorkflow` with #7's `HostAiModelClient` and #9's
+  `CadAdapter`; stage/plan/tool/text events and the workflow's terminal,
+  `changes` and resulting document stamp become the turn result.
+- Native turns require a host-provisioned bridge channel. `dist/src/main.js`
+  accepts `--bridge-fd <fd>` for one inherited duplex MCP stream (one MCP
+  session per turn on the same lane) and `--requirements-file <path>` for the
+  externally frozen check profiles. Without a configured bridge the prior
+  single-step no-tools path remains. Without #13 the workflow cannot claim
+  validated success; passing stage checks end `task_failed` with a clear
+  validation-unavailable reason.
 - `agent.run` is explicitly unavailable: the runtime advertises
   `hostAgentTasks: false` and returns `UNSUPPORTED_CAPABILITY` until the ACP task
   executor (#4) lands.
@@ -136,6 +148,10 @@ counts and any mismatch.
   rounds, fixed check policy, bounded repair and a host validation handoff.
   It is not a second command catalog and it never turns model text into success.
   See [`docs/mastra-native-workflow.md`](../../docs/mastra-native-workflow.md).
+- `src/bridge-lane.ts` wraps one host-provisioned duplex fd as reusable MCP
+  line lanes, so each turn gets a fresh MCP session without closing the host
+  transport. `--bridge-fd` and `--requirements-file` are launch configuration,
+  not new protocol methods or copied schemas.
 - Images and documents are refused before a model call. Structured output and
   streaming are refused before a HostAi call.
 - A process replacement has no session, normalized history or continuation to

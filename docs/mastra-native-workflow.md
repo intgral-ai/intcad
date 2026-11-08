@@ -106,10 +106,26 @@ the local exact check results. It consumes only the host decision:
   manifests, evidence or runner identity. That is #13's host-owned gate. A test
   stub in this repository is not a validation gate.
 
-The runtime's `src/server.ts` remains the #7 placeholder; invoking
-`runNativeModelingWorkflow` from the turn runner, supplying a real
-`ValidationHandoff` and the host bridge, is the remaining integration step after
-#13 and #4.
+The runtime turn runner (`src/server.ts`) now invokes
+`runNativeModelingWorkflow` when the session has a `solidcraft-app` bridge and
+the host injected a CAD channel. It maps workflow stage/plan/tool/text events to
+the protocol events and publishes the workflow's terminal state, `changes` and
+resulting document stamp. The host still owns report verification; until #13
+delivers the real `ValidationHandoff`, every passing stage check ends
+`task_failed` with the validation-unavailable reason.
+
+### Turn-runner wiring
+
+| File | Responsibility |
+|---|---|
+| `src/server.ts` | Per-turn `McpClient` + `CadAdapter`, the `HostAiModelClient` seam, workflow event mapping and terminal/`changes`/document publication. A configured bridge without an injected channel fails truthfully with no write. A session without a bridge keeps the prior no-tools path. |
+| `src/main.ts` | Host launch seam: `--bridge-fd <fd>` for one inherited duplex MCP stream and `--requirements-file <path>` for the host-frozen profile table. Neither changes protocol 1.0 or the schema bundle. |
+| `src/bridge-lane.ts` | One reusable line lane over the inherited stream; each turn gets a fresh MCP session and closing the channel does not destroy the host transport. |
+
+`--requirements-file` is a temporary delivery seam, not profile ownership. #13
+must replace it with the host-resolved frozen profile and report gate. An empty
+or missing profile list means no extra stage checks, so the workflow still ends
+without validated success.
 
 ## Source-to-native adaptation record
 
@@ -141,7 +157,15 @@ workflow has no credentials, script runtime or durable store.
 
 `test/workflow.test.ts` drives the real `McpClient` + `CadAdapter` over the
 deterministic MCP peer with scripted model replies and original analytic
-geometry (20 × 10 × 5 = 1000 mm³). It covers:
+geometry (20 × 10 × 5 = 1000 mm³). `test/server-native.test.ts` spawns the built
+`dist/src/main.js`, injects the MCP bridge on an inherited fd and the frozen
+profiles on disk, and speaks real protocol 1.0 turns. It covers:
+
+- create then parameter edit in one process, with two MCP sessions on one lane;
+- protected dimensions and the resulting document stamp/`changes` facts;
+- the bounded repair budget and `quality_failed` terminal;
+- cancellation after the current step, then ask/decline with truthful changes;
+- no `validated_success` while the #13 host gate is absent.
 
 - the workflow consumes #7's real `HostAiModelClient` with one explicit
   `model.generate` per round;
@@ -167,5 +191,7 @@ npm run verify:schema -w @intgral-ai/solidcraft-mastra-runtime
 npm run check:deps -w @intgral-ai/solidcraft-mastra-runtime
 ```
 
-These are workflow-stage tests. They are not a host validation gate, an
-installed-package test, an ACP executor test or real panel evidence.
+These are workflow-stage and application-level server tests. They are not a
+host validation gate, an installed-package test, an ACP executor test or real
+panel evidence. #13 still owns snapshot report verification; #4 still owns ACP
+task execution.
