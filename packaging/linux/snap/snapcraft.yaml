@@ -71,6 +71,7 @@ parts:
     organize:
       bin/: usr/bin/
       share/: usr/share/
+      lib/: usr/lib/
     override-pull: |
       craftctl default
       craftctl set version="$(cat "$CRAFT_PROJECT_DIR/version.txt")"

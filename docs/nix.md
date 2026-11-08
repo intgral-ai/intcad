@@ -56,6 +56,28 @@ nix run github:bherbruck/solidcraft#solidcraft -- --version
 An unrelated old executable on `PATH` is not updated by `nix build`.
 Use the flake app or `./result/bin/solidcraft` to verify the package you just built.
 
+## Source builds and the Mastra runtime binding
+
+A Nix build compiles from a source store path with no `.git` directory and no `git` in the
+sandbox. Ordinary builds therefore use the unbound revision sentinel
+`0000000000000000000000000000000000000000`. They compile normally, but the packaged Mastra
+runtime gate refuses that host revision, so a source build never claims a verified installed
+runtime. This repository's `flake.nix` passes no revision, so its builds stay unbound. A Nix or
+source release build that needs the binding supplies the full 40-hex commit in
+`SOLIDCRAFT_GIT_REVISION_OVERRIDE`; a dirty or exported source tree without it keeps the sentinel.
+
+A release or Mastra-bundling build needs the real reviewed revision. Set
+`SOLIDCRAFT_GIT_REVISION_OVERRIDE` to the full 40-hex commit (or build from a checkout with
+`git`). A strict build (`SOLIDCRAFT_WITH_MASTRA=1` or `SOLIDCRAFT_RELEASE=1`) without one fails
+with an explicit error instead of producing an unbindable package. For a source tarball:
+
+```sh
+SOLIDCRAFT_RELEASE=1 SOLIDCRAFT_GIT_REVISION_OVERRIDE="$COMMIT" cargo build --release
+```
+
+A downstream flake that needs a bound package must pass the same variable into the derivation;
+this repository does not change `flake.nix` here.
+
 ## Graphics and file dialogs
 
 The app wrapper includes Wayland, X11, xkbcommon, EGL, Vulkan-loader and D-Bus

@@ -75,5 +75,6 @@ pollster = { workspace = true }
 
 [build-dependencies]
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 # Reads assets/icons/ui/design/palette.toml and aliases.toml into compiled tables.
 toml = { workspace = true }

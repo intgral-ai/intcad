@@ -506,7 +506,14 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
 /// which connection or key is used. Direct keeps the behaviour of older preferences. It stays
 /// inside the Connecting section so the page's section rhythm does not move for it.
 pub(crate) fn runtime_command_missing(app: &SolveApp) -> bool {
-    app.preferences.mastra_runtime_command.trim().is_empty()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        !crate::agent_chat::packaged_runtime::installed() && app.preferences.mastra_runtime_command.trim().is_empty()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        app.preferences.mastra_runtime_command.trim().is_empty()
+    }
 }
 
 fn execution_controls(app: &mut SolveApp, ui: &mut egui::Ui) {

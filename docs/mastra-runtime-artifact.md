@@ -7,7 +7,9 @@ blocked on legal review. `policy.approvals` is empty. `check:deps` is evidence m
 reproducible inventory and reports `unapproved` with exit 0. Packaging/release
 must use `check:artifact-approval` (or `runtime-artifact --mode artifact`), which
 fails closed. No Vector Studio source was imported and no legal sign-off is
-claimed.
+claimed. The packaging layout, startup checks and installed-target documentation
+are in [mastra-packaging.md](mastra-packaging.md); they consume an approved
+artifact and do not approve this one.
 
 ## Recorded values
 

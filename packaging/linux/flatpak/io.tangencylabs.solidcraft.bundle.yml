@@ -49,6 +49,8 @@ modules:
       # Already has the release's version and date substituted by package.sh.
       - install -Dm644 share/metainfo/io.tangencylabs.solidcraft.metainfo.xml /app/share/metainfo/io.tangencylabs.solidcraft.metainfo.xml
       - mkdir -p /app/share/icons /app/share/doc && cp -R share/icons/hicolor /app/share/icons/ && cp -R share/doc/solidcraft /app/share/doc/
+      # Application-relative Mastra runtime; absent on architectures that do not advertise it.
+      - if [ -d lib/solidcraft ]; then mkdir -p /app/lib && cp -R lib/solidcraft /app/lib/; fi
     sources:
       - type: dir
         path: stage

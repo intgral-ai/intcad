@@ -5,7 +5,9 @@ evidence for [#15](https://github.com/intgral-ai/open-skyfall-desktop/issues/15)
 implementing the scope in [the hosting contract](mastra-runtime.md#1-product-and-distribution-decisions).
 No runtime artifact or installed desktop package is approved here. The Linux
 inventory is legal-review-pending; #14 still owns installed-package, signature and
-non-inclusion evidence.
+non-inclusion evidence. The packaging layout and fail-closed startup checks for an
+approved artifact are described in [mastra-packaging.md](mastra-packaging.md); they
+do not approve the current artifact.
 `cargo xtask runtime-artifact` is a production command. `cargo xtask ci` checks
 the fixed reviewed distribution metadata immediately after its existing Cargo
 license check. This static CI step is not npm/Node coverage or artifact admission.

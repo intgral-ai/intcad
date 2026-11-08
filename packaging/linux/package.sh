@@ -8,7 +8,7 @@
 #   $DIST/solidcraft-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
 #   $DIST/solidcraft-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
 #
-# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"]
+# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--with-mastra]
 #
 # Needs: cargo; nfpm for deb/rpm (https://nfpm.goreleaser.com); appimagetool for the AppImage
 # (downloaded into $CARGO_TARGET_DIR if missing). Build on an old distro (CI: Ubuntu 22.04,
@@ -22,10 +22,13 @@ HERE="$ROOT/packaging/linux"
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
+WITH_MASTRA="${SOLIDCRAFT_WITH_MASTRA:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
+    --with-mastra) WITH_MASTRA=1; shift ;;
+    --without-mastra) WITH_MASTRA=0; shift ;;
     -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -84,6 +87,25 @@ if command -v desktop-file-validate >/dev/null; then
 fi
 if command -v appstreamcli >/dev/null; then
   appstreamcli validate --no-net --explain "$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
+fi
+
+# ---- Mastra runtime (opt-in; application-relative, pinned Node) ---------------------------------
+# Bundling is opt-in because the artifact is still unapproved (DQ-7, #15). Ordinary packaging
+# keeps the previous release behavior; --with-mastra (or SOLIDCRAFT_WITH_MASTRA=1) asks for the
+# workflow and then fails closed until the owner approves a reviewed artifact.
+if [ "$WITH_MASTRA" = 1 ]; then
+  case "$ARCH" in
+    x86_64)
+      "$HERE/../mastra/stage.sh" --target x86_64-unknown-linux-gnu --dest "$STAGE/usr/lib/solidcraft/mastra"
+      mkdir -p "$STAGE/usr/share/doc/solidcraft"
+      cp "$STAGE/usr/lib/solidcraft/mastra/licenses/LICENSES.txt" "$STAGE/usr/share/doc/solidcraft/MASTRA-LICENSES.txt"
+      cp "$STAGE/usr/lib/solidcraft/mastra/notices/NOTICE.txt" "$STAGE/usr/share/doc/solidcraft/MASTRA-NOTICE.txt"
+      ;;
+    *) echo "error: the built-in Mastra workflow does not ship for Linux $ARCH in 1.0; drop --with-mastra for this package" >&2; exit 2 ;;
+  esac
+else
+  mkdir -p "$STAGE/usr/lib/solidcraft"
+  warn "the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)"
 fi
 
 has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }

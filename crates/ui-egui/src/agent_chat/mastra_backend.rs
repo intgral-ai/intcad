@@ -813,6 +813,7 @@ pub struct MastraBackend {
     document: Option<DocumentStamp>,
     events: VecDeque<Event>,
     stopped: bool,
+    packaged_verified: bool,
     models_sent: bool,
     host_bridge: Option<HostBridge>,
     bridge_generation: Option<u64>,
@@ -932,6 +933,7 @@ impl MastraBackend {
             document: None,
             events: VecDeque::new(),
             stopped: false,
+            packaged_verified: false,
             models_sent: false,
             host_bridge: None,
             bridge_generation: None,
@@ -2222,6 +2224,17 @@ impl ChatBackend for MastraBackend {
     }
 
     fn prompt(&mut self, parts: &[PromptPart]) {
+        // The window thread checked the receipt shape when it connected. Hash the full artifact
+        // once, when the first turn actually needs it, rather than freezing startup (or every
+        // prompt) on a multi-hundred-megabyte digest pass.
+        if !self.packaged_verified && super::packaged_runtime::installed() {
+            if let Err(error) = super::packaged_runtime::verify_current(&super::packaged_runtime::expectations()) {
+                let text = crate::i18n::format("ui.mastra_runtime_unusable", &[("reason", &error.to_string())]);
+                self.push(Event::Error(text));
+                return;
+            }
+            self.packaged_verified = true;
+        }
         self.begin_turn(parts);
     }
 

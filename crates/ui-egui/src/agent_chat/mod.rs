@@ -37,6 +37,8 @@ mod markdown_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod mastra_backend;
 pub mod mastra_protocol;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod packaged_runtime;
 mod panel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod paste;
@@ -1072,6 +1074,17 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     // answer its permission requests. Do not offer a Mastra workflow on an ACP agent until that
     // wiring lands; direct chat with the same agent keeps working.
     if execution == agents::Execution::Mastra && entry.kind == agents::Kind::Acp {
+        // Codex is discovered, never bundled. Say what is missing before modeling starts;
+        // the panel still cannot show an ACP agent's sign-in or permission requests (#4).
+        if entry.id == "codex" {
+            let detection = app.agent_chat.detection.clone().unwrap_or_default();
+            let prerequisite = discover::codex_prerequisite(&detection);
+            if !prerequisite.is_ready() {
+                app.agent_chat.notice(prerequisite.message(), true);
+                app.agent_chat.state = Some(State::Failed);
+                return;
+            }
+        }
         app.agent_chat.notice(tr("ui.mastra_acp_tasks_unavailable"), true);
         app.agent_chat.state = Some(State::Failed);
         return;
@@ -1129,11 +1142,23 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic) => (|| -> Result<Box<dyn ChatBackend>, String> {
             let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
             let backend::StartContext { cwd, bridge, tools, wake, .. } = start;
-            let mut argv = acp::split_command(&mastra_command);
-            if argv.is_empty() {
-                return Err(tr("ui.mastra_runtime_missing").to_string());
-            }
-            let executable = std::path::PathBuf::from(argv.remove(0));
+            // Installed packages always use the validated application-relative runtime. A source
+            // checkout may still name a development command while debugging; it is never used as
+            // a fallback by an installed package or a release build.
+            let launch = match packaged_runtime::resolve_current_metadata(&packaged_runtime::expectations()) {
+                Ok(launch) => (launch.executable, launch.args, launch.cwd),
+                Err(error) => {
+                    let development = (cfg!(debug_assertions) && !mastra_command.trim().is_empty())
+                        .then(|| acp::split_command(&mastra_command))
+                        .filter(|argv| !argv.is_empty());
+                    if let Some(mut argv) = development {
+                        let executable = std::path::PathBuf::from(argv.remove(0));
+                        (executable, argv.into_iter().map(std::ffi::OsString::from).collect(), cwd.clone())
+                    } else {
+                        return Err(trf("ui.mastra_runtime_unusable", &[("reason", &error.to_string())]));
+                    }
+                }
+            };
             let workflow_id =
                 if mastra_workflow.trim().is_empty() { mastra_backend::DEFAULT_WORKFLOW.to_string() } else { mastra_workflow.trim().to_string() };
             if mastra_protocol::Id::parse(&workflow_id).is_err() {
@@ -1152,9 +1177,9 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 wake: Arc::from(wake),
             };
             let launch = runtime_client::RuntimeLaunch {
-                executable,
-                args: argv.into_iter().map(std::ffi::OsString::from).collect(),
-                cwd,
+                executable: launch.0,
+                args: launch.1,
+                cwd: launch.2,
                 host_version: env!("CARGO_PKG_VERSION").into(),
                 limits: mastra_protocol::Limits::default(),
             };
