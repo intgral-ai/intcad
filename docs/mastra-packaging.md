@@ -113,8 +113,10 @@ projections, not model-token deltas.
   code; the panel avoids exposing that code as user-facing prose.
 - Settings → AI no longer requires a runtime command when the installed package carries
   `mastra/runtime.json`; a source checkout can still use the development command while debugging.
-- A build without Git history fails with an explicit message; a source tarball build must set
-  `SOLIDCRAFT_GIT_REVISION_OVERRIDE` to the reviewed 40-hex revision that the runtime is bound to.
+- Ordinary builds without Git history compile with the unbound revision sentinel and can never
+  match an installed runtime. A strict release/Mastra build (`SOLIDCRAFT_WITH_MASTRA=1` or
+  `SOLIDCRAFT_RELEASE=1`) still requires a real 40-hex revision or
+  `SOLIDCRAFT_GIT_REVISION_OVERRIDE`.
 - The release machine can run the same gate by hand:
 
 ```sh

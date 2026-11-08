@@ -49,6 +49,9 @@ jobs:
         run: python3 packaging/tests/flatpak_test.py
       - name: Mastra packaged-runtime gate regression
         run: python3 packaging/tests/mastra_runtime_test.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Mastra source-build revision regression
+        run: packaging/tests/mastra_revision.sh
       - name: PowerShell
         shell: pwsh
         run: |
