@@ -69,7 +69,7 @@ pub(crate) fn stamp_json(stamp: &DocumentStamp) -> Value {
 }
 
 /// Decode the actual control reply, not the legacy `outcome` (which discards its siblings).
-pub(crate) fn decode_guarded_reply(reply: &Value) -> Result<GuardedReply, GuardedCallError> {
+pub fn decode_guarded_reply(reply: &Value) -> Result<GuardedReply, GuardedCallError> {
     match reply.get("ok").and_then(Value::as_bool) {
         Some(true) => {
             let unknown = || GuardedCallError::OutcomeUnknown("The app's successful guarded reply lacks a valid result or document stamp.".into());
@@ -206,7 +206,7 @@ pub(crate) fn check_nested_stamps(method: &str, envelope: &Value) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn validate_request(method: &str, params: &Value) -> Result<(), GuardedCallError> {
+pub fn validate_request(method: &str, params: &Value) -> Result<(), GuardedCallError> {
     if parse_expected_document(params)?.is_none() {
         return Err(invalid("expectedDocument", "call_guarded requires expectedDocument"));
     }

@@ -4591,6 +4591,7 @@ dependencies = [
  "solidcore-record",
  "solidcraft-engine",
  "solidcraft-gpu",
+ "solidcraft-mcp",
  "solidcraft-space-mouse",
  "syn 2.0.119",
  "sys-locale",

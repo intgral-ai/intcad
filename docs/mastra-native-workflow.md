@@ -138,6 +138,7 @@ that turn, its own cached report reference matches, and the current live
 | `src/server.ts` | Per-turn `McpClient` + `CadAdapter`, the `HostAiModelClient` seam, workflow event mapping and terminal/`changes`/document publication. A configured bridge without an injected channel fails truthfully with no write. A session without a bridge keeps the prior no-tools path. |
 | `src/main.ts` | Host launch seam: `--bridge-fd <fd>` for one inherited duplex MCP stream and `--requirements-file <path>` for the host-frozen profile table. Neither changes protocol 1.0 or the schema bundle. |
 | `src/bridge-lane.ts` | One reusable line lane over the inherited stream; each turn gets a fresh MCP session and closing the channel does not destroy the host transport. |
+| `crates/ui-egui/src/agent_chat/host_bridge.rs` | The host end of the inherited lane. It serves the existing `solidcraft_mcp::Server` over a Unix socketpair, forwards every tool call through the chat's control queue, attaches the turn's trusted cancellation flag at that boundary, and drops the lane with the backend. It is Unix-only in 1.0; Windows packaged targets still need their own inherited-handle path. |
 
 `--requirements-file` is a temporary delivery seam, not profile ownership. #13
 must replace it with the host-resolved frozen profile and report gate. An empty
@@ -186,10 +187,11 @@ workflow has no credentials, script runtime or durable store.
   from `TurnBinding.document`, the workflow refuses before planning with
   `task_failed`/`STALE_DOCUMENT` instead of silently adopting a newer document.
   A user edit needs a new turn and a fresh binding.
-- **Hello capabilities do not infer guarded writes from channel presence.** The
-  bridge schema is known only after the per-turn MCP handshake, so hello keeps
-  `guardedExecute`/`guardedBatch` false. The workflow verifies the actual
-  discovered execute/batch schemas before any write.
+- **Hello capabilities come from a host probe, not channel presence.** Before
+  launch the Rust host inspects the actual `execute`/`batch` tool schemas and
+  passes `--bridge-capabilities=execute,batch` only when both carry
+  `expectedDocument`. The runtime still verifies the discovered schemas before
+  any write; a channel without those schemas advertises false.
 - **`--requirements-file` is temporary profile delivery.** Until #13 provides
   the host-resolved frozen profile and report gate, the launch file supplies
   externally fixed checks. It is not profile ownership, and missing checks never
@@ -227,7 +229,12 @@ covers the reusable bridge lane. Coverage includes:
   and a probe that unexpectedly returns still matching its tool result;
 - malformed fixed requirements refused before planning;
 - server create/edit/repair/cancel/ask turns and a bridge with no channel;
-- bridge-lane partial-line discard between turns.
+- bridge-lane partial-line discard between turns;
+- the Rust host lane applies a native batch to the current chat document, shows
+  the MCP call as an existing tool event, and leaves exactly one undo step;
+- a stale `expectedDocument` batch and a request after turn end write nothing;
+- a bridge without its control queue fails before the runtime starts;
+- `hello` reports guarded paths only with the host-probed capability argument.
 
 Run:
 

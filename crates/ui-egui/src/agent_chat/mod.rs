@@ -30,6 +30,8 @@ pub mod discover;
 pub mod gate;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_ai;
+#[cfg(not(target_arch = "wasm32"))]
+mod host_bridge;
 mod markdown;
 mod markdown_view;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1126,7 +1128,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_acp_tasks_unavailable").to_string()),
         (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic) => (|| -> Result<Box<dyn ChatBackend>, String> {
             let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
-            let backend::StartContext { cwd, bridge, wake, .. } = start;
+            let backend::StartContext { cwd, bridge, tools, wake, .. } = start;
             let mut argv = acp::split_command(&mastra_command);
             if argv.is_empty() {
                 return Err(tr("ui.mastra_runtime_missing").to_string());
@@ -1142,6 +1144,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 model: entry.model.clone(),
                 workflow_id,
                 bridge,
+                tools,
                 instructions,
                 connection_auth: Arc::new(std::sync::Mutex::new(None)),
                 frozen_binding: Arc::new(std::sync::Mutex::new(None)),
@@ -1718,8 +1721,12 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     app.agent_chat.steering = false;
     app.agent_chat.ended = None;
     let stamp = app.session.document_stamp();
+    let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
     if let Some(b) = app.agent_chat.backend.as_mut() {
         b.set_document(&stamp.document_id, stamp.revision);
+        if let Some(active) = active {
+            b.set_turn_control(active);
+        }
         b.prompt(&parts);
     }
 }
@@ -2047,7 +2054,11 @@ fn pump_tools(app: &mut SolveApp) {
             refuse(req, "the agent chat has no message in progress".into());
             continue;
         };
-        req.chat_turn = Some(Arc::clone(&turn.active));
+        // A bridge backend already attached the exact turn that sent this request. Keep it:
+        // overwriting with the current turn would let a replaced turn borrow new permission.
+        if req.chat_turn.is_none() {
+            req.chat_turn = Some(Arc::clone(&turn.active));
+        }
         turn.requests += 1;
         // Requests without folders of their own stay inside the chat's working folder.
         if let Some(o) = req.params.as_object_mut()

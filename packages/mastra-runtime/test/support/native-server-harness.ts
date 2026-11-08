@@ -129,6 +129,8 @@ export function volumeCheck(expected: number): JsonObject {
 export interface NativePeerOptions {
   /** Omit --bridge-fd to exercise a configured bridge with no channel. */
   readonly bridge?: boolean;
+  /** The host-probed guarded paths (`execute`, `batch`). */
+  readonly bridgeCapabilities?: string;
 }
 
 export class NativeRecordedPeer {
@@ -173,6 +175,9 @@ export class NativeRecordedPeer {
     const args = [`--requirements-file=${requirementsFile}`];
     if (bridge) {
       args.push("--bridge-fd=3");
+    }
+    if (options.bridgeCapabilities !== undefined) {
+      args.push(`--bridge-capabilities=${options.bridgeCapabilities}`);
     }
     this.child = spawn(process.execPath, [MAIN, ...args], { stdio: ["pipe", "pipe", "pipe", "pipe"] });
     this.exit = new Promise<number>((resolve) => {

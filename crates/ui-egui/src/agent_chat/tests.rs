@@ -114,6 +114,7 @@ pub(super) mod direct_integration {
         while !done(app) {
             assert!(Instant::now() < guard, "backend did not settle");
             poll(app, ctx);
+            app.drain_control(ctx);
             std::thread::yield_now();
         }
     }
@@ -13257,6 +13258,7 @@ mod mastra_backend_tests {
             model: "m1".into(),
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
+            tools: None,
             instructions: String::new(),
             connection_auth: auth,
             frozen_binding: Arc::new(Mutex::new(None)),
@@ -13493,6 +13495,7 @@ mod mastra_backend_tests {
         while !done(app) {
             assert!(Instant::now() < deadline, "the backend did not settle");
             poll(app, ctx);
+            app.drain_control(ctx);
             std::thread::yield_now();
         }
     }
@@ -13842,6 +13845,224 @@ mod mastra_backend_tests {
         );
     }
 
+    #[cfg(unix)]
+    fn bridge_reply(method: &str, result: serde_json::Value) -> String {
+        let hex = super::mastra_worker_support::hex;
+        format!("REPLY_METHOD_HEX {} {}\n", hex(method.as_bytes()), hex(result.to_string().as_bytes()))
+    }
+
+    #[cfg(unix)]
+    fn bridge_event(sequence: u32, event: &str, data: serde_json::Value) -> String {
+        let hex = super::mastra_worker_support::hex;
+        format!("EVENT_LAST {sequence} {event} {}\n", hex(data.to_string().as_bytes()))
+    }
+
+    #[cfg(unix)]
+    fn bridge_app(
+        mut app: SolveApp,
+        script: String,
+        limits: Limits,
+    ) -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<std::sync::mpsc::Sender<ControlRequest>>) {
+        use super::mastra_worker_support::*;
+        let program = super::mastra_peer_program().unwrap();
+        let script_path = program.directory.join("bridge-peer");
+        std::fs::write(&script_path, script).unwrap();
+        let (tools, tools_rx) = std::sync::mpsc::channel();
+        app.agent_chat.tools_tx = Some(tools.clone());
+        app.agent_chat.tools_rx = Some(tools_rx);
+        app.agent_chat.running_id = "api-1".into();
+        app.agent_chat.mastra = true;
+        app.agent_chat.state = Some(State::Starting);
+        let (host, _) = test_host();
+        let mut config = config(Arc::new(Mutex::new(None)));
+        config.workflow_id = "w".into();
+        config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1 });
+        config.tools = Some(tools.clone());
+        let launch = runtime_client::RuntimeLaunch {
+            executable: program.executable.clone(),
+            args: vec![script_path.into_os_string()],
+            cwd: program.directory.clone(),
+            host_version: "1".into(),
+            limits,
+        };
+        let admission = Arc::new(runtime_client::RuntimeAdmission::new(8).unwrap());
+        program.track_runtime(Arc::clone(&admission));
+        let backend = MastraBackend::start(config, launch, host, ids(), admission).unwrap();
+        app.agent_chat.backend = Some(Box::new(backend));
+        let log = Arc::new(Mutex::new(test_support::Log::default()));
+        (app, crate::fonts::test_context(), log, Arc::new(tools))
+    }
+
+    #[cfg(unix)]
+    fn settle_bridge(app: &mut SolveApp, ctx: &egui::Context, done: impl Fn(&SolveApp) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(app) {
+            assert!(Instant::now() < deadline, "the bridge peer did not settle");
+            poll(app, ctx);
+            app.drain_control(ctx);
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(unix)]
+    fn bridge_script(expected: solidcraft_engine::DocumentStamp, batch_commands: serde_json::Value, finished: serde_json::Value) -> String {
+        use super::mastra_worker_support::{bootstrap, hex};
+        let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"bridge-peer","version":"1"}}});
+        let batch = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"batch","arguments":{"commands":batch_commands,"expectedDocument":{"documentId":expected.document_id,"revision":expected.revision.to_string()}}}});
+        bootstrap(&Limits::default())
+            + "READ_PROTO\n"
+            + &bridge_reply("session.start", json!({"state":"ready","workflowId":"w"}))
+            + "READ_PROTO\n"
+            + &bridge_reply("turn.start", json!({"state":"accepted"}))
+            + &format!("MCP_WRITE_HEX {}\nMCP_READ_LINE\n", hex(init.to_string().as_bytes()))
+            + &format!("MCP_WRITE_HEX {}\n", hex(json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string().as_bytes()))
+            + &format!("MCP_WRITE_HEX {}\nMCP_READ_LINE\n", hex(batch.to_string().as_bytes()))
+            + &bridge_event(2, "turn.finished", finished)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mastra_bridge_batch_reaches_the_chat_document_as_one_tool_event_and_one_undo_step() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        let before_doc = Arc::clone(&app.session.doc);
+        let stamp = app.session.document_stamp();
+        let finished = json!({
+            "state": "task_failed",
+            "reason": "the bridge batch applied",
+            "document": {"documentId": stamp.document_id, "revision": (stamp.revision + 1).to_string()},
+            "changes": "applied",
+            "validationRunId": null,
+            "report": null
+        });
+        let script = bridge_script(stamp.clone(), json!([{"command":"solid.box","params":{"length":20,"width":10,"height":5}}]), finished);
+        let (mut app, ctx, _log, _tools) = bridge_app(app, script, Limits::default());
+        settle_bridge(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
+        send(&mut app, &ctx, "make a box through the bridge".into());
+        settle_bridge(&mut app, &ctx, |app| app.agent_chat.turn.is_none());
+        assert_eq!(app.session.doc.features.len(), 1, "the batch reached the current chat document");
+        assert_eq!(app.session.undo.len(), 1, "the turn's edits are one undo step");
+        assert!(
+            app.agent_chat
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Tool { kind, output: Some(output), .. } if kind == "bridge" && output.contains("documentStamp"))),
+            "the bridge call is visible as an existing tool event"
+        );
+        let changes = app.agent_chat.items.iter().rposition(|item| matches!(item, Item::Changes { .. })).expect("one undo entry");
+        assert_eq!(app.session.undo.len(), 1);
+        agent_chat::undo_changes(&mut app, changes);
+        assert!(Arc::ptr_eq(&app.session.doc, &before_doc), "the bridge batch undoes as one step");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mastra_bridge_rejects_a_stale_expected_document_without_a_write() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        let stamp = app.session.document_stamp();
+        let mut stale = stamp.clone();
+        stale.revision += 99;
+        let finished = json!({
+            "state": "task_failed",
+            "reason": "the bridge rejected the stale batch",
+            "document": {"documentId": stamp.document_id, "revision": stamp.revision.to_string()},
+            "changes": "none",
+            "validationRunId": null,
+            "report": null
+        });
+        let script = bridge_script(stale, json!([{"command":"solid.box","params":{"length":20,"width":10,"height":5}}]), finished);
+        let (mut app, ctx, _log, _tools) = bridge_app(app, script, Limits::default());
+        settle_bridge(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
+        send(&mut app, &ctx, "try a stale box".into());
+        settle_bridge(&mut app, &ctx, |app| app.agent_chat.turn.is_none());
+        assert_eq!(app.session.doc.features.len(), 0, "a stale expectedDocument writes nothing");
+        assert_eq!(app.session.undo.len(), 0);
+        assert!(
+            app.agent_chat
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Tool { kind, status: Some(crate::agent_chat::acp::ToolStatus::Failed), .. } if kind == "bridge")),
+            "the rejected bridge call is shown as failed"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mastra_bridge_late_request_after_turn_end_cannot_write() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        let before = Arc::clone(&app.session.doc);
+        let stamp = app.session.document_stamp();
+        let marker = std::env::temp_dir().join(format!("solidcraft-bridge-late-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let finished = json!({
+            "state": "task_failed",
+            "reason": "the turn ended before the late bridge request",
+            "document": {"documentId": stamp.document_id, "revision": stamp.revision.to_string()},
+            "changes": "none",
+            "validationRunId": null,
+            "report": null
+        });
+        let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"bridge-peer","version":"1"}}});
+        let batch = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"batch","arguments":{"commands":[{"command":"solid.box","params":{"length":20,"width":10,"height":5}}],"expectedDocument":{"documentId":stamp.document_id,"revision":stamp.revision.to_string()}}}});
+        use super::mastra_worker_support::{bootstrap, hex};
+        let script = bootstrap(&Limits::default())
+            + "READ_PROTO\n"
+            + &bridge_reply("session.start", json!({"state":"ready","workflowId":"w"}))
+            + "READ_PROTO\n"
+            + &bridge_reply("turn.start", json!({"state":"accepted"}))
+            + &bridge_event(2, "turn.finished", finished)
+            // The host processes turn.finished and closes the turn before this marker exists.
+            + &format!("HOLD_INPUT {}\n", marker.display())
+            + &format!("MCP_WRITE_HEX {}\nMCP_READ_LINE\n", hex(init.to_string().as_bytes()))
+            + &format!("MCP_WRITE_HEX {}\nMCP_READ_LINE\n", hex(batch.to_string().as_bytes()));
+        let (mut app, ctx, _log, _tools) = bridge_app(app, script, Limits::default());
+        settle_bridge(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
+        send(&mut app, &ctx, "a turn that ends first".into());
+        settle_bridge(&mut app, &ctx, |app| app.agent_chat.turn.is_none());
+        std::fs::write(&marker, b"go").unwrap();
+        // Let the late request reach the bridge and be refused; the app must not change.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline
+            && !app
+                .agent_chat
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Tool { kind, status: Some(crate::agent_chat::acp::ToolStatus::Failed), .. } if kind == "bridge"))
+        {
+            poll(&mut app, &ctx);
+            app.drain_control(&ctx);
+            std::thread::yield_now();
+        }
+        assert_eq!(app.session.doc.features.len(), 0, "a late request after turn end writes nothing");
+        assert_eq!(app.session.undo.len(), 0);
+        assert!(Arc::ptr_eq(&app.session.doc, &before));
+        let _ = std::fs::remove_file(marker);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mastra_bridge_without_a_control_queue_fails_before_the_runtime_starts() {
+        use super::mastra_worker_support::*;
+        let program = super::mastra_peer_program().unwrap();
+        let (host, _) = test_host();
+        let mut config = config(Arc::new(Mutex::new(None)));
+        config.workflow_id = "w".into();
+        config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1 });
+        config.tools = None;
+        let launch = runtime_client::RuntimeLaunch {
+            executable: program.executable.clone(),
+            args: vec![std::ffi::OsString::from("unused")],
+            cwd: program.directory.clone(),
+            host_version: "1".into(),
+            limits: Limits::default(),
+        };
+        let admission = Arc::new(runtime_client::RuntimeAdmission::new(8).unwrap());
+        let error = match MastraBackend::start(config, launch, host, ids(), admission) {
+            Ok(_) => panic!("a bridge without a control queue must not start"),
+            Err(error) => error,
+        };
+        assert!(error.contains("bridge") || error.contains("validation") || error.contains("Mastra"), "{error}");
+    }
+
     #[test]
     fn mastra_peer_events_arrive_on_the_existing_presentation() {
         use super::mastra_worker_support::*;
@@ -14096,6 +14317,7 @@ mod mastra_backend_tests {
             model: "m1".into(),
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
+            tools: None,
             instructions: String::new(),
             connection_auth: Arc::new(Mutex::new(None)),
             frozen_binding: Arc::new(Mutex::new(None)),
@@ -14410,6 +14632,7 @@ done
             model: String::new(),
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
+            tools: None,
             instructions: String::new(),
             connection_auth: Arc::clone(&auth),
             frozen_binding: Arc::new(std::sync::Mutex::new(None)),

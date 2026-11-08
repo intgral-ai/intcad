@@ -38,6 +38,7 @@ export function startRuntime(options: StartOptions = {}): RuntimeServer {
     process.stderr.write(`${line.slice(0, 400)}\n`);
   };
   const bridgeFd = options.bridgeFd ?? argument("bridge-fd");
+  const bridgeCapabilities = capabilities(argument("bridge-capabilities"));
   const requirementsFile = options.requirementsFile ?? argument("requirements-file");
   const requirements = loadRequirements(requirementsFile, diagnostic);
 
@@ -65,6 +66,7 @@ export function startRuntime(options: StartOptions = {}): RuntimeServer {
     bundle,
     diagnostic,
     ...(cadBridge === undefined ? {} : { cadBridge }),
+    bridgeCapabilities,
     fixedRequirements: async (profile: ProfileRef) => requirements[profile.profileId] ?? { checks: [] },
     onStopped: (code) => {
       closeBridge();
@@ -76,6 +78,11 @@ export function startRuntime(options: StartOptions = {}): RuntimeServer {
   });
   server.start();
   return server;
+}
+
+function capabilities(value: string | null): { guardedExecute: boolean; guardedBatch: boolean } {
+  const words = (value ?? "").split(",").map((word) => word.trim());
+  return { guardedExecute: words.includes("execute"), guardedBatch: words.includes("batch") };
 }
 
 function argument(name: string): string | null {

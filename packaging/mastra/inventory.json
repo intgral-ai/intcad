@@ -13892,8 +13892,8 @@
       "originId": "in-0dbe33f8697d4f26ceb8",
       "originalPath": "packages/mastra-runtime/src/main.ts",
       "sourceRevision": null,
-      "digest": "sha256:48b29298499fa54b82550de144943fd5c4f09d995246e68c10ff2a2a0974fe22",
-      "sizeBytes": 4749,
+      "digest": "sha256:bcb177c138cbe51bc4ba6e3366e3f92c7fd84d40c2e59da9ebe7ae626ff8955d",
+      "sizeBytes": 5114,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -63592,8 +63592,8 @@
       "originId": "in-5ae5879af0e8ef678f2f",
       "originalPath": "packages/mastra-runtime/src/workflows/types.ts",
       "sourceRevision": null,
-      "digest": "sha256:64604f443489183af6ca6e87165e8ffe8df5b84ec96ccbac32503385b52b99b7",
-      "sizeBytes": 7662,
+      "digest": "sha256:fb99a7940f5da0211cc7ec68760521f81c4a1d47dc8d5f72feadcac9f5050b5d",
+      "sizeBytes": 10092,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -74456,8 +74456,8 @@
       "originId": "in-6c1c919cd25478bba14c",
       "originalPath": "packages/mastra-runtime/src/workflows/index.ts",
       "sourceRevision": null,
-      "digest": "sha256:138ab3dd7f48386636e02eea72262bf3154d3e0d9b1b1d29bb34efebc2c5c134",
-      "sizeBytes": 1306,
+      "digest": "sha256:acd6d93056e9a71bec2524a93346d6691392f08d864c197aa2eb1291400afacb",
+      "sizeBytes": 1537,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -79092,6 +79092,20 @@
       "sourceRevision": null,
       "digest": "sha256:b5a20a2d37a719504837fc6aa45da3c3059d1d78711bb00fc58955fe67bece24",
       "sizeBytes": 191,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-73773421a590d8f15d8b",
+      "materializedPath": "sources/src/workflows/validation.ts",
+      "originKind": "repository",
+      "originId": "in-73773421a590d8f15d8b",
+      "originalPath": "packages/mastra-runtime/src/workflows/validation.ts",
+      "sourceRevision": null,
+      "digest": "sha256:774b9d48af54a69a1f605525c4c40d9ad3bf1e4d2fe6a4b4820966bbcde463f1",
+      "sizeBytes": 17195,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -109814,6 +109828,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-a26377e7e164f670eea6",
+      "materializedPath": "evidence/dist/src/workflows/validation.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-a26377e7e164f670eea6",
+      "originalPath": "evidence/dist/src/workflows/validation.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:7596f39fbfcedc035c05ce76e37df673937bb81f9a3b491fe55e54dcb4583a24",
+      "sizeBytes": 200,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-a264a3fc759e5d06414d",
       "materializedPath": "schema/mastra-runtime/v1/fixtures/invalid/error-INVALID_CANDIDATE-empty-missing-details.json",
       "originKind": "repository",
@@ -122168,8 +122196,8 @@
       "originId": "in-b61c33187d554c372e8c",
       "originalPath": "packages/mastra-runtime/src/workflows/workflow.ts",
       "sourceRevision": null,
-      "digest": "sha256:744a2986ce02648fbc3170cf6553333618b21bfba883376694a288e66fee21b9",
-      "sizeBytes": 35055,
+      "digest": "sha256:5ab108d10427775fcd3e4c780a79c39e05af74314d88845b73afd18083100a0d",
+      "sizeBytes": 38179,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -128738,6 +128766,20 @@
       "sizeBytes": 2376,
       "licenseIds": [
         "lic-mastra-core-1.82.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-c0e88a37009557d88c03",
+      "materializedPath": "evidence/dist/src/workflows/validation.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-c0e88a37009557d88c03",
+      "originalPath": "evidence/dist/src/workflows/validation.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:2cb665e3a75d79e85171ea0c426b6282651e2492a33754f679106172cb7ff4a6",
+      "sizeBytes": 198,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -147410,8 +147452,8 @@
       "originId": "in-decbce07e0d8ec7452a4",
       "originalPath": "packages/mastra-runtime/src/server.ts",
       "sourceRevision": null,
-      "digest": "sha256:d1342d0b4f78e3bc1661e156aa593aeb4cc28c77589b948e5a26aae6306245f9",
-      "sizeBytes": 43423,
+      "digest": "sha256:abd8837766ae89d4fa1bbd89443ef7ee432bd61981919e8728187db201f9a9c7",
+      "sizeBytes": 45804,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -168604,8 +168646,8 @@
     },
     {
       "path": "dist/src/main.js",
-      "digest": "sha256:460434466c23001cfcc134dec6c36a97750fb8679c70cc6e7804d4175bbe6f82",
-      "sizeBytes": 4394,
+      "digest": "sha256:304664a0635e53a1866de534f0de72063f2a08b3cd4fa93d16b28ffa72f4b5a6",
+      "sizeBytes": 4701,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168631,8 +168673,8 @@
     },
     {
       "path": "dist/src/server.d.ts",
-      "digest": "sha256:23c0839dd5a17acc423292be4294554ce0468bfe1ce3ca866d750a1421dc07d6",
-      "sizeBytes": 2179,
+      "digest": "sha256:922d3eec51f710979870da9607deb0f46b01c6ddd4d95bffdeb2ebd4a37a59e0",
+      "sizeBytes": 2504,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168640,8 +168682,8 @@
     },
     {
       "path": "dist/src/server.js",
-      "digest": "sha256:2bed44207584ebbb97bb49aabc6572a7d96ebacc3e7474238cf8fc56592af1d6",
-      "sizeBytes": 43369,
+      "digest": "sha256:dae2b50fa1ac100ed54c6ef84e2e80265865267d4e02835fa957e99d6d04872c",
+      "sizeBytes": 44964,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168775,8 +168817,8 @@
     },
     {
       "path": "dist/src/workflows/index.d.ts",
-      "digest": "sha256:5cee586a490f53e5c4d7b24420c8dc2e7d991a7e20ed6e6c63c1a5042d037353",
-      "sizeBytes": 1219,
+      "digest": "sha256:06b967cc7e3fc18db048e5ecbd90f53933382575891698ca601f5188675afe36",
+      "sizeBytes": 1436,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168784,8 +168826,8 @@
     },
     {
       "path": "dist/src/workflows/index.js",
-      "digest": "sha256:fded55a93bf7cdf82b277527a0c426624ee7cc29f367818f738ac26675b22d15",
-      "sizeBytes": 736,
+      "digest": "sha256:11c64e6384714412d3eb1cdd351f45edb41bc1ba37757bc5382e65b1cca41039",
+      "sizeBytes": 811,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168829,8 +168871,8 @@
     },
     {
       "path": "dist/src/workflows/types.d.ts",
-      "digest": "sha256:c9bdb3d6ae5119ead15bceb083cedf62a9ef6c464f3caf72e50efcd9c4fffafb",
-      "sizeBytes": 7760,
+      "digest": "sha256:f8d03353e797fd2481047598af7897700c77c8d7eb613b2045276b0d38a5bb6e",
+      "sizeBytes": 10309,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168840,6 +168882,24 @@
       "path": "dist/src/workflows/types.js",
       "digest": "sha256:14bcb63b552e208c4676742d5010675aadca070dd51669286282528118397c9f",
       "sizeBytes": 297,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/validation.d.ts",
+      "digest": "sha256:6f0f9a64377ad7a8d8352fe7649cba97d9a1be63a014cc94d257ea1be0a2b239",
+      "sizeBytes": 2103,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/validation.js",
+      "digest": "sha256:128327632a04485d55a183a98fe307397ed462109d8051c5a2f16f0972796d7a",
+      "sizeBytes": 15980,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168856,8 +168916,8 @@
     },
     {
       "path": "dist/src/workflows/workflow.js",
-      "digest": "sha256:90d7bd287e4ceb7b768778efda8ed3bedc0d2677dec2e8b83ac2fbaecd64535c",
-      "sizeBytes": 35057,
+      "digest": "sha256:0cc16c1339e7ddbf3caefb7f2ad2e8c02dcbae3b5cec79970007386cee742ffd",
+      "sizeBytes": 38342,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -274026,6 +274086,30 @@
         "tool-typescript"
       ],
       "evidenceInputId": "in-e184c919043d11a853fa"
+    },
+    {
+      "outputPath": "dist/src/workflows/validation.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-73773421a590d8f15d8b",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-a26377e7e164f670eea6"
+    },
+    {
+      "outputPath": "dist/src/workflows/validation.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-73773421a590d8f15d8b",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-c0e88a37009557d88c03"
     },
     {
       "outputPath": "dist/src/workflows/workflow.d.ts",
