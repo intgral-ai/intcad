@@ -100,6 +100,8 @@ repository source revision, contract digest, artifact digests and provenance inv
 The host resolves resources from the
 installed application, not the development checkout, a shell, `npx` or the user's
 Node installation. Missing/mismatched files fail before a session starts.
+The installed locations, diagnostics and current unapproved-artifact gate are in
+[`mastra-packaging.md`](mastra-packaging.md).
 
 Codex ACP is **discovered, not bundled**, in 1.0. Reuse `discover.rs` to locate the
 user-installed `codex-acp`, probe its actual execution dependencies and version,

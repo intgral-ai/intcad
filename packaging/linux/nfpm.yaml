@@ -83,6 +83,11 @@ contents:
   - src: ${STAGE}/usr/share/
     dst: /usr/share/
     type: tree
+  # Application-relative Mastra workflow runtime (mastra/runtime.json, pinned node, JS entry).
+  # Present only on supported x86_64 glibc builds; absent on architectures that do not advertise it.
+  - src: ${STAGE}/usr/lib/solidcraft
+    dst: /usr/lib/solidcraft
+    type: tree
 
 scripts:
   postinstall: packaging/linux/postinst.sh

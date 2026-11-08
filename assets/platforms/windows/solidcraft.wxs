@@ -53,6 +53,7 @@
 
     <Feature Id="Main" Title="SolidCraft" Level="1">
       <ComponentGroupRef Id="SolidcraftFiles" />
+      <ComponentGroupRef Id="SolidcraftMastra" />
     </Feature>
 
     <!-- WixUI_InstallDir without its licence page (MIT OR Apache-2.0: nothing to accept). -->
@@ -140,6 +141,23 @@
         <File Id="Notice" Source="$(var.BinDir)\NOTICE" />
         <File Id="ThirdParty" Source="$(var.BinDir)\THIRD-PARTY-LICENSES.txt" />
       </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!--
+    The application-relative Mastra runtime (mastra\runtime.json, node.exe, dist\, node_modules\,
+    contract bundle and licences). Only Windows x86_64 MSVC builds stage it. Harvested as a
+    directory tree so every production dependency and the pinned Node executable is installed;
+    omitting any file would make the host reject the runtime as incomplete before a turn.
+  -->
+  <Fragment>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Directory Id="MastraFolder" Name="mastra" />
+    </DirectoryRef>
+  </Fragment>
+  <Fragment>
+    <ComponentGroup Id="SolidcraftMastra" Directory="MastraFolder">
+      <Files Include="$(var.BinDir)\mastra\**" />
     </ComponentGroup>
   </Fragment>
 </Wix>

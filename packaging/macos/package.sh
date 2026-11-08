@@ -165,6 +165,31 @@ cp "$ROOT/assets/icons/app/macos/exports/Assets.car" "$APP/Contents/Resources/As
 cp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$APP/Contents/Resources/SolidCraft.icns"
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
+
+# ---- Mastra runtime (application-relative, pinned Node) -----------------------------------------
+# A universal app carries both architecture slices under mastra/<triple>; a single-arch app uses
+# mastra/ directly. Both are legally gated artifacts and the stage helper fails closed.
+stage_mastra() {
+  local target="$1" variable="$2" dest="$3"
+  local artifact="${!variable:-}"
+  if [ -z "$artifact" ]; then
+    echo "error: $variable is not set; the $target Mastra runtime is required for macOS $ARCH and is unapproved until #15 records an approval" >&2
+    exit 1
+  fi
+  "$SCRIPT_DIR/../mastra/stage.sh" --target "$target" --artifact "$artifact" --dest "$dest"
+}
+if [ "$ARCH" = universal ]; then
+  stage_mastra aarch64-apple-darwin SOLIDCRAFT_MASTRA_ARTIFACT_AARCH64 "$APP/Contents/Resources/mastra/aarch64-apple-darwin"
+  stage_mastra x86_64-apple-darwin SOLIDCRAFT_MASTRA_ARTIFACT_X86_64 "$APP/Contents/Resources/mastra/x86_64-apple-darwin"
+else
+  stage_mastra "${TARGETS[0]}" SOLIDCRAFT_MASTRA_ARTIFACT "$APP/Contents/Resources/mastra"
+fi
+mkdir -p "$APP/Contents/Resources/Licenses"
+mastra_licenses="$(find "$APP/Contents/Resources/mastra" -path '*/licenses/LICENSES.txt' -print -quit)"
+mastra_notice="$(find "$APP/Contents/Resources/mastra" -path '*/notices/NOTICE.txt' -print -quit)"
+if [ -n "$mastra_licenses" ]; then cp "$mastra_licenses" "$APP/Contents/Resources/Licenses/MASTRA-LICENSES.txt"; fi
+if [ -n "$mastra_notice" ]; then cp "$mastra_notice" "$APP/Contents/Resources/Licenses/MASTRA-NOTICE.txt"; fi
+
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" "$ROOT/assets/platforms/macos/Info.plist.in" >"$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
@@ -172,6 +197,12 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 # unsigned helper in Contents/MacOS. The entitlements go on the bundle (they apply to the main
 # executable): the 3D mouse driver is loaded by the app, not by the CLI.
 sign_code "$APP/Contents/MacOS/solidcraft-cli" "$MACOS_BUNDLE_ID.cli"
+# The bundled pinned Node is nested executable code: sign it before the app bundle.
+if [ -d "$APP/Contents/Resources/mastra" ]; then
+  find "$APP/Contents/Resources/mastra" -type f -name node -print0 | while IFS= read -r -d '' node; do
+    sign_code "$node" "$MACOS_BUNDLE_ID.mastra-node"
+  done
+fi
 sign_code "$APP" "" "$SCRIPT_DIR/entitlements.plist"
 codesign --verify --strict --deep --verbose=2 "$APP"
 if [ -n "$SIGN_IDENTITY" ]; then
@@ -229,6 +260,13 @@ for arch in "${WANT[@]}"; do
   lipo "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" -verify_arch "$arch"
 done
 test -s "$MNT/SolidCraft.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
+case "$ARCH" in
+  universal)
+    test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/aarch64-apple-darwin/runtime.json"
+    test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/x86_64-apple-darwin/runtime.json"
+    ;;
+  *) test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/runtime.json" ;;
+esac
 # Not --strict: the mounted HFS volume adds Finder info, which strict verification rejects.
 codesign --verify --deep --verbose=2 "$MNT/SolidCraft.app"
 "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" --version

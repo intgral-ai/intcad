@@ -48,6 +48,57 @@ fn main() {
         eprintln!("icon data: {e}");
         std::process::exit(1);
     }
+    if let Err(e) = mastra_expectations() {
+        eprintln!("mastra: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// The reviewed identities a packaged Mastra runtime must match: one repository revision,
+/// contract bundle, runtime and Node version, policy and source-record digests, and the
+/// inventory digests the reviewed policy currently approves. An empty approval list makes the
+/// installed-runtime gate fail closed, which is the state until #15 records a legal review.
+fn mastra_expectations() -> Result<(), String> {
+    use sha2::{Digest as _, Sha256};
+
+    let crate_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|e| e.to_string())?;
+    let root = std::path::Path::new(&crate_dir).join("../..");
+    let digest = |relative: &str| -> Result<String, String> {
+        let path = root.join(relative);
+        println!("cargo:rerun-if-changed={}", path.display());
+        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(format!("sha256:{:x}", Sha256::digest(&bytes)))
+    };
+    let read_json = |relative: &str| -> Result<serde_json::Value, String> {
+        let path = root.join(relative);
+        println!("cargo:rerun-if-changed={}", path.display());
+        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+    };
+
+    let revision =
+        git(&["rev-parse", "HEAD"]).filter(|r| r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_else(|| "unknown".into());
+    let contract = digest("schema/mastra-runtime/v1/manifest.json")?;
+    let policy = digest("packaging/mastra/policy.json")?;
+    let sources = digest("packaging/mastra/source-records.json")?;
+    println!("cargo:rerun-if-changed=../../.nvmrc");
+    let node = std::fs::read_to_string(root.join(".nvmrc")).map_err(|e| format!(".nvmrc: {e}"))?.trim().to_string();
+    let package = read_json("packages/mastra-runtime/package.json")?;
+    let runtime = package.get("version").and_then(serde_json::Value::as_str).unwrap_or("unknown").to_string();
+    let approvals = read_json("packaging/mastra/policy.json")?
+        .get("approvals")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| items.iter().filter_map(|item| item.get("inventoryDigest").and_then(serde_json::Value::as_str)).collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
+
+    println!("cargo:rustc-env=SOLIDCRAFT_GIT_REVISION={revision}");
+    println!("cargo:rustc-env=SOLIDCRAFT_MASTRA_CONTRACT_DIGEST={contract}");
+    println!("cargo:rustc-env=SOLIDCRAFT_MASTRA_POLICY_DIGEST={policy}");
+    println!("cargo:rustc-env=SOLIDCRAFT_MASTRA_SOURCES_DIGEST={sources}");
+    println!("cargo:rustc-env=SOLIDCRAFT_MASTRA_RUNTIME_VERSION={runtime}");
+    println!("cargo:rustc-env=SOLIDCRAFT_MASTRA_NODE_VERSION={node}");
+    println!("cargo:rustc-env=SOLIDCRAFT_MASTRA_APPROVED_INVENTORIES={approvals}");
+    Ok(())
 }
 
 /// `$OUT_DIR/locales/<id>.json`: each catalog in `assets/locales` plus the messages of

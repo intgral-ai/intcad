@@ -86,6 +86,22 @@ if command -v appstreamcli >/dev/null; then
   appstreamcli validate --no-net --explain "$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
 fi
 
+# ---- Mastra runtime (application-relative, pinned Node) -----------------------------------------
+# The runtime is a separate, legally gated artifact. A supported x86_64 glibc build requires an
+# admitted artifact; other Linux architectures simply do not advertise the workflow in 1.0.
+case "$ARCH" in
+  x86_64)
+    "$HERE/../mastra/stage.sh" --target x86_64-unknown-linux-gnu --dest "$STAGE/usr/lib/solidcraft/mastra"
+    mkdir -p "$STAGE/usr/share/doc/solidcraft"
+    cp "$STAGE/usr/lib/solidcraft/mastra/licenses/LICENSES.txt" "$STAGE/usr/share/doc/solidcraft/MASTRA-LICENSES.txt"
+    cp "$STAGE/usr/lib/solidcraft/mastra/notices/NOTICE.txt" "$STAGE/usr/share/doc/solidcraft/MASTRA-NOTICE.txt"
+    ;;
+  *)
+    mkdir -p "$STAGE/usr/lib/solidcraft"
+    warn "the built-in Mastra workflow is not shipped for Linux $ARCH in 1.0"
+    ;;
+esac
+
 has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # ---- .tar.gz ------------------------------------------------------------------------------------

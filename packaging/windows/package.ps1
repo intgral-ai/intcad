@@ -100,6 +100,17 @@ if ($Phase -ne 'package') {
   New-Item -ItemType Directory -Force -Path $Stage | Out-Null
   Copy-Item (Join-Path $Bin 'solidcraft.exe'), (Join-Path $Bin 'solidcraft-cli.exe'), (Join-Path $Bin 'solvecraft-cli.exe') $Stage
   foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Stage }
+  # Application-relative Mastra runtime. 1.0 supports Windows x86_64 MSVC only; the other
+  # architectures build without the built-in workflow. The stage helper fails closed on an
+  # unapproved or mismatched artifact (the current artifact is unapproved, #15).
+  if ($Arch -eq 'x64') {
+    Invoke-Native 'stage Mastra runtime' { & (Join-Path $PSScriptRoot '..\mastra\stage.ps1') -Target $Target -Dest (Join-Path $Stage 'mastra') }
+  } else {
+    # The WXS harvests mastra\**; keep an empty folder so unsupported architectures still build
+    # a package without advertising the workflow.
+    New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'mastra') | Out-Null
+    Write-Output "the built-in Mastra workflow is not shipped for Windows $Arch in 1.0"
+  }
 }
 if ($Phase -eq 'stage') {
   Write-Output "staged for signing: $Stage"
@@ -130,6 +141,7 @@ Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
 foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Portable }
+if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
 $Zip = Join-Path $Dist "solidcraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip

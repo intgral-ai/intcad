@@ -26,7 +26,8 @@
     "ui.mastra_start_before_prompt": "The Mastra runtime is not ready for a message yet.",
     "ui.mastra_validation_not_available": "Validation reports are not available in this release; the workflow's result is shown as it reported it.",
     "ui.mastra_workflow": "Mastra workflow",
-    "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid."
+    "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
   },
   "de": {
     "ui.mastra_attachment_count": "Ein Workflow-Durchlauf nimmt höchstens vier Anhänge an.",
@@ -55,7 +56,8 @@
     "ui.mastra_start_before_prompt": "Die Mastra-Laufzeit ist noch nicht bereit für eine Nachricht.",
     "ui.mastra_validation_not_available": "Prüfberichte gibt es in dieser Version noch nicht; das Workflow-Ergebnis wird so angezeigt, wie es gemeldet wurde.",
     "ui.mastra_workflow": "Mastra-Workflow",
-    "ui.mastra_workflow_invalid": "Die Mastra-Workflow-Kennung ist ungültig."
+    "ui.mastra_workflow_invalid": "Die Mastra-Workflow-Kennung ist ungültig.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
   },
   "ja": {
     "ui.mastra_attachment_count": "ワークフローの 1 ターンに添付できるのは最大 4 件です。",
@@ -84,7 +86,8 @@
     "ui.mastra_start_before_prompt": "Mastra ランタイムはまだメッセージを受け取れません。",
     "ui.mastra_validation_not_available": "この版には検証レポートがありません。ワークフローが報告した結果をそのまま表示します。",
     "ui.mastra_workflow": "Mastra ワークフロー",
-    "ui.mastra_workflow_invalid": "Mastra ワークフロー ID が正しくありません。"
+    "ui.mastra_workflow_invalid": "Mastra ワークフロー ID が正しくありません。",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
   },
   "ko": {
     "ui.mastra_attachment_count": "워크플로 한 턴에는 첨부를 최대 네 개까지 넣을 수 있습니다.",
@@ -113,7 +116,8 @@
     "ui.mastra_start_before_prompt": "Mastra 런타임이 아직 메시지를 받을 준비가 되지 않았습니다.",
     "ui.mastra_validation_not_available": "이 릴리스에는 검증 보고서가 없습니다. 워크플로가 보고한 결과를 그대로 표시합니다.",
     "ui.mastra_workflow": "Mastra 워크플로",
-    "ui.mastra_workflow_invalid": "Mastra 워크플로 ID가 올바르지 않습니다."
+    "ui.mastra_workflow_invalid": "Mastra 워크플로 ID가 올바르지 않습니다.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
   },
   "zh": {
     "ui.mastra_attachment_count": "一个工作流回合最多接受四个附件。",
@@ -142,7 +146,8 @@
     "ui.mastra_start_before_prompt": "Mastra 运行时尚未准备好接收消息。",
     "ui.mastra_validation_not_available": "此版本还没有校验报告；工作流报告的结果将按原样显示。",
     "ui.mastra_workflow": "Mastra 工作流",
-    "ui.mastra_workflow_invalid": "Mastra 工作流 ID 无效。"
+    "ui.mastra_workflow_invalid": "Mastra 工作流 ID 无效。",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
   },
   "ar": {
     "ui.mastra_attachment_count": "يقبل دور سير العمل أربعة مرفقات كحد أقصى.",
@@ -171,7 +176,8 @@
     "ui.mastra_start_before_prompt": "The Mastra runtime is not ready for a message yet.",
     "ui.mastra_validation_not_available": "Validation reports are not available in this release; the workflow's result is shown as it reported it.",
     "ui.mastra_workflow": "Mastra workflow",
-    "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid."
+    "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
   },
   "he": {
     "ui.mastra_attachment_count": "סבב תהליך עבודה מקבל עד ארבעה קבצים מצורפים.",
@@ -200,7 +206,8 @@
     "ui.mastra_start_before_prompt": "The Mastra runtime is not ready for a message yet.",
     "ui.mastra_validation_not_available": "Validation reports are not available in this release; the workflow's result is shown as it reported it.",
     "ui.mastra_workflow": "Mastra workflow",
-    "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid."
+    "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
   },
   "vi": {
     "ui.mastra_attachment_count": "Một lượt quy trình nhận tối đa bốn tệp đính kèm.",
@@ -229,6 +236,7 @@
     "ui.mastra_start_before_prompt": "The Mastra runtime is not ready for a message yet.",
     "ui.mastra_validation_not_available": "Validation reports are not available in this release; the workflow's result is shown as it reported it.",
     "ui.mastra_workflow": "Mastra workflow",
-    "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid."
+    "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
   }
 }

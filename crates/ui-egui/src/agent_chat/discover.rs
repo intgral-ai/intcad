@@ -215,6 +215,44 @@ pub struct Detection {
     pub took_ms: u64,
 }
 
+/// What the Codex ACP path can do on this machine. Codex is discovered, never bundled: a missing
+/// installation, a broken adapter and a working one are separate states, and only the last may be
+/// offered a task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodexPrerequisite {
+    Ready { version: Option<String> },
+    Missing { install: &'static str },
+    Unusable { problem: String },
+}
+
+impl CodexPrerequisite {
+    pub fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready { .. })
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::Ready { .. } => "Codex ACP is installed and ready for tasks".into(),
+            Self::Missing { install } => format!("Codex ACP is not installed; install it with `{install}` and sign in with `codex login`"),
+            Self::Unusable { problem } => format!("Codex ACP is installed but cannot start: {problem}; reinstall it and sign in again"),
+        }
+    }
+}
+
+/// The Codex prerequisite from a completed discovery pass. Codex's own authentication file and
+/// key variables are checked by discovery; this function adds the executable/version state.
+pub fn codex_prerequisite(detection: &Detection) -> CodexPrerequisite {
+    match detection.found.iter().find(|found| found.id == "codex") {
+        Some(found) => match &found.problem {
+            Some(problem) => CodexPrerequisite::Unusable { problem: problem.clone() },
+            None => CodexPrerequisite::Ready { version: found.version.clone() },
+        },
+        None => CodexPrerequisite::Missing {
+            install: KNOWN.iter().find(|known| known.id == "codex").map_or("install the Codex ACP adapter", |known| known.install),
+        },
+    }
+}
+
 fn home() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).filter(|p| p.is_absolute())
 }
@@ -705,6 +743,39 @@ mod tests {
         assert_eq!(find_in("codex-acp", &[a.clone(), b.clone()]), Some(b.join(name)));
         assert_eq!(find_in("gemini", &[a, b]), None);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Codex is discovered, not bundled: the packaged app ships no Codex binary or credential,
+    /// and the task path is offered only when the user's own adapter is installed and usable.
+    #[test]
+    fn codex_prerequisite_separates_installed_missing_and_broken() {
+        let detection = Detection::default();
+        let missing = codex_prerequisite(&detection);
+        assert!(matches!(missing, CodexPrerequisite::Missing { .. }));
+        assert!(missing.message().contains("npm install -g @agentclientprotocol/codex-acp"));
+        assert!(missing.message().contains("codex login"));
+
+        let found = |problem: Option<&str>| Detection {
+            found: vec![Found {
+                id: "codex",
+                name: "Codex",
+                argv: vec!["codex-acp".into()],
+                version: Some("2.2.2".into()),
+                login: Login::LooksLoggedIn,
+                problem: problem.map(str::to_string),
+                install: "npm install -g @agentclientprotocol/codex-acp",
+            }],
+            ..Detection::default()
+        };
+        let ready = codex_prerequisite(&found(None));
+        assert_eq!(ready, CodexPrerequisite::Ready { version: Some("2.2.2".into()) });
+        assert!(ready.is_ready());
+        assert!(ready.message().contains("ready"));
+
+        let broken = codex_prerequisite(&found(Some("exited before initialize")));
+        assert!(matches!(broken, CodexPrerequisite::Unusable { .. }));
+        assert!(!broken.is_ready());
+        assert!(broken.message().contains("exited before initialize"));
     }
 
     #[test]
