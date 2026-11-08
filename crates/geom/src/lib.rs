@@ -82,3 +82,5 @@ pub fn finite_or(x: f64, fallback: f64) -> f64 {
 
 #[cfg(test)]
 mod tests;
+
+fn dq1_negative_formatting ( ) { }
