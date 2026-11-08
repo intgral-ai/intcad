@@ -13892,8 +13892,8 @@
       "originId": "in-0dbe33f8697d4f26ceb8",
       "originalPath": "packages/mastra-runtime/src/main.ts",
       "sourceRevision": null,
-      "digest": "sha256:e7daa5c5b4ac5410a596bea1b5434dd0a9a7c4647014d553daa192c57d9d544d",
-      "sizeBytes": 1440,
+      "digest": "sha256:48b29298499fa54b82550de144943fd5c4f09d995246e68c10ff2a2a0974fe22",
+      "sizeBytes": 4749,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -28096,6 +28096,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-23b0b1eccd8b152b0418",
+      "materializedPath": "evidence/dist/src/workflows/budget.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-23b0b1eccd8b152b0418",
+      "originalPath": "evidence/dist/src/workflows/budget.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:a7683024227870f8ffab89f20dde33c9b86eee8e688bab7938d330f3d3d2f033",
+      "sizeBytes": 196,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-23b3d5b8f071afee5ef1",
       "materializedPath": "node_modules/@posthog/core/dist/error-tracking/coercers/error-event-coercer.d.ts",
       "originKind": "dependency",
@@ -32390,6 +32404,20 @@
       "sizeBytes": 2311,
       "licenseIds": [
         "lic-mastra-core-1.82.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-29f485ec194443324dc5",
+      "materializedPath": "evidence/dist/src/workflows/proposals.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-29f485ec194443324dc5",
+      "originalPath": "evidence/dist/src/workflows/proposals.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:d9f0a52f5fc4c7cd33d58b9cf2776dd6bc025659d5f97d7f419b6df4c551928c",
+      "sizeBytes": 199,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -45484,6 +45512,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-3e5890f309cef5b7e4e5",
+      "materializedPath": "evidence/dist/src/workflows/workflow.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-3e5890f309cef5b7e4e5",
+      "originalPath": "evidence/dist/src/workflows/workflow.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:b812575b7cc2f276866eab1a925e10fb8fcb1a0c7a7dbffe4234d854bfb26a7a",
+      "sizeBytes": 198,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-3e5a988ca5aa1fe7993b",
       "materializedPath": "node_modules/execa/lib/convert/writable.js",
       "originKind": "dependency",
@@ -55816,6 +55858,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-4ecad3aebf603edbfa66",
+      "materializedPath": "sources/src/workflows/budget.ts",
+      "originKind": "repository",
+      "originId": "in-4ecad3aebf603edbfa66",
+      "originalPath": "packages/mastra-runtime/src/workflows/budget.ts",
+      "sourceRevision": null,
+      "digest": "sha256:5d76d1185773aa6ed11d135591688ba3907412f93e47b6bafb75e7bbf348218f",
+      "sizeBytes": 2829,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-4ed3c4f129ee64de6482",
       "materializedPath": "node_modules/@mastra/core/dist/tools/tool-title.d.ts.map",
       "originKind": "dependency",
@@ -61528,6 +61584,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-57b01fb57348e82ccb32",
+      "materializedPath": "sources/src/workflows/apply.ts",
+      "originKind": "repository",
+      "originId": "in-57b01fb57348e82ccb32",
+      "originalPath": "packages/mastra-runtime/src/workflows/apply.ts",
+      "sourceRevision": null,
+      "digest": "sha256:d8b6ec0528907b065d1a9da9e8fb5849c8ead66354a093a3b1309d2702d5403a",
+      "sizeBytes": 2276,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-57b082e7e51c28ec49f5",
       "materializedPath": "node_modules/@posthog/core/src/traces/span.ts",
       "originKind": "dependency",
@@ -63512,6 +63582,20 @@
       "sizeBytes": 186,
       "licenseIds": [
         "lic-mastra-core-1.82.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-5ae5879af0e8ef678f2f",
+      "materializedPath": "sources/src/workflows/types.ts",
+      "originKind": "repository",
+      "originId": "in-5ae5879af0e8ef678f2f",
+      "originalPath": "packages/mastra-runtime/src/workflows/types.ts",
+      "sourceRevision": null,
+      "digest": "sha256:64604f443489183af6ca6e87165e8ffe8df5b84ec96ccbac32503385b52b99b7",
+      "sizeBytes": 7662,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -72518,6 +72602,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-6907f6c4784da8f5e286",
+      "materializedPath": "sources/src/workflows/proposals.ts",
+      "originKind": "repository",
+      "originId": "in-6907f6c4784da8f5e286",
+      "originalPath": "packages/mastra-runtime/src/workflows/proposals.ts",
+      "sourceRevision": null,
+      "digest": "sha256:655d778846bf6d29181a8c0f9317bdbd91570f88309c1b0d63176cb472e50edd",
+      "sizeBytes": 9612,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-6909b3a1d3a316174e9a",
       "materializedPath": "node_modules/mdast-util-to-markdown/lib/util/check-quote.js",
       "originKind": "dependency",
@@ -74348,6 +74446,20 @@
       "sizeBytes": 3685,
       "licenseIds": [
         "lic-mastra-core-1.82.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-6c1c919cd25478bba14c",
+      "materializedPath": "sources/src/workflows/index.ts",
+      "originKind": "repository",
+      "originId": "in-6c1c919cd25478bba14c",
+      "originalPath": "packages/mastra-runtime/src/workflows/index.ts",
+      "sourceRevision": null,
+      "digest": "sha256:138ab3dd7f48386636e02eea72262bf3154d3e0d9b1b1d29bb34efebc2c5c134",
+      "sizeBytes": 1306,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -78968,6 +79080,20 @@
       "sizeBytes": 154,
       "licenseIds": [
         "lic-ai-sdk-provider-utils-v7-5.0.72"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-736623ffde02290d01bd",
+      "materializedPath": "evidence/dist/src/bridge-lane.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-736623ffde02290d01bd",
+      "originalPath": "evidence/dist/src/bridge-lane.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:b5a20a2d37a719504837fc6aa45da3c3059d1d78711bb00fc58955fe67bece24",
+      "sizeBytes": 191,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -91810,6 +91936,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-862743fb1ce442691d04",
+      "materializedPath": "evidence/dist/src/workflows/checks.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-862743fb1ce442691d04",
+      "originalPath": "evidence/dist/src/workflows/checks.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:184ed244516c18afed4ccb7e77267e42e5494edbc7c8666a9a8d6d1b28c6f2ad",
+      "sizeBytes": 196,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-862ec44a4d3214bb69fb",
       "materializedPath": "node_modules/zod/v4/locales/gu.d.cts",
       "originKind": "dependency",
@@ -93574,6 +93714,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-88f69491139d54231216",
+      "materializedPath": "evidence/dist/src/workflows/proposals.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-88f69491139d54231216",
+      "originalPath": "evidence/dist/src/workflows/proposals.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:cfb486d98e1894cd190696bf46f455e5184fa0810a2d5eb9f4487ec7c585ec59",
+      "sizeBytes": 197,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-88fcdf5b483e830af610",
       "materializedPath": "node_modules/@ai-sdk/provider-v7/src/speech-model/v3/speech-model-v3.ts",
       "originKind": "dependency",
@@ -94340,6 +94494,20 @@
       "sizeBytes": 1714,
       "licenseIds": [
         "lic-mastra-core-1.82.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-8a10b78f59db3ad1e1b4",
+      "materializedPath": "evidence/dist/src/workflows/types.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-8a10b78f59db3ad1e1b4",
+      "originalPath": "evidence/dist/src/workflows/types.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:e55b1f26ad6674c729c829ca2119aaa10592a37296d122b8f6ed6db728ae54af",
+      "sizeBytes": 195,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -95544,6 +95712,20 @@
       "sizeBytes": 105904,
       "licenseIds": [
         "lic-mastra-core-1.82.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-8bff2a81da87ca505758",
+      "materializedPath": "sources/src/bridge-lane.ts",
+      "originKind": "repository",
+      "originId": "in-8bff2a81da87ca505758",
+      "originalPath": "packages/mastra-runtime/src/bridge-lane.ts",
+      "sourceRevision": null,
+      "digest": "sha256:8d1fe93ea6d69e424f2fee94315fbb092401301d6040ec22c0a1a6dc931289b0",
+      "sizeBytes": 4579,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -103584,6 +103766,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-98fb9fac8cc3a43dfa27",
+      "materializedPath": "evidence/dist/src/workflows/apply.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-98fb9fac8cc3a43dfa27",
+      "originalPath": "evidence/dist/src/workflows/apply.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:2211821174239cbcc276ec45c6eb3003ad26f8d37165906ef8a18636ae4aa5f9",
+      "sizeBytes": 195,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-990026a76d64286de47f",
       "materializedPath": "schema/mastra-runtime/v1/fixtures/valid/trace-cancel-coalescing-deadline-006.ndjson",
       "originKind": "repository",
@@ -106268,6 +106464,20 @@
       "sizeBytes": 2318,
       "licenseIds": [
         "lic-posthog-node-5.63.1"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-9cd136bc5094f4ff6b55",
+      "materializedPath": "sources/src/workflows/checks.ts",
+      "originKind": "repository",
+      "originId": "in-9cd136bc5094f4ff6b55",
+      "originalPath": "packages/mastra-runtime/src/workflows/checks.ts",
+      "sourceRevision": null,
+      "digest": "sha256:ebb1b27a8c5674fcdf6fc9ea40a9c9cf48913e351e106dd91fe1bda5d5142ed5",
+      "sizeBytes": 12949,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -112950,6 +113160,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-a79fc0eeeb99ebd11431",
+      "materializedPath": "evidence/dist/src/workflows/workflow.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-a79fc0eeeb99ebd11431",
+      "originalPath": "evidence/dist/src/workflows/workflow.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:2908f84f92bdf32b47374d1e80f6705069b109f07071dac151ebc6f51c49e1b8",
+      "sizeBytes": 196,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-a7a0eac8adca86b2e2df",
       "materializedPath": "node_modules/yaml/dist/compose/util-contains-newline.js",
       "originKind": "dependency",
@@ -116520,6 +116744,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-ad067335a693328b67e6",
+      "materializedPath": "evidence/dist/src/workflows/budget.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-ad067335a693328b67e6",
+      "originalPath": "evidence/dist/src/workflows/budget.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:89afe3fc4655263681501d55bf97c9e32e6a594349ba40f164bbb307b5ce0d08",
+      "sizeBytes": 194,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-ad0f30be0e9573fb90e1",
       "materializedPath": "node_modules/posthog-node/dist/emails/emails.d.ts",
       "originKind": "dependency",
@@ -119950,6 +120188,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-b28a9f4bcfc1b413416d",
+      "materializedPath": "evidence/dist/src/workflows/index.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-b28a9f4bcfc1b413416d",
+      "originalPath": "evidence/dist/src/workflows/index.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:27fed52c7ad677e34eb510dd14e0d02ec3b0864843b86ceee51cbd86cc6da844",
+      "sizeBytes": 193,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-b28b6e8ea424ff6c2527",
       "materializedPath": "node_modules/@mastra/core/dist/notifications/index.js",
       "originKind": "dependency",
@@ -120376,8 +120628,8 @@
       "originId": "in-b335630551682c19a781",
       "originalPath": "packages/mastra-runtime/README.md",
       "sourceRevision": null,
-      "digest": "sha256:3edb334f617236a8f220e2321c7549d9cd71d8ab7ab77589bc9369047c44c4e3",
-      "sizeBytes": 10239,
+      "digest": "sha256:695b4c2bb7950b83f830e4ac59cd04ddd183ab926068fd2379f638a6dad58d39",
+      "sizeBytes": 12616,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -121906,6 +122158,20 @@
       "sizeBytes": 45798,
       "licenseIds": [
         "lic-mastra-core-1.82.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-b61c33187d554c372e8c",
+      "materializedPath": "sources/src/workflows/workflow.ts",
+      "originKind": "repository",
+      "originId": "in-b61c33187d554c372e8c",
+      "originalPath": "packages/mastra-runtime/src/workflows/workflow.ts",
+      "sourceRevision": null,
+      "digest": "sha256:744a2986ce02648fbc3170cf6553333618b21bfba883376694a288e66fee21b9",
+      "sizeBytes": 35055,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -125742,6 +126008,20 @@
       "sizeBytes": 5589,
       "licenseIds": [
         "lic-micromark-util-chunked-2.0.1"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-bc921bd9e94e413ddde4",
+      "materializedPath": "sources/src/workflows/inspect.ts",
+      "originKind": "repository",
+      "originId": "in-bc921bd9e94e413ddde4",
+      "originalPath": "packages/mastra-runtime/src/workflows/inspect.ts",
+      "sourceRevision": null,
+      "digest": "sha256:2b858a91b6f0eaeb0755be4ab2460cc04cd75b63bd88f28d425adec8de9fd31c",
+      "sizeBytes": 5555,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -132186,6 +132466,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-c74b2615989245a33cc9",
+      "materializedPath": "evidence/dist/src/bridge-lane.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-c74b2615989245a33cc9",
+      "originalPath": "evidence/dist/src/bridge-lane.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:dfb7415dfe0a6248b34baf00d9981c217149bdad73a69640766c9d9f8e6db371",
+      "sizeBytes": 189,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-c74d8930def5227b243e",
       "materializedPath": "node_modules/@mastra/schema-compat/dist/_types/ajv/dist/ajv.d.ts",
       "originKind": "dependency",
@@ -136060,6 +136354,20 @@
       "sizeBytes": 6383,
       "licenseIds": [
         "lic-ajv-8.20.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-cd99ba17d61269ef431e",
+      "materializedPath": "evidence/dist/src/workflows/inspect.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-cd99ba17d61269ef431e",
+      "originalPath": "evidence/dist/src/workflows/inspect.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:1516d3320b0ed50c2b7aacc669a4d6810dd27ffcb6ac41dd5726fb427aead0e5",
+      "sizeBytes": 195,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -145038,6 +145346,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-dbde3ec2e20aeb6cd26f",
+      "materializedPath": "evidence/dist/src/workflows/inspect.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-dbde3ec2e20aeb6cd26f",
+      "originalPath": "evidence/dist/src/workflows/inspect.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:3abd2b9fbab653ecada47dc9b6b1e99776aaaa9e3090539bda2f704072c4bce1",
+      "sizeBytes": 197,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-dbde6ab448be404c7147",
       "materializedPath": "node_modules/@mastra/core/dist/docs/references/integrations-frameworks-sveltekit.md",
       "originKind": "dependency",
@@ -147088,8 +147410,8 @@
       "originId": "in-decbce07e0d8ec7452a4",
       "originalPath": "packages/mastra-runtime/src/server.ts",
       "sourceRevision": null,
-      "digest": "sha256:d505845b2999f0f9d90e7a121568ca889725f6ec1a4a2f5d15d089e5d4102549",
-      "sizeBytes": 35769,
+      "digest": "sha256:d1342d0b4f78e3bc1661e156aa593aeb4cc28c77589b948e5a26aae6306245f9",
+      "sizeBytes": 43423,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -148604,6 +148926,20 @@
       "sizeBytes": 4663,
       "licenseIds": [
         "lic-zod-4.6.7"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-e184c919043d11a853fa",
+      "materializedPath": "evidence/dist/src/workflows/types.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-e184c919043d11a853fa",
+      "originalPath": "evidence/dist/src/workflows/types.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:c127b1e40e69b01754992edb29a56e3334a9332c392d7c487879949d1761a2c5",
+      "sizeBytes": 193,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -153462,6 +153798,20 @@
       "sizeBytes": 1117,
       "licenseIds": [
         "lic-sindresorhus-merge-streams-4.0.0"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-e8e4eb05804205b21fe1",
+      "materializedPath": "evidence/dist/src/workflows/index.d.ts.json",
+      "originKind": "build-evidence",
+      "originId": "in-e8e4eb05804205b21fe1",
+      "originalPath": "evidence/dist/src/workflows/index.d.ts.json",
+      "sourceRevision": null,
+      "digest": "sha256:f6010871ad8f759a6164ded62a218e8b382199215ab90f2c6b1e8453a8663456",
+      "sizeBytes": 195,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -164022,6 +164372,20 @@
       "sourceRecordId": null
     },
     {
+      "id": "in-f9a4264193abcc7547cd",
+      "materializedPath": "evidence/dist/src/workflows/apply.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-f9a4264193abcc7547cd",
+      "originalPath": "evidence/dist/src/workflows/apply.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:a9283aa32f38de0705e361545333f1d84a6d8db849f1903a21f20704a9530ee3",
+      "sizeBytes": 193,
+      "licenseIds": [
+        "lic-runtime"
+      ],
+      "sourceRecordId": null
+    },
+    {
       "id": "in-f9a5b6773c681c315e4c",
       "materializedPath": "schema/mastra-runtime/v1/fixtures/invalid/missing-param-model.generate-tools.ndjson",
       "originKind": "repository",
@@ -164312,6 +164676,20 @@
       "sizeBytes": 1262,
       "licenseIds": [
         "lic-dequal-2.0.3"
+      ],
+      "sourceRecordId": null
+    },
+    {
+      "id": "in-fa3c2c10ee502412e192",
+      "materializedPath": "evidence/dist/src/workflows/checks.js.json",
+      "originKind": "build-evidence",
+      "originId": "in-fa3c2c10ee502412e192",
+      "originalPath": "evidence/dist/src/workflows/checks.js.json",
+      "sourceRevision": null,
+      "digest": "sha256:339668af90e887dea51233859cfbf92c9280b11195c96c1f007234f276f7c324",
+      "sizeBytes": 194,
+      "licenseIds": [
+        "lic-runtime"
       ],
       "sourceRecordId": null
     },
@@ -168010,8 +168388,8 @@
     },
     {
       "path": "README.md",
-      "digest": "sha256:3edb334f617236a8f220e2321c7549d9cd71d8ab7ab77589bc9369047c44c4e3",
-      "sizeBytes": 10239,
+      "digest": "sha256:695b4c2bb7950b83f830e4ac59cd04ddd183ab926068fd2379f638a6dad58d39",
+      "sizeBytes": 12616,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168030,6 +168408,24 @@
       "path": "dist/src/bin/verify-schema.js",
       "digest": "sha256:f7a7dd935ffc36ba35dc822dbd05f16fda3ffee378280b6f8c665d637464bc57",
       "sizeBytes": 321,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/bridge-lane.d.ts",
+      "digest": "sha256:002963f713a5574097d9e927865d56112df3dd2740192039830cf740c41711a1",
+      "sizeBytes": 984,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/bridge-lane.js",
+      "digest": "sha256:2e00682cc1b4d05c455dbda0bafece5c8a4a244c75f44dd84e55cf2cd6cbf6e9",
+      "sizeBytes": 4757,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168199,8 +168595,8 @@
     },
     {
       "path": "dist/src/main.d.ts",
-      "digest": "sha256:d1ccc0d2f8890e519926a2274b54e48be475c5a07ab28752c9b2ec5637563ac5",
-      "sizeBytes": 391,
+      "digest": "sha256:9d9ba0b92a457992a3e13a599bb35c90d4e334fc7f1cc57833a71293f23084a0",
+      "sizeBytes": 1090,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168208,8 +168604,8 @@
     },
     {
       "path": "dist/src/main.js",
-      "digest": "sha256:c8d8c6599ea4288c16bcfd21739dcf6a84a79c9cf04ca858f64f818bf53a265d",
-      "sizeBytes": 1438,
+      "digest": "sha256:460434466c23001cfcc134dec6c36a97750fb8679c70cc6e7804d4175bbe6f82",
+      "sizeBytes": 4394,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168235,8 +168631,8 @@
     },
     {
       "path": "dist/src/server.d.ts",
-      "digest": "sha256:30923b1db562cb6c8140614ccb86d467144c03d3ca195869d2a16dd5da55f526",
-      "sizeBytes": 1465,
+      "digest": "sha256:23c0839dd5a17acc423292be4294554ce0468bfe1ce3ca866d750a1421dc07d6",
+      "sizeBytes": 2179,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168244,8 +168640,8 @@
     },
     {
       "path": "dist/src/server.js",
-      "digest": "sha256:cbfc97b5c1ff3166253e21527cdc6090cb6812514590af594df473d4857bc0a9",
-      "sizeBytes": 36158,
+      "digest": "sha256:2bed44207584ebbb97bb49aabc6572a7d96ebacc3e7474238cf8fc56592af1d6",
+      "sizeBytes": 43369,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168318,6 +168714,150 @@
       "path": "dist/src/transport.js",
       "digest": "sha256:0205544ec00dbddcbc35b03e631248b93f7900b3df2f218081fe1ac8e397a0a1",
       "sizeBytes": 4522,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/apply.d.ts",
+      "digest": "sha256:9d63ce375f6991f33101fb47afb69b6573683d397919fb386a07e013469dbd80",
+      "sizeBytes": 879,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/apply.js",
+      "digest": "sha256:c422a8c5a01f2fce8e45029d3425087e4bd3308f761d0d9cf0e56222a3f28ca0",
+      "sizeBytes": 2016,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/budget.d.ts",
+      "digest": "sha256:11e46021255778dfbe59ed1ddc826e4dd750f9d0c5cdd9478396aed8fd578f38",
+      "sizeBytes": 894,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/budget.js",
+      "digest": "sha256:f179b49513731e67c47f444d561c922ee144eac3bc6cb0a7bbe143a5433e2015",
+      "sizeBytes": 2826,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/checks.d.ts",
+      "digest": "sha256:5c3544bd6f88a0a045da18c063f1a3a050615a7ff6a9e719844f30bb9e200089",
+      "sizeBytes": 1260,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/checks.js",
+      "digest": "sha256:f1a45fcf1a294eaee7e13a7ac5e3759d3e8f8a18a2638f9b9fcd6d032a383cd1",
+      "sizeBytes": 12994,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/index.d.ts",
+      "digest": "sha256:5cee586a490f53e5c4d7b24420c8dc2e7d991a7e20ed6e6c63c1a5042d037353",
+      "sizeBytes": 1219,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/index.js",
+      "digest": "sha256:fded55a93bf7cdf82b277527a0c426624ee7cc29f367818f738ac26675b22d15",
+      "sizeBytes": 736,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/inspect.d.ts",
+      "digest": "sha256:eca691471ebfd499835b8aa44eb98c146291362118dc30b65d027bcdd3e24b50",
+      "sizeBytes": 887,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/inspect.js",
+      "digest": "sha256:a5398d4f09b387a2a0d6a9d1161f786b02e6ada09274da8f10838713c4740a6e",
+      "sizeBytes": 5149,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/proposals.d.ts",
+      "digest": "sha256:93b6dac1d419d4a6d243f8ca2b51c28d7f5d9f47183c63145e4c92a4ff0ffee6",
+      "sizeBytes": 2196,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/proposals.js",
+      "digest": "sha256:4672ed36dbad16f832e7d14b066d84516173d7e8403f252822d982c1b847a575",
+      "sizeBytes": 9356,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/types.d.ts",
+      "digest": "sha256:c9bdb3d6ae5119ead15bceb083cedf62a9ef6c464f3caf72e50efcd9c4fffafb",
+      "sizeBytes": 7760,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/types.js",
+      "digest": "sha256:14bcb63b552e208c4676742d5010675aadca070dd51669286282528118397c9f",
+      "sizeBytes": 297,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/workflow.d.ts",
+      "digest": "sha256:ba56607948e045bfa0dbf49cdea6f1e80da6e22eb4d2594a7ce31fa7964ccb9a",
+      "sizeBytes": 733,
+      "role": "code",
+      "licenseIds": [
+        "lic-runtime"
+      ]
+    },
+    {
+      "path": "dist/src/workflows/workflow.js",
+      "digest": "sha256:90d7bd287e4ceb7b768778efda8ed3bedc0d2677dec2e8b83ac2fbaecd64535c",
+      "sizeBytes": 35057,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -272912,6 +273452,30 @@
       "evidenceInputId": "in-7dcf36d9d9955a5fc36a"
     },
     {
+      "outputPath": "dist/src/bridge-lane.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-8bff2a81da87ca505758",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-736623ffde02290d01bd"
+    },
+    {
+      "outputPath": "dist/src/bridge-lane.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-8bff2a81da87ca505758",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-c74b2615989245a33cc9"
+    },
+    {
       "outputPath": "dist/src/clock.d.ts",
       "inputIds": [
         "in-543a15062aa97162ab3c",
@@ -273294,6 +273858,198 @@
         "tool-typescript"
       ],
       "evidenceInputId": "in-5646784973f0da177988"
+    },
+    {
+      "outputPath": "dist/src/workflows/apply.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-57b01fb57348e82ccb32",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-98fb9fac8cc3a43dfa27"
+    },
+    {
+      "outputPath": "dist/src/workflows/apply.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-57b01fb57348e82ccb32",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-f9a4264193abcc7547cd"
+    },
+    {
+      "outputPath": "dist/src/workflows/budget.d.ts",
+      "inputIds": [
+        "in-4ecad3aebf603edbfa66",
+        "in-543a15062aa97162ab3c",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-23b0b1eccd8b152b0418"
+    },
+    {
+      "outputPath": "dist/src/workflows/budget.js",
+      "inputIds": [
+        "in-4ecad3aebf603edbfa66",
+        "in-543a15062aa97162ab3c",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-ad067335a693328b67e6"
+    },
+    {
+      "outputPath": "dist/src/workflows/checks.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-92062d34e634b8000aa7",
+        "in-9cd136bc5094f4ff6b55"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-862743fb1ce442691d04"
+    },
+    {
+      "outputPath": "dist/src/workflows/checks.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-92062d34e634b8000aa7",
+        "in-9cd136bc5094f4ff6b55"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-fa3c2c10ee502412e192"
+    },
+    {
+      "outputPath": "dist/src/workflows/index.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-6c1c919cd25478bba14c",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-e8e4eb05804205b21fe1"
+    },
+    {
+      "outputPath": "dist/src/workflows/index.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-6c1c919cd25478bba14c",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-b28a9f4bcfc1b413416d"
+    },
+    {
+      "outputPath": "dist/src/workflows/inspect.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-92062d34e634b8000aa7",
+        "in-bc921bd9e94e413ddde4"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-dbde3ec2e20aeb6cd26f"
+    },
+    {
+      "outputPath": "dist/src/workflows/inspect.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-92062d34e634b8000aa7",
+        "in-bc921bd9e94e413ddde4"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-cd99ba17d61269ef431e"
+    },
+    {
+      "outputPath": "dist/src/workflows/proposals.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-6907f6c4784da8f5e286",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-29f485ec194443324dc5"
+    },
+    {
+      "outputPath": "dist/src/workflows/proposals.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-6907f6c4784da8f5e286",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-88f69491139d54231216"
+    },
+    {
+      "outputPath": "dist/src/workflows/types.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-5ae5879af0e8ef678f2f",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-8a10b78f59db3ad1e1b4"
+    },
+    {
+      "outputPath": "dist/src/workflows/types.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-5ae5879af0e8ef678f2f",
+        "in-92062d34e634b8000aa7"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-e184c919043d11a853fa"
+    },
+    {
+      "outputPath": "dist/src/workflows/workflow.d.ts",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-92062d34e634b8000aa7",
+        "in-b61c33187d554c372e8c"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-3e5890f309cef5b7e4e5"
+    },
+    {
+      "outputPath": "dist/src/workflows/workflow.js",
+      "inputIds": [
+        "in-543a15062aa97162ab3c",
+        "in-92062d34e634b8000aa7",
+        "in-b61c33187d554c372e8c"
+      ],
+      "toolInputIds": [
+        "tool-typescript"
+      ],
+      "evidenceInputId": "in-a79fc0eeeb99ebd11431"
     },
     {
       "outputPath": "licenses/LICENSES.txt",

@@ -20,13 +20,13 @@ claimed.
 | npm | `11.19.0`, archive `sha256:31e9770f7dc71119a58509353b27917557aaf0ac9b5ef1a0465ee7d8ec67ae75` |
 | Lockfile | `package-lock.json`, `sha256:fd09e98344a3242c76056411a2dcca580c60120cc17bffeb6906ef99b34f48b0` |
 | Contract bundle | `schema/mastra-runtime/v1/manifest.json`, `sha256:f5e9ed0238da5b9f1ce5cf70bff4a23ed7134476cab5c43b717134c4a282662a` |
-| Built entry point | `dist/src/main.js`, `sha256:c8d8c6599ea4288c16bcfd21739dcf6a84a79c9cf04ca858f64f818bf53a265d` |
+| Built entry point | `dist/src/main.js`, `sha256:460434466c23001cfcc134dec6c36a97750fb8679c70cc6e7804d4175bbe6f82` |
 | Production dependencies | **151** |
 | License evidence entries | **155** (151 packages + runtime + Node + TypeScript build tool + enterprise-content review) |
-| Artifact files | **11,620** = 11,618 outputs + `inventory.json` + `runtime.json` |
-| Artifact bytes | **291,562,487** |
-| Inventory bytes | **12,470,929** |
-| Inventory digest | `sha256:e2523bd5a7ceb557c43f9e459cc538cd58656d4c629cc743df29a6cccceb0b0e` |
+| Artifact files | **11,638** = 11,636 outputs + `inventory.json` + `runtime.json` |
+| Artifact bytes | **291,692,689** |
+| Inventory bytes | **12,494,478** |
+| Inventory digest | `sha256:03d4648c183c2503e1b98214a253a38646c568cabf3909c63d8073b1169527db` |
 | `policy.approvals` | `[]` — unapproved |
 | Policy digest | `sha256:cc65d32fec291b31f2079beeaac877ca9208cf97051693962b008eb02ab32fb3` |
 | `LICENSES.txt` | `sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba` |
@@ -36,7 +36,7 @@ Artifact shape:
 
 ```text
 node
-dist/src/**                 34 files
+dist/src/**                 52 files
 node_modules/**             production closure, `ee/` paths pruned
 schema/mastra-runtime/v1/**  1,103 files
 package.json, README.md, DEPENDENCIES.md
