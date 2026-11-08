@@ -24,13 +24,13 @@ claimed.
 | Production dependencies | **151** |
 | License evidence entries | **155** (151 packages + runtime + Node + TypeScript build tool + enterprise-content review) |
 | Artifact files | **11,638** = 11,636 outputs + `inventory.json` + `runtime.json` |
-| Artifact bytes | **291,692,689** |
+| Artifact bytes | **291,695,159** |
 | Inventory bytes | **12,494,478** |
-| Inventory digest | `sha256:03d4648c183c2503e1b98214a253a38646c568cabf3909c63d8073b1169527db` |
+| Inventory digest | `sha256:b2f34e81fb4e630b4dfaaf9e06611d245b87c11737a6471bfd24b063b262d771` |
 | `policy.approvals` | `[]` — unapproved |
 | Policy digest | `sha256:cc65d32fec291b31f2079beeaac877ca9208cf97051693962b008eb02ab32fb3` |
 | `LICENSES.txt` | `sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba` |
-| `NOTICE.txt` | `sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec` |
+| `NOTICE.txt` | `sha256:16c7b031ff79252a4c8454b277880daa122de7538b196ce99ef91f5b0e8023d6` |
 
 Artifact shape:
 

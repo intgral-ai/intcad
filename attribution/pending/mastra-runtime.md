@@ -4,8 +4,8 @@
 | `node_modules/@a2a-js/sdk-v1@1.0.1` | unstated in package.json | https://registry.npmjs.org/@a2a-js/sdk/-/sdk-1.0.1.tgz | Apache-2.0 |
 | `node_modules/@ai-sdk/provider@3.0.19` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider/-/provider-3.0.19.tgz | Apache-2.0 |
 | `node_modules/@ai-sdk/provider@4.0.35` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider/-/provider-4.0.35.tgz | Apache-2.0 |
-| `node_modules/@ai-sdk/provider-utils-v6@4.0.63` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider-utils/-/provider-utils-4.0.63.tgz | Apache-2.0 |
-| `node_modules/@ai-sdk/provider-utils-v7@5.0.72` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider-utils/-/provider-utils-5.0.72.tgz | Apache-2.0 |
+| `node_modules/@ai-sdk/provider-utils-v6@4.0.63` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider-utils/-/provider-utils-4.0.63.tgz | Apache-2.0 (needs-human: no separate licence file; legal review pending) |
+| `node_modules/@ai-sdk/provider-utils-v7@5.0.72` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider-utils/-/provider-utils-5.0.72.tgz | Apache-2.0 (needs-human: no separate licence file; legal review pending) |
 | `node_modules/@ai-sdk/provider-v5@2.0.5` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider/-/provider-2.0.5.tgz | Apache-2.0 |
 | `node_modules/@ai-sdk/provider-v6@3.0.19` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider/-/provider-3.0.19.tgz | Apache-2.0 |
 | `node_modules/@ai-sdk/provider-v7@4.0.35` | unstated in package.json | https://registry.npmjs.org/@ai-sdk/provider/-/provider-4.0.35.tgz | Apache-2.0 |
@@ -14,14 +14,15 @@
 | `node_modules/@isaacs/ttlcache@2.1.5` | Isaac Z. Schlueter  (https://izs.me) | https://registry.npmjs.org/@isaacs/ttlcache/-/ttlcache-2.1.5.tgz | BlueOak-1.0.0 |
 | `node_modules/@lukeed/csprng@1.1.0` | Luke Edwards | https://registry.npmjs.org/@lukeed/csprng/-/csprng-1.1.0.tgz | MIT |
 | `node_modules/@lukeed/uuid@2.0.1` | Luke Edwards | https://registry.npmjs.org/@lukeed/uuid/-/uuid-2.0.1.tgz | MIT |
-| `node_modules/@mastra/core@1.82.0` | Mastra AI and contributors | https://registry.npmjs.org/@mastra/core/-/core-1.82.0.tgz | Apache-2.0 |
+| `node_modules/@mastra/core@1.82.0` | Mastra AI and contributors | https://registry.npmjs.org/@mastra/core/-/core-1.82.0.tgz | Apache-2.0 + `LicenseRef-Mastra-Enterprise` for dist/ee-* (needs-human) |
+| `node_modules/@mastra/core@1.82.0 dist/ee-*` | Mastra AI and contributors | `packaging/mastra/inventory.json` (`lic-mastra-enterprise`) | `LicenseRef-Mastra-Enterprise`; needs-human legal review pending |
 | `node_modules/@mastra/schema-compat@1.3.17` | Mastra AI and contributors | https://registry.npmjs.org/@mastra/schema-compat/-/schema-compat-1.3.17.tgz | Apache-2.0 |
 | `node_modules/@posthog/core@1.64.1` | unstated in package.json | https://registry.npmjs.org/@posthog/core/-/core-1.64.1.tgz | MIT |
 | `node_modules/@posthog/types@1.421.1` | unstated in package.json | https://registry.npmjs.org/@posthog/types/-/types-1.421.1.tgz | MIT |
 | `node_modules/@sec-ant/readable-stream@0.4.1` | Ze-Zheng Wu | https://registry.npmjs.org/@sec-ant/readable-stream/-/readable-stream-0.4.1.tgz | MIT |
 | `node_modules/@sindresorhus/merge-streams@4.0.0` | Sindre Sorhus | https://registry.npmjs.org/@sindresorhus/merge-streams/-/merge-streams-4.0.0.tgz | MIT |
-| `node_modules/@standard-community/standard-json@0.3.7` | unstated in package.json | https://registry.npmjs.org/@standard-community/standard-json/-/standard-json-0.3.7.tgz | MIT |
-| `node_modules/@standard-community/standard-openapi@0.2.11` | unstated in package.json | https://registry.npmjs.org/@standard-community/standard-openapi/-/standard-openapi-0.2.11.tgz | MIT |
+| `node_modules/@standard-community/standard-json@0.3.7` | unstated in package.json | https://registry.npmjs.org/@standard-community/standard-json/-/standard-json-0.3.7.tgz | MIT (needs-human: no separate licence file; legal review pending) |
+| `node_modules/@standard-community/standard-openapi@0.2.11` | unstated in package.json | https://registry.npmjs.org/@standard-community/standard-openapi/-/standard-openapi-0.2.11.tgz | MIT (needs-human: no separate licence file; legal review pending) |
 | `node_modules/@standard-schema/spec@1.1.0` | Colin McDonnell | https://registry.npmjs.org/@standard-schema/spec/-/spec-1.1.0.tgz | MIT |
 | `node_modules/@types/debug@4.1.13` | unstated in package.json | https://registry.npmjs.org/@types/debug/-/debug-4.1.13.tgz | MIT |
 | `node_modules/@types/json-schema@7.0.15` | unstated in package.json | https://registry.npmjs.org/@types/json-schema/-/json-schema-7.0.15.tgz | MIT |

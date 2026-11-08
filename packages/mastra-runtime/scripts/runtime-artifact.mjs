@@ -432,15 +432,20 @@ function renderNotices(dependencyData) {
   notice.push(`Target: ${TARGET}; Node 22.23.4; npm 11.19.0; runtime ${RUNTIME_VERSION}.`);
   notice.push("The artifact contains no path component named `ee`. However, the shipped `@mastra/core/dist/ee-*.js`/`.cjs`/`.map` files carry Mastra Enterprise License headers and `src/ee/index.ts` source-map provenance. They are NOT approved for distribution, are recorded as needs-human legal review, and the current public `@mastra/core/agent` entry imports them. The artifact is blocked; #14 must not bundle it until legal review or a different build resolves this.");
   notice.push("");
-  notice.push("| Package | Version | Licence | Rights holder | Source |");
-  notice.push("|---|---|---|---|---|");
+  notice.push("| Package | Version | Licence | Rights holder | Source | Review |");
+  notice.push("|---|---|---|---|---|---|");
   for (const dep of [...dependencyData.dependencies].sort((left, right) => byString(left.name, right.name) || byString(left.version, right.version))) {
     const license = dependencyData.licenses.find((item) => item.id === `lic-${sanitize(`${dep.name}-${dep.version}`)}`);
-    notice.push(`| \`${dep.name}\` | ${dep.version} | ${license.expression} | ${license.rightsHolder} | ${dep.sourceUrl} |`);
+    const review = dep.name === "@mastra/core"
+      ? "needs-human — 4 dist/ee-* files under LicenseRef-Mastra-Enterprise"
+      : license.verdict === "verified" ? "verified" : `needs-human — ${license.reason}`;
+    const expression = dep.name === "@mastra/core" ? `${license.expression} + LicenseRef-Mastra-Enterprise (4 dist/ee-* files)` : license.expression;
+    notice.push(`| \`${dep.name}\` | ${dep.version} | ${expression} | ${license.rightsHolder} | ${dep.sourceUrl} | ${review} |`);
   }
-  notice.push(`| \`node\` | 22.23.4 | MIT | OpenJS Foundation and Node.js contributors | ${NODE_SOURCE_URL} |`);
-  notice.push(`| \`@intgral-ai/solidcraft-mastra-runtime\` | ${RUNTIME_VERSION} | MIT OR Apache-2.0 | SolidCraft contributors | https://github.com/intgral-ai/open-skyfall-desktop |`);
-  notice.push(`| \`typescript\` | 5.9.3 | Apache-2.0 | Microsoft and contributors | build tool only, not shipped |`);
+  notice.push(`| \`@mastra/core\` enterprise \`dist/ee-*\` | 1.82.0 | LicenseRef-Mastra-Enterprise | Mastra AI and contributors | packaging/mastra/inventory.json (lic-mastra-enterprise) | needs-human — legal review pending |`);
+  notice.push(`| \`node\` | 22.23.4 | MIT | OpenJS Foundation and Node.js contributors | ${NODE_SOURCE_URL} | verified |`);
+  notice.push(`| \`@intgral-ai/solidcraft-mastra-runtime\` | ${RUNTIME_VERSION} | MIT OR Apache-2.0 | SolidCraft contributors | https://github.com/intgral-ai/open-skyfall-desktop | verified |`);
+  notice.push(`| \`typescript\` | 5.9.3 | Apache-2.0 | Microsoft and contributors | build tool only, not shipped | verified |`);
   notice.push("");
   notice.push("Enterprise-license files requiring legal review:");
   for (const path of enterpriseFilePaths(dependencyData)) notice.push(`- \`${path}\``);
