@@ -20,7 +20,9 @@ const repoRoot = resolve(packageRoot, "../..");
 const script = join(packageRoot, "scripts/runtime-artifact.mjs");
 const inventory = join(repoRoot, "packaging/mastra/inventory.json");
 const tempInventory = join(repoRoot, "target/mastra-runtime-inventory-drift.json");
-const injected = join(repoRoot, "node_modules/@mastra/core/dist/injected/ee/x.js");
+// Inject under a package that is actually shipped after BM-1; @mastra/core is
+// no longer in the dependency graph, so a path there would be ignored.
+const injected = join(repoRoot, "node_modules/ajv/dist/injected/ee/x.js");
 
 const env = { ...process.env };
 if (!env["SOLIDCRAFT_NODE_BIN"]) env["SOLIDCRAFT_NODE_BIN"] = process.execPath;
