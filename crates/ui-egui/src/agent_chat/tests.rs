@@ -14438,6 +14438,10 @@ mod mastra_backend_tests {
         ]
     }
 
+    fn tiny_jpeg() -> Vec<u8> {
+        vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]
+    }
+
     fn tiny_pdf() -> Vec<u8> {
         b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n".to_vec()
     }
@@ -14447,6 +14451,7 @@ mod mastra_backend_tests {
         vec![
             PromptPart::Text("use these".into()),
             PromptPart::Image { mime: "image/png".into(), base64: base64(&tiny_png()) },
+            PromptPart::Image { mime: "image/jpeg".into(), base64: base64(&tiny_jpeg()) },
             PromptPart::Document {
                 name: "brief.pdf".into(),
                 uri: "file:///tmp/brief.pdf".into(),
@@ -14477,22 +14482,34 @@ mod mastra_backend_tests {
         backend.set_document("doc-main", 7);
         backend.prompt(&attachment_parts());
         let params = turn_start(&log).expect("turn.start with attachments");
-        let (image, document) = match params.parts.as_slice() {
-            [ContentBlock::Text { text }, ContentBlock::Image { artifact }, ContentBlock::Document { name, artifact: doc }] => {
+        let (image, jpeg, document) = match params.parts.as_slice() {
+            [
+                ContentBlock::Text { text },
+                ContentBlock::Image { artifact: image },
+                ContentBlock::Image { artifact: jpeg },
+                ContentBlock::Document { name, artifact: doc },
+            ] => {
                 assert_eq!(text, "use these");
-                (artifact.clone(), (name.clone(), doc.clone()))
+                (image.clone(), jpeg.clone(), (name.clone(), doc.clone()))
             }
             other => panic!("unexpected parts: {other:?}"),
         };
         let png = tiny_png();
+        let jpg = tiny_jpeg();
         assert_eq!(image.size_bytes as usize, png.len());
         assert_eq!(image.media_type, "image/png");
         assert_eq!(image.digest.to_string(), format!("sha256:{:x}", Sha256::digest(&png)));
+        assert_eq!(jpeg.size_bytes as usize, jpg.len());
+        assert_eq!(jpeg.media_type, "image/jpeg");
+        assert_eq!(jpeg.digest.to_string(), format!("sha256:{:x}", Sha256::digest(&jpg)));
         assert_eq!(document.0, "brief.pdf");
         assert_eq!(document.1.size_bytes as usize, tiny_pdf().len());
         assert_eq!(document.1.media_type, "application/pdf");
+        assert_eq!(document.1.digest.to_string(), format!("sha256:{:x}", Sha256::digest(tiny_pdf())));
         let wire = serde_json::to_string(&params).unwrap();
-        assert!(!wire.contains(&crate::agent_chat::backend::base64(&png)), "attachment bytes never enter the runtime frame");
+        for bytes in [&png, &jpg, &tiny_pdf()] {
+            assert!(!wire.contains(&crate::agent_chat::backend::base64(bytes)), "attachment bytes never enter the runtime frame");
+        }
 
         // The backend's runtime session id and HostAi instance are the same fixture pair.
         let binding = backend.next_binding().unwrap();
@@ -14511,6 +14528,20 @@ mod mastra_backend_tests {
             media_type: image.media_type.clone(),
         };
         assert_eq!(host.read_attachment_for_test(&session, &host_ref).as_deref(), Some(png.as_slice()));
+    }
+
+    #[test]
+    fn attachment_store_accepts_exactly_sixteen_mib_and_refuses_a_fifth() {
+        let (host, _) = test_host();
+        let session = host_ai::SessionKey { runtime_instance_id: "runtime".into(), session_id: "limit".into() };
+        for index in 0..4u8 {
+            let reference = host
+                .store_attachment(&session, std::sync::Arc::from(vec![index; 4 << 20]), "image/png")
+                .expect("four 4 MiB attachments fit the 16 MiB turn");
+            assert_eq!(host.read_attachment_for_test(&session, &reference).map(|bytes| bytes.len()), Some(4 << 20));
+        }
+        let error = host.store_attachment(&session, std::sync::Arc::from(vec![9u8; 4 << 20]), "image/png").unwrap_err();
+        assert_eq!(error.code(), host_ai::AiErrorCode::ResourceExhausted);
     }
 
     #[test]

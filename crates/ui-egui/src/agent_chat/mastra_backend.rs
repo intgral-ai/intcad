@@ -1001,16 +1001,16 @@ impl MastraBackend {
             return;
         }
         let Ok(session) = self.ids.next_id() else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::format("ui.mastra_runtime_failed", &[("error", "session")])));
             return;
         };
         if !self.rebind_host_session(self.session.as_ref(), &session) {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::format("ui.mastra_runtime_failed", &[("error", "session")])));
             return;
         }
         let bridge = if self.config.bridge.is_some() {
             let Ok(bridge_id) = self.ids.next_id() else {
-                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                self.push(Event::Error(crate::i18n::format("ui.mastra_runtime_failed", &[("error", "bridge")])));
                 return;
             };
             Some(BridgeRef { name: BridgeName::SolidCraftApp, bridge_id })
@@ -1029,7 +1029,7 @@ impl MastraBackend {
                 self.session = Some(session);
                 self.session_ready = false;
             }
-            Err(_) => self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string())),
+            Err(_) => self.push(Event::Error(crate::i18n::format("ui.mastra_runtime_failed", &[("error", "session")]))),
         }
     }
 

@@ -158,13 +158,11 @@ impl HostAi {
         self.attachments.read(session, reference)
     }
 
+    /// Prompt attachments resolve only from this turn's attachment store. Candidate/validation
+    /// artifacts use their own authorized reader; a prompt reference must never fall through to it.
     fn artifact_reader(&self) -> ArtifactReadFn {
         let store = Arc::clone(&self.attachments);
-        let fallback = Arc::clone(&self.deps.artifacts);
-        Arc::new(move |session, reference| match store.read(session, reference) {
-            Some(bytes) => Ok(bytes),
-            None => fallback(session, reference),
-        })
+        Arc::new(move |session, reference| store.read(session, reference).ok_or_else(|| AiError::unsupported("artifact")))
     }
 
     pub(crate) fn check_binding(&self, binding: &ConnectionBinding) -> Result<(), AiError> {

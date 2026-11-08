@@ -147452,8 +147452,8 @@
       "originId": "in-decbce07e0d8ec7452a4",
       "originalPath": "packages/mastra-runtime/src/server.ts",
       "sourceRevision": null,
-      "digest": "sha256:0dd759b7e2f339babdd4eeb947e5a840afe977f4f3dfcb24a662d4f9dc8c72ca",
-      "sizeBytes": 50717,
+      "digest": "sha256:3c524feabd15332437771ba0427a4af45001c4cb0d74700e32b0d9b854a3ae3b",
+      "sizeBytes": 51694,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -168682,8 +168682,8 @@
     },
     {
       "path": "dist/src/server.js",
-      "digest": "sha256:e406f6bc47b7fa7aa7a3978f92acf1b45550244432dba5230324c643bc95abaf",
-      "sizeBytes": 50188,
+      "digest": "sha256:02e57120b47eeeb231535b345984057e40ff132a1c10337b39d565e571bfcf70",
+      "sizeBytes": 51256,
       "role": "code",
       "licenseIds": [
         "lic-runtime"

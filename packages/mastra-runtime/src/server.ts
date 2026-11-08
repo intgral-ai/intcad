@@ -1013,9 +1013,16 @@ export class RuntimeServer {
         if (hasAttachments) {
           // The Mastra Agent prompt language has no host artifact reference. Send the normalized
           // messages directly so image/PDF blocks reach HostAi unchanged.
+          const instructed: ModelMessage[] =
+            session.instructions.trim().length === 0
+              ? messages
+              : [
+                  { role: "system", content: [{ type: "text", text: session.instructions }], toolCalls: [], toolCallId: null },
+                  ...messages,
+                ];
           const result = await client.generate(
             {
-              messages,
+              messages: instructed,
               tools: [],
               options: {
                 delivery: "buffered",
@@ -1241,7 +1248,20 @@ export class RuntimeServer {
       })),
       toolCallId: null,
     };
-    session.history.appendRound([turn.userMessage, assistant], this.#limits);
+    // A reference is valid only for the turn that created it. Keep a text marker in history so
+    // later turns never ask HostAi to resolve an expired attachment.
+    const historyUser: ModelMessage = {
+      ...turn.userMessage,
+      content: turn.userMessage.content.some((block) => block.type !== "text")
+        ? turn.userMessage.content.flatMap((block) => {
+            if (block.type === "text") {
+              return [block];
+            }
+            return [{ type: "text" as const, text: block.type === "image" ? "[image attachment]" : `[document attachment: ${block.name}]` }];
+          })
+        : turn.userMessage.content,
+    };
+    session.history.appendRound([historyUser, assistant], this.#limits);
   }
 
   #finishFromError(turn: TurnState, error: unknown): void {
