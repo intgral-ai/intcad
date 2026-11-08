@@ -23,7 +23,7 @@ RUNTIME_INPUTS = ("package.json", "packages/mastra-runtime/package.json",
                   "packages/mastra-runtime/src/main.ts", "packages/mastra-runtime/tsconfig.json")
 NODE_PINS = (".node-version", ".nvmrc")
 NODE_LOCKS = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")
-NODE_FILES = (*NODE_PINS, *NODE_LOCKS, "package.json", "pnpm-workspace.yaml")
+NODE_FILES = (*NODE_PINS, *NODE_LOCKS, "package.json", "pnpm-workspace.yaml", ".npmrc")
 VERIFIER_ENTRY = "xtask/src/main.rs"
 # Repository-tooling inputs run the xtask tests. Their Rust changes map to the
 # xtask package already; packaging/mastra metadata is ignored by the Rust

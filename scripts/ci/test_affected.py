@@ -73,7 +73,7 @@ class Synthetic(unittest.TestCase):
     def test_no_code_paths_select_nothing(self):
         # What CI reads as "no code changed", on pull requests and pushes to main alike.
         for p in [".github/workflows/docker.yml", ".github/ISSUE_TEMPLATE/bug.yml", "scripts/claim/claim.js",
-                  "scripts/triage/triage.test.js", "vendor/README.md", "SECURITY.md"]:
+                  "scripts/triage/triage.test.js", "vendor/README.md", "SECURITY.md", ".gitignore", ".npmrc"]:
             self.assertEqual(affected.select(SYNTH, [p]), (False, []), p)
 
     def test_windows_metadata_selects_packages_and_preserves_triggers(self):
@@ -137,6 +137,15 @@ class MonorepoSelection(unittest.TestCase):
                                        "jobs", "openObligations"})
         self.assertEqual((result["version"], result["sourceRevision"], result["scope"]), (1, "a" * 40, "affected"))
 
+    def test_housekeeping_and_node_config_do_not_select_native_work(self):
+        gitignore = self.select(".gitignore")
+        self.assertFalse(gitignore["rustFull"])
+        self.assertEqual(gitignore["rustPackages"], [])
+        npmrc = self.select(".npmrc")
+        self.assertFalse(npmrc["rustFull"])
+        self.assertIn("solidcraft-ui-egui", npmrc["rustPackages"])
+        self.decision(npmrc, "runtime", "run", "selected_change")
+
     def test_pr_policy_does_not_run_on_ordinary_push(self):
         self.decision(self.select(event_name="push"), "pr-policy", "not_applicable", "no_relevant_change")
         self.decision(self.select(event_name="merge_group"), "pr-policy", "run", "always")
@@ -173,7 +182,7 @@ class MonorepoSelection(unittest.TestCase):
 
     def test_runtime_node_pins_and_locks_select_both_languages(self):
         for path in ("packages/mastra-runtime/src/main.ts", "package.json", "package-lock.json", "pnpm-lock.yaml",
-                     "pnpm-workspace.yaml", "yarn.lock", "bun.lock", ".node-version", ".nvmrc"):
+                     "pnpm-workspace.yaml", "yarn.lock", "bun.lock", ".node-version", ".nvmrc", ".npmrc"):
             with self.subTest(path=path):
                 result = self.select(path)
                 for job in ("contract-rust", "runtime", "contract-ts", "integration", "artifact-policy"):
