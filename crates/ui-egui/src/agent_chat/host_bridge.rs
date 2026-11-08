@@ -274,7 +274,6 @@ impl Drop for HostBridge {
     }
 }
 
-#[cfg(unix)]
 fn push_event(events: &Mutex<VecDeque<Event>>, event: Event) {
     if let Ok(mut events) = events.lock() {
         if events.len() >= 64 {
