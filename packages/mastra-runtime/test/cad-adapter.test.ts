@@ -375,6 +375,47 @@ test("still running is reconciled on the same connection without resending the m
   assert.equal(await adapter.reconcile(), null);
 });
 
+test("a client timeout is reconciled with pending after the original reply is tombstoned", async (t) => {
+  const { peer, client, adapter, setExecute, setPending } = await harness(t, { writeTimeoutMs: 25, pendingTimeoutMs: 500 });
+  const arrived = deferred<void>();
+  const held = deferred<void>();
+  setExecute(async () => {
+    arrived.resolve();
+    await held.promise;
+    return guardedReply({ result: { changed: true }, documentStamp: STAMP_42 });
+  });
+  let pendingCalls = 0;
+  setPending(() => {
+    pendingCalls += 1;
+    if (pendingCalls === 1) {
+      return textReply({ pending: "parameters.change", done: false, running_s: 1 });
+    }
+    return textReply({
+      pending: "parameters.change",
+      done: true,
+      result: { result: { changed: true }, documentStamp: STAMP_42 },
+      expectation: null,
+    });
+  });
+  const first = await adapter.execute("parameters.change", { name: "width" });
+  assertConforms(first);
+  assert.equal(first.outcome.state, "pending");
+  assert.equal(first.outcome.completed, null);
+  assert.equal(peer.toolCallsNamed("execute").length, 1);
+  const executeId = peer.toolCallsNamed("execute")[0]?.id;
+  const second = await adapter.reconcile();
+  assert.ok(second !== null);
+  assertConforms(second);
+  assert.equal(second.outcome.state, "applied");
+  assert.equal(second.outcome.request.requestId, `mcp-${String(executeId)}`);
+  assert.equal(peer.toolCallsNamed("execute").length, 1, "the timed-out mutation is never resent");
+  held.resolve();
+  await tick();
+  await tick();
+  assert.equal(client.isClosed, false, "the late original reply is a tombstoned response, not a violation");
+  assert.equal(peer.toolCallsNamed("execute").length, 1);
+});
+
 test("a lost pending slot is unknown, blocks new writes and is never resubmitted", async (t) => {
   const { peer, adapter, setExecute, setPending } = await harness(t);
   setExecute(() => guardedReply({ error: "still running: batch", pending: true }, true));
