@@ -1814,16 +1814,18 @@
       "id": "lic-a2a-js-sdk-v0_3-0.3.14",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1831,16 +1833,18 @@
       "id": "lic-a2a-js-sdk-v1-1.0.1",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1848,16 +1852,18 @@
       "id": "lic-ai-sdk-provider-3.0.19",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1865,16 +1871,18 @@
       "id": "lic-ai-sdk-provider-4.0.35",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1882,16 +1890,18 @@
       "id": "lic-ai-sdk-provider-utils-v6-4.0.63",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "needs-human",
+      "reason": "The published package has no separate licence file; its permissive SPDX declaration needs legal review.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1899,16 +1909,18 @@
       "id": "lic-ai-sdk-provider-utils-v7-5.0.72",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "needs-human",
+      "reason": "The published package has no separate licence file; its permissive SPDX declaration needs legal review.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1916,16 +1928,18 @@
       "id": "lic-ai-sdk-provider-v5-2.0.5",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1933,16 +1947,18 @@
       "id": "lic-ai-sdk-provider-v6-3.0.19",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1950,16 +1966,18 @@
       "id": "lic-ai-sdk-provider-v7-4.0.35",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1967,16 +1985,18 @@
       "id": "lic-ajv-8.20.0",
       "expression": "MIT",
       "rightsHolder": "Evgeny Poberezkin",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -1984,16 +2004,18 @@
       "id": "lic-bail-2.0.2",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2001,16 +2023,18 @@
       "id": "lic-ccount-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2018,16 +2042,18 @@
       "id": "lic-character-entities-2.0.2",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2035,16 +2061,18 @@
       "id": "lic-chat-4.44.0",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2052,16 +2080,18 @@
       "id": "lic-chat-adapter-catalog-4.44.0",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2069,16 +2099,18 @@
       "id": "lic-croner-10.0.1",
       "expression": "MIT",
       "rightsHolder": "Hexagon",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2086,16 +2118,18 @@
       "id": "lic-cross-spawn-7.0.6",
       "expression": "MIT",
       "rightsHolder": "André Cruz",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2103,16 +2137,18 @@
       "id": "lic-debug-4.4.3",
       "expression": "MIT",
       "rightsHolder": "Josh Junon (https://github.com/qix-)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2120,16 +2156,18 @@
       "id": "lic-decode-named-character-reference-1.3.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2137,16 +2175,18 @@
       "id": "lic-dequal-2.0.3",
       "expression": "MIT",
       "rightsHolder": "Luke Edwards",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2154,16 +2194,18 @@
       "id": "lic-devlop-1.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2171,16 +2213,18 @@
       "id": "lic-dotenv-17.4.2",
       "expression": "BSD-2-Clause",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2188,16 +2232,18 @@
       "id": "lic-escape-string-regexp-5.0.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2205,16 +2251,18 @@
       "id": "lic-eventsource-parser-3.1.1",
       "expression": "MIT",
       "rightsHolder": "Espen Hovlandsdal",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2222,16 +2270,18 @@
       "id": "lic-execa-9.6.1",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2239,16 +2289,18 @@
       "id": "lic-extend-3.0.2",
       "expression": "MIT",
       "rightsHolder": "Stefan Thomas  (http://www.justmoon.net)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2256,16 +2308,18 @@
       "id": "lic-fast-deep-equal-3.1.3",
       "expression": "MIT",
       "rightsHolder": "Evgeny Poberezkin",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2273,16 +2327,18 @@
       "id": "lic-fast-uri-3.1.9",
       "expression": "BSD-3-Clause",
       "rightsHolder": "Vincent Le Goff  (https://github.com/zekth)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2290,16 +2346,18 @@
       "id": "lic-fastq-1.20.3",
       "expression": "ISC",
       "rightsHolder": "Matteo Collina",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2307,16 +2365,18 @@
       "id": "lic-figures-6.1.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2324,16 +2384,18 @@
       "id": "lic-get-stream-9.0.1",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2341,16 +2403,18 @@
       "id": "lic-hono-4.13.17",
       "expression": "MIT",
       "rightsHolder": "Yusuke Wada  (https://github.com/yusukebe)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2358,16 +2422,18 @@
       "id": "lic-hono-openapi-1.5.0",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2375,16 +2441,18 @@
       "id": "lic-hono-standard-validator-0.4.1",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2392,16 +2460,18 @@
       "id": "lic-human-signals-8.0.1",
       "expression": "Apache-2.0",
       "rightsHolder": "ehmicky  (https://github.com/ehmicky)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2409,16 +2479,18 @@
       "id": "lic-ignore-7.0.14",
       "expression": "MIT",
       "rightsHolder": "kael",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2426,16 +2498,18 @@
       "id": "lic-is-network-error-1.3.2",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2443,16 +2517,18 @@
       "id": "lic-is-plain-obj-4.1.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2460,16 +2536,18 @@
       "id": "lic-is-stream-4.0.1",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2477,16 +2555,18 @@
       "id": "lic-is-unicode-supported-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2494,16 +2574,18 @@
       "id": "lic-isaacs-ttlcache-2.1.5",
       "expression": "BlueOak-1.0.0",
       "rightsHolder": "Isaac Z. Schlueter  (https://izs.me)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2511,16 +2593,18 @@
       "id": "lic-isexe-2.0.0",
       "expression": "ISC",
       "rightsHolder": "Isaac Z. Schlueter  (http://blog.izs.me/)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2528,16 +2612,18 @@
       "id": "lic-jose-6.2.15",
       "expression": "MIT",
       "rightsHolder": "Filip Skokan",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2545,16 +2631,18 @@
       "id": "lic-jpeg-js-0.4.4",
       "expression": "BSD-3-Clause",
       "rightsHolder": "Eugene Ware",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2562,16 +2650,18 @@
       "id": "lic-json-schema-0.4.0",
       "expression": "BSD-3-Clause",
       "rightsHolder": "Kris Zyp",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2579,16 +2669,18 @@
       "id": "lic-json-schema-to-zod-2.8.1",
       "expression": "ISC",
       "rightsHolder": "Stefan Terdell",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2596,16 +2688,18 @@
       "id": "lic-json-schema-traverse-1.0.0",
       "expression": "MIT",
       "rightsHolder": "Evgeny Poberezkin",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2613,16 +2707,18 @@
       "id": "lic-longest-streak-3.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2630,16 +2726,18 @@
       "id": "lic-lru-cache-11.5.3",
       "expression": "BlueOak-1.0.0",
       "rightsHolder": "Isaac Z. Schlueter",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2647,16 +2745,18 @@
       "id": "lic-lukeed-csprng-1.1.0",
       "expression": "MIT",
       "rightsHolder": "Luke Edwards",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2664,16 +2764,18 @@
       "id": "lic-lukeed-uuid-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Luke Edwards",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2681,16 +2783,18 @@
       "id": "lic-markdown-table-3.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2698,16 +2802,37 @@
       "id": "lic-mastra-core-1.82.0",
       "expression": "Apache-2.0",
       "rightsHolder": "Mastra AI and contributors",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
+        }
+      ]
+    },
+    {
+      "id": "lic-mastra-enterprise",
+      "expression": "LicenseRef-Mastra-Enterprise",
+      "rightsHolder": "Mastra AI and contributors",
+      "verdict": "needs-human",
+      "reason": "Mastra Enterprise License header and src/ee/index.ts source-map provenance; the contract excludes enterprise modules and no distribution approval exists.",
+      "licenseFiles": [
+        {
+          "path": "licenses/LICENSES.txt",
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
+        }
+      ],
+      "noticeFiles": [
+        {
+          "path": "notices/NOTICE.txt",
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2715,16 +2840,18 @@
       "id": "lic-mastra-schema-compat-1.3.17",
       "expression": "Apache-2.0",
       "rightsHolder": "Mastra AI and contributors",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2732,16 +2859,18 @@
       "id": "lic-mdast-util-find-and-replace-3.0.4",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2749,16 +2878,18 @@
       "id": "lic-mdast-util-from-markdown-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2766,16 +2897,18 @@
       "id": "lic-mdast-util-gfm-3.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2783,16 +2916,18 @@
       "id": "lic-mdast-util-gfm-autolink-literal-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2800,16 +2935,18 @@
       "id": "lic-mdast-util-gfm-footnote-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2817,16 +2954,18 @@
       "id": "lic-mdast-util-gfm-strikethrough-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2834,16 +2973,18 @@
       "id": "lic-mdast-util-gfm-table-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2851,16 +2992,18 @@
       "id": "lic-mdast-util-gfm-task-list-item-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2868,16 +3011,18 @@
       "id": "lic-mdast-util-phrasing-4.1.0",
       "expression": "MIT",
       "rightsHolder": "Victor Felder  (https://draft.li)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2885,16 +3030,18 @@
       "id": "lic-mdast-util-to-markdown-2.2.3",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2902,16 +3049,18 @@
       "id": "lic-mdast-util-to-string-4.0.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2919,16 +3068,18 @@
       "id": "lic-micromark-4.0.3",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2936,16 +3087,18 @@
       "id": "lic-micromark-core-commonmark-2.0.4",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2953,16 +3106,18 @@
       "id": "lic-micromark-extension-gfm-3.0.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2970,16 +3125,18 @@
       "id": "lic-micromark-extension-gfm-autolink-literal-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -2987,16 +3144,18 @@
       "id": "lic-micromark-extension-gfm-footnote-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3004,16 +3163,18 @@
       "id": "lic-micromark-extension-gfm-strikethrough-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3021,16 +3182,18 @@
       "id": "lic-micromark-extension-gfm-table-2.1.2",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3038,16 +3201,18 @@
       "id": "lic-micromark-extension-gfm-tagfilter-2.0.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3055,16 +3220,18 @@
       "id": "lic-micromark-extension-gfm-task-list-item-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3072,16 +3239,18 @@
       "id": "lic-micromark-factory-destination-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3089,16 +3258,18 @@
       "id": "lic-micromark-factory-label-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3106,16 +3277,18 @@
       "id": "lic-micromark-factory-space-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3123,16 +3296,18 @@
       "id": "lic-micromark-factory-title-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3140,16 +3315,18 @@
       "id": "lic-micromark-factory-whitespace-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3157,16 +3334,18 @@
       "id": "lic-micromark-util-character-2.1.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3174,16 +3353,18 @@
       "id": "lic-micromark-util-chunked-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3191,16 +3372,18 @@
       "id": "lic-micromark-util-classify-character-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3208,16 +3391,18 @@
       "id": "lic-micromark-util-combine-extensions-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3225,16 +3410,18 @@
       "id": "lic-micromark-util-decode-numeric-character-reference-2.0.2",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3242,16 +3429,18 @@
       "id": "lic-micromark-util-decode-string-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3259,16 +3448,18 @@
       "id": "lic-micromark-util-edit-map-1.0.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3276,16 +3467,18 @@
       "id": "lic-micromark-util-encode-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3293,16 +3486,18 @@
       "id": "lic-micromark-util-html-tag-name-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3310,16 +3505,18 @@
       "id": "lic-micromark-util-normalize-identifier-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3327,16 +3524,18 @@
       "id": "lic-micromark-util-resolve-all-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3344,16 +3543,18 @@
       "id": "lic-micromark-util-sanitize-uri-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3361,16 +3562,18 @@
       "id": "lic-micromark-util-subtokenize-2.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3378,16 +3581,18 @@
       "id": "lic-micromark-util-symbol-2.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3395,16 +3600,18 @@
       "id": "lic-micromark-util-types-2.0.3",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3412,16 +3619,18 @@
       "id": "lic-ms-2.1.3",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3429,16 +3638,18 @@
       "id": "lic-node",
       "expression": "MIT",
       "rightsHolder": "OpenJS Foundation and Node.js contributors",
+      "verdict": "verified",
+      "reason": "Official Node.js linux-x64 distribution under its MIT licence.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3446,16 +3657,18 @@
       "id": "lic-npm-run-path-6.0.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3463,16 +3676,18 @@
       "id": "lic-openapi-types-12.1.3",
       "expression": "MIT",
       "rightsHolder": "Joseph Spencer",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3480,16 +3695,18 @@
       "id": "lic-p-map-7.1.1",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3497,16 +3714,18 @@
       "id": "lic-p-retry-7.1.1",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3514,16 +3733,18 @@
       "id": "lic-parse-ms-4.0.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3531,16 +3752,18 @@
       "id": "lic-path-key-3.1.1",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3548,16 +3771,18 @@
       "id": "lic-path-key-4.0.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3565,16 +3790,18 @@
       "id": "lic-picomatch-4.0.7",
       "expression": "MIT",
       "rightsHolder": "Jon Schlinkert (https://github.com/jonschlinkert)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3582,16 +3809,18 @@
       "id": "lic-posthog-core-1.64.1",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3599,16 +3828,18 @@
       "id": "lic-posthog-node-5.63.1",
       "expression": "MIT",
       "rightsHolder": "PostHog",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3616,16 +3847,18 @@
       "id": "lic-posthog-types-1.421.1",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3633,16 +3866,18 @@
       "id": "lic-pretty-ms-9.3.1",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3650,16 +3885,18 @@
       "id": "lic-quansync-0.2.11",
       "expression": "MIT",
       "rightsHolder": "Anthony Fu",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3667,16 +3904,18 @@
       "id": "lic-re2js-2.9.1",
       "expression": "MIT",
       "rightsHolder": "Oleksii Vasyliev",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3684,16 +3923,18 @@
       "id": "lic-remark-gfm-4.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3701,16 +3942,18 @@
       "id": "lic-remark-parse-11.0.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3718,16 +3961,18 @@
       "id": "lic-remark-stringify-11.0.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3735,16 +3980,18 @@
       "id": "lic-remend-1.4.0",
       "expression": "Apache-2.0",
       "rightsHolder": "Hayden Bleasel",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3752,16 +3999,18 @@
       "id": "lic-require-from-string-2.0.2",
       "expression": "MIT",
       "rightsHolder": "Vsevolod Strukchinsky",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3769,16 +4018,18 @@
       "id": "lic-reusify-1.1.0",
       "expression": "MIT",
       "rightsHolder": "Matteo Collina",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3786,16 +4037,18 @@
       "id": "lic-runtime",
       "expression": "MIT OR Apache-2.0",
       "rightsHolder": "SolidCraft contributors",
+      "verdict": "verified",
+      "reason": "Original SolidCraft runtime code under the project dual licence.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3803,16 +4056,18 @@
       "id": "lic-sec-ant-readable-stream-0.4.1",
       "expression": "MIT",
       "rightsHolder": "Ze-Zheng Wu",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3820,16 +4075,18 @@
       "id": "lic-shebang-command-2.0.0",
       "expression": "MIT",
       "rightsHolder": "Kevin Mårtensson",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3837,16 +4094,18 @@
       "id": "lic-shebang-regex-3.0.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3854,16 +4113,18 @@
       "id": "lic-signal-exit-4.1.0",
       "expression": "ISC",
       "rightsHolder": "Ben Coe",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3871,16 +4132,18 @@
       "id": "lic-sindresorhus-merge-streams-4.0.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3888,16 +4151,18 @@
       "id": "lic-standard-community-standard-json-0.3.7",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "needs-human",
+      "reason": "The published package has no separate licence file; its permissive SPDX declaration needs legal review.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3905,16 +4170,18 @@
       "id": "lic-standard-community-standard-openapi-0.2.11",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "needs-human",
+      "reason": "The published package has no separate licence file; its permissive SPDX declaration needs legal review.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3922,16 +4189,18 @@
       "id": "lic-standard-schema-spec-1.1.0",
       "expression": "MIT",
       "rightsHolder": "Colin McDonnell",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3939,16 +4208,18 @@
       "id": "lic-strip-final-newline-4.0.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3956,16 +4227,18 @@
       "id": "lic-trough-2.2.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3973,16 +4246,18 @@
       "id": "lic-types-debug-4.1.13",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -3990,16 +4265,18 @@
       "id": "lic-types-json-schema-7.0.15",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4007,16 +4284,18 @@
       "id": "lic-types-mdast-4.0.4",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4024,16 +4303,18 @@
       "id": "lic-types-ms-2.1.0",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4041,16 +4322,18 @@
       "id": "lic-types-unist-3.0.3",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4058,16 +4341,18 @@
       "id": "lic-typescript",
       "expression": "Apache-2.0",
       "rightsHolder": "Microsoft and contributors",
+      "verdict": "verified",
+      "reason": "TypeScript build tool, not shipped, under Apache-2.0.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4075,16 +4360,18 @@
       "id": "lic-undici-6.29.1",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4092,16 +4379,18 @@
       "id": "lic-undici-7.30.2",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4109,16 +4398,18 @@
       "id": "lic-unicorn-magic-0.3.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4126,16 +4417,18 @@
       "id": "lic-unified-11.0.5",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4143,16 +4436,18 @@
       "id": "lic-unist-util-is-6.0.1",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4160,16 +4455,18 @@
       "id": "lic-unist-util-stringify-position-4.0.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4177,16 +4474,18 @@
       "id": "lic-unist-util-visit-5.2.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4194,16 +4493,18 @@
       "id": "lic-unist-util-visit-parents-6.1.0",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4211,16 +4512,18 @@
       "id": "lic-uuid-11.1.1",
       "expression": "MIT",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4228,16 +4531,18 @@
       "id": "lic-vfile-6.0.3",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4245,16 +4550,18 @@
       "id": "lic-vfile-message-4.0.4",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4262,16 +4569,18 @@
       "id": "lic-which-2.0.2",
       "expression": "ISC",
       "rightsHolder": "Isaac Z. Schlueter  (http://blog.izs.me)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4279,16 +4588,18 @@
       "id": "lic-workflow-serde-4.1.0",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4296,16 +4607,18 @@
       "id": "lic-workflow-serde-4.1.0-beta.2",
       "expression": "Apache-2.0",
       "rightsHolder": "unstated in package.json",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4313,16 +4626,18 @@
       "id": "lic-ws-8.22.1",
       "expression": "MIT",
       "rightsHolder": "Einar Otto Stangvik  (http://2x.io)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4330,16 +4645,18 @@
       "id": "lic-xxhash-wasm-1.1.0",
       "expression": "MIT",
       "rightsHolder": "Michael Jungo",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4347,16 +4664,18 @@
       "id": "lic-yaml-2.9.1",
       "expression": "ISC",
       "rightsHolder": "Eemeli Aro",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4364,16 +4683,18 @@
       "id": "lic-yoctocolors-2.2.0",
       "expression": "MIT",
       "rightsHolder": "Sindre Sorhus",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4381,16 +4702,18 @@
       "id": "lic-zod-4.6.7",
       "expression": "MIT",
       "rightsHolder": "Colin McDonnell",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4398,16 +4721,18 @@
       "id": "lic-zod-from-json-schema-0.5.2",
       "expression": "MIT",
       "rightsHolder": "Mark Probst",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     },
@@ -4415,16 +4740,18 @@
       "id": "lic-zwitch-2.0.4",
       "expression": "MIT",
       "rightsHolder": "Titus Wormer  (https://wooorm.com)",
+      "verdict": "verified",
+      "reason": "SPDX expression declared by the package; its licence file is retained in LICENSES.txt.",
       "licenseFiles": [
         {
           "path": "licenses/LICENSES.txt",
-          "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5"
+          "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba"
         }
       ],
       "noticeFiles": [
         {
           "path": "notices/NOTICE.txt",
-          "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302"
+          "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec"
         }
       ]
     }
@@ -39941,8 +40268,8 @@
       "originId": "in-361b7b02a3f2c36f74ae",
       "originalPath": "packaging/mastra/NOTICE.txt",
       "sourceRevision": null,
-      "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302",
-      "sizeBytes": 22060,
+      "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec",
+      "sizeBytes": 22531,
       "licenseIds": [
         "lic-a2a-js-sdk-v0_3-0.3.14",
         "lic-a2a-js-sdk-v1-1.0.1",
@@ -39997,6 +40324,7 @@
         "lic-lukeed-uuid-2.0.1",
         "lic-markdown-table-3.1.0",
         "lic-mastra-core-1.82.0",
+        "lic-mastra-enterprise",
         "lic-mastra-schema-compat-1.3.17",
         "lic-mdast-util-find-and-replace-3.0.4",
         "lic-mdast-util-from-markdown-2.1.0",
@@ -44283,7 +44611,7 @@
       "digest": "sha256:f5e4c704bc4fe05043a038fd49c2bdd438995ca33c635698c1e465d02c96a4cb",
       "sizeBytes": 54732,
       "licenseIds": [
-        "lic-mastra-core-1.82.0"
+        "lic-mastra-enterprise"
       ],
       "sourceRecordId": null
     },
@@ -53842,8 +54170,8 @@
       "originId": "in-4c5aa9f5c1049d1611d3",
       "originalPath": "packaging/mastra/LICENSES.txt",
       "sourceRevision": null,
-      "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5",
-      "sizeBytes": 466438,
+      "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba",
+      "sizeBytes": 483365,
       "licenseIds": [
         "lic-a2a-js-sdk-v0_3-0.3.14",
         "lic-a2a-js-sdk-v1-1.0.1",
@@ -53898,6 +54226,7 @@
         "lic-lukeed-uuid-2.0.1",
         "lic-markdown-table-3.1.0",
         "lic-mastra-core-1.82.0",
+        "lic-mastra-enterprise",
         "lic-mastra-schema-compat-1.3.17",
         "lic-mdast-util-find-and-replace-3.0.4",
         "lic-mdast-util-from-markdown-2.1.0",
@@ -78873,8 +79202,8 @@
       "originId": "in-73c2e4c2e886ff07d524",
       "originalPath": "packages/mastra-runtime/DEPENDENCIES.md",
       "sourceRevision": null,
-      "digest": "sha256:8b02cb2af5ca5e2cbaa81a6cab6930c679de95e4616fa0d4ba97af15c5ee29e9",
-      "sizeBytes": 3858,
+      "digest": "sha256:c741799fafe23bdcfb2064a2e142e83e569edf39b973dc26b49b7c2315f45d9f",
+      "sizeBytes": 4146,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -86226,7 +86555,7 @@
       "digest": "sha256:94035ac1a10698294b5567b49670f77f3a6bde684e7db0af9772dfc7c5d17f0f",
       "sizeBytes": 79212,
       "licenseIds": [
-        "lic-mastra-core-1.82.0"
+        "lic-mastra-enterprise"
       ],
       "sourceRecordId": null
     },
@@ -86240,7 +86569,7 @@
       "digest": "sha256:41416b22cb3adca74f1312eae884756da3d39a012e382201a904a584f5923139",
       "sizeBytes": 79250,
       "licenseIds": [
-        "lic-mastra-core-1.82.0"
+        "lic-mastra-enterprise"
       ],
       "sourceRecordId": null
     },
@@ -135282,7 +135611,7 @@
       "digest": "sha256:f9a31956f65b0a184094971f3b26d99cee5340dda7caebf5b681ff7acc30eba7",
       "sizeBytes": 58376,
       "licenseIds": [
-        "lic-mastra-core-1.82.0"
+        "lic-mastra-enterprise"
       ],
       "sourceRecordId": null
     },
@@ -167672,8 +168001,8 @@
   "outputs": [
     {
       "path": "DEPENDENCIES.md",
-      "digest": "sha256:8b02cb2af5ca5e2cbaa81a6cab6930c679de95e4616fa0d4ba97af15c5ee29e9",
-      "sizeBytes": 3858,
+      "digest": "sha256:c741799fafe23bdcfb2064a2e142e83e569edf39b973dc26b49b7c2315f45d9f",
+      "sizeBytes": 4146,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -167996,8 +168325,8 @@
     },
     {
       "path": "licenses/LICENSES.txt",
-      "digest": "sha256:d989d4aebd5caf64221f1f729bfeddb23027f26192aad82942dca5e3c59a3fa5",
-      "sizeBytes": 466438,
+      "digest": "sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba",
+      "sizeBytes": 483365,
       "role": "license",
       "licenseIds": [
         "lic-a2a-js-sdk-v0_3-0.3.14",
@@ -168053,6 +168382,7 @@
         "lic-lukeed-uuid-2.0.1",
         "lic-markdown-table-3.1.0",
         "lic-mastra-core-1.82.0",
+        "lic-mastra-enterprise",
         "lic-mastra-schema-compat-1.3.17",
         "lic-mdast-util-find-and-replace-3.0.4",
         "lic-mdast-util-from-markdown-2.1.0",
@@ -195954,7 +196284,7 @@
       "sizeBytes": 54732,
       "role": "code",
       "licenseIds": [
-        "lic-mastra-core-1.82.0"
+        "lic-mastra-enterprise"
       ]
     },
     {
@@ -195963,7 +196293,7 @@
       "sizeBytes": 79212,
       "role": "code",
       "licenseIds": [
-        "lic-mastra-core-1.82.0"
+        "lic-mastra-enterprise"
       ]
     },
     {
@@ -195972,7 +196302,7 @@
       "sizeBytes": 58376,
       "role": "code",
       "licenseIds": [
-        "lic-mastra-core-1.82.0"
+        "lic-mastra-enterprise"
       ]
     },
     {
@@ -195981,7 +196311,7 @@
       "sizeBytes": 79250,
       "role": "code",
       "licenseIds": [
-        "lic-mastra-core-1.82.0"
+        "lic-mastra-enterprise"
       ]
     },
     {
@@ -262442,8 +262772,8 @@
     },
     {
       "path": "notices/NOTICE.txt",
-      "digest": "sha256:c0de78e11fc891f2cc1d8f3f3f534e3586c0e98e1fa027bf15820cbfbf77a302",
-      "sizeBytes": 22060,
+      "digest": "sha256:1fa7df190165c883dadb04e2758a1463f480bee38c9f2ff0bdf6dbd82e2c09ec",
+      "sizeBytes": 22531,
       "role": "notice",
       "licenseIds": [
         "lic-a2a-js-sdk-v0_3-0.3.14",
@@ -262499,6 +262829,7 @@
         "lic-lukeed-uuid-2.0.1",
         "lic-markdown-table-3.1.0",
         "lic-mastra-core-1.82.0",
+        "lic-mastra-enterprise",
         "lic-mastra-schema-compat-1.3.17",
         "lic-mdast-util-find-and-replace-3.0.4",
         "lic-mdast-util-from-markdown-2.1.0",

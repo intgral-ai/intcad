@@ -696,6 +696,12 @@ fn evaluate_artifact(root: &Path, request: &Request) -> Result<GateReport, GateE
     }
     for output in &observed_inventory.outputs.0 {
         check_observation(files_by_path.get(output.path.0.as_str()).copied(), &output.path.0, &output.digest.0, output.size_bytes.0)?;
+        if enterprise_scan_path(&output.path.0) {
+            let bytes = std::fs::read(tree.join(&output.path.0)).map_err(|_| at(ErrorCode::IoError, &output.path.0))?;
+            if enterprise_content(&bytes) {
+                return Err(at(ErrorCode::EnterpriseInput, &output.path.0));
+            }
+        }
     }
     for input in &observed_inventory.inputs.0 {
         check_observation(
@@ -735,6 +741,16 @@ fn check_observation(file: Option<&ObservedFile>, path: &str, digest: &str, size
         return Err(at(ErrorCode::DigestMismatch, path));
     }
     matches_digest(&file.digest, digest, path)
+}
+
+fn enterprise_scan_path(path: &str) -> bool {
+    path.starts_with("node_modules/@mastra/core/") && [".js", ".cjs", ".mjs", ".map"].iter().any(|extension| path.ends_with(extension))
+}
+
+fn enterprise_content(bytes: &[u8]) -> bool {
+    [b"Mastra Enterprise License".as_slice(), b"@license Mastra Enterprise License", b"src/ee/"]
+        .iter()
+        .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
 }
 
 fn file_entry(root: &Path, relative: &str) -> Result<TreeEntry, GateError> {
@@ -1284,7 +1300,7 @@ model!(pub(crate) Inventory {
 model!(Node { version: Version, source_url: HttpsUrl, archive_digest: Digest, executable_path: RelPath });
 model!(PackageManager { name: PackageManagerName, version: Version, source_url: HttpsUrl, archive_digest: Digest });
 model!(Dependency { id: Id, name: Text, version: Version, source_url: HttpsUrl, archive_digest: Digest, lock_integrity: Text, dependency_ids: List<Id> });
-model!(LicenseEvidence { id: Id, expression: Text, rights_holder: Text, license_files: List<FileRef>, notice_files: List<FileRef> });
+model!(LicenseEvidence { id: Id, expression: Text, rights_holder: Text, verdict: AuditVerdict, reason: Text, license_files: List<FileRef>, notice_files: List<FileRef> });
 model!(BuildInput {
     id: Id, materialized_path: RelPath, origin_kind: OriginKind, origin_id: Id, original_path: RelPath,
     #[serde(deserialize_with = "required_nullable")] source_revision: RequiredNullable<GitRevision>,
@@ -1509,6 +1525,9 @@ impl Inventory {
     /// Exact reviewed vocabulary only, not rights/provenance approval; run before payload reads.
     pub(crate) fn validate_licenses(&self, policy: &Policy) -> Result<(), GateError> {
         for license in &self.licenses.0 {
+            if license.verdict != AuditVerdict::Verified {
+                return Err(GateError { code: ErrorCode::SourceRightsUnverified, subject: Some(license.id.0.clone()) });
+            }
             if denied_license_expression(&license.expression.0) || !policy.allowed_license_expressions.0.contains(&license.expression) {
                 return Err(GateError { code: ErrorCode::SourceRightsUnverified, subject: Some(license.id.0.clone()) });
             }

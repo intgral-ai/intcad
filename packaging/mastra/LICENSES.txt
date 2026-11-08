@@ -43,6 +43,7 @@ export * from './dist/license';
 ## @a2a-js/sdk-v0_3@0.3.14
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@a2a-js/sdk/-/sdk-0.3.14.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 
                                  Apache License
                            Version 2.0, January 2004
@@ -250,6 +251,7 @@ Source: https://registry.npmjs.org/@a2a-js/sdk/-/sdk-0.3.14.tgz
 ## @a2a-js/sdk-v1@1.0.1
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@a2a-js/sdk/-/sdk-1.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 
                                  Apache License
                            Version 2.0, January 2004
@@ -457,6 +459,7 @@ Source: https://registry.npmjs.org/@a2a-js/sdk/-/sdk-1.0.1.tgz
 ## @ai-sdk/provider@3.0.19
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@ai-sdk/provider/-/provider-3.0.19.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2023 Vercel, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -474,6 +477,7 @@ limitations under the License.
 ## @ai-sdk/provider@4.0.35
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@ai-sdk/provider/-/provider-4.0.35.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2023 Vercel, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -491,16 +495,19 @@ limitations under the License.
 ## @ai-sdk/provider-utils-v6@4.0.63
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@ai-sdk/provider-utils/-/provider-utils-4.0.63.tgz
+Review: needs-human — The published package has no separate licence file; its permissive SPDX declaration needs legal review.
 No separate licence file in the published package; the SPDX identifier above applies.
 
 ## @ai-sdk/provider-utils-v7@5.0.72
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@ai-sdk/provider-utils/-/provider-utils-5.0.72.tgz
+Review: needs-human — The published package has no separate licence file; its permissive SPDX declaration needs legal review.
 No separate licence file in the published package; the SPDX identifier above applies.
 
 ## @ai-sdk/provider-v5@2.0.5
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@ai-sdk/provider/-/provider-2.0.5.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2023 Vercel, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -518,6 +525,7 @@ limitations under the License.
 ## @ai-sdk/provider-v6@3.0.19
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@ai-sdk/provider/-/provider-3.0.19.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2023 Vercel, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -535,6 +543,7 @@ limitations under the License.
 ## @ai-sdk/provider-v7@4.0.35
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@ai-sdk/provider/-/provider-4.0.35.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2023 Vercel, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -552,6 +561,7 @@ limitations under the License.
 ## @mastra/core@1.82.0
 Rights holder: Mastra AI and contributors
 Source: https://registry.npmjs.org/@mastra/core/-/core-1.82.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Portions of this software are licensed as follows:
 
 - All content that resides under any directory named `ee/` within this
@@ -591,6 +601,7 @@ export * from './dist/license';
 ## @mastra/schema-compat@1.3.17
 Rights holder: Mastra AI and contributors
 Source: https://registry.npmjs.org/@mastra/schema-compat/-/schema-compat-1.3.17.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Portions of this software are licensed as follows:
 
 - All content that resides under any directory named `ee/` within this
@@ -628,6 +639,7 @@ limitations under the License.
 ## @workflow/serde@4.1.0
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@workflow/serde/-/serde-4.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Apache License 2.0
 
 See the LICENSE file in the root of this repository.
@@ -636,6 +648,7 @@ See the LICENSE file in the root of this repository.
 ## @workflow/serde@4.1.0-beta.2
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@workflow/serde/-/serde-4.1.0-beta.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Apache License 2.0
 
 See the LICENSE file in the root of this repository.
@@ -644,6 +657,7 @@ See the LICENSE file in the root of this repository.
 ## human-signals@8.0.1
 Rights holder: ehmicky  (https://github.com/ehmicky)
 Source: https://registry.npmjs.org/human-signals/-/human-signals-8.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -850,6 +864,7 @@ Source: https://registry.npmjs.org/human-signals/-/human-signals-8.0.1.tgz
 ## remend@1.4.0
 Rights holder: Hayden Bleasel
 Source: https://registry.npmjs.org/remend/-/remend-1.4.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2023 Vercel, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -894,6 +909,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## dotenv@17.4.2
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/dotenv/-/dotenv-17.4.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright (c) 2015, Scott Motte
 All rights reserved.
 
@@ -1121,6 +1137,7 @@ permission of its copyright owner.
 ## fast-uri@3.1.9
 Rights holder: Vincent Le Goff  (https://github.com/zekth)
 Source: https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.9.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright (c) 2011-2021, Gary Court until https://github.com/garycourt/uri-js/commit/a1acf730b4bba3f1097c9f52e7d9d3aba8cdcaae
 Copyright (c) 2021-present The Fastify team <https://github.com/fastify/fastify#team>
 All rights reserved.
@@ -1155,6 +1172,7 @@ The complete list of contributors can be found at:
 ## jpeg-js@0.4.4
 Rights holder: Eugene Ware
 Source: https://registry.npmjs.org/jpeg-js/-/jpeg-js-0.4.4.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright (c) 2014, Eugene Ware
 All rights reserved.
   
@@ -1185,6 +1203,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## json-schema@0.4.0
 Rights holder: Kris Zyp
 Source: https://registry.npmjs.org/json-schema/-/json-schema-0.4.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Dojo is available under *either* the terms of the BSD 3-Clause "New" License *or* the
 Academic Free License version 2.1. As a recipient of Dojo, you may choose which
 license to receive this code under (except as noted in per-module LICENSE
@@ -1444,6 +1463,7 @@ software or this license, under any kind of legal claim.***
 ## @isaacs/ttlcache@2.1.5
 Rights holder: Isaac Z. Schlueter  (https://izs.me)
 Source: https://registry.npmjs.org/@isaacs/ttlcache/-/ttlcache-2.1.5.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 # Blue Oak Model License
 
 Version 1.0.0
@@ -1504,6 +1524,7 @@ software or this license, under any kind of legal claim.***
 ## lru-cache@11.5.3
 Rights holder: Isaac Z. Schlueter
 Source: https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 # Blue Oak Model License
 
 Version 1.0.0
@@ -1582,6 +1603,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## fastq@1.20.3
 Rights holder: Matteo Collina
 Source: https://registry.npmjs.org/fastq/-/fastq-1.20.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright (c) 2015-2020, Matteo Collina <matteo.collina@gmail.com>
 
 Permission to use, copy, modify, and/or distribute this software for any
@@ -1600,6 +1622,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## isexe@2.0.0
 Rights holder: Isaac Z. Schlueter  (http://blog.izs.me/)
 Source: https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The ISC License
 
 Copyright (c) Isaac Z. Schlueter and Contributors
@@ -1620,6 +1643,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## json-schema-to-zod@2.8.1
 Rights holder: Stefan Terdell
 Source: https://registry.npmjs.org/json-schema-to-zod/-/json-schema-to-zod-2.8.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 ISC License
 
 Copyright (c) 2021, Stefan Terdell
@@ -1639,6 +1663,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## signal-exit@4.1.0
 Rights holder: Ben Coe
 Source: https://registry.npmjs.org/signal-exit/-/signal-exit-4.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The ISC License
 
 Copyright (c) 2015-2023 Benjamin Coe, Isaac Z. Schlueter, and Contributors
@@ -1660,6 +1685,7 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## which@2.0.2
 Rights holder: Isaac Z. Schlueter  (http://blog.izs.me)
 Source: https://registry.npmjs.org/which/-/which-2.0.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The ISC License
 
 Copyright (c) Isaac Z. Schlueter and Contributors
@@ -1680,6 +1706,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## yaml@2.9.1
 Rights holder: Eemeli Aro
 Source: https://registry.npmjs.org/yaml/-/yaml-2.9.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright Eemeli Aro <eemeli@gmail.com>
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
@@ -1694,6 +1721,17 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
+
+# LicenseRef-Mastra-Enterprise
+
+Mastra Enterprise License content is NOT approved for this distribution. These files are
+recorded as needs-human legal review; the current public @mastra/core/agent entry imports
+them, so the artifact is blocked until legal review or a different build resolves them.
+
+- node_modules/@mastra/core/dist/ee-iTj2bRDt-By_B9ngH.js
+- node_modules/@mastra/core/dist/ee-iTj2bRDt-By_B9ngH.js.map
+- node_modules/@mastra/core/dist/ee-iTj2bRDt-D3-QLGDF.cjs
+- node_modules/@mastra/core/dist/ee-iTj2bRDt-D3-QLGDF.cjs.map
 
 # MIT
 
@@ -1711,6 +1749,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## @chat-adapter/catalog@4.44.0
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@chat-adapter/catalog/-/catalog-4.44.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2026 Vercel, Inc.
@@ -1725,6 +1764,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 ## @hono/standard-validator@0.4.1
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@hono/standard-validator/-/standard-validator-0.4.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2022 - present, Yusuke Wada and Hono contributors
@@ -1751,6 +1791,7 @@ SOFTWARE.
 ## @lukeed/csprng@1.1.0
 Rights holder: Luke Edwards
 Source: https://registry.npmjs.org/@lukeed/csprng/-/csprng-1.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
@@ -1765,6 +1806,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## @lukeed/uuid@2.0.1
 Rights holder: Luke Edwards
 Source: https://registry.npmjs.org/@lukeed/uuid/-/uuid-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
@@ -1779,6 +1821,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## @posthog/core@1.64.1
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@posthog/core/-/core-1.64.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2020 Posthog / Hiberly, Inc.
 
 Copyright 2015 Mixpanel, Inc.
@@ -2201,6 +2244,7 @@ SOFTWARE.
 ## @posthog/types@1.421.1
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@posthog/types/-/types-1.421.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2020 Posthog / Hiberly, Inc.
 
 Copyright 2015 Mixpanel, Inc.
@@ -2623,6 +2667,7 @@ SOFTWARE.
 ## @sec-ant/readable-stream@0.4.1
 Rights holder: Ze-Zheng Wu
 Source: https://registry.npmjs.org/@sec-ant/readable-stream/-/readable-stream-0.4.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2022 Ze-Zheng Wu
@@ -2649,6 +2694,7 @@ SOFTWARE.
 ## @sindresorhus/merge-streams@4.0.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/@sindresorhus/merge-streams/-/merge-streams-4.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -2663,16 +2709,19 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## @standard-community/standard-json@0.3.7
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@standard-community/standard-json/-/standard-json-0.3.7.tgz
+Review: needs-human — The published package has no separate licence file; its permissive SPDX declaration needs legal review.
 No separate licence file in the published package; the SPDX identifier above applies.
 
 ## @standard-community/standard-openapi@0.2.11
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@standard-community/standard-openapi/-/standard-openapi-0.2.11.tgz
+Review: needs-human — The published package has no separate licence file; its permissive SPDX declaration needs legal review.
 No separate licence file in the published package; the SPDX identifier above applies.
 
 ## @standard-schema/spec@1.1.0
 Rights holder: Colin McDonnell
 Source: https://registry.npmjs.org/@standard-schema/spec/-/spec-1.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2024 Colin McDonnell
@@ -2698,6 +2747,7 @@ SOFTWARE.
 ## @types/debug@4.1.13
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@types/debug/-/debug-4.1.13.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
     MIT License
 
     Copyright (c) Microsoft Corporation.
@@ -2724,6 +2774,7 @@ Source: https://registry.npmjs.org/@types/debug/-/debug-4.1.13.tgz
 ## @types/json-schema@7.0.15
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@types/json-schema/-/json-schema-7.0.15.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
     MIT License
 
     Copyright (c) Microsoft Corporation.
@@ -2750,6 +2801,7 @@ Source: https://registry.npmjs.org/@types/json-schema/-/json-schema-7.0.15.tgz
 ## @types/mdast@4.0.4
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@types/mdast/-/mdast-4.0.4.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
     MIT License
 
     Copyright (c) Microsoft Corporation.
@@ -2776,6 +2828,7 @@ Source: https://registry.npmjs.org/@types/mdast/-/mdast-4.0.4.tgz
 ## @types/ms@2.1.0
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@types/ms/-/ms-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
     MIT License
 
     Copyright (c) Microsoft Corporation.
@@ -2802,6 +2855,7 @@ Source: https://registry.npmjs.org/@types/ms/-/ms-2.1.0.tgz
 ## @types/unist@3.0.3
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/@types/unist/-/unist-3.0.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
     MIT License
 
     Copyright (c) Microsoft Corporation.
@@ -2828,6 +2882,7 @@ Source: https://registry.npmjs.org/@types/unist/-/unist-3.0.3.tgz
 ## ajv@8.20.0
 Rights holder: Evgeny Poberezkin
 Source: https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2015-2021 Evgeny Poberezkin
@@ -2855,6 +2910,7 @@ SOFTWARE.
 ## bail@2.0.2
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/bail/-/bail-2.0.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -2882,6 +2938,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## ccount@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/ccount/-/ccount-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -2909,6 +2966,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## character-entities@2.0.2
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/character-entities/-/character-entities-2.0.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -2936,6 +2994,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## chat@4.44.0
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/chat/-/chat-4.44.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2026 Vercel, Inc.
@@ -2950,6 +3009,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 ## croner@10.0.1
 Rights holder: Hexagon
 Source: https://registry.npmjs.org/croner/-/croner-10.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2015-2021 Hexagon <github.com/Hexagon>
@@ -2977,6 +3037,7 @@ SOFTWARE.
 ## cross-spawn@7.0.6
 Rights holder: André Cruz
 Source: https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio>
@@ -3003,6 +3064,7 @@ THE SOFTWARE.
 ## debug@4.4.3
 Rights holder: Josh Junon (https://github.com/qix-)
 Source: https://registry.npmjs.org/debug/-/debug-4.4.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2014-2017 TJ Holowaychuk <tj@vision-media.ca>
@@ -3028,6 +3090,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## decode-named-character-reference@1.3.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/decode-named-character-reference/-/decode-named-character-reference-1.3.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3055,6 +3118,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## dequal@2.0.3
 Rights holder: Luke Edwards
 Source: https://registry.npmjs.org/dequal/-/dequal-2.0.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
@@ -3081,6 +3145,7 @@ THE SOFTWARE.
 ## devlop@1.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/devlop/-/devlop-1.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2023 Titus Wormer <tituswormer@gmail.com>
@@ -3108,6 +3173,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## escape-string-regexp@5.0.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/escape-string-regexp/-/escape-string-regexp-5.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -3122,6 +3188,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## eventsource-parser@3.1.1
 Rights holder: Espen Hovlandsdal
 Source: https://registry.npmjs.org/eventsource-parser/-/eventsource-parser-3.1.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2026 Espen Hovlandsdal <espen@hovlandsdal.com>
@@ -3148,6 +3215,7 @@ SOFTWARE.
 ## execa@9.6.1
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/execa/-/execa-9.6.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -3162,6 +3230,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## extend@3.0.2
 Rights holder: Stefan Thomas  (http://www.justmoon.net)
 Source: https://registry.npmjs.org/extend/-/extend-3.0.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2014 Stefan Thomas
@@ -3190,6 +3259,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## fast-deep-equal@3.1.3
 Rights holder: Evgeny Poberezkin
 Source: https://registry.npmjs.org/fast-deep-equal/-/fast-deep-equal-3.1.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2017 Evgeny Poberezkin
@@ -3216,6 +3286,7 @@ SOFTWARE.
 ## figures@6.1.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/figures/-/figures-6.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -3230,6 +3301,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## get-stream@9.0.1
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/get-stream/-/get-stream-9.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -3244,6 +3316,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## hono@4.13.17
 Rights holder: Yusuke Wada  (https://github.com/yusukebe)
 Source: https://registry.npmjs.org/hono/-/hono-4.13.17.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2021 - present, Yusuke Wada and Hono contributors
@@ -3270,6 +3343,7 @@ SOFTWARE.
 ## hono-openapi@1.5.0
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/hono-openapi/-/hono-openapi-1.5.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2024 Rhinobase
@@ -3296,6 +3370,7 @@ SOFTWARE.
 ## ignore@7.0.14
 Rights holder: kael
 Source: https://registry.npmjs.org/ignore/-/ignore-7.0.14.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright (c) 2013 Kael Zhang <i@kael.me>, contributors
 http://kael.me/
 
@@ -3321,6 +3396,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## is-network-error@1.3.2
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/is-network-error/-/is-network-error-1.3.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -3335,6 +3411,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## is-plain-obj@4.1.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/is-plain-obj/-/is-plain-obj-4.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -3349,6 +3426,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## is-stream@4.0.1
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/is-stream/-/is-stream-4.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -3363,6 +3441,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## is-unicode-supported@2.1.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/is-unicode-supported/-/is-unicode-supported-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -3377,6 +3456,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## jose@6.2.15
 Rights holder: Filip Skokan
 Source: https://registry.npmjs.org/jose/-/jose-6.2.15.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2018 Filip Skokan
@@ -3403,6 +3483,7 @@ SOFTWARE.
 ## json-schema-traverse@1.0.0
 Rights holder: Evgeny Poberezkin
 Source: https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-1.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2017 Evgeny Poberezkin
@@ -3429,6 +3510,7 @@ SOFTWARE.
 ## longest-streak@3.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/longest-streak/-/longest-streak-3.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <mailto:tituswormer@gmail.com>
@@ -3456,6 +3538,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## markdown-table@3.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/markdown-table/-/markdown-table-3.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3483,6 +3566,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-find-and-replace@3.0.4
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-find-and-replace/-/mdast-util-find-and-replace-3.0.4.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3510,6 +3594,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-from-markdown@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-from-markdown/-/mdast-util-from-markdown-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3537,6 +3622,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-gfm@3.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-gfm/-/mdast-util-gfm-3.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3564,6 +3650,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-gfm-autolink-literal@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-gfm-autolink-literal/-/mdast-util-gfm-autolink-literal-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3591,6 +3678,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-gfm-footnote@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-gfm-footnote/-/mdast-util-gfm-footnote-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3618,6 +3706,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-gfm-strikethrough@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-gfm-strikethrough/-/mdast-util-gfm-strikethrough-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3645,6 +3734,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-gfm-table@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-gfm-table/-/mdast-util-gfm-table-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3672,6 +3762,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-gfm-task-list-item@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-gfm-task-list-item/-/mdast-util-gfm-task-list-item-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3699,6 +3790,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-phrasing@4.1.0
 Rights holder: Victor Felder  (https://draft.li)
 Source: https://registry.npmjs.org/mdast-util-phrasing/-/mdast-util-phrasing-4.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2017 Titus Wormer <tituswormer@gmail.com>
@@ -3727,6 +3819,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-to-markdown@2.2.3
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-to-markdown/-/mdast-util-to-markdown-2.2.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3754,6 +3847,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## mdast-util-to-string@4.0.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/mdast-util-to-string/-/mdast-util-to-string-4.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -3781,6 +3875,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark@4.0.3
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark/-/micromark-4.0.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3808,6 +3903,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-core-commonmark@2.0.4
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-core-commonmark/-/micromark-core-commonmark-2.0.4.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3835,6 +3931,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-extension-gfm@3.0.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-extension-gfm/-/micromark-extension-gfm-3.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2020 Titus Wormer <tituswormer@gmail.com>
@@ -3862,6 +3959,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-extension-gfm-autolink-literal@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-extension-gfm-autolink-literal/-/micromark-extension-gfm-autolink-literal-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2020 Titus Wormer <tituswormer@gmail.com>
@@ -3889,6 +3987,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-extension-gfm-footnote@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-extension-gfm-footnote/-/micromark-extension-gfm-footnote-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2021 Titus Wormer <tituswormer@gmail.com>
@@ -3916,6 +4015,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-extension-gfm-strikethrough@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-extension-gfm-strikethrough/-/micromark-extension-gfm-strikethrough-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2020 Titus Wormer <tituswormer@gmail.com>
@@ -3943,6 +4043,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-extension-gfm-table@2.1.2
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-extension-gfm-table/-/micromark-extension-gfm-table-2.1.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -3970,6 +4071,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-extension-gfm-tagfilter@2.0.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-extension-gfm-tagfilter/-/micromark-extension-gfm-tagfilter-2.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2020 Titus Wormer <tituswormer@gmail.com>
@@ -3997,6 +4099,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-extension-gfm-task-list-item@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-extension-gfm-task-list-item/-/micromark-extension-gfm-task-list-item-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2020 Titus Wormer <tituswormer@gmail.com>
@@ -4024,6 +4127,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-factory-destination@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-factory-destination/-/micromark-factory-destination-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4051,6 +4155,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-factory-label@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-factory-label/-/micromark-factory-label-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4078,6 +4183,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-factory-space@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-factory-space/-/micromark-factory-space-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4105,6 +4211,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-factory-title@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-factory-title/-/micromark-factory-title-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4132,6 +4239,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-factory-whitespace@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-factory-whitespace/-/micromark-factory-whitespace-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4159,6 +4267,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-character@2.1.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-character/-/micromark-util-character-2.1.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4186,6 +4295,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-chunked@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-chunked/-/micromark-util-chunked-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4213,6 +4323,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-classify-character@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-classify-character/-/micromark-util-classify-character-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4240,6 +4351,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-combine-extensions@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-combine-extensions/-/micromark-util-combine-extensions-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4267,6 +4379,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-decode-numeric-character-reference@2.0.2
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-decode-numeric-character-reference/-/micromark-util-decode-numeric-character-reference-2.0.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4294,6 +4407,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-decode-string@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-decode-string/-/micromark-util-decode-string-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4321,6 +4435,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-edit-map@1.0.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-edit-map/-/micromark-util-edit-map-1.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4348,6 +4463,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-encode@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-encode/-/micromark-util-encode-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4375,6 +4491,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-html-tag-name@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-html-tag-name/-/micromark-util-html-tag-name-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4402,6 +4519,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-normalize-identifier@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-normalize-identifier/-/micromark-util-normalize-identifier-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4429,6 +4547,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-resolve-all@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-resolve-all/-/micromark-util-resolve-all-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4456,6 +4575,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-sanitize-uri@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-sanitize-uri/-/micromark-util-sanitize-uri-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4483,6 +4603,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-subtokenize@2.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-subtokenize/-/micromark-util-subtokenize-2.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4510,6 +4631,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-symbol@2.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-symbol/-/micromark-util-symbol-2.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4537,6 +4659,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## micromark-util-types@2.0.3
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/micromark-util-types/-/micromark-util-types-2.0.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -4564,6 +4687,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## ms@2.1.3
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/ms/-/ms-2.1.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2020 Vercel, Inc.
@@ -4590,6 +4714,7 @@ SOFTWARE.
 ## npm-run-path@6.0.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/npm-run-path/-/npm-run-path-6.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -4604,6 +4729,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## openapi-types@12.1.3
 Rights holder: Joseph Spencer
 Source: https://registry.npmjs.org/openapi-types/-/openapi-types-12.1.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2018 Kogo Softare LLC
@@ -4630,6 +4756,7 @@ THE SOFTWARE.
 ## p-map@7.1.1
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/p-map/-/p-map-7.1.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -4644,6 +4771,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## p-retry@7.1.1
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/p-retry/-/p-retry-7.1.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -4658,6 +4786,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## parse-ms@4.0.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/parse-ms/-/parse-ms-4.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -4672,6 +4801,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## path-key@3.1.1
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/path-key/-/path-key-3.1.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
@@ -4686,6 +4816,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## path-key@4.0.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/path-key/-/path-key-4.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -4700,6 +4831,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## picomatch@4.0.7
 Rights holder: Jon Schlinkert (https://github.com/jonschlinkert)
 Source: https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2017-present, Jon Schlinkert.
@@ -4726,6 +4858,7 @@ THE SOFTWARE.
 ## posthog-node@5.63.1
 Rights holder: PostHog
 Source: https://registry.npmjs.org/posthog-node/-/posthog-node-5.63.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright 2020 Posthog / Hiberly, Inc.
 
 Copyright 2015 Mixpanel, Inc.
@@ -5148,6 +5281,7 @@ SOFTWARE.
 ## pretty-ms@9.3.1
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/pretty-ms/-/pretty-ms-9.3.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -5162,6 +5296,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## quansync@0.2.11
 Rights holder: Anthony Fu
 Source: https://registry.npmjs.org/quansync/-/quansync-0.2.11.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2025-PRESENT Anthony Fu <https://github.com/antfu> and Kevin Deng <https://github.com/sxzz>
@@ -5188,6 +5323,7 @@ SOFTWARE.
 ## re2js@2.9.1
 Rights holder: Oleksii Vasyliev
 Source: https://registry.npmjs.org/re2js/-/re2js-2.9.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2023 Oleksii Vasyliev
@@ -5214,6 +5350,7 @@ SOFTWARE.
 ## remark-gfm@4.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/remark-gfm/-/remark-gfm-4.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -5241,6 +5378,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## remark-parse@11.0.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/remark-parse/-/remark-parse-11.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2014 Titus Wormer <tituswormer@gmail.com>
@@ -5267,6 +5405,7 @@ THE SOFTWARE.
 ## remark-stringify@11.0.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/remark-stringify/-/remark-stringify-11.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2014 Titus Wormer <tituswormer@gmail.com>
@@ -5293,6 +5432,7 @@ THE SOFTWARE.
 ## require-from-string@2.0.2
 Rights holder: Vsevolod Strukchinsky
 Source: https://registry.npmjs.org/require-from-string/-/require-from-string-2.0.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) Vsevolod Strukchinsky <floatdrop@gmail.com> (github.com/floatdrop)
@@ -5319,6 +5459,7 @@ THE SOFTWARE.
 ## reusify@1.1.0
 Rights holder: Matteo Collina
 Source: https://registry.npmjs.org/reusify/-/reusify-1.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2015-2024 Matteo Collina
@@ -5346,6 +5487,7 @@ SOFTWARE.
 ## shebang-command@2.0.0
 Rights holder: Kevin Mårtensson
 Source: https://registry.npmjs.org/shebang-command/-/shebang-command-2.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Kevin Mårtensson <kevinmartensson@gmail.com> (github.com/kevva)
@@ -5360,6 +5502,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## shebang-regex@3.0.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/shebang-regex/-/shebang-regex-3.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
@@ -5374,6 +5517,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## strip-final-newline@4.0.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/strip-final-newline/-/strip-final-newline-4.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -5388,6 +5532,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## trough@2.2.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/trough/-/trough-2.2.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
@@ -5414,6 +5559,7 @@ THE SOFTWARE.
 ## undici@6.29.1
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/undici/-/undici-6.29.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Matteo Collina and Undici contributors
@@ -5440,6 +5586,7 @@ SOFTWARE.
 ## undici@7.30.2
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/undici/-/undici-7.30.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Matteo Collina and Undici contributors
@@ -5466,6 +5613,7 @@ SOFTWARE.
 ## unicorn-magic@0.3.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/unicorn-magic/-/unicorn-magic-0.3.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -5480,6 +5628,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## unified@11.0.5
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/unified/-/unified-11.0.5.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -5506,6 +5655,7 @@ THE SOFTWARE.
 ## unist-util-is@6.0.1
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/unist-util-is/-/unist-util-is-6.0.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT license)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -5533,6 +5683,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## unist-util-stringify-position@4.0.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/unist-util-stringify-position/-/unist-util-stringify-position-4.0.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
@@ -5560,6 +5711,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## unist-util-visit@5.2.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/unist-util-visit/-/unist-util-visit-5.2.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -5587,6 +5739,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## unist-util-visit-parents@6.1.0
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/unist-util-visit-parents/-/unist-util-visit-parents-6.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -5614,6 +5767,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## uuid@11.1.1
 Rights holder: unstated in package.json
 Source: https://registry.npmjs.org/uuid/-/uuid-11.1.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2010-2020 Robert Kieffer and other contributors
@@ -5628,6 +5782,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## vfile@6.0.3
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/vfile/-/vfile-6.0.3.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -5654,6 +5809,7 @@ THE SOFTWARE.
 ## vfile-message@4.0.4
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/vfile-message/-/vfile-message-4.0.4.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -5681,6 +5837,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## ws@8.22.1
 Rights holder: Einar Otto Stangvik  (http://2x.io)
 Source: https://registry.npmjs.org/ws/-/ws-8.22.1.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
 Copyright (c) 2013 Arnout Kazemier and contributors
 Copyright (c) 2016 Luigi Pinca and contributors
@@ -5706,6 +5863,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## xxhash-wasm@1.1.0
 Rights holder: Michael Jungo
 Source: https://registry.npmjs.org/xxhash-wasm/-/xxhash-wasm-1.1.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 =====================
 
@@ -5736,6 +5894,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 ## yoctocolors@2.2.0
 Rights holder: Sindre Sorhus
 Source: https://registry.npmjs.org/yoctocolors/-/yoctocolors-2.2.0.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
@@ -5750,6 +5909,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## zod@4.6.7
 Rights holder: Colin McDonnell
 Source: https://registry.npmjs.org/zod/-/zod-4.6.7.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 MIT License
 
 Copyright (c) 2025 Colin McDonnell
@@ -5776,6 +5936,7 @@ SOFTWARE.
 ## zod-from-json-schema@0.5.2
 Rights holder: Mark Probst
 Source: https://registry.npmjs.org/zod-from-json-schema/-/zod-from-json-schema-0.5.2.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 The MIT License (MIT)
 
 Copyright (c) 2025 Mark Probst
@@ -5802,6 +5963,7 @@ THE SOFTWARE.
 ## zwitch@2.0.4
 Rights holder: Titus Wormer  (https://wooorm.com)
 Source: https://registry.npmjs.org/zwitch/-/zwitch-2.0.4.tgz
+Review: verified — SPDX expression declared by the package; its licence file is retained in LICENSES.txt.
 (The MIT License)
 
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>

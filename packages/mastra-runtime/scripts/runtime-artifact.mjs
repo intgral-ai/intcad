@@ -275,14 +275,29 @@ function buildDependencyData() {
       lockIntegrity: lockPackage.integrity,
       dependencyIds: pkg.childIds,
     });
+    const licenceText = licenseFileText(pkg.paths[0], manifest);
     licenses.push({
       id: `lic-${sanitize(`${pkg.name}-${pkg.version}`)}`,
       expression,
       rightsHolder: rightsHolder(manifest, pkg.name),
+      verdict: licenceText ? "verified" : "needs-human",
+      reason: licenceText
+        ? "SPDX expression declared by the package; its licence file is retained in LICENSES.txt."
+        : "The published package has no separate licence file; its permissive SPDX declaration needs legal review.",
       licenseFiles: [],
       noticeFiles: [],
     });
   }
+  licenses.push({
+    id: "lic-mastra-enterprise",
+    expression: "LicenseRef-Mastra-Enterprise",
+    rightsHolder: "Mastra AI and contributors",
+    verdict: "needs-human",
+    reason: "Mastra Enterprise License header and src/ee/index.ts source-map provenance; the contract excludes enterprise modules and no distribution approval exists.",
+    licenseFiles: [],
+    noticeFiles: [],
+  });
+  licenses.sort((left, right) => byString(left.id, right.id));
   return { dependencies, licenses, rootDependencyIds, packages };
 }
 
@@ -294,7 +309,14 @@ function artifactPlan(dependencyData) {
       for (const absolute of listPackageFiles(join(repoRoot, path))) {
         const output = relative(repoRoot, absolute).split(sep).join("/");
         if (eeComponent(output)) continue;
-        plan.push({ source: absolute, output, kind: "dependency", originId: pkg.id, licenseId: `lic-${sanitize(`${pkg.name}-${pkg.version}`)}` });
+        const enterprise = pkg.name === "@mastra/core" && /\/ee-[^/]+$/u.test(output);
+        plan.push({
+          source: absolute,
+          output,
+          kind: "dependency",
+          originId: pkg.id,
+          licenseId: enterprise ? "lic-mastra-enterprise" : `lic-${sanitize(`${pkg.name}-${pkg.version}`)}`,
+        });
       }
     }
   }
@@ -319,6 +341,19 @@ function artifactPlan(dependencyData) {
   return plan;
 }
 
+function enterpriseFilePaths(dependencyData) {
+  const mastra = [...dependencyData.packages.values()].find((pkg) => pkg.name === "@mastra/core");
+  if (!mastra) return [];
+  const paths = [];
+  for (const path of mastra.paths) {
+    for (const absolute of listPackageFiles(join(repoRoot, path))) {
+      const output = relative(repoRoot, absolute).split(sep).join("/");
+      if (/\/ee-[^/]+$/u.test(output)) paths.push(output);
+    }
+  }
+  return paths.sort(byString);
+}
+
 function renderNotices(dependencyData) {
   const licenseTexts = new Map();
   for (const pkg of dependencyData.packages.values()) {
@@ -336,6 +371,17 @@ function renderNotices(dependencyData) {
   for (const expression of expressions) {
     chunks.push(`# ${expression}`);
     chunks.push("");
+    if (expression === "LicenseRef-Mastra-Enterprise") {
+      chunks.push("Mastra Enterprise License content is NOT approved for this distribution. These files are");
+      chunks.push("recorded as needs-human legal review; the current public @mastra/core/agent entry imports");
+      chunks.push("them, so the artifact is blocked until legal review or a different build resolves them.");
+      chunks.push("");
+      for (const path of enterpriseFilePaths(dependencyData)) {
+        chunks.push(`- ${path}`);
+      }
+      chunks.push("");
+      continue;
+    }
     const sample = [...dependencyData.packages.values()].find((pkg) => licenseOf(pkg)?.expression === expression);
     if (sample) {
       const text = licenseTexts.get(sample.id);
@@ -351,6 +397,7 @@ function renderNotices(dependencyData) {
       chunks.push(`## ${pkg.name}@${pkg.version}`);
       chunks.push(`Rights holder: ${license.rightsHolder}`);
       chunks.push(`Source: ${dependencyData.dependencies.find((dep) => dep.id === pkg.id)?.sourceUrl ?? "unstated"}`);
+      chunks.push(`Review: ${license.verdict} — ${license.reason}`);
       chunks.push(text ? text.toString("utf8") : "No separate licence file in the published package; the SPDX identifier above applies.");
       chunks.push("");
     }
@@ -371,7 +418,7 @@ function renderNotices(dependencyData) {
   const notice = [];
   notice.push("SolidCraft Mastra runtime — third-party notices");
   notice.push(`Target: ${TARGET}; Node 22.23.4; npm 11.19.0; runtime ${RUNTIME_VERSION}.`);
-  notice.push("The artifact contains no path component named `ee`. `@mastra/core`'s published public entry imports `dist/ee-*.js`, which is outside the LICENSE.md `ee/` directory exclusion; no file under an `ee/` directory is shipped. This is a reviewed distribution note, not a legal sign-off.");
+  notice.push("The artifact contains no path component named `ee`. However, the shipped `@mastra/core/dist/ee-*.js`/`.cjs`/`.map` files carry Mastra Enterprise License headers and `src/ee/index.ts` source-map provenance. They are NOT approved for distribution, are recorded as needs-human legal review, and the current public `@mastra/core/agent` entry imports them. The artifact is blocked; #14 must not bundle it until legal review or a different build resolves this.");
   notice.push("");
   notice.push("| Package | Version | Licence | Rights holder | Source |");
   notice.push("|---|---|---|---|---|");
@@ -382,6 +429,9 @@ function renderNotices(dependencyData) {
   notice.push(`| \`node\` | 22.23.4 | MIT | OpenJS Foundation and Node.js contributors | ${NODE_SOURCE_URL} |`);
   notice.push(`| \`@intgral-ai/solidcraft-mastra-runtime\` | ${RUNTIME_VERSION} | MIT OR Apache-2.0 | SolidCraft contributors | https://github.com/intgral-ai/open-skyfall-desktop |`);
   notice.push(`| \`typescript\` | 5.9.3 | Apache-2.0 | Microsoft and contributors | build tool only, not shipped |`);
+  notice.push("");
+  notice.push("Enterprise-license files requiring legal review:");
+  for (const path of enterpriseFilePaths(dependencyData)) notice.push(`- \`${path}\``);
   return { licenses, notice: Buffer.from(`${notice.join("\n")}\n`) };
 }
 
@@ -480,9 +530,9 @@ function build() {
   const fileRef = (path, digestValue) => ({ path, digest: digestValue });
   const licenses = [
     ...dependencyData.licenses.map((license) => ({ ...license, licenseFiles: [fileRef("licenses/LICENSES.txt", licenseFileDigest)], noticeFiles: [fileRef("notices/NOTICE.txt", noticeFileDigest)] })),
-    { id: RUNTIME_LICENSE_ID, expression: RUNTIME_LICENSE, rightsHolder: "SolidCraft contributors", licenseFiles: [fileRef("licenses/LICENSES.txt", licenseFileDigest)], noticeFiles: [fileRef("notices/NOTICE.txt", noticeFileDigest)] },
-    { id: NODE_LICENSE_ID, expression: "MIT", rightsHolder: "OpenJS Foundation and Node.js contributors", licenseFiles: [fileRef("licenses/LICENSES.txt", licenseFileDigest)], noticeFiles: [fileRef("notices/NOTICE.txt", noticeFileDigest)] },
-    { id: TYPESCRIPT_LICENSE_ID, expression: "Apache-2.0", rightsHolder: "Microsoft and contributors", licenseFiles: [fileRef("licenses/LICENSES.txt", licenseFileDigest)], noticeFiles: [fileRef("notices/NOTICE.txt", noticeFileDigest)] },
+    { id: RUNTIME_LICENSE_ID, expression: RUNTIME_LICENSE, rightsHolder: "SolidCraft contributors", verdict: "verified", reason: "Original SolidCraft runtime code under the project dual licence.", licenseFiles: [fileRef("licenses/LICENSES.txt", licenseFileDigest)], noticeFiles: [fileRef("notices/NOTICE.txt", noticeFileDigest)] },
+    { id: NODE_LICENSE_ID, expression: "MIT", rightsHolder: "OpenJS Foundation and Node.js contributors", verdict: "verified", reason: "Official Node.js linux-x64 distribution under its MIT licence.", licenseFiles: [fileRef("licenses/LICENSES.txt", licenseFileDigest)], noticeFiles: [fileRef("notices/NOTICE.txt", noticeFileDigest)] },
+    { id: TYPESCRIPT_LICENSE_ID, expression: "Apache-2.0", rightsHolder: "Microsoft and contributors", verdict: "verified", reason: "TypeScript build tool, not shipped, under Apache-2.0.", licenseFiles: [fileRef("licenses/LICENSES.txt", licenseFileDigest)], noticeFiles: [fileRef("notices/NOTICE.txt", noticeFileDigest)] },
   ].sort((left, right) => byString(left.id, right.id));
 
   // Tool input for the TypeScript compiler.
@@ -536,7 +586,7 @@ function build() {
   if (!check) writeFileSync(inventoryPath, inventoryBytes);
 
   const policy = readJson(policyPath);
-  policy.approvals = [{ id: APPROVAL_ID, target: TARGET, inventoryDigest: digest(inventoryBytes) }];
+  policy.approvals = [];
   if (!check) writeJson(policyPath, policy);
   const policyBytes = readFileSync(policyPath);
   const runtime = {
@@ -556,6 +606,10 @@ function build() {
   return { inventory, inventoryBytes, runtime, outputs, inputs, dependencies: dependencyData.dependencies };
 }
 
+function enterpriseContent(bytes) {
+  return ["Mastra Enterprise License", "@license Mastra Enterprise License", "src/ee/"].some((marker) => bytes.includes(Buffer.from(marker)));
+}
+
 function compare() {
   require(existsSync(inventoryPath), "packaging/mastra/inventory.json is missing; run --generate");
   const committed = readJson(inventoryPath);
@@ -573,10 +627,35 @@ function compare() {
     throw new Error("inventory drift: rebuild does not match packaging/mastra/inventory.json");
   }
   const policy = readJson(policyPath);
-  const approval = policy.approvals?.find((item) => item.id === APPROVAL_ID);
-  require(approval && approval.inventoryDigest === digest(readFileSync(inventoryPath)), "policy approval does not bind packaging/mastra/inventory.json");
   const ee = listFiles(artifactDir).map((path) => relative(artifactDir, path).split(sep).join("/")).filter(eeComponent);
   require(ee.length === 0, `artifact still contains ee paths: ${ee.slice(0, 5).join(", ")}`);
+  const enterpriseFiles = listFiles(artifactDir)
+    .map((path) => relative(artifactDir, path).split(sep).join("/"))
+    .filter((path) => path.startsWith("node_modules/@mastra/core/") && [".js", ".cjs", ".mjs", ".map"].some((extension) => path.endsWith(extension)))
+    .filter((path) => enterpriseContent(readFileSync(join(artifactDir, path))));
+  const unapprovedLicenses = committed.licenses.filter((license) => license.verdict !== "verified").map((license) => license.id);
+  const approvals = policy.approvals ?? [];
+  const blockers = [];
+  if (approvals.length > 0) blockers.push("policy.approvals is not empty; an artifact approval must not be claimed");
+  if (unapprovedLicenses.length > 0) blockers.push(`licences need legal review: ${unapprovedLicenses.join(", ")}`);
+  if (enterpriseFiles.length > 0) blockers.push(`enterprise-license content: ${enterpriseFiles.join(", ")}`);
+  if (blockers.length > 0) {
+    console.log(JSON.stringify({
+      mode: "check",
+      status: "unapproved",
+      target: TARGET,
+      dependencyCount: built.dependencies.length,
+      outputCount: built.outputs.length,
+      inputCount: built.inputs.length,
+      inventoryDigest: digest(readFileSync(inventoryPath)),
+      artifactFiles: built.outputs.length + 2,
+      artifactBytes: built.outputs.reduce((total, output) => total + output.sizeBytes, 0) + readFileSync(join(artifactDir, "inventory.json")).length + readFileSync(join(artifactDir, "runtime.json")).length,
+      eePaths: 0,
+      blockers,
+    }));
+    process.exitCode = 1;
+    return;
+  }
   console.log(JSON.stringify({
     mode: "check",
     status: "verified",

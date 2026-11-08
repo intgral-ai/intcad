@@ -1,6 +1,6 @@
 SolidCraft Mastra runtime — third-party notices
 Target: x86_64-unknown-linux-gnu; Node 22.23.4; npm 11.19.0; runtime 0.1.0.
-The artifact contains no path component named `ee`. `@mastra/core`'s published public entry imports `dist/ee-*.js`, which is outside the LICENSE.md `ee/` directory exclusion; no file under an `ee/` directory is shipped. This is a reviewed distribution note, not a legal sign-off.
+The artifact contains no path component named `ee`. However, the shipped `@mastra/core/dist/ee-*.js`/`.cjs`/`.map` files carry Mastra Enterprise License headers and `src/ee/index.ts` source-map provenance. They are NOT approved for distribution, are recorded as needs-human legal review, and the current public `@mastra/core/agent` entry imports them. The artifact is blocked; #14 must not bundle it until legal review or a different build resolves this.
 
 | Package | Version | Licence | Rights holder | Source |
 |---|---|---|---|---|
@@ -158,3 +158,9 @@ The artifact contains no path component named `ee`. `@mastra/core`'s published p
 | `node` | 22.23.4 | MIT | OpenJS Foundation and Node.js contributors | https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz |
 | `@intgral-ai/solidcraft-mastra-runtime` | 0.1.0 | MIT OR Apache-2.0 | SolidCraft contributors | https://github.com/intgral-ai/open-skyfall-desktop |
 | `typescript` | 5.9.3 | Apache-2.0 | Microsoft and contributors | build tool only, not shipped |
+
+Enterprise-license files requiring legal review:
+- `node_modules/@mastra/core/dist/ee-iTj2bRDt-By_B9ngH.js`
+- `node_modules/@mastra/core/dist/ee-iTj2bRDt-By_B9ngH.js.map`
+- `node_modules/@mastra/core/dist/ee-iTj2bRDt-D3-QLGDF.cjs`
+- `node_modules/@mastra/core/dist/ee-iTj2bRDt-D3-QLGDF.cjs.map`

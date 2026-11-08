@@ -68,20 +68,24 @@ after `npm ci`. The reviewed closure is now
 151 production packages, exact versions, resolved URLs, lockfile integrity and
 tarball SHA-256, with a file/digest entry for every shipped file.
 
-## Reviewed artifact
+## Reproducible artifact evidence, not an approval
 
 `npm run check:deps` also runs
 `packages/mastra-runtime/scripts/runtime-artifact.mjs --check`. It rebuilds the
 Linux x64 artifact from `dist/src`, the production `node_modules` closure, the
-protocol bundle and the pinned Node binary, then compares every digest with the
-reviewed inventory and rejects any `ee/` path. See
-[`docs/mastra-runtime-artifact.md`](../../docs/mastra-runtime-artifact.md) for the
-recorded digests, counts and the exact artifact-admission command.
+protocol bundle and the pinned Node binary, compares every digest with the
+inventory, and checks for enterprise-license content. It currently reports
+`unapproved`, not `verified`. See
+[`docs/mastra-runtime-artifact.md`](../../docs/mastra-runtime-artifact.md).
 
-The artifact excludes every path component named `ee`. `@mastra/core` also
-publishes `dist/ee-*.js` outside its `LICENSE.md` `ee/` directory exclusion; the
-public agent entry imports those files, so they are retained and explicitly
-recorded in `packaging/mastra/NOTICE.txt`. That note is not legal sign-off.
+The artifact has no path component named `ee`, but four required
+`@mastra/core/dist/ee-*.js`/`.cjs`/`.map` files carry Mastra Enterprise License
+headers and `src/ee/index.ts` source-map provenance. The public
+`@mastra/core/agent` entry imports them, so they cannot simply be pruned. They are
+recorded as needs-human enterprise content in the inventory and notices. The
+artifact is **blocked on legal review**; #14 must not bundle it until that is
+resolved, either by a different Mastra build/entry that excludes the files or by
+an explicit reviewed decision. This is not legal sign-off.
 
 ## Verification
 

@@ -20,11 +20,5 @@
   "forbiddenPathComponents": [
     "ee"
   ],
-  "approvals": [
-    {
-      "id": "mastra-runtime-linux-x64-v1",
-      "target": "x86_64-unknown-linux-gnu",
-      "inventoryDigest": "sha256:583b1e52fd20361a0ec7104287c98209d2410ef05a99f33df5dd2f02576d537e"
-    }
-  ]
+  "approvals": []
 }
