@@ -3,8 +3,10 @@
 **Status: reproducible evidence only — the artifact is NOT approved.** Four
 required `@mastra/core` files carry Mastra Enterprise License headers and
 `src/ee/index.ts` source-map provenance, so the contract's enterprise exclusion is
-blocked on legal review. `policy.approvals` is empty and `check:deps` reports
-`unapproved`. No Vector Studio source was imported and no legal sign-off is
+blocked on legal review. `policy.approvals` is empty. `check:deps` is evidence mode: it verifies the
+reproducible inventory and reports `unapproved` with exit 0. Packaging/release
+must use `check:artifact-approval` (or `runtime-artifact --mode artifact`), which
+fails closed. No Vector Studio source was imported and no legal sign-off is
 claimed.
 
 ## Recorded values
@@ -22,9 +24,9 @@ claimed.
 | Production dependencies | **151** |
 | License evidence entries | **155** (151 packages + runtime + Node + TypeScript build tool + enterprise-content review) |
 | Artifact files | **11,620** = 11,618 outputs + `inventory.json` + `runtime.json` |
-| Artifact bytes | **291,562,109** |
+| Artifact bytes | **291,562,487** |
 | Inventory bytes | **12,470,929** |
-| Inventory digest | `sha256:24e5bf24956bd03e7f0006e092f68511a3194345d021350f8d4901a1fe8d28be` |
+| Inventory digest | `sha256:e2523bd5a7ceb557c43f9e459cc538cd58656d4c629cc743df29a6cccceb0b0e` |
 | `policy.approvals` | `[]` — unapproved |
 | Policy digest | `sha256:cc65d32fec291b31f2079beeaac877ca9208cf97051693962b008eb02ab32fb3` |
 | `LICENSES.txt` | `sha256:0b8b47113c30f9b3235519314bbae9e2bbf9559d530e5276149e71c5c318beba` |
@@ -82,8 +84,18 @@ SOLIDCRAFT_NODE_BIN=path/to/official/node npm run check:deps -w @intgral-ai/soli
 
 `check:deps` rebuilds the artifact under `target/mastra-runtime-artifact` and the
 input tree under `target/mastra-runtime-inputs`, compares every digest with
-`packaging/mastra/inventory.json`, and **exits non-zero with `status:
-"unapproved"`** while the enterprise content/legal review is open.
+`packaging/mastra/inventory.json`, and exits **0** with `status: "unapproved"`
+while it is reproducible and the enterprise/missing-licence content is recorded
+as `needs-human`. It exits non-zero on drift, an unrecorded dependency, a checksum
+mismatch, an unexpected `ee/` path, or enterprise content not recorded as
+needs-human.
+
+`check:artifact-approval` is the release/packaging mode:
+
+```sh
+SOLIDCRAFT_NODE_BIN=path/to/official/node npm run check:artifact-approval -w @intgral-ai/solidcraft-mastra-runtime
+# -> status "unapproved", exit 1 until legal review and a real approval exist
+```
 
 Artifact admission is expected to fail closed:
 

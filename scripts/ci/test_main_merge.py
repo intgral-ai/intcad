@@ -133,6 +133,7 @@ class ForkExecution(unittest.TestCase):
             ["npm", "run", "build", "-w", package],
             ["npm", "run", "verify:schema", "-w", package],
             ["npm", "run", "check:deps", "-w", package],
+            ["npm", "run", "test:artifact-gate", "-w", package],
         ])
         self.assertEqual(contract[2], expected)
         self.assertEqual(contract[3:], [

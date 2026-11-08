@@ -57,6 +57,8 @@ const inputsDir = resolve(flag("--inputs") ?? join(repoRoot, "target/mastra-runt
 const nodeBinary = resolve(flag("--node-bin") ?? process.env["SOLIDCRAFT_NODE_BIN"] ?? process.execPath);
 const revision = flag("--revision") ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
 const archiveDigestsPath = flag("--archive-digests");
+const committedInventoryPath = resolve(flag("--inventory") ?? inventoryPath);
+const requireApproved = has("--require-approved");
 
 const failures = [];
 const fail = (message) => {
@@ -249,7 +251,7 @@ function buildDependencyData() {
   const { packages, rootDependencyIds } = productionTree();
   const archiveDigests = archiveDigestsPath && existsSync(archiveDigestsPath) ? readJson(archiveDigestsPath) : {};
   const archiveByResolved = new Map(Object.values(archiveDigests).map((entry) => [`${entry.resolved}|${entry.integrity}`, entry.sha256]));
-  const committed = existsSync(inventoryPath) ? readJson(inventoryPath) : undefined;
+  const committed = existsSync(committedInventoryPath) ? readJson(committedInventoryPath) : undefined;
   const committedDigests = new Map((committed?.dependencies ?? []).map((dep) => [`${dep.name}@${dep.version}`, dep.archiveDigest]));
   const dependencies = [];
   const licenses = [];
@@ -551,8 +553,8 @@ function build() {
   addInput({ id: "tool-typescript", source: typescriptManifest, materializedPath: "tools/typescript.json", originKind: "tool", originId: "typescript", originalPath: "tools/typescript.json", licenseId: TYPESCRIPT_LICENSE_ID });
 
   const typescriptArchive = archiveDigestsPath ? readJson(archiveDigestsPath)["typescript@5.9.3"]?.sha256 : undefined;
-  const committedBuildTool = existsSync(inventoryPath)
-    ? readJson(inventoryPath).buildTools?.find((tool) => tool.id === "typescript")?.archiveDigest
+  const committedBuildTool = existsSync(committedInventoryPath)
+    ? readJson(committedInventoryPath).buildTools?.find((tool) => tool.id === "typescript")?.archiveDigest
     : undefined;
   const typescriptDigestValue = typescriptArchive ? `sha256:${String(typescriptArchive).replace(/^sha256:/u, "")}` : committedBuildTool;
   require(typeof typescriptDigestValue === "string" && /^sha256:[0-9a-f]{64}$/u.test(typescriptDigestValue), "typescript archive digest is unavailable; pass --archive-digests");
@@ -621,8 +623,8 @@ function enterpriseContent(bytes) {
 }
 
 function compare() {
-  require(existsSync(inventoryPath), "packaging/mastra/inventory.json is missing; run --generate");
-  const committed = readJson(inventoryPath);
+  require(existsSync(committedInventoryPath), "packaging/mastra/inventory.json is missing; run --generate");
+  const committed = readJson(committedInventoryPath);
   const built = build();
   const generated = JSON.parse(built.inventoryBytes.toString("utf8"));
   const committedText = JSON.stringify(committed);
@@ -639,45 +641,58 @@ function compare() {
   const policy = readJson(policyPath);
   const ee = listFiles(artifactDir).map((path) => relative(artifactDir, path).split(sep).join("/")).filter(eeComponent);
   require(ee.length === 0, `artifact still contains ee paths: ${ee.slice(0, 5).join(", ")}`);
+  const outputs = new Map(committed.outputs.map((output) => [output.path, output]));
   const enterpriseFiles = listFiles(artifactDir)
     .map((path) => relative(artifactDir, path).split(sep).join("/"))
     .filter((path) => path.startsWith("node_modules/@mastra/core/") && [".js", ".cjs", ".mjs", ".map"].some((extension) => path.endsWith(extension)))
     .filter((path) => enterpriseContent(readFileSync(join(artifactDir, path))));
-  const unapprovedLicenses = committed.licenses.filter((license) => license.verdict !== "verified").map((license) => license.id);
-  const approvals = policy.approvals ?? [];
-  const blockers = [];
-  if (approvals.length > 0) blockers.push("policy.approvals is not empty; an artifact approval must not be claimed");
-  if (unapprovedLicenses.length > 0) blockers.push(`licences need legal review: ${unapprovedLicenses.join(", ")}`);
-  if (enterpriseFiles.length > 0) blockers.push(`enterprise-license content: ${enterpriseFiles.join(", ")}`);
-  if (blockers.length > 0) {
-    console.log(JSON.stringify({
-      mode: "check",
-      status: "unapproved",
-      target: TARGET,
-      dependencyCount: built.dependencies.length,
-      outputCount: built.outputs.length,
-      inputCount: built.inputs.length,
-      inventoryDigest: digest(readFileSync(inventoryPath)),
-      artifactFiles: built.outputs.length + 2,
-      artifactBytes: built.outputs.reduce((total, output) => total + output.sizeBytes, 0) + readFileSync(join(artifactDir, "inventory.json")).length + readFileSync(join(artifactDir, "runtime.json")).length,
-      eePaths: 0,
-      blockers,
-    }));
-    process.exitCode = 1;
-    return;
+  const licenses = new Map(committed.licenses.map((license) => [license.id, license]));
+  const enterpriseLicense = licenses.get("lic-mastra-enterprise");
+  const evidenceErrors = [];
+  if (enterpriseFiles.length > 0 && (!enterpriseLicense || enterpriseLicense.verdict !== "needs-human")) {
+    evidenceErrors.push("enterprise-license content is present but lic-mastra-enterprise is not recorded needs-human");
   }
-  console.log(JSON.stringify({
+  for (const path of enterpriseFiles) {
+    const output = outputs.get(path);
+    if (!output || !output.licenseIds.includes("lic-mastra-enterprise")) {
+      evidenceErrors.push(`enterprise-license content is not recorded as needs-human: ${path}`);
+    }
+  }
+  const unapprovedLicenses = committed.licenses.filter((license) => license.verdict !== "verified").map((license) => license.id);
+  const inventoryDigest = digest(readFileSync(committedInventoryPath));
+  const approvals = policy.approvals ?? [];
+  const approval = approvals.find((item) => item.id === APPROVAL_ID && item.target === TARGET && item.inventoryDigest === inventoryDigest);
+  const approvalBlockers = [];
+  if (!approval) approvalBlockers.push("policy.approvals is empty or does not bind this inventory");
+  if (unapprovedLicenses.length > 0) approvalBlockers.push(`licences need legal review: ${unapprovedLicenses.join(", ")}`);
+  if (enterpriseFiles.length > 0) approvalBlockers.push(`enterprise-license content: ${enterpriseFiles.join(", ")}`);
+  const artifactBytes = built.outputs.reduce((total, output) => total + output.sizeBytes, 0) + readFileSync(join(artifactDir, "inventory.json")).length + readFileSync(join(artifactDir, "runtime.json")).length;
+  const report = {
     mode: "check",
-    status: "verified",
     target: TARGET,
     dependencyCount: built.dependencies.length,
     outputCount: built.outputs.length,
     inputCount: built.inputs.length,
-    inventoryDigest: digest(readFileSync(inventoryPath)),
+    inventoryDigest,
     artifactFiles: built.outputs.length + 2,
-    artifactBytes: built.outputs.reduce((total, output) => total + output.sizeBytes, 0) + readFileSync(join(artifactDir, "inventory.json")).length + readFileSync(join(artifactDir, "runtime.json")).length,
+    artifactBytes,
     eePaths: 0,
-  }));
+  };
+  if (evidenceErrors.length > 0) {
+    console.log(JSON.stringify({ ...report, status: "failed", errors: evidenceErrors }));
+    process.exitCode = 1;
+    return;
+  }
+  if (requireApproved && (!approval || approvalBlockers.length > 0)) {
+    console.log(JSON.stringify({ ...report, status: "unapproved", blockers: approvalBlockers }));
+    process.exitCode = 1;
+    return;
+  }
+  if (!approval || approvalBlockers.length > 0) {
+    console.log(JSON.stringify({ ...report, status: "unapproved", blockers: approvalBlockers }));
+    return;
+  }
+  console.log(JSON.stringify({ ...report, status: "verified" }));
 }
 
 try {

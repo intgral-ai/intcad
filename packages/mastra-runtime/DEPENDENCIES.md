@@ -71,11 +71,13 @@ tarball SHA-256, with a file/digest entry for every shipped file.
 ## Reproducible artifact evidence, not an approval
 
 `npm run check:deps` also runs
-`packages/mastra-runtime/scripts/runtime-artifact.mjs --check`. It rebuilds the
-Linux x64 artifact from `dist/src`, the production `node_modules` closure, the
-protocol bundle and the pinned Node binary, compares every digest with the
-inventory, and checks for enterprise-license content. It currently reports
-`unapproved`, not `verified`. See
+`packages/mastra-runtime/scripts/runtime-artifact.mjs --check` in evidence mode.
+It rebuilds the Linux x64 artifact from `dist/src`, the production `node_modules`
+closure, the protocol bundle and the pinned Node binary, compares every digest
+with the inventory, and checks for enterprise-license content. It exits 0 with
+`status: "unapproved"` while the content is reproducible and explicitly recorded
+as `needs-human`. Packaging/release must use `npm run check:artifact-approval`
+(`--require-approved`), which exits 1 while `policy.approvals` is empty. See
 [`docs/mastra-runtime-artifact.md`](../../docs/mastra-runtime-artifact.md).
 
 The artifact has no path component named `ee`, but four required

@@ -275,7 +275,8 @@ def runtime_commands():
             ["npm", "test", "-w", RUNTIME_PACKAGE],
             ["npm", "run", "build", "-w", RUNTIME_PACKAGE],
             ["npm", "run", "verify:schema", "-w", RUNTIME_PACKAGE],
-            ["npm", "run", "check:deps", "-w", RUNTIME_PACKAGE]]
+            ["npm", "run", "check:deps", "-w", RUNTIME_PACKAGE],
+            ["npm", "run", "test:artifact-gate", "-w", RUNTIME_PACKAGE]]
 
 
 def contract_ts_commands():

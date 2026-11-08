@@ -79202,8 +79202,8 @@
       "originId": "in-73c2e4c2e886ff07d524",
       "originalPath": "packages/mastra-runtime/DEPENDENCIES.md",
       "sourceRevision": null,
-      "digest": "sha256:c741799fafe23bdcfb2064a2e142e83e569edf39b973dc26b49b7c2315f45d9f",
-      "sizeBytes": 4146,
+      "digest": "sha256:f1fa07efe490686d5b2ba41ee2f9596ddb7851227cd7b137312b459f6840ebb1",
+      "sizeBytes": 4361,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -84186,8 +84186,8 @@
       "originId": "in-7ae45ad102eab3b6d7e7",
       "originalPath": "packages/mastra-runtime/package.json",
       "sourceRevision": null,
-      "digest": "sha256:bb500ccda97597c181cd5661b35238c986fc298728729fcf6b27d398aef8208b",
-      "sizeBytes": 1291,
+      "digest": "sha256:eb15e0358d596539ecb0d41dc93265154ca6b99109a54c18d07f49fd081d3058",
+      "sizeBytes": 1454,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -99250,8 +99250,8 @@
       "originId": "in-92062d34e634b8000aa7",
       "originalPath": "packages/mastra-runtime/package.json",
       "sourceRevision": null,
-      "digest": "sha256:bb500ccda97597c181cd5661b35238c986fc298728729fcf6b27d398aef8208b",
-      "sizeBytes": 1291,
+      "digest": "sha256:eb15e0358d596539ecb0d41dc93265154ca6b99109a54c18d07f49fd081d3058",
+      "sizeBytes": 1454,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -168001,8 +168001,8 @@
   "outputs": [
     {
       "path": "DEPENDENCIES.md",
-      "digest": "sha256:c741799fafe23bdcfb2064a2e142e83e569edf39b973dc26b49b7c2315f45d9f",
-      "sizeBytes": 4146,
+      "digest": "sha256:f1fa07efe490686d5b2ba41ee2f9596ddb7851227cd7b137312b459f6840ebb1",
+      "sizeBytes": 4361,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -262935,8 +262935,8 @@
     },
     {
       "path": "package.json",
-      "digest": "sha256:bb500ccda97597c181cd5661b35238c986fc298728729fcf6b27d398aef8208b",
-      "sizeBytes": 1291,
+      "digest": "sha256:eb15e0358d596539ecb0d41dc93265154ca6b99109a54c18d07f49fd081d3058",
+      "sizeBytes": 1454,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
