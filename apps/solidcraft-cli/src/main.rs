@@ -22,6 +22,7 @@
 //!                                                             MCP server on stdio (docs/mcp.md)
 //! solidcraft-cli mcp setup [--dry-run] [--client NAME] [--live] (alias: mcp install) add it to OpenCode, Claude Desktop, Claude Code, Cursor
 //! solidcraft-cli licences                                     SolidCraft's licence and the third-party licences
+//! solidcraft-cli validate submit|status|report|cancel ...     immutable candidate validation (docs/validation.md)
 //! solidcraft-cli icon --out F.png|F.ico [--size N]             the app icon (packaging; drawn, not a file)
 //!
 //! --debug (with any command)                                  SolidCraft's debug log on stderr (or RUST_LOG=LEVEL)
@@ -43,6 +44,7 @@ mod profiling;
 mod recipe;
 mod render;
 mod spatial;
+mod validation;
 
 use std::process::ExitCode;
 
@@ -106,6 +108,8 @@ const USAGE_FUZZ_ONE: &str = "  solidcraft-cli fuzz-one <seed> [--steps N] [--mi
 const USAGE_BENCH_EDIT: &str = "  solidcraft-cli bench-edit <script.json|recipe.json> <param> <expr>\n";
 /// `save-stress`'s lines in the usage: the file saved over and over.
 const USAGE_SAVE_STRESS: &str = "  solidcraft-cli save-stress <path> <rounds>\n";
+/// `validate`'s lines in the usage.
+const USAGE_VALIDATE: &str = validation::USAGE;
 /// The flags every command takes, at the end of the top-level usage.
 const USAGE_DEBUG: &str = "  --debug, with any command: what SolidCraft logs (why a body has no display plan, why a save left its\n      model cache out), on stderr; RUST_LOG=error|warn|info|debug|trace sets one level for every crate\n  --max-file-size SIZE, with any command: read STEP and import files and design files up to SIZE for this run\n      (for example 2GB or 1500MB; at most 16GB; the defaults are 512 MB and 256 MB, and a smaller SIZE keeps them)\n";
 
@@ -135,6 +139,7 @@ const COMMANDS: &[Command] = &[
     Command { name: "icon", usage: USAGE_ICON, listed: true },
     Command { name: "bench-edit", usage: USAGE_BENCH_EDIT, listed: false },
     Command { name: "save-stress", usage: USAGE_SAVE_STRESS, listed: false },
+    Command { name: "validate", usage: USAGE_VALIDATE, listed: true },
 ];
 
 fn main() -> ExitCode {
@@ -208,6 +213,7 @@ fn main() -> ExitCode {
         }
         // Hidden, for the kill-mid-save test: save a large design over and over.
         Some("save-stress") => cmd_save_stress(&args[1..]),
+        Some("validate") => validation::run(&args[1..]),
         // Hidden: time recomputes after parameter edits (docs/perf.md).
         Some("bench-edit") => cmd_bench_edit(&args[1..]),
         Some("bench-open") => cmd_bench_open(&args[1..]),

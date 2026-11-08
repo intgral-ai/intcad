@@ -38,6 +38,8 @@ pub mod snap;
 pub mod status_details;
 pub mod status_items;
 pub mod timing;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod validation;
 pub mod view;
 
 use solidcraft_geom::prelude::*;
