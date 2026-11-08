@@ -195,6 +195,8 @@ pub struct ValidationPort {
     admit: Mutex<()>,
     /// Serializes terminal commits and cancellation markers.
     commit: Mutex<()>,
+    /// Serializes pin/unpin with the candidate sweep in `cleanup`.
+    pins: Mutex<()>,
 }
 
 impl ValidationPort {
@@ -243,6 +245,7 @@ impl ValidationPort {
             profiles: Mutex::new(profiles),
             admit: Mutex::new(()),
             commit: Mutex::new(()),
+            pins: Mutex::new(()),
         };
         if reconcile {
             port.reconcile()?;
@@ -327,6 +330,7 @@ impl ValidationPort {
             if !key_path.is_file() {
                 self.store.write_json_new(&key_path, &record)?;
             }
+            self.pin_recovered(&run_id, &admission.candidate.candidate_id)?;
             self.repair_state(&run_id, &admission, now)?;
             return self.submit_result(&run_id, &admission.candidate, &admission.profile);
         }
@@ -387,11 +391,9 @@ impl ValidationPort {
             }
             Err(error) => return Err(error),
         }
-        // This attempt owns the key. From here a failure may only remove its own run.
-        if let Err(error) = self.pin_run(&run_id, &candidate.candidate_id) {
-            let _ = std::fs::remove_file(&key_path);
-            return Err(error);
-        }
+        // This attempt owns the key. Admission and state are written before the candidate is
+        // pinned, so a crash can never leave a pin with no visible run. A retry sees the
+        // admission and completes the pin.
         let written = (|| -> Result<()> {
             self.store.write_profile(&run_id, &resolved)?;
             self.store.ensure_json(&self.store.admission_path(&run_id), &admission)?;
@@ -400,15 +402,14 @@ impl ValidationPort {
         })();
         if let Err(error) = written {
             // A concurrent helper may already have completed this run from the same key. Leave
-            // its key, admission, state and pin in place; only a wholly unclaimed run is rolled
-            // back.
+            // its key, admission and state in place; only a wholly unclaimed run is rolled back.
             if !self.store.admission_path(&run_id).is_file() && !self.store.state_path(&run_id).is_file() {
                 let _ = std::fs::remove_file(&key_path);
                 let _ = std::fs::remove_file(self.store.profile_path(&run_id));
-                let _ = self.unpin_run(&run_id, &candidate.candidate_id);
             }
             return Err(error);
         }
+        self.pin_run(&run_id, &candidate.candidate_id)?;
         self.submit_result(&run_id, candidate, profile)
     }
 
@@ -417,6 +418,7 @@ impl ValidationPort {
     fn resume_submission(&self, key: &SubmissionKey, submission: &SubmissionRecord, profile: &ProfileRef, now: u64) -> Result<SubmitResult> {
         match self.load_admission(&submission.run_id) {
             Ok(admission) => {
+                self.pin_recovered(&submission.run_id, &admission.candidate.candidate_id)?;
                 self.repair_state(&submission.run_id, &admission, now)?;
                 self.submit_result(&submission.run_id, &admission.candidate, &admission.profile)
             }
@@ -491,6 +493,24 @@ impl ValidationPort {
     }
 
     fn pin_run(&self, run_id: &str, candidate_id: &str) -> Result<()> {
+        let _guard = self.pins.lock().map_err(|_| ValidationError::internal("validation pin lock was poisoned"))?;
+        self.pin_run_unlocked(run_id, candidate_id)
+    }
+
+    /// A replay of an already admitted run may find its candidate expired. The original run is
+    /// still returned; only pin it when the inputs are still there.
+    fn pin_recovered(&self, run_id: &str, candidate_id: &str) -> Result<()> {
+        match self.pin_run(run_id, candidate_id) {
+            Err(error) if error.code == ErrorCode::InvalidCandidate => Ok(()),
+            other => other,
+        }
+    }
+
+    fn pin_run_unlocked(&self, run_id: &str, candidate_id: &str) -> Result<()> {
+        // A concurrent cleanup may have removed the candidate before this pin took the lock.
+        if !self.candidate_root.join(format!("{candidate_id}.zip")).is_file() {
+            return Err(ValidationError::invalid_candidate("the candidate inputs are no longer available"));
+        }
         let first = self.store.pinned_runs(candidate_id).is_empty();
         if first {
             solidcraft_io::candidate::pin(&self.candidate_root, candidate_id)
@@ -508,6 +528,11 @@ impl ValidationPort {
     }
 
     fn unpin_run(&self, run_id: &str, candidate_id: &str) -> Result<()> {
+        let _guard = self.pins.lock().map_err(|_| ValidationError::internal("validation pin lock was poisoned"))?;
+        self.unpin_run_unlocked(run_id, candidate_id)
+    }
+
+    fn unpin_run_unlocked(&self, run_id: &str, candidate_id: &str) -> Result<()> {
         let last = self.store.remove_run_pin(candidate_id, run_id)?;
         if last {
             solidcraft_io::candidate::unpin(&self.candidate_root, candidate_id).map_err(|error| ValidationError::internal(error.to_string()))?;
@@ -945,7 +970,12 @@ impl ValidationPort {
     /// Remove completed records and unpinned candidate inputs older than the retention window.
     /// Active jobs and their pins are never evicted.
     pub fn cleanup(&self, now_ms: u64) -> usize {
-        let removed = self.purge_records(now_ms);
+        let Ok(_guard) = self.pins.lock() else { return 0 };
+        self.cleanup_locked(now_ms)
+    }
+
+    fn cleanup_locked(&self, now_ms: u64) -> usize {
+        let removed = self.purge_records_locked(now_ms);
         let now = UNIX_EPOCH.checked_add(Duration::from_millis(now_ms)).unwrap_or(SystemTime::UNIX_EPOCH);
         let _ = solidcraft_io::candidate::cleanup(&self.candidate_root, now, self.limits.retention);
         removed
@@ -954,10 +984,15 @@ impl ValidationPort {
     /// Remove expired records and their per-run pins, leaving candidate files for `cleanup`'s
     /// explicit candidate sweep.
     fn purge_records(&self, now_ms: u64) -> usize {
+        let Ok(_guard) = self.pins.lock() else { return 0 };
+        self.purge_records_locked(now_ms)
+    }
+
+    fn purge_records_locked(&self, now_ms: u64) -> usize {
         let removed = self.store.purge_older_than(now_ms, duration_ms(self.limits.retention));
         for (run_id, candidate) in &removed {
             if let Some(candidate) = candidate {
-                let _ = self.unpin_run(run_id, candidate);
+                let _ = self.unpin_run_unlocked(run_id, candidate);
             }
         }
         removed.len()
@@ -990,6 +1025,10 @@ impl ValidationPort {
     }
 
     fn commit_report(&self, run_id: &str, report: ValidationReport, state: ValidationState) -> Result<()> {
+        let current = self.load_state(run_id)?;
+        if current.state.is_terminal() && current.state != state {
+            return Err(ValidationError::report_mismatch("a terminal state cannot be paired with a report for another state"));
+        }
         let mut bytes = self.serialize_report(&report)?;
         let path = self.store.report_path(run_id);
         let mut created = false;
@@ -1029,6 +1068,19 @@ impl ValidationPort {
             ));
         }
         Ok(bytes)
+    }
+
+    /// Keep an immutable terminal state but advertise that its report is not available. A
+    /// missing or invalid report is never replaced by one whose state cannot bind the terminal
+    /// state.
+    fn mark_report_unavailable(&self, run_id: &str) -> Result<()> {
+        let mut current = self.load_state(run_id)?;
+        if !current.state.is_terminal() || !current.report_available {
+            return Ok(());
+        }
+        current.report_available = false;
+        current.updated_at_ms = self.clock.now_ms();
+        self.store.write_json_replace(&self.store.state_path(run_id), &current)
     }
 
     fn write_terminal_state(&self, run_id: &str, state: ValidationState) -> Result<()> {
@@ -1212,29 +1264,14 @@ impl ValidationPort {
             if state.state.is_terminal() {
                 if self.adopt_report(&run_id, &admission)? {
                     self.unpin(&run_id)?;
-                } else if self.store.report_exists(&run_id) {
-                    // A report that cannot be verified never becomes a pass. A dead owner's
-                    // invalid terminal record is replaced with an honest unknown report.
-                    if owned_or_dead {
+                } else {
+                    // The terminal state is immutable. Never write a report whose state cannot
+                    // bind it: remove an unverifiable report and publish reportAvailable=false.
+                    if self.store.report_exists(&run_id) {
                         let _ = std::fs::remove_file(self.store.report_path(&run_id));
-                        let profile = self.store.read_profile(&run_id)?;
-                        let report = self.recovery_report(
-                            &admission,
-                            &profile,
-                            ValidationState::Unknown,
-                            Some(ValidationError::report_mismatch("the persisted report did not verify after a restart")),
-                        );
-                        self.commit_report(&run_id, report, ValidationState::Unknown)?;
                     }
-                } else if owned_or_dead {
-                    let profile = self.store.read_profile(&run_id)?;
-                    let report = self.recovery_report(
-                        &admission,
-                        &profile,
-                        ValidationState::Unknown,
-                        Some(ValidationError::outcome_unknown("the terminal report is missing after a restart")),
-                    );
-                    self.commit_report(&run_id, report, ValidationState::Unknown)?;
+                    self.mark_report_unavailable(&run_id)?;
+                    self.unpin(&run_id)?;
                 }
                 continue;
             }

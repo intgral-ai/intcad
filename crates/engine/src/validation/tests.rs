@@ -966,6 +966,10 @@ fn limits_above_the_contract_ceilings_are_rejected() {
     assert!(Limits { checks: MAX_CHECKS_PER_PROFILE + 1, ..Limits::default() }.validate().is_err());
     assert!(Limits { evidence_artifacts: MAX_EVIDENCE_ARTIFACTS + 1, ..Limits::default() }.validate().is_err());
     assert!(Limits { evidence_bytes: MAX_EVIDENCE_BYTES + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { evidence_total_bytes: MAX_EVIDENCE_TOTAL_BYTES + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { execution: MAX_EXECUTION + std::time::Duration::from_millis(1), ..Limits::default() }.validate().is_err());
+    assert!(Limits { queue_admission: MAX_QUEUE_ADMISSION + std::time::Duration::from_millis(1), ..Limits::default() }.validate().is_err());
+    assert!(Limits { retention: MAX_RETENTION + std::time::Duration::from_millis(1), ..Limits::default() }.validate().is_err());
     assert!(Limits { job_records: MAX_JOB_RECORDS + 1, ..Limits::default() }.validate().is_err());
 }
 
@@ -1109,5 +1113,119 @@ fn concurrent_same_key_submissions_from_two_ports_share_the_key_claim() {
     assert_eq!(a.run_id, b.run_id);
     assert_eq!(first.store.count_admissions(), 1);
     assert!(candidate::is_pinned(&candidates, "cand-concurrent-ports"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_terminal_state_never_pairs_with_an_incompatible_report() {
+    for corrupt in [false, true] {
+        let root = scratch(if corrupt { "terminal-corrupt-report" } else { "terminal-missing-report" });
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-terminal-report", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let profile = native_basic_profile();
+        let reference = profile_ref(&profile).unwrap();
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+        port.register_profile(profile.clone()).unwrap();
+        let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+        port.pump().unwrap();
+        assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Passed);
+        let report_path = store.join("runs").join(format!("{}.report.json", run.run_id));
+        if corrupt {
+            std::fs::write(&report_path, b"{").unwrap();
+        } else {
+            std::fs::remove_file(&report_path).unwrap();
+        }
+        let restarted = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+        let status = restarted.status(&run.run_id).unwrap();
+        assert_eq!(status.state, ValidationState::Passed, "the terminal state is immutable");
+        assert!(!status.report_available, "a missing or corrupt report is not available");
+        let state: store::StateRecord = restarted.store.read_json(&restarted.store.state_path(&run.run_id), 1 << 20).unwrap();
+        assert!(!state.report_available);
+        assert!(!restarted.store.report_exists(&run.run_id), "an unverifiable report is removed, not replaced by an incompatible one");
+        let error = restarted.report(&run.run_id).unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotReady, "no REPORT_MISMATCH after reconciliation");
+        assert!(!candidate::is_pinned(&candidates, "cand-terminal-report"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn a_pin_only_orphan_is_garbage_collected_after_retention() {
+    let root = scratch("pin-only-orphan");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-pin-only", analytic_design());
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let clock = Arc::new(ManualClock::new(now));
+    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), limits, clock.clone());
+    let run_id = generate_run_id(now);
+    let key = generate_submission_key(now);
+    let parsed = SubmissionKey::parse(&key, now).unwrap();
+    let profile = profile_ref(&native_basic_profile()).unwrap();
+    let record = store::SubmissionRecord {
+        schema_version: store::RECORD_SCHEMA.into(),
+        submission_key: key.clone(),
+        payload_digest: format!("sha256:{}", "0".repeat(64)),
+        run_id: run_id.clone(),
+        candidate: candidate.clone(),
+        profile,
+        owner: "local".into(),
+        created_at_ms: now,
+        expires_at_ms: parsed.expires_at_ms(),
+    };
+    port.store.write_json_new(&port.store.key_path(&parsed.file_name()), &record).unwrap();
+    candidate::pin(&candidates, "cand-pin-only").unwrap();
+    port.store.write_run_pin("cand-pin-only", &run_id).unwrap();
+    assert!(candidate::is_pinned(&candidates, "cand-pin-only"));
+    assert!(port.store.run_pin_path("cand-pin-only", &run_id).is_file());
+    assert!(!port.store.admission_path(&run_id).is_file());
+    assert!(!port.store.state_path(&run_id).is_file());
+
+    clock.advance(8 * 24 * 60 * 60 * 1000);
+    assert_eq!(port.cleanup(clock.now_ms()), 1);
+    assert!(!candidate::is_pinned(&candidates, "cand-pin-only"));
+    assert!(!port.store.run_pin_path("cand-pin-only", &run_id).is_file());
+    assert!(!port.store.key_path(&parsed.file_name()).is_file());
+    assert!(candidate::lookup(&candidates, "cand-pin-only").is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
+    let root = scratch("pin-cleanup-race");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let _candidate = write_candidate(&candidates, "cand-pin-cleanup", analytic_design());
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let clock = Arc::new(ManualClock::new(now));
+    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
+    let port = Arc::new(port_with(&store, &candidates, runner_with(Vec::new()), limits, clock.clone()));
+    let barrier = Arc::new(Barrier::new(2));
+    let run_id = generate_run_id(now);
+    let pin = {
+        let port = Arc::clone(&port);
+        let barrier = Arc::clone(&barrier);
+        let run_id = run_id.clone();
+        thread::spawn(move || {
+            barrier.wait();
+            port.pin_run(&run_id, "cand-pin-cleanup")
+        })
+    };
+    let cleanup = {
+        let port = Arc::clone(&port);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            port.cleanup(now)
+        })
+    };
+    let pinned = pin.join().unwrap();
+    let _ = cleanup.join().unwrap();
+    let lookup_ok = candidate::lookup(&candidates, "cand-pin-cleanup").is_ok();
+    assert_eq!(pinned.is_ok(), lookup_ok, "a pin exists exactly when the candidate still exists");
+    assert_eq!(candidate::is_pinned(&candidates, "cand-pin-cleanup"), lookup_ok);
     let _ = std::fs::remove_dir_all(root);
 }

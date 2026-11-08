@@ -70,6 +70,10 @@ least one evidence artifact whose digest and size verify at report time.
   adopted before its terminal state is published; a tampered or unverifiable report is
   not adopted. A lost or ambiguous worker result becomes `unknown`; a queued job that
   never started becomes `infrastructure_error`.
+- A terminal state is immutable and is never paired with a report for another state. If
+  a terminal run's report is missing or corrupt, reconciliation removes the unverifiable
+  report, keeps the terminal state and publishes `reportAvailable: false` (`report()`
+  returns `NOT_READY`). It does not rewrite `passed` as `unknown`.
 - Reconciliation only touches workers owned by this host or whose recorded host process
   is no longer alive. `status`, `report` and `cancel` open the port read-only: a second
   process observing a live submit never turns it into a restart. Cancel still writes the
@@ -101,9 +105,10 @@ The defaults are the contract's §4 ceilings: 2 workers and 8 waiting jobs, 600 
 execution, 300 s in the admission queue, a 4 MiB report, 128 checks, 64 evidence
 artifacts of at most 16 MiB each and 64 MiB aggregate per run, 10,000 job records and
 7-day retention. Active jobs pin their candidate inputs with a per-run pin; admission is refused with
-`RESOURCE_EXHAUSTED` rather than evicting active evidence. `cleanup(now)` removes
-completed records and their unpinned candidate inputs only after retention, and never
-touches an active job.
+`RESOURCE_EXHAUSTED` rather than evicting active evidence. The admission and queued state
+are written before the pin, and cleanup also removes a pin left by a crash before the
+admission became visible. `cleanup(now)` removes completed records and their unpinned
+candidate inputs only after retention, and never touches an active job.
 
 ## CLI
 

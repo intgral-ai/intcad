@@ -4,6 +4,7 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
@@ -336,6 +337,34 @@ impl Store {
         ids
     }
 
+    /// Every per-run pin, with the candidate it pins and its file's modification time. A pin
+    /// without an admission or state is a crash window after the key claim, not a live run.
+    pub fn pin_records(&self) -> Vec<(String, String, u64)> {
+        let Ok(entries) = fs::read_dir(self.pins_root()) else { return Vec::new() };
+        let mut records = Vec::new();
+        for entry in entries.flatten() {
+            let candidate_id = entry.file_name().to_string_lossy().into_owned();
+            if !ids::valid_id(&candidate_id) {
+                continue;
+            }
+            let Ok(files) = fs::read_dir(entry.path()) else { continue };
+            for file in files.flatten() {
+                let name = file.file_name().to_string_lossy().into_owned();
+                let Some(run_id) = name.strip_suffix(".pin").filter(|id| ids::valid_id(id)) else { continue };
+                let modified_ms = file
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                    .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+                    .unwrap_or(0);
+                records.push((candidate_id.clone(), run_id.to_string(), modified_ms));
+            }
+        }
+        records.sort();
+        records
+    }
+
     /// Remove every record for a completed run older than the retention window. Active
     /// (nonterminal) runs are never touched; an orphaned admission older than the window is
     /// removed too.
@@ -372,6 +401,18 @@ impl Store {
                 let _ = self.remove_run_pin(candidate_id, &run_id);
             }
             removed.push((run_id, candidate_id));
+        }
+        // A crash after the key claim but before the admission/state leaves a pin with no
+        // visible run. It is not an active job: age it from its pin file and remove it.
+        for (candidate_id, run_id, modified_ms) in self.pin_records() {
+            if self.admission_path(&run_id).is_file() || self.state_path(&run_id).is_file() {
+                continue;
+            }
+            if now_ms.saturating_sub(modified_ms) < retention_ms {
+                continue;
+            }
+            let _ = self.remove_run_pin(&candidate_id, &run_id);
+            removed.push((run_id, Some(candidate_id)));
         }
         self.purge_keys(now_ms, retention_ms);
         removed

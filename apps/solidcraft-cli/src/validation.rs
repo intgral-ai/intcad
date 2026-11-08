@@ -105,13 +105,23 @@ impl Runner for SlowRunner {
     }
 
     fn run(&self, job: &RunJob, control: &RunControl) -> RunnerOutcome {
-        std::thread::sleep(self.delay);
+        // This is a capped test hook: it must never outlive the execution deadline or delay a
+        // cancellation, even if the environment asks for a huge delay.
+        let delay = self.delay.min(Duration::from_secs(5));
+        let deadline = std::time::Instant::now() + delay;
+        while std::time::Instant::now() < deadline {
+            if control.cancelled() || control.timed_out() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
         LocalRunner.run(job, control)
     }
 }
 
 fn open_worker(store: PathBuf, candidates: PathBuf) -> Result<ValidationPort, String> {
-    let delay = std::env::var("SOLIDCRAFT_VALIDATION_RUNNER_DELAY_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+    // Test-only hook, capped by SlowRunner and bounded by the execution deadline.
+    let delay = std::env::var("SOLIDCRAFT_VALIDATION_RUNNER_DELAY_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0).min(5_000);
     if delay > 0 {
         ValidationPort::open_with(
             store,
