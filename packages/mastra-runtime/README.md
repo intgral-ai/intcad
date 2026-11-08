@@ -71,13 +71,13 @@ npm run check:deps      # direct production licences and ee/ import check
 node dist/src/main.js   # start the built artifact on stdio
 ```
 
-`npm test` currently runs 78 tests. The schema suite checks **899 of 1002**
+`npm test` currently runs 79 tests. The schema suite checks **899 of 1002**
 catalog cases that this layer owns and agrees with the catalog on every one. The
 remaining 103 are reported, not claimed: 93 raw `guard-*` / `native-stamp-*`
 carriers whose decision belongs to the Rust component adapters, and 10 host
 state-machine transcripts owned by the Rust `RuntimeMachine`.
 
-47 of the 78 tests are the SolidCraft MCP adapter suites: a deterministic
+48 of the 79 tests are the SolidCraft MCP adapter suites: a deterministic
 in-memory MCP peer (`test/support/mcp-peer.ts`) supplies every guarded outcome
 class, and every produced `WriteOutcome` is validated against the repository's
 `#/$defs/WriteOutcome` schema rather than a TypeScript copy of it.
