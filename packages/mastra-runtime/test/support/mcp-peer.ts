@@ -173,6 +173,10 @@ export function defaultCommands(): CommandFixture[] {
   return [
     { id: "document.revision", params: "→ document_id, revision", input: null },
     {
+      id: "document.snapshot.capture",
+      input: { type: "object", additionalProperties: false, properties: {} },
+    },
+    {
       id: "parameters.change",
       input: {
         type: "object",

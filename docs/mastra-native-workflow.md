@@ -2,8 +2,8 @@
 
 Status: implemented as a runtime module in
 `packages/mastra-runtime/src/workflows/`. This document records the stage
-contract, the source-to-native adaptation and the remaining integration work.
-It does not claim the #13 host validation gate.
+contract, the source-to-native adaptation and the validation hand-off. The
+authoritative report and live-stamp gate remains in the Rust host (#13).
 
 ## Stage flow
 
@@ -92,27 +92,44 @@ Terminal states use protocol 1.0. The result also carries a machine-readable
 No model text can produce `validated_success`. Without the host validation
 handoff, passing stage checks end `task_failed` with `VALIDATION_UNAVAILABLE`.
 
-## Validation hand-off (#13)
+## Validation stage (#13)
 
-`ValidationHandoff.submit` is an injected host port. The workflow sends the
-current native `DocumentStamp`, the frozen profile, the fixed requirements and
-the local exact check results. It consumes only the host decision:
+After the fixed stage checks pass, `src/workflows/validation.ts`:
 
-- `passed` must still match the live stamp after the decision, otherwise the
-  report is historical evidence and the turn ends `quality_failed`.
-- `quality_failed`, `cancelled`, `unknown` and `infrastructure_error` map to
-  their distinct terminals above.
-- The workflow does not read, hash or verify report bytes, candidates,
-  manifests, evidence or runner identity. That is #13's host-owned gate. A test
-  stub in this repository is not a validation gate.
+1. captures one immutable candidate through the guarded
+   `document.snapshot.capture` command and requires its source stamp to equal the
+   workflow's frozen stamp;
+2. submits `validation.submit(candidate, profile, requestId)` under a fresh
+   `<unix-ms>:<uuid-v4>` key, retrying a lost submit with the same key;
+3. polls `validation.status` and fetches `validation.report`;
+4. verifies the report's run, candidate ID/digests, manifest digest, profile,
+   runner identity, terminal state, error and required check/evidence facts.
 
-The runtime turn runner (`src/server.ts`) now invokes
-`runNativeModelingWorkflow` when the session has a `solidcraft-app` bridge and
-the host injected a CAD channel. It maps workflow stage/plan/tool/text events to
-the protocol events and publishes the workflow's terminal state, `changes` and
-resulting document stamp. The host still owns report verification; until #13
-delivers the real `ValidationHandoff`, every passing stage check ends
-`task_failed` with the validation-unavailable reason.
+The four methods are the existing protocol surface; this module holds no local
+profile, check catalog or report implementation. The host's Rust `ValidationPort`
+owns the frozen profile, the local runner and the persisted report bytes.
+
+- A **quality failure** returns to planning with the failed run/candidate identity
+  in the conversation. Every repair captures a new candidate and uses a new
+  submission key; the old report is history only. The shared repair budget bounds
+  stage-check and validation repairs together.
+- An **infrastructure error, timeout, cancel or unknown** is not a geometry
+  repair. Submit/status/report calls have bounded same-submission retries; after
+  that the turn ends in its distinct terminal state.
+- A **passing report** is checked against the live stamp again after the report is
+  fetched. A changed live design makes the report historical, not verified
+  success.
+- An LLM answer, a `validationRunId` or runtime-supplied report JSON never
+  produces success. The Rust host performs the final §9.3 verification and
+  publishes the authoritative terminal outcome.
+
+The runtime turn runner (`src/server.ts`) invokes `runNativeModelingWorkflow`
+when the session has a `solidcraft-app` bridge and the host injected a CAD
+channel. It maps workflow stage/plan/tool/text events to the protocol events and
+publishes the workflow's terminal state, `changes`, `validationRunId` and report
+reference. The host ignores a proposed success unless the run was submitted by
+that turn, its own cached report reference matches, and the current live
+`DocumentStamp` equals the captured candidate's source.
 
 ### Turn-runner wiring
 

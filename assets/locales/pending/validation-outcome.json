@@ -1,0 +1,44 @@
+{
+  "en": {
+    "ui.mastra_validation_card": "Snapshot validation · {state}",
+    "ui.mastra_validation_historical": "The passing report is historical evidence, not approval of the current design: {reason}",
+    "ui.mastra_validation_no_report": "The workflow proposed verified success without a host report reference; the turn is not success.",
+    "ui.mastra_validation_rejected": "Snapshotted validation did not approve this turn: {reason}",
+    "ui.mastra_validation_unavailable": "This build has no local validation runner; the workflow's proposed success was not accepted."
+  },
+  "ar": {
+    "ui.mastra_validation_card": "التحقق من اللقطة · {state}",
+    "ui.mastra_validation_historical": "تقرير النجاح دليل تاريخي، وليس موافقة على التصميم الحالي: {reason}",
+    "ui.mastra_validation_no_report": "اقترح سير العمل نجاحاً موثقاً دون مرجع تقرير من المضيف؛ هذه الجولة ليست ناجحة.",
+    "ui.mastra_validation_rejected": "لم يوافق التحقق من اللقطة على هذه الجولة: {reason}",
+    "ui.mastra_validation_unavailable": "لا يحتوي هذا الإصدار على مشغّل تحقق محلي؛ لم يتم قبول النجاح المقترح من سير العمل."
+  },
+  "he": {
+    "ui.mastra_validation_card": "אימות תמונת מצב · {state}",
+    "ui.mastra_validation_historical": "דוח ההצלחה הוא ראיה היסטורית, לא אישור לעיצוב הנוכחי: {reason}",
+    "ui.mastra_validation_no_report": "זרימת העבודה הציעה הצלחה מאומתת בלי הפניה לדוח מהמארח; התור אינו הצלחה.",
+    "ui.mastra_validation_rejected": "אימות תמונת המצב לא אישר את התור הזה: {reason}",
+    "ui.mastra_validation_unavailable": "build זה אינו כולל מריץ אימות מקומי; ההצלחה המוצעת של זרימת העבודה לא התקבלה."
+  },
+  "ja": {
+    "ui.mastra_validation_card": "スナップショット検証 · {state}",
+    "ui.mastra_validation_historical": "合格したレポートは履歴上の証拠であり、現在の設計の承認ではありません: {reason}",
+    "ui.mastra_validation_no_report": "ワークフローはホストのレポート参照なしで検証済み成功を提案しました。このターンは成功ではありません。",
+    "ui.mastra_validation_rejected": "スナップショット検証はこのターンを承認しませんでした: {reason}",
+    "ui.mastra_validation_unavailable": "このビルドにはローカル検証ランナーがありません。ワークフローが提案した成功は受け入れられませんでした。"
+  },
+  "vi": {
+    "ui.mastra_validation_card": "Xác thực ảnh chụp · {state}",
+    "ui.mastra_validation_historical": "Báo cáo đạt là bằng chứng lịch sử, không phải phê duyệt thiết kế hiện tại: {reason}",
+    "ui.mastra_validation_no_report": "Quy trình đã đề xuất thành công đã xác thực mà không có tham chiếu báo cáo từ máy chủ; lượt này không thành công.",
+    "ui.mastra_validation_rejected": "Xác thực ảnh chụp không phê duyệt lượt này: {reason}",
+    "ui.mastra_validation_unavailable": "Bản dựng này không có trình chạy xác thực cục bộ; thành công do quy trình đề xuất đã không được chấp nhận."
+  },
+  "zh": {
+    "ui.mastra_validation_card": "快照校验 · {state}",
+    "ui.mastra_validation_historical": "通过的报告是历史证据，不是对当前设计的批准：{reason}",
+    "ui.mastra_validation_no_report": "工作流在没有主机报告引用的情况下提出了已验证成功；此轮不算成功。",
+    "ui.mastra_validation_rejected": "快照校验未批准此轮：{reason}",
+    "ui.mastra_validation_unavailable": "此版本没有本地校验运行器；工作流提出的成功未被接受。"
+  }
+}

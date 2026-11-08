@@ -25,6 +25,7 @@ import {
   validateRequirements,
 } from "./checks.js";
 import { documentStampEquals, inspectAndFreeze, prepareTurn } from "./inspect.js";
+import { runValidationStageFor } from "./validation.js";
 import {
   APPLY_TOOL,
   DECISION_TOOL,
@@ -286,7 +287,24 @@ async function runByok(
           "QUALITY_FAILED",
         );
       }
-      return validateAndFinish(context, finish);
+      const validation = await validateAndFinish(context, finish);
+      if (validation.kind === "terminal") {
+        return validation.result;
+      }
+      // A failed report is history for the old candidate. Ask for a corrected
+      // native edit; the next validation always captures a new candidate and
+      // uses a fresh durable submission key.
+      context.recorder.text(validation.message, "progress");
+      messages.push({
+        role: "user",
+        content: [{ type: "text", text: validation.message }],
+        toolCalls: [],
+        toolCallId: null,
+      });
+      context.recorder.step("apply", "pending");
+      context.recorder.step("check", "pending");
+      context.recorder.step("validate", "pending");
+      continue;
     }
 
     if (text.length > 0) {
@@ -481,6 +499,7 @@ async function runAcp(
     );
   }
   let staleRetried = false;
+  let feedback = "";
   for (;;) {
     assertActive(context);
     context.meter.assertTime();
@@ -490,7 +509,7 @@ async function runAcp(
     const reply = await source.requestProposal(
       {
         instructions: context.input.instructions,
-        task: acpTask(context, frozen),
+        task: acpTask(context, frozen, feedback),
         document: context.document,
         selection: context.input.selection,
         capabilities: frozen.capabilities,
@@ -549,7 +568,16 @@ async function runAcp(
       return outcome.result;
     }
     if (context.appliedAny && context.checksPassed) {
-      return validateAndFinish(context, finish);
+      const validation = await validateAndFinish(context, finish);
+      if (validation.kind === "terminal") {
+        return validation.result;
+      }
+      context.recorder.text(validation.message, "progress");
+      feedback = validation.message;
+      context.recorder.step("apply", "pending");
+      context.recorder.step("check", "pending");
+      context.recorder.step("validate", "pending");
+      continue;
     }
   }
 }
@@ -752,43 +780,46 @@ function checkFailure(context: RunContext, write: CadWriteResult): Outcome {
   };
 }
 
+type ValidationStep = { readonly kind: "terminal"; readonly result: WorkflowResult } | { readonly kind: "repair"; readonly message: string };
+
 async function validateAndFinish(
   context: RunContext,
   finish: ResultFactory,
-): Promise<WorkflowResult> {
+): Promise<ValidationStep> {
   if (!context.checksPassed || !requiredChecksPassed(context.checks)) {
     context.recorder.step("check", "failed");
-    return finish(
-      "quality_failed",
-      `Fixed stage checks did not pass: ${failedCheckSummary(context.checks) || "no exact check result"}.`,
-      "QUALITY_FAILED",
-    );
+    return {
+      kind: "terminal",
+      result: finish(
+        "quality_failed",
+        `Fixed stage checks did not pass: ${failedCheckSummary(context.checks) || "no exact check result"}.`,
+        "QUALITY_FAILED",
+      ),
+    };
   }
   const gate = context.options.validation ?? null;
   if (gate === null) {
-    return finish(
-      "task_failed",
-      "Native stage checks passed, but snapshot validation is not installed in this runtime revision (#13); no verified success is claimed.",
-      "VALIDATION_UNAVAILABLE",
-    );
+    return {
+      kind: "terminal",
+      result: finish(
+        "task_failed",
+        "Native stage checks passed, but this host has no local snapshot validation runner; no verified success is claimed.",
+        "VALIDATION_UNAVAILABLE",
+      ),
+    };
   }
   context.meter.reserveValidation();
   assertActive(context);
   const source = cloneStamp(context.document);
   context.recorder.step("validate", "running");
-  context.recorder.stage("validate", "Hand the native snapshot to host validation", "running");
-  const outcome = await gate.submit(
-    {
-      sessionId: context.input.sessionId,
-      turnId: context.input.turnId,
-      workflowRunId: context.input.workflowRunId,
-      document: source,
-      profile: context.input.profile,
-      requirements: context.input.requirements,
-      checks: context.checks,
-    },
-    context.signal,
-  );
+  context.recorder.stage("validate", "Capture and validate the native snapshot", "running");
+  const outcome = await runValidationStageFor(context.options.cad, source, {
+    port: gate,
+    profile: context.input.profile,
+    signal: context.signal,
+    clock: context.clock,
+    deadlineMilliseconds: context.clock.now() + context.meter.remainingMilliseconds,
+  });
   assertActive(context);
 
   if (outcome.state === "passed") {
@@ -796,46 +827,77 @@ async function validateAndFinish(
     assertActive(context);
     context.document = cloneStamp(current.stamp);
     if (!documentStampEquals(source, current.stamp)) {
-      context.recorder.stage("validate", "Hand the native snapshot to host validation", "failed");
+      context.recorder.stage("validate", "Capture and validate the native snapshot", "failed");
       context.recorder.step("validate", "failed");
-      return finish(
-        "quality_failed",
-        "The live design changed after the validated snapshot; that report is historical evidence, not approval of current content.",
-        "STALE_DOCUMENT",
-        { validationRunId: outcome.runId, report: outcome.report },
-      );
+      return {
+        kind: "terminal",
+        result: finish(
+          "quality_failed",
+          "The live design changed after the validated snapshot; that report is historical evidence, not approval of current content.",
+          "STALE_DOCUMENT",
+          { validationRunId: outcome.runId, report: outcome.report },
+        ),
+      };
     }
-    context.recorder.stage("validate", "Hand the native snapshot to host validation", "completed");
+    context.recorder.stage("validate", "Capture and validate the native snapshot", "completed");
     context.recorder.step("validate", "completed");
-    return finish("validated_success", outcome.reason || "Required checks passed for the current native snapshot.", "VALIDATED_SUCCESS", {
-      validationRunId: outcome.runId,
-      report: outcome.report,
-    });
+    return {
+      kind: "terminal",
+      result: finish("validated_success", outcome.reason || "Required checks passed for the current native snapshot.", "VALIDATED_SUCCESS", {
+        validationRunId: outcome.runId,
+        report: outcome.report,
+      }),
+    };
   }
-  context.recorder.stage("validate", "Hand the native snapshot to host validation", "failed");
+  context.recorder.stage("validate", "Capture and validate the native snapshot", "failed");
   context.recorder.step("validate", "failed");
   switch (outcome.state) {
-    case "quality_failed":
-      return finish("quality_failed", outcome.reason, "QUALITY_FAILED", {
-        validationRunId: outcome.runId,
-        report: outcome.report,
-      });
+    case "quality_failed": {
+      const reportNote =
+        outcome.runId === null
+          ? ""
+          : ` The failed report is ${outcome.report?.artifactId ?? "unavailable"} for run ${outcome.runId} and candidate ${outcome.candidate?.candidateId ?? "unknown"}; it is history only.`;
+      if (context.meter.tryReserveRepair()) {
+        context.recorder.stage("repair", "Repair the failed validation report", "running");
+        return {
+          kind: "repair",
+          message: `Snapshot validation failed: ${outcome.reason}${reportNote} Inspect the live design, apply a corrected native edit, and let the workflow capture a NEW candidate for a new run. Do not reuse the old report.`,
+        };
+      }
+      return {
+        kind: "terminal",
+        result: finish("quality_failed", `${outcome.reason}${reportNote}`, "QUALITY_FAILED", {
+          validationRunId: outcome.runId,
+          report: outcome.report,
+        }),
+      };
+    }
     case "cancelled":
-      return finish("cancelled", outcome.reason || "Host validation was cancelled.", "CANCELLED", {
-        validationRunId: outcome.runId,
-        report: outcome.report,
-      });
+      return {
+        kind: "terminal",
+        result: finish("cancelled", outcome.reason || "Host validation was cancelled.", "CANCELLED", {
+          validationRunId: outcome.runId,
+          report: outcome.report,
+        }),
+      };
     case "unknown":
-      return finish("outcome_unknown", outcome.reason || "The host validation outcome is unknown.", "OUTCOME_UNKNOWN", {
-        changes: "unknown",
-        validationRunId: outcome.runId,
-        report: outcome.report,
-      });
+      return {
+        kind: "terminal",
+        result: finish("outcome_unknown", outcome.reason || "The host validation outcome is unknown.", "OUTCOME_UNKNOWN", {
+          changes: "unknown",
+          validationRunId: outcome.runId,
+          report: outcome.report,
+        }),
+      };
     case "infrastructure_error":
-      return finish("task_failed", `Validation infrastructure error: ${outcome.reason}`, "VALIDATION_INFRASTRUCTURE_ERROR", {
-        validationRunId: outcome.runId,
-        report: outcome.report,
-      });
+      // A runner/transport failure is never repaired by editing geometry.
+      return {
+        kind: "terminal",
+        result: finish("task_failed", `Validation infrastructure error: ${outcome.reason}`, outcome.reasonCode, {
+          validationRunId: outcome.runId,
+          report: outcome.report,
+        }),
+      };
   }
 }
 
@@ -925,10 +987,11 @@ function protocolOutput(error: unknown): JsonObject {
   return errorOutput({ code: wire.value.code, message: wire.value.message, details: wire.value.details });
 }
 
-function acpTask(context: RunContext, frozen: FrozenInspection): string {
+function acpTask(context: RunContext, frozen: FrozenInspection, feedback: string): string {
   return [
     context.input.parts.join("\n"),
     "",
+    ...(feedback.length === 0 ? [] : [feedback, ""]),
     "Return exactly one JSON object with this shape and no prose:",
     '{"source":{"documentId":"...","revision":"..."},"commands":[{"command":"...","params":{}}]}',
     `The source stamp must be the frozen design ${JSON.stringify(context.document)}.`,

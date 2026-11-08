@@ -1145,6 +1145,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 instructions,
                 connection_auth: Arc::new(std::sync::Mutex::new(None)),
                 frozen_binding: Arc::new(std::sync::Mutex::new(None)),
+                validation: mastra_backend::HostValidation::local(),
                 wake: Arc::from(wake),
             };
             let launch = runtime_client::RuntimeLaunch {
@@ -2181,6 +2182,12 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     take_loaded(app, ctx);
+    // The host's current stamp is the final authority for §9.3: a user or turn edit after the
+    // captured snapshot must make the passing report historical, even if no new prompt ran.
+    let stamp = app.session.document_stamp();
+    if let Some(backend) = app.agent_chat.backend.as_mut() {
+        backend.set_document(&stamp.document_id, stamp.revision);
+    }
     let events = app.agent_chat.backend.as_mut().map(|b| b.poll()).unwrap_or_default();
     for e in events {
         let ready = matches!(e, Event::Ready { .. });

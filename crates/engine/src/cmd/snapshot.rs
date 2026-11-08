@@ -66,6 +66,11 @@ fn set_test_candidate_store(root: PathBuf) {
 /// The host store: a test thread's root, an embedding's choice, `SOLIDCRAFT_CANDIDATE_DIR`, the
 /// per-user data folder in a build, or a per-process scratch folder under the test recovery
 /// folder. The browser has no such store.
+/// The candidate store this build uses. Hosts open the validation port on the same directory.
+pub fn candidate_store_root() -> Option<PathBuf> {
+    candidate_root()
+}
+
 fn candidate_root() -> Option<PathBuf> {
     #[cfg(target_arch = "wasm32")]
     {

@@ -146,6 +146,16 @@ export class NativeRecordedPeer {
     timer: NodeJS.Timeout;
   }[] = [];
   readonly #channel: McpBridgeChannel | null;
+  /** Per-profile terminal results, consumed by successive submissions. */
+  readonly validationStates = new Map<string, string[]>();
+  readonly validationSubmissions: JsonObject[] = [];
+  readonly #profiles: Record<string, JsonObject>;
+  readonly #validationRuns = new Map<
+    string,
+    { candidate: JsonObject; profile: JsonObject; requestId: string; state: string; statusCalls: number }
+  >();
+  #nextValidation = 0;
+  #nextCandidate = 0;
   #closed = false;
 
   constructor(
@@ -155,6 +165,7 @@ export class NativeRecordedPeer {
     options: NativePeerOptions = {},
   ) {
     this.state = state;
+    this.#profiles = profiles;
     this.#tempDir = mkdtempSync(join(tmpdir(), "solidcraft-mastra-native-"));
     const requirementsFile = join(this.#tempDir, "requirements.json");
     writeFileSync(requirementsFile, JSON.stringify({ profiles }), "utf8");
@@ -271,6 +282,9 @@ export class NativeRecordedPeer {
     if (command === "document.revision") {
       return textReply(`{\n  "document_id": "${this.mcp.documentId}",\n  "revision": ${this.revision}\n}`);
     }
+    if (command === "document.snapshot.capture") {
+      return guardedReply({ candidate: this.#captureCandidate(), documentStamp: this.stamp() });
+    }
     const applied = this.applyCommand(command, args["params"]);
     if (!applied.ok) {
       return textReply(applied.message, true);
@@ -346,6 +360,9 @@ export class NativeRecordedPeer {
 
   #onFrame(frame: Frame): void {
     this.frames.push(frame);
+    if (frame.kind === "request" && frame.method?.startsWith("validation.") === true) {
+      this.#onValidation(frame);
+    }
     for (const waiter of [...this.#waiters]) {
       if (!this.#consumed.has(frame) && waiter.predicate(frame)) {
         this.#consumed.add(frame);
@@ -388,6 +405,145 @@ export class NativeRecordedPeer {
   async request(method: string, scope: Scope, params: JsonObject, requestId: string): Promise<Frame> {
     this.send(method, scope, params, requestId);
     return this.waitFor((frame) => frame.kind === "response" && frame.requestId === requestId);
+  }
+
+  #terminalFor(profileId: string): string {
+    const planned = this.validationStates.get(profileId) ?? [];
+    return planned.shift() ?? "passed";
+  }
+
+  #reportChecks(profileId: string, state: string): JsonObject[] {
+    const resultState = state === "passed" ? "passed" : state === "quality_failed" ? "failed" : "not_run";
+    const evidence = [
+      {
+        artifactId: `evidence-${this.#nextValidation}`,
+        digest: `sha256:${"e".repeat(64)}`,
+        sizeBytes: 2,
+        mediaType: "application/json",
+      },
+    ];
+    const base: JsonObject[] = [
+      { checkId: "input.integrity", required: true, state: resultState, expected: {}, actual: {}, evidence },
+      { checkId: "native.rebuild", required: true, state: resultState, expected: {}, actual: {}, evidence },
+    ];
+    const requirements = this.#profiles[profileId]?.["checks"];
+    if (Array.isArray(requirements)) {
+      for (const requirement of requirements) {
+        if (typeof requirement !== "object" || requirement === null) {
+          continue;
+        }
+        const check = requirement as JsonObject;
+        base.push({
+          checkId: check["checkId"],
+          required: check["required"] ?? true,
+          state: resultState,
+          expected: check["parameters"] ?? {},
+          actual: {},
+          evidence,
+        });
+      }
+    }
+    return base;
+  }
+
+  #onValidation(frame: Frame): void {
+    const params = frame.params ?? {};
+    const method = frame.method ?? "";
+    if (method === "validation.submit") {
+      this.#nextValidation += 1;
+      const candidate = (params["candidate"] ?? {}) as JsonObject;
+      const profile = (params["profile"] ?? {}) as JsonObject;
+      const profileId = typeof profile["profileId"] === "string" ? profile["profileId"] : "";
+      const runId = `v-${this.#nextValidation}`;
+      const state = this.#terminalFor(profileId);
+      this.validationSubmissions.push({ candidate, profile, requestId: params["requestId"], runId });
+      this.#validationRuns.set(runId, {
+        candidate,
+        profile,
+        requestId: String(params["requestId"] ?? ""),
+        state,
+        statusCalls: 0,
+      });
+      this.replyOk(frame, { runId, state: "queued", candidate, profile });
+      return;
+    }
+    const runId = typeof params["runId"] === "string" ? params["runId"] : "";
+    const run = this.#validationRuns.get(runId);
+    if (run === undefined) {
+      this.replyError(frame, "NOT_FOUND", "No such validation run.");
+      return;
+    }
+    if (method === "validation.status") {
+      run.statusCalls += 1;
+      const state = run.statusCalls === 1 ? "running" : run.state;
+      this.replyOk(frame, {
+        runId,
+        state,
+        candidate: run.candidate,
+        profile: run.profile,
+        updatedAt: "2026-11-07T12:00:00.000Z",
+        reportAvailable: state !== "running" && state !== "queued",
+      });
+      return;
+    }
+    if (method === "validation.report") {
+      const report = {
+        schemaVersion: "1.0",
+        runId,
+        candidateId: run.candidate["candidateId"],
+        candidateDigest: run.candidate["candidateDigest"],
+        manifestDigest: run.candidate["manifestDigest"],
+        profile: run.profile,
+        runner: { runnerId: "local-solidcraft", version: "1.0.0", engineVersion: "0.0.0-test" },
+        state: run.state,
+        startedAt: "2026-11-07T12:00:00.000Z",
+        finishedAt: "2026-11-07T12:00:01.000Z",
+        checks: this.#reportChecks(
+          typeof run.profile["profileId"] === "string" ? run.profile["profileId"] : "",
+          run.state,
+        ),
+        error: run.state === "passed" || run.state === "quality_failed" ? null : { code: "CANCELLED", message: "terminal" },
+      };
+      this.replyOk(frame, {
+        report,
+        reference: {
+          artifactId: `report-${runId}`,
+          digest: `sha256:${"d".repeat(64)}`,
+          sizeBytes: 3,
+          mediaType: "application/json",
+        },
+      });
+      return;
+    }
+    if (method === "validation.cancel") {
+      run.state = "cancelled";
+      this.replyOk(frame, { runId, state: "cancelled" });
+      return;
+    }
+    this.replyError(frame, "METHOD_NOT_FOUND", "Unknown validation method.");
+  }
+
+  #captureCandidate(): JsonObject {
+    this.#nextCandidate += 1;
+    const serial = this.#nextCandidate.toString(16).padStart(64, "0");
+    return {
+      candidateId: `cand-${this.#nextCandidate}`,
+      source: this.stamp(),
+      candidateDigest: `sha256:${serial}`,
+      manifestDigest: `sha256:${serial.split("").reverse().join("")}`,
+      artifact: {
+        artifactId: `artifact-cand-${this.#nextCandidate}`,
+        digest: `sha256:${"c".repeat(64)}`,
+        sizeBytes: 1024,
+        mediaType: "application/zip",
+      },
+    };
+  }
+
+  replyError(request: Frame, code: string, message: string): void {
+    this.child.stdin?.write(
+      `${JSON.stringify({ protocolVersion: "1.0", kind: "response", requestId: request.requestId, scope: request.scope, outcome: "error", error: { code, message, retry: "never", details: {} } })}\n`,
+    );
   }
 
   replyOk(request: Frame, result: JsonObject): void {

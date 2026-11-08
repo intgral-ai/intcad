@@ -11,10 +11,16 @@
 //! The turn binding is frozen when [`ChatBackend::prompt`] is called: workflow, connection,
 //! model, session and turn ids are copied then. Picker changes reach the next turn only.
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+use solidcraft_engine::validation as validation_port;
 
 use super::acp::McpBridge;
 use super::backend::{ChatBackend, Event, PromptPart, ToolStatus};
@@ -100,6 +106,504 @@ impl Drop for TaskControlGuard<'_> {
     }
 }
 
+/// The host-owned local validation service. It routes the runtime's `validation.*` calls to the
+/// Rust `ValidationPort`, caches the exact report bytes reference it returned, and owns the final
+/// §9.3 acceptance decision. The runtime never supplies a report body or a verdict.
+pub(crate) struct HostValidation {
+    port: Arc<validation_port::ValidationPort>,
+    profile: validation_port::ProfileRef,
+    profile_checks: Vec<validation_port::CheckRequirement>,
+    runner: validation_port::RunnerIdentity,
+    book: Mutex<ValidationBook>,
+    worker_stop: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct ValidationBook {
+    runs: HashMap<String, ValidationRunRecord>,
+    reports: HashMap<String, CachedValidationReport>,
+    report_order: VecDeque<String>,
+}
+
+#[derive(Clone)]
+struct ValidationRunRecord {
+    run_id: String,
+    session_id: String,
+    turn_id: String,
+    workflow_run_id: String,
+    candidate: solidcraft_engine::schema::snapshot::CandidateRef,
+    profile: validation_port::ProfileRef,
+    state: validation_port::ValidationState,
+}
+
+#[derive(Clone)]
+struct CachedValidationReport {
+    reference: validation_port::ArtifactRef,
+    state: validation_port::ValidationState,
+    verdict: Result<(), String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ValidationIdentity {
+    pub run_id: String,
+    pub candidate_id: String,
+    pub candidate_digest: String,
+    pub manifest_digest: String,
+    pub source_document_id: String,
+    pub source_revision: String,
+    pub profile_id: String,
+    pub profile_version: String,
+    pub profile_digest: String,
+    pub state: String,
+    pub report_artifact_id: String,
+    pub report_digest: String,
+    pub live_document_id: Option<String>,
+    pub live_revision: Option<String>,
+    pub live_changed: bool,
+    pub historical: bool,
+}
+
+impl ValidationIdentity {
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "runId": self.run_id,
+            "candidateId": self.candidate_id,
+            "candidateDigest": self.candidate_digest,
+            "manifestDigest": self.manifest_digest,
+            "snapshot": {"documentId": self.source_document_id, "revision": self.source_revision},
+            "profile": {"profileId": self.profile_id, "version": self.profile_version, "digest": self.profile_digest},
+            "validationState": self.state,
+            "report": {"artifactId": self.report_artifact_id, "digest": self.report_digest},
+            "liveDocument": self.live_document_id.as_ref().zip(self.live_revision.as_ref()).map(|(document, revision)| serde_json::json!({"documentId": document, "revision": revision})),
+            "liveChanged": self.live_changed,
+            "historical": self.historical,
+        })
+    }
+}
+
+pub(crate) struct ValidationAcceptance {
+    pub accepted: bool,
+    pub historical: bool,
+    pub reason: String,
+    pub identity: ValidationIdentity,
+}
+
+impl HostValidation {
+    /// Open the local port and start its single worker loop. The store and candidate directories
+    /// are the same ones `document.snapshot.capture` writes to.
+    pub(crate) fn open(store: PathBuf, candidate_root: PathBuf) -> Result<Self, String> {
+        let port = Arc::new(validation_port::ValidationPort::open(store, candidate_root).map_err(|error| format!("{error}"))?);
+        let native = validation_port::native_basic_profile();
+        let profile = validation_port::profile_ref(&native).map_err(|error| format!("{error}"))?;
+        let host = HostValidation {
+            port: Arc::clone(&port),
+            profile,
+            profile_checks: native.checks,
+            runner: validation_port::local_runner_identity(),
+            book: Mutex::new(ValidationBook::default()),
+            worker_stop: Arc::new(AtomicBool::new(false)),
+        };
+        let stop = Arc::clone(&host.worker_stop);
+        let _ = std::thread::Builder::new().name("mastra-validation-worker".into()).spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                if port.pump().is_err() {
+                    // A failed job is already a persisted terminal record; never restart it as
+                    // new work. The next queued job can still run.
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        });
+        Ok(host)
+    }
+
+    /// Open the port on this build's normal app-data directories. A failure leaves the backend
+    /// without verification rather than claiming success from an unverified runtime event.
+    pub(crate) fn local() -> Option<Arc<Self>> {
+        let candidates = solidcraft_engine::cmd::candidate_store_root()?;
+        let store = std::env::var_os("SOLIDCRAFT_VALIDATION_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| solidcraft_engine::recovery::data_dir().map(|dir| dir.join("validation")))?;
+        HostValidation::open(store, candidates).ok().map(Arc::new)
+    }
+
+    /// The profile reference frozen in every turn binding.
+    pub(crate) fn profile(&self) -> Option<ProfileRef> {
+        encode_wire(&self.profile).ok()
+    }
+
+    pub(crate) fn submit(&self, scope: &Scope, params: ValidationSubmitParams) -> Result<ValidationSubmitResult, WireError> {
+        let Scope::Turn(turn) = scope else {
+            return Err(local_error(ErrorCode::InvalidRequest));
+        };
+        let candidate: solidcraft_engine::schema::snapshot::CandidateRef =
+            decode_wire(&params.candidate).map_err(|_| local_error(ErrorCode::InvalidRequest))?;
+        let profile: validation_port::ProfileRef = decode_wire(&params.profile).map_err(|_| local_error(ErrorCode::InvalidRequest))?;
+        if profile != self.profile {
+            return Err(validation_wire(validation_port::ValidationError::profile_unsupported(
+                "the submitted profile is not the host-frozen turn profile",
+            )));
+        }
+        let result =
+            self.port.submit_for(&candidate, &profile, params.request_id.as_str(), turn.workflow_run_id.as_str()).map_err(validation_wire)?;
+        {
+            let mut book = self.book.lock().map_err(|_| local_error(ErrorCode::InternalError))?;
+            let record = ValidationRunRecord {
+                run_id: result.run_id.to_string(),
+                session_id: turn.session_id.to_string(),
+                turn_id: turn.turn_id.to_string(),
+                workflow_run_id: turn.workflow_run_id.to_string(),
+                candidate: result.candidate.clone(),
+                profile: result.profile.clone(),
+                state: result.state,
+            };
+            book.runs.insert(result.run_id.to_string(), record);
+            if book.runs.len() > 64
+                && let Some(oldest) = book.runs.keys().next().cloned()
+            {
+                book.runs.remove(&oldest);
+            }
+        }
+        encode_wire(&result)
+    }
+
+    pub(crate) fn status(&self, scope: &Scope, params: ValidationStatusParams) -> Result<ValidationStatusResult, WireError> {
+        let run = self.authorized(scope, params.run_id.as_str())?;
+        let status = self.port.status(params.run_id.as_str()).map_err(validation_wire)?;
+        if status.candidate != run.candidate || status.profile != run.profile {
+            return Err(validation_wire(validation_port::ValidationError::report_mismatch("the status response names another candidate or profile")));
+        }
+        if let Ok(mut book) = self.book.lock()
+            && let Some(record) = book.runs.get_mut(params.run_id.as_str())
+        {
+            record.state = status.state;
+        }
+        encode_wire(&status)
+    }
+
+    pub(crate) fn report(&self, scope: &Scope, params: ValidationReportParams) -> Result<ValidationReportResult, WireError> {
+        let run = self.authorized(scope, params.run_id.as_str())?;
+        let result = self.port.report(params.run_id.as_str()).map_err(validation_wire)?;
+        let verdict = self.verify_report(&run, &result.report);
+        if let Ok(mut book) = self.book.lock() {
+            book.remember(
+                params.run_id.as_str(),
+                CachedValidationReport { reference: result.reference.clone(), state: result.report.state, verdict },
+            );
+        }
+        encode_wire(&result)
+    }
+
+    pub(crate) fn cancel(&self, scope: &Scope, params: ValidationCancelParams) -> Result<ValidationCancelResult, WireError> {
+        let _run = self.authorized(scope, params.run_id.as_str())?;
+        let result = self.port.cancel(params.run_id.as_str()).map_err(validation_wire)?;
+        if let Ok(mut book) = self.book.lock()
+            && let Some(record) = book.runs.get_mut(params.run_id.as_str())
+        {
+            record.state = result.state;
+        }
+        encode_wire(&result)
+    }
+
+    fn authorized(&self, scope: &Scope, run_id: &str) -> Result<ValidationRunRecord, WireError> {
+        let book = self.book.lock().map_err(|_| local_error(ErrorCode::InternalError))?;
+        let Some(run) = book.runs.get(run_id) else {
+            return Err(local_error(ErrorCode::NotFound));
+        };
+        match scope {
+            Scope::Turn(turn) => {
+                if run.session_id == turn.session_id.as_str()
+                    && run.turn_id == turn.turn_id.as_str()
+                    && run.workflow_run_id == turn.workflow_run_id.as_str()
+                {
+                    Ok(run.clone())
+                } else {
+                    Err(local_error(ErrorCode::NotFound))
+                }
+            }
+            Scope::Session(session) => {
+                if run.session_id == session.as_str() {
+                    Ok(run.clone())
+                } else {
+                    Err(local_error(ErrorCode::NotFound))
+                }
+            }
+            Scope::Runtime => Err(local_error(ErrorCode::InvalidRequest)),
+        }
+    }
+
+    /// Execute the authoritative §9.3 check at the terminal transition.
+    pub(crate) fn accept(&self, scope: &TurnScope, run_id: &Id, claimed: &ArtifactRef, live: Option<&DocumentStamp>) -> ValidationAcceptance {
+        let run_id = run_id.as_str();
+        let (run, report) = {
+            let book = match self.book.lock() {
+                Ok(book) => book,
+                Err(_) => return self.rejected(run_id, live, "The host validation state is unavailable.".into(), false),
+            };
+            (book.runs.get(run_id).cloned(), book.reports.get(run_id).cloned())
+        };
+        let Some(run) = run else {
+            return self.rejected(run_id, live, "This run was not submitted by the current turn.".into(), false);
+        };
+        if run.session_id != scope.session_id.as_str()
+            || run.turn_id != scope.turn_id.as_str()
+            || run.workflow_run_id != scope.workflow_run_id.as_str()
+        {
+            return self.rejected(run_id, live, "This run belongs to another turn; it cannot approve this one.".into(), true);
+        }
+        let Some(report) = report else {
+            return self.rejected(run_id, live, "The host has not fetched and verified this run's report.".into(), false);
+        };
+        let expected = match encode_wire::<_, ArtifactRef>(&report.reference) {
+            Ok(value) => value,
+            Err(_) => return self.rejected(run_id, live, "The host report reference is malformed.".into(), false),
+        };
+        if expected != *claimed {
+            return self.rejected(run_id, live, "The runtime's report reference does not match the host's own report.".into(), false);
+        }
+        if let Err(reason) = &report.verdict {
+            return self.rejected(run_id, live, format!("The report failed host verification: {reason}."), false);
+        }
+        if report.state != validation_port::ValidationState::Passed {
+            return self.rejected(run_id, live, "The run is terminal but did not pass.".into(), true);
+        }
+        let Some(live) = live else {
+            return self.rejected(run_id, live, "The current live document stamp is unavailable.".into(), false);
+        };
+        if live.document_id.as_str() != run.candidate.source.document_id || live.revision.as_u64().to_string() != run.candidate.source.revision {
+            let acceptance = self.rejected(
+                run_id,
+                Some(live),
+                "The live document changed after the captured snapshot; the passing report is historical evidence, not approval of current content."
+                    .into(),
+                true,
+            );
+            return acceptance;
+        }
+        ValidationAcceptance {
+            accepted: true,
+            historical: false,
+            reason: format!("Required checks passed for candidate {}.", run.candidate.candidate_id),
+            identity: self.identity(&run, Some(&report), Some(live), false, false),
+        }
+    }
+
+    fn rejected(&self, run_id: &str, live: Option<&DocumentStamp>, reason: String, historical: bool) -> ValidationAcceptance {
+        let book = self.book.lock().ok();
+        let record = book.as_ref().and_then(|book| book.runs.get(run_id));
+        ValidationAcceptance {
+            accepted: false,
+            historical,
+            reason,
+            identity: match record {
+                Some(run) => {
+                    let report = book.as_ref().and_then(|book| book.reports.get(run_id));
+                    self.identity(run, report, live, true, historical)
+                }
+                None => ValidationIdentity {
+                    run_id: run_id.to_owned(),
+                    candidate_id: String::new(),
+                    candidate_digest: String::new(),
+                    manifest_digest: String::new(),
+                    source_document_id: String::new(),
+                    source_revision: String::new(),
+                    profile_id: String::new(),
+                    profile_version: String::new(),
+                    profile_digest: String::new(),
+                    state: "unknown".into(),
+                    report_artifact_id: String::new(),
+                    report_digest: String::new(),
+                    live_document_id: live.map(|stamp| stamp.document_id.to_string()),
+                    live_revision: live.map(|stamp| stamp.revision.to_string()),
+                    live_changed: live.is_some(),
+                    historical,
+                },
+            },
+        }
+    }
+
+    fn identity(
+        &self,
+        run: &ValidationRunRecord,
+        report: Option<&CachedValidationReport>,
+        live: Option<&DocumentStamp>,
+        rejected: bool,
+        historical: bool,
+    ) -> ValidationIdentity {
+        let state = report.map_or(run.state, |report| report.state);
+        ValidationIdentity {
+            run_id: run.run_id.clone(),
+            candidate_id: run.candidate.candidate_id.clone(),
+            candidate_digest: run.candidate.candidate_digest.clone(),
+            manifest_digest: run.candidate.manifest_digest.clone(),
+            source_document_id: run.candidate.source.document_id.clone(),
+            source_revision: run.candidate.source.revision.clone(),
+            profile_id: run.profile.profile_id.clone(),
+            profile_version: run.profile.version.clone(),
+            profile_digest: run.profile.digest.clone(),
+            state: if rejected { "rejected".into() } else { state.as_str().to_owned() },
+            report_artifact_id: report.map(|report| report.reference.artifact_id.clone()).unwrap_or_default(),
+            report_digest: report.map(|report| report.reference.digest.clone()).unwrap_or_default(),
+            live_document_id: live.map(|stamp| stamp.document_id.to_string()),
+            live_revision: live.map(|stamp| stamp.revision.to_string()),
+            live_changed: live.is_some_and(|stamp| {
+                stamp.document_id.as_str() != run.candidate.source.document_id || stamp.revision.as_u64().to_string() != run.candidate.source.revision
+            }),
+            historical,
+        }
+    }
+
+    fn verify_report(&self, run: &ValidationRunRecord, report: &validation_port::ValidationReport) -> Result<(), String> {
+        if report.run_id != run.run_id {
+            return Err("the report belongs to another run".into());
+        }
+        if report.candidate_id != run.candidate.candidate_id {
+            return Err("the report names another candidate".into());
+        }
+        if report.candidate_digest != run.candidate.candidate_digest || report.manifest_digest != run.candidate.manifest_digest {
+            return Err("the report binds different candidate bytes".into());
+        }
+        if report.profile != run.profile {
+            return Err("the report binds another profile".into());
+        }
+        if report.runner != self.runner {
+            return Err("the report was produced by an unapproved runner or engine version".into());
+        }
+        if report.state != validation_port::ValidationState::Passed {
+            return Err(format!("the report state is {}", report.state.as_str()));
+        }
+        if report.error.is_some() {
+            return Err("a passing report carries an error".into());
+        }
+        if report.checks.len() != self.profile_checks.len() {
+            return Err("the report does not cover the profile's required checks exactly".into());
+        }
+        let mut seen = HashSet::with_capacity(report.checks.len());
+        for requirement in &self.profile_checks {
+            let Some(result) = report.checks.iter().find(|result| result.check_id == requirement.check_id) else {
+                return Err(format!("the report is missing check {}", requirement.check_id));
+            };
+            if !seen.insert(result.check_id.as_str()) {
+                return Err(format!("the report repeats check {}", requirement.check_id));
+            }
+            if result.required != requirement.required {
+                return Err(format!("check {} changed its required flag", requirement.check_id));
+            }
+            if requirement.required {
+                if result.state != validation_port::CheckState::Passed {
+                    return Err(format!("required check {} is {}", requirement.check_id, result.state.as_str()));
+                }
+                if result.evidence.is_empty() {
+                    return Err(format!("required check {} has no evidence", requirement.check_id));
+                }
+                for evidence in &result.evidence {
+                    if !valid_digest(&evidence.digest) || evidence.size_bytes == 0 || evidence.media_type.is_empty() {
+                        return Err(format!("required check {} has an unusable evidence reference", requirement.check_id));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verify_report_for_test(&self, run_id: &str, report: &validation_port::ValidationReport) -> Result<(), String> {
+        let book = self.book.lock().map_err(|_| "validation book is unavailable".to_string())?;
+        let run = book.runs.get(run_id).ok_or_else(|| "no such run".to_string())?;
+        self.verify_report(run, report)
+    }
+
+    /// Identity for a terminal run that did not propose success. It is history, not approval.
+    pub(crate) fn history_identity(&self, run_id: &str, live: Option<&DocumentStamp>) -> Option<ValidationIdentity> {
+        let book = self.book.lock().ok()?;
+        let run = book.runs.get(run_id)?;
+        let report = book.reports.get(run_id);
+        Some(self.identity(run, report, live, true, true))
+    }
+
+    pub(crate) fn retire_turn(&self, scope: &TurnScope) {
+        if let Ok(mut book) = self.book.lock() {
+            let runs: Vec<String> = book
+                .runs
+                .iter()
+                .filter(|(_, run)| {
+                    run.session_id == scope.session_id.as_str()
+                        && run.turn_id == scope.turn_id.as_str()
+                        && run.workflow_run_id == scope.workflow_run_id.as_str()
+                })
+                .map(|(run_id, _)| run_id.clone())
+                .collect();
+            for run_id in runs {
+                book.runs.remove(&run_id);
+                book.reports.remove(&run_id);
+            }
+        }
+    }
+}
+
+impl ValidationBook {
+    fn remember(&mut self, run_id: &str, report: CachedValidationReport) {
+        self.reports.insert(run_id.to_owned(), report);
+        self.report_order.push_back(run_id.to_owned());
+        while self.report_order.len() > 128 {
+            if let Some(oldest) = self.report_order.pop_front() {
+                self.reports.remove(&oldest);
+            }
+        }
+    }
+}
+
+fn decode_wire<T: DeserializeOwned, U: Serialize>(value: &U) -> Result<T, WireError> {
+    let json = serde_json::to_value(value).map_err(|_| local_error(ErrorCode::InvalidRequest))?;
+    serde_json::from_value(json).map_err(|_| local_error(ErrorCode::InvalidRequest))
+}
+
+fn encode_wire<T: Serialize, U: DeserializeOwned>(value: &T) -> Result<U, WireError> {
+    let json = serde_json::to_value(value).map_err(|_| local_error(ErrorCode::InternalError))?;
+    serde_json::from_value(json).map_err(|_| local_error(ErrorCode::InternalError))
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value.as_bytes()[7..].iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+}
+
+fn local_error(code: ErrorCode) -> WireError {
+    WireError {
+        code,
+        message: "The host validation service rejected this call.".into(),
+        retry: Retry::Never,
+        details: ErrorDetails::Empty(EmptyDetails {}),
+    }
+}
+
+fn validation_wire(error: validation_port::ValidationError) -> WireError {
+    let code = match error.code {
+        validation_port::ErrorCode::InvalidRequest => ErrorCode::InvalidRequest,
+        validation_port::ErrorCode::InvalidCandidate => ErrorCode::InvalidCandidate,
+        validation_port::ErrorCode::DependencyChanged => ErrorCode::DependencyChanged,
+        validation_port::ErrorCode::ProfileUnsupported => ErrorCode::ProfileUnsupported,
+        validation_port::ErrorCode::ReportMismatch => ErrorCode::ReportMismatch,
+        validation_port::ErrorCode::NotReady => ErrorCode::NotReady,
+        validation_port::ErrorCode::NotFound => ErrorCode::NotFound,
+        validation_port::ErrorCode::IdempotencyConflict => ErrorCode::IdempotencyConflict,
+        validation_port::ErrorCode::RequestExpired => ErrorCode::RequestExpired,
+        validation_port::ErrorCode::ResourceExhausted => ErrorCode::ResourceExhausted,
+        validation_port::ErrorCode::Timeout => ErrorCode::Timeout,
+        validation_port::ErrorCode::Cancelled => ErrorCode::Cancelled,
+        validation_port::ErrorCode::OutcomeUnknown => ErrorCode::OutcomeUnknown,
+        validation_port::ErrorCode::InternalError => ErrorCode::InternalError,
+    };
+    let retry = match code {
+        ErrorCode::ResourceExhausted | ErrorCode::NotReady | ErrorCode::Timeout | ErrorCode::Cancelled | ErrorCode::OutcomeUnknown => {
+            Retry::SameSubmission
+        }
+        _ => Retry::Never,
+    };
+    WireError { code, message: error.message, retry, details: ErrorDetails::Empty(EmptyDetails {}) }
+}
+
 /// What a Mastra backend is told before it starts. The execution choice is already made; this is
 /// only the connection, workflow and launch identity it uses.
 pub struct MastraConfig {
@@ -118,6 +622,9 @@ pub struct MastraConfig {
     pub connection_auth: Arc<Mutex<Option<bool>>>,
     /// The connection/model pair frozen for the turn in progress; host calls must match it.
     pub frozen_binding: Arc<Mutex<Option<(String, String)>>>,
+    /// The host-owned local validation port, when this build can run it. Without it the
+    /// backend never publishes `validated_success`, even if the runtime proposes one.
+    pub validation: Option<Arc<HostValidation>>,
     /// Wakes the window when a runtime notice arrives.
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
@@ -265,6 +772,7 @@ impl MastraBackend {
                 Arc::clone(&agent_budget),
                 Arc::clone(&task_control),
                 Arc::clone(&config.frozen_binding),
+                config.validation.as_ref().map(Arc::clone),
             ),
             Arc::new(move || wake()),
         )
@@ -467,24 +975,31 @@ impl MastraBackend {
             workflow_run_id: workflow_run_id.to_string(),
         };
         let scope = TurnScope { session_id: session.clone(), turn_id, workflow_run_id };
-        let Ok(profile_id) = Id::parse(NATIVE_PROFILE) else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
-            self.push(Event::TurnEnded { reason: "error".into() });
-            return;
-        };
-        let Ok(digest) = Digest::parse(EMPTY_DIGEST) else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
-            self.push(Event::TurnEnded { reason: "error".into() });
-            return;
+        let profile = match self.config.validation.as_ref() {
+            Some(validation) => match validation.profile() {
+                Some(profile) => profile,
+                None => {
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::TurnEnded { reason: "error".into() });
+                    return;
+                }
+            },
+            None => {
+                let Ok(profile_id) = Id::parse(NATIVE_PROFILE) else {
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::TurnEnded { reason: "error".into() });
+                    return;
+                };
+                let Ok(digest) = Digest::parse(EMPTY_DIGEST) else {
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::TurnEnded { reason: "error".into() });
+                    return;
+                };
+                ProfileRef { profile_id, version: "1.0".into(), digest }
+            }
         };
         let params = TurnStartParams {
-            binding: TurnBinding {
-                workflow_id,
-                connection_id,
-                model_id: self.next_model.clone(),
-                document,
-                profile: ProfileRef { profile_id, version: "1.0".into(), digest },
-            },
+            binding: TurnBinding { workflow_id, connection_id, model_id: self.next_model.clone(), document, profile },
             parts: blocks,
             context: TurnContext { selection: Vec::new(), requirements: RequiredNullable(None) },
             budgets: Budgets::default(),
@@ -521,6 +1036,31 @@ impl MastraBackend {
             let _ = host.retire_session(&SessionKey { runtime_instance_id: instance.clone(), session_id: old.to_string() });
         }
         host.open_session(SessionKey { runtime_instance_id: instance, session_id: next.to_string() }, AiLimits::contract_defaults()).is_ok()
+    }
+
+    fn push_validation_identity(&mut self, acceptance: &ValidationAcceptance, status: ToolStatus) {
+        self.push_validation_card(&acceptance.identity, status);
+    }
+
+    fn push_validation_history(&mut self, identity: &ValidationIdentity, status: ToolStatus) {
+        self.push_validation_card(identity, status);
+    }
+
+    fn push_validation_card(&mut self, identity: &ValidationIdentity, status: ToolStatus) {
+        let title = crate::i18n::format("ui.mastra_validation_card", &[("state", &identity.state)]);
+        let output = serde_json::to_string(&identity.json()).ok();
+        self.push(Event::Tool {
+            id: format!("validation:{}", identity.run_id),
+            title: Some(title),
+            kind: Some("validation".into()),
+            status: Some(status),
+            input: None,
+            output,
+        });
+    }
+
+    fn validation_history(&self, run_id: &str) -> Option<ValidationIdentity> {
+        self.config.validation.as_ref()?.history_identity(run_id, self.document.as_ref())
     }
 
     fn map_runtime_event(&mut self, scope: &Scope, event: RuntimeEvent) {
@@ -590,7 +1130,7 @@ impl MastraBackend {
             RuntimeEvent::TurnFinished(finished) => {
                 let Some(turn) = self.end_active() else { return };
                 log::debug!("mastra workflow turn {} ended", turn.binding.workflow_id);
-                let reason = terminal_reason(finished.state);
+                let mut reason = terminal_reason(finished.state);
                 if finished.state == TurnTerminal::AuthRequired {
                     // A terminal auth failure belongs to the AI connection, never to runtime
                     // readiness, so it updates the separate connection state.
@@ -600,11 +1140,44 @@ impl MastraBackend {
                     self.push(Event::ConnectionAuth { available: false });
                 }
                 if finished.state == TurnTerminal::ValidatedSuccess {
-                    // Host verification (§9.3 / #12) does not exist in this release, even when a
-                    // validationRunId is present, so never claim that a report passed.
-                    self.push(Event::Text { thought: true, text: crate::i18n::tr("ui.mastra_validation_not_available").to_string() });
+                    // The runtime's proposal is not acceptance: this host must find the report it
+                    // submitted for this turn, verify it and compare the current live stamp.
+                    let run_id = finished.validation_run_id.0.as_ref();
+                    let claimed = finished.report.0.as_ref();
+                    let acceptance = match (&self.config.validation, run_id, claimed) {
+                        (Some(service), Some(run_id), Some(claimed)) => Some(service.accept(&turn.scope, run_id, claimed, self.document.as_ref())),
+                        (None, _, _) => {
+                            self.push(Event::Text { thought: true, text: crate::i18n::tr("ui.mastra_validation_unavailable").to_string() });
+                            None
+                        }
+                        _ => {
+                            self.push(Event::Text { thought: true, text: crate::i18n::tr("ui.mastra_validation_no_report").to_string() });
+                            None
+                        }
+                    };
+                    match acceptance {
+                        Some(acceptance) if acceptance.accepted => {
+                            reason = String::new();
+                            self.push_validation_identity(&acceptance, ToolStatus::Completed);
+                        }
+                        Some(acceptance) => {
+                            reason = "error".into();
+                            let key = if acceptance.historical { "ui.mastra_validation_historical" } else { "ui.mastra_validation_rejected" };
+                            self.push(Event::Text { thought: true, text: crate::i18n::format(key, &[("reason", &acceptance.reason)]) });
+                            self.push_validation_identity(&acceptance, ToolStatus::Failed);
+                        }
+                        None => {
+                            reason = "error".into();
+                        }
+                    }
+                } else if let Some(run_id) = finished.validation_run_id.0.as_ref() {
+                    // A failed or cancelled run is shown as history, never as approval.
+                    if let Some(identity) = self.validation_history(run_id.as_str()) {
+                        self.push_validation_history(&identity, ToolStatus::Failed);
+                    }
                 }
-                let _ = turn;
+                // Keep the report/reference for history and read-only queries; the active turn
+                // slot is already cleared, so no later event can promote this turn.
                 self.push(Event::TurnEnded { reason });
             }
         }
@@ -804,13 +1377,14 @@ fn runtime_services(
     agent_budget: Arc<AtomicU32>,
     task_control: Arc<TaskControlSlot>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
+    validation: Option<Arc<HostValidation>>,
 ) -> RuntimeServices {
     RuntimeServices {
         clock: Arc::new(WallClock),
         ids,
         admission,
         lifecycle: Arc::new(ClosedLifecycle),
-        dispatch: Arc::new(HostCalls { host, connection_auth, budget, agent_budget, task_control, runtime_instance, frozen_binding }),
+        dispatch: Arc::new(HostCalls { host, connection_auth, budget, agent_budget, task_control, runtime_instance, frozen_binding, validation }),
     }
 }
 
@@ -837,6 +1411,7 @@ struct HostCalls {
     task_control: Arc<TaskControlSlot>,
     runtime_instance: Arc<Mutex<Option<String>>>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
+    validation: Option<Arc<HostValidation>>,
 }
 
 impl HostDispatch for HostCalls {
@@ -848,12 +1423,13 @@ impl HostDispatch for HostCalls {
         let task_control = Arc::clone(&self.task_control);
         let instance = Arc::clone(&self.runtime_instance);
         let frozen = Arc::clone(&self.frozen_binding);
+        let validation = self.validation.as_ref().map(Arc::clone);
         let spawned = std::thread::Builder::new().name("mastra-host-call".into()).spawn(move || {
             let cancelled = call.cancellation.is_cancelled();
             let result = if cancelled {
                 Err(cancelled_error("operation"))
             } else {
-                handle_call(&host, &auth, &budget, &agent_budget, &task_control, &instance, &frozen, call, &reply)
+                handle_call(&host, &auth, &budget, &agent_budget, &task_control, &instance, &frozen, validation.as_deref(), call, &reply)
             };
             let _ = reply.finish(result);
         });
@@ -871,6 +1447,7 @@ fn handle_call(
     task_control: &TaskControlSlot,
     runtime_instance: &Mutex<Option<String>>,
     frozen_binding: &Mutex<Option<(String, String)>>,
+    validation: Option<&HostValidation>,
     call: CallbackCall,
     reply: &ReplyPort,
 ) -> Result<HostReply, WireError> {
@@ -1122,8 +1699,21 @@ fn handle_call(
                 Err(error) => Err(ai_task_error(&connection, &error)),
             }
         }
-        HostCall::ValidationSubmit(_) | HostCall::ValidationStatus(_) | HostCall::ValidationReport(_) | HostCall::ValidationCancel(_) => {
-            Err(unsupported("validation"))
+        HostCall::ValidationSubmit(params) => {
+            let service = validation.ok_or_else(|| unsupported("validation"))?;
+            service.submit(&scope, *params).map(HostReply::ValidationSubmit)
+        }
+        HostCall::ValidationStatus(params) => {
+            let service = validation.ok_or_else(|| unsupported("validation"))?;
+            service.status(&scope, params).map(HostReply::ValidationStatus)
+        }
+        HostCall::ValidationReport(params) => {
+            let service = validation.ok_or_else(|| unsupported("validation"))?;
+            service.report(&scope, params).map(HostReply::ValidationReport)
+        }
+        HostCall::ValidationCancel(params) => {
+            let service = validation.ok_or_else(|| unsupported("validation"))?;
+            service.cancel(&scope, params).map(HostReply::ValidationCancel)
         }
     }
 }
@@ -1369,6 +1959,11 @@ impl ChatBackend for MastraBackend {
         self.task_control.cancel();
         let Some(turn) = self.end_active() else { return };
         let _ = self.port.cancel_turn(&turn.scope, CancelReason::User);
+        // A late passing report remains history; clearing the active slot makes the terminal
+        // proposal unable to promote this cancelled turn.
+        if let Some(service) = self.config.validation.as_ref() {
+            service.retire_turn(&turn.scope);
+        }
         // The host owns the terminal transition: a runtime that never answers cannot leave the
         // panel busy, and a late turn.finished is ignored by the empty active slot.
         self.push(Event::TurnEnded { reason: "cancelled".into() });

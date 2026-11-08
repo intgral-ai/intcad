@@ -64,10 +64,12 @@ test("create produces editable native features and preserves tool-result identit
   assert.equal(harness.writes.length, 1);
   assert.deepEqual(harness.stamps, [{ documentId: "doc-A", revision: "41" }]);
 
-  const checks = validation.requests[0]?.checks ?? [];
+  const checks = result.checks;
   assert.equal(checks[0]?.checkId, "geometry.exact");
   assert.equal(checks[0]?.state, "passed");
   assert.equal(checks[0]?.actual["measure:/total/volume_mm3"], 1_000);
+  assert.equal(validation.submissions.length, 1);
+  assert.equal(validation.submissions[0]?.candidate.source.revision, "42");
 
   const requests = harness.model?.requests ?? [];
   assert.equal(requests.length, 3, "one explicit model call per round, no hidden loop");
@@ -192,7 +194,7 @@ test("a parameter edit verifies the requested value and every protected dimensio
   assert.equal(harness.state.parameters.get("width")?.value, 40);
   assert.equal(harness.state.parameters.get("depth")?.value, 10);
   assert.equal(harness.state.parameters.get("height")?.value, 5);
-  const check = validation.requests[0]?.checks[0];
+  const check = result.checks[0];
   assert.equal(check?.state, "passed");
   assert.deepEqual(check?.actual, { width: 40, depth: 10, height: 5 });
   assert.deepEqual(check?.expected, { width: 40, depth: 10, height: 5 });
@@ -218,7 +220,7 @@ test("a failed check uses at most the configured repairs, then reports a clear q
   assert.equal(result.changes, "applied");
   assert.equal(result.budgets.repairs, 2);
   assert.equal(harness.writes.length, 3, "the initial stage plus exactly two bounded repairs");
-  assert.equal(validation.requests.length, 0, "a failed check never reaches validation");
+  assert.equal(validation.submissions.length, 0, "a failed check never reaches validation");
   assert.match(result.reason, /2 repair attempt/u);
   assert.equal(harness.state.parameters.get("width")?.value, 30);
 });
@@ -314,7 +316,7 @@ test("a speculative probe returns UNSUPPORTED_CAPABILITY with zero writes", asyn
   assert.equal(result.reasonCode, "NO_RESULT");
   assert.equal(result.changes, "none");
   assert.equal(harness.writes.length, 0);
-  assert.equal(validation.requests.length, 0);
+  assert.equal(validation.submissions.length, 0);
   const probe = result.tools.find((tool) => tool.callId === "call-probe");
   assert.equal(probe?.state, "failed");
   assert.equal(probe?.output?.["code"], "UNSUPPORTED_CAPABILITY");
@@ -354,7 +356,7 @@ test("a stale stamp re-inspects and requires a new model round before another wr
     .toolCallsNamed("execute")
     .filter((call) => call.args["command"] === "document.revision");
   assert.equal(inspections.length >= 3, true, "inspection ran at turn start and again after the stale reply");
-  assert.equal(validation.requests[0]?.document.revision, "43");
+  assert.equal(validation.submissions[0]?.candidate.source.revision, "43");
 });
 
 test("unknown write effects stop further modeling and end outcome_unknown", async (t) => {
@@ -381,7 +383,7 @@ test("unknown write effects stop further modeling and end outcome_unknown", asyn
   assert.equal(result.changes, "unknown");
   assert.equal(harness.writes.length, 1);
   assert.equal(harness.model?.requests.length, 2, "no replacement command and no further model round");
-  assert.equal(validation.requests.length, 0);
+  assert.equal(validation.submissions.length, 0);
 });
 
 test("a pending reply is reconciled on the same connection and never resent", async (t) => {
@@ -432,7 +434,7 @@ test("an expectation mismatch is preserved and does not become success", async (
   assert.equal(result.reasonCode, "EXPECTATION_MISMATCH");
   assert.equal(result.changes, "applied");
   assert.deepEqual(result.document, { documentId: "doc-A", revision: "42" });
-  assert.equal(validation.requests.length, 0);
+  assert.equal(validation.submissions.length, 0);
 });
 
 test("an unsupported native command is reported distinctly and performs no write", async (t) => {
@@ -466,7 +468,7 @@ test("no LLM text produces verified success without a native result and host val
   assert.equal(result.state, "task_failed");
   assert.equal(result.reasonCode, "NO_RESULT");
   assert.equal(result.changes, "none");
-  assert.equal(validation.requests.length, 0);
+  assert.equal(validation.submissions.length, 0);
   assert.match(result.answer, /verified/u);
 });
 
@@ -556,7 +558,7 @@ test("ACP proposal-only mode validates the source stamp before any guarded write
   assert.equal(accepted.changes, "applied");
   assert.equal(valid.state.parameters.get("width")?.value, 40);
   assert.equal(valid.writes.length, 1);
-  assert.equal(validation.requests.length, 1);
+  assert.equal(validation.submissions.length, 1);
 });
 
 test("fixed requirements reject malformed or non-finite tolerances before any planning", async (t) => {
@@ -643,7 +645,7 @@ test("a model answer after a failed check cannot reach validation or claim check
     assert.equal(result.plan.find((step) => step.id === "check")?.state, "failed");
     assert.equal(result.tools.at(-1)?.state, "failed");
     if (validation !== null) {
-      assert.equal(validation.requests.length, 0);
+      assert.equal(validation.submissions.length, 0);
     }
   }
 });
@@ -670,7 +672,7 @@ test("a partial command failure adopts its resulting stamp and reports applied",
   assert.equal(result.reasonCode, "COMMAND_FAILED");
   assert.equal(result.changes, "applied");
   assert.deepEqual(result.document, { documentId: "doc-A", revision: "42" });
-  assert.equal(validation.requests.length, 0);
+  assert.equal(validation.submissions.length, 0);
 });
 
 test("a rollback-restored command failure can replan and still finish its checks", async (t) => {
@@ -696,7 +698,7 @@ test("a rollback-restored command failure can replan and still finish its checks
   assert.equal(result.changes, "applied");
   assert.equal(harness.writes.length, 2);
   assert.equal(result.budgets.repairs, 1);
-  assert.equal(validation.requests.length, 1);
+  assert.equal(validation.submissions.length, 1);
 });
 
 test("cancellation during an in-flight write keeps the applied edit and its stamp", async (t) => {
@@ -719,7 +721,7 @@ test("cancellation during an in-flight write keeps the applied edit and its stam
   assert.deepEqual(result.document, { documentId: "doc-A", revision: "42" });
   assert.equal(harness.state.parameters.get("width")?.value, 40);
   assert.equal(harness.writes.length, 1);
-  assert.equal(validation.requests.length, 0);
+  assert.equal(validation.submissions.length, 0);
 });
 
 test("the initial inspect must match the frozen turn binding", async (t) => {
@@ -895,19 +897,86 @@ test("ACP task and validation budgets are distinct and reserved before dispatch"
   });
   assert.equal(validationResult.state, "budget_exhausted");
   assert.match(validationResult.reason, /validationRuns/u);
-  assert.equal(validation.requests.length, 0);
+  assert.equal(validation.submissions.length, 0);
+});
+
+async function runOneValidation(
+  t: import("node:test").TestContext,
+  validation: FixedValidation,
+  overrides: Partial<import("../src/workflows/index.js").NativeWorkflowInput> = {},
+) {
+  const harness = new WorkflowHarness(t, boxState());
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([applyCall("call-box", boxCommands())]),
+      replyText("Created."),
+    ],
+    requirements: fixedRequirements(volumeCheck(1_000)),
+    validation,
+    ...overrides,
+  });
+  return { harness, result };
+}
+
+test("a report for candidate A cannot approve candidate B", async (t) => {
+  const validation = new FixedValidation("passed", undefined, (report) => ({ ...report, candidateId: "cand-other" }));
+  const { result } = await runOneValidation(t, validation);
+  assert.equal(result.state, "task_failed");
+  assert.equal(result.reasonCode, "REPORT_MISMATCH");
+  assert.equal(result.changes, "applied");
+  assert.match(result.reason, /another candidate/u);
+});
+
+test("a passing report needs a required check with evidence", async (t) => {
+  const missing = new FixedValidation("passed", undefined, (report) => ({
+    ...report,
+    checks: report.checks.map((check) => ({ ...check, required: false })),
+  }));
+  const first = await runOneValidation(t, missing);
+  assert.equal(first.result.reasonCode, "REPORT_MISMATCH");
+  assert.match(first.result.reason, /no required check/u);
+
+  const noEvidence = new FixedValidation("passed", undefined, (report) => ({
+    ...report,
+    checks: report.checks.map((check) => ({ ...check, evidence: [] })),
+  }));
+  const second = await runOneValidation(t, noEvidence);
+  assert.equal(second.result.reasonCode, "REPORT_MISMATCH");
+  assert.match(second.result.reason, /no evidence/u);
+});
+
+test("an unapproved runner or another profile cannot produce verified success", async (t) => {
+  const runner = new FixedValidation("passed", undefined, (report) => ({
+    ...report,
+    runner: { ...report.runner, runnerId: "" },
+  }));
+  const first = await runOneValidation(t, runner);
+  assert.equal(first.result.reasonCode, "REPORT_MISMATCH");
+  assert.match(first.result.reason, /runner identity/u);
+
+  const profile = new FixedValidation("passed", undefined, (report) => ({
+    ...report,
+    profile: { ...report.profile, digest: `sha256:${"9".repeat(64)}` },
+  }));
+  const second = await runOneValidation(t, profile);
+  assert.equal(second.result.reasonCode, "REPORT_MISMATCH");
+  assert.match(second.result.reason, /another profile/u);
+});
+
+test("a cancelled run with passing checks cannot approve an active turn", async (t) => {
+  const validation = new FixedValidation("cancelled");
+  const { result } = await runOneValidation(t, validation);
+  assert.equal(result.state, "cancelled");
+  assert.equal(result.reasonCode, "CANCELLED");
+  assert.equal(result.validationRunId, "v-1");
+  assert.notEqual(result.state, "validated_success");
 });
 
 test("a passing report for a changed live stamp is historical, not validated success", async (t) => {
   const harness = new WorkflowHarness(t, boxState());
-  const validation = new FixedValidation(() => {
+  const validation = new FixedValidation("passed", () => {
     harness.peer.revision += 1n;
-    return {
-      state: "passed",
-      runId: "v-stale",
-      report: { schemaVersion: "1.0", runId: "v-stale", state: "passed" },
-      reason: "Passed for the captured candidate.",
-    };
   });
   const result = await harness.run({
     modelReplies: [
@@ -921,7 +990,7 @@ test("a passing report for a changed live stamp is historical, not validated suc
 
   assert.equal(result.state, "quality_failed");
   assert.equal(result.reasonCode, "STALE_DOCUMENT");
-  assert.equal(result.validationRunId, "v-stale");
+  assert.equal(result.validationRunId, "v-1");
   assert.equal(result.changes, "applied");
-  assert.deepEqual(result.document, { documentId: "doc-A", revision: "43" });
+  assert.deepEqual(result.document, { documentId: "doc-A", revision: "44" });
 });
