@@ -1,8 +1,11 @@
 # Desktop Mastra distribution policy
 
-**Status:** static policy and explicit CLI admission for [#15](https://github.com/intgral-ai/open-skyfall-desktop/issues/15),
+**Status:** reviewed static policy and reproducible Linux x64 runtime inventory
+evidence for [#15](https://github.com/intgral-ai/open-skyfall-desktop/issues/15),
 implementing the scope in [the hosting contract](mastra-runtime.md#1-product-and-distribution-decisions).
-No runtime, Node binary, dependency release or installed package is approved here.
+No runtime artifact or installed desktop package is approved here. The Linux
+inventory is legal-review-pending; #14 still owns installed-package, signature and
+non-inclusion evidence.
 `cargo xtask runtime-artifact` is a production command. `cargo xtask ci` checks
 the fixed reviewed distribution metadata immediately after its existing Cargo
 license check. This static CI step is not npm/Node coverage or artifact admission.
@@ -12,9 +15,11 @@ license check. This static CI step is not npm/Node coverage or artifact admissio
 [`packaging/mastra/policy.json`](../packaging/mastra/policy.json) records the four
 intended desktop targets and an exact reviewed license-expression vocabulary.
 Those expressions are not dependency approvals. Its real `approvals` array is
-empty: no actual inventory digest, Node pin or package evidence has been supplied.
-Only a reviewed repository change may approve an exact target and inventory byte
-digest. Synthetic approvals exist only in temporary, original test fixtures.
+empty: the reproducible Linux inventory is evidence only, not an approved
+artifact. `packaging/mastra/inventory.json` records enterprise-license content and
+missing-licence-text packages as `needs-human`. Only a reviewed repository change
+may approve an exact target and inventory byte digest. Synthetic approvals exist
+only in temporary, original test fixtures.
 
 Static policy validity permits explicitly unverified source candidates. It does
 not mean that any candidate, artifact or installed target is verified. Cargo's
@@ -64,7 +69,9 @@ unknown expressions fail admission. Copyleft and share-alike identifiers
 `CeCILL`, `CC-BY-SA` and similar) are a hard deny independent of the policy's
 `allowedLicenseExpressions`, so a future policy edit cannot admit one. A package's
 license string is not rights clearance. The current policy vocabulary is
-`Apache-2.0`, `MIT`, `MIT OR Apache-2.0`.
+`Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `BlueOak-1.0.0`, `ISC`, `MIT` and
+`MIT OR Apache-2.0`. A `LicenseEvidence` whose `verdict` is not `"verified"` is
+recorded evidence, not licence permission.
 
 JSON is bounded to 16,777,216 bytes (16 MiB) per file, including BuildEvidence;
 serde's recursion limit remains enabled (128). Each array has at most 100,000
@@ -95,7 +102,8 @@ Approval { id: Id, target: Target, inventoryDigest: Digest }
 `forbiddenPathComponents` exactly `["ee"]`. Supported targets and allowed
 expressions are nonempty; an approval's target must be in supportedTargets.
 The real policy lists exactly the four targets above, has policyId
-`solidcraft-desktop-mastra-v1` and still has **approvals: []**.
+`solidcraft-desktop-mastra-v1` and has **approvals: []**. The inventory is
+reproducible evidence, not an approved artifact.
 
 ```text
 SourceRecords {
@@ -157,7 +165,8 @@ Dependency {
   archiveDigest: Digest, lockIntegrity: Text, dependencyIds: Id[]
 }
 LicenseEvidence {
-  id: Id, expression: Text, rightsHolder: Text, licenseFiles: FileRef[], noticeFiles: FileRef[]
+  id: Id, expression: Text, rightsHolder: Text, verdict: AuditVerdict, reason: Text,
+  licenseFiles: FileRef[], noticeFiles: FileRef[]
 }
 BuildInput {
   id: Id, materializedPath: RelPath, originKind: OriginKind, originId: Id,
@@ -426,9 +435,11 @@ source-to-materialized mappings, applicable rights/notices, the selected lock an
 production closure, and complete real build evidence before release. These tests
 execute no Node, tool or package manager. Synthetic admission and Cargo checks do
 not establish real source audit, reproducibility, installed-package acceptance or
-trusted checkout identity; #17/#14 retain those release obligations. Real approvals
-remain empty and all five selected real source records now carry pinned digests
-and an explicit audit verdict: 0 verified, 3 needs-human, 2 rejected.
+trusted checkout identity; #17/#14 retain those release obligations. The Linux x64
+runtime inventory is reproducible evidence but is intentionally unapproved pending
+legal review; the other targets and installed-package evidence remain open. All
+five selected real source records carry pinned digests and an explicit audit
+verdict: 0 verified, 3 needs-human, 2 rejected.
 
 ## CLI contract and #17 integration
 

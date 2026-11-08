@@ -10,9 +10,15 @@
   ],
   "allowedLicenseExpressions": [
     "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BlueOak-1.0.0",
+    "ISC",
     "MIT",
     "MIT OR Apache-2.0"
   ],
-  "forbiddenPathComponents": ["ee"],
+  "forbiddenPathComponents": [
+    "ee"
+  ],
   "approvals": []
 }

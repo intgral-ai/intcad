@@ -62,9 +62,32 @@ files before building an installed artifact. That artifact inventory remains
 ## Transitive closure
 
 The repository-root `package-lock.json` is the locked transitive closure and is
-committed with this package. `npm ls --omit=dev --all` can print the installed
-tree after `npm ci`. This record does not claim that the full transitive set has
-been reviewed for distribution; #15 owns that review and the notices it implies.
+committed with this package. `npm ls --omit=dev --all` prints the installed tree
+after `npm ci`. The reviewed closure is now
+[`packaging/mastra/inventory.json`](../../packaging/mastra/inventory.json):
+151 production packages, exact versions, resolved URLs, lockfile integrity and
+tarball SHA-256, with a file/digest entry for every shipped file.
+
+## Reproducible artifact evidence, not an approval
+
+`npm run check:deps` also runs
+`packages/mastra-runtime/scripts/runtime-artifact.mjs --check` in evidence mode.
+It rebuilds the Linux x64 artifact from `dist/src`, the production `node_modules`
+closure, the protocol bundle and the pinned Node binary, compares every digest
+with the inventory, and checks for enterprise-license content. It exits 0 with
+`status: "unapproved"` while the content is reproducible and explicitly recorded
+as `needs-human`. Packaging/release must use `npm run check:artifact-approval`
+(`--require-approved`), which exits 1 while `policy.approvals` is empty. See
+[`docs/mastra-runtime-artifact.md`](../../docs/mastra-runtime-artifact.md).
+
+The artifact has no path component named `ee`, but four required
+`@mastra/core/dist/ee-*.js`/`.cjs`/`.map` files carry Mastra Enterprise License
+headers and `src/ee/index.ts` source-map provenance. The public
+`@mastra/core/agent` entry imports them, so they cannot simply be pruned. They are
+recorded as needs-human enterprise content in the inventory and notices. The
+artifact is **blocked on legal review**; #14 must not bundle it until that is
+resolved, either by a different Mastra build/entry that excludes the files or by
+an explicit reviewed decision. This is not legal sign-off.
 
 ## Verification
 

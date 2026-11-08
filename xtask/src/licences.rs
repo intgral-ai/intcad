@@ -409,6 +409,7 @@ mod tests {
             "rootDependencyIds":["fixture-dependency"],"dependencies":[{"id":"fixture-dependency","name":"@fixture/original","version":"1.0.0",
                 "sourceUrl":"https://fixture.invalid/dependency","archiveDigest":pin,"lockIntegrity":"synthetic-integrity","dependencyIds":[]}],
             "rootToolIds":[],"buildTools":[],"licenses":[{"id":"fixture-license","expression":"MIT","rightsHolder":"Synthetic fixture author",
+                "verdict":"verified","reason":"Synthetic fixture licence review",
                 "licenseFiles":[{"path":"licenses/original.txt","digest":outputs[1]["digest"]}],"noticeFiles":[]}],
             "inputs":inputs,"outputs":outputs,"derivations":derivations});
         put_bytes(&fixture.artifact, "inventory.json", &serde_json::to_vec(&inventory).unwrap());
@@ -1591,6 +1592,35 @@ mod tests {
         artifact_error(&f, &artifact_request(&f), "PROVENANCE_INCOMPLETE");
     }
 
+    // Content-level enterprise markers fail even when the path has no ee component and
+    // the synthetic approval covers the exact inventory bytes.
+    #[test]
+    fn distribution_enterprise_content_cannot_be_laundered() {
+        let f = valid_artifact_case();
+        let marker = b"// @license Mastra Enterprise License\n";
+        let path = "node_modules/@mastra/core/dist/injected/enterprise.js";
+        put_bytes(&f.artifact, path, marker);
+        put_bytes(&f.inputs, path, marker);
+        rewrite_json(&f.artifact, "inventory.json", |i| {
+            i["inputs"].as_array_mut().unwrap().push(json!({
+                "id":"injected-enterprise-input","materializedPath":path,"originKind":"dependency",
+                "originId":"fixture-dependency","originalPath":path,"sourceRevision":null,
+                "digest":digest(marker),"sizeBytes":marker.len(),"licenseIds":["fixture-license"],"sourceRecordId":null
+            }));
+            i["inputs"].as_array_mut().unwrap().sort_by_key(|v| v["id"].as_str().unwrap().to_owned());
+            i["outputs"].as_array_mut().unwrap().push(json!({
+                "path":path,"digest":digest(marker),"sizeBytes":marker.len(),"role":"code","licenseIds":["fixture-license"]
+            }));
+            i["outputs"].as_array_mut().unwrap().sort_by_key(|v| v["path"].as_str().unwrap().to_owned());
+            i["derivations"].as_array_mut().unwrap().push(json!({
+                "outputPath":path,"inputIds":["injected-enterprise-input"],"toolInputIds":[],"evidenceInputId":null
+            }));
+            i["derivations"].as_array_mut().unwrap().sort_by_key(|v| v["outputPath"].as_str().unwrap().to_owned());
+        });
+        refresh_fixture_receipt(&f);
+        artifact_error(&f, &artifact_request(&f), "ENTERPRISE_INPUT");
+    }
+
     // Owner authorization is not a per-file review or permission to substitute third-party rights.
     #[test]
     fn distribution_unverified_migration_is_not_admitted() {
@@ -2254,13 +2284,29 @@ mod tests {
         let real_sources = read_source_records(repository).unwrap();
         let policy_value: Value = serde_json::from_slice(&std::fs::read(repository.join("packaging/mastra/policy.json")).unwrap()).unwrap();
         let real_value: Value = serde_json::from_slice(&std::fs::read(repository.join("packaging/mastra/source-records.json")).unwrap()).unwrap();
-        assert_eq!(policy_value["approvals"], json!([]), "no real artifact has been approved");
         assert_eq!(policy_value["policyId"], "solidcraft-desktop-mastra-v1");
         assert_eq!(
             policy_value["supportedTargets"],
             json!(["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"])
         );
-        assert_eq!(policy_value["allowedLicenseExpressions"], json!(["Apache-2.0", "MIT", "MIT OR Apache-2.0"]));
+        assert_eq!(
+            policy_value["allowedLicenseExpressions"],
+            json!(["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BlueOak-1.0.0", "ISC", "MIT", "MIT OR Apache-2.0"])
+        );
+        let approvals = policy_value["approvals"].as_array().unwrap();
+        assert!(approvals.is_empty(), "the reproducible runtime inventory must not be approved");
+        let real_inventory: Value = serde_json::from_slice(&std::fs::read(repository.join("packaging/mastra/inventory.json")).unwrap()).unwrap();
+        let license = |id: &str| real_inventory["licenses"].as_array().unwrap().iter().find(|license| license["id"] == id).cloned().unwrap();
+        assert_eq!(license("lic-mastra-enterprise")["verdict"], "needs-human");
+        assert_eq!(license("lic-mastra-enterprise")["expression"], "LicenseRef-Mastra-Enterprise");
+        for id in [
+            "lic-ai-sdk-provider-utils-v6-4.0.63",
+            "lic-ai-sdk-provider-utils-v7-5.0.72",
+            "lic-standard-community-standard-json-0.3.7",
+            "lic-standard-community-standard-openapi-0.2.11",
+        ] {
+            assert_eq!(license(id)["verdict"], "needs-human", "{id}: missing-licence package must need review");
+        }
         assert_eq!(real_value["authorizations"][0]["declaration"], "有权代表并授权");
         assert_eq!(real_value["authorizations"][0]["sourceRevision"], "acb5048120b53ae1b4502724b70d1283e8c9daf4");
         let records = real_value["records"].as_array().unwrap();
