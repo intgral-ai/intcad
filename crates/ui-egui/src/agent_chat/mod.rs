@@ -1115,41 +1115,42 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
     let started: Result<Box<dyn ChatBackend>, String> = match (execution, entry.kind) {
-        (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_needs_connection").to_string()),
-        (agents::Execution::Mastra, _) => (|| -> Result<Box<dyn ChatBackend>, String> {
-            let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
-            let backend::StartContext { cwd, bridge, wake, .. } = start;
-            let mut argv = acp::split_command(&mastra_command);
-            if argv.is_empty() {
-                return Err(tr("ui.mastra_runtime_missing").to_string());
-            }
-            let executable = std::path::PathBuf::from(argv.remove(0));
-            let workflow_id =
-                if mastra_workflow.trim().is_empty() { mastra_backend::DEFAULT_WORKFLOW.to_string() } else { mastra_workflow.trim().to_string() };
-            if mastra_protocol::Id::parse(&workflow_id).is_err() {
-                return Err(tr("ui.mastra_workflow_invalid").to_string());
-            }
-            let config = mastra_backend::MastraConfig {
-                connection_id: entry.id.clone(),
-                model: entry.model.clone(),
-                workflow_id,
-                bridge,
-                instructions,
-                connection_auth: Arc::new(std::sync::Mutex::new(None)),
-                frozen_binding: Arc::new(std::sync::Mutex::new(None)),
-                wake: Arc::from(wake),
-            };
-            let launch = runtime_client::RuntimeLaunch {
-                executable,
-                args: argv.into_iter().map(std::ffi::OsString::from).collect(),
-                cwd,
-                host_version: env!("CARGO_PKG_VERSION").into(),
-                limits: mastra_protocol::Limits::default(),
-            };
-            let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);
-            let admission = runtime_client::RuntimeAdmission::new(8).map(Arc::new).map_err(|_| tr("ui.mastra_runtime_failed").to_string())?;
-            mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
-        })(),
+        (agents::Execution::Mastra, agents::Kind::Acp | agents::Kind::Api | agents::Kind::Anthropic) => {
+            (|| -> Result<Box<dyn ChatBackend>, String> {
+                let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
+                let backend::StartContext { cwd, bridge, wake, .. } = start;
+                let mut argv = acp::split_command(&mastra_command);
+                if argv.is_empty() {
+                    return Err(tr("ui.mastra_runtime_missing").to_string());
+                }
+                let executable = std::path::PathBuf::from(argv.remove(0));
+                let workflow_id =
+                    if mastra_workflow.trim().is_empty() { mastra_backend::DEFAULT_WORKFLOW.to_string() } else { mastra_workflow.trim().to_string() };
+                if mastra_protocol::Id::parse(&workflow_id).is_err() {
+                    return Err(tr("ui.mastra_workflow_invalid").to_string());
+                }
+                let config = mastra_backend::MastraConfig {
+                    connection_id: entry.id.clone(),
+                    model: entry.model.clone(),
+                    workflow_id,
+                    bridge,
+                    instructions,
+                    connection_auth: Arc::new(std::sync::Mutex::new(None)),
+                    frozen_binding: Arc::new(std::sync::Mutex::new(None)),
+                    wake: Arc::from(wake),
+                };
+                let launch = runtime_client::RuntimeLaunch {
+                    executable,
+                    args: argv.into_iter().map(std::ffi::OsString::from).collect(),
+                    cwd,
+                    host_version: env!("CARGO_PKG_VERSION").into(),
+                    limits: mastra_protocol::Limits::default(),
+                };
+                let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);
+                let admission = runtime_client::RuntimeAdmission::new(8).map(Arc::new).map_err(|_| tr("ui.mastra_runtime_failed").to_string())?;
+                mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+            })()
+        }
         (agents::Execution::Direct, agents::Kind::Acp) if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
         (agents::Execution::Direct, agents::Kind::Acp) => {
             acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)

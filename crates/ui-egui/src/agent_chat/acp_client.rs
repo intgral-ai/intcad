@@ -91,6 +91,15 @@ impl AcpBackend {
         self.proc.send(&acp::request(self.next_id, method, params));
     }
 
+    /// Updates belong to the open session. An empty session id is tolerated for older peers, but
+    /// a named session other than the active one is retired and must not reach the panel.
+    fn accepts_session(&self, session: &str) -> bool {
+        match self.session.as_deref() {
+            Some(active) => session.is_empty() || session == active,
+            None => session.is_empty(),
+        }
+    }
+
     fn new_session(&mut self) {
         self.config_pending = None;
         self.pending.retain(|_, request| *request != Pending::SetConfig);
@@ -195,14 +204,23 @@ impl AcpBackend {
                     }
                 }
             }
-            Incoming::Text { thought, text } => out.push(Event::Text { thought, text }),
-            Incoming::Tool { id, title, kind, status, input, output } => out.push(Event::Tool { id, title, kind, status, input, output }),
-            Incoming::Plan(p) => out.push(Event::Plan(p)),
-            Incoming::Permission { rpc, title, kind, options } => {
+            Incoming::Text { session, thought, text } if self.accepts_session(&session) => out.push(Event::Text { thought, text }),
+            Incoming::Tool { session, id, title, kind, status, input, output } if self.accepts_session(&session) => {
+                out.push(Event::Tool { id, title, kind, status, input, output })
+            }
+            Incoming::Plan { session, steps } if self.accepts_session(&session) => out.push(Event::Plan(steps)),
+            Incoming::Permission { session, rpc, title, kind, options } => {
+                if !self.accepts_session(&session) {
+                    // A retired or unknown session cannot be approved: answer the protocol's
+                    // cancellation outcome instead of leaving the agent waiting.
+                    self.proc.send(&acp::permission_reply(rpc, None));
+                    return;
+                }
                 self.next_key += 1;
                 self.permissions.insert(self.next_key, rpc);
                 out.push(Event::Permission { key: self.next_key, title, kind, options });
             }
+            Incoming::Text { .. } | Incoming::Tool { .. } | Incoming::Plan { .. } => {}
             Incoming::AuthStatus(s) => out.push(Event::AuthStatus(s)),
             Incoming::ModeChanged(m) if !self.modern_config => out.push(Event::Modes { current: m, available: Vec::new() }),
             Incoming::ModelChanged(m) if !self.modern_config => out.push(Event::Models { current: m, available: Vec::new() }),

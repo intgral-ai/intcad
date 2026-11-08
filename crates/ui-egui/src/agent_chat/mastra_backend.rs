@@ -20,7 +20,8 @@ use super::acp::McpBridge;
 use super::backend::{ChatBackend, Event, PromptPart, ToolStatus};
 use super::host_ai::{
     self, AiError, AiErrorCode, AiErrorDetails, AiLimits, CallContext, CallScope, ContinuationId, Delivery, FinishReason, GenerateOptions,
-    GenerateRequest, HostAi, MessageRole, ModelCallBudget, ModelMessage, SessionKey, TurnControl,
+    GenerateRequest, HostAi, MessageRole, ModelCallBudget, ModelMessage, SessionKey, TaskControl, TaskPermissionState, TaskProgress, TaskRequest,
+    TaskStamp, TaskToolState, TurnControl,
 };
 use super::mastra_protocol::*;
 use super::runtime_client::{
@@ -43,6 +44,9 @@ const TURN_TIMEOUT: Duration = Duration::from_secs(1200);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 /// The model calls one workflow turn may make through this host.
 const MODEL_CALLS_PER_TURN: u32 = 20;
+/// The ACP tasks one workflow turn may delegate. This says nothing about the agent's own hidden
+/// model calls; it bounds only host delegations.
+const AGENT_TASKS_PER_TURN: u32 = 4;
 
 /// What a Mastra backend is told before it starts. The execution choice is already made; this is
 /// only the connection, workflow and launch identity it uses.
@@ -162,6 +166,8 @@ pub struct MastraBackend {
     host: Option<Arc<HostAi>>,
     runtime_instance: Option<Arc<Mutex<Option<String>>>>,
     model_budget: Option<Arc<AtomicU32>>,
+    agent_budget: Option<Arc<AtomicU32>>,
+    task_control: Arc<Mutex<Option<Arc<TaskControl>>>>,
     next_model: String,
     next_connection: String,
     runtime_ready: bool,
@@ -193,6 +199,8 @@ impl MastraBackend {
         let drain_bytes = usize::try_from(launch.limits.frame_bytes).unwrap_or(1 << 20).saturating_add(1 << 20).max(1 << 20);
         let runtime_instance = Arc::new(Mutex::new(None::<String>));
         let model_budget = Arc::new(AtomicU32::new(MODEL_CALLS_PER_TURN));
+        let agent_budget = Arc::new(AtomicU32::new(AGENT_TASKS_PER_TURN));
+        let task_control: Arc<Mutex<Option<Arc<TaskControl>>>> = Arc::new(Mutex::new(None));
         let runtime = RuntimeClient::start(
             launch,
             runtime_services(
@@ -202,6 +210,8 @@ impl MastraBackend {
                 Arc::clone(&config.connection_auth),
                 Arc::clone(&runtime_instance),
                 Arc::clone(&model_budget),
+                Arc::clone(&agent_budget),
+                Arc::clone(&task_control),
                 Arc::clone(&config.frozen_binding),
             ),
             Arc::new(move || wake()),
@@ -215,6 +225,8 @@ impl MastraBackend {
         backend.host = Some(host);
         backend.runtime_instance = Some(runtime_instance);
         backend.model_budget = Some(model_budget);
+        backend.agent_budget = Some(agent_budget);
+        backend.task_control = task_control;
         backend.events.push_back(Event::Documents(false));
         backend.events.push_back(Event::ToolsAvailable(backend.config.bridge.is_some()));
         // The connection's sign-in state is checked once, off the window thread, and kept apart
@@ -241,6 +253,8 @@ impl MastraBackend {
             host: None,
             runtime_instance: Some(Arc::new(Mutex::new(None))),
             model_budget: None,
+            agent_budget: None,
+            task_control: Arc::new(Mutex::new(None)),
             next_model,
             next_connection,
             runtime_ready: false,
@@ -363,6 +377,9 @@ impl MastraBackend {
         }
         if let Some(budget) = self.model_budget.as_ref() {
             budget.store(MODEL_CALLS_PER_TURN, Ordering::Release);
+        }
+        if let Some(budget) = self.agent_budget.as_ref() {
+            budget.store(AGENT_TASKS_PER_TURN, Ordering::Release);
         }
         let (Some(session), Some(document)) = (self.session.clone(), self.document.clone()) else {
             self.push(Event::Error(crate::i18n::tr("ui.mastra_document_missing").to_string()));
@@ -571,8 +588,31 @@ impl MastraBackend {
                 self.push(Event::Plan(steps));
             }
             AgentProgressContent::Permission(permission) => {
-                // Approval itself belongs to the ACP task owner (#4). Until then this progress is
-                // shown as a card, never as a button that cannot answer the agent.
+                if permission.state == PermissionState::Waiting
+                    && let Some(key) = permission.permission_id.as_str().strip_prefix('p').and_then(|k| k.parse::<u64>().ok())
+                {
+                    // The ACP task owner maps its own option ids to the panel's two answers.
+                    self.push(Event::Permission {
+                        key,
+                        title: permission.title,
+                        kind: Some("task".into()),
+                        options: vec![
+                            super::acp::PermissionOption {
+                                id: "allow".into(),
+                                name: crate::i18n::tr("ui.agent_chat_allow").to_string(),
+                                kind: "allow_once".into(),
+                            },
+                            super::acp::PermissionOption {
+                                id: "deny".into(),
+                                name: crate::i18n::tr("ui.agent_chat_deny").to_string(),
+                                kind: "reject_once".into(),
+                            },
+                        ],
+                    });
+                    return;
+                }
+                // Approval itself belongs to the ACP task owner; a no-longer-waiting progress is
+                // shown as a card, never as a live button.
                 let status = match permission.state {
                     PermissionState::Waiting => Some(ToolStatus::InProgress),
                     PermissionState::Allowed | PermissionState::Denied => Some(ToolStatus::Completed),
@@ -709,6 +749,8 @@ fn runtime_services(
     connection_auth: Arc<Mutex<Option<bool>>>,
     runtime_instance: Arc<Mutex<Option<String>>>,
     budget: Arc<AtomicU32>,
+    agent_budget: Arc<AtomicU32>,
+    task_control: Arc<Mutex<Option<Arc<TaskControl>>>>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
 ) -> RuntimeServices {
     RuntimeServices {
@@ -716,7 +758,7 @@ fn runtime_services(
         ids,
         admission,
         lifecycle: Arc::new(ClosedLifecycle),
-        dispatch: Arc::new(HostCalls { host, connection_auth, budget, runtime_instance, frozen_binding }),
+        dispatch: Arc::new(HostCalls { host, connection_auth, budget, agent_budget, task_control, runtime_instance, frozen_binding }),
     }
 }
 
@@ -739,6 +781,8 @@ struct HostCalls {
     host: Arc<HostAi>,
     connection_auth: Arc<Mutex<Option<bool>>>,
     budget: Arc<AtomicU32>,
+    agent_budget: Arc<AtomicU32>,
+    task_control: Arc<Mutex<Option<Arc<TaskControl>>>>,
     runtime_instance: Arc<Mutex<Option<String>>>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
 }
@@ -748,11 +792,17 @@ impl HostDispatch for HostCalls {
         let host = Arc::clone(&self.host);
         let auth = Arc::clone(&self.connection_auth);
         let budget = Arc::clone(&self.budget);
+        let agent_budget = Arc::clone(&self.agent_budget);
+        let task_control = Arc::clone(&self.task_control);
         let instance = Arc::clone(&self.runtime_instance);
         let frozen = Arc::clone(&self.frozen_binding);
         let spawned = std::thread::Builder::new().name("mastra-host-call".into()).spawn(move || {
             let cancelled = call.cancellation.is_cancelled();
-            let result = if cancelled { Err(cancelled_error("operation")) } else { handle_call(&host, &auth, &budget, &instance, &frozen, call) };
+            let result = if cancelled {
+                Err(cancelled_error("operation"))
+            } else {
+                handle_call(&host, &auth, &budget, &agent_budget, &task_control, &instance, &frozen, call, &reply)
+            };
             let _ = reply.finish(result);
         });
         // On a failed spawn, dropping the reply port resolves the call with the machine's
@@ -765,19 +815,20 @@ fn handle_call(
     host: &HostAi,
     auth: &Mutex<Option<bool>>,
     budget: &AtomicU32,
+    agent_budget: &AtomicU32,
+    task_control: &Mutex<Option<Arc<TaskControl>>>,
     runtime_instance: &Mutex<Option<String>>,
     frozen_binding: &Mutex<Option<(String, String)>>,
     call: CallbackCall,
+    reply: &ReplyPort,
 ) -> Result<HostReply, WireError> {
     let CallbackCall { scope, call, cancellation, deadline, limits, token: _token } = call;
     let frozen = frozen_binding.lock().ok().and_then(|binding| binding.clone());
     match call {
         HostCall::ConnectionDescribe(params) => {
             reject_retarget(&frozen, &params.connection_id.to_string(), &params.model_id)?;
-            let binding = host
-                .bind(&params.connection_id.to_string(), &params.model_id)
-                .map_err(|error| ai_error(&params.connection_id.to_string(), &error))?;
-            let description = host.describe(&binding).map_err(|error| ai_error(&params.connection_id.to_string(), &error))?;
+            let connection = params.connection_id.to_string();
+            let description = host.describe_agent(&connection, &params.model_id).map_err(|error| ai_error(&connection, &error))?;
             if let Ok(mut reported) = auth.lock() {
                 *reported = Some(description.state == host_ai::ConnectionState::Available);
             }
@@ -799,7 +850,11 @@ fn handle_call(
                     usage: capabilities.usage,
                     delivery: super::mastra_protocol::Delivery::Buffered,
                 },
-                auth_methods: Vec::new(),
+                auth_methods: description
+                    .auth_methods
+                    .into_iter()
+                    .filter_map(|method| Some(AuthMethod { id: Id::parse(&method.id).ok()?, name: method.name, description: method.description }))
+                    .collect(),
             }))
         }
         HostCall::ModelGenerate(params) => {
@@ -892,8 +947,128 @@ fn handle_call(
             }
         }
         HostCall::AgentRun(params) => {
-            reject_retarget(&frozen, &params.connection_id.to_string(), &params.model_id)?;
-            Err(unsupported("agent_tasks"))
+            let AgentRunParams { connection_id, model_id, task, context, timeout_seconds } = params;
+            reject_retarget(&frozen, &connection_id.to_string(), &model_id)?;
+            if context.delegation_mode != DelegationMode::ProposalOnly {
+                return Err(unsupported("delegation_mode"));
+            }
+            if agent_budget.try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1)).is_err() {
+                return Err(resource_exhausted("agent_tasks", AGENT_TASKS_PER_TURN));
+            }
+            let connection = connection_id.to_string();
+            let binding = host.bind_acp(&connection).map_err(|error| ai_error(&connection, &error))?;
+            let mut text = String::new();
+            for block in task {
+                match block {
+                    ContentBlock::Text { text: part } => {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        let room = (256usize << 10).saturating_sub(text.len());
+                        text.extend(part.chars().take(room));
+                    }
+                    ContentBlock::Image { .. } | ContentBlock::Document { .. } => return Err(unsupported("attachments")),
+                }
+            }
+            let timeout = Duration::from_secs(u64::from(timeout_seconds.clamp(1, 600)));
+            let request = TaskRequest {
+                text,
+                model: if model_id.is_empty() { None } else { Some(model_id) },
+                source: TaskStamp { document_id: context.document.document_id.as_str().to_string(), revision: context.document.revision.as_u64() },
+                timeout,
+                remaining_commands: 64,
+                allowed_commands: None,
+            };
+            let control = Arc::new(TaskControl::default());
+            if let Ok(mut slot) = task_control.lock() {
+                *slot = Some(Arc::clone(&control));
+            }
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let watch_control = Arc::clone(&control);
+            let watch_done = Arc::clone(&done);
+            let watch_cancel = cancellation.clone();
+            let _watch = std::thread::Builder::new().name("mastra-task-cancel".into()).spawn(move || {
+                while !watch_done.load(Ordering::Acquire) {
+                    if watch_cancel.is_cancelled() {
+                        watch_control.cancel();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+            let mut emit = |progress: TaskProgress| {
+                let event = match progress {
+                    TaskProgress::Text { session, text } => AgentProgress {
+                        agent_session_id: Id::parse(&session).unwrap_or_else(|_| Id::literal("session")),
+                        content: AgentProgressContent::Text(ProgressText { text }),
+                    },
+                    TaskProgress::Tool { session, call_id, title, state } => AgentProgress {
+                        agent_session_id: Id::parse(&session).unwrap_or_else(|_| Id::literal("session")),
+                        content: AgentProgressContent::Tool(ToolProgress {
+                            call_id: Id::parse(&call_id).unwrap_or_else(|_| Id::literal("tool")),
+                            title,
+                            state: match state {
+                                TaskToolState::Running => StageState::Running,
+                                TaskToolState::Completed => StageState::Completed,
+                                TaskToolState::Failed => StageState::Failed,
+                            },
+                        }),
+                    },
+                    TaskProgress::Plan { session, steps } => AgentProgress {
+                        agent_session_id: Id::parse(&session).unwrap_or_else(|_| Id::literal("session")),
+                        content: AgentProgressContent::Plan(WorkflowPlan {
+                            steps: steps
+                                .into_iter()
+                                .take(64)
+                                .enumerate()
+                                .filter_map(|(index, (title, state))| {
+                                    Some(PlanStep {
+                                        id: Id::parse(&format!("s{}", index + 1)).ok()?,
+                                        title,
+                                        state: match state.as_str() {
+                                            "completed" => StepState::Completed,
+                                            "failed" => StepState::Failed,
+                                            "in_progress" | "running" => StepState::Running,
+                                            _ => StepState::Pending,
+                                        },
+                                    })
+                                })
+                                .collect(),
+                        }),
+                    },
+                    TaskProgress::Permission { session, key, title, state } => AgentProgress {
+                        agent_session_id: Id::parse(&session).unwrap_or_else(|_| Id::literal("session")),
+                        content: AgentProgressContent::Permission(PermissionProgress {
+                            permission_id: Id::parse(&format!("p{key}")).unwrap_or_else(|_| Id::literal("permission")),
+                            title,
+                            state: match state {
+                                TaskPermissionState::Waiting => PermissionState::Waiting,
+                                TaskPermissionState::Allowed => PermissionState::Allowed,
+                                TaskPermissionState::Denied => PermissionState::Denied,
+                            },
+                        }),
+                    },
+                };
+                let _ = reply.emit(CallProgress::AgentProgress(event));
+            };
+            let result = host.agent_run(&binding, request, &control, &mut emit);
+            done.store(true, Ordering::Release);
+            if let Ok(mut slot) = task_control.lock() {
+                *slot = None;
+            }
+            if cancellation.is_cancelled() || control.is_cancelled() {
+                return Err(cancelled_error("agent.run"));
+            }
+            match result {
+                Ok(outcome) => Ok(HostReply::AgentRun(AgentRunResult {
+                    agent_session_id: Id::parse(&outcome.agent_session_id).map_err(|_| invalid_error("agent_session_id"))?,
+                    state: CompletedState::Completed,
+                    content: vec![ContentBlock::Text { text: outcome.text }],
+                    stop_reason: outcome.stop_reason,
+                    usage: RequiredNullable(None),
+                })),
+                Err(error) => Err(ai_error(&connection, &error)),
+            }
         }
         HostCall::ValidationSubmit(_) | HostCall::ValidationStatus(_) | HostCall::ValidationReport(_) | HostCall::ValidationCancel(_) => {
             Err(unsupported("validation"))
@@ -1069,6 +1244,24 @@ fn ai_error(connection_id: &str, error: &AiError) -> WireError {
             };
             (if error.code() == AiErrorCode::ModelError { ErrorCode::ModelError } else { ErrorCode::MalformedResponse }, details)
         }
+        AiErrorCode::PermissionDenied => {
+            let permission = match error.details() {
+                AiErrorDetails::Permission { permission_id } => permission_id.clone(),
+                _ => "permission".into(),
+            };
+            let details = match Id::parse(&permission) {
+                Ok(id) => ErrorDetails::Permission(PermissionDetails { permission_id: id }),
+                Err(_) => ErrorDetails::Empty(EmptyDetails {}),
+            };
+            (ErrorCode::PermissionDenied, details)
+        }
+        AiErrorCode::InvalidProposal | AiErrorCode::TaskFailed => {
+            let details = match Id::parse(connection_id) {
+                Ok(id) => ErrorDetails::Connection(ConnectionDetails { connection_id: id }),
+                Err(_) => ErrorDetails::Empty(EmptyDetails {}),
+            };
+            (if error.code() == AiErrorCode::InvalidProposal { ErrorCode::InvalidProposal } else { ErrorCode::TaskFailed }, details)
+        }
         AiErrorCode::ResourceExhausted => {
             let (resource, limit) = match error.details() {
                 AiErrorDetails::Resource { resource, limit } => ((*resource).to_owned(), *limit),
@@ -1108,6 +1301,11 @@ impl ChatBackend for MastraBackend {
     }
 
     fn cancel(&mut self) {
+        if let Ok(slot) = self.task_control.lock()
+            && let Some(control) = slot.as_ref()
+        {
+            control.cancel();
+        }
         let Some(turn) = self.end_active() else { return };
         let _ = self.port.cancel_turn(&turn.scope, CancelReason::User);
         // The host owns the terminal transition: a runtime that never answers cannot leave the
@@ -1153,14 +1351,29 @@ impl ChatBackend for MastraBackend {
         self.document = document_stamp_from_native(document_id, revision).ok();
     }
 
-    fn answer_permission(&mut self, _key: u64, _option: Option<&str>) {
-        // Mastra turns run their own tools through the chat's MCP bridge, whose approvals pass
-        // the existing gate. There is no separate runtime permission channel in 1.0.
+    fn answer_permission(&mut self, key: u64, option: Option<&str>) {
+        if let Ok(slot) = self.task_control.lock()
+            && let Some(control) = slot.as_ref()
+        {
+            let _ = control.answer(key, option);
+        }
     }
 
-    fn authenticate(&mut self, _method: &str) {
-        // The selected AI connection owns its sign-in (Settings → AI / its key). Runtime readiness
-        // never authenticates it.
+    fn authenticate(&mut self, method: &str) {
+        // The selected connection owns its sign-in. ACP tasks forward the agent's own methods and
+        // invoke its authenticate request; no key is stored here.
+        let Some(host) = self.host.as_ref().map(Arc::clone) else { return };
+        let connection = self.config.connection_id.clone();
+        let method = method.to_string();
+        let auth = Arc::clone(&self.config.connection_auth);
+        let wake = Arc::clone(&self.config.wake);
+        let _ = std::thread::Builder::new().name("mastra-agent-auth".into()).spawn(move || {
+            let available = host.authenticate_agent(&connection, &method).is_ok_and(|d| d.state == super::host_ai::ConnectionState::Available);
+            if let Ok(mut reported) = auth.lock() {
+                *reported = Some(available);
+            }
+            wake();
+        });
     }
 
     fn set_model(&mut self, model: &str) {
