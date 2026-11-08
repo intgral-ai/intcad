@@ -388,15 +388,15 @@ pub fn max_file_size(value: Option<&str>) -> Result<u64, String> {
 
 /// The message shown when no window could be opened at all.
 pub fn no_window_message(error: &str, settings: Option<&Path>) -> String {
-    let folder = settings.map(|d| d.display().to_string()).unwrap_or_else(|| "the SolidCraft settings folder".into());
+    let folder = settings.map(|d| d.display().to_string()).unwrap_or_else(|| "the open-skyfall settings folder".into());
     format!(
-        "SolidCraft could not open its window.\n\n{error}\n\n\
+        "open-skyfall could not open its window.\n\n{error}\n\n\
          The software renderer was tried too. Things to try:\n\
          - Install or update the graphics driver (on Windows, from the GPU maker's site rather than Windows Update).\n\
          - Over Remote Desktop or in a virtual machine, enable 3D acceleration or run it on the machine itself.\n\
          - Start it once with `solidcraft --safe-mode`.\n\
          - Rename the settings folder: {folder}\n\n\
-         More: https://docs.solidcraft.io/guide/troubleshooting.html"
+         More: https://github.com/intgral-ai/open-skyfall-desktop/blob/main/docs/book/src/guide/troubleshooting.md"
     )
 }
 

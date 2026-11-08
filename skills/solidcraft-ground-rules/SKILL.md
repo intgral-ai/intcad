@@ -29,6 +29,6 @@ Hard rules; reasons: CONTRIBUTING.md, "Rules that aren't negotiable".
 - Before icon, assignment or media edits, read `assets/AGENTS.md`, `assets/icons/ui/AGENTS.md` and `assets/icons/ui/STYLE_GUIDE.md`. Use canonical bases and named finished references, not a parallel style; `cargo xtask icons` validates.
 
 ## The name
-- Use SolidCraft: `solidcraft-*` crates, `solidcraft`/`solidcraft-cli`, `.sc` (`.solidcraft` still opens), `solidcraft/N`, `SOLIDCRAFT_*`, settings/recovery, MCP, docs, CI and packaging.
-- Old-name shims only: `docs/compatibility.md`. Public docs/web/Flatpak Pages stay `/solidcraft/`; no old-name aliases.
-- Terms: `docs/book/src/reference/glossary.md`, one per idea; add new terms there. Internal units: millimetres/radians; Z up.
+- Displayed name: **open-skyfall**. Internal identifiers stay `solidcraft`: crates, binaries, `.sc`, `solidcraft/N`, `SOLIDCRAFT_*`, settings, app IDs and MCP.
+- Compatibility: `docs/compatibility.md`; no new internal `solidcraft` names without a reason. Upstream keeps the SolidCraft name/logo; credit it only as upstream.
+- Terms: `docs/book/src/reference/glossary.md`; units mm/radians, Z up.

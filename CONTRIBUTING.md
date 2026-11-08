@@ -51,12 +51,13 @@ cargo xtask test                                   # unit, engine and UI-scenari
 cargo xtask ci                                     # everything a PR must pass (see below)
 ```
 
-SolidCraft is the product, repository, Cargo package and executable name.
-Build the desktop app with `cargo build --release -p solidcraft`, or the CLI with
+The displayed product name is `open-skyfall`. The repository, Cargo packages and executables
+keep the `solidcraft` name, and so do the `.sc`/`solidcraft/N` format, `SOLIDCRAFT_*`
+variables, settings folders, app IDs and the MCP server, so existing designs and scripts keep
+working. Build the desktop app with `cargo build --release -p solidcraft`, or the CLI with
 `cargo build --release -p solidcraft-cli`. Run the CLI with
 `cargo run --release -p solidcraft-cli -- commands` (or `target/release/solidcraft-cli commands`
-after building). The old name appears only in the compatibility shims listed in
-[docs/compatibility.md](docs/compatibility.md); don't add new uses of it.
+after building). The compatibility record is [docs/compatibility.md](docs/compatibility.md).
 
 Web: `cd apps/solidcraft-web && trunk serve --release`, then open the printed URL (`?sample`
 opens the sample part, `?webgl` forces WebGL2). Saving and opening files in the browser needs
@@ -533,4 +534,4 @@ about 250 KB and a clip under about 1 MB.
 ## Licence
 
 By contributing you agree that your contribution is licensed as MIT OR Apache-2.0, like the rest
-of SolidCraft. SolidCraft isn't affiliated with any CAD vendor; product names are trademarks of their owners (see NOTICE).
+of open-skyfall. open-skyfall isn't affiliated with any CAD vendor; product names are trademarks of their owners (see NOTICE).

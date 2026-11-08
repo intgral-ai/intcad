@@ -1,4 +1,4 @@
-//! SolidCraft in the browser.
+//! open-skyfall in the browser.
 //!
 //! Runs the same [`solidcraft_ui_egui::SolveApp`] as the desktop app through eframe's web runner
 //! (wgpu: WebGPU where available, WebGL2 otherwise). Build with `trunk build --release` from this
@@ -1247,7 +1247,7 @@ mod web {
                             let rev = app.session.revision;
                             app.home.show(rev);
                         }
-                        let api = Api::install(sender, cc.egui_ctx.clone()).map_err(|e| format!("SolidCraft browser API: {e:?}"))?;
+                        let api = Api::install(sender, cc.egui_ctx.clone()).map_err(|e| format!("open-skyfall browser API: {e:?}"))?;
                         let font_language = app.preferences.language.clone();
                         let linked = crate::linked::Download::start(launch.open.as_deref(), &cc.egui_ctx);
                         let full_url = window.location().href().ok().and_then(|value| url::Url::parse(&value).ok()).map(|url| launch.full_app_url(url));
@@ -1290,7 +1290,7 @@ mod web {
                 match result {
                     Ok(()) => dismiss_loading(el),
                     Err(e) => {
-                        el.set_inner_html(&format!("<p>SolidCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>"))
+                        el.set_inner_html(&format!("<p>open-skyfall failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>"))
                     }
                 }
             }
