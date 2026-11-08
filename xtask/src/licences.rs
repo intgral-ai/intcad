@@ -2297,16 +2297,18 @@ mod tests {
         assert!(approvals.is_empty(), "the reproducible runtime inventory must not be approved");
         let real_inventory: Value = serde_json::from_slice(&std::fs::read(repository.join("packaging/mastra/inventory.json")).unwrap()).unwrap();
         let license = |id: &str| real_inventory["licenses"].as_array().unwrap().iter().find(|license| license["id"] == id).cloned().unwrap();
-        assert_eq!(license("lic-mastra-enterprise")["verdict"], "needs-human");
-        assert_eq!(license("lic-mastra-enterprise")["expression"], "LicenseRef-Mastra-Enterprise");
-        for id in [
-            "lic-ai-sdk-provider-utils-v6-4.0.63",
-            "lic-ai-sdk-provider-utils-v7-5.0.72",
-            "lic-standard-community-standard-json-0.3.7",
-            "lic-standard-community-standard-openapi-0.2.11",
-        ] {
-            assert_eq!(license(id)["verdict"], "needs-human", "{id}: missing-licence package must need review");
-        }
+        // BM-1 removed the Mastra SDK closure; the current inventory is the
+        // native runtime's ajv/node/runtime/typescript closure.
+        assert_eq!(license("lic-ajv-8.20.0")["expression"], "MIT");
+        assert_eq!(license("lic-runtime")["expression"], "MIT OR Apache-2.0");
+        assert!(
+            !real_inventory["licenses"].as_array().unwrap().iter().any(|license| {
+                let id = license["id"].as_str().unwrap_or("");
+                let expression = license["expression"].as_str().unwrap_or("");
+                id.contains("mastra") || expression.contains("Mastra")
+            }),
+            "BM-1 removed the Mastra/EE licence closure"
+        );
         assert_eq!(real_value["authorizations"][0]["declaration"], "有权代表并授权");
         assert_eq!(real_value["authorizations"][0]["sourceRevision"], "acb5048120b53ae1b4502724b70d1283e8c9daf4");
         let records = real_value["records"].as_array().unwrap();
