@@ -58,6 +58,15 @@ pub enum Event {
         agent: String,
         images: bool,
     },
+    /// A standalone Mastra runtime process is ready. This says nothing about any AI connection's
+    /// authentication, which arrives separately in [`Event::ConnectionAuth`].
+    RuntimeReady {
+        version: String,
+    },
+    /// The selected AI connection's authentication, checked independently of runtime readiness.
+    ConnectionAuth {
+        available: bool,
+    },
     /// Text it streams (`thought`: its reasoning, shown dimmed).
     Text {
         thought: bool,
@@ -147,6 +156,9 @@ pub trait ChatBackend {
     /// The user's custom instructions (#8220), added to the system note of every session that
     /// starts after this call. The panel sets them before the first session and before New chat.
     fn set_instructions(&mut self, _text: &str) {}
+    /// The open document a turn is about to bind to: its identity and actual revision, read when
+    /// the turn starts. Backends that pin a document use it; the others ignore it.
+    fn set_document(&mut self, _document_id: &str, _revision: u64) {}
     /// Answer an [`Event::Permission`] with one of its options (`None`: cancelled).
     fn answer_permission(&mut self, key: u64, option: Option<&str>);
     /// Ask the backend to sign in by itself with one of its methods (it opens the browser).

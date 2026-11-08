@@ -1562,6 +1562,13 @@ preference_settings! {
     /// Custom instructions (#8220): text the agent chat adds to its system note when a session
     /// starts (`agent_chat::acp::system_note`). No page reset discards this user-authored text.
     agent_instructions: String = String::new();
+    /// How chat turns execute: directly on the selected AI connection (the default, as before)
+    /// or through a Mastra workflow runtime. Separate from the connection and model identity.
+    chat_execution: crate::agent_chat::agents::Execution = crate::agent_chat::agents::Execution::Direct, PAGE_ASSISTANT;
+    /// The Mastra workflow a workflow turn runs (empty: the runtime's `modeling` workflow).
+    mastra_workflow_id: String = String::new(), PAGE_ASSISTANT;
+    /// How to start the Mastra runtime: its command line (empty: not configured).
+    mastra_runtime_command: String = String::new(), PAGE_ASSISTANT;
 
     // ---- Sketch / selection modifier bindings (classic defaults; alternate mapping is opt-in) ----
     /// Modifier that suppresses sketch auto-snap while drawing or dragging a sketch point.
@@ -2263,6 +2270,12 @@ fn ui_font_row(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         app.prefs_window.font_filter.clear();
     }
+}
+
+/// Test seam for the page reset table; production uses [`defaults`].
+#[cfg(test)]
+pub(crate) fn reset_preferences_for_test(p: &mut Prefs, page: usize) {
+    reset_preferences(p, page);
 }
 
 /// Restore Defaults for one page.

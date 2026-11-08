@@ -3,7 +3,7 @@
 //! and the panel. Plus the Add agent dialog: an installed ACP agent, a custom command, or an
 //! endpoint (OpenAI-compatible or Anthropic-compatible, whose key goes to the system keychain).
 
-use super::agents::{self, AgentConfig, Kind, Mode, Protocol};
+use super::agents::{self, AgentConfig, Execution, Kind, Mode, Protocol};
 use super::backend::TestError;
 use super::*;
 use crate::ui_kit;
@@ -502,6 +502,33 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The execution choice is separate from the agent/model pickers: it decides who answers, not
+/// which connection or key is used. Direct keeps the behaviour of older preferences. It stays
+/// inside the Connecting section so the page's section rhythm does not move for it.
+pub(crate) fn runtime_command_missing(app: &SolveApp) -> bool {
+    app.preferences.mastra_runtime_command.trim().is_empty()
+}
+
+fn execution_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui.separator();
+    ui_kit::text(ui, tr("ui.mastra_execution"), ui_kit::Text::Hint("execution_heading"));
+    let mut selected = Execution::ALL.iter().position(|choice| *choice == app.preferences.chat_execution).unwrap_or(0);
+    let options = [tr("ui.mastra_execution_direct"), tr("ui.mastra_execution_workflow")];
+    if ui_kit::segmented(ui, &mut selected, &options, ui_kit::Segments { intrinsic: true, ..Default::default() })
+        && let Some(choice) = Execution::ALL.get(selected)
+    {
+        app.preferences.chat_execution = *choice;
+    }
+    ui_kit::text(ui, tr("ui.mastra_execution_note"), ui_kit::Text::Hint("execution"));
+    if app.preferences.chat_execution == Execution::Mastra {
+        ui_kit::text_row(ui, tr("ui.mastra_workflow"), &mut app.preferences.mastra_workflow_id, "modeling");
+        ui_kit::text_row(ui, tr("ui.mastra_runtime_command"), &mut app.preferences.mastra_runtime_command, tr("ui.mastra_runtime_hint"));
+        if runtime_command_missing(app) {
+            ui_kit::text(ui, tr("ui.mastra_runtime_missing"), ui_kit::Text::Hint("runtime"));
+        }
+    }
+}
+
 fn connecting_section(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui_kit::settings_section(ui, "assistant_connecting", tr("prefs.assistant_connecting"), |ui| {
         for (label, help, handle, value) in [
@@ -517,6 +544,7 @@ fn connecting_section(app: &mut SolveApp, ui: &mut egui::Ui) {
                 ui_kit::help_icon(ui, tr(help));
             });
         }
+        execution_controls(app, ui);
     });
 }
 

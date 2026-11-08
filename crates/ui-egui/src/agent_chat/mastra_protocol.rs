@@ -27,6 +27,12 @@ impl Id {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A compile-time protocol constant, never user or peer input. Parsing is skipped because the
+    /// caller's literal is already valid by construction.
+    pub fn literal(value: &'static str) -> Self {
+        Self(value.to_owned())
+    }
 }
 
 impl fmt::Display for Id {
