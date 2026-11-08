@@ -633,7 +633,19 @@ function compare() {
     const keys = new Set([...Object.keys(committed), ...Object.keys(generated)]);
     for (const key of keys) {
       if (JSON.stringify(committed[key]) !== JSON.stringify(generated[key])) {
-        throw new Error(`inventory drift at ${key}: rebuild does not match packaging/mastra/inventory.json`);
+        let detail = "";
+        if (Array.isArray(committed[key]) && Array.isArray(generated[key])) {
+          const length = Math.max(committed[key].length, generated[key].length);
+          for (let index = 0; index < length; index += 1) {
+            if (JSON.stringify(committed[key][index]) !== JSON.stringify(generated[key][index])) {
+              const committedItem = committed[key][index];
+              const generatedItem = generated[key][index];
+              detail = `; first difference at index ${index}: committed=${JSON.stringify(committedItem)} generated=${JSON.stringify(generatedItem)}`;
+              break;
+            }
+          }
+        }
+        throw new Error(`inventory drift at ${key}: rebuild does not match packaging/mastra/inventory.json${detail}`);
       }
     }
     throw new Error("inventory drift: rebuild does not match packaging/mastra/inventory.json");
