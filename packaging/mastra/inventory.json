@@ -34654,8 +34654,8 @@
       "originId": "in-2dc303413d024f8326f4",
       "originalPath": "packages/mastra-runtime/src/host-ai/language-model.ts",
       "sourceRevision": null,
-      "digest": "sha256:64cb9c04c58a4cd8b21a942d3b881ad990fe31131d8c08ba7729447d68fe7627",
-      "sizeBytes": 14311,
+      "digest": "sha256:7509a14da094422c0ab993f4748d9964d0bfb593c449ed32e95b4be0286fbb33",
+      "sizeBytes": 14532,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -63592,8 +63592,8 @@
       "originId": "in-5ae5879af0e8ef678f2f",
       "originalPath": "packages/mastra-runtime/src/workflows/types.ts",
       "sourceRevision": null,
-      "digest": "sha256:fb99a7940f5da0211cc7ec68760521f81c4a1d47dc8d5f72feadcac9f5050b5d",
-      "sizeBytes": 10092,
+      "digest": "sha256:af9457ae2f244938a89c359deb9d419c02d48a5e49dc41e79d703353d6eb0030",
+      "sizeBytes": 10212,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -96394,8 +96394,8 @@
       "originId": "in-8ceec59f9e9594481517",
       "originalPath": "packages/mastra-runtime/src/host-ai/model-client.ts",
       "sourceRevision": null,
-      "digest": "sha256:286e65008bced6a2116d7aef91153d988ffd390e1a475c2405bd87fea25c5a86",
-      "sizeBytes": 8538,
+      "digest": "sha256:86c4fa5f50e05e0386340b82bc6d2c2620f38058ac5b493c5b87a75096fe481a",
+      "sizeBytes": 10652,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -126046,8 +126046,8 @@
       "originId": "in-bc921bd9e94e413ddde4",
       "originalPath": "packages/mastra-runtime/src/workflows/inspect.ts",
       "sourceRevision": null,
-      "digest": "sha256:2b858a91b6f0eaeb0755be4ab2460cc04cd75b63bd88f28d425adec8de9fd31c",
-      "sizeBytes": 5555,
+      "digest": "sha256:fd984c5354bc055d5df2e55e3c27aae2a55c65a5bc47f4bc7957813094e89113",
+      "sizeBytes": 5676,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -147452,8 +147452,8 @@
       "originId": "in-decbce07e0d8ec7452a4",
       "originalPath": "packages/mastra-runtime/src/server.ts",
       "sourceRevision": null,
-      "digest": "sha256:abd8837766ae89d4fa1bbd89443ef7ee432bd61981919e8728187db201f9a9c7",
-      "sizeBytes": 45804,
+      "digest": "sha256:0dd759b7e2f339babdd4eeb947e5a840afe977f4f3dfcb24a662d4f9dc8c72ca",
+      "sizeBytes": 50717,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -168574,8 +168574,8 @@
     },
     {
       "path": "dist/src/host-ai/language-model.js",
-      "digest": "sha256:3f93d77ddabe7e9de338395008a12f3b1543982e2fe5b4802e9432c8d4d4b12c",
-      "sizeBytes": 12540,
+      "digest": "sha256:4c6ba2925bea544d7a6081df5b3cfd917990d8651bbe3b0ccf289a994f76c072",
+      "sizeBytes": 12736,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168583,8 +168583,8 @@
     },
     {
       "path": "dist/src/host-ai/model-client.d.ts",
-      "digest": "sha256:c34a807726dd6b88c40460aee9ea19d41626adfee10beb51ca7d16d4bb42f57a",
-      "sizeBytes": 2798,
+      "digest": "sha256:5c1e3aac67b654d413c330250cb15bb5fa3db89c08af8ff7d64968dcdf346ad1",
+      "sizeBytes": 3159,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168592,8 +168592,8 @@
     },
     {
       "path": "dist/src/host-ai/model-client.js",
-      "digest": "sha256:f94a32f69f120883f5ae698c3dd771a754140a2ab4579bce5d4ecf1c6ef647bf",
-      "sizeBytes": 6511,
+      "digest": "sha256:b2dfd11e6f5d0b4ac112d0d8ecc9c0f5d9ea428fb9cec43d208192862847f81b",
+      "sizeBytes": 8386,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168682,8 +168682,8 @@
     },
     {
       "path": "dist/src/server.js",
-      "digest": "sha256:dae2b50fa1ac100ed54c6ef84e2e80265865267d4e02835fa957e99d6d04872c",
-      "sizeBytes": 44964,
+      "digest": "sha256:e406f6bc47b7fa7aa7a3978f92acf1b45550244432dba5230324c643bc95abaf",
+      "sizeBytes": 50188,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168844,8 +168844,8 @@
     },
     {
       "path": "dist/src/workflows/inspect.js",
-      "digest": "sha256:a5398d4f09b387a2a0d6a9d1161f786b02e6ada09274da8f10838713c4740a6e",
-      "sizeBytes": 5149,
+      "digest": "sha256:9e13e8f91272c6a944c6ab5ddb8fd68684d2cb7a0ae78176e76822d4d8f43942",
+      "sizeBytes": 5286,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -168871,8 +168871,8 @@
     },
     {
       "path": "dist/src/workflows/types.d.ts",
-      "digest": "sha256:f8d03353e797fd2481047598af7897700c77c8d7eb613b2045276b0d38a5bb6e",
-      "sizeBytes": 10309,
+      "digest": "sha256:dde097861ddbc1ab0e7b49cd989783f9a9a1dab03ba18bcf2e7fc059164fc6f1",
+      "sizeBytes": 10433,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
