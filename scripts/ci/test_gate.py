@@ -309,12 +309,12 @@ class ExecutionEvidence(unittest.TestCase):
         self.value = planner.make_plan(META, ["packages/mastra-runtime/src/main.ts"], inventory,
             source_revision=SHA, event_name="pull_request", base_ref="develop", head_ref="task",
             full=True, release_required=True, diff_complete=True)
-        for job in ("contract-rust", "integration", "packages"):
+        for job in ("contract-rust", "packages"):
             with self.subTest(job=job):
                 self.receipts = {job: command_receipt(self.value, job)}
                 self.needs = {job: "success"}
                 self.assertIn(job + ": test-bearing", "\n".join(self.evaluate()))
-        for job in ("runtime", "contract-ts"):
+        for job in ("runtime", "contract-ts", "integration"):
             with self.subTest(job=job):
                 receipt = self.gate.record_receipt(plan_bytes(self.value), job,
                     [{"argv": ["npm", "ci", "--no-audit", "--no-fund"], "exitCode": 0}], None, None, set())

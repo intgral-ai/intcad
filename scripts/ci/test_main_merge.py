@@ -269,12 +269,23 @@ else:
 
     def test_present_but_unwired_consumer_cannot_get_a_success_stub(self):
         value = self.plan(["README.md"])
-        value["jobs"]["integration"] = {"decision": "run", "reason": "selected_change", "missingInputs": []}
-        value["openObligations"].remove("integration")
+        value["jobs"]["packages"] = {"decision": "run", "reason": "selected_change", "missingInputs": []}
         self.plan_file.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, "handoff"):
-            main_merge.execute_workflow(self.plan_file, "integration", self.root / "evidence/integration")
-        self.assertFalse((self.root / "evidence/integration/receipt.json").exists())
+            main_merge.execute_workflow(self.plan_file, "packages", self.root / "evidence/packages")
+        self.assertFalse((self.root / "evidence/packages/receipt.json").exists())
+
+    def test_integration_commands_are_real_npm_argv(self):
+        commands = main_merge.integration_commands()
+        package = "@intgral-ai/solidcraft-mastra-runtime"
+        self.assertEqual(commands[:2], main_merge.VERSION_CHECKS)
+        self.assertIn("22.23.4", commands[0][2])
+        self.assertIn("11.19.0", commands[1][2])
+        self.assertEqual(commands[2:], [
+            ["npm", "ci", "--no-audit", "--no-fund"],
+            ["npm", "run", "build", "-w", package],
+            ["npm", "test", "-w", package],
+        ])
 
     def test_selection_uses_real_diff_including_both_names_and_actual_checkout(self):
         base = self.source
