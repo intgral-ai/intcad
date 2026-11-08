@@ -75,7 +75,8 @@ class Synthetic(unittest.TestCase):
         for p in [".github/workflows/docker.yml", ".github/ISSUE_TEMPLATE/bug.yml", "scripts/claim/claim.js",
                   "scripts/triage/triage.test.js", "vendor/README.md", "SECURITY.md", ".gitignore", ".npmrc",
                   "attribution/pending/mastra-runtime.md",
-                  "assets/locales/pending/host-bridge.json"]:
+                  "assets/locales/pending/host-bridge.json",
+                  "assets/platforms/windows/solidcraft.wxs"]:
             self.assertEqual(affected.select(SYNTH, [p]), (False, []), p)
 
     def test_windows_metadata_selects_packages_and_preserves_triggers(self):
