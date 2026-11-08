@@ -141,6 +141,10 @@ class ForkExecution(unittest.TestCase):
             ["npm", "run", "verify:schema", "-w", package],
         ])
 
+    def test_artifact_policy_command_is_the_reviewed_policy_check(self):
+        self.assertEqual(self.adapter("artifact_commands")(),
+                         [["cargo", "xtask", "runtime-artifact", "--mode", "policy"]])
+
     def test_empty_rust_package_scope_is_an_error_not_workspace_fallback(self):
         build = self.adapter("native_commands")
         with self.assertRaises(ValueError):

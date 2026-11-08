@@ -35,7 +35,7 @@ FULL_FILES = ("Cargo.toml", "Cargo.lock", ".github/workflows/ci.yml")
 # and the GitHub bots' scripts (tested in the repository checks). Root *.md files too, unless
 # embedded (below).
 IGNORED_PREFIXES = ("docs/", "packaging/", ".github/", "scripts/claim/", "scripts/triage/")
-IGNORED_FILES = ("vendor/README.md",)
+IGNORED_FILES = ("vendor/README.md", ".gitignore", ".npmrc")
 # Root files that a crate embeds (include_str!), so they are not ignorable documentation.
 EMBEDDED = {
     "ATTRIBUTION.md": "solidcraft-ui-egui",
