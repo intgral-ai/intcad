@@ -267,13 +267,17 @@ else:
             main_merge.execute_workflow(self.plan_file, "rust", self.root / "evidence/rust")
         self.assertFalse((self.root / "evidence/rust/commands.json").exists())
 
-    def test_present_but_unwired_consumer_cannot_get_a_success_stub(self):
-        value = self.plan(["README.md"])
-        value["jobs"]["packages"] = {"decision": "run", "reason": "selected_change", "missingInputs": []}
-        self.plan_file.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, "handoff"):
-            main_merge.execute_workflow(self.plan_file, "packages", self.root / "evidence/packages")
-        self.assertFalse((self.root / "evidence/packages/receipt.json").exists())
+    def test_packages_commands_are_real_packaging_regressions(self):
+        commands = main_merge.packages_commands()
+        self.assertEqual(commands, [
+            ["python3", "-I", "packaging/tests/nightly_test.py"],
+            ["python3", "-I", "packaging/tests/windows_icon_test.py"],
+            ["python3", "-I", "packaging/tests/apprun_test.py"],
+            ["python3", "-I", "packaging/tests/flatpak_test.py"],
+        ])
+        for argv in commands:
+            self.assertEqual(argv[0], "python3")
+            self.assertTrue(argv[-1].endswith("_test.py"))
 
     def test_integration_commands_are_real_npm_argv(self):
         commands = main_merge.integration_commands()
