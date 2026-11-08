@@ -805,7 +805,7 @@ fn handle_call(
         HostCall::ModelGenerate(params) => {
             let ModelGenerateParams { connection_id, model_id, messages, tools, options, continuation } = params;
             reject_retarget(&frozen, &connection_id.to_string(), &model_id)?;
-            if budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1)).is_err() {
+            if budget.try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1)).is_err() {
                 return Err(resource_exhausted("model_calls", MODEL_CALLS_PER_TURN));
             }
             let connection = connection_id.to_string();
