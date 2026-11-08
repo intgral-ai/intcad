@@ -291,6 +291,18 @@ def artifact_commands():
     return [["cargo", "xtask", "runtime-artifact", "--mode", "policy"]]
 
 
+def integration_commands():
+    """Host/runtime process integration at the deterministic Node peer seam.
+
+    The Rust `mastra_peer_` lifecycle tests stay in the nightly full suite; this
+    job proves the built runtime process, the shared fixture bundle and the
+    deterministic host peer agree on a real turn without a second source tree.
+    """
+    return VERSION_CHECKS + [["npm", "ci", "--no-audit", "--no-fund"],
+            ["npm", "run", "build", "-w", RUNTIME_PACKAGE],
+            ["npm", "test", "-w", RUNTIME_PACKAGE]]
+
+
 def wasm_commands():
     # Read the same checked-in layering table as xtask::wasm_check; do not keep a
     # second manually maintained crate list. Compile exactly the layered crates + web.
@@ -333,6 +345,8 @@ def execute_workflow(plan_file, job, out, *, full=False):
         argvs = wasm_commands()
     elif job == "artifact-policy":
         argvs = artifact_commands()
+    elif job == "integration":
+        argvs = integration_commands()
     else:
         raise ValueError(job + ": executable owner handoff is not integrated; no placeholder receipt is permitted")
     selection = junit = None
