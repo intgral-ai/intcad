@@ -66,7 +66,9 @@ export function initialMessages(
     })),
     {
       role: "user",
-      content: [{ type: "text", text: input.parts.join("\n") }],
+      content: input.content !== undefined && input.content.length > 0
+        ? input.content.map((block) => ({ ...block }))
+        : [{ type: "text", text: input.parts.join("\n") }],
       toolCalls: [],
       toolCallId: null,
     },

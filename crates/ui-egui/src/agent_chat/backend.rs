@@ -235,6 +235,57 @@ pub fn base64(data: &[u8]) -> String {
     out
 }
 
+/// Decode standard padded base64 (RFC 4648), as the composer stores an attached picture or PDF.
+pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    if !text.len().is_multiple_of(4) {
+        return Err("base64 length is not a multiple of four".into());
+    }
+    let byte = |c: u8| -> Option<u8> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        })
+    };
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        let last = index + 1 == bytes.len() / 4;
+        let a = byte(chunk[0]).ok_or_else(|| "base64 contains an invalid character".to_string())?;
+        let b = byte(chunk[1]).ok_or_else(|| "base64 contains an invalid character".to_string())?;
+        let c = if chunk[2] == b'=' {
+            if !last || chunk[3] != b'=' {
+                return Err("base64 padding is invalid".into());
+            }
+            0
+        } else {
+            byte(chunk[2]).ok_or_else(|| "base64 contains an invalid character".to_string())?
+        };
+        let d = if chunk[3] == b'=' {
+            if !last {
+                return Err("base64 padding is invalid".into());
+            }
+            0
+        } else {
+            byte(chunk[3]).ok_or_else(|| "base64 contains an invalid character".to_string())?
+        };
+        let value = (u32::from(a) << 18) | (u32::from(b) << 12) | (u32::from(c) << 6) | u32::from(d);
+        out.push((value >> 16) as u8);
+        if chunk[2] != b'=' {
+            out.push((value >> 8) as u8);
+        } else if chunk[3] != b'=' {
+            return Err("base64 padding is invalid".into());
+        }
+        if chunk[3] != b'=' {
+            out.push(value as u8);
+        }
+    }
+    Ok(out)
+}
+
 /// A message's parts as ACP content blocks.
 pub fn content_blocks(parts: &[PromptPart]) -> Vec<Value> {
     parts
@@ -259,6 +310,16 @@ mod tests {
         {
             assert_eq!(base64(i.as_bytes()), o);
         }
+    }
+
+    #[test]
+    fn base64_decodes_the_encoder_output_and_refuses_bad_padding() {
+        for bytes in [b"".as_slice(), b"f", b"fo", b"foo", b"foobar", &[0u8, 255, 1, 2, 3]] {
+            assert_eq!(base64_decode(&base64(bytes)).as_deref(), Ok(bytes));
+        }
+        assert!(base64_decode("abc").is_err());
+        assert!(base64_decode("ab=c").is_err());
+        assert!(base64_decode("!!!!").is_err());
     }
 
     #[test]

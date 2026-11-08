@@ -269,26 +269,133 @@ test("cancellation reaches the in-flight HostAi request and prevents a late repl
   }
 });
 
-test("unsupported content is refused before a model call, and a zero model budget ends explicitly", async () => {
+test("image and document parts reach HostAi as artifact references", async () => {
   const { peer } = await negotiatedPeer();
   try {
     await peer.request("session.start", sessionScope, sessionParams(), "h:2");
-    const imageTurn = turnParams();
-    imageTurn["parts"] = [
+    const attached = turnParams();
+    const image = {
+      artifactId: "image-1",
+      digest: `sha256:${"c".repeat(64)}`,
+      sizeBytes: 10,
+      mediaType: "image/png",
+    };
+    const document = {
+      artifactId: "doc-1",
+      digest: `sha256:${"d".repeat(64)}`,
+      sizeBytes: 20,
+      mediaType: "application/pdf",
+    };
+    attached["parts"] = [
+      { type: "text", text: "Use the attached picture and brief." },
+      { type: "image", artifact: image },
+      { type: "document", name: "brief.pdf", artifact: document },
+    ];
+    const accepted = await peer.request("turn.start", turnScope, attached, "h:3");
+    assert.deepEqual(accepted.result, { state: "accepted" });
+
+    const model = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
+    const messages = (model.params as JsonObject)["messages"] as JsonObject[];
+    assert.deepEqual(messages.at(-1)?.["content"], [
+      { type: "text", text: "Use the attached picture and brief." },
+      { type: "image", artifact: image },
+      { type: "document", name: "brief.pdf", artifact: document },
+    ]);
+    assert.equal(JSON.stringify(model.params).includes("data:"), false, "the runtime never forwards attachment bytes");
+    peer.replyModel(model, "The attachments describe the requested change.", null);
+    const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
+    assert.equal((finished.data as JsonObject)["state"], "task_failed");
+  } finally {
+    peer.kill();
+  }
+});
+
+test("attachment references are stripped from history before the next turn", async () => {
+  const { peer } = await negotiatedPeer();
+  try {
+    await peer.request("session.start", sessionScope, sessionParams(), "h:2");
+    const first = turnParams();
+    first["parts"] = [
+      { type: "text", text: "First turn with files." },
       {
         type: "image",
         artifact: { artifactId: "image-1", digest: `sha256:${"c".repeat(64)}`, sizeBytes: 10, mediaType: "image/png" },
       },
+      {
+        type: "document",
+        name: "brief.pdf",
+        artifact: { artifactId: "doc-1", digest: `sha256:${"d".repeat(64)}`, sizeBytes: 20, mediaType: "application/pdf" },
+      },
     ];
-    const refused = await peer.request("turn.start", turnScope, imageTurn, "h:3");
-    assert.equal(refused.outcome, "error");
-    assert.equal(refused.error?.["code"], "UNSUPPORTED_CAPABILITY");
-    assert.equal((refused.error?.["details"] as JsonObject)["capability"], "images");
+    assert.deepEqual((await peer.request("turn.start", turnScope, first, "h:3")).result, { state: "accepted" });
+    const firstModel = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
+    const firstMessages = (firstModel.params as JsonObject)["messages"] as JsonObject[];
+    assert.equal(firstMessages[0]?.["role"], "system");
+    assert.equal(JSON.stringify(firstMessages[0]?.["content"]).includes("Use native features."), true);
+    peer.replyModel(firstModel, "Noted the attachments.", null);
+    await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
+
+    const second = turnParams();
+    second["parts"] = [{ type: "text", text: "Second turn is text only." }];
+    const secondScope = { ...turnScope, turnId: "t-2", workflowRunId: "w-2" };
+    assert.deepEqual((await peer.request("turn.start", secondScope, second, "h:5")).result, { state: "accepted" });
+    const secondModel = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
+    const history = JSON.stringify((secondModel.params as JsonObject)["messages"]);
+    assert.equal(history.includes('"type":"image"'), false, "an expired image reference never reaches the second call");
+    assert.equal(history.includes('"type":"document"'), false, "an expired PDF reference never reaches the second call");
+    assert.equal(history.includes("[image attachment]"), true);
+    assert.equal(history.includes("[document attachment: brief.pdf]"), true);
+    peer.replyModel(secondModel, "Second turn answered.", null);
+    const finished = await peer.waitFor(
+      (frame) => frame.kind === "event" && frame.event === "turn.finished" && frame.scope?.turnId === "t-2",
+    );
+    assert.equal((finished.data as JsonObject)["state"], "task_failed");
+    const frames = JSON.stringify(peer.frames);
+    assert.equal(frames.includes("data:"), false);
+    assert.equal(frames.includes("apiKey"), false);
+    assert.equal(frames.includes("Authorization"), false);
+  } finally {
+    peer.kill();
+  }
+});
+
+test("unsupported attachment type or size is refused before a model call", async () => {
+  const { peer } = await negotiatedPeer();
+  try {
+    await peer.request("session.start", sessionScope, sessionParams(), "h:2");
+    const badType = turnParams();
+    badType["parts"] = [
+      {
+        type: "image",
+        artifact: { artifactId: "image-1", digest: `sha256:${"c".repeat(64)}`, sizeBytes: 10, mediaType: "image/gif" },
+      },
+    ];
+    const refusedType = await peer.request("turn.start", turnScope, badType, "h:3");
+    assert.equal(refusedType.outcome, "error");
+    assert.equal(refusedType.error?.["code"], "INVALID_REQUEST");
+
+    const tooLarge = turnParams();
+    tooLarge["parts"] = [
+      {
+        type: "document",
+        name: "brief.pdf",
+        artifact: {
+          artifactId: "doc-1",
+          digest: `sha256:${"d".repeat(64)}`,
+          sizeBytes: DEFAULT_LIMITS.attachmentBytes + 1,
+          mediaType: "application/pdf",
+        },
+      },
+    ];
+    const refusedSize = await peer.request("turn.start", turnScope, tooLarge, "h:4");
+    assert.equal(refusedSize.outcome, "error");
+    // The wire schema caps artifact size at 4 MiB before the handler sees it.
+    assert.equal(refusedSize.error?.["code"], "INVALID_REQUEST");
     assert.equal(peer.frames.filter((frame) => frame.kind === "request" && frame.method === "model.generate").length, 0);
 
     const noBudget = turnParams();
     noBudget["budgets"] = { modelCalls: 0, agentTasks: 0, cadCommands: 0, repairs: 0, validationRuns: 0, wallTimeSeconds: 120 };
-    const accepted = await peer.request("turn.start", turnScope, noBudget, "h:4");
+    const accepted = await peer.request("turn.start", turnScope, noBudget, "h:5");
     assert.deepEqual(accepted.result, { state: "accepted" });
     const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
     assert.equal((finished.data as JsonObject)["state"], "budget_exhausted");

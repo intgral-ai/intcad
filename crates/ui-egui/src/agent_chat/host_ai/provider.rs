@@ -658,14 +658,19 @@ mod invocation {
         Ok(reply)
     }
 
-    pub(in crate::agent_chat) fn capabilities(_binding: &ConnectionBinding) -> super::super::types::AiCapabilities {
+    pub(in crate::agent_chat) fn capabilities(binding: &ConnectionBinding) -> super::super::types::AiCapabilities {
         use super::super::types::{AiCapabilities, Delivery};
+        let wire = if binding.protocol() == Protocol::OpenAi && go::is_opencode_go(&binding.configuration().base_url) {
+            go::go_protocol(binding.model_id())
+        } else {
+            binding.protocol().into()
+        };
         AiCapabilities {
             model_generate: true,
             agent_run: false,
             tools: true,
             images: true,
-            documents: false,
+            documents: matches!(wire, WireProtocol::Messages | WireProtocol::Gemini),
             structured_output: false,
             model_selection: true,
             usage: true,

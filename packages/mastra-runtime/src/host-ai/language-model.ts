@@ -65,6 +65,13 @@ function textBlock(text: string): ContentBlock {
   return { type: "text", text };
 }
 
+function blockText(block: ContentBlock): string {
+  if (block.type !== "text") {
+    throw unsupportedCapability(block.type === "image" ? "images" : "documents");
+  }
+  return block.text;
+}
+
 function parseToolArguments(args: unknown): JsonObject {
   if (isObject(args)) {
     return args;
@@ -287,13 +294,13 @@ export function toMastraMessages(messages: readonly ModelMessage[]): unknown[] {
   }
   return messages.map((message) => {
     if (message.role === "system") {
-      return { role: "system", content: message.content.map((block) => block.text).join("\n") };
+      return { role: "system", content: message.content.map(blockText).join("\n") };
     }
     if (message.role === "user") {
-      return { role: "user", content: message.content.map((block) => ({ type: "text", text: block.text })) };
+      return { role: "user", content: message.content.map((block) => ({ type: "text", text: blockText(block) })) };
     }
     if (message.role === "assistant") {
-      const content: unknown[] = message.content.map((block) => ({ type: "text", text: block.text }));
+      const content: unknown[] = message.content.map((block) => ({ type: "text", text: blockText(block) }));
       for (const call of message.toolCalls) {
         content.push({
           type: "tool-call",
@@ -304,7 +311,7 @@ export function toMastraMessages(messages: readonly ModelMessage[]): unknown[] {
       }
       return { role: "assistant", content };
     }
-    const text = message.content.map((block) => block.text).join("");
+    const text = message.content.map(blockText).join("");
     let result: unknown = text;
     try {
       result = JSON.parse(text);
@@ -414,6 +421,8 @@ export function createHostAiAgent(config: HostAiAgentConfig): Agent {
 export function messagesWithinLimits(messages: readonly ModelMessage[], limits: Limits = DEFAULT_LIMITS): boolean {
   return (
     messages.length <= limits.modelMessages &&
-    messages.every((message) => message.content.every((block) => utf8Bytes(block.text) <= limits.textBytes))
+    messages.every((message) =>
+      message.content.every((block) => (block.type === "text" ? utf8Bytes(block.text) : 0) <= limits.textBytes),
+    )
   );
 }

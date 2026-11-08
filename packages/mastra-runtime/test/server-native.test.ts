@@ -53,6 +53,46 @@ function modelRequest(peer: NativeRecordedPeer): Promise<Frame> {
   return peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
 }
 
+test("the native workflow strips attachment references from history before the next turn", async (t) => {
+  const peer = new NativeRecordedPeer(t, editBase(), { "p-edit": { checks: [] } });
+  await handshake(peer);
+
+  const first = turnParams("t-file", "w-file", "p-edit", "First turn with files.", peer.stamp());
+  first["parts"] = [
+    { type: "text", text: "First turn with files." },
+    {
+      type: "image",
+      artifact: { artifactId: "image-1", digest: `sha256:${"c".repeat(64)}`, sizeBytes: 10, mediaType: "image/png" },
+    },
+    {
+      type: "document",
+      name: "brief.pdf",
+      artifact: { artifactId: "doc-1", digest: `sha256:${"d".repeat(64)}`, sizeBytes: 20, mediaType: "application/pdf" },
+    },
+  ];
+  assert.deepEqual((await peer.request("turn.start", turnScope("t-file", "w-file"), first, "h:file")).result, { state: "accepted" });
+  const firstModel = await modelRequest(peer);
+  const firstContent = JSON.stringify(((firstModel.params?.["messages"] as JsonObject[] | undefined) ?? []).at(-1)?.["content"]);
+  assert.equal(firstContent.includes('"type":"image"'), true);
+  assert.equal(firstContent.includes('"type":"document"'), true);
+  peer.replyText(firstModel, "Noted the attachments.");
+  await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished" && frame.scope?.turnId === "t-file");
+
+  const second = turnParams("t-text", "w-text", "p-edit", "Second turn is text only.", peer.stamp());
+  assert.deepEqual((await peer.request("turn.start", turnScope("t-text", "w-text"), second, "h:text")).result, { state: "accepted" });
+  const secondModel = await modelRequest(peer);
+  const history = JSON.stringify((secondModel.params?.["messages"] as JsonObject[] | undefined) ?? []);
+  assert.equal(history.includes('"type":"image"'), false, "the native history has no expired image reference");
+  assert.equal(history.includes('"type":"document"'), false, "the native history has no expired PDF reference");
+  assert.equal(history.includes("[image attachment]"), true);
+  peer.replyText(secondModel, "Second turn answered.");
+  await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished" && frame.scope?.turnId === "t-text");
+  const frames = JSON.stringify(peer.frames);
+  assert.equal(frames.includes("data:"), false);
+  assert.equal(frames.includes("apiKey"), false);
+  assert.equal(frames.includes("Authorization"), false);
+});
+
 test("hello advertises guarded paths only when the host probed them", async (t) => {
   const plain = new NativeRecordedPeer(t, editBase(), {});
   const hello = await plain.request("runtime.hello", RUNTIME_SCOPE, helloParams(), "h:hello");

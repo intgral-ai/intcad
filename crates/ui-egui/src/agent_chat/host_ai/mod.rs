@@ -6,8 +6,11 @@ use std::{
     time::Duration,
 };
 
+use sha2::Digest;
+
 use super::backend::{HttpFn, Secrets};
 
+mod artifacts;
 mod call;
 mod connections;
 pub(super) mod continuation;
@@ -67,6 +70,7 @@ pub struct HostAi {
     deps: HostAiDependencies,
     state: Mutex<HostState>,
     tasks: AcpTaskExecutor,
+    attachments: Arc<artifacts::AttachmentStore>,
 }
 
 #[derive(Default)]
@@ -96,7 +100,7 @@ struct ScopePin {
 
 impl HostAi {
     pub fn new(deps: HostAiDependencies) -> Self {
-        Self { deps, state: Mutex::default(), tasks: AcpTaskExecutor::default() }
+        Self { deps, state: Mutex::default(), tasks: AcpTaskExecutor::default(), attachments: Arc::new(artifacts::AttachmentStore::default()) }
     }
 
     /// Direct chat already owns native prompt attachments; it cannot resolve runtime artifacts.
@@ -124,6 +128,41 @@ impl HostAi {
 
     pub(crate) fn bind_acp(&self, connection_id: &str) -> Result<AcpBinding, AiError> {
         self.deps.shared.connections.bind_acp(connection_id)
+    }
+
+    /// Retain one composer attachment for this session/turn and return only its opaque reference.
+    /// The bytes never enter a protocol frame, a log or the panel.
+    pub(crate) fn store_attachment(&self, session: &SessionKey, bytes: Arc<[u8]>, media_type: &str) -> Result<ArtifactRef, AiError> {
+        if !artifacts::SUPPORTED_MEDIA_TYPES.contains(&media_type) {
+            return Err(AiError::unsupported("mediaType"));
+        }
+        if bytes.is_empty() || bytes.len() > artifacts::MAX_ATTACHMENT_BYTES {
+            return Err(AiError::exhausted("attachment_bytes", artifacts::MAX_ATTACHMENT_BYTES as u32));
+        }
+        let id = (self.deps.ids)()?;
+        if !messages::valid_id(&id) {
+            return Err(AiError::internal("artifact_id"));
+        }
+        let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        self.attachments.insert(session, &id, Arc::clone(&bytes))?;
+        Ok(ArtifactRef { artifact_id: id, digest, size_bytes: bytes.len() as u32, media_type: media_type.to_string() })
+    }
+
+    /// A new turn replaces the previous turn's attachments; old references stop resolving.
+    pub(crate) fn clear_attachments(&self, session: &SessionKey) {
+        self.attachments.clear(session);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_attachment_for_test(&self, session: &SessionKey, reference: &ArtifactRef) -> Option<Arc<[u8]>> {
+        self.attachments.read(session, reference)
+    }
+
+    /// Prompt attachments resolve only from this turn's attachment store. Candidate/validation
+    /// artifacts use their own authorized reader; a prompt reference must never fall through to it.
+    fn artifact_reader(&self) -> ArtifactReadFn {
+        let store = Arc::clone(&self.attachments);
+        Arc::new(move |session, reference| store.read(session, reference).ok_or_else(|| AiError::unsupported("artifact")))
     }
 
     pub(crate) fn check_binding(&self, binding: &ConnectionBinding) -> Result<(), AiError> {
@@ -352,8 +391,8 @@ impl HostAi {
             (request, lease, limits)
         };
         // Artifact/secret/HTTP/ID/clock callbacks never hold the store or control gate.
-        let mut call =
-            messages::prepare_messages(&context.scope.session, binding, request.request(), &limits, &self.deps.artifacts, lease.private())?;
+        let artifacts = self.artifact_reader();
+        let mut call = messages::prepare_messages(&context.scope.session, binding, request.request(), &limits, &artifacts, lease.private())?;
         let now = (self.deps.clock)();
         context.control.check(now, context.deadline)?;
         let seconds = u64::from(request.request().options.timeout_seconds)
@@ -452,6 +491,7 @@ impl HostAi {
     }
 
     pub fn retire_session(&self, session: &SessionKey) -> Result<(), AiError> {
+        self.attachments.clear(session);
         let result = (|| {
             let calls = {
                 let mut state = self.lock_state()?;

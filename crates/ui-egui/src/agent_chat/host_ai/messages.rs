@@ -39,9 +39,22 @@ pub(in crate::agent_chat) fn prepare_messages(
         if digest != reference.digest {
             return Err(AiError::invalid("artifact"));
         }
-        let format = image::guess_format(&bytes).map_err(|_| AiError::invalid("media_type"))?;
-        if !matches!((reference.media_type.as_str(), format), ("image/png", image::ImageFormat::Png) | ("image/jpeg", image::ImageFormat::Jpeg)) {
-            return Err(AiError::invalid("media_type"));
+        match reference.media_type.as_str() {
+            "image/png" | "image/jpeg" => {
+                let format = image::guess_format(&bytes).map_err(|_| AiError::invalid("media_type"))?;
+                if !matches!(
+                    (reference.media_type.as_str(), format),
+                    ("image/png", image::ImageFormat::Png) | ("image/jpeg", image::ImageFormat::Jpeg)
+                ) {
+                    return Err(AiError::invalid("media_type"));
+                }
+            }
+            "application/pdf" => {
+                if !bytes.starts_with(b"%PDF-") {
+                    return Err(AiError::invalid("media_type"));
+                }
+            }
+            _ => return Err(AiError::invalid("media_type")),
         }
         resolved.push((reference, bytes));
     }
@@ -136,8 +149,13 @@ pub(super) fn validate_request<'a>(
     if !caps.tools && !request.tools.is_empty() {
         return Err(AiError::unsupported("tools"));
     }
-    if !caps.images && !references.is_empty() {
+    let has_images = references.iter().any(|reference| reference.media_type.starts_with("image/"));
+    let has_documents = references.iter().any(|reference| reference.media_type == "application/pdf");
+    if !caps.images && has_images {
         return Err(AiError::unsupported("images"));
+    }
+    if !caps.documents && has_documents {
+        return Err(AiError::unsupported("documents"));
     }
 
     Ok((wire, references))
@@ -285,7 +303,7 @@ pub(in crate::agent_chat) fn provider_payload_bound(
     let header_bytes = serialized_bytes(&header, usize::MAX, "provider_payload_bytes")?;
     let mut bytes = components.checked_mul(2).and_then(|n| n.checked_mul(6)).and_then(|n| n.checked_add(header_bytes)).ok_or_else(overflow)?;
     for part in request.messages.iter().flat_map(|message| &message.content) {
-        if let ContentPart::Image(reference) = part {
+        if let ContentPart::Image(reference) | ContentPart::Document { artifact: reference, .. } = part {
             bytes = bytes.checked_add(base64_bytes(reference.size_bytes as usize)?).ok_or_else(overflow)?;
         }
     }
@@ -354,20 +372,22 @@ fn validate_input<'a>(request: &'a GenerateRequest, limits: &AiLimits, wire: Wir
         for part in &message.content {
             match part {
                 ContentPart::Text(text) => bound(text.len(), limits.text_bytes, "text_bytes")?,
-                ContentPart::Document { .. } => return Err(AiError::unsupported("documents")),
+                ContentPart::Document { name, artifact: reference } => {
+                    if reference.media_type != "application/pdf" {
+                        return Err(AiError::unsupported("mediaType"));
+                    }
+                    bound(name.len(), limits.text_bytes, "text_bytes")?;
+                    if name.is_empty() || name.chars().any(char::is_control) {
+                        return Err(AiError::invalid("document_name"));
+                    }
+                    validate_attachment(message.role, reference, attachments.len(), &mut total, limits)?;
+                    attachments.push(reference);
+                }
                 ContentPart::Image(reference) => {
                     if !matches!(reference.media_type.as_str(), "image/png" | "image/jpeg") {
                         return Err(AiError::unsupported("mediaType"));
                     }
-                    if message.role != MessageRole::User || !valid_id(&reference.artifact_id) || reference.size_bytes == 0 {
-                        return Err(AiError::invalid("artifact"));
-                    }
-                    bound(reference.size_bytes as usize, limits.attachment_bytes, "attachment_bytes")?;
-                    bound(attachments.len() + 1, limits.attachments, "attachments")?;
-                    total = total
-                        .checked_add(reference.size_bytes as usize)
-                        .ok_or_else(|| AiError::exhausted("attachment_total_bytes", limits.attachment_total_bytes))?;
-                    bound(total, limits.attachment_total_bytes, "attachment_total_bytes")?;
+                    validate_attachment(message.role, reference, attachments.len(), &mut total, limits)?;
                     attachments.push(reference);
                 }
             }
@@ -629,6 +649,18 @@ fn push_group(history: &mut Vec<Value>, role: &str, key: &str, parts: Vec<Value>
     history.push(Value::Object(message));
 }
 
+fn validate_attachment(role: MessageRole, reference: &ArtifactRef, existing: usize, total: &mut usize, limits: &AiLimits) -> Result<(), AiError> {
+    if role != MessageRole::User || !valid_id(&reference.artifact_id) || reference.size_bytes == 0 {
+        return Err(AiError::invalid("artifact"));
+    }
+    bound(reference.size_bytes as usize, limits.attachment_bytes, "attachment_bytes")?;
+    bound(existing + 1, limits.attachments, "attachments")?;
+    *total = total
+        .checked_add(reference.size_bytes as usize)
+        .ok_or_else(|| AiError::exhausted("attachment_total_bytes", limits.attachment_total_bytes))?;
+    bound(*total, limits.attachment_total_bytes, "attachment_total_bytes")
+}
+
 fn encode_history(
     request: &GenerateRequest,
     wire: WireProtocol,
@@ -711,7 +743,15 @@ fn encode_history(
                         WireProtocol::Gemini => json!({"inlineData":{"mimeType":reference.media_type,"data":data}}),
                     }
                 }
-                ContentPart::Document { .. } => return Err(AiError::unsupported("documents")),
+                ContentPart::Document { name, artifact: reference } => {
+                    let data = images.iter().find(|(r, _)| *r == reference).map(|(_, data)| data).ok_or_else(|| AiError::invalid("artifact"))?;
+                    let _ = name;
+                    match wire {
+                        WireProtocol::Messages => json!({"type":"document","source":{"type":"base64","media_type":"application/pdf","data":data}}),
+                        WireProtocol::Gemini => json!({"inlineData":{"mimeType":"application/pdf","data":data}}),
+                        WireProtocol::Chat | WireProtocol::Responses => return Err(AiError::unsupported("documents")),
+                    }
+                }
             });
         }
         let mut calls = Vec::new();
@@ -730,7 +770,7 @@ fn encode_history(
         }
         match wire {
             WireProtocol::Chat => {
-                let content = if message.content.iter().any(|part| matches!(part, ContentPart::Image(_))) {
+                let content = if message.content.iter().any(|part| matches!(part, ContentPart::Image(_) | ContentPart::Document { .. })) {
                     Value::Array(parts)
                 } else {
                     json!(joined_text(message))

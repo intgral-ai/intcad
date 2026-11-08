@@ -54,6 +54,10 @@ const MODEL_CALLS_PER_TURN: u32 = 20;
 /// The ACP tasks one workflow turn may delegate. This says nothing about the agent's own hidden
 /// model calls; it bounds only host delegations.
 const AGENT_TASKS_PER_TURN: u32 = 4;
+/// Contract §4: four composer attachments per turn, 4 MiB each, 16 MiB total.
+const MAX_PROMPT_ATTACHMENTS: usize = 4;
+const MAX_PROMPT_ATTACHMENT_BYTES: usize = 4 << 20;
+const MAX_PROMPT_ATTACHMENT_TOTAL_BYTES: usize = 16 << 20;
 
 /// One in-flight ACP task. `agent.run` is serialized per window so two runtime calls cannot
 /// replace each other's permission channel. A guard clears only the control it installed.
@@ -997,16 +1001,16 @@ impl MastraBackend {
             return;
         }
         let Ok(session) = self.ids.next_id() else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::format("ui.mastra_runtime_failed", &[("error", "session")])));
             return;
         };
         if !self.rebind_host_session(self.session.as_ref(), &session) {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::format("ui.mastra_runtime_failed", &[("error", "session")])));
             return;
         }
         let bridge = if self.config.bridge.is_some() {
             let Ok(bridge_id) = self.ids.next_id() else {
-                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                self.push(Event::Error(crate::i18n::format("ui.mastra_runtime_failed", &[("error", "bridge")])));
                 return;
             };
             Some(BridgeRef { name: BridgeName::SolidCraftApp, bridge_id })
@@ -1025,8 +1029,80 @@ impl MastraBackend {
                 self.session = Some(session);
                 self.session_ready = false;
             }
-            Err(_) => self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string())),
+            Err(_) => self.push(Event::Error(crate::i18n::format("ui.mastra_runtime_failed", &[("error", "session")]))),
         }
+    }
+
+    fn host_session_key(&self, session: &Id) -> Option<SessionKey> {
+        let runtime_instance_id = self.runtime_instance.as_ref().and_then(|id| id.lock().ok().and_then(|id| id.clone())).unwrap_or_default();
+        Some(SessionKey { runtime_instance_id, session_id: session.to_string() })
+    }
+
+    /// Turn the composer's parts into wire content blocks. Images and PDFs become host-owned
+    /// artifact references; only the reference is sent to the runtime.
+    fn turn_blocks(&self, session: &SessionKey, parts: &[PromptPart]) -> Result<Vec<ContentBlock>, &'static str> {
+        let mut blocks = Vec::with_capacity(parts.len());
+        let mut count = 0usize;
+        let mut total = 0usize;
+        for part in parts {
+            match part {
+                PromptPart::Text(text) => blocks.push(ContentBlock::Text { text: text.clone() }),
+                PromptPart::Image { mime, base64 } => {
+                    if !matches!(mime.as_str(), "image/png" | "image/jpeg") {
+                        return Err("ui.mastra_attachment_type");
+                    }
+                    let bytes = super::backend::base64_decode(base64).map_err(|_| "ui.mastra_attachment_invalid")?;
+                    let reference = self.store_attachment(session, mime, bytes, &mut count, &mut total)?;
+                    blocks.push(ContentBlock::Image { artifact: wire_artifact(&reference)? });
+                }
+                PromptPart::Document { name, mime, base64, .. } => {
+                    if mime != "application/pdf" {
+                        return Err("ui.mastra_attachment_type");
+                    }
+                    let bytes = super::backend::base64_decode(base64).map_err(|_| "ui.mastra_attachment_invalid")?;
+                    let reference = self.store_attachment(session, mime, bytes, &mut count, &mut total)?;
+                    let name: String = name.trim().chars().take(200).collect();
+                    if name.is_empty() {
+                        return Err("ui.mastra_attachment_invalid");
+                    }
+                    blocks.push(ContentBlock::Document { name, artifact: wire_artifact(&reference)? });
+                }
+            }
+        }
+        Ok(blocks)
+    }
+
+    fn store_attachment(
+        &self,
+        session: &SessionKey,
+        media_type: &str,
+        bytes: Vec<u8>,
+        count: &mut usize,
+        total: &mut usize,
+    ) -> Result<host_ai::ArtifactRef, &'static str> {
+        if bytes.is_empty() || bytes.len() > MAX_PROMPT_ATTACHMENT_BYTES {
+            return Err("ui.mastra_attachment_size");
+        }
+        *count = count.checked_add(1).ok_or("ui.mastra_attachment_count")?;
+        if *count > MAX_PROMPT_ATTACHMENTS {
+            return Err("ui.mastra_attachment_count");
+        }
+        *total = total.checked_add(bytes.len()).ok_or("ui.mastra_attachment_size")?;
+        if *total > MAX_PROMPT_ATTACHMENT_TOTAL_BYTES {
+            return Err("ui.mastra_attachment_size");
+        }
+        let host = self.host.as_ref().ok_or("ui.mastra_attachment_invalid")?;
+        host.store_attachment(session, std::sync::Arc::from(bytes), media_type).map_err(|error| match error.code() {
+            AiErrorCode::ResourceExhausted => {
+                if *count > MAX_PROMPT_ATTACHMENTS {
+                    "ui.mastra_attachment_count"
+                } else {
+                    "ui.mastra_attachment_size"
+                }
+            }
+            AiErrorCode::UnsupportedCapability => "ui.mastra_attachment_type",
+            _ => "ui.mastra_attachment_invalid",
+        })
     }
 
     fn begin_turn(&mut self, parts: &[PromptPart]) {
@@ -1052,23 +1128,27 @@ impl MastraBackend {
         let (Ok(turn_id), Ok(workflow_run_id), Ok(workflow_id), Ok(connection_id)) =
             (self.ids.next_id(), self.ids.next_id(), Id::parse(&self.config.workflow_id), Id::parse(&self.next_connection))
         else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
             self.push(Event::TurnEnded { reason: "error".into() });
             return;
         };
-        let mut blocks = Vec::with_capacity(parts.len());
-        for part in parts {
-            match part {
-                PromptPart::Text(text) => blocks.push(ContentBlock::Text { text: text.clone() }),
-                // Runtime attachments are host artifact references (#11). Until that store
-                // exists, refusing is honest; dropping one silently would change the prompt.
-                PromptPart::Image { .. } | PromptPart::Document { .. } => {
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_attachments_unsupported").to_string()));
-                    self.push(Event::TurnEnded { reason: "error".into() });
-                    return;
-                }
-            }
+        let Some(host_session) = self.host_session_key(&session) else {
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
+            self.push(Event::TurnEnded { reason: "error".into() });
+            return;
+        };
+        if let Some(host) = self.host.as_ref() {
+            // A turn owns its attachments; the previous turn's references stop resolving.
+            host.clear_attachments(&host_session);
         }
+        let blocks = match self.turn_blocks(&host_session, parts) {
+            Ok(blocks) => blocks,
+            Err(key) => {
+                self.push(Event::Error(crate::i18n::tr(key).to_string()));
+                self.push(Event::TurnEnded { reason: "error".into() });
+                return;
+            }
+        };
         let binding = FrozenBinding {
             workflow_id: workflow_id.to_string(),
             connection_id: connection_id.to_string(),
@@ -1082,19 +1162,19 @@ impl MastraBackend {
             Some(validation) => match validation.profile() {
                 Some(profile) => profile,
                 None => {
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                     self.push(Event::TurnEnded { reason: "error".into() });
                     return;
                 }
             },
             None => {
                 let Ok(profile_id) = Id::parse(NATIVE_PROFILE) else {
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                     self.push(Event::TurnEnded { reason: "error".into() });
                     return;
                 };
                 let Ok(digest) = Digest::parse(EMPTY_DIGEST) else {
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                     self.push(Event::TurnEnded { reason: "error".into() });
                     return;
                 };
@@ -1130,7 +1210,7 @@ impl MastraBackend {
                 {
                     bridge.end_turn(generation);
                 }
-                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                 self.push(Event::TurnEnded { reason: "error".into() });
             }
         }
@@ -1406,7 +1486,7 @@ impl MastraBackend {
                                 let old = self.session.replace(next.clone());
                                 if !self.rebind_host_session(old.as_ref(), &next) {
                                     self.session_ready = false;
-                                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                                     return;
                                 }
                             }
@@ -1420,7 +1500,7 @@ impl MastraBackend {
                     }
                 } else if self.active.as_ref().is_some_and(|active| Scope::Turn(active.scope.clone()) == scope) && result.is_err() {
                     self.end_active();
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                     self.push(Event::TurnEnded { reason: "error".into() });
                 }
             }
@@ -1877,7 +1957,10 @@ fn host_messages(messages: &[ModelMessageWire]) -> Result<Vec<ModelMessage>, Wir
                     ContentBlock::Text { text } => Ok(host_ai::ContentPart::Text(text.clone())),
                     // The runtime sends host artifact references; the direct host has no artifact
                     // store yet (#11), so this fails closed instead of inventing bytes.
-                    ContentBlock::Image { .. } | ContentBlock::Document { .. } => Err(unsupported("artifacts")),
+                    ContentBlock::Image { artifact } => Ok(host_ai::ContentPart::Image(host_artifact(artifact)?)),
+                    ContentBlock::Document { name, artifact } => {
+                        Ok(host_ai::ContentPart::Document { name: name.clone(), artifact: host_artifact(artifact)? })
+                    }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(ModelMessage {
@@ -1897,6 +1980,39 @@ fn host_messages(messages: &[ModelMessageWire]) -> Result<Vec<ModelMessage>, Wir
             })
         })
         .collect()
+}
+
+fn digest_text(digest: [u8; 32]) -> String {
+    let mut text = String::with_capacity(71);
+    text.push_str("sha256:");
+    for byte in digest {
+        text.push_str(&format!("{byte:02x}"));
+    }
+    text
+}
+
+fn wire_artifact(reference: &host_ai::ArtifactRef) -> Result<ArtifactRef, &'static str> {
+    Ok(ArtifactRef {
+        artifact_id: Id::parse(&reference.artifact_id).map_err(|_| "ui.mastra_attachment_invalid")?,
+        digest: Digest::parse(&digest_text(reference.digest)).map_err(|_| "ui.mastra_attachment_invalid")?,
+        size_bytes: reference.size_bytes,
+        media_type: reference.media_type.clone(),
+    })
+}
+
+fn host_artifact(reference: &ArtifactRef) -> Result<host_ai::ArtifactRef, WireError> {
+    let text = reference.digest.to_string();
+    let hex = text.strip_prefix("sha256:").ok_or_else(|| invalid_error("digest"))?;
+    if hex.len() != 64 {
+        return Err(invalid_error("digest"));
+    }
+    let mut digest = [0u8; 32];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        let pair = hex.get(index * 2..index * 2 + 2).ok_or_else(|| invalid_error("digest"))?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid_error("digest"))?;
+    }
+    let artifact_id = reference.artifact_id.as_str().to_string();
+    Ok(host_ai::ArtifactRef { artifact_id, digest, size_bytes: reference.size_bytes, media_type: reference.media_type.clone() })
 }
 
 fn session_from_scope(scope: &Scope, runtime_instance: &Mutex<Option<String>>) -> Option<SessionKey> {
@@ -2140,7 +2256,7 @@ impl ChatBackend for MastraBackend {
             return;
         }
         let Ok(next) = self.ids.next_id() else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
             return;
         };
         let params = SessionResetParams { next_session_id: next.clone(), instructions: self.config.instructions.chars().take(4000).collect() };
@@ -2154,7 +2270,7 @@ impl ChatBackend for MastraBackend {
                 self.plan_set = false;
                 self.models_sent = false;
             }
-            Err(_) => self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string())),
+            Err(_) => self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string())),
         }
     }
 

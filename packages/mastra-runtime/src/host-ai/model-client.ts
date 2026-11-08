@@ -8,10 +8,22 @@ import { DEFAULT_LIMITS, isObject, type Limits } from "../limits.js";
 import type { JsonObject, Scope } from "../protocol.js";
 import { utf8Bytes } from "../protocol.js";
 
-export interface ContentBlock {
+export interface ArtifactRef {
+  readonly artifactId: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+  readonly mediaType: string;
+}
+
+export interface TextBlock {
   readonly type: "text";
   readonly text: string;
 }
+
+export type ContentBlock =
+  | TextBlock
+  | { readonly type: "image"; readonly artifact: ArtifactRef }
+  | { readonly type: "document"; readonly name: string; readonly artifact: ArtifactRef };
 
 export interface ToolCall {
   readonly id: string;
@@ -55,7 +67,7 @@ export interface Usage {
 }
 
 export interface ModelGenerateResult {
-  readonly content: ContentBlock[];
+  readonly content: TextBlock[];
   readonly toolCalls: ToolCall[];
   readonly finishReason: "stop" | "tool_calls" | "length" | "refusal" | "unknown";
   readonly usage: Usage | null;
@@ -81,13 +93,57 @@ export function modelScope(context: HostCallContext): Scope {
   return { sessionId: context.sessionId, turnId: context.turnId, workflowRunId: context.workflowRunId };
 }
 
+function validateArtifact(artifact: unknown, mediaTypes: readonly string[]): ArtifactRef {
+  if (
+    !isObject(artifact) ||
+    typeof artifact["artifactId"] !== "string" ||
+    typeof artifact["digest"] !== "string" ||
+    typeof artifact["sizeBytes"] !== "number" ||
+    typeof artifact["mediaType"] !== "string" ||
+    !Number.isInteger(artifact["sizeBytes"]) ||
+    artifact["sizeBytes"] <= 0 ||
+    !mediaTypes.includes(artifact["mediaType"])
+  ) {
+    throw invalidRequest("A model attachment reference is invalid.", { field: "messages" });
+  }
+  return artifact as unknown as ArtifactRef;
+}
+
 function validateMessages(messages: readonly ModelMessage[], limits: Limits): void {
   if (messages.length === 0 || messages.length > limits.modelMessages) {
     throw invalidRequest("The model message list is empty or over the negotiated limit.", { field: "messages" });
   }
+  let attachments = 0;
+  let total = 0;
   for (const message of messages) {
-    if (message.content.some((block) => utf8Bytes(block.text) > limits.textBytes)) {
-      throw invalidRequest("A model text block exceeds textBytes.", { field: "messages" });
+    for (const block of message.content) {
+      if (block.type === "text") {
+        if (utf8Bytes(block.text) > limits.textBytes) {
+          throw invalidRequest("A model text block exceeds textBytes.", { field: "messages" });
+        }
+        continue;
+      }
+      if (message.role !== "user") {
+        throw invalidRequest("Only a user message may carry an attachment.", { field: "messages" });
+      }
+      const artifact = validateArtifact(
+        block.artifact,
+        block.type === "image" ? ["image/png", "image/jpeg"] : ["application/pdf"],
+      );
+      if (block.type === "document" && (typeof block.name !== "string" || block.name.length === 0)) {
+        throw invalidRequest("A document block needs a name.", { field: "messages" });
+      }
+      if (artifact.sizeBytes > limits.attachmentBytes) {
+        throw invalidRequest("An attachment exceeds attachmentBytes.", { field: "messages" });
+      }
+      attachments += 1;
+      total += artifact.sizeBytes;
+      if (attachments > limits.attachments) {
+        throw invalidRequest("The model message list carries too many attachments.", { field: "messages" });
+      }
+      if (total > limits.attachmentTotalBytes) {
+        throw invalidRequest("The model attachments exceed attachmentTotalBytes.", { field: "messages" });
+      }
     }
   }
   if (messages.some((message) => message.role !== "assistant" && message.toolCalls.length > 0)) {
@@ -155,7 +211,7 @@ export function validateModelResult(value: unknown, limits: Limits): ModelGenera
     throw new ProtocolError("MALFORMED_RESPONSE", "HostAi returned an invalid usage value.");
   }
   return {
-    content: content as ContentBlock[],
+    content: content as TextBlock[],
     toolCalls: toolCalls as ToolCall[],
     finishReason,
     usage: (usage as Usage | null) ?? null,
