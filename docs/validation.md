@@ -71,9 +71,12 @@ least one evidence artifact whose digest and size verify at report time.
   not adopted. A lost or ambiguous worker result becomes `unknown`; a queued job that
   never started becomes `infrastructure_error`.
 - A terminal state is immutable and is never paired with a report for another state. If
-  a terminal run's report is missing or corrupt, reconciliation removes the unverifiable
-  report, keeps the terminal state and publishes `reportAvailable: false` (`report()`
-  returns `NOT_READY`). It does not rewrite `passed` as `unknown`.
+  a terminal run's report is missing or corrupt, `status` verifies availability before
+  reporting it (read-only observers included), and `report()` returns `NOT_READY`.
+  A worker reconcile removes the unverifiable report, keeps the terminal state and
+  persists `reportAvailable: false`; it does not rewrite `passed` as `unknown`.
+- A recovered queued run is pinned again when a worker claims it. If its candidate
+  inputs are gone, the run becomes `infrastructure_error` instead of starting.
 - Reconciliation only touches workers owned by this host or whose recorded host process
   is no longer alive. `status`, `report` and `cancel` open the port read-only: a second
   process observing a live submit never turns it into a restart. Cancel still writes the

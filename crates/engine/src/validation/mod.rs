@@ -330,8 +330,11 @@ impl ValidationPort {
             if !key_path.is_file() {
                 self.store.write_json_new(&key_path, &record)?;
             }
-            self.pin_recovered(&run_id, &admission.candidate.candidate_id)?;
             self.repair_state(&run_id, &admission, now)?;
+            let state = self.load_state(&run_id)?;
+            if !state.state.is_terminal() {
+                self.pin_recovered(&run_id, &admission.candidate.candidate_id)?;
+            }
             return self.submit_result(&run_id, &admission.candidate, &admission.profile);
         }
         // New work: resolve and freeze the profile, then verify the exact candidate bytes.
@@ -418,8 +421,11 @@ impl ValidationPort {
     fn resume_submission(&self, key: &SubmissionKey, submission: &SubmissionRecord, profile: &ProfileRef, now: u64) -> Result<SubmitResult> {
         match self.load_admission(&submission.run_id) {
             Ok(admission) => {
-                self.pin_recovered(&submission.run_id, &admission.candidate.candidate_id)?;
                 self.repair_state(&submission.run_id, &admission, now)?;
+                let state = self.load_state(&submission.run_id)?;
+                if !state.state.is_terminal() {
+                    self.pin_recovered(&submission.run_id, &admission.candidate.candidate_id)?;
+                }
                 self.submit_result(&submission.run_id, &admission.candidate, &admission.profile)
             }
             Err(error) if error.code == ErrorCode::NotFound => {
@@ -442,8 +448,11 @@ impl ValidationPort {
                 };
                 self.store.write_profile(&submission.run_id, &resolved)?;
                 self.store.ensure_json(&self.store.admission_path(&submission.run_id), &admission)?;
-                self.pin_run(&submission.run_id, &submission.candidate.candidate_id)?;
                 self.repair_state(&submission.run_id, &admission, now)?;
+                let state = self.load_state(&submission.run_id)?;
+                if !state.state.is_terminal() {
+                    self.pin_recovered(&submission.run_id, &submission.candidate.candidate_id)?;
+                }
                 self.submit_result(&submission.run_id, &admission.candidate, &admission.profile)
             }
             Err(error) => Err(error),
@@ -594,14 +603,26 @@ impl ValidationPort {
             self.repair_state(run_id, &admission, self.clock.now_ms())?;
         }
         let state = self.load_state(run_id)?;
+        let report_available = self.report_available(run_id, &admission, &state);
         Ok(RunStatus {
             run_id: run_id.into(),
             state: state.state,
             candidate: admission.candidate,
             profile: admission.profile,
             updated_at: ids::timestamp(state.updated_at_ms),
-            report_available: state.state.is_terminal() && self.store.report_exists(run_id),
+            report_available,
         })
+    }
+
+    /// Availability is a read-only verification, not file existence: a corrupt or unverifiable
+    /// terminal report is not offered, even before a worker port reconciles it.
+    fn report_available(&self, run_id: &str, admission: &AdmissionRecord, state: &StateRecord) -> bool {
+        if !state.state.is_terminal() || !self.store.report_exists(run_id) {
+            return false;
+        }
+        let Ok(bytes) = self.store.read_bounded(&self.store.report_path(run_id), self.limits.report_bytes) else { return false };
+        let Ok(report) = serde_json::from_slice::<ValidationReport>(&bytes) else { return false };
+        self.verify_report(run_id, admission, state, &report).is_ok()
     }
 
     /// `cancel(runId)`: persist the marker before any signal, then finalize a queued job. A
@@ -715,6 +736,16 @@ impl ValidationPort {
                     &profile,
                     ValidationState::InfrastructureError,
                     Some(ValidationError::resource_exhausted("the profile exceeds the host check limit", "checks", self.limits.checks as u64)),
+                );
+                self.commit_report(&run_id, report, ValidationState::InfrastructureError)?;
+                continue;
+            }
+            if let Err(error) = self.pin_run(&run_id, &admission.candidate.candidate_id) {
+                let report = self.recovery_report(
+                    &admission,
+                    &profile,
+                    ValidationState::InfrastructureError,
+                    Some(ValidationError::invalid_candidate(format!("the candidate inputs could not be pinned: {error}"))),
                 );
                 self.commit_report(&run_id, report, ValidationState::InfrastructureError)?;
                 continue;
@@ -900,8 +931,9 @@ impl ValidationPort {
             if error.code == ErrorCode::NotFound { ValidationError::not_ready("the validation run has no report") } else { error }
         })?;
         let report: ValidationReport =
-            serde_json::from_slice(&bytes).map_err(|error| ValidationError::report_mismatch(format!("the report is malformed: {error}")))?;
-        self.verify_report(run_id, &admission, &state, &report)?;
+            serde_json::from_slice(&bytes).map_err(|_| ValidationError::not_ready("the validation run's report is not verifiable"))?;
+        self.verify_report(run_id, &admission, &state, &report)
+            .map_err(|error| ValidationError::not_ready(format!("the validation run's report is not verifiable: {}", error.message)))?;
         let reference = ArtifactRef {
             artifact_id: format!("report-{run_id}"),
             digest: ids::digest(&bytes),

@@ -568,7 +568,7 @@ fn evidence_is_digest_checked_and_the_report_reference_hashes_the_persisted_byte
     assert_eq!(evidence.digest, super::ids::digest(&bytes));
     std::fs::write(&path, b"tampered").unwrap();
     let error = port.report(&run.run_id).unwrap_err();
-    assert_eq!(error.code, ErrorCode::ReportMismatch);
+    assert_eq!(error.code, ErrorCode::NotReady);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -633,7 +633,7 @@ fn a_changed_input_byte_after_a_pass_rejects_the_report() {
     *bytes.last_mut().unwrap() ^= 0xff;
     std::fs::write(&container, bytes).unwrap();
     let error = port.report(&run.run_id).unwrap_err();
-    assert!(matches!(error.code, ErrorCode::InvalidCandidate | ErrorCode::DependencyChanged), "{error}");
+    assert_eq!(error.code, ErrorCode::NotReady, "an unverifiable terminal report is unavailable");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -680,7 +680,7 @@ fn an_unsupported_required_check_and_a_malformed_report_cannot_pass() {
     let run = port.submit(&candidate2, &reference, &generate_submission_key(clock.now_ms())).unwrap();
     port.pump().unwrap();
     std::fs::write(store2.join("runs").join(format!("{}.report.json", run.run_id)), b"{").unwrap();
-    assert_eq!(port.report(&run.run_id).unwrap_err().code, ErrorCode::ReportMismatch);
+    assert_eq!(port.report(&run.run_id).unwrap_err().code, ErrorCode::NotReady);
     let _ = std::fs::remove_dir_all(root);
     let _ = std::fs::remove_dir_all(root2);
 }
@@ -1228,4 +1228,96 @@ fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
     assert_eq!(pinned.is_ok(), lookup_ok, "a pin exists exactly when the candidate still exists");
     assert_eq!(candidate::is_pinned(&candidates, "cand-pin-cleanup"), lookup_ok);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_only_status_and_report_treat_a_corrupt_terminal_report_as_unavailable() {
+    for corrupt in [false, true] {
+        let root = scratch(if corrupt { "read-only-corrupt" } else { "read-only-missing" });
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-read-only-report", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let profile = native_basic_profile();
+        let reference = profile_ref(&profile).unwrap();
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+        port.register_profile(profile.clone()).unwrap();
+        let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+        port.pump().unwrap();
+        let report_path = store.join("runs").join(format!("{}.report.json", run.run_id));
+        if corrupt {
+            std::fs::write(&report_path, b"{").unwrap();
+        } else {
+            std::fs::remove_file(&report_path).unwrap();
+        }
+        // No reconciliation: this is the same path as `validate status` / `validate report`.
+        let observer = read_port(&store, &candidates, clock.clone());
+        let status = observer.status(&run.run_id).unwrap();
+        assert_eq!(status.state, ValidationState::Passed);
+        assert!(!status.report_available);
+        let error = observer.report(&run.run_id).unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotReady, "read-only report is NOT_READY, not REPORT_MISMATCH");
+        assert_eq!(store.join("runs").join(format!("{}.report.json", run.run_id)).is_file(), corrupt);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn a_terminal_same_key_replay_does_not_re_pin() {
+    let root = scratch("replay-terminal-no-pin");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-replay-terminal", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let key = generate_submission_key(clock.now_ms());
+    let first = port.submit(&candidate, &reference, &key).unwrap();
+    port.pump().unwrap();
+    assert_eq!(port.status(&first.run_id).unwrap().state, ValidationState::Passed);
+    assert!(!candidate::is_pinned(&candidates, "cand-replay-terminal"));
+    assert!(!port.store.run_pin_path("cand-replay-terminal", &first.run_id).is_file());
+    let replay = port.submit(&candidate, &reference, &key).unwrap();
+    assert_eq!(replay.run_id, first.run_id);
+    assert_eq!(replay.state, ValidationState::Passed);
+    assert!(!candidate::is_pinned(&candidates, "cand-replay-terminal"), "a terminal replay must not re-pin");
+    assert!(!port.store.run_pin_path("cand-replay-terminal", &first.run_id).is_file());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn start_next_pins_a_recovered_queued_run_or_reports_missing_inputs() {
+    let root = scratch("start-next-pin");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-start-next-pin", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    let reference = native_reference(&port);
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.store.remove_run_pin("cand-start-next-pin", &run.run_id).unwrap();
+    candidate::unpin(&candidates, "cand-start-next-pin").unwrap();
+    assert!(!candidate::is_pinned(&candidates, "cand-start-next-pin"));
+    let job = port.start_next().unwrap().expect("a recovered queued run starts");
+    assert_eq!(job.run_id, run.run_id);
+    assert!(candidate::is_pinned(&candidates, "cand-start-next-pin"));
+    assert!(port.store.run_pin_path("cand-start-next-pin", &run.run_id).is_file());
+    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Running);
+    let _ = std::fs::remove_dir_all(root);
+
+    let root2 = scratch("start-next-missing-input");
+    let candidates2 = root2.join("candidates");
+    let store2 = root2.join("validation");
+    let candidate2 = write_candidate(&candidates2, "cand-start-next-missing", analytic_design());
+    let port = port_with(&store2, &candidates2, runner_with(Vec::new()), Limits::default(), clock.clone());
+    let reference = native_reference(&port);
+    let run = port.submit(&candidate2, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.store.remove_run_pin("cand-start-next-missing", &run.run_id).unwrap();
+    candidate::unpin(&candidates2, "cand-start-next-missing").unwrap();
+    std::fs::remove_file(candidates2.join("cand-start-next-missing.zip")).unwrap();
+    assert!(port.start_next().unwrap().is_none());
+    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::InfrastructureError);
+    let _ = std::fs::remove_dir_all(root2);
 }
