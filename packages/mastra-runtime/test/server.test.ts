@@ -329,6 +329,9 @@ test("attachment references are stripped from history before the next turn", asy
     ];
     assert.deepEqual((await peer.request("turn.start", turnScope, first, "h:3")).result, { state: "accepted" });
     const firstModel = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
+    const firstMessages = (firstModel.params as JsonObject)["messages"] as JsonObject[];
+    assert.equal(firstMessages[0]?.["role"], "system");
+    assert.equal(JSON.stringify(firstMessages[0]?.["content"]).includes("Use native features."), true);
     peer.replyModel(firstModel, "Noted the attachments.", null);
     await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
 
