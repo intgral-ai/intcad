@@ -71,7 +71,7 @@ pub struct ValidationError {
 
 impl ValidationError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        ValidationError { code, message: message.into(), details: json!({}) }
+        ValidationError { code, message: cap_message(message.into()), details: json!({}) }
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
@@ -150,6 +150,20 @@ impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.code.as_str(), self.message)
     }
+}
+
+/// The contract caps an error message at 2,048 UTF-8 bytes.
+fn cap_message(mut message: String) -> String {
+    const MAX: usize = 2_048;
+    if message.len() <= MAX {
+        return message;
+    }
+    let mut end = MAX;
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    message
 }
 
 impl std::error::Error for ValidationError {}

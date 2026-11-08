@@ -447,3 +447,122 @@ fn cli_validation_rejects_a_changed_candidate_byte() {
     assert!(stderr.contains("INVALID_CANDIDATE") || stderr.contains("DEPENDENCY_CHANGED"), "{stderr}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// #12: a second process's status/cancel is a read-only observer. It must not reconcile the
+/// first process's running job into `unknown`, and cancel must persist a marker and win over the
+/// worker's late result.
+#[test]
+fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = std::env::temp_dir().join(format!("solidcraft-cli-validate-two-process-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let candidates = dir.join("candidates");
+    let validation = dir.join("validation");
+    let script = dir.join("capture.json");
+    let results = dir.join("results.json");
+    std::fs::write(
+        &script,
+        json!({"commands": [
+            {"command": "solid.box", "params": {"length": 20, "width": 10, "height": 5}},
+            {"command": "document.snapshot.capture", "params": {}},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+        .arg("run")
+        .arg(&script)
+        .args(["--results", "--json-out"])
+        .arg(&results)
+        .env("SOLIDCRAFT_CANDIDATE_DIR", &candidates)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let replies: Value = serde_json::from_slice(&std::fs::read(&results).unwrap()).unwrap();
+    let candidate = replies.as_array().unwrap().last().unwrap()["candidate"].clone();
+    let request = json!({
+        "candidate": candidate,
+        "profile": solidcraft_engine::validation::profile_ref(&solidcraft_engine::validation::native_basic_profile()).unwrap(),
+        "requestId": solidcraft_engine::validation::generate_submission_key(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+        ),
+    });
+    let request_path = dir.join("request.json");
+    std::fs::write(&request_path, serde_json::to_string_pretty(&request).unwrap()).unwrap();
+
+    let submit = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+        .args(["validate", "submit"])
+        .arg(&request_path)
+        .args(["--candidate-dir"])
+        .arg(&candidates)
+        .args(["--validation-dir"])
+        .arg(&validation)
+        .env("SOLIDCRAFT_VALIDATION_RUNNER_DELAY_MS", "1500")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let run_id = {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        'poll: loop {
+            if let Ok(entries) = std::fs::read_dir(validation.join("runs")) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.ends_with(".json")
+                        && !name.contains(".state.")
+                        && !name.contains(".profile.")
+                        && !name.contains(".worker.")
+                        && !name.contains(".report.")
+                        && let Some(id) = name.strip_suffix(".json")
+                    {
+                        let status = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+                            .args(["validate", "status", id, "--candidate-dir"])
+                            .arg(&candidates)
+                            .args(["--validation-dir"])
+                            .arg(&validation)
+                            .output()
+                            .unwrap();
+                        let value: Value = serde_json::from_slice(&status.stdout).unwrap_or(Value::Null);
+                        if value["state"] == "running" {
+                            break 'poll id.to_string();
+                        }
+                    }
+                }
+            }
+            assert!(Instant::now() < deadline, "the submit never reached running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+
+    let cancel = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+        .args(["validate", "cancel", &run_id, "--candidate-dir"])
+        .arg(&candidates)
+        .args(["--validation-dir"])
+        .arg(&validation)
+        .output()
+        .unwrap();
+    assert!(cancel.status.success(), "{}", String::from_utf8_lossy(&cancel.stderr));
+    let cancelled: Value = serde_json::from_slice(&cancel.stdout).unwrap();
+    assert_eq!(cancelled["state"], "cancelled", "{cancelled:#}");
+    assert!(validation.join("runs").join(format!("{run_id}.cancel")).is_file(), "the cancel marker was not persisted");
+
+    let submit_out = submit.wait_with_output().unwrap();
+    assert!(submit_out.status.success(), "{}", String::from_utf8_lossy(&submit_out.stderr));
+    let submitted: Value = serde_json::from_slice(&submit_out.stdout).unwrap();
+    assert_eq!(submitted["state"], "cancelled", "{submitted:#}");
+
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+        .args(["validate", "status", &run_id, "--candidate-dir"])
+        .arg(&candidates)
+        .args(["--validation-dir"])
+        .arg(&validation)
+        .output()
+        .unwrap();
+    let final_status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(final_status["state"], "cancelled", "{final_status:#}");
+    let _ = std::fs::remove_dir_all(dir);
+}

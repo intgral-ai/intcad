@@ -66,9 +66,14 @@ least one evidence artifact whose digest and size verify at report time.
   unverifiable required evidence artifact is `infrastructure_error`.
 - Cancellation persists `runs/<runId>.cancel` before any signal. It wins before the
   terminal commit, so a late passing result cannot overwrite it.
-- A host restart never restarts an admitted job. A committed report is reconciled; a
-  lost or ambiguous worker result becomes `unknown`; a queued job that never started
-  becomes `infrastructure_error`.
+- A host restart never restarts an admitted job. A committed report is verified and
+  adopted before its terminal state is published; a tampered or unverifiable report is
+  not adopted. A lost or ambiguous worker result becomes `unknown`; a queued job that
+  never started becomes `infrastructure_error`.
+- Reconciliation only touches workers owned by this host or whose recorded host process
+  is no longer alive. `status`, `report` and `cancel` open the port read-only: a second
+  process observing a live submit never turns it into a restart. Cancel still writes the
+  durable marker and finalizes the run as `cancelled`.
 
 All five terminal states are immutable. The store keeps the admission, frozen profile,
 worker identity, cancellation marker, report and state as separately atomically written
@@ -95,9 +100,10 @@ exact persisted report bytes.
 The defaults are the contract's §4 ceilings: 2 workers and 8 waiting jobs, 600 s of
 execution, 300 s in the admission queue, a 4 MiB report, 128 checks, 64 evidence
 artifacts of at most 16 MiB each and 64 MiB aggregate per run, 10,000 job records and
-7-day retention. Active jobs pin their candidate inputs; admission is refused with
-`RESOURCE_EXHAUSTED` rather than evicting active evidence. Completed inputs and records
-are removed only by an explicit `cleanup(now)` after retention.
+7-day retention. Active jobs pin their candidate inputs with a per-run pin; admission is refused with
+`RESOURCE_EXHAUSTED` rather than evicting active evidence. `cleanup(now)` removes
+completed records and their unpinned candidate inputs only after retention, and never
+touches an active job.
 
 ## CLI
 
@@ -114,6 +120,8 @@ solidcraft-cli validate cancel <runId> --validation-dir validation
 the request names the `--profile` file. `submit` runs the local worker to a terminal
 state and prints `status`; a quality failure is a successful run with
 `"state": "quality_failed"`, not a CLI error. `native-basic` needs no `--profile`.
+`status`, `report` and `cancel` open the store read-only and never reconcile a live
+worker owned by another process.
 
 The directories default to `SOLIDCRAFT_CANDIDATE_DIR` (or the per-user
 `validation-candidates` directory) and `SOLIDCRAFT_VALIDATION_DIR` (or the per-user

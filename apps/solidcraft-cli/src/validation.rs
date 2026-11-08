@@ -5,11 +5,16 @@
 //! headless worker to a terminal state and prints `status`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use solidcraft_engine::schema::snapshot::CandidateRef;
-use solidcraft_engine::validation::{CheckProfile, ProfileRef, ValidationPort, native_basic_profile};
+use solidcraft_engine::validation::{
+    CheckProfile, Limits, LocalRunner, ProfileRef, RunControl, RunJob, Runner, RunnerIdentity, RunnerOutcome, SystemClock, ValidationPort,
+    native_basic_profile,
+};
 
 /// `validate`'s lines in the top-level usage.
 pub const USAGE: &str = "  solidcraft-cli validate submit <request.json> [--profile FILE] [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate status <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate report <runId> [--candidate-dir DIR] [--validation-dir DIR] [--out FILE]\n  solidcraft-cli validate cancel <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n      (submit admits the candidate/profile job, runs the local headless worker and prints its status;\n       a quality failure is a terminal report, not a CLI error. --profile is the complete task profile;\n       native-basic needs none. The request is {candidate, profile, requestId} and requestId is\n       '<unix-ms>:<uuid-v4>'. --json-out/--out write the same JSON to a file.)\n";
@@ -87,13 +92,53 @@ fn requested_profile(request: &ProfileRequest) -> ProfileRef {
     ProfileRef { profile_id: request.profile_id.clone(), version: request.version.clone(), digest: request.digest.clone().unwrap_or_default() }
 }
 
+/// A worker wrapper that sleeps before running checks. Tests use it to hold a submit open while
+/// a second process calls status or cancel. It changes no production behaviour unless
+/// `SOLIDCRAFT_VALIDATION_RUNNER_DELAY_MS` is set.
+struct SlowRunner {
+    delay: Duration,
+}
+
+impl Runner for SlowRunner {
+    fn identity(&self) -> RunnerIdentity {
+        LocalRunner::identity()
+    }
+
+    fn run(&self, job: &RunJob, control: &RunControl) -> RunnerOutcome {
+        std::thread::sleep(self.delay);
+        LocalRunner.run(job, control)
+    }
+}
+
+fn open_worker(store: PathBuf, candidates: PathBuf) -> Result<ValidationPort, String> {
+    let delay = std::env::var("SOLIDCRAFT_VALIDATION_RUNNER_DELAY_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+    if delay > 0 {
+        ValidationPort::open_with(
+            store,
+            candidates,
+            Arc::new(SlowRunner { delay: Duration::from_millis(delay) }),
+            Limits::default(),
+            Arc::new(SystemClock),
+        )
+        .map_err(|error| error.to_string())
+    } else {
+        ValidationPort::open(store, candidates).map_err(|error| error.to_string())
+    }
+}
+
 /// Run one `validate` mode.
 pub fn run(args: &[String]) -> Result<(), String> {
     let positionals = positional(args);
     let mode = positionals.first().map(|arg| arg.as_str()).ok_or_else(|| format!("usage:\n{USAGE}"))?;
     let store = validation_dir(args);
     let candidates = candidate_dir(args);
-    let port = ValidationPort::open(store, candidates).map_err(|error| error.to_string())?;
+    // Only the worker host reconciles. Status/report/cancel are read-only observers: opening
+    // them must not turn another process's live job into a restart.
+    let port = if mode == "submit" {
+        open_worker(store, candidates)
+    } else {
+        ValidationPort::open_read_only(store, candidates).map_err(|error| error.to_string())
+    }?;
     match mode {
         "submit" => {
             let request_path = positionals.get(1).ok_or_else(|| "validate submit needs <request.json>".to_string())?;

@@ -232,12 +232,17 @@ pub fn verify_candidate(candidate_root: &Path, expected: &CandidateRef) -> Resul
 }
 
 fn integrity_check(verified: &solidcraft_io::candidate::VerifiedCandidate) -> CheckOutcome {
+    let manifest_inputs = verified.manifest.get("inputs").and_then(Value::as_array).cloned().unwrap_or_default();
     let inputs: Vec<Value> = verified
         .files
         .iter()
         .map(|file| {
+            let manifest = manifest_inputs.iter().find(|input| input.get("path").and_then(Value::as_str) == Some(file.path.as_str()));
             json!({
                 "path": file.path,
+                "kind": manifest.and_then(|input| input.get("kind")).cloned().unwrap_or(Value::Null),
+                "dependencyId": manifest.and_then(|input| input.get("dependencyId")).cloned().unwrap_or(Value::Null),
+                "dependencyVersion": manifest.and_then(|input| input.get("dependencyVersion")).cloned().unwrap_or(Value::Null),
                 "digest": digest(&file.bytes),
                 "sizeBytes": file.bytes.len(),
             })

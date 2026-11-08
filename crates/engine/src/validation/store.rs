@@ -45,6 +45,10 @@ pub(super) struct AdmissionRecord {
     pub profile: ProfileRef,
     pub owner: String,
     pub runner: RunnerIdentity,
+    #[serde(default)]
+    pub host_id: String,
+    #[serde(default)]
+    pub host_pid: u32,
     pub created_at_ms: u64,
     pub queued_deadline_ms: u64,
 }
@@ -69,6 +73,10 @@ pub(super) struct WorkerRecord {
     pub runner: RunnerIdentity,
     pub worker_id: String,
     pub pid: u32,
+    #[serde(default)]
+    pub host_id: String,
+    #[serde(default)]
+    pub host_pid: u32,
     pub started_at_ms: u64,
     pub deadline_ms: u64,
 }
@@ -139,6 +147,61 @@ impl Store {
 
     pub fn evidence_path(&self, run_id: &str, artifact_id: &str) -> PathBuf {
         self.evidence_dir(run_id).join(format!("{artifact_id}.json"))
+    }
+
+    pub fn pins_root(&self) -> PathBuf {
+        self.root.join("pins")
+    }
+
+    pub fn pin_dir(&self, candidate_id: &str) -> PathBuf {
+        self.pins_root().join(candidate_id)
+    }
+
+    pub fn run_pin_path(&self, candidate_id: &str, run_id: &str) -> PathBuf {
+        self.pin_dir(candidate_id).join(format!("{run_id}.pin"))
+    }
+
+    /// Every run id with a pin for `candidate_id`.
+    pub fn pinned_runs(&self, candidate_id: &str) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(self.pin_dir(candidate_id)) else { return Vec::new() };
+        let mut ids: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.strip_suffix(".pin").filter(|id| ids::valid_id(id)).map(str::to_string)
+            })
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// `true` when this run's pin was created now (not already present).
+    pub fn write_run_pin(&self, candidate_id: &str, run_id: &str) -> Result<bool, ValidationError> {
+        let dir = self.pin_dir(candidate_id);
+        fs::create_dir_all(&dir).map_err(|error| ValidationError::internal(format!("validation pins: {error}")))?;
+        let path = self.run_pin_path(candidate_id, run_id);
+        match self.write_bytes_new(&path, b"active\n") {
+            Ok(()) => Ok(true),
+            Err(_) if path.is_file() => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Remove this run's pin. `true` when no pin remains for the candidate.
+    pub fn remove_run_pin(&self, candidate_id: &str, run_id: &str) -> Result<bool, ValidationError> {
+        let path = self.run_pin_path(candidate_id, run_id);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ValidationError::internal(format!("validation pins: {error}"))),
+        }
+        let remaining = self.pinned_runs(candidate_id);
+        if remaining.is_empty() {
+            let _ = fs::remove_dir(self.pin_dir(candidate_id));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub fn run_ids(&self) -> Vec<String> {
@@ -223,6 +286,19 @@ impl Store {
         solidcraft_io::safe_write::create_atomic(path, &bytes).map_err(|error| ValidationError::internal(format!("{}: {error}", path.display())))
     }
 
+    /// Write a record only when absent; an existing record (a concurrent helper completing the
+    /// same run) is accepted as already written.
+    pub fn ensure_json<T: Serialize>(&self, path: &Path, value: &T) -> Result<(), ValidationError> {
+        if path.is_file() {
+            return Ok(());
+        }
+        match self.write_json_new(path, value) {
+            Ok(()) => Ok(()),
+            Err(_) if path.is_file() => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn write_json_replace<T: Serialize>(&self, path: &Path, value: &T) -> Result<(), ValidationError> {
         let bytes = serde_json::to_vec(value).map_err(|error| ValidationError::internal(format!("record: {error}")))?;
         if let Some(parent) = path.parent() {
@@ -247,18 +323,38 @@ impl Store {
         self.report_path(run_id).is_file()
     }
 
-    /// Remove every record for a completed run older than the retention window. Active
-    /// (nonterminal) runs are never touched.
-    pub fn purge_older_than(&self, now_ms: u64, retention_ms: u64) -> usize {
-        let mut removed = 0;
-        for run_id in self.run_ids() {
-            let state_path = self.state_path(&run_id);
-            let Ok(bytes) = self.read_bounded(&state_path, 64 << 10) else { continue };
-            let Ok(state) = serde_json::from_slice::<StateRecord>(&bytes) else { continue };
-            if !state.state.is_terminal() {
-                continue;
+    /// Every run id with an admission or a state record. Orphaned admissions (a crash between
+    /// the admission and state writes) are still counted and cleaned up.
+    pub fn all_run_ids(&self) -> Vec<String> {
+        let mut ids = self.run_ids();
+        for id in self.admission_ids() {
+            if !ids.contains(&id) {
+                ids.push(id);
             }
-            if now_ms.saturating_sub(state.updated_at_ms) < retention_ms {
+        }
+        ids.sort();
+        ids
+    }
+
+    /// Remove every record for a completed run older than the retention window. Active
+    /// (nonterminal) runs are never touched; an orphaned admission older than the window is
+    /// removed too.
+    pub fn purge_older_than(&self, now_ms: u64, retention_ms: u64) -> Vec<(String, Option<String>)> {
+        let mut removed: Vec<(String, Option<String>)> = Vec::new();
+        for run_id in self.all_run_ids() {
+            let state = self.read_optional_json::<StateRecord>(&self.state_path(&run_id), 64 << 10).ok().flatten();
+            let admission = self.read_optional_json::<AdmissionRecord>(&self.admission_path(&run_id), 1 << 20).ok().flatten();
+            let (terminal_old, candidate_id) = match (state.as_ref(), admission.as_ref()) {
+                (Some(state), _) if state.state.is_terminal() => {
+                    (now_ms.saturating_sub(state.updated_at_ms) >= retention_ms, admission.as_ref().map(|a| a.candidate.candidate_id.clone()))
+                }
+                (None, Some(admission)) => {
+                    // A record with no state never started a worker; age it from admission.
+                    (now_ms.saturating_sub(admission.created_at_ms) >= retention_ms, Some(admission.candidate.candidate_id.clone()))
+                }
+                _ => (false, None),
+            };
+            if !terminal_old {
                 continue;
             }
             for path in [
@@ -272,7 +368,10 @@ impl Store {
                 let _ = fs::remove_file(path);
             }
             let _ = fs::remove_dir_all(self.evidence_dir(&run_id));
-            removed += 1;
+            if let Some(candidate_id) = &candidate_id {
+                let _ = self.remove_run_pin(candidate_id, &run_id);
+            }
+            removed.push((run_id, candidate_id));
         }
         self.purge_keys(now_ms, retention_ms);
         removed
@@ -292,7 +391,8 @@ impl Store {
                 .ok()
                 .flatten()
                 .is_some_and(|state| state.state.is_terminal() && now_ms.saturating_sub(state.updated_at_ms) >= retention_ms);
-            if run_terminal_old || !self.state_path(&record.run_id).is_file() {
+            let admission_exists = self.admission_path(&record.run_id).is_file();
+            if run_terminal_old || (!self.state_path(&record.run_id).is_file() && !admission_exists) {
                 let _ = fs::remove_file(path);
             }
         }
@@ -301,7 +401,9 @@ impl Store {
     /// The frozen profile bytes were persisted at admission so later verification never depends
     /// on a registry entry changing.
     pub fn write_profile(&self, run_id: &str, profile: &CheckProfile) -> Result<(), ValidationError> {
-        self.write_json_new(&self.profile_path(run_id), profile)
+        // A crash after the profile write, or a second process completing the same key claim,
+        // must not block the retry.
+        self.ensure_json(&self.profile_path(run_id), profile)
     }
 
     pub fn read_profile(&self, run_id: &str) -> Result<CheckProfile, ValidationError> {

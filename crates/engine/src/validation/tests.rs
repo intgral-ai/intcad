@@ -1,7 +1,8 @@
 //! Validation port tests: state machine, profiles, idempotency, reports and the local runner.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -25,7 +26,7 @@ fn analytic_design() -> Vec<u8> {
     solidcraft_io::write_design_container(&s.doc).unwrap()
 }
 
-fn manifest(candidate_id: &str, files: &[CandidateFile]) -> Value {
+fn manifest_with_engine(candidate_id: &str, files: &[CandidateFile], engine_version: &str) -> Value {
     let mut inputs: Vec<Value> = files
         .iter()
         .map(|file| {
@@ -46,14 +47,18 @@ fn manifest(candidate_id: &str, files: &[CandidateFile]) -> Value {
         "source": {"documentId": "doc-validation", "revision": "7"},
         "capturedAt": "2026-11-07T12:00:00.000Z",
         "formatVersion": "solidcraft/unknown",
-        "engineVersion": env!("CARGO_PKG_VERSION"),
+        "engineVersion": engine_version,
         "inputs": inputs,
     })
 }
 
 fn write_candidate(root: &Path, id: &str, design: Vec<u8>) -> crate::schema::snapshot::CandidateRef {
+    write_candidate_with_engine(root, id, design, env!("CARGO_PKG_VERSION"))
+}
+
+fn write_candidate_with_engine(root: &Path, id: &str, design: Vec<u8>, engine_version: &str) -> crate::schema::snapshot::CandidateRef {
     let files = vec![CandidateFile { path: "design.sc".into(), bytes: design }];
-    let stored = candidate::write(root, id, &files, &manifest(id, &files), &format!("artifact-{id}")).unwrap();
+    let stored = candidate::write(root, id, &files, &manifest_with_engine(id, &files, engine_version), &format!("artifact-{id}")).unwrap();
     crate::schema::snapshot::CandidateRef {
         candidate_id: id.into(),
         source: crate::schema::snapshot::SnapshotSource { document_id: "doc-validation".into(), revision: "7".into() },
@@ -65,6 +70,21 @@ fn write_candidate(root: &Path, id: &str, design: Vec<u8>) -> crate::schema::sna
             size_bytes: stored.artifact.size_bytes,
             media_type: stored.artifact.media_type,
         },
+    }
+}
+
+/// Simulate the crash of the host that admitted/claimed this run. A fresh process opens a new
+/// host id; tests keep one process, so they record a process that is definitely gone.
+fn mark_host_dead(store_root: &Path, run_id: &str) {
+    let store = store::Store::open(store_root.to_path_buf()).unwrap();
+    let dead = 999_999_u32;
+    let mut admission: store::AdmissionRecord = store.read_json(&store.admission_path(run_id), 1 << 20).unwrap();
+    admission.host_pid = dead;
+    store.write_json_replace(&store.admission_path(run_id), &admission).unwrap();
+    if store.worker_path(run_id).is_file() {
+        let mut worker: store::WorkerRecord = store.read_json(&store.worker_path(run_id), 1 << 20).unwrap();
+        worker.host_pid = dead;
+        store.write_json_replace(&store.worker_path(run_id), &worker).unwrap();
     }
 }
 
@@ -183,6 +203,10 @@ fn the_local_runner_passes_the_analytic_profile_and_reports_evidence() {
             assert!(!result.evidence.is_empty(), "{result:?}");
         }
     }
+    let integrity = report.report.checks.iter().find(|check| check.check_id == "input.integrity").unwrap();
+    assert_eq!(integrity.actual["inputs"][0]["kind"], "design");
+    assert_eq!(integrity.actual["inputs"][0]["dependencyId"], "design-root");
+    assert!(integrity.actual["inputs"][0].get("dependencyVersion").is_some());
     let bytes = std::fs::read(store.join("runs").join(format!("{}.report.json", submitted.run_id))).unwrap();
     assert_eq!(report.reference.digest, super::ids::digest(&bytes));
     assert_eq!(report.reference.size_bytes, bytes.len() as u64);
@@ -436,6 +460,7 @@ fn a_restart_reconciles_queued_and_running_jobs_without_rerunning_them() {
         port.register_profile(profile.clone()).unwrap();
         port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap()
     };
+    mark_host_dead(&store, &queued.run_id);
     let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
     assert_eq!(port.status(&queued.run_id).unwrap().state, ValidationState::InfrastructureError);
     assert!(port.start_next().unwrap().is_none());
@@ -451,6 +476,7 @@ fn a_restart_reconciles_queued_and_running_jobs_without_rerunning_them() {
         port.start_next().unwrap().unwrap();
         run
     };
+    mark_host_dead(&store2, &running.run_id);
     let port = port_with(&store2, &candidates2, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
     let status = port.status(&running.run_id).unwrap();
     assert_eq!(status.state, ValidationState::Unknown);
@@ -657,4 +683,431 @@ fn an_unsupported_required_check_and_a_malformed_report_cannot_pass() {
     assert_eq!(port.report(&run.run_id).unwrap_err().code, ErrorCode::ReportMismatch);
     let _ = std::fs::remove_dir_all(root);
     let _ = std::fs::remove_dir_all(root2);
+}
+
+fn read_port(store: &Path, candidates: &Path, clock: Arc<dyn Clock>) -> ValidationPort {
+    ValidationPort::open_read_only_with(store.to_path_buf(), candidates.to_path_buf(), Limits::default(), clock).unwrap()
+}
+
+#[test]
+fn a_read_only_status_or_cancel_never_reconciles_a_live_worker() {
+    let root = scratch("read-only-live");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-read-only-live", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    let job = port.start_next().unwrap().unwrap();
+
+    let observer = read_port(&store, &candidates, clock.clone());
+    assert_eq!(observer.status(&run.run_id).unwrap().state, ValidationState::Running);
+    assert_eq!(observer.cancel(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    assert!(store.join("runs").join(format!("{}.cancel", run.run_id)).is_file());
+    assert_eq!(observer.status(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    // The worker's late pass cannot replace the cancellation.
+    let late = RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) };
+    assert_eq!(port.complete(&job.run_id, late).unwrap(), ValidationState::Cancelled);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_foreign_live_worker_is_not_reconciled_by_another_process_port() {
+    let root = scratch("foreign-live");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-foreign-live", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.start_next().unwrap().unwrap();
+    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let foreign_pid = child.id();
+
+    let mut admission: store::AdmissionRecord = port.store.read_json(&port.store.admission_path(&run.run_id), 1 << 20).unwrap();
+    admission.host_id = "foreign-host".into();
+    admission.host_pid = foreign_pid;
+    port.store.write_json_replace(&port.store.admission_path(&run.run_id), &admission).unwrap();
+    let mut worker: store::WorkerRecord = port.store.read_json(&port.store.worker_path(&run.run_id), 1 << 20).unwrap();
+    worker.host_id = "foreign-host".into();
+    worker.host_pid = foreign_pid;
+    port.store.write_json_replace(&port.store.worker_path(&run.run_id), &worker).unwrap();
+
+    let observer = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    assert_eq!(observer.status(&run.run_id).unwrap().state, ValidationState::Running);
+    assert_eq!(observer.cancel(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_lost_state_file_is_repaired_by_the_same_key_retry() {
+    let root = scratch("repair-state");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-repair-state", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    let reference = native_reference(&port);
+    let key = generate_submission_key(clock.now_ms());
+    let first = port.submit(&candidate, &reference, &key).unwrap();
+    std::fs::remove_file(store.join("runs").join(format!("{}.state.json", first.run_id))).unwrap();
+    let retried = port.submit(&candidate, &reference, &key).unwrap();
+    assert_eq!(retried.run_id, first.run_id);
+    assert_eq!(retried.state, ValidationState::Queued);
+    assert!(store.join("runs").join(format!("{}.state.json", first.run_id)).is_file());
+    assert_eq!(port.store.count_admissions(), 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_lost_state_file_is_repaired_by_status_and_cleanup_sees_the_admission() {
+    let root = scratch("repair-status");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-repair-status", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    let reference = native_reference(&port);
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    std::fs::remove_file(store.join("runs").join(format!("{}.state.json", run.run_id))).unwrap();
+    // A fresh read-only port repairs from the admission rather than reporting NOT_FOUND.
+    let observer = read_port(&store, &candidates, clock.clone());
+    assert_eq!(observer.status(&run.run_id).unwrap().state, ValidationState::Queued);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn concurrent_same_key_submissions_share_one_run_and_keep_the_pin() {
+    let root = scratch("concurrent");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-concurrent", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = Arc::new(port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone()));
+    port.register_profile(profile).unwrap();
+    let key = generate_submission_key(clock.now_ms());
+    let barrier = Arc::new(Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let port = Arc::clone(&port);
+        let candidate = candidate.clone();
+        let reference = reference.clone();
+        let key = key.clone();
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            port.submit(&candidate, &reference, &key)
+        }));
+    }
+    let results: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap().unwrap()).collect();
+    assert_eq!(results[0].run_id, results[1].run_id);
+    assert_eq!(port.store.count_admissions(), 1);
+    assert!(candidate::is_pinned(&candidates, "cand-concurrent"));
+    assert_eq!(port.status(&results[0].run_id).unwrap().state, ValidationState::Queued);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn idempotent_replay_survives_a_removed_profile_and_candidate() {
+    let root = scratch("replay-without-profile");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-replay-without-profile", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let task_profile = task();
+    let reference = profile_ref(&task_profile).unwrap();
+    let key = generate_submission_key(clock.now_ms());
+    let run = {
+        let port = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+        port.register_profile(task_profile).unwrap();
+        port.submit(&candidate, &reference, &key).unwrap()
+    };
+    std::fs::remove_file(candidates.join("cand-replay-without-profile.zip")).unwrap();
+    // The read-only port has no task profile and the candidate container is gone, but the key
+    // still names the original run.
+    let observer = read_port(&store, &candidates, clock.clone());
+    let replay = observer.submit(&candidate, &reference, &key).unwrap();
+    assert_eq!(replay.run_id, run.run_id);
+    assert_eq!(replay.state, ValidationState::Queued);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_missing_or_tampered_committed_report_is_adopted_or_rejected_on_restart() {
+    let root = scratch("adopt-report");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-adopt-report", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    // Simulate a crash after the report was committed but before the terminal state was written.
+    let mut state: store::StateRecord = port.store.read_json(&port.store.state_path(&run.run_id), 1 << 20).unwrap();
+    state.state = ValidationState::Running;
+    state.report_available = false;
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &state).unwrap();
+    mark_host_dead(&store, &run.run_id);
+    let restarted = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    assert_eq!(restarted.status(&run.run_id).unwrap().state, ValidationState::Passed);
+    assert_eq!(restarted.report(&run.run_id).unwrap().report.state, ValidationState::Passed);
+    assert!(!candidate::is_pinned(&candidates, "cand-adopt-report"));
+    let _ = std::fs::remove_dir_all(root);
+
+    let root2 = scratch("reject-report");
+    let candidates2 = root2.join("candidates");
+    let store2 = root2.join("validation");
+    let candidate2 = write_candidate(&candidates2, "cand-reject-report", analytic_design());
+    let port = port_with(&store2, &candidates2, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate2, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    let mut state: store::StateRecord = port.store.read_json(&port.store.state_path(&run.run_id), 1 << 20).unwrap();
+    state.state = ValidationState::Running;
+    state.report_available = false;
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &state).unwrap();
+    std::fs::write(store2.join("runs").join(format!("{}.report.json", run.run_id)), b"{").unwrap();
+    mark_host_dead(&store2, &run.run_id);
+    let restarted = port_with(&store2, &candidates2, runner_with(Vec::new()), Limits::default(), clock.clone());
+    assert_eq!(restarted.status(&run.run_id).unwrap().state, ValidationState::Unknown);
+    let _ = std::fs::remove_dir_all(root2);
+}
+
+#[test]
+fn an_out_of_whitelist_geometry_command_is_unsupported() {
+    let root = scratch("unsupported-command");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-unsupported-command", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = task_profile(
+        "task-unsupported-command",
+        "1.0.0",
+        None,
+        Some(vec![MeasurementRequirement {
+            command: "solid.box".into(),
+            params: json!({}),
+            result_pointer: "/body_count".into(),
+            expected: 1.0,
+            abs_tolerance: 0.0,
+            rel_tolerance: 0.0,
+        }]),
+    )
+    .unwrap();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, Arc::new(LocalRunner), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::InfrastructureError);
+    let result = port.report(&run.run_id).unwrap().report;
+    let geometry = result.checks.iter().find(|check| check.check_id == "geometry.exact").unwrap();
+    assert_eq!(geometry.state, CheckState::Unsupported);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_worker_infrastructure_failure_is_not_a_timeout_or_quality_failure() {
+    let root = scratch("worker-failure");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-worker-failure", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let failure = Arc::new(FixedRunner {
+        identity: LocalRunner::identity(),
+        outcome: RunnerOutcome::Infrastructure { started_at_ms: Some(1), finished_at_ms: 2, message: "worker crashed".into() },
+    });
+    let port = port_with(&store, &candidates, failure, Limits::default(), clock.clone());
+    port.register_profile(profile).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    let report = port.report(&run.run_id).unwrap().report;
+    assert_eq!(report.state, ValidationState::InfrastructureError);
+    assert_eq!(report.error.as_ref().map(|error| error.code.as_str()), Some("INTERNAL_ERROR"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_engine_version_is_checked_when_a_new_job_is_admitted() {
+    let root = scratch("engine-version");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate_with_engine(&candidates, "cand-engine-version", analytic_design(), "0.0.0");
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    let reference = native_reference(&port);
+    let error = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidCandidate);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn limits_above_the_contract_ceilings_are_rejected() {
+    Limits::default().validate().unwrap();
+    assert!(Limits { workers: MAX_WORKERS + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { queue: MAX_QUEUE + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { report_bytes: MAX_REPORT_BYTES + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { checks: MAX_CHECKS_PER_PROFILE + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { evidence_artifacts: MAX_EVIDENCE_ARTIFACTS + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { evidence_bytes: MAX_EVIDENCE_BYTES + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { job_records: MAX_JOB_RECORDS + 1, ..Limits::default() }.validate().is_err());
+}
+
+#[test]
+fn an_error_message_is_capped_at_the_contract_limit() {
+    let error = ValidationError::internal("x".repeat(5_000));
+    assert!(error.message.len() <= 2_048);
+    assert_eq!(error.message.len(), 2_048);
+}
+
+#[test]
+fn cleanup_removes_retained_candidate_inputs_as_well_as_store_records() {
+    let root = scratch("cleanup-candidate");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-cleanup-candidate", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), limits, clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    assert!(candidate::lookup(&candidates, "cand-cleanup-candidate").is_ok());
+    assert_eq!(port.cleanup(clock.now_ms() + 1), 1);
+    assert!(candidate::lookup(&candidates, "cand-cleanup-candidate").is_err());
+    assert!(port.status(&run.run_id).is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn an_orphaned_admission_is_cleaned_up_and_does_not_linger() {
+    let root = scratch("orphan-cleanup");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-orphan-cleanup", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let limits = Limits { retention: std::time::Duration::from_millis(10), ..Limits::default() };
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), limits, clock.clone());
+    let reference = native_reference(&port);
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    std::fs::remove_file(store.join("runs").join(format!("{}.state.json", run.run_id))).unwrap();
+    clock.advance(100);
+    assert_eq!(port.cleanup(clock.now_ms()), 1);
+    assert!(port.status(&run.run_id).is_err());
+    assert_eq!(port.store.count_admissions(), 0);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn start_next_continues_past_a_profile_that_exceeds_the_limit() {
+    let root = scratch("skip-large-profile");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skip-large-profile", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let first = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    clock.advance(1);
+    let second = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    let mut oversized = native_basic_profile();
+    for index in 0..(MAX_CHECKS_PER_PROFILE - 1) {
+        oversized.checks.push(CheckRequirement {
+            check_id: format!("zz.{index:03}"),
+            kind: "unsupported.test".into(),
+            required: false,
+            parameters: json!({}),
+        });
+    }
+    oversized.checks.sort_by(|a, b| a.check_id.cmp(&b.check_id));
+    port.store.write_json_replace(&port.store.profile_path(&first.run_id), &oversized).unwrap();
+    let mut admission: store::AdmissionRecord = port.store.read_json(&port.store.admission_path(&first.run_id), 1 << 20).unwrap();
+    admission.profile = profile_ref(&oversized).unwrap();
+    port.store.write_json_replace(&port.store.admission_path(&first.run_id), &admission).unwrap();
+    let job = port.start_next().unwrap().expect("the next queued job still starts");
+    assert_eq!(job.run_id, second.run_id);
+    assert_eq!(port.status(&first.run_id).unwrap().state, ValidationState::InfrastructureError);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_report_evidence_id_cannot_escape_its_run_directory() {
+    let root = scratch("evidence-id");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-evidence-id", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    let report_path = store.join("runs").join(format!("{}.report.json", run.run_id));
+    let mut report: Value = serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    report["checks"][0]["evidence"][0]["artifactId"] = json!("../../escape");
+    std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+    let mut state: store::StateRecord = port.store.read_json(&port.store.state_path(&run.run_id), 1 << 20).unwrap();
+    state.state = ValidationState::Running;
+    state.report_available = false;
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &state).unwrap();
+    mark_host_dead(&store, &run.run_id);
+    let restarted = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    assert_eq!(restarted.status(&run.run_id).unwrap().state, ValidationState::Unknown);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn concurrent_same_key_submissions_from_two_ports_share_the_key_claim() {
+    let root = scratch("concurrent-ports");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-concurrent-ports", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let first = Arc::new(port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone()));
+    let second = Arc::new(port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone()));
+    first.register_profile(profile.clone()).unwrap();
+    second.register_profile(profile.clone()).unwrap();
+    let key = generate_submission_key(clock.now_ms());
+    let barrier = Arc::new(Barrier::new(2));
+    let spawn = |port: Arc<ValidationPort>| {
+        let candidate = candidate.clone();
+        let reference = reference.clone();
+        let key = key.clone();
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            port.submit(&candidate, &reference, &key)
+        })
+    };
+    let a = spawn(Arc::clone(&first));
+    let b = spawn(Arc::clone(&second));
+    let a = a.join().unwrap().unwrap();
+    let b = b.join().unwrap().unwrap();
+    assert_eq!(a.run_id, b.run_id);
+    assert_eq!(first.store.count_admissions(), 1);
+    assert!(candidate::is_pinned(&candidates, "cand-concurrent-ports"));
+    let _ = std::fs::remove_dir_all(root);
 }
