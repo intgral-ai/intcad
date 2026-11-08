@@ -54,10 +54,14 @@ per-file public-distribution authorization to wait for here.
 | Baseline at the pinned revision | This package | Status |
 |---|---|---|
 | `packages/ai-runtime/src/models/model-runtime.ts` (`ModelRuntime.createAgent`, Mastra model seam) | `src/host-ai/language-model.ts` | Original adapter; behavior adapted from the public Mastra model interface, no source copied |
-| `apps/server/src/mastra/agent-loop/agent-loop.ts` and related tool/read/continuity modules | Not here; native authoring loop belongs to #10 | Not imported |
-| `packages/ai-runtime/src/workflows/cad-generation.ts` and `src/tools/cad-execution.ts` | Not here; native dispatch belongs to #9/#10 | Not imported |
+| `apps/server/src/mastra/workflows/query-proposal.ts` and `apps/server/src/mastra/agent-loop/` (read/decision, ordered tool rounds, parameter edit, continuity checks, bounded repair) | `src/workflows/` | Original independent adaptation; no source imported. The source audit keeps these records `needs-human`, so only the stage/role design is referenced |
+| `packages/ai-runtime/src/workflows/cad-generation.ts` and `src/tools/cad-execution.ts` | `src/workflows/apply.ts` uses #9's native guarded adapter | The prepared-script executor and its `SCRIPT` inputs are replaced, not imported |
 | `apps/server/src/mastra/services/product-generation-runtime.ts` | Not here; host sessions and durable records belong to #5/#6/#12 | Not imported |
 | Provider/account/PostgreSQL/asset-service/route bootstrap | Not here | Rejected; this runtime has no database, account or route bootstrap |
+
+The workflow's source/deviation record is
+[`docs/mastra-native-workflow.md`](../../docs/mastra-native-workflow.md). No
+Vector Studio bytes are present in this package.
 
 ## Commands
 
@@ -71,16 +75,23 @@ npm run check:deps      # direct production licences and ee/ import check
 node dist/src/main.js   # start the built artifact on stdio
 ```
 
-`npm test` currently runs 87 tests. The schema suite checks **899 of 1002**
+`npm test` currently runs 123 tests. The schema suite checks **899 of 1002**
 catalog cases that this layer owns and agrees with the catalog on every one. The
 remaining 103 are reported, not claimed: 93 raw `guard-*` / `native-stamp-*`
 carriers whose decision belongs to the Rust component adapters, and 10 host
 state-machine transcripts owned by the Rust `RuntimeMachine`.
 
-56 of the 87 tests are the SolidCraft MCP adapter suites: a deterministic
+56 of the 123 tests are the SolidCraft MCP adapter suites: a deterministic
 in-memory MCP peer (`test/support/mcp-peer.ts`) supplies every guarded outcome
 class, and every produced `WriteOutcome` is validated against the repository's
-`#/$defs/WriteOutcome` schema rather than a TypeScript copy of it.
+`#/$defs/WriteOutcome` schema rather than a TypeScript copy of it. The 30
+workflow tests in `test/workflow.test.ts` drive a real `McpClient` + `CadAdapter`
+over that peer with scripted HostAi replies and analytic 20×10×5 geometry. Four
+`test/server-native.test.ts` cases spawn the built `dist/src/main.js` with an
+inherited `--bridge-fd`, drive real protocol 1.0 turns and cover create, edit,
+bounded repair, cancellation, ask and a bridge with no channel. Two
+`test/bridge-lane.test.ts` cases cover per-turn session isolation and partial
+line discard.
 
 ## Contract bundle
 
@@ -118,11 +129,31 @@ counts and any mismatch.
 - `model.generate` as one buffered HostAi request per Agent invocation. There is
   no hidden retry, provider fallback or tool execution.
 - Tool calls returned by the model are surfaced to the workflow and never
-  executed. A text-only or tool-proposal turn ends `task_failed` with
-  `changes: "none"` until the native dispatch workflow (#10) lands.
+  executed by the SDK. The outer workflow owns native tool execution and the
+  next explicit model call. When `session.start` has a `solidcraft-app` bridge
+  and the host injected a CAD channel, the turn runner calls
+  `runNativeModelingWorkflow` with #7's `HostAiModelClient` and #9's
+  `CadAdapter`; stage/plan/tool/text events and the workflow's terminal,
+  `changes` and resulting document stamp become the turn result.
+- Native turns require a host-provisioned bridge channel. `dist/src/main.js`
+  accepts `--bridge-fd <fd>` for one inherited duplex MCP stream (one MCP
+  session per turn on the same lane) and `--requirements-file <path>` for the
+  externally frozen check profiles. Without a configured bridge the prior
+  single-step no-tools path remains. Without #13 the workflow cannot claim
+  validated success; passing stage checks end `task_failed` with a clear
+  validation-unavailable reason.
 - `agent.run` is explicitly unavailable: the runtime advertises
   `hostAgentTasks: false` and returns `UNSUPPORTED_CAPABILITY` until the ACP task
   executor (#4) lands.
+- `src/workflows/` implements the #10 native stage machine as an independently
+  tested module: inspect/freeze, plan/decision, ordered guarded apply/check
+  rounds, fixed check policy, bounded repair and a host validation handoff.
+  It is not a second command catalog and it never turns model text into success.
+  See [`docs/mastra-native-workflow.md`](../../docs/mastra-native-workflow.md).
+- `src/bridge-lane.ts` wraps one host-provisioned duplex fd as reusable MCP
+  line lanes, so each turn gets a fresh MCP session without closing the host
+  transport. `--bridge-fd` and `--requirements-file` are launch configuration,
+  not new protocol methods or copied schemas.
 - Images and documents are refused before a model call. Structured output and
   streaming are refused before a HostAi call.
 - A process replacement has no session, normalized history or continuation to
