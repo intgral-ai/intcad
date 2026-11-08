@@ -1128,12 +1128,12 @@ impl MastraBackend {
         let (Ok(turn_id), Ok(workflow_run_id), Ok(workflow_id), Ok(connection_id)) =
             (self.ids.next_id(), self.ids.next_id(), Id::parse(&self.config.workflow_id), Id::parse(&self.next_connection))
         else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
             self.push(Event::TurnEnded { reason: "error".into() });
             return;
         };
         let Some(host_session) = self.host_session_key(&session) else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
             self.push(Event::TurnEnded { reason: "error".into() });
             return;
         };
@@ -1162,19 +1162,19 @@ impl MastraBackend {
             Some(validation) => match validation.profile() {
                 Some(profile) => profile,
                 None => {
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                     self.push(Event::TurnEnded { reason: "error".into() });
                     return;
                 }
             },
             None => {
                 let Ok(profile_id) = Id::parse(NATIVE_PROFILE) else {
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                     self.push(Event::TurnEnded { reason: "error".into() });
                     return;
                 };
                 let Ok(digest) = Digest::parse(EMPTY_DIGEST) else {
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                     self.push(Event::TurnEnded { reason: "error".into() });
                     return;
                 };
@@ -1210,7 +1210,7 @@ impl MastraBackend {
                 {
                     bridge.end_turn(generation);
                 }
-                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                 self.push(Event::TurnEnded { reason: "error".into() });
             }
         }
@@ -1486,7 +1486,7 @@ impl MastraBackend {
                                 let old = self.session.replace(next.clone());
                                 if !self.rebind_host_session(old.as_ref(), &next) {
                                     self.session_ready = false;
-                                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                                     return;
                                 }
                             }
@@ -1500,7 +1500,7 @@ impl MastraBackend {
                     }
                 } else if self.active.as_ref().is_some_and(|active| Scope::Turn(active.scope.clone()) == scope) && result.is_err() {
                     self.end_active();
-                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+                    self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
                     self.push(Event::TurnEnded { reason: "error".into() });
                 }
             }
@@ -2256,7 +2256,7 @@ impl ChatBackend for MastraBackend {
             return;
         }
         let Ok(next) = self.ids.next_id() else {
-            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string()));
+            self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string()));
             return;
         };
         let params = SessionResetParams { next_session_id: next.clone(), instructions: self.config.instructions.chars().take(4000).collect() };
@@ -2270,7 +2270,7 @@ impl ChatBackend for MastraBackend {
                 self.plan_set = false;
                 self.models_sent = false;
             }
-            Err(_) => self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_failed").to_string())),
+            Err(_) => self.push(Event::Error(crate::i18n::tr("ui.mastra_runtime_internal_failure").to_string())),
         }
     }
 

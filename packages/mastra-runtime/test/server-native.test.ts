@@ -90,6 +90,7 @@ test("the native workflow strips attachment references from history before the n
   const frames = JSON.stringify(peer.frames);
   assert.equal(frames.includes("data:"), false);
   assert.equal(frames.includes("apiKey"), false);
+  assert.equal(frames.includes("Authorization"), false);
 });
 
 test("hello advertises guarded paths only when the host probed them", async (t) => {

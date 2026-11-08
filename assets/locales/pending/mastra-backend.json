@@ -17,6 +17,7 @@
     "ui.mastra_protocol_error": "The Mastra runtime reported a protocol error ({code}).",
     "ui.mastra_runtime_command": "Mastra runtime command",
     "ui.mastra_runtime_failed": "The Mastra runtime could not start ({error}).",
+    "ui.mastra_runtime_internal_failure": "The Mastra runtime had an internal failure.",
     "ui.mastra_runtime_hint": "The runtime's command line",
     "ui.mastra_runtime_missing": "Set the Mastra runtime command in Settings → AI to run workflow turns.",
     "ui.mastra_runtime_ready": "Mastra runtime ready",
