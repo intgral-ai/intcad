@@ -43,6 +43,14 @@ pub struct ConnectionDescription {
     pub capabilities: AiCapabilities,
 }
 
+/// ACP-aware description. `auth_methods` come from the agent's own `initialize` reply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentDescription {
+    pub state: ConnectionState,
+    pub capabilities: AiCapabilities,
+    pub auth_methods: Vec<super::super::acp::AuthMethod>,
+}
+
 /// An authorized immutable reference, not a filesystem path or inline payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactRef {
@@ -179,6 +187,9 @@ pub enum AiErrorCode {
     ConnectionChanged,
     ModelError,
     MalformedResponse,
+    PermissionDenied,
+    InvalidProposal,
+    TaskFailed,
     ResourceExhausted,
     Timeout,
     Cancelled,
@@ -192,6 +203,7 @@ pub enum AiErrorDetails {
     Field { field: &'static str },
     Connection { connection_id: String, http_status: Option<u16> },
     Capability { capability: &'static str },
+    Permission { permission_id: String },
     Resource { resource: &'static str, limit: u32 },
     Operation { operation: &'static str },
 }
@@ -230,7 +242,7 @@ impl AiError {
         self
     }
 
-    pub(super) fn invalid(field: &'static str) -> Self {
+    pub(crate) fn invalid(field: &'static str) -> Self {
         Self {
             code: AiErrorCode::InvalidRequest,
             message_id: "ui.host_ai_invalid_request",
@@ -248,7 +260,7 @@ impl AiError {
         }
     }
 
-    pub(super) fn internal(operation: &'static str) -> Self {
+    pub(crate) fn internal(operation: &'static str) -> Self {
         Self {
             code: AiErrorCode::InternalError,
             message_id: if operation == "read_secret" { "ui.host_ai_key_unavailable" } else { "ui.host_ai_internal_error" },
@@ -268,6 +280,10 @@ impl AiError {
 
     pub(super) fn auth_required() -> Self {
         Self { code: AiErrorCode::AuthRequired, message_id: "ui.ai_http_key", details: AiErrorDetails::None, compatibility: [false; 2] }
+    }
+
+    pub(super) fn auth_required_task() -> Self {
+        Self { code: AiErrorCode::AuthRequired, message_id: "ui.host_ai_acp_auth_required", details: AiErrorDetails::None, compatibility: [false; 2] }
     }
 
     pub(super) fn unsupported(capability: &'static str) -> Self {
@@ -307,6 +323,33 @@ impl AiError {
 
     pub(super) fn model_failed() -> Self {
         Self { code: AiErrorCode::ModelError, message_id: "ui.host_ai_model_failed", details: AiErrorDetails::None, compatibility: [false; 2] }
+    }
+
+    pub(super) fn permission_denied(permission_id: &str) -> Self {
+        Self {
+            code: AiErrorCode::PermissionDenied,
+            message_id: "ui.host_ai_permission_denied",
+            details: AiErrorDetails::Permission { permission_id: permission_id.to_string() },
+            compatibility: [false; 2],
+        }
+    }
+
+    pub(super) fn invalid_proposal() -> Self {
+        Self {
+            code: AiErrorCode::InvalidProposal,
+            message_id: "ui.host_ai_invalid_proposal",
+            details: AiErrorDetails::None,
+            compatibility: [false; 2],
+        }
+    }
+
+    pub(super) fn task_failed(operation: &'static str) -> Self {
+        Self {
+            code: AiErrorCode::TaskFailed,
+            message_id: "ui.host_ai_task_failed",
+            details: AiErrorDetails::Operation { operation },
+            compatibility: [false; 2],
+        }
     }
 
     pub(super) fn provider_status(connection_id: &str, status: u16, authentication: bool) -> Self {

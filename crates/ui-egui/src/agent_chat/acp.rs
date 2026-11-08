@@ -239,6 +239,15 @@ Keep answers short.";
 /// Preferences field takes no more, and a longer text from an edited settings file is cut here.
 pub const INSTRUCTIONS_LIMIT: usize = 4000;
 
+/// The ACP system note for workflow-owned tasks. A task session gets no CAD bridge and no host
+/// control token, so the only correct answer is a proposal for the host to validate.
+pub const PROPOSAL_NOTE: &str = "You are running as a workflow task inside SolidCraft, a parametric 3D CAD application. \
+This session has no CAD tools, no shell and no file access. Do not try to change any design. \
+Answer with exactly one JSON object and no prose or code fence: \
+{\"source\":{\"documentId\":\"<id>\",\"revision\":\"<revision>\"},\"commands\":[{\"command\":\"<native command>\",\"params\":{}}]}. \
+Copy the source document id and revision from the task text. Give between 1 and 64 commands that a host can validate and apply. \
+If the task cannot be expressed as commands, answer with an empty command list rather than guessing.";
+
 /// [`SYSTEM_NOTE`] with the user's custom instructions (#8220) after it. Blank instructions leave
 /// the note as it is.
 pub fn system_note(instructions: &str) -> String {
@@ -491,11 +500,14 @@ pub enum Incoming {
     },
     /// Text the agent streams (`thought`: its reasoning, shown dimmed).
     Text {
+        /// The upstream ACP session the update belongs to; empty when the peer omitted it.
+        session: String,
         thought: bool,
         text: String,
     },
     /// A new tool call, or news about one (`title`/`status` when they changed).
     Tool {
+        session: String,
         id: String,
         title: Option<String>,
         kind: Option<String>,
@@ -504,9 +516,13 @@ pub enum Incoming {
         output: Option<String>,
     },
     /// The agent's plan: each entry with its status.
-    Plan(Vec<(String, String)>),
+    Plan {
+        session: String,
+        steps: Vec<(String, String)>,
+    },
     /// The agent asks before running a tool call; answered with [`permission_reply`].
     Permission {
+        session: String,
         rpc: Value,
         title: String,
         /// The tool call's kind (`execute`, `edit`, `other`, …), as the agent gives it.
@@ -601,7 +617,13 @@ pub fn parse(line: &str) -> Option<Incoming> {
                         .collect()
                 })
                 .unwrap_or_default();
-            Some(Incoming::Permission { rpc: id.clone(), title, kind, options })
+            Some(Incoming::Permission {
+                session: params.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string(),
+                rpc: id.clone(),
+                title,
+                kind,
+                options,
+            })
         }
         (Some(m), Some(id)) => Some(Incoming::Unsupported { rpc: id.clone(), method: m.to_string() }),
         (Some("session/update"), None) => Some(update(params.get("update")?, params.get("sessionId").and_then(Value::as_str).unwrap_or(""))),
@@ -616,11 +638,12 @@ fn update(u: &Value, session: &str) -> Incoming {
     let s = |k: &str| u.get(k).and_then(Value::as_str).map(str::to_string);
     match u.get("sessionUpdate").and_then(Value::as_str) {
         Some(kind @ ("agent_message_chunk" | "agent_thought_chunk")) => match u.get("content").and_then(content_text) {
-            Some(text) => Incoming::Text { thought: kind == "agent_thought_chunk", text },
+            Some(text) => Incoming::Text { session: session.to_string(), thought: kind == "agent_thought_chunk", text },
             None => Incoming::Ignored,
         },
         Some("tool_call" | "tool_call_update") => match s("toolCallId") {
             Some(id) => Incoming::Tool {
+                session: session.to_string(),
                 id,
                 title: s("title"),
                 kind: s("kind"),
@@ -643,8 +666,10 @@ fn update(u: &Value, session: &str) -> Incoming {
             ConfigParse::Snapshot(options) if !session.is_empty() => Incoming::ConfigOptions { session: session.into(), options },
             _ => Incoming::Ignored,
         },
-        Some("plan") => Incoming::Plan(
-            u.get("entries")
+        Some("plan") => Incoming::Plan {
+            session: session.to_string(),
+            steps: u
+                .get("entries")
                 .and_then(Value::as_array)
                 .map(|a| {
                     a.iter()
@@ -656,7 +681,7 @@ fn update(u: &Value, session: &str) -> Incoming {
                         .collect()
                 })
                 .unwrap_or_default(),
-        ),
+        },
         _ => Incoming::Ignored,
     }
 }
@@ -915,11 +940,12 @@ mod tests {
     #[test]
     fn updates_permissions_and_replies_are_told_apart() {
         let text = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi"}}}}"#;
-        assert_eq!(parse(text), Some(Incoming::Text { thought: false, text: "Hi".into() }));
+        assert_eq!(parse(text), Some(Incoming::Text { session: "s".into(), thought: false, text: "Hi".into() }));
         let tool = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"ok"}}]}}}"#;
         assert_eq!(
             parse(tool),
             Some(Incoming::Tool {
+                session: "s".into(),
                 id: "t1".into(),
                 title: None,
                 kind: None,
@@ -929,8 +955,8 @@ mod tests {
             })
         );
         let perm = r#"{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t1","title":"batch"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
-        let Some(Incoming::Permission { rpc, title, kind, options }) = parse(perm) else { panic!() };
-        assert_eq!((title.as_str(), options.len(), options[1].kind.as_str()), ("batch", 2, "reject_once"));
+        let Some(Incoming::Permission { session, rpc, title, kind, options }) = parse(perm) else { panic!() };
+        assert_eq!((session.as_str(), title.as_str(), options.len(), options[1].kind.as_str()), ("s", "batch", 2, "reject_once"));
         assert_eq!(kind, None);
         assert_eq!(permission_reply(rpc.clone(), Some("allow"))["result"]["outcome"], json!({"outcome": "selected", "optionId": "allow"}));
         assert_eq!(permission_reply(rpc, None)["result"]["outcome"]["outcome"], "cancelled");

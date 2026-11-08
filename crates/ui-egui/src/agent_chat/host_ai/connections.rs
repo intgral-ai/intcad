@@ -21,11 +21,45 @@ struct CatalogState {
     // Never reset it when the last entry is removed.
     generation: u64,
     entries: HashMap<String, Entry>,
+    acp: HashMap<String, AcpEntry>,
 }
 
 struct Entry {
     generation: u64,
     configuration: Result<AgentConfig, AiError>,
+}
+
+struct AcpEntry {
+    generation: u64,
+    configuration: Result<AgentConfig, AiError>,
+}
+
+/// One frozen ACP agent command. It carries no credentials: the agent owns its own sign-in.
+#[derive(Clone)]
+pub struct AcpBinding {
+    source: Arc<()>,
+    generation: u64,
+    configuration: AgentConfig,
+}
+
+impl fmt::Debug for AcpBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AcpBinding").field("connection_id", &self.connection_id()).finish_non_exhaustive()
+    }
+}
+
+impl AcpBinding {
+    pub fn connection_id(&self) -> &str {
+        &self.configuration.id
+    }
+
+    pub fn model_id(&self) -> &str {
+        &self.configuration.model
+    }
+
+    pub(crate) fn argv(&self) -> Vec<String> {
+        super::super::acp::split_command(&self.configuration.command)
+    }
 }
 
 /// A turn's selected model and invocation configuration, never its credentials.
@@ -81,9 +115,23 @@ impl ConnectionCatalog {
     /// Publish one complete preference view atomically, retaining bad entries as refusals.
     pub fn replace(&self, configs: &[AgentConfig]) -> Result<(), AiError> {
         let mut prepared = HashMap::new();
+        let mut prepared_acp = HashMap::new();
         for config in configs {
-            let value = if prepared.contains_key(&config.id) { Err(AiError::invalid("connection_id")) } else { normalize(config) };
-            prepared.insert(config.id.clone(), value);
+            if prepared.contains_key(&config.id) {
+                // A duplicate stays present as a refusal; it must not remove or replace the
+                // earlier entry with a silently valid one.
+                prepared.insert(config.id.clone(), Err(AiError::invalid("connection_id")));
+                if prepared_acp.contains_key(&config.id) {
+                    prepared_acp.insert(config.id.clone(), Err(AiError::invalid("connection_id")));
+                }
+                continue;
+            }
+            if config.kind.is_api() {
+                prepared.insert(config.id.clone(), normalize(config));
+            } else {
+                prepared.insert(config.id.clone(), Err(AiError::unsupported("modelGenerate")));
+                prepared_acp.insert(config.id.clone(), normalize_acp(config));
+            }
         }
         let mut state = self.state.lock().map_err(|_| AiError::internal("connections"))?;
         let mut generation = state.generation;
@@ -103,9 +151,57 @@ impl ConnectionCatalog {
             };
             entries.insert(id, Entry { generation: entry_generation, configuration });
         }
+        let mut acp = HashMap::new();
+        for (id, configuration) in prepared_acp {
+            let old = state.acp.get(&id);
+            let unchanged = old.is_some_and(|old| match (&old.configuration, &configuration) {
+                (Ok(a), Ok(b)) => a.command == b.command && a.model == b.model && a.request_timeout_s == b.request_timeout_s,
+                (Err(a), Err(b)) => a == b,
+                _ => false,
+            });
+            let entry_generation = match old.filter(|_| unchanged) {
+                Some(old) => old.generation,
+                None => {
+                    generation = generation.checked_add(1).ok_or_else(|| AiError::internal("connection_generation"))?;
+                    generation
+                }
+            };
+            acp.insert(id, AcpEntry { generation: entry_generation, configuration });
+        }
         // No mutation before every fallible check above has succeeded.
-        *state = CatalogState { generation, entries };
+        *state = CatalogState { generation, entries, acp };
         Ok(())
+    }
+
+    pub fn is_acp(&self, connection_id: &str) -> bool {
+        self.state.lock().is_ok_and(|state| state.acp.contains_key(connection_id))
+    }
+
+    pub fn bind_acp(&self, connection_id: &str) -> Result<AcpBinding, AiError> {
+        if !valid_id(connection_id) {
+            return Err(AiError::invalid("connection_id"));
+        }
+        let state = self.state.lock().map_err(|_| AiError::internal("connections"))?;
+        let entry = state.acp.get(connection_id).ok_or_else(AiError::connection_changed)?;
+        let configuration = entry.configuration.clone()?;
+        Ok(AcpBinding { source: Arc::clone(&self.source), generation: entry.generation, configuration })
+    }
+
+    pub(crate) fn resolve_acp(&self, binding: &AcpBinding) -> Result<AgentConfig, AiError> {
+        if !Arc::ptr_eq(&self.source, &binding.source) {
+            return Err(AiError::connection_changed());
+        }
+        let state = self.state.lock().map_err(|_| AiError::internal("connections"))?;
+        let entry = state.acp.get(binding.connection_id()).ok_or_else(AiError::connection_changed)?;
+        let configuration = entry.configuration.as_ref().map_err(|_| AiError::connection_changed())?;
+        if entry.generation != binding.generation
+            || configuration.command != binding.configuration.command
+            || configuration.model != binding.configuration.model
+            || configuration.request_timeout_s != binding.configuration.request_timeout_s
+        {
+            return Err(AiError::connection_changed());
+        }
+        Ok(configuration.clone())
     }
 
     pub fn bind(&self, connection_id: &str, model_id: &str) -> Result<ConnectionBinding, AiError> {
@@ -168,6 +264,22 @@ fn normalize(config: &AgentConfig) -> Result<AgentConfig, AiError> {
         return Err(AiError::invalid("base_url"));
     }
     Ok(AgentConfig { base_url, reasoning_effort: effort.into(), ..config.clone() })
+}
+
+fn normalize_acp(config: &AgentConfig) -> Result<AgentConfig, AiError> {
+    if !valid_id(&config.id) {
+        return Err(AiError::invalid("connection_id"));
+    }
+    if config.kind.is_api() {
+        return Err(AiError::invalid("connection_kind"));
+    }
+    if super::super::acp::split_command(&config.command).is_empty() {
+        return Err(AiError::invalid("command"));
+    }
+    if config.command.len() > 4096 || config.command.chars().any(char::is_control) {
+        return Err(AiError::invalid("command"));
+    }
+    Ok(config.clone())
 }
 
 fn valid_endpoint(url: &str) -> bool {

@@ -1066,6 +1066,14 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     };
     let execution = app.preferences.chat_execution;
+    // ACP tasks exist in HostAi, but this panel cannot yet show the agent's sign-in methods or
+    // answer its permission requests. Do not offer a Mastra workflow on an ACP agent until that
+    // wiring lands; direct chat with the same agent keeps working.
+    if execution == agents::Execution::Mastra && entry.kind == agents::Kind::Acp {
+        app.agent_chat.notice(tr("ui.mastra_acp_tasks_unavailable"), true);
+        app.agent_chat.state = Some(State::Failed);
+        return;
+    }
     let mastra_command = app.preferences.mastra_runtime_command.clone();
     let mastra_workflow = app.preferences.mastra_workflow_id.clone();
     let instructions = app.preferences.agent_instructions.clone();
@@ -1115,8 +1123,8 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
     let started: Result<Box<dyn ChatBackend>, String> = match (execution, entry.kind) {
-        (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_needs_connection").to_string()),
-        (agents::Execution::Mastra, _) => (|| -> Result<Box<dyn ChatBackend>, String> {
+        (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_acp_tasks_unavailable").to_string()),
+        (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic) => (|| -> Result<Box<dyn ChatBackend>, String> {
             let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
             let backend::StartContext { cwd, bridge, wake, .. } = start;
             let mut argv = acp::split_command(&mastra_command);

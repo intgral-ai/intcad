@@ -14,12 +14,18 @@ pub(super) mod continuation;
 pub(super) mod go;
 pub(super) mod messages;
 pub(super) mod provider;
+mod task;
 mod types;
 
 pub use call::{CallControl, HttpAdmission, ModelCallBudget, TurnControl};
-pub use connections::{ConnectionBinding, ConnectionCatalog};
+pub use connections::{AcpBinding, ConnectionBinding, ConnectionCatalog};
+#[allow(unused_imports)]
+pub(crate) use task::{
+    AcpTaskExecutor, PermissionAnswer, TaskCommand, TaskControl, TaskOutcome, TaskPermissionState, TaskProgress, TaskProposal, TaskRequest,
+    TaskStamp, TaskToolState, parse_proposal,
+};
 pub use types::{
-    AiCapabilities, AiError, AiErrorCode, AiErrorDetails, AiLimits, ArtifactReadFn, ArtifactRef, CallContext, CallScope, ClockFn,
+    AgentDescription, AiCapabilities, AiError, AiErrorCode, AiErrorDetails, AiLimits, ArtifactReadFn, ArtifactRef, CallContext, CallScope, ClockFn,
     ConnectionDescription, ConnectionState, ContentPart, ContinuationId, Delivery, FinishReason, GenerateOptions, GenerateRequest, IdFn, MessageRole,
     ModelMessage, ModelReply, SessionKey, ToolCall, ToolDefinition, Usage,
 };
@@ -60,6 +66,7 @@ pub struct HostAiDependencies {
 pub struct HostAi {
     deps: HostAiDependencies,
     state: Mutex<HostState>,
+    tasks: AcpTaskExecutor,
 }
 
 #[derive(Default)]
@@ -89,7 +96,7 @@ struct ScopePin {
 
 impl HostAi {
     pub fn new(deps: HostAiDependencies) -> Self {
-        Self { deps, state: Mutex::default() }
+        Self { deps, state: Mutex::default(), tasks: AcpTaskExecutor::default() }
     }
 
     /// Direct chat already owns native prompt attachments; it cannot resolve runtime artifacts.
@@ -113,6 +120,10 @@ impl HostAi {
             return Err(AiError::invalid("base_url"));
         }
         Ok(binding)
+    }
+
+    pub(crate) fn bind_acp(&self, connection_id: &str) -> Result<AcpBinding, AiError> {
+        self.deps.shared.connections.bind_acp(connection_id)
     }
 
     pub(crate) fn check_binding(&self, binding: &ConnectionBinding) -> Result<(), AiError> {
@@ -179,6 +190,70 @@ impl HostAi {
             Err(error) => return Err(error),
         };
         Ok(ConnectionDescription { state, capabilities: provider::capabilities(binding) })
+    }
+
+    /// Worker only. A real ACP session either lists the agent's auth methods or proves it is
+    /// usable. A configured command alone is never authentication.
+    pub fn describe_agent(&self, connection_id: &str, model_id: &str) -> Result<AgentDescription, AiError> {
+        if !self.deps.shared.connections.is_acp(connection_id) {
+            let binding = self.bind(connection_id, model_id)?;
+            let description = self.describe(&binding)?;
+            return Ok(AgentDescription { state: description.state, capabilities: description.capabilities, auth_methods: Vec::new() });
+        }
+        let binding = self.deps.shared.connections.bind_acp(connection_id)?;
+        let _ = self.deps.shared.connections.resolve_acp(&binding)?;
+        let probe = self.tasks.probe(&binding)?;
+        Ok(AgentDescription {
+            state: probe.state,
+            capabilities: AiCapabilities {
+                model_generate: false,
+                agent_run: true,
+                tools: false,
+                images: probe.images,
+                documents: probe.documents,
+                structured_output: false,
+                model_selection: probe.model_selection,
+                usage: false,
+                delivery: Delivery::Buffered,
+            },
+            auth_methods: probe.auth,
+        })
+    }
+
+    /// Worker only. Invoke the agent's own sign-in. Codex and the other agents keep their
+    /// credentials; no second store is read or written here.
+    pub fn authenticate_agent(&self, connection_id: &str, method: &str) -> Result<AgentDescription, AiError> {
+        let binding = self.deps.shared.connections.bind_acp(connection_id)?;
+        let _ = self.deps.shared.connections.resolve_acp(&binding)?;
+        let probe = self.tasks.authenticate(&binding, method)?;
+        Ok(AgentDescription {
+            state: probe.state,
+            capabilities: AiCapabilities {
+                model_generate: false,
+                agent_run: true,
+                tools: false,
+                images: probe.images,
+                documents: probe.documents,
+                structured_output: false,
+                model_selection: probe.model_selection,
+                usage: false,
+                delivery: Delivery::Buffered,
+            },
+            auth_methods: probe.auth,
+        })
+    }
+
+    /// Worker only. One workflow task on a fresh ACP session. The returned text is validated as a
+    /// proposal before it leaves this function; this never applies a command.
+    pub(crate) fn agent_run(
+        &self,
+        binding: &AcpBinding,
+        request: TaskRequest,
+        control: &TaskControl,
+        emit: &mut dyn FnMut(TaskProgress),
+    ) -> Result<TaskOutcome, AiError> {
+        let _ = self.deps.shared.connections.resolve_acp(binding)?;
+        self.tasks.run(binding, request, control, emit)
     }
 
     /// Worker only. A domain proposal is not #5's authoritative wire/turn completion.

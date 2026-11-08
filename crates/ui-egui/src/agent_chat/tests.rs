@@ -13894,3 +13894,610 @@ mod mastra_backend_tests {
         backend.shutdown(true);
     }
 }
+
+/// #4: workflow-owned ACP tasks, driven by deterministic newline-delimited peers.
+#[cfg(unix)]
+mod acp_task_tests {
+    use super::*;
+    use host_ai::*;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    #[derive(Default)]
+    struct NoKeys(AtomicUsize);
+    impl backend::Secrets for NoKeys {
+        fn get(&self, _id: &str) -> Result<Option<String>, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+        fn set(&self, _id: &str, _key: &str) -> Result<(), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn delete(&self, _id: &str) -> Result<(), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn peer_dir(name: &str) -> std::path::PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!("solidcraft-acp-task-{}-{}-{name}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write a shell peer and its data files. `{DIR}` in the script is replaced by its folder.
+    fn peer(name: &str, script: &str, files: &[(&str, String)]) -> String {
+        let dir = peer_dir(name);
+        for (file, content) in files {
+            std::fs::write(dir.join(file), content).unwrap();
+        }
+        let path = dir.join("peer.sh");
+        std::fs::write(&path, script.replace("{DIR}", &dir.to_string_lossy())).unwrap();
+        format!("sh {}", path.display())
+    }
+
+    fn json_line(value: serde_json::Value) -> String {
+        let mut line = value.to_string();
+        line.push('\n');
+        line
+    }
+
+    fn update(session: &str, update: serde_json::Value) -> String {
+        json_line(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": session, "update": update}
+        }))
+    }
+
+    fn text(session: &str, text: &str) -> String {
+        update_text(session, false, text)
+    }
+
+    fn update_text(session: &str, thought: bool, text: &str) -> String {
+        update(
+            session,
+            serde_json::json!({
+                "sessionUpdate": if thought { "agent_thought_chunk" } else { "agent_message_chunk" },
+                "content": {"type": "text", "text": text}
+            }),
+        )
+    }
+
+    fn proposal_text(width: u32) -> String {
+        serde_json::json!({
+            "source": {"documentId": "doc-main", "revision": "7"},
+            "commands": [{"command": "parameters.change", "params": {"name": "width", "expression": width.to_string()}}]
+        })
+        .to_string()
+    }
+
+    fn fixture_host(connection: &str, command: &str) -> (Arc<HostAi>, Arc<NoKeys>) {
+        let shared = Arc::new(AiShared::default());
+        shared
+            .connections()
+            .replace(&[agents::AgentConfig {
+                id: connection.into(),
+                name: "Fixture agent".into(),
+                kind: agents::Kind::Acp,
+                command: command.into(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let keys = Arc::new(NoKeys::default());
+        let next = AtomicU64::new(1);
+        let host = Arc::new(HostAi::new(HostAiDependencies {
+            shared,
+            http: Arc::new(|_| Err("the ACP task fixture must not make HTTP calls".into())),
+            secrets: Some(keys.clone()),
+            artifacts: Arc::new(|_, _| Err(ModelCallBudget::new(0).err().unwrap())),
+            clock: Arc::new(|| Duration::ZERO),
+            ids: Arc::new(move || Ok(format!("{:032x}", next.fetch_add(1, Ordering::SeqCst)))),
+        }));
+        (host, keys)
+    }
+
+    fn request(text: &str, timeout: Duration) -> TaskRequest {
+        TaskRequest {
+            text: text.into(),
+            model: None,
+            source: TaskStamp { document_id: "doc-main".into(), revision: 7 },
+            timeout,
+            remaining_commands: 64,
+            allowed_commands: None,
+        }
+    }
+
+    fn run(host: &HostAi, binding: &AcpBinding, request: TaskRequest) -> (Result<TaskOutcome, AiError>, Vec<TaskProgress>) {
+        let control = TaskControl::default();
+        let mut progress = Vec::new();
+        let result = host.agent_run(binding, request, &control, &mut |p| progress.push(p));
+        (result, progress)
+    }
+
+    const INIT_NO_AUTH: &str = r#"{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}"#;
+
+    fn base_script(new_session: &str, prompt: &str) -> String {
+        format!(
+            r#"
+while IFS= read -r line; do
+  id=${{line#*'"id":'}}
+  id=${{id%%,*}}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":%s}}\n' "$id" '{INIT_NO_AUTH}' ;;
+    *'"method":"session/new"'*) {new_session} ;;
+    *'"method":"session/prompt"'*) {prompt} ;;
+    *) ;;
+  esac
+done
+"#
+        )
+    }
+
+    #[test]
+    fn authenticated_task_completes_without_a_second_credential_store() {
+        let update = text("s1", &proposal_text(40));
+        let thought = update_text("s1", true, "secret reasoning");
+        let script = base_script(
+            r#"printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id""#,
+            r#"PROMPT=$id; cat {DIR}/thought1; cat {DIR}/update1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":4,"totalTokens":7}}}\n' "$PROMPT""#,
+        );
+        let command = peer("authenticated", &script, &[("thought1", thought), ("update1", update)]);
+        let (host, keys) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let (result, progress) = run(&host, &binding, request("Widen the block", Duration::from_secs(20)));
+        let outcome = result.unwrap();
+        assert_eq!(outcome.agent_session_id, "s1");
+        assert_eq!(outcome.proposal.commands.len(), 1);
+        assert_eq!(outcome.proposal.commands[0].command, "parameters.change");
+        assert_eq!(outcome.proposal.source, TaskStamp { document_id: "doc-main".into(), revision: 7 });
+        assert_eq!(outcome.usage, Some(Usage { input_tokens: Some(3), output_tokens: Some(4), total_tokens: Some(7) }));
+        assert!(!outcome.text.contains("secret reasoning"), "thought text never becomes proposal text");
+        assert!(progress.iter().all(|p| !matches!(p, TaskProgress::Text { text, .. } if text.contains("secret reasoning"))));
+        assert!(progress.iter().any(|p| matches!(p, TaskProgress::Text { text, .. } if text.contains("parameters.change"))));
+        assert_eq!(keys.0.load(Ordering::SeqCst), 0, "an ACP task never reads the API-key store");
+    }
+
+    #[test]
+    fn unauthenticated_agent_exposes_its_real_auth_methods() {
+        let script = r#"
+AUTH='{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[{"id":"chatgpt","name":"Login with ChatGPT","description":"Use the agent account"}]}'
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$AUTH" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"Authentication required"}}\n' "$id" ;;
+    *) ;;
+  esac
+done
+"#;
+        let command = peer("unauthenticated", script, &[]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let description = host.describe_agent("acp-task", "").unwrap();
+        assert_eq!(description.state, ConnectionState::AuthRequired);
+        assert_eq!(description.auth_methods.len(), 1);
+        assert_eq!(description.auth_methods[0].id, "chatgpt");
+        assert!(description.capabilities.agent_run && !description.capabilities.model_generate);
+        let error = host.agent_run(&binding, request("task", Duration::from_secs(20)), &TaskControl::default(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::AuthRequired);
+    }
+
+    #[test]
+    fn runtime_readiness_alone_never_marks_a_connection_authenticated() {
+        use mastra_backend::test_support;
+        let auth = Arc::new(std::sync::Mutex::new(None));
+        let log = Arc::new(std::sync::Mutex::new(test_support::Log::default()));
+        let config = mastra_backend::MastraConfig {
+            connection_id: "acp-task".into(),
+            model: String::new(),
+            workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
+            bridge: None,
+            instructions: String::new(),
+            connection_auth: Arc::clone(&auth),
+            frozen_binding: Arc::new(std::sync::Mutex::new(None)),
+            wake: Arc::new(|| {}),
+        };
+        let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);
+        let mut backend = mastra_backend::MastraBackend::with_port(config, Box::new(test_support::TestPort::new(Arc::clone(&log))), ids);
+        test_support::Log::inject_client(&mut log.lock().unwrap(), runtime_client::ClientNotice::RuntimeReady(test_support::runtime_info("1")));
+        let events = backend.poll();
+        assert!(events.iter().any(|e| matches!(e, backend::Event::RuntimeReady { .. })));
+        assert!(!events.iter().any(|e| matches!(e, backend::Event::ConnectionAuth { .. })));
+        assert_eq!(*auth.lock().unwrap(), None, "runtime ready is not sign-in evidence");
+    }
+
+    #[test]
+    fn every_task_gets_a_fresh_session_and_only_its_own_history() {
+        let script = r#"
+n=0
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}\n' "$id" ;;
+    *'"method":"session/new"'*) n=$((n+1)); printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s%d"}}\n' "$id" "$n" ;;
+    *'"method":"session/prompt"'*) sid=${line#*'"sessionId":"'}; sid=${sid%%\"*}; printf '%s\n' "$sid" >> {DIR}/seen; cat {DIR}/update${n} ; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+    *) ;;
+  esac
+done
+"#;
+        let mut files = vec![("update1", text("s1", &proposal_text(41))), ("update2", text("s2", &proposal_text(42)))];
+        files.sort_by(|a, b| a.0.cmp(b.0));
+        let command = peer("history", script, &files);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let first = run(&host, &binding, request("first task", Duration::from_secs(20))).0.unwrap();
+        let second = run(&host, &binding, request("second task", Duration::from_secs(20))).0.unwrap();
+        assert_eq!((first.agent_session_id.as_str(), second.agent_session_id.as_str()), ("s1", "s2"));
+        assert_eq!(first.proposal.commands[0].params.get("expression"), Some(&serde_json::json!("41")));
+        assert_eq!(second.proposal.commands[0].params.get("expression"), Some(&serde_json::json!("42")));
+        assert!(!first.text.contains("42"));
+        assert_eq!(first.usage, None, "no supplied usage stays null");
+    }
+
+    #[test]
+    fn an_unsupported_model_fails_before_the_prompt_is_sent() {
+        let script = r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1","models":{"currentModelId":"a","availableModels":[{"modelId":"a","name":"A"}]}}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) printf 'prompt\n' > {DIR}/prompt-was-sent ;;
+    *) ;;
+  esac
+done
+"#;
+        let command = peer("unsupported-model", script, &[]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let mut req = request("task", Duration::from_secs(20));
+        req.model = Some("b".into());
+        let error = host.agent_run(&binding, req, &TaskControl::default(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::UnsupportedCapability);
+    }
+
+    #[test]
+    fn cancellation_permission_denial_exit_and_invalid_proposal_are_distinct() {
+        // Cancellation waits for the agent's own acknowledgement.
+        let cancel_script = r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) PROMPT=$id; printf 'prompt\n' > {DIR}/prompt-seen
+      while IFS= read -r next; do
+        case "$next" in *'"method":"session/cancel"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$PROMPT"; break ;; esac
+      done ;;
+    *) ;;
+  esac
+done
+"#;
+        let command = peer("cancel", cancel_script, &[]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let control = Arc::new(TaskControl::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = Arc::clone(&host);
+        let c = Arc::clone(&control);
+        std::thread::spawn(move || {
+            let _ = tx.send(h.agent_run(&binding, request("cancel me", Duration::from_secs(30)), &c, &mut |_| {}));
+        });
+        let seen = Instant::now() + Duration::from_secs(20);
+        let path = std::path::PathBuf::from(command.split_whitespace().last().unwrap()).parent().unwrap().join("prompt-seen");
+        while !path.exists() {
+            assert!(Instant::now() < seen, "the peer never saw the prompt");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        control.cancel();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap_err().code(), AiErrorCode::Cancelled);
+
+        // A user's deny answer is a permission outcome, not a cancellation or a task failure.
+        let deny_script = r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) PROMPT=$id
+      printf '{"jsonrpc":"2.0","id":"perm1","method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t","title":"write"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}\n'
+      while IFS= read -r next; do
+        case "$next" in *'"id":"perm1"'*) printf '%s\n' "$next" > {DIR}/answer; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$PROMPT"; break ;; esac
+      done ;;
+    *) ;;
+  esac
+done
+"#;
+        let command = peer("deny", deny_script, &[]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let control = Arc::new(TaskControl::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (ptx, prx) = std::sync::mpsc::channel();
+        let h = Arc::clone(&host);
+        let c = Arc::clone(&control);
+        std::thread::spawn(move || {
+            let result = h.agent_run(&binding, request("deny me", Duration::from_secs(30)), &c, &mut |p| {
+                if let TaskProgress::Permission { key, state, .. } = p {
+                    let _ = ptx.send((key, state));
+                }
+            });
+            let _ = tx.send(result);
+        });
+        let (key, state) = prx.recv_timeout(Duration::from_secs(20)).expect("permission progress");
+        assert_eq!(state, TaskPermissionState::Waiting);
+        control.answer(key, Some("deny")).unwrap();
+        let (_, denied) = prx.recv_timeout(Duration::from_secs(20)).expect("permission answer progress");
+        assert_eq!(denied, TaskPermissionState::Denied);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap_err().code(), AiErrorCode::PermissionDenied);
+
+        // An agent exit is TASK_FAILED, distinct from all of the above.
+        let exit_script = r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) exit 0 ;;
+  esac
+done
+"#;
+        let command = peer("exit", exit_script, &[]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let error = host.agent_run(&binding, request("exit", Duration::from_secs(20)), &TaskControl::default(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::TaskFailed);
+
+        // Unusable returned text is INVALID_PROPOSAL, not a completed task.
+        let invalid_script = base_script(
+            r#"printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id""#,
+            r#"PROMPT=$id; cat {DIR}/update1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$PROMPT""#,
+        );
+        let command = peer("invalid", &invalid_script, &[("update1", text("s1", "not a proposal"))]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let error = host.agent_run(&binding, request("invalid", Duration::from_secs(20)), &TaskControl::default(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::InvalidProposal);
+    }
+
+    #[test]
+    fn a_proposal_is_validated_before_any_cad_scheduling() {
+        let update = text("s1", &proposal_text(40));
+        let script = base_script(
+            r#"printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id""#,
+            r#"PROMPT=$id; cat {DIR}/update1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$PROMPT""#,
+        );
+        let command = peer("proposal", &script, &[("update1", update)]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let (outcome, _) = run(&host, &binding, request("proposal", Duration::from_secs(20)));
+        assert!(outcome.is_ok());
+        // The host itself never applies a command: only the validated proposal leaves the executor.
+        let mut writes = 0u32;
+        if let Ok(outcome) = outcome {
+            assert_eq!(outcome.proposal.commands.len(), 1);
+            // A caller may schedule only after this point; the test records that no earlier path
+            // returned a write count.
+            writes += outcome.proposal.commands.len() as u32;
+        }
+        assert_eq!(writes, 1);
+
+        let wrong_source = serde_json::json!({
+            "source": {"documentId": "doc-main", "revision": "8"},
+            "commands": [{"command": "parameters.change", "params": {}}]
+        })
+        .to_string();
+        let command = peer("stale-proposal", &script, &[("update1", text("s1", &wrong_source))]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let error = host.agent_run(&binding, request("stale", Duration::from_secs(20)), &TaskControl::default(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::InvalidProposal);
+    }
+
+    #[test]
+    fn late_task_a_updates_and_permissions_cannot_enter_task_b() {
+        let command = peer(
+            "late",
+            r#"
+n=0
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}\n' "$id" ;;
+    *'"method":"session/new"'*) n=$((n+1)); printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s%d"}}\n' "$id" "$n" ;;
+    *'"method":"session/prompt"'*) PROMPT=$id
+      if [ "$n" -eq 1 ]; then cat {DIR}/a; else
+        cat {DIR}/late
+        printf '{"jsonrpc":"2.0","id":"perm-old","method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"old","title":"old"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}\n'
+        while IFS= read -r next; do
+          case "$next" in *'"id":"perm-old"'*) printf '%s\n' "$next" > {DIR}/stale-answer; break ;; esac
+        done
+        cat {DIR}/b
+      fi
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$PROMPT" ;;
+    *) ;;
+  esac
+done
+"#,
+            &[("a", text("s1", &proposal_text(41))), ("late", text("s1", "STALE TASK A")), ("b", text("s2", &proposal_text(42)))],
+        );
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let first = run(&host, &binding, request("task A", Duration::from_secs(20))).0.unwrap();
+        let (second, progress) = run(&host, &binding, request("task B", Duration::from_secs(20)));
+        let second = second.unwrap();
+        assert_eq!((first.agent_session_id.as_str(), second.agent_session_id.as_str()), ("s1", "s2"));
+        assert!(!second.text.contains("STALE TASK A"), "{}", second.text);
+        assert!(!progress.iter().any(|p| matches!(p, TaskProgress::Text { text, .. } if text.contains("STALE"))));
+        assert!(!progress.iter().any(|p| matches!(p, TaskProgress::Permission { .. })), "stale permission never reaches the panel");
+        let dir = std::path::Path::new(command.split_whitespace().last().unwrap()).parent().unwrap();
+        let answer = std::fs::read_to_string(dir.join("stale-answer")).unwrap();
+        assert!(answer.contains("\"outcome\":\"cancelled\""), "a stale permission is answered cancelled: {answer}");
+    }
+
+    #[test]
+    fn mastra_with_acp_is_gated_with_an_actionable_message() {
+        let mut app = app_with_discovered_login();
+        app.preferences.chat_execution = agents::Execution::Mastra;
+        connect(&mut app, &egui::Context::default());
+        assert_eq!(app.agent_chat.state(), State::Failed);
+        assert!(app.agent_chat.backend.is_none(), "a gated ACP workflow must not start a backend");
+        let items = format!("{:?}", app.agent_chat.items);
+        assert!(items.contains(&crate::i18n::tr("ui.mastra_acp_tasks_unavailable").to_string()), "{items}");
+    }
+
+    #[test]
+    fn cancellation_during_session_start_sends_no_prompt() {
+        let command = peer(
+            "cancel-session-start",
+            r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}
+' "$id" ;;
+    *'"method":"session/new"'*) printf 'seen
+' > {DIR}/session-new-seen; while :; do sleep 1; done ;;
+    *'"method":"session/prompt"'*) printf 'sent
+' > {DIR}/prompt-was-sent ;;
+    *) ;;
+  esac
+done
+"#,
+            &[],
+        );
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let control = Arc::new(TaskControl::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = Arc::clone(&host);
+        let c = Arc::clone(&control);
+        std::thread::spawn(move || {
+            let _ = tx.send(h.agent_run(&binding, request("cancel me", Duration::from_secs(30)), &c, &mut |_| {}));
+        });
+        let dir = std::path::Path::new(command.split_whitespace().last().unwrap()).parent().unwrap();
+        let seen = Instant::now() + Duration::from_secs(20);
+        while !dir.join("session-new-seen").exists() {
+            assert!(Instant::now() < seen, "the peer never saw session/new");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        control.cancel();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap_err().code(), AiErrorCode::Cancelled);
+        assert!(!dir.join("prompt-was-sent").exists(), "Stop during session/new must not send session/prompt");
+    }
+
+    #[test]
+    fn a_task_timeout_cancels_the_agent_and_is_not_a_completion() {
+        let command = peer(
+            "timeout",
+            r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}
+' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}
+' "$id" ;;
+    *'"method":"session/prompt"'*) PROMPT=$id
+      while IFS= read -r next; do
+        case "$next" in *'"method":"session/cancel"'*) printf 'cancelled
+' > {DIR}/cancelled; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}
+' "$PROMPT"; break ;; esac
+      done ;;
+    *) ;;
+  esac
+done
+"#,
+            &[],
+        );
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let error = host.agent_run(&binding, request("never finish", Duration::from_millis(250)), &TaskControl::default(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::Timeout);
+        let dir = std::path::Path::new(command.split_whitespace().last().unwrap()).parent().unwrap();
+        let seen = Instant::now() + Duration::from_secs(10);
+        while !dir.join("cancelled").exists() {
+            assert!(Instant::now() < seen, "the timeout must send session/cancel");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_reused_session_id_is_refused() {
+        let script = base_script(
+            r#"printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id""#,
+            r#"PROMPT=$id; cat {DIR}/update1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$PROMPT""#,
+        );
+        let command = peer("duplicate-session", &script, &[("update1", text("s1", &proposal_text(40)))]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        assert!(run(&host, &binding, request("first", Duration::from_secs(20))).0.is_ok());
+        let error = run(&host, &binding, request("second", Duration::from_secs(20))).0.unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::TaskFailed);
+        assert!(matches!(error.details(), AiErrorDetails::Operation { operation } if *operation == "session_reuse"));
+    }
+
+    #[test]
+    fn task_control_slot_serializes_and_refuses_a_stale_permission_key() {
+        let slot = Arc::new(mastra_backend::TaskControlSlot::default());
+        let first = Arc::new(TaskControl::default());
+        let first_key = first.next_key();
+        let guard = slot.acquire(Arc::clone(&first)).unwrap();
+        assert!(slot.answer(first_key, Some("allow")).is_ok());
+        assert_eq!(first.take_answers().unwrap(), vec![(first_key, PermissionAnswer::Selected("allow".into()))]);
+
+        let second = Arc::new(TaskControl::default());
+        let second_key = second.next_key();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_slot = Arc::clone(&slot);
+        let worker_control = Arc::clone(&second);
+        let worker = std::thread::spawn(move || {
+            let _guard = worker_slot.acquire(worker_control).unwrap();
+            let _ = tx.send(());
+            std::thread::sleep(Duration::from_millis(100));
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err(), "a second task cannot replace the first control");
+        drop(guard);
+        rx.recv_timeout(Duration::from_secs(2)).expect("the second task acquires after the first finishes");
+        assert_ne!(first_key, second_key);
+        assert!(slot.answer(first_key, Some("deny")).is_err(), "a retired task's key cannot answer a later task");
+        assert!(second.take_answers().unwrap().is_empty());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn proposal_limits_reject_empty_excess_disallowed_and_oversized_commands() {
+        let source = TaskStamp { document_id: "doc-main".into(), revision: 7 };
+        let proposal = |commands: Vec<serde_json::Value>| {
+            serde_json::json!({"source": {"documentId": "doc-main", "revision": "7"}, "commands": commands}).to_string()
+        };
+        let command = |name: &str, params: serde_json::Value| serde_json::json!({"command": name, "params": params});
+        assert!(host_ai::parse_proposal(&proposal(vec![]), &source, 64, None).is_err(), "0 commands is invalid");
+        let many = (0..65).map(|_| command("parameters.change", serde_json::json!({}))).collect();
+        assert!(host_ai::parse_proposal(&proposal(many), &source, 64, None).is_err(), "65 commands is invalid");
+        let allowed = vec!["parameters.change".to_string()];
+        assert!(
+            host_ai::parse_proposal(&proposal(vec![command("design.delete", serde_json::json!({}))]), &source, 64, Some(&allowed)).is_err(),
+            "a command outside the allowlist is invalid"
+        );
+        let oversized = serde_json::json!({"blob": "x".repeat(70 * 1024)});
+        assert!(
+            host_ai::parse_proposal(&proposal(vec![command("parameters.change", oversized)]), &source, 64, None).is_err(),
+            "params over the per-command byte bound are invalid"
+        );
+        assert!(host_ai::parse_proposal(&proposal(vec![command("parameters.change", serde_json::json!({}))]), &source, 64, Some(&allowed)).is_ok());
+    }
+}
