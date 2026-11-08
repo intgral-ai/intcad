@@ -34,7 +34,7 @@ FULL_FILES = ("Cargo.toml", "Cargo.lock", ".github/workflows/ci.yml")
 # Changes here affect no code: documentation, packaging, the other workflows and GitHub settings,
 # and the GitHub bots' scripts (tested in the repository checks). Root *.md files too, unless
 # embedded (below).
-IGNORED_PREFIXES = ("docs/", "packaging/", "attribution/", "assets/locales/pending/", ".github/", "scripts/claim/", "scripts/triage/")
+IGNORED_PREFIXES = ("docs/", "packaging/", "attribution/", "assets/locales/pending/", "assets/platforms/", ".github/", "scripts/claim/", "scripts/triage/")
 IGNORED_FILES = ("vendor/README.md", ".gitignore", ".npmrc")
 # Root files that a crate embeds (include_str!), so they are not ignorable documentation.
 EMBEDDED = {
