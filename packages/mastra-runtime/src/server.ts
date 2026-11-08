@@ -10,10 +10,6 @@
 import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
 
-import type { Agent } from "@mastra/core/agent";
-import { createStep, createWorkflow } from "@mastra/core/workflows";
-import { z } from "zod/v4";
-
 import { monotonicClock, type Clock } from "./clock.js";
 import {
   asProtocolError,
@@ -29,7 +25,6 @@ import {
 } from "./errors.js";
 import { DEFAULT_LIMITS, isObject, limitsValid, narrowerLimits, type Budgets, type Limits } from "./limits.js";
 import { SessionHistory } from "./history.js";
-import { createHostAiAgent, ContinuationBranch, toMastraMessages } from "./host-ai/language-model.js";
 import {
   HostAiModelClient,
   type ContentBlock,
@@ -121,7 +116,6 @@ interface SessionState {
   readonly instructions: string;
   readonly bridge: JsonObject | null;
   readonly history: SessionHistory;
-  readonly branch: ContinuationBranch;
 }
 
 type TerminalState =
@@ -439,7 +433,6 @@ export class RuntimeServer {
       instructions,
       bridge: bridge as JsonObject | null,
       history: new SessionHistory(),
-      branch: new ContinuationBranch(this.#limits.continuationTtlSeconds),
     };
     this.#respondOk(request.requestId, request.scope, { state: "ready", workflowId });
   }
@@ -659,7 +652,6 @@ export class RuntimeServer {
       instructions,
       bridge: session.bridge,
       history: new SessionHistory(),
-      branch: new ContinuationBranch(this.#limits.continuationTtlSeconds),
     };
     this.#respondOk(request.requestId, request.scope, { state: "ready", sessionId: nextSessionId });
   }
@@ -794,36 +786,15 @@ export class RuntimeServer {
       if (session === null || session.id !== turn.sessionId || turn.retired) {
         return;
       }
-      if (session.bridge !== null) {
-        await this.#runNativeTurn(session, turn);
+      if (session.bridge === null) {
+        this.#finishTurn(
+          turn,
+          "task_failed",
+          "This runtime serves native modeling turns only; the chat's SolidCraft bridge is not configured.",
+        );
         return;
       }
-      const workflow = this.#workflow(session, turn);
-      const run = await workflow.createRun();
-      const result = await run.start({ inputData: {} });
-      if (result.status !== "success") {
-        throw new Error(`workflow ${result.status}`);
-      }
-      if (turn.cancelled) {
-        throw new TurnCancelled();
-      }
-      if (this.#clock.now() > turn.deadline) {
-        throw new BudgetExhausted();
-      }
-      this.#appendHistory(session, turn);
-      const outcome = turn.outcome;
-      if (outcome === null) {
-        this.#finishTurn(turn, "task_failed", "The workflow produced no modeling answer.");
-      } else if (outcome.type === "tool-calls") {
-        this.#emitTurn(turn, "workflow.stage", {
-          stageId: "dispatch",
-          title: "Native tool dispatch is not available in this runtime revision.",
-          state: "failed",
-        });
-        this.#finishTurn(turn, "task_failed", "The model proposed a tool call. Native dispatch lands with issue #10; no CAD command was executed.");
-      } else {
-        this.#finishTurn(turn, "task_failed", "The model produced no native modeling result.");
-      }
+      await this.#runNativeTurn(session, turn);
     } catch (error) {
       this.#finishFromError(turn, error);
     }
@@ -955,134 +926,6 @@ export class RuntimeServer {
         this.#emitTurn(turn, "workflow.tool", { callId, name, state, output: output ?? null });
       },
     };
-  }
-
-  #workflow(session: SessionState, turn: TurnState) {
-    const stepResult = z.object({ ok: z.boolean() });
-    const inspect = createStep({
-      id: "inspect",
-      inputSchema: z.object({}),
-      outputSchema: stepResult,
-      execute: async () => {
-        this.#checkCancelled(turn);
-        this.#emitTurn(turn, "workflow.stage", { stageId: "inspect", title: "Inspect the frozen turn", state: "running" });
-        this.#checkCancelled(turn);
-        this.#emitTurn(turn, "workflow.stage", { stageId: "inspect", title: "Inspect the frozen turn", state: "completed" });
-        return { ok: true };
-      },
-    });
-    const generate = createStep({
-      id: "generate",
-      inputSchema: stepResult,
-      outputSchema: stepResult,
-      execute: async () => {
-        this.#checkCancelled(turn);
-        this.#emitTurn(turn, "workflow.stage", { stageId: "model", title: "Ask HostAi for one model step", state: "running" });
-        const remainingSeconds = Math.max(1, Math.floor((turn.deadline - this.#clock.now()) / 1000));
-        const client = new HostAiModelClient(
-          this.#hostTransport(),
-          {
-            sessionId: session.id,
-            turnId: turn.turnId,
-            workflowRunId: turn.workflowRunId,
-            connectionId: String(turn.binding["connectionId"]),
-            modelId: String(turn.binding["modelId"]),
-            remainingSeconds,
-          },
-          this.#limits,
-          () => {
-            turn.modelCalls += 1;
-          },
-        );
-        if (turn.modelCalls > turn.budgets.modelCalls) {
-          throw new BudgetExhausted();
-        }
-        const agent = createHostAiAgent({
-          client,
-          connectionId: String(turn.binding["connectionId"]),
-          modelId: String(turn.binding["modelId"]),
-          timeoutSeconds: Math.min(this.#limits.callDefaultSeconds, remainingSeconds),
-          instructions: session.instructions,
-          tools: [],
-          signal: turn.abort.signal,
-          limits: this.#limits,
-          branch: session.branch,
-        }) as Agent;
-        const messages: ModelMessage[] = [...session.history.messages, turn.userMessage];
-        const hasAttachments = turn.userMessage.content.some((block) => block.type !== "text");
-        if (hasAttachments) {
-          // The Mastra Agent prompt language has no host artifact reference. Send the normalized
-          // messages directly so image/PDF blocks reach HostAi unchanged.
-          const instructed: ModelMessage[] =
-            session.instructions.trim().length === 0
-              ? messages
-              : [
-                  { role: "system", content: [{ type: "text", text: session.instructions }], toolCalls: [], toolCallId: null },
-                  ...messages,
-                ];
-          const result = await client.generate(
-            {
-              messages: instructed,
-              tools: [],
-              options: {
-                delivery: "buffered",
-                timeoutSeconds: Math.min(this.#limits.callDefaultSeconds, remainingSeconds),
-                maxOutputTokens: null,
-                temperature: null,
-                reasoningEffort: null,
-                outputSchema: null,
-              },
-              continuation: null,
-            },
-            turn.abort.signal,
-          );
-          this.#checkCancelled(turn);
-          if (this.#clock.now() > turn.deadline) {
-            throw new BudgetExhausted();
-          }
-          turn.outcome = {
-            type: result.toolCalls.length > 0 ? "tool-calls" : "text",
-            text: result.content.map((block) => block.text).join(""),
-            toolCalls: result.toolCalls.map((call) => ({
-              id: call.id,
-              name: call.name,
-              arguments: call.arguments,
-            })),
-            finishReason: result.finishReason,
-          };
-        } else {
-          const result = await agent.generateLegacy(toMastraMessages(messages) as Parameters<Agent["generateLegacy"]>[0], { maxSteps: 1 });
-          this.#checkCancelled(turn);
-          if (this.#clock.now() > turn.deadline) {
-            throw new BudgetExhausted();
-          }
-          const steps = Array.isArray(result.steps) ? result.steps : [];
-          if (steps.length > 1) {
-            throw new ProtocolError("INTERNAL_ERROR", "Mastra executed more than one model step.");
-          }
-          const toolCalls = Array.isArray(result.toolCalls)
-            ? result.toolCalls.map((call) => ({
-                id: String(call.toolCallId),
-                name: String(call.toolName),
-                arguments: isObject(call.args) ? call.args : {},
-              }))
-            : [];
-          turn.outcome = {
-            type: toolCalls.length > 0 ? "tool-calls" : "text",
-            text: typeof result.text === "string" ? result.text : "",
-            toolCalls,
-            finishReason: String(result.finishReason),
-          };
-        }
-        this.#emitTurn(turn, "workflow.stage", { stageId: "model", title: "Ask HostAi for one model step", state: "completed" });
-        const outcome = turn.outcome;
-        if (outcome !== null && outcome.toolCalls.length === 0 && outcome.text.length > 0) {
-          this.#emitTurn(turn, "workflow.text", { text: outcome.text, channel: "answer" });
-        }
-        return { ok: true };
-      },
-    });
-    return createWorkflow({ id: "native-modeling", inputSchema: z.object({}), outputSchema: stepResult }).then(inspect).then(generate).commit();
   }
 
   #hostTransport(): HostAiTransport {

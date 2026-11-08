@@ -1,7 +1,12 @@
-# Mastra runtime artifact inventory
+# Workflow runtime artifact inventory
 
-**Status: reproducible evidence only — the artifact is NOT approved.** Four
-required `@mastra/core` files carry Mastra Enterprise License headers and
+**Status: reproducible evidence only — BM-1 removed `@mastra/core`; the current
+inventory has no `@mastra`/`ee` path. `policy.approvals` is empty, so the artifact
+remains unapproved (DQ-7). BM-3 owns the final installed-package inventory and
+release policy; the historical enterprise notes below describe the pre-BM-1 tree.**
+
+Historical pre-BM-1 status: **the artifact was NOT approved.** Four
+required `@mastra/core` files carried Mastra Enterprise License headers and
 `src/ee/index.ts` source-map provenance, so the contract's enterprise exclusion is
 blocked on legal review. `policy.approvals` is empty. `check:deps` is evidence mode: it verifies the
 reproducible inventory and reports `unapproved` with exit 0. Packaging/release

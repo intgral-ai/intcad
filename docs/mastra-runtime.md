@@ -1,4 +1,4 @@
-# Mastra workflow hosting and validation contract
+# SolidCraft workflow hosting and validation contract
 
 **Status:** design contract 1.0 for [T01 / #2](https://github.com/intgral-ai/open-skyfall-desktop/issues/2),
 under [the workflow epic](https://github.com/intgral-ai/open-skyfall-desktop/issues/1).
@@ -19,7 +19,7 @@ their deviations here for review, rather than defining local protocol variants.
 
 ### 1.1 Approved exception and package ownership
 
-The desktop distribution may contain a standalone Mastra runtime, its TypeScript
+The desktop distribution may contain a standalone SolidCraft workflow runtime, its TypeScript
 workflow and client adapters, a pinned Node executable, and the necessary production
 dependencies. This is an explicit exception to the Rust-only distribution policy;
 putting code in a subprocess or another repository is not, by itself, an exception.
@@ -55,7 +55,7 @@ to application implementation in this repository. T01 itself adds documentation 
 |---|---|
 | This repository's `agent_chat/api_client.rs`, `acp.rs`, `acp_client.rs`, `process.rs`, `discover.rs` | Extract/reuse Rust model invocation, ACP session mechanics, authentication and process lifecycle. Preserve provider behavior and original connection identities. |
 | This repository's MCP, engine commands, schemas, native design writer and safe writes | Reuse existing Rust implementations through their interfaces; discover command schemas instead of copying a TypeScript command catalog. |
-| Mastra's public workflow SDK | Use permissively licensed entry points after the exact locked release and distributed files pass #15's inventory. No enterprise modules. |
+| Native workflow runtime | No Mastra SDK is used. The runtime keeps the custom TypeScript workflow, the HostAi model client and Protocol 1.0; #15/BM-3 audits the final installed dependency, notice and licence closure. |
 | Vector Studio authoring workflow and agent loop | Selected orchestration baseline at the fixed revision in section 1.5. Adapt its stages and tool-turn logic to native modeling. Source imports require the per-file rights and policy record below; this is not a blanket license for the product server. |
 | Vector Studio provider/account/database/route bootstrap, script executor and script-specific prompts/skills | Replace with the desktop ports and native command guidance described in section 1.5. These implementations are outside the selected migration. |
 
@@ -70,13 +70,12 @@ notices; the project's dual license is not automatically applied to them. The so
 map below is a migration specification, not a claim that private code has been
 published or is already licensed here. This documentation change imports no code.
 
-The [Mastra root license](https://github.com/mastra-ai/mastra/blob/main/LICENSE.md)
-was checked during T01: it assigns Apache-2.0 to eligible content and excludes every
-`ee/` directory, including areas inside `@mastra/core`. Therefore a package-level
-license string is insufficient. The delivered artifact must exclude those modules,
-not merely avoid calling them. #7 locks the actual dependency versions; #15 checks
-the full shipped dependency/file inventory, Node notices and pending attributions.
-Cargo's license check alone does not cover this TypeScript artifact.
+BM-1 removed `@mastra/core` and the legacy no-bridge Mastra path. The runtime uses
+the custom TypeScript native workflow and `HostAiModelClient`; there is no Mastra
+SDK or `ee/` module in the source or lockfile. #15/BM-3 audits the final installed
+dependency, notice and licence closure. Cargo's licence check alone does not cover
+this TypeScript artifact. `policy.approvals` remains empty and DQ-7 blocks
+distribution until that audit and a separate owner decision.
 
 ### 1.3 Installed targets and Codex
 
@@ -87,7 +86,7 @@ Cargo's license check alone does not cover this TypeScript artifact.
 | Linux x86_64, glibc desktop packages | Matching pinned Node executable and runtime artifact | #14 |
 
 Windows x86/arm64, Linux arm64, FreeBSD and wasm do not advertise the built-in
-Mastra workflow in 1.0. This is a runtime feature matrix, not a change to the
+SolidCraft workflow in 1.0. This is a runtime feature matrix, not a change to the
 application's broader release matrix. A platform is supported only after an
 installed-package test succeeds on that platform. Sandboxed Linux formats must
 test their packaged executable, artifact paths and allowed network/filesystem
@@ -109,7 +108,7 @@ and reuse its own authentication flow. A clean machine can use the bundled runti
 with BYOK without installing Node. Codex mode additionally requires a functioning
 external Codex ACP installation; missing executable, incompatible dependency and
 authentication-required are separate states. Desktop bundling of Codex would be
-a separate distribution decision, not implied by the Mastra exception.
+a separate distribution decision, not implied by the desktop TypeScript exception.
 
 ### 1.4 What validation controls
 
@@ -127,7 +126,7 @@ publication gating would require enforcement at the host's export/publication en
 points. These guarantees are not prerequisites or promises of this delivery.
 
 The independently deliverable foundation is #11's immutable snapshot plus #12's
-local runner, callable without Mastra. Remote CI vendors, deployment credentials
+local runner, callable without the workflow runtime. Remote CI vendors, deployment credentials
 and production-specific profiles are subsequent integrations. Here, “validation”
 means checks on a design candidate; repository `cargo xtask ci` is a different gate.
 
@@ -144,7 +143,7 @@ deviations against this baseline, rather than silently following its moving bran
 |---|---|
 | `apps/server/src/mastra/workflows/query-proposal.ts`: `read-query → draft-script → validate-proposal`, optionally using the agent loop | #10 keeps staged authoring, explicit decisions and bounded model/tool rounds. Read the frozen turn and native design; plan native operations; apply/check them; then request snapshot validation through #13. Source proposal validation checks script/parameter shape, not this contract's design-quality gate. |
 | `apps/server/src/mastra/agent-loop/agent-loop.ts` and its tool, read, parameter-edit and continuity modules | #10 adapts ordered tool calls, matching results, decision state, distinct budgets, cancellation and unknown outcomes. #9 supplies native reads and guarded writes; the tool mapping below replaces script execution and candidate adoption. |
-| `packages/ai-runtime/src/models/model-runtime.ts`: `ModelRuntime.createAgent`, model interface and lifecycle | #7 provides a desktop Agent factory backed by HostAi at the Mastra model seam. The source factory is not a direct `model.generate` client. Keep compatible Agent/tool-call behavior; replace provider routing, admission and trace storage with desktop scope/capability/budget handling. |
+| `packages/ai-runtime/src/models/model-runtime.ts`: `ModelRuntime.createAgent`, model interface and lifecycle | #7 provides the direct HostAi model client; the legacy Mastra Agent adapter was removed by BM-1. The source factory is not a direct `model.generate` client. Keep compatible tool-call behavior; replace provider routing, admission and trace storage with desktop scope/capability/budget handling. |
 | `packages/ai-runtime/src/workflows/cad-generation.ts` and `src/tools/cad-execution.ts`: prepared-script execution using an injected `CadExecutionPort` | Use the separation of workflow and injected executor as a reference. This wrapper is not the complete authoring loop. Replace SCRIPT inputs, script hashes and the remote executor with #9's discovered native schemas and `WriteOutcome`; no Python/script-execution dependency is introduced by this migration. |
 | `apps/server/src/mastra/services/product-generation-runtime.ts`: admission, claims, product persistence, replies and recovery | #5/#6 bind runtime sessions to host turns and cancellation; #7 owns session-local normalized history; #12 owns durable validation records. Replace PostgreSQL, account/quota services, product routes and publication with these ports. Do not import the product-server bootstrap. |
 | Source transcript/trace ports and CAD skills | #7/#10 preserve model-call/tool-result correlation and stage diagnostics under host IDs. Use native command schemas and native modeling guidance instead of script prompts or `anatomy-smlibpy`. Persisted desktop projections remain host-owned as described below. |
@@ -158,7 +157,8 @@ calls and feeds their matching results into the next explicit step. Override SDK
 multi-step/retry defaults. Neither the SDK nor HostAi may execute another hidden
 CAD loop, model retry or provider fallback. Each actual invocation consumes the
 section 4 budget and keeps the frozen connection/model. #7 verifies this with an
-actual Mastra Agent using deterministic HostAi replies, not only a mock factory.
+the native workflow using deterministic HostAi replies, not only a mock factory;
+the legacy Mastra Agent adapter was removed by BM-1.
 
 Adapt the locked SDK's messages, tool IDs/arguments, finish reason and available
 usage to section 6. Preserve opaque continuation handles without inspecting their
@@ -225,19 +225,19 @@ to protocol 1.0.
 |---|---|
 | `MastraBackend` (Rust, `ui-egui/agent_chat`) | Implements `ChatBackend`; freezes workflow/connection/model/turn binding, maps events to the existing panel, injects the chat bridge and delegates to host services. Calls never block an egui frame. |
 | `HostAi` (Rust, proposed `agent_chat/host_ai`) | Resolves the original `AgentConfig.id`, uses injected `Secrets`/`HttpFn`, owns provider-private continuation data and downstream ACP sessions. Provides one model call or one agent task, without a CAD tool loop. |
-| Standalone Mastra runtime (TypeScript) | Owns normalized workflow conversation, stages, plan and bounded repair scheduling. Calls host capabilities and the injected MCP bridge. No key store, provider-account bootstrap or direct document implementation. |
+| Standalone workflow runtime (TypeScript) | Owns normalized workflow conversation, stages, plan and bounded repair scheduling. Calls host capabilities and the injected MCP bridge. No key store, provider-account bootstrap or direct document implementation. |
 | SolidCraft MCP adapter (TypeScript client, existing Rust server) | Discovers tools/schemas, serializes guarded mutations, preserves original MCP request identity and normalizes real results. The Rust host owns permission decisions, cancellation enforcement and undo. |
 | `ValidationPort` (Rust host service, TypeScript client) | Owns snapshot references, idempotent job admission, local-runner lifecycle, durable run/report records and report verification. The CLI runner checks frozen inputs without editing the live document. |
 
 Host orchestration stays at the app/`ui-egui` layer, using injected services. Native
 snapshot capture reaches engine commands and `io`; CLI loading/checking uses those
-lower layers without depending on UI. No lower crate depends on Mastra or egui.
+lower layers without depending on UI. No lower crate depends on the workflow runtime or egui.
 
 ### Baseline evidence and proposed guarantees
 
 | Baseline fact | Contract addition and implementation owner |
 |---|---|
-| [`backend.rs`](../crates/ui-egui/src/agent_chat/backend.rs) defines `ChatBackend`, normalized prompt parts, `Secrets` and buffered `HttpFn`. | #3/#6 expose shared calls and Mastra panel adaptation without a new account identity. |
+| [`backend.rs`](../crates/ui-egui/src/agent_chat/backend.rs) defines `ChatBackend`, normalized prompt parts, `Secrets` and buffered `HttpFn`. | #3/#6 expose shared calls and workflow panel adaptation without a new account identity. |
 | [`api_client.rs`](../crates/ui-egui/src/agent_chat/api_client.rs) owns a provider history/tool loop and private Gemini signatures; cancelled HTTP work may continue until timeout while its answer is dropped. | #3 extracts one-call invocation, continuation handles and bounded abandoned-call accounting. It does not claim physical HTTP interruption or incremental tokens. |
 | [`acp_client.rs`](../crates/ui-egui/src/agent_chat/acp_client.rs) owns ACP process/session/authentication and a five-second cancellation fallback. | #4 gives workflow tasks distinct ACP sessions and proposal-only CAD authority. |
 | [`agents.rs`](../crates/ui-egui/src/agent_chat/agents.rs) preserves configured connection IDs; [`mod.rs`](../crates/ui-egui/src/agent_chat/mod.rs) currently treats `Event::Ready` as signed in for `running_id`. | #6 separates execution choice, runtime readiness and original-connection authentication. |
@@ -1061,7 +1061,7 @@ Required compatibility cases, owned by the linked implementation tasks:
 | Hello exact-version success/refusal; unknown method/capability; nested HostAi callback while awaiting runtime work; bounded queue/EOF cleanup | #5 |
 | Revision `9007199254740993` and max-u64 round trips; overflow/leading-zero rejection; `document_id` normalization | #5, #8 |
 | Buffered result versus genuine deltas; tool-call identity, provider continuation branch/reset, cancelled HTTP still occupying its physical slot | #3, #7 |
-| Real Mastra Agent backed by deterministic HostAi: exactly one model step, no hidden retry/tool execution, tool-result identity and capability rejection; process replacement cannot resume old transcript/continuation | #5, #7 |
+| Native workflow backed by deterministic HostAi: exactly one model step, no hidden retry/tool execution, tool-result identity and capability rejection; process replacement cannot resume old transcript/continuation | #5, #7 |
 | ACP auth-required versus ready, independent sessions, unsupported model selection, permission denial and invalid proposals; late task-A text/tools/permissions during task B cannot enter B's output or UI | #4, #6 |
 | Cancel/reset/late terminal races; exactly one host-owned turn terminal outcome; a proposed success cannot bypass host acceptance; no stale turn writes | #5, #6, #9 |
 | Guarded execute/batch application interleavings, tab changes, deferred evaluation, failed rollback, expectation failure, same-connection pending and lost-connection unknown | #8, #9 |

@@ -12,5 +12,5 @@
 | apps | `solidcraft`, `solidcraft-cli` | desktop app, headless CLI |
 <!-- ANCHOR_END: architecture -->
 
-[Mastra workflow hosting](mastra-runtime.md) defines the proposed desktop runtime,
+[Workflow runtime hosting](mastra-runtime.md) defines the proposed desktop runtime,
 shared AI interfaces, guarded document writes and snapshot-validation contract.

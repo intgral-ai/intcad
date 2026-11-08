@@ -1,11 +1,12 @@
 # Workflow ACP tasks (HostAi slice)
 
-This branch adds the **HostAi-level** task executor behind the protocol's
-`agent.run`. It does not enable the user-selectable Mastra-on-ACP path in the panel.
+This document records the **HostAi-level** task executor behind the protocol's
+`agent.run`. #4 is paused by DQ-11 B-minimal; the task path is not a Beta capability.
+The Direct ACP chat path is unaffected.
 
-- The panel still refuses `(Mastra, ACP)` with an actionable message. Direct chat with
-  that agent keeps working. The runtime call, sign-in event and permission UI are a
-  follow-up issue, not part of merged #25.
+- The panel still refuses `(workflow, ACP)` with an actionable message. Direct chat with
+  that agent keeps working. The runtime call, sign-in event and permission UI remain a
+  future ACP decision, not part of this delivery.
 - The task executor, not the chat panel, owns the ACP process, session, authentication,
   cancellation and permission state. Panel event adaptation stays in
   `mastra_backend.rs` for a future wiring change.

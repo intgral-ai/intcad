@@ -4,7 +4,7 @@
 >
 > The `develop`/stable-`main` topology, the zero-mandatory-approval proposal and
 > the merge-method choices on this page are **not approved product decisions**.
-> [Mastra runtime contract §11](mastra-runtime.md) still records the topology as
+> [Workflow runtime contract §11](mastra-runtime.md) still records the topology as
 > proposed, and issue #17 still lists the branch policy as open.
 >
 > The CI mechanics described here are ready and reversible: path selection,

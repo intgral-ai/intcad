@@ -1,7 +1,12 @@
-# Packaged Mastra runtime
+# Packaged SolidCraft workflow runtime
 
-Status: **packaging scaffolding only — the runtime artifact is NOT approved, and bundling is
-opt-in.** Four shipped `@mastra/core/dist/ee-*` files carry the Mastra Enterprise License (DQ-7),
+Status: **packaging scaffolding only — BM-1 removed `@mastra/core` and the four EE files.**
+`policy.approvals` is empty, so the admission gate still fails closed (DQ-7); BM-3 owns the
+final artifact inventory, packaging and release policy. The historical notes below describe the
+pre-BM-1 scaffold; use BM-3's regenerated inventory for the final artifact.
+
+Historical pre-BM-1 status: **the runtime artifact was NOT approved, and bundling is
+opt-in.** Four shipped `@mastra/core/dist/ee-*` files carried the Mastra Enterprise License (DQ-7),
 so `policy.approvals` is empty and the admission gate fails closed. Ordinary release packaging
 leaves the workflow out unless `--with-mastra` / `SOLIDCRAFT_WITH_MASTRA=1` is passed; the owner
 must decide that release default (DQ-7/DQ-4) before a package may include it. No installed-package,

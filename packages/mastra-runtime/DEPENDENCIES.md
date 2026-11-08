@@ -12,7 +12,7 @@ licence check does not cover this npm/Node artifact.
 | npm | `11.19.0` (`packageManager`) |
 | Package | `@intgral-ai/solidcraft-mastra-runtime@0.1.0`, private |
 | Package licence | `MIT OR Apache-2.0` (project dual licence) |
-| Lockfile | repository-root `package-lock.json`, SHA-256 `fd09e98344a3242c76056411a2dcca580c60120cc17bffeb6906ef99b34f48b0` |
+| Lockfile | repository-root `package-lock.json`, SHA-256 `c2e05f37b9ef1a7398b3b6a926b81f579c8ac76279822c4e1863a210e42377b6` |
 | Contract bundle | `schema/mastra-runtime/v1/manifest.json`, SHA-256 `f5e9ed0238da5b9f1ce5cf70bff4a23ed7134476cab5c43b717134c4a282662a` |
 | Built entry point | `dist/src/main.js` from `npm run build` |
 
@@ -20,13 +20,11 @@ licence check does not cover this npm/Node artifact.
 
 | Package | Version | Licence | Source |
 |---|---|---|---|
-| `@mastra/core` | `1.82.0` | Apache-2.0 | `https://registry.npmjs.org/@mastra/core/-/core-1.82.0.tgz` |
 | `ajv` | `8.20.0` | MIT | `https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz` |
-| `zod` | `4.6.7` | MIT | `https://registry.npmjs.org/zod/-/zod-4.6.7.tgz` |
 
-`zod` is used only to declare the Mastra workflow step schemas. It was already
-present in Mastra's transitive closure; this package now declares it directly so
-the lockfile records the intended version.
+`@mastra/core`, `zod` and the legacy `language-model.ts` adapter are no longer
+dependencies. `ajv` validates the protocol schema bundle. `check:deps` and
+`test/package.test.ts` fail on any `@mastra` import or `ee` path.
 
 ## Development-only dependencies
 
@@ -38,26 +36,16 @@ the lockfile records the intended version.
 The test runner is the Node.js built-in `node:test` module. There is no separate
 test-runner package.
 
-## Mastra enterprise-module boundary
+## No Mastra SDK / enterprise module
 
-`@mastra/core` 1.82.0 declares Apache-2.0 in its `package.json`, and its
-`LICENSE.md` excludes every `ee/` directory from that grant. The package tarball
-does contain enterprise directories (`agent-builder/ee`, `auth/ee` and the
-internal auth bundle), so a package-level licence string or wholesale copy of
-`node_modules/@mastra/core` is not sufficient.
+`@mastra/core` and `zod` are absent from `package.json` and the lockfile. The
+legacy `language-model.ts` adapter and no-bridge Agent/Workflow path were removed
+by BM-1. `npm run check:deps` scans `package.json`, the lockfile, `src/` and
+`dist/src/` and fails on any `@mastra` import or `ee` path. The native workflow
+uses only `ajv` plus Node builtins.
 
-This runtime imports only:
-
-```text
-@mastra/core/agent
-@mastra/core/workflows
-```
-
-`npm run check:deps` scans both `src/` and `dist/src/` and reports no `ee/`
-import. The built artifact contains only this package's `dist/src`; the packaging
-step in #14 must prune or otherwise exclude unused `@mastra/core` enterprise
-files before building an installed artifact. That artifact inventory remains
-#15's decision.
+The artifact inventory remains #15/BM-3's decision. `policy.approvals` stays
+empty and the artifact is unapproved (DQ-7); BM-1 does not unblock distribution.
 
 ## Transitive closure
 
@@ -65,8 +53,9 @@ The repository-root `package-lock.json` is the locked transitive closure and is
 committed with this package. `npm ls --omit=dev --all` prints the installed tree
 after `npm ci`. The reviewed closure is now
 [`packaging/mastra/inventory.json`](../../packaging/mastra/inventory.json):
-151 production packages, exact versions, resolved URLs, lockfile integrity and
-tarball SHA-256, with a file/digest entry for every shipped file.
+the exact production closure, resolved URLs, lockfile integrity and tarball
+SHA-256, with a file/digest entry for every shipped file. BM-3 owns the final
+installed-package inventory and release policy.
 
 ## Reproducible artifact evidence, not an approval
 
@@ -74,20 +63,16 @@ tarball SHA-256, with a file/digest entry for every shipped file.
 `packages/mastra-runtime/scripts/runtime-artifact.mjs --check` in evidence mode.
 It rebuilds the Linux x64 artifact from `dist/src`, the production `node_modules`
 closure, the protocol bundle and the pinned Node binary, compares every digest
-with the inventory, and checks for enterprise-license content. It exits 0 with
+with the inventory, and checks for Mastra/enterprise content. It exits 0 with
 `status: "unapproved"` while the content is reproducible and explicitly recorded
 as `needs-human`. Packaging/release must use `npm run check:artifact-approval`
 (`--require-approved`), which exits 1 while `policy.approvals` is empty. See
 [`docs/mastra-runtime-artifact.md`](../../docs/mastra-runtime-artifact.md).
 
-The artifact has no path component named `ee`, but four required
-`@mastra/core/dist/ee-*.js`/`.cjs`/`.map` files carry Mastra Enterprise License
-headers and `src/ee/index.ts` source-map provenance. The public
-`@mastra/core/agent` entry imports them, so they cannot simply be pruned. They are
-recorded as needs-human enterprise content in the inventory and notices. The
-artifact is **blocked on legal review**; #14 must not bundle it until that is
-resolved, either by a different Mastra build/entry that excludes the files or by
-an explicit reviewed decision. This is not legal sign-off.
+The current artifact contains no `@mastra` or `ee` path; `status: "unapproved"`
+is only the empty `policy.approvals` (DQ-7). BM-3/legal must audit the final
+installed dependency/licence closure before any release; this is not legal
+sign-off.
 
 ## Verification
 

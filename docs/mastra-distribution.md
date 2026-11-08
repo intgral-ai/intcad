@@ -1,4 +1,9 @@
-# Desktop Mastra distribution policy
+# Desktop workflow distribution policy
+
+> **BM-1 update:** `@mastra/core` and the legacy no-bridge path are removed. The
+> desktop TypeScript exception remains for the native workflow runtime; BM-3 owns
+> the final distribution policy and artifact audit. DQ-7 remains blocked until
+> that audit and a separate owner decision.
 
 **Status:** reviewed static policy and reproducible Linux x64 runtime inventory
 evidence for [#15](https://github.com/intgral-ai/open-skyfall-desktop/issues/15),

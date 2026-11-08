@@ -294,15 +294,6 @@ function buildDependencyData() {
       noticeFiles: [],
     });
   }
-  licenses.push({
-    id: "lic-mastra-enterprise",
-    expression: "LicenseRef-Mastra-Enterprise",
-    rightsHolder: "Mastra AI and contributors",
-    verdict: "needs-human",
-    reason: "Mastra Enterprise License header and src/ee/index.ts source-map provenance; the contract excludes enterprise modules and no distribution approval exists.",
-    licenseFiles: [],
-    noticeFiles: [],
-  });
   licenses.sort((left, right) => byString(left.id, right.id));
   return { dependencies, licenses, rootDependencyIds, packages };
 }
@@ -380,7 +371,7 @@ function renderNotices(dependencyData) {
   const licenseOf = (pkg) => dependencyData.licenses.find((item) => item.id === `lic-${sanitize(`${pkg.name}-${pkg.version}`)}`);
   const expressions = [...new Set(dependencyData.licenses.map((license) => license.expression))].sort();
   const chunks = [];
-  chunks.push("SolidCraft Mastra runtime — third-party licence texts");
+  chunks.push("SolidCraft workflow runtime — third-party licence texts");
   chunks.push("Pinned build; see packaging/mastra/inventory.json for exact files and digests.");
   chunks.push("This file is a reviewed distribution record, not a legal sign-off.");
   chunks.push("");
@@ -432,9 +423,12 @@ function renderNotices(dependencyData) {
   const licenses = Buffer.from(`${chunks.join("\n")}\n`);
 
   const notice = [];
-  notice.push("SolidCraft Mastra runtime — third-party notices");
+  const enterprisePaths = enterpriseFilePaths(dependencyData);
+  notice.push("SolidCraft workflow runtime — third-party notices");
   notice.push(`Target: ${TARGET}; Node ${NODE_VERSION}; npm 11.19.0; runtime ${RUNTIME_VERSION}.`);
-  notice.push("The artifact contains no path component named `ee`. However, the shipped `@mastra/core/dist/ee-*.js`/`.cjs`/`.map` files carry Mastra Enterprise License headers and `src/ee/index.ts` source-map provenance. They are NOT approved for distribution, are recorded as needs-human legal review, and the current public `@mastra/core/agent` entry imports them. The artifact is blocked; #14 must not bundle it until legal review or a different build resolves this.");
+  if (enterprisePaths.length > 0) {
+    notice.push("The artifact contains enterprise-licensed files. They are NOT approved for distribution; #14 must not bundle this artifact until legal review or a different build resolves them.");
+  }
   notice.push("");
   notice.push("| Package | Version | Licence | Rights holder | Source | Review |");
   notice.push("|---|---|---|---|---|---|");
@@ -446,13 +440,17 @@ function renderNotices(dependencyData) {
     const expression = dep.name === "@mastra/core" ? `${license.expression} + LicenseRef-Mastra-Enterprise (4 dist/ee-* files)` : license.expression;
     notice.push(`| \`${dep.name}\` | ${dep.version} | ${expression} | ${license.rightsHolder} | ${dep.sourceUrl} | ${review} |`);
   }
-  notice.push(`| \`@mastra/core\` enterprise \`dist/ee-*\` | 1.82.0 | LicenseRef-Mastra-Enterprise | Mastra AI and contributors | packaging/mastra/inventory.json (lic-mastra-enterprise) | needs-human — legal review pending |`);
+  if (enterprisePaths.length > 0) {
+    notice.push(`| \`@mastra/core\` enterprise \`dist/ee-*\` | 1.82.0 | LicenseRef-Mastra-Enterprise | Mastra AI and contributors | packaging/mastra/inventory.json (lic-mastra-enterprise) | needs-human — legal review pending |`);
+  }
   notice.push(`| \`node\` | ${NODE_VERSION} | MIT | OpenJS Foundation and Node.js contributors | ${NODE_SOURCE_URL} | verified |`);
   notice.push(`| \`@intgral-ai/solidcraft-mastra-runtime\` | ${RUNTIME_VERSION} | MIT OR Apache-2.0 | SolidCraft contributors | https://github.com/intgral-ai/open-skyfall-desktop | verified |`);
   notice.push(`| \`typescript\` | 5.9.3 | Apache-2.0 | Microsoft and contributors | build tool only, not shipped | verified |`);
   notice.push("");
-  notice.push("Enterprise-license files requiring legal review:");
-  for (const path of enterpriseFilePaths(dependencyData)) notice.push(`- \`${path}\``);
+  if (enterprisePaths.length > 0) {
+    notice.push("Enterprise-license files requiring legal review:");
+    for (const path of enterprisePaths) notice.push(`- \`${path}\``);
+  }
   return { licenses, notice: Buffer.from(`${notice.join("\n")}\n`) };
 }
 

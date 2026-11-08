@@ -173,9 +173,9 @@ workflow has no credentials, script runtime or durable store.
 
 ## Deliberate deviations and seams
 
-- **Direct `HostAiModelClient`, not `createHostAiAgent`.** The turn runner calls
-  #7's one-call client directly and owns every tool round. The Mastra `Agent`
-  wrapper remains a compatibility seam for #7; using it here would hide the
+- **Direct `HostAiModelClient`, not a legacy Agent.** The turn runner calls
+  #7's one-call client directly and owns every tool round. The legacy Mastra
+  `Agent` wrapper was removed by BM-1; using it here would hide the
   ordered tool-call/result identity and the exact next-call boundary this
   workflow must control. Every round is still exactly one HostAi
   `model.generate` call with no retry or hidden tool execution.

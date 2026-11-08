@@ -176,7 +176,7 @@ async function negotiatedPeer(): Promise<{ peer: Peer; instanceId: string }> {
   return { peer, instanceId };
 }
 
-test("a built runtime executes a deterministic Mastra workflow through the host protocol", async () => {
+test("a no-bridge turn fails closed without a model call", async () => {
   const { peer } = await negotiatedPeer();
   try {
     const start = await peer.request("session.start", sessionScope, sessionParams(), "h:2");
@@ -184,23 +184,15 @@ test("a built runtime executes a deterministic Mastra workflow through the host 
     const accepted = await peer.request("turn.start", turnScope, turnParams(), "h:3");
     assert.deepEqual(accepted.result, { state: "accepted" });
 
-    const model = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
-    const params = model.params as JsonObject;
-    assert.equal(params["connectionId"], "byok-1");
-    assert.equal(params["modelId"], "model-a");
-    assert.equal(Object.hasOwn(params, "apiKey"), false, "the runtime never carries provider credentials");
-    assert.equal(Object.hasOwn(params, "key"), false);
-    assert.equal((params["options"] as JsonObject)["delivery"], "buffered");
-    assert.deepEqual((params["messages"] as JsonObject[]).at(-1)?.["content"], [{ type: "text", text: "Set width to 40 mm." }]);
-    peer.replyModel(model, "The width can be 40 mm.", "cont-1");
-
-    const answer = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "workflow.text");
-    assert.equal((answer.data as JsonObject)["text"], "The width can be 40 mm.");
     const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
     assert.equal((finished.data as JsonObject)["state"], "task_failed");
+    assert.match(String((finished.data as JsonObject)["reason"]), /bridge is not configured/u);
     assert.equal((finished.data as JsonObject)["changes"], "none");
     assert.deepEqual((finished.data as JsonObject)["document"], { documentId: "doc-demo", revision: "41" });
     assert.equal((finished.data as JsonObject)["validationRunId"], null);
+
+    assert.equal(peer.frames.some((frame) => frame.kind === "request" && frame.method === "model.generate"), false);
+    assert.equal(peer.frames.some((frame) => frame.kind === "event" && frame.event === "workflow.text"), false);
 
     const sequences = peer.frames.filter((frame) => frame.kind === "event").map((frame) => frame.sequence ?? 0);
     assert.deepEqual(sequences, [...sequences].sort((left, right) => left - right));
@@ -235,125 +227,6 @@ test("an incompatible hello is refused and the process exits before a session st
     assert.equal(refusal.error?.["code"], "INCOMPATIBLE_VERSION");
     assert.deepEqual((refusal.error?.["details"] as JsonObject)["supported"], ["1.0"]);
     assert.equal(await peer.closeInput(), 0);
-  } finally {
-    peer.kill();
-  }
-});
-
-test("cancellation reaches the in-flight HostAi request and prevents a late reply from finishing the turn", async () => {
-  const { peer } = await negotiatedPeer();
-  try {
-    await peer.request("session.start", sessionScope, sessionParams(), "h:2");
-    await peer.request("turn.start", turnScope, turnParams(), "h:3");
-    const model = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
-    const wrongRun = await peer.request(
-      "turn.cancel",
-      { ...turnScope, workflowRunId: "w-other" },
-      { reason: "user" },
-      "h:3b",
-    );
-    assert.deepEqual(wrongRun.result, { state: "terminal" }, "a different workflowRunId must not cancel the active turn");
-    const cancel = peer.request("turn.cancel", turnScope, { reason: "user" }, "h:4");
-    const cancelReply = await cancel;
-    assert.deepEqual(cancelReply.result, { state: "cancelling" });
-    const runtimeCancel = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "request.cancel");
-    assert.equal((runtimeCancel.params as JsonObject)["targetRequestId"], model.requestId);
-    const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
-    assert.equal((finished.data as JsonObject)["state"], "cancelled");
-
-    peer.replyModel(model, "late answer", "cont-late");
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    assert.equal(peer.frames.filter((frame) => frame.kind === "event" && frame.event === "turn.finished").length, 1);
-  } finally {
-    peer.kill();
-  }
-});
-
-test("image and document parts reach HostAi as artifact references", async () => {
-  const { peer } = await negotiatedPeer();
-  try {
-    await peer.request("session.start", sessionScope, sessionParams(), "h:2");
-    const attached = turnParams();
-    const image = {
-      artifactId: "image-1",
-      digest: `sha256:${"c".repeat(64)}`,
-      sizeBytes: 10,
-      mediaType: "image/png",
-    };
-    const document = {
-      artifactId: "doc-1",
-      digest: `sha256:${"d".repeat(64)}`,
-      sizeBytes: 20,
-      mediaType: "application/pdf",
-    };
-    attached["parts"] = [
-      { type: "text", text: "Use the attached picture and brief." },
-      { type: "image", artifact: image },
-      { type: "document", name: "brief.pdf", artifact: document },
-    ];
-    const accepted = await peer.request("turn.start", turnScope, attached, "h:3");
-    assert.deepEqual(accepted.result, { state: "accepted" });
-
-    const model = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
-    const messages = (model.params as JsonObject)["messages"] as JsonObject[];
-    assert.deepEqual(messages.at(-1)?.["content"], [
-      { type: "text", text: "Use the attached picture and brief." },
-      { type: "image", artifact: image },
-      { type: "document", name: "brief.pdf", artifact: document },
-    ]);
-    assert.equal(JSON.stringify(model.params).includes("data:"), false, "the runtime never forwards attachment bytes");
-    peer.replyModel(model, "The attachments describe the requested change.", null);
-    const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
-    assert.equal((finished.data as JsonObject)["state"], "task_failed");
-  } finally {
-    peer.kill();
-  }
-});
-
-test("attachment references are stripped from history before the next turn", async () => {
-  const { peer } = await negotiatedPeer();
-  try {
-    await peer.request("session.start", sessionScope, sessionParams(), "h:2");
-    const first = turnParams();
-    first["parts"] = [
-      { type: "text", text: "First turn with files." },
-      {
-        type: "image",
-        artifact: { artifactId: "image-1", digest: `sha256:${"c".repeat(64)}`, sizeBytes: 10, mediaType: "image/png" },
-      },
-      {
-        type: "document",
-        name: "brief.pdf",
-        artifact: { artifactId: "doc-1", digest: `sha256:${"d".repeat(64)}`, sizeBytes: 20, mediaType: "application/pdf" },
-      },
-    ];
-    assert.deepEqual((await peer.request("turn.start", turnScope, first, "h:3")).result, { state: "accepted" });
-    const firstModel = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
-    const firstMessages = (firstModel.params as JsonObject)["messages"] as JsonObject[];
-    assert.equal(firstMessages[0]?.["role"], "system");
-    assert.equal(JSON.stringify(firstMessages[0]?.["content"]).includes("Use native features."), true);
-    peer.replyModel(firstModel, "Noted the attachments.", null);
-    await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
-
-    const second = turnParams();
-    second["parts"] = [{ type: "text", text: "Second turn is text only." }];
-    const secondScope = { ...turnScope, turnId: "t-2", workflowRunId: "w-2" };
-    assert.deepEqual((await peer.request("turn.start", secondScope, second, "h:5")).result, { state: "accepted" });
-    const secondModel = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
-    const history = JSON.stringify((secondModel.params as JsonObject)["messages"]);
-    assert.equal(history.includes('"type":"image"'), false, "an expired image reference never reaches the second call");
-    assert.equal(history.includes('"type":"document"'), false, "an expired PDF reference never reaches the second call");
-    assert.equal(history.includes("[image attachment]"), true);
-    assert.equal(history.includes("[document attachment: brief.pdf]"), true);
-    peer.replyModel(secondModel, "Second turn answered.", null);
-    const finished = await peer.waitFor(
-      (frame) => frame.kind === "event" && frame.event === "turn.finished" && frame.scope?.turnId === "t-2",
-    );
-    assert.equal((finished.data as JsonObject)["state"], "task_failed");
-    const frames = JSON.stringify(peer.frames);
-    assert.equal(frames.includes("data:"), false);
-    assert.equal(frames.includes("apiKey"), false);
-    assert.equal(frames.includes("Authorization"), false);
   } finally {
     peer.kill();
   }
@@ -426,11 +299,11 @@ test("session.reset retires the old session identity", async () => {
       "h:5",
     );
     assert.deepEqual(newTurn.result, { state: "accepted" });
-    const model = await peer.waitFor((frame) => frame.kind === "request" && frame.method === "model.generate");
-    assert.equal((model.scope as Scope).sessionId, "s-2");
-    peer.replyModel(model, "ok");
     const finished = await peer.waitFor((frame) => frame.kind === "event" && frame.event === "turn.finished");
     assert.equal((finished.scope as Scope).sessionId, "s-2");
+    assert.equal((finished.data as JsonObject)["state"], "task_failed");
+    assert.match(String((finished.data as JsonObject)["reason"]), /bridge is not configured/u);
+    assert.equal(peer.frames.filter((frame) => frame.kind === "request" && frame.method === "model.generate").length, 0);
   } finally {
     peer.kill();
   }

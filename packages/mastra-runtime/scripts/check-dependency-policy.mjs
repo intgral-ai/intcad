@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Locked dependency and enterprise-module check for the Mastra runtime.
+ * Locked dependency and enterprise-module check for the SolidCraft workflow runtime.
  *
  * Cargo's licence gate does not cover npm/Node. This script reports the direct
  * production closure and proves the runtime source and built artifact import no
- * `@mastra/core` enterprise module. The full lockfile remains the inventory for
- * #15; this is not a substitute for that review.
+ * Mastra SDK or enterprise module. The full lockfile remains the inventory for
+ * #15/BM-3; this is not a substitute for that review.
  */
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
@@ -55,13 +55,10 @@ for (const name of direct) {
   console.log(`${name}@${manifest.version} license=${manifest.license ?? "unknown"}`);
 }
 
-const mastra = readJson(join(repoRoot, "node_modules/@mastra/core/package.json"));
-if (mastra.license !== "Apache-2.0") {
-  fail(`@mastra/core license is ${mastra.license}, expected Apache-2.0`);
-}
-const licenseText = readFileSync(join(repoRoot, "node_modules/@mastra/core/LICENSE.md"), "utf8");
-if (!licenseText.includes("ee/")) {
-  fail("the Mastra license text does not document the ee/ exclusion");
+for (const name of Object.keys(lock.packages ?? {})) {
+  if (name.includes("@mastra/")) {
+    fail(`lockfile contains ${name}; the Mastra SDK must not be a runtime dependency`);
+  }
 }
 
 function files(directory, out = []) {
@@ -87,8 +84,8 @@ for (const root of [join(packageRoot, "src"), join(packageRoot, "dist", "src")])
   }
   for (const file of files(root).filter((path) => path.endsWith(".ts") || path.endsWith(".js"))) {
     const source = readFileSync(file, "utf8");
-    if (/@mastra\/core\/[^"']*ee/u.test(source)) {
-      fail(`${file} imports an enterprise module`);
+    if (/@mastra\//u.test(source) || /\/ee(?:\/|["'])/u.test(source)) {
+      fail(`${file} imports the Mastra SDK or an enterprise module`);
     }
   }
 }
@@ -100,6 +97,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(`direct production dependencies: ${direct.join(", ")}`);
-  console.log("enterprise imports: none");
+  console.log("Mastra SDK / enterprise imports: none");
   console.log("lockfile: committed at the repository root; reviewed closure in packaging/mastra/inventory.json");
 }

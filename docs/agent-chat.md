@@ -350,7 +350,7 @@ HTTP slot until the host HTTP function exits. Direct chat and the native one-ste
 share a process-wide ceiling of two physical calls per original connection ID and eight across
 all windows. Each window has its own connection catalog. At capacity a call is refused rather
 than queued. HostAi itself does not execute tools or run chat rounds; this does not add a runtime
-execution selector to the panel or claim any Mastra wire integration.
+execution selector to the panel or claim any workflow wire integration.
 
 For Ollama, choosing a model checks its reported capabilities in the background. If its
 capabilities list lacks `tools`, a warning below the model picker explains that the model can

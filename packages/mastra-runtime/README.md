@@ -1,4 +1,4 @@
-# SolidCraft Mastra runtime
+# SolidCraft workflow runtime
 
 Private npm workspace package `@intgral-ai/solidcraft-mastra-runtime`.
 
@@ -53,7 +53,7 @@ per-file public-distribution authorization to wait for here.
 
 | Baseline at the pinned revision | This package | Status |
 |---|---|---|
-| `packages/ai-runtime/src/models/model-runtime.ts` (`ModelRuntime.createAgent`, Mastra model seam) | `src/host-ai/language-model.ts` | Original adapter; behavior adapted from the public Mastra model interface, no source copied |
+| `packages/ai-runtime/src/models/model-runtime.ts` (`ModelRuntime.createAgent`, legacy model seam) | `src/host-ai/model-client.ts` | The legacy `language-model.ts` adapter was removed by BM-1; the native workflow calls `HostAiModelClient` directly. |
 | `apps/server/src/mastra/workflows/query-proposal.ts` and `apps/server/src/mastra/agent-loop/` (read/decision, ordered tool rounds, parameter edit, continuity checks, bounded repair) | `src/workflows/` | Original independent adaptation; no source imported. The source audit keeps these records `needs-human`, so only the stage/role design is referenced |
 | `packages/ai-runtime/src/workflows/cad-generation.ts` and `src/tools/cad-execution.ts` | `src/workflows/apply.ts` uses #9's native guarded adapter | The prepared-script executor and its `SCRIPT` inputs are replaced, not imported |
 | `apps/server/src/mastra/services/product-generation-runtime.ts` | Not here; host sessions and durable records belong to #5/#6/#12 | Not imported |
@@ -123,9 +123,9 @@ counts and any mismatch.
 - The 64 KiB control lane is reserved: data frames admit only up to
   `queueBytes - controlLaneBytes`, while cancel, shutdown, hello and terminal
   frames still use their lane under data backpressure.
-- A Mastra `createWorkflow` run for each turn with an `inspect` and one `model`
-  step. The model step is an actual Mastra `Agent` with `maxSteps: 1` and
-  `maxRetries: 0`.
+- A native `runNativeModelingWorkflow` run for each turn that has a
+  `solidcraft-app` bridge. The legacy no-bridge Mastra Agent/Workflow path is
+  removed; a no-bridge turn fails closed before any model call.
 - `model.generate` as one buffered HostAi request per Agent invocation. There is
   no hidden retry, provider fallback or tool execution.
 - Tool calls returned by the model are surfaced to the workflow and never
