@@ -13845,16 +13845,19 @@ mod mastra_backend_tests {
         );
     }
 
+    #[cfg(unix)]
     fn bridge_reply(method: &str, result: serde_json::Value) -> String {
         let hex = super::mastra_worker_support::hex;
         format!("REPLY_METHOD_HEX {} {}\n", hex(method.as_bytes()), hex(result.to_string().as_bytes()))
     }
 
+    #[cfg(unix)]
     fn bridge_event(sequence: u32, event: &str, data: serde_json::Value) -> String {
         let hex = super::mastra_worker_support::hex;
         format!("EVENT_LAST {sequence} {event} {}\n", hex(data.to_string().as_bytes()))
     }
 
+    #[cfg(unix)]
     fn bridge_app(
         mut app: SolveApp,
         script: String,
@@ -13890,6 +13893,7 @@ mod mastra_backend_tests {
         (app, crate::fonts::test_context(), log, Arc::new(tools))
     }
 
+    #[cfg(unix)]
     fn settle_bridge(app: &mut SolveApp, ctx: &egui::Context, done: impl Fn(&SolveApp) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(30);
         while !done(app) {
@@ -13900,6 +13904,7 @@ mod mastra_backend_tests {
         }
     }
 
+    #[cfg(unix)]
     fn bridge_script(expected: solidcraft_engine::DocumentStamp, batch_commands: serde_json::Value, finished: serde_json::Value) -> String {
         use super::mastra_worker_support::{bootstrap, hex};
         let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"bridge-peer","version":"1"}}});
@@ -13916,6 +13921,7 @@ mod mastra_backend_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mastra_bridge_batch_reaches_the_chat_document_as_one_tool_event_and_one_undo_step() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
         let before_doc = Arc::clone(&app.session.doc);
@@ -13949,6 +13955,7 @@ mod mastra_backend_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mastra_bridge_rejects_a_stale_expected_document_without_a_write() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
         let stamp = app.session.document_stamp();
@@ -13979,6 +13986,7 @@ mod mastra_backend_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mastra_bridge_late_request_after_turn_end_cannot_write() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
         let before = Arc::clone(&app.session.doc);
@@ -14031,6 +14039,7 @@ mod mastra_backend_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mastra_bridge_without_a_control_queue_fails_before_the_runtime_starts() {
         use super::mastra_worker_support::*;
         let program = super::mastra_peer_program().unwrap();

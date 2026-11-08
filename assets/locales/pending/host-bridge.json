@@ -1,20 +1,26 @@
 {
   "en": {
+    "ui.mastra_bridge_fallback": "The Mastra tool bridge is unavailable ({error}); this chat will run without CAD tools and a modeling turn will fail truthfully with no writes.",
     "ui.mastra_bridge_unavailable": "The Mastra runtime needs this chat's tool bridge, but its control queue is unavailable. No turn was started."
   },
   "ar": {
+    "ui.mastra_bridge_fallback": "جسر أدوات Mastra غير متاح ({error})؛ ستتم هذه الدردشة دون أدوات CAD وستفشل جولة النمذجة بصدق دون كتابة.",
     "ui.mastra_bridge_unavailable": "يحتاج وقت تشغيل Mastra إلى جسر أدوات هذه الدردشة، لكن قائمة انتظار التحكم غير متاحة. لم تبدأ أي جولة."
   },
   "he": {
+    "ui.mastra_bridge_fallback": "גשר הכלים של Mastra אינו זמין ({error}); הצ'אט הזה יפעל בלי כלי CAD ותור דיגום ייכשל באופן אמיתי בלי כתיבה.",
     "ui.mastra_bridge_unavailable": "זמן הריצה של Mastra זקוק לגשר הכלים של הצ'אט הזה, אבל תור הבקרה אינו זמין. לא התחיל תור."
   },
   "ja": {
+    "ui.mastra_bridge_fallback": "Mastra ツールブリッジを利用できません（{error}）。このチャットは CAD ツールなしで動作し、モデリングのターンは書き込みなしで正直に失敗します。",
     "ui.mastra_bridge_unavailable": "Mastra ランタイムにはこのチャットのツールブリッジが必要ですが、制御キューを利用できません。ターンは開始されていません。"
   },
   "vi": {
+    "ui.mastra_bridge_fallback": "Cầu nối công cụ Mastra không khả dụng ({error}); cuộc trò chuyện này sẽ chạy không có công cụ CAD và lượt mô hình sẽ thất bại trung thực mà không ghi gì.",
     "ui.mastra_bridge_unavailable": "Máy chạy Mastra cần cầu nối công cụ của cuộc trò chuyện này, nhưng hàng đợi điều khiển không khả dụng. Không có lượt nào được bắt đầu."
   },
   "zh": {
+    "ui.mastra_bridge_fallback": "Mastra 工具桥不可用（{error}）；此聊天将在没有 CAD 工具的情况下运行，建模轮次会如实失败且不会写入。",
     "ui.mastra_bridge_unavailable": "Mastra 运行时需要此聊天的工具桥，但其控制队列不可用。未开始任何轮次。"
   }
 }

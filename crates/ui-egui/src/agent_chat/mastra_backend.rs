@@ -819,7 +819,7 @@ impl MastraBackend {
     /// Start the runtime and its bounded client. Returns an error text suitable for the panel
     /// when the process cannot start at all; protocol failures arrive as events later.
     pub fn start(
-        config: MastraConfig,
+        mut config: MastraConfig,
         mut launch: RuntimeLaunch,
         host: Arc<HostAi>,
         ids: Arc<dyn IdSource>,
@@ -833,18 +833,25 @@ impl MastraBackend {
         let agent_budget = Arc::new(AtomicU32::new(AGENT_TASKS_PER_TURN));
         let task_control: Arc<TaskControlSlot> = Arc::new(TaskControlSlot::default());
         let mut host_bridge = None;
+        let mut bridge_fallback: Option<String> = None;
         if config.bridge.is_some() {
             let tools = config.tools.clone().ok_or_else(|| crate::i18n::tr("ui.mastra_bridge_unavailable").to_string())?;
-            let bridge = HostBridge::open(tools)?;
-            let fd = bridge.child_fd();
-            if fd < 0 {
-                return Err(crate::i18n::tr("ui.mastra_bridge_unavailable").to_string());
+            match HostBridge::open(tools) {
+                Ok(bridge) => {
+                    let fd = bridge.child_fd();
+                    launch.args.push(std::ffi::OsString::from(format!("--bridge-fd={fd}")));
+                    if let Some(argument) = capability_argument() {
+                        launch.args.push(std::ffi::OsString::from(argument));
+                    }
+                    host_bridge = Some(bridge);
+                }
+                Err(error) => {
+                    // The prior no-bridge path is truthful and keeps Mastra chat available
+                    // instead of making the whole backend fatal on a platform without a lane.
+                    config.bridge = None;
+                    bridge_fallback = Some(error);
+                }
             }
-            launch.args.push(std::ffi::OsString::from(format!("--bridge-fd={fd}")));
-            if let Some(argument) = capability_argument() {
-                launch.args.push(std::ffi::OsString::from(argument));
-            }
-            host_bridge = Some(bridge);
         }
         let runtime = RuntimeClient::start(
             launch,
@@ -877,6 +884,9 @@ impl MastraBackend {
         backend.agent_budget = Some(agent_budget);
         backend.task_control = task_control;
         backend.host_bridge = host_bridge;
+        if let Some(error) = bridge_fallback {
+            backend.events.push_back(Event::Text { thought: true, text: crate::i18n::format("ui.mastra_bridge_fallback", &[("error", &error)]) });
+        }
         backend.events.push_back(Event::Documents(false));
         backend.events.push_back(Event::ToolsAvailable(backend.config.bridge.is_some()));
         // The connection's sign-in state is checked once, off the window thread, and kept apart

@@ -166,7 +166,6 @@ pub(crate) struct HostBridge {
     state: Arc<BridgeState>,
     error: Arc<Mutex<Option<String>>>,
     events: Arc<Mutex<VecDeque<Event>>>,
-    generation: AtomicU64,
 }
 
 impl HostBridge {
@@ -181,6 +180,9 @@ impl HostBridge {
         #[cfg(unix)]
         {
             let (host, child) = UnixStream::pair().map_err(|error| format!("the Mastra bridge lane could not be created: {error}"))?;
+            if !inheritable(child.as_raw_fd()) {
+                return Err("the Mastra bridge descriptor is below fd 3 and cannot be inherited safely".into());
+            }
             clear_cloexec(&child)?;
             host.set_nonblocking(false).map_err(|error| error.to_string())?;
             child.set_nonblocking(false).map_err(|error| error.to_string())?;
@@ -191,20 +193,25 @@ impl HostBridge {
             let events = Arc::new(Mutex::new(VecDeque::new()));
             let backend = ChatBackend { tools, state: Arc::clone(&state), events: Arc::clone(&events), next_call: Arc::new(AtomicU64::new(0)) };
             let reported = Arc::clone(&error);
+            let close_state = Arc::clone(&state);
             std::thread::Builder::new()
                 .name("mastra-bridge".into())
                 .spawn(move || {
                     let mut server = Server::new(Box::new(backend));
                     let failure = match server.serve(BufReader::new(reader), BufWriter::new(writer)) {
-                        Ok(()) => "the Mastra bridge lane closed".to_string(),
-                        Err(failure) => format!("the Mastra bridge stopped: {failure}"),
+                        // EOF after the runtime normally retired its turn is not an error.
+                        Ok(()) if close_state.current().is_err() => None,
+                        Ok(()) => Some("the Mastra bridge lane closed during a turn".to_string()),
+                        Err(failure) => Some(format!("the Mastra bridge stopped: {failure}")),
                     };
-                    if let Ok(mut slot) = reported.lock() {
+                    if let Some(failure) = failure
+                        && let Ok(mut slot) = reported.lock()
+                    {
                         *slot = Some(failure);
                     }
                 })
                 .map_err(|error| format!("the Mastra bridge server could not start: {error}"))?;
-            Ok(Self { host, child: Some(child), state, error, events, generation: AtomicU64::new(0) })
+            Ok(Self { host, child: Some(child), state, error, events })
         }
     }
 
@@ -234,9 +241,7 @@ impl HostBridge {
 
     /// Begin the turn the lane may serve. Returns a generation used to end only that turn.
     pub(crate) fn begin_turn(&self, active: Arc<AtomicBool>) -> u64 {
-        let generation = self.state.begin(active);
-        self.generation.store(generation, Ordering::Relaxed);
-        generation
+        self.state.begin(active)
     }
 
     pub(crate) fn end_turn(&self, generation: u64) {
@@ -300,6 +305,11 @@ fn bounded(text: &str) -> String {
         out.push('…');
     }
     out
+}
+
+#[cfg(unix)]
+fn inheritable(fd: RawFd) -> bool {
+    fd >= 3
 }
 
 #[cfg(unix)]
@@ -371,12 +381,22 @@ mod tests {
     fn a_closed_bridge_lane_reports_an_actionable_error() {
         let (tools, _rx) = std::sync::mpsc::channel();
         let mut bridge = HostBridge::open(tools).expect("the bridge opens");
+        bridge.begin_turn(Arc::new(AtomicBool::new(true)));
         drop(bridge.take_child());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while bridge.take_error().is_none() {
             assert!(std::time::Instant::now() < deadline, "the closed lane never reported");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stdio_descriptors_are_not_accepted_as_the_bridge_fd() {
+        assert!(!inheritable(0));
+        assert!(!inheritable(1));
+        assert!(!inheritable(2));
+        assert!(inheritable(3));
     }
 
     #[test]
