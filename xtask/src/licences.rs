@@ -2254,13 +2254,20 @@ mod tests {
         let real_sources = read_source_records(repository).unwrap();
         let policy_value: Value = serde_json::from_slice(&std::fs::read(repository.join("packaging/mastra/policy.json")).unwrap()).unwrap();
         let real_value: Value = serde_json::from_slice(&std::fs::read(repository.join("packaging/mastra/source-records.json")).unwrap()).unwrap();
-        assert_eq!(policy_value["approvals"], json!([]), "no real artifact has been approved");
         assert_eq!(policy_value["policyId"], "solidcraft-desktop-mastra-v1");
         assert_eq!(
             policy_value["supportedTargets"],
             json!(["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"])
         );
-        assert_eq!(policy_value["allowedLicenseExpressions"], json!(["Apache-2.0", "MIT", "MIT OR Apache-2.0"]));
+        assert_eq!(
+            policy_value["allowedLicenseExpressions"],
+            json!(["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BlueOak-1.0.0", "ISC", "MIT", "MIT OR Apache-2.0"])
+        );
+        let approvals = policy_value["approvals"].as_array().unwrap();
+        assert_eq!(approvals.len(), 1, "one reviewed runtime inventory is approved");
+        assert_eq!(approvals[0]["id"], "mastra-runtime-linux-x64-v1");
+        assert_eq!(approvals[0]["target"], "x86_64-unknown-linux-gnu");
+        assert_eq!(approvals[0]["inventoryDigest"], digest(&std::fs::read(repository.join("packaging/mastra/inventory.json")).unwrap()));
         assert_eq!(real_value["authorizations"][0]["declaration"], "有权代表并授权");
         assert_eq!(real_value["authorizations"][0]["sourceRevision"], "acb5048120b53ae1b4502724b70d1283e8c9daf4");
         let records = real_value["records"].as_array().unwrap();

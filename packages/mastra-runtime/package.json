@@ -25,7 +25,9 @@
     "pretest": "npm run build",
     "test": "node --test dist/test/*.test.js",
     "verify:schema": "node dist/src/bin/verify-schema.js",
-    "check:deps": "node scripts/check-dependency-policy.mjs"
+    "check:deps": "node scripts/check-dependency-policy.mjs && node scripts/runtime-artifact.mjs --check",
+    "artifact:generate": "node scripts/runtime-artifact.mjs --generate",
+    "artifact:check": "node scripts/runtime-artifact.mjs --check"
   },
   "dependencies": {
     "@mastra/core": "1.82.0",

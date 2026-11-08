@@ -62,9 +62,26 @@ files before building an installed artifact. That artifact inventory remains
 ## Transitive closure
 
 The repository-root `package-lock.json` is the locked transitive closure and is
-committed with this package. `npm ls --omit=dev --all` can print the installed
-tree after `npm ci`. This record does not claim that the full transitive set has
-been reviewed for distribution; #15 owns that review and the notices it implies.
+committed with this package. `npm ls --omit=dev --all` prints the installed tree
+after `npm ci`. The reviewed closure is now
+[`packaging/mastra/inventory.json`](../../packaging/mastra/inventory.json):
+151 production packages, exact versions, resolved URLs, lockfile integrity and
+tarball SHA-256, with a file/digest entry for every shipped file.
+
+## Reviewed artifact
+
+`npm run check:deps` also runs
+`packages/mastra-runtime/scripts/runtime-artifact.mjs --check`. It rebuilds the
+Linux x64 artifact from `dist/src`, the production `node_modules` closure, the
+protocol bundle and the pinned Node binary, then compares every digest with the
+reviewed inventory and rejects any `ee/` path. See
+[`docs/mastra-runtime-artifact.md`](../../docs/mastra-runtime-artifact.md) for the
+recorded digests, counts and the exact artifact-admission command.
+
+The artifact excludes every path component named `ee`. `@mastra/core` also
+publishes `dist/ee-*.js` outside its `LICENSE.md` `ee/` directory exclusion; the
+public agent entry imports those files, so they are retained and explicitly
+recorded in `packaging/mastra/NOTICE.txt`. That note is not legal sign-off.
 
 ## Verification
 

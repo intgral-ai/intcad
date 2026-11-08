@@ -10,9 +10,21 @@
   ],
   "allowedLicenseExpressions": [
     "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BlueOak-1.0.0",
+    "ISC",
     "MIT",
     "MIT OR Apache-2.0"
   ],
-  "forbiddenPathComponents": ["ee"],
-  "approvals": []
+  "forbiddenPathComponents": [
+    "ee"
+  ],
+  "approvals": [
+    {
+      "id": "mastra-runtime-linux-x64-v1",
+      "target": "x86_64-unknown-linux-gnu",
+      "inventoryDigest": "sha256:583b1e52fd20361a0ec7104287c98209d2410ef05a99f33df5dd2f02576d537e"
+    }
+  ]
 }

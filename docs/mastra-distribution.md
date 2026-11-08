@@ -1,8 +1,10 @@
 # Desktop Mastra distribution policy
 
-**Status:** static policy and explicit CLI admission for [#15](https://github.com/intgral-ai/open-skyfall-desktop/issues/15),
-implementing the scope in [the hosting contract](mastra-runtime.md#1-product-and-distribution-decisions).
-No runtime, Node binary, dependency release or installed package is approved here.
+**Status:** reviewed static policy and one real Linux x64 runtime inventory for
+[#15](https://github.com/intgral-ai/open-skyfall-desktop/issues/15), implementing
+the scope in [the hosting contract](mastra-runtime.md#1-product-and-distribution-decisions).
+No installed desktop package is approved here; #14 still owns installed-package,
+signature and non-inclusion evidence.
 `cargo xtask runtime-artifact` is a production command. `cargo xtask ci` checks
 the fixed reviewed distribution metadata immediately after its existing Cargo
 license check. This static CI step is not npm/Node coverage or artifact admission.
@@ -11,10 +13,12 @@ license check. This static CI step is not npm/Node coverage or artifact admissio
 
 [`packaging/mastra/policy.json`](../packaging/mastra/policy.json) records the four
 intended desktop targets and an exact reviewed license-expression vocabulary.
-Those expressions are not dependency approvals. Its real `approvals` array is
-empty: no actual inventory digest, Node pin or package evidence has been supplied.
-Only a reviewed repository change may approve an exact target and inventory byte
-digest. Synthetic approvals exist only in temporary, original test fixtures.
+Those expressions are not dependency approvals. Its real `approvals` array has one
+reviewed entry for `x86_64-unknown-linux-gnu`; it binds the SHA-256 digest of
+[`packaging/mastra/inventory.json`](../packaging/mastra/inventory.json). The other
+three targets remain unapproved. Only a reviewed repository change may approve an
+exact target and inventory byte digest. Synthetic approvals exist only in
+temporary, original test fixtures.
 
 Static policy validity permits explicitly unverified source candidates. It does
 not mean that any candidate, artifact or installed target is verified. Cargo's
@@ -95,7 +99,8 @@ Approval { id: Id, target: Target, inventoryDigest: Digest }
 `forbiddenPathComponents` exactly `["ee"]`. Supported targets and allowed
 expressions are nonempty; an approval's target must be in supportedTargets.
 The real policy lists exactly the four targets above, has policyId
-`solidcraft-desktop-mastra-v1` and still has **approvals: []**.
+`solidcraft-desktop-mastra-v1` and has **one reviewed approval** for
+`x86_64-unknown-linux-gnu` binding the real runtime inventory digest.
 
 ```text
 SourceRecords {
@@ -426,8 +431,9 @@ source-to-materialized mappings, applicable rights/notices, the selected lock an
 production closure, and complete real build evidence before release. These tests
 execute no Node, tool or package manager. Synthetic admission and Cargo checks do
 not establish real source audit, reproducibility, installed-package acceptance or
-trusted checkout identity; #17/#14 retain those release obligations. Real approvals
-remain empty and all five selected real source records now carry pinned digests
+trusted checkout identity; #17/#14 retain those release obligations. One real
+Linux x64 runtime inventory is approved; the other targets and installed-package
+evidence remain open. All five selected real source records carry pinned digests
 and an explicit audit verdict: 0 verified, 3 needs-human, 2 rejected.
 
 ## CLI contract and #17 integration

@@ -101,5 +101,5 @@ if (failures.length > 0) {
 } else {
   console.log(`direct production dependencies: ${direct.join(", ")}`);
   console.log("enterprise imports: none");
-  console.log("lockfile: committed at the repository root (full closure for #15)");
+  console.log("lockfile: committed at the repository root; reviewed closure in packaging/mastra/inventory.json");
 }

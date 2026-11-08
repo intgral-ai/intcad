@@ -15,7 +15,7 @@ Hard rules; reasons: CONTRIBUTING.md, "Rules that aren't negotiable".
 
 ## desktop-only Mastra distribution exception
 - Rights gate: `docs/mastra-distribution.md` and `packaging/mastra/source-records.json`. At `acb5048120b53ae1b4502724b70d1283e8c9daf4`, the intgral-ai grant covers only selected owned Vector Studio orchestration/agent-loop/model-runtime code for public redistribution as `MIT OR Apache-2.0`, after per-file ownership, bytes, license, notices, dependencies and independent third-party review. Third-party content retains its own licenses/notices; `ee/` and excluded roles remain forbidden.
-- 3 records `needs-human` (`unverified`), 2 `rejected`; approvals empty. No source is importable yet; original adapters are the route. Evidence/attribution never grant permission.
+- 3 records `needs-human` (`unverified`), 2 `rejected`; one Linux x64 runtime inventory is approved. No source is importable yet; original adapters are the route. Evidence/attribution never grant permission.
 - Only opt-in desktop `packages/mastra-runtime/` permits the TS companion, workflows/clients, pinned Node and necessary production dependencies. Host/core/application stay Rust/wasm; browser runtime unavailable, no Node.
 
 ## No GPL, LGPL or AGPL code
