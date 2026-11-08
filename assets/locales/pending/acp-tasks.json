@@ -1,0 +1,58 @@
+{
+  "ar": {
+    "ui.host_ai_acp_auth_required": "سجّل الدخول إلى وكيل ACP لتشغيل مهمة سير العمل هذه.",
+    "ui.host_ai_invalid_proposal": "أعاد الوكيل اقتراحاً لا يستطيع هذا المضيف قبوله.",
+    "ui.host_ai_permission_denied": "رفضت إذن الوكيل بالمتابعة.",
+    "ui.host_ai_task_failed": "تعذّر على الوكيل إكمال المهمة.",
+    "ui.mastra_acp_tasks_unavailable": "لا يمكن لسير عمل Mastra استخدام وكيل ACP في هذا الإصدار بعد. الدردشة المباشرة مع الوكيل ما زالت تعمل؛ ويجري ربط مسار مهام سير العمل."
+  },
+  "de": {
+    "ui.host_ai_acp_auth_required": "Melde dich beim ACP-Agenten an, um diese Workflow-Aufgabe auszuführen.",
+    "ui.host_ai_invalid_proposal": "Der Agent hat einen Vorschlag geliefert, den dieser Host nicht annehmen kann.",
+    "ui.host_ai_permission_denied": "Du hast die Berechtigung des Agenten zum Fortfahren abgelehnt.",
+    "ui.host_ai_task_failed": "Der Agent konnte die Aufgabe nicht abschließen.",
+    "ui.mastra_acp_tasks_unavailable": "Ein Mastra-Workflow kann in diesem Build noch keinen ACP-Agenten verwenden. Der direkte Chat mit dem Agenten funktioniert weiterhin; der Workflow-Aufgabenpfad wird gerade angebunden."
+  },
+  "en": {
+    "ui.host_ai_acp_auth_required": "Sign in to the ACP agent to run this workflow task.",
+    "ui.host_ai_invalid_proposal": "The agent returned a proposal this host cannot accept.",
+    "ui.host_ai_permission_denied": "You denied the agent permission to continue.",
+    "ui.host_ai_task_failed": "The agent could not complete the task.",
+    "ui.mastra_acp_tasks_unavailable": "A Mastra workflow cannot use an ACP agent in this build yet. Direct chat with the agent still works; the workflow task path is being wired."
+  },
+  "he": {
+    "ui.host_ai_acp_auth_required": "יש להתחבר לסוכן ה-ACP כדי להריץ את משימת תהליך העבודה.",
+    "ui.host_ai_invalid_proposal": "הסוכן החזיר הצעה שהמארח הזה אינו יכול לקבל.",
+    "ui.host_ai_permission_denied": "דחית את הרשאת הסוכן להמשיך.",
+    "ui.host_ai_task_failed": "הסוכן לא הצליח להשלים את המשימה.",
+    "ui.mastra_acp_tasks_unavailable": "תהליך Mastra עדיין אינו יכול להשתמש בסוכן ACP בגרסה הזו. הצ׳אט הישיר עם הסוכן עדיין עובד; נתיב משימות תהליך העבודה נמצא בהקמה."
+  },
+  "ja": {
+    "ui.host_ai_acp_auth_required": "このワークフロー タスクを実行するには ACP エージェントにサインインしてください。",
+    "ui.host_ai_invalid_proposal": "エージェントがこのホストで受け入れられない提案を返しました。",
+    "ui.host_ai_permission_denied": "エージェントの続行許可を拒否しました。",
+    "ui.host_ai_task_failed": "エージェントはタスクを完了できませんでした。",
+    "ui.mastra_acp_tasks_unavailable": "このビルドでは Mastra ワークフローから ACP エージェントをまだ使用できません。エージェントとの直接チャットは引き続き動作します。ワークフローのタスク経路を接続中です。"
+  },
+  "ko": {
+    "ui.host_ai_acp_auth_required": "이 워크플로 작업을 실행하려면 ACP 에이전트에 로그인하세요.",
+    "ui.host_ai_invalid_proposal": "에이전트가 이 호스트에서 받아들일 수 없는 제안을 반환했습니다.",
+    "ui.host_ai_permission_denied": "에이전트의 계속 권한을 거부했습니다.",
+    "ui.host_ai_task_failed": "에이전트가 작업을 완료하지 못했습니다.",
+    "ui.mastra_acp_tasks_unavailable": "이 빌드에서는 Mastra 워크플로가 아직 ACP 에이전트를 사용할 수 없습니다. 에이전트와의 직접 채팅은 계속 작동하며 워크플로 작업 경로를 연결 중입니다."
+  },
+  "vi": {
+    "ui.host_ai_acp_auth_required": "Đăng nhập vào tác nhân ACP để chạy tác vụ quy trình này.",
+    "ui.host_ai_invalid_proposal": "Tác nhân trả về một đề xuất mà máy chủ này không thể chấp nhận.",
+    "ui.host_ai_permission_denied": "Bạn đã từ chối quyền tiếp tục của tác nhân.",
+    "ui.host_ai_task_failed": "Tác nhân không thể hoàn thành nhiệm vụ.",
+    "ui.mastra_acp_tasks_unavailable": "Bản dựng này chưa cho phép quy trình Mastra dùng tác nhân ACP. Trò chuyện trực tiếp với tác nhân vẫn hoạt động; đường dẫn tác vụ quy trình đang được nối."
+  },
+  "zh": {
+    "ui.host_ai_acp_auth_required": "请登录 ACP 代理以运行此工作流任务。",
+    "ui.host_ai_invalid_proposal": "代理返回了此主机无法接受的建议。",
+    "ui.host_ai_permission_denied": "你拒绝了该代理继续操作的权限。",
+    "ui.host_ai_task_failed": "代理未能完成任务。",
+    "ui.mastra_acp_tasks_unavailable": "此版本中的 Mastra 工作流暂时不能使用 ACP 代理。与该代理的直接聊天仍然可用；工作流任务路径正在接通。"
+  }
+}

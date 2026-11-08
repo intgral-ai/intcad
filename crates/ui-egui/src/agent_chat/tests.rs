@@ -13954,10 +13954,14 @@ mod acp_task_tests {
     }
 
     fn text(session: &str, text: &str) -> String {
+        update_text(session, false, text)
+    }
+
+    fn update_text(session: &str, thought: bool, text: &str) -> String {
         update(
             session,
             serde_json::json!({
-                "sessionUpdate": "agent_message_chunk",
+                "sessionUpdate": if thought { "agent_thought_chunk" } else { "agent_message_chunk" },
                 "content": {"type": "text", "text": text}
             }),
         )
@@ -14036,11 +14040,12 @@ done
     #[test]
     fn authenticated_task_completes_without_a_second_credential_store() {
         let update = text("s1", &proposal_text(40));
+        let thought = update_text("s1", true, "secret reasoning");
         let script = base_script(
             r#"printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id""#,
-            r#"PROMPT=$id; cat {DIR}/update1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$PROMPT""#,
+            r#"PROMPT=$id; cat {DIR}/thought1; cat {DIR}/update1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":4,"totalTokens":7}}}\n' "$PROMPT""#,
         );
-        let command = peer("authenticated", &script, &[("update1", update)]);
+        let command = peer("authenticated", &script, &[("thought1", thought), ("update1", update)]);
         let (host, keys) = fixture_host("acp-task", &command);
         let binding = host.bind_acp("acp-task").unwrap();
         let (result, progress) = run(&host, &binding, request("Widen the block", Duration::from_secs(20)));
@@ -14049,7 +14054,9 @@ done
         assert_eq!(outcome.proposal.commands.len(), 1);
         assert_eq!(outcome.proposal.commands[0].command, "parameters.change");
         assert_eq!(outcome.proposal.source, TaskStamp { document_id: "doc-main".into(), revision: 7 });
-        assert_eq!(outcome.usage, None, "the ACP peer supplied no usage");
+        assert_eq!(outcome.usage, Some(Usage { input_tokens: Some(3), output_tokens: Some(4), total_tokens: Some(7) }));
+        assert!(!outcome.text.contains("secret reasoning"), "thought text never becomes proposal text");
+        assert!(progress.iter().all(|p| !matches!(p, TaskProgress::Text { text, .. } if text.contains("secret reasoning"))));
         assert!(progress.iter().any(|p| matches!(p, TaskProgress::Text { text, .. } if text.contains("parameters.change"))));
         assert_eq!(keys.0.load(Ordering::SeqCst), 0, "an ACP task never reads the API-key store");
     }
@@ -14130,6 +14137,7 @@ done
         assert_eq!(first.proposal.commands[0].params.get("expression"), Some(&serde_json::json!("41")));
         assert_eq!(second.proposal.commands[0].params.get("expression"), Some(&serde_json::json!("42")));
         assert!(!first.text.contains("42"));
+        assert_eq!(first.usage, None, "no supplied usage stays null");
     }
 
     #[test]
@@ -14336,5 +14344,160 @@ done
         let dir = std::path::Path::new(command.split_whitespace().last().unwrap()).parent().unwrap();
         let answer = std::fs::read_to_string(dir.join("stale-answer")).unwrap();
         assert!(answer.contains("\"outcome\":\"cancelled\""), "a stale permission is answered cancelled: {answer}");
+    }
+
+    #[test]
+    fn mastra_with_acp_is_gated_with_an_actionable_message() {
+        let mut app = app_with_discovered_login();
+        app.preferences.chat_execution = agents::Execution::Mastra;
+        connect(&mut app, &egui::Context::default());
+        assert_eq!(app.agent_chat.state(), State::Failed);
+        assert!(app.agent_chat.backend.is_none(), "a gated ACP workflow must not start a backend");
+        let items = format!("{:?}", app.agent_chat.items);
+        assert!(items.contains(&crate::i18n::tr("ui.mastra_acp_tasks_unavailable").to_string()), "{items}");
+    }
+
+    #[test]
+    fn cancellation_during_session_start_sends_no_prompt() {
+        let command = peer(
+            "cancel-session-start",
+            r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}
+' "$id" ;;
+    *'"method":"session/new"'*) printf 'seen
+' > {DIR}/session-new-seen; while :; do sleep 1; done ;;
+    *'"method":"session/prompt"'*) printf 'sent
+' > {DIR}/prompt-was-sent ;;
+    *) ;;
+  esac
+done
+"#,
+            &[],
+        );
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let control = Arc::new(TaskControl::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = Arc::clone(&host);
+        let c = Arc::clone(&control);
+        std::thread::spawn(move || {
+            let _ = tx.send(h.agent_run(&binding, request("cancel me", Duration::from_secs(30)), &c, &mut |_| {}));
+        });
+        let dir = std::path::Path::new(command.split_whitespace().last().unwrap()).parent().unwrap();
+        let seen = Instant::now() + Duration::from_secs(20);
+        while !dir.join("session-new-seen").exists() {
+            assert!(Instant::now() < seen, "the peer never saw session/new");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        control.cancel();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap_err().code(), AiErrorCode::Cancelled);
+        assert!(!dir.join("prompt-was-sent").exists(), "Stop during session/new must not send session/prompt");
+    }
+
+    #[test]
+    fn a_task_timeout_cancels_the_agent_and_is_not_a_completion() {
+        let command = peer(
+            "timeout",
+            r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}
+' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}
+' "$id" ;;
+    *'"method":"session/prompt"'*) PROMPT=$id
+      while IFS= read -r next; do
+        case "$next" in *'"method":"session/cancel"'*) printf 'cancelled
+' > {DIR}/cancelled; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}
+' "$PROMPT"; break ;; esac
+      done ;;
+    *) ;;
+  esac
+done
+"#,
+            &[],
+        );
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let error = host.agent_run(&binding, request("never finish", Duration::from_millis(250)), &TaskControl::default(), &mut |_| {}).unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::Timeout);
+        let dir = std::path::Path::new(command.split_whitespace().last().unwrap()).parent().unwrap();
+        let seen = Instant::now() + Duration::from_secs(10);
+        while !dir.join("cancelled").exists() {
+            assert!(Instant::now() < seen, "the timeout must send session/cancel");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_reused_session_id_is_refused() {
+        let script = base_script(
+            r#"printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id""#,
+            r#"PROMPT=$id; cat {DIR}/update1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$PROMPT""#,
+        );
+        let command = peer("duplicate-session", &script, &[("update1", text("s1", &proposal_text(40)))]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        assert!(run(&host, &binding, request("first", Duration::from_secs(20))).0.is_ok());
+        let error = run(&host, &binding, request("second", Duration::from_secs(20))).0.unwrap_err();
+        assert_eq!(error.code(), AiErrorCode::TaskFailed);
+        assert!(matches!(error.details(), AiErrorDetails::Operation { operation } if *operation == "session_reuse"));
+    }
+
+    #[test]
+    fn task_control_slot_serializes_and_refuses_a_stale_permission_key() {
+        let slot = Arc::new(mastra_backend::TaskControlSlot::default());
+        let first = Arc::new(TaskControl::default());
+        let first_key = first.next_key();
+        let guard = slot.acquire(Arc::clone(&first)).unwrap();
+        assert!(slot.answer(first_key, Some("allow")).is_ok());
+        assert_eq!(first.take_answers().unwrap(), vec![(first_key, PermissionAnswer::Selected("allow".into()))]);
+
+        let second = Arc::new(TaskControl::default());
+        let second_key = second.next_key();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_slot = Arc::clone(&slot);
+        let worker_control = Arc::clone(&second);
+        let worker = std::thread::spawn(move || {
+            let _guard = worker_slot.acquire(worker_control).unwrap();
+            let _ = tx.send(());
+            std::thread::sleep(Duration::from_millis(100));
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err(), "a second task cannot replace the first control");
+        drop(guard);
+        rx.recv_timeout(Duration::from_secs(2)).expect("the second task acquires after the first finishes");
+        assert_ne!(first_key, second_key);
+        assert!(slot.answer(first_key, Some("deny")).is_err(), "a retired task's key cannot answer a later task");
+        assert!(second.take_answers().unwrap().is_empty());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn proposal_limits_reject_empty_excess_disallowed_and_oversized_commands() {
+        let source = TaskStamp { document_id: "doc-main".into(), revision: 7 };
+        let proposal = |commands: Vec<serde_json::Value>| {
+            serde_json::json!({"source": {"documentId": "doc-main", "revision": "7"}, "commands": commands}).to_string()
+        };
+        let command = |name: &str, params: serde_json::Value| serde_json::json!({"command": name, "params": params});
+        assert!(host_ai::parse_proposal(&proposal(vec![]), &source, 64, None).is_err(), "0 commands is invalid");
+        let many = (0..65).map(|_| command("parameters.change", serde_json::json!({}))).collect();
+        assert!(host_ai::parse_proposal(&proposal(many), &source, 64, None).is_err(), "65 commands is invalid");
+        let allowed = vec!["parameters.change".to_string()];
+        assert!(
+            host_ai::parse_proposal(&proposal(vec![command("design.delete", serde_json::json!({}))]), &source, 64, Some(&allowed)).is_err(),
+            "a command outside the allowlist is invalid"
+        );
+        let oversized = serde_json::json!({"blob": "x".repeat(70 * 1024)});
+        assert!(
+            host_ai::parse_proposal(&proposal(vec![command("parameters.change", oversized)]), &source, 64, None).is_err(),
+            "params over the per-command byte bound are invalid"
+        );
+        assert!(host_ai::parse_proposal(&proposal(vec![command("parameters.change", serde_json::json!({}))]), &source, 64, Some(&allowed)).is_ok());
     }
 }

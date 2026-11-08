@@ -26,6 +26,9 @@ pub(crate) const MAX_TASK_TEXT: usize = 256 << 10;
 pub(crate) const MAX_COMMANDS: usize = 64;
 /// Most bytes in one command's parameter object.
 pub(crate) const MAX_COMMAND_BYTES: usize = 64 << 10;
+/// ACP session start and model selection have their own 30-second ceiling, independent of the
+/// task's remaining wall time.
+pub(crate) const SESSION_START: Duration = Duration::from_secs(30);
 /// Poll interval while waiting for ACP output, permission answers and cancellation.
 const TICK: Duration = Duration::from_millis(20);
 
@@ -84,7 +87,7 @@ pub(crate) enum PermissionAnswer {
 #[derive(Default)]
 pub(crate) struct TaskControl {
     cancelled: AtomicBool,
-    next_key: AtomicU64,
+    issued: Mutex<std::collections::HashSet<u64>>,
     answers: Mutex<HashMap<u64, PermissionAnswer>>,
 }
 
@@ -98,6 +101,12 @@ impl TaskControl {
     }
 
     pub(crate) fn answer(&self, key: u64, option: Option<&str>) -> Result<(), AiError> {
+        // Only a key this task actually asked the panel about can be answered. Keys are
+        // process-wide unique, so an answer for a retired task is refused instead of reaching a
+        // later task's permission map.
+        if !self.issued.lock().map_err(|_| AiError::internal("task_permission"))?.contains(&key) {
+            return Err(AiError::invalid("permission"));
+        }
         let answer = match option {
             Some(option) => PermissionAnswer::Selected(option.to_string()),
             None => PermissionAnswer::Cancelled,
@@ -106,11 +115,16 @@ impl TaskControl {
         Ok(())
     }
 
-    fn next_key(&self) -> u64 {
-        self.next_key.fetch_add(1, Ordering::AcqRel).saturating_add(1)
+    pub(crate) fn next_key(&self) -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let key = NEXT.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut issued) = self.issued.lock() {
+            issued.insert(key);
+        }
+        key
     }
 
-    fn take_answers(&self) -> Result<Vec<(u64, PermissionAnswer)>, AiError> {
+    pub(crate) fn take_answers(&self) -> Result<Vec<(u64, PermissionAnswer)>, AiError> {
         let mut answers = self.answers.lock().map_err(|_| AiError::internal("task_permission"))?;
         Ok(answers.drain().collect())
     }
@@ -202,7 +216,7 @@ impl AcpTaskExecutor {
             return Err(AiError::cancelled());
         }
         let deadline = Instant::now().checked_add(request.timeout).unwrap_or_else(Instant::now);
-        let mut live = self.take_or_start(binding)?;
+        let mut live = self.take_or_start(binding, control)?;
         let result = self.run_live(&mut live, request, control, emit, deadline);
         let keep = result.is_ok() && live.reusable && !control.is_cancelled();
         if keep {
@@ -239,10 +253,11 @@ impl AcpTaskExecutor {
             }
             live.shutdown();
         }
-        let mut live = self.start(binding)?;
+        let control = TaskControl::default();
+        let mut live = self.start(binding, &control)?;
         let auth = live.auth.clone();
         let (images, documents) = (live.images, live.documents);
-        match self.open_session(&mut live, Instant::now() + Duration::from_secs(30)) {
+        match self.open_session(&mut live, Instant::now() + Duration::from_secs(30), &control) {
             Ok((session, _, reply)) => {
                 live.session = Some(session);
                 let model_selection = acp::models(&reply).is_some();
@@ -264,19 +279,20 @@ impl AcpTaskExecutor {
     /// Invoke the agent's own authentication method, then verify with a real session. Credentials
     /// stay with the agent; this function stores none.
     pub(crate) fn authenticate(&self, binding: &AcpBinding, method: &str) -> Result<TaskProbe, AiError> {
-        let mut live = self.start(binding)?;
+        let control = TaskControl::default();
+        let mut live = self.start(binding, &control)?;
         if !live.auth.iter().any(|m| m.id == method) {
             live.shutdown();
             return Err(AiError::unsupported("auth_method"));
         }
         let id = live.request("authenticate", serde_json::json!({"methodId": method}));
-        if let Err(error) = reply(&live, id, Instant::now() + Duration::from_secs(300)) {
+        if let Err(error) = reply(&live, id, Instant::now() + Duration::from_secs(300), &control) {
             live.shutdown();
             return Err(error);
         }
         let auth = live.auth.clone();
         let (images, documents) = (live.images, live.documents);
-        match self.open_session(&mut live, Instant::now() + Duration::from_secs(30)) {
+        match self.open_session(&mut live, Instant::now() + Duration::from_secs(30), &control) {
             Ok((session, _, session_reply)) => {
                 let model_selection = acp::models(&session_reply).is_some();
                 live.session = Some(session);
@@ -295,7 +311,7 @@ impl AcpTaskExecutor {
         }
     }
 
-    fn take_or_start(&self, binding: &AcpBinding) -> Result<LiveProcess, AiError> {
+    fn take_or_start(&self, binding: &AcpBinding, control: &TaskControl) -> Result<LiveProcess, AiError> {
         let existing = self.lock()?.take();
         if let Some(live) = existing {
             if live.connection_id == binding.connection_id() && live.reusable && live.proc.pid().is_some() {
@@ -304,10 +320,10 @@ impl AcpTaskExecutor {
             let mut live = live;
             live.shutdown();
         }
-        self.start(binding)
+        self.start(binding, control)
     }
 
-    fn start(&self, binding: &AcpBinding) -> Result<LiveProcess, AiError> {
+    fn start(&self, binding: &AcpBinding, control: &TaskControl) -> Result<LiveProcess, AiError> {
         let argv = binding.argv();
         if argv.is_empty() {
             return Err(AiError::invalid("command"));
@@ -328,7 +344,7 @@ impl AcpTaskExecutor {
             reusable: false,
         };
         let initialize = live.request("initialize", acp::initialize_params(env!("CARGO_PKG_VERSION")));
-        let init = match reply(&live, initialize, Instant::now() + Duration::from_secs(10)) {
+        let init = match reply(&live, initialize, Instant::now() + Duration::from_secs(10), control) {
             Ok(value) => value,
             Err(error) => {
                 live.shutdown();
@@ -342,13 +358,18 @@ impl AcpTaskExecutor {
         Ok(live)
     }
 
-    fn open_session(&self, live: &mut LiveProcess, deadline: Instant) -> Result<(String, String, Value), AiError> {
+    fn open_session(&self, live: &mut LiveProcess, deadline: Instant, control: &TaskControl) -> Result<(String, String, Value), AiError> {
+        let session_deadline = (Instant::now() + SESSION_START).min(deadline);
         let params = acp::session_new_params(&live.cwd, None, &live.init, acp::PROPOSAL_NOTE);
         let id = live.request("session/new", params);
-        let value = reply(live, id, deadline)?;
+        let value = reply(live, id, session_deadline, control)?;
         let Some(session) = value.get("sessionId").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string) else {
             return Err(AiError::task_failed("session_new"));
         };
+        if live.session.as_deref() == Some(session.as_str()) {
+            // A peer that hands back the previous session id has not opened a fresh history.
+            return Err(AiError::task_failed("session_reuse"));
+        }
         Ok((session, String::new(), value))
     }
 
@@ -360,15 +381,20 @@ impl AcpTaskExecutor {
         emit: &mut dyn FnMut(TaskProgress),
         deadline: Instant,
     ) -> Result<TaskOutcome, AiError> {
-        let (session, _, session_reply) = self.open_session(live, deadline)?;
+        let (session, _, session_reply) = self.open_session(live, deadline, control)?;
         live.model_selection = acp::models(&session_reply).is_some();
         if let Some(model) = request.model.as_deref().filter(|m| !m.is_empty()) {
-            select_model(live, &session, model, &session_reply, deadline)?;
+            select_model(live, &session, model, &session_reply, deadline, control)?;
         }
         live.session = Some(session.clone());
         live.reusable = true;
+        if control.is_cancelled() {
+            self.cancel_live(live, &session, 0, &mut HashMap::new(), control)?;
+            return Err(AiError::cancelled());
+        }
         let prompt = live.request("session/prompt", acp::prompt_params(&session, &[super::super::backend::PromptPart::Text(request.text.clone())]));
         let mut text = String::new();
+        let usage;
         let mut open: HashMap<u64, (Value, Vec<PermissionOption>)> = HashMap::new();
         let stop_reason;
         loop {
@@ -395,23 +421,28 @@ impl AcpTaskExecutor {
                     let Some(message) = acp::parse(&line) else { continue };
                     match message {
                         Incoming::Reply { id, result } if id == prompt => {
-                            if let Err((code, message)) = result {
-                                if code == acp::AUTH_REQUIRED || message.to_ascii_lowercase().contains("auth") {
-                                    return Err(AiError::auth_required());
+                            let value = match result {
+                                Ok(value) => value,
+                                Err((code, message)) => {
+                                    if code == acp::AUTH_REQUIRED || message.to_ascii_lowercase().contains("auth") {
+                                        return Err(AiError::auth_required_task());
+                                    }
+                                    return Err(AiError::task_failed("prompt"));
                                 }
-                                return Err(AiError::task_failed("prompt"));
-                            }
-                            stop_reason =
-                                Some(result.ok().and_then(|v| v.get("stopReason").and_then(Value::as_str).map(str::to_string)).unwrap_or_default());
+                            };
+                            stop_reason = Some(value.get("stopReason").and_then(Value::as_str).map(str::to_string).unwrap_or_default());
+                            usage = parse_usage(&value);
                             break;
                         }
                         Incoming::Reply { .. } => {}
                         Incoming::Text { session: update_session, thought, text: chunk } => {
-                            if !live.accepts(&update_session) {
+                            if !live.accepts(&update_session) || thought {
+                                // The wire progress shape has no thought flag; dropping reasoning
+                                // is honest and keeps it out of the proposal text.
                                 continue;
                             }
                             let chunk = bounded_text(&chunk);
-                            if !thought && text.len() < MAX_TASK_TEXT {
+                            if text.len() < MAX_TASK_TEXT {
                                 let room = MAX_TASK_TEXT.saturating_sub(text.len());
                                 text.push_str(&chunk.chars().take(room).collect::<String>());
                             }
@@ -471,7 +502,7 @@ impl AcpTaskExecutor {
             live.proc.send(&acp::permission_reply(rpc, None));
         }
         let proposal = parse_proposal(&text, &request.source, request.remaining_commands, request.allowed_commands.as_deref())?;
-        Ok(TaskOutcome { agent_session_id: session, text, stop_reason: stop_reason.unwrap_or_default(), proposal, usage: None })
+        Ok(TaskOutcome { agent_session_id: session, text, stop_reason: stop_reason.unwrap_or_default(), proposal, usage })
     }
 
     fn cancel_live(
@@ -487,6 +518,11 @@ impl AcpTaskExecutor {
         }
         let _ = control.take_answers();
         live.proc.send(&acp::notification("session/cancel", serde_json::json!({"sessionId": session})));
+        if prompt == 0 {
+            live.reusable = false;
+            live.shutdown();
+            return Ok(());
+        }
         let deadline = Instant::now() + TASK_CANCEL_GRACE;
         while Instant::now() < deadline {
             let wait = deadline.saturating_duration_since(Instant::now()).min(TICK);
@@ -522,7 +558,15 @@ impl LiveProcess {
     }
 }
 
-fn select_model(live: &mut LiveProcess, session: &str, model: &str, session_reply: &Value, deadline: Instant) -> Result<(), AiError> {
+fn select_model(
+    live: &mut LiveProcess,
+    session: &str,
+    model: &str,
+    session_reply: &Value,
+    deadline: Instant,
+    control: &TaskControl,
+) -> Result<(), AiError> {
+    let deadline = (Instant::now() + SESSION_START).min(deadline);
     if let Some((current, available)) = acp::models(session_reply) {
         if model != current && !available.iter().any(|m| m.id == model) {
             return Err(AiError::unsupported("model_selection"));
@@ -532,7 +576,7 @@ fn select_model(live: &mut LiveProcess, session: &str, model: &str, session_repl
         }
     }
     let id = live.request("session/set_model", acp::set_model_params(session, model));
-    match reply(live, id, deadline) {
+    match reply(live, id, deadline, control) {
         Ok(_) => Ok(()),
         Err(error) if error.code() == super::AiErrorCode::UnsupportedCapability => Err(AiError::unsupported("model_selection")),
         Err(error) => Err(error),
@@ -559,8 +603,11 @@ fn resolve_answer(answer: &PermissionAnswer, options: &[PermissionOption]) -> (O
     }
 }
 
-fn reply(live: &LiveProcess, id: u64, deadline: Instant) -> Result<Value, AiError> {
+fn reply(live: &LiveProcess, id: u64, deadline: Instant, control: &TaskControl) -> Result<Value, AiError> {
     loop {
+        if control.is_cancelled() {
+            return Err(AiError::cancelled());
+        }
         if Instant::now() >= deadline {
             return Err(AiError::timeout());
         }
@@ -576,7 +623,7 @@ fn reply(live: &LiveProcess, id: u64, deadline: Instant) -> Result<Value, AiErro
                                 if code == acp::METHOD_NOT_FOUND {
                                     Err(AiError::unsupported("acp_method"))
                                 } else if code == acp::AUTH_REQUIRED || message.to_ascii_lowercase().contains("auth") {
-                                    Err(AiError::auth_required())
+                                    Err(AiError::auth_required_task())
                                 } else {
                                     Err(AiError::task_failed("acp_request"))
                                 }
@@ -607,6 +654,13 @@ fn task_directory(generation: u64) -> Result<std::path::PathBuf, AiError> {
     let path = std::env::temp_dir().join(format!("solidcraft-acp-task-{}-{unique}-{generation}", std::process::id()));
     std::fs::create_dir_all(&path).map_err(|_| AiError::internal("task_workdir"))?;
     Ok(path)
+}
+
+fn parse_usage(value: &Value) -> Option<Usage> {
+    let usage = value.get("usage")?.as_object()?;
+    let field = |name: &str| usage.get(name).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+    let parsed = Usage { input_tokens: field("inputTokens"), output_tokens: field("outputTokens"), total_tokens: field("totalTokens") };
+    (parsed.input_tokens.is_some() || parsed.output_tokens.is_some() || parsed.total_tokens.is_some()).then_some(parsed)
 }
 
 fn bounded_text(text: &str) -> String {

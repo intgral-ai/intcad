@@ -48,6 +48,58 @@ const MODEL_CALLS_PER_TURN: u32 = 20;
 /// model calls; it bounds only host delegations.
 const AGENT_TASKS_PER_TURN: u32 = 4;
 
+/// One in-flight ACP task. `agent.run` is serialized per window so two runtime calls cannot
+/// replace each other's permission channel. A guard clears only the control it installed.
+#[derive(Default)]
+pub(crate) struct TaskControlSlot {
+    serial: Mutex<()>,
+    current: Mutex<Option<Arc<TaskControl>>>,
+}
+
+pub(crate) struct TaskControlGuard<'a> {
+    slot: &'a TaskControlSlot,
+    control: Arc<TaskControl>,
+    _serial: std::sync::MutexGuard<'a, ()>,
+}
+
+impl TaskControlSlot {
+    pub(crate) fn acquire(&self, control: Arc<TaskControl>) -> Result<TaskControlGuard<'_>, AiError> {
+        let serial = self.serial.lock().map_err(|_| AiError::internal("acp_task_serial"))?;
+        *self.current.lock().map_err(|_| AiError::internal("acp_task_slot"))? = Some(Arc::clone(&control));
+        Ok(TaskControlGuard { slot: self, control, _serial: serial })
+    }
+
+    pub(crate) fn answer(&self, key: u64, option: Option<&str>) -> Result<(), AiError> {
+        let current = self.current.lock().map_err(|_| AiError::internal("acp_task_slot"))?.clone();
+        match current {
+            Some(control) => control.answer(key, option),
+            None => Err(AiError::invalid("permission")),
+        }
+    }
+
+    pub(crate) fn cancel(&self) {
+        if let Ok(current) = self.current.lock()
+            && let Some(control) = current.as_ref()
+        {
+            control.cancel();
+        }
+    }
+
+    fn clear(&self, control: &Arc<TaskControl>) {
+        if let Ok(mut current) = self.current.lock()
+            && current.as_ref().is_some_and(|current| Arc::ptr_eq(current, control))
+        {
+            *current = None;
+        }
+    }
+}
+
+impl Drop for TaskControlGuard<'_> {
+    fn drop(&mut self) {
+        self.slot.clear(&self.control);
+    }
+}
+
 /// What a Mastra backend is told before it starts. The execution choice is already made; this is
 /// only the connection, workflow and launch identity it uses.
 pub struct MastraConfig {
@@ -167,7 +219,7 @@ pub struct MastraBackend {
     runtime_instance: Option<Arc<Mutex<Option<String>>>>,
     model_budget: Option<Arc<AtomicU32>>,
     agent_budget: Option<Arc<AtomicU32>>,
-    task_control: Arc<Mutex<Option<Arc<TaskControl>>>>,
+    task_control: Arc<TaskControlSlot>,
     next_model: String,
     next_connection: String,
     runtime_ready: bool,
@@ -200,7 +252,7 @@ impl MastraBackend {
         let runtime_instance = Arc::new(Mutex::new(None::<String>));
         let model_budget = Arc::new(AtomicU32::new(MODEL_CALLS_PER_TURN));
         let agent_budget = Arc::new(AtomicU32::new(AGENT_TASKS_PER_TURN));
-        let task_control: Arc<Mutex<Option<Arc<TaskControl>>>> = Arc::new(Mutex::new(None));
+        let task_control: Arc<TaskControlSlot> = Arc::new(TaskControlSlot::default());
         let runtime = RuntimeClient::start(
             launch,
             runtime_services(
@@ -254,7 +306,7 @@ impl MastraBackend {
             runtime_instance: Some(Arc::new(Mutex::new(None))),
             model_budget: None,
             agent_budget: None,
-            task_control: Arc::new(Mutex::new(None)),
+            task_control: Arc::new(TaskControlSlot::default()),
             next_model,
             next_connection,
             runtime_ready: false,
@@ -750,7 +802,7 @@ fn runtime_services(
     runtime_instance: Arc<Mutex<Option<String>>>,
     budget: Arc<AtomicU32>,
     agent_budget: Arc<AtomicU32>,
-    task_control: Arc<Mutex<Option<Arc<TaskControl>>>>,
+    task_control: Arc<TaskControlSlot>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
 ) -> RuntimeServices {
     RuntimeServices {
@@ -782,7 +834,7 @@ struct HostCalls {
     connection_auth: Arc<Mutex<Option<bool>>>,
     budget: Arc<AtomicU32>,
     agent_budget: Arc<AtomicU32>,
-    task_control: Arc<Mutex<Option<Arc<TaskControl>>>>,
+    task_control: Arc<TaskControlSlot>,
     runtime_instance: Arc<Mutex<Option<String>>>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
 }
@@ -816,7 +868,7 @@ fn handle_call(
     auth: &Mutex<Option<bool>>,
     budget: &AtomicU32,
     agent_budget: &AtomicU32,
-    task_control: &Mutex<Option<Arc<TaskControl>>>,
+    task_control: &TaskControlSlot,
     runtime_instance: &Mutex<Option<String>>,
     frozen_binding: &Mutex<Option<(String, String)>>,
     call: CallbackCall,
@@ -952,9 +1004,6 @@ fn handle_call(
             if context.delegation_mode != DelegationMode::ProposalOnly {
                 return Err(unsupported("delegation_mode"));
             }
-            if agent_budget.try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1)).is_err() {
-                return Err(resource_exhausted("agent_tasks", AGENT_TASKS_PER_TURN));
-            }
             let connection = connection_id.to_string();
             let binding = host.bind_acp(&connection).map_err(|error| ai_error(&connection, &error))?;
             let mut text = String::new();
@@ -979,10 +1028,12 @@ fn handle_call(
                 remaining_commands: 64,
                 allowed_commands: None,
             };
-            let control = Arc::new(TaskControl::default());
-            if let Ok(mut slot) = task_control.lock() {
-                *slot = Some(Arc::clone(&control));
+            // A validated delegation now consumes the turn's ACP-task budget.
+            if agent_budget.try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1)).is_err() {
+                return Err(resource_exhausted("agent_tasks", AGENT_TASKS_PER_TURN));
             }
+            let control = Arc::new(TaskControl::default());
+            let _control_guard = task_control.acquire(Arc::clone(&control)).map_err(|error| ai_task_error(&connection, &error))?;
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let watch_control = Arc::clone(&control);
             let watch_done = Arc::clone(&done);
@@ -1053,9 +1104,6 @@ fn handle_call(
             };
             let result = host.agent_run(&binding, request, &control, &mut emit);
             done.store(true, Ordering::Release);
-            if let Ok(mut slot) = task_control.lock() {
-                *slot = None;
-            }
             if cancellation.is_cancelled() || control.is_cancelled() {
                 return Err(cancelled_error("agent.run"));
             }
@@ -1065,9 +1113,13 @@ fn handle_call(
                     state: CompletedState::Completed,
                     content: vec![ContentBlock::Text { text: outcome.text }],
                     stop_reason: outcome.stop_reason,
-                    usage: RequiredNullable(None),
+                    usage: RequiredNullable(outcome.usage.map(|usage| Usage {
+                        input_tokens: RequiredNullable(usage.input_tokens),
+                        output_tokens: RequiredNullable(usage.output_tokens),
+                        total_tokens: RequiredNullable(usage.total_tokens),
+                    })),
                 })),
-                Err(error) => Err(ai_error(&connection, &error)),
+                Err(error) => Err(ai_task_error(&connection, &error)),
             }
         }
         HostCall::ValidationSubmit(_) | HostCall::ValidationStatus(_) | HostCall::ValidationReport(_) | HostCall::ValidationCancel(_) => {
@@ -1220,7 +1272,11 @@ fn ai_error(connection_id: &str, error: &AiError) -> WireError {
     let (code, details) = match error.code() {
         AiErrorCode::InvalidRequest => (ErrorCode::InvalidRequest, ErrorDetails::Empty(EmptyDetails {})),
         AiErrorCode::UnsupportedCapability => {
-            (ErrorCode::UnsupportedCapability, ErrorDetails::Capability(CapabilityDetails { capability: "model_generate".into() }))
+            let capability = match error.details() {
+                AiErrorDetails::Capability { capability } => (*capability).to_owned(),
+                _ => "model_generate".to_owned(),
+            };
+            (ErrorCode::UnsupportedCapability, ErrorDetails::Capability(CapabilityDetails { capability }))
         }
         AiErrorCode::AuthRequired | AiErrorCode::ConnectionChanged => {
             let connection = match error.details() {
@@ -1279,6 +1335,15 @@ fn ai_error(connection_id: &str, error: &AiError) -> WireError {
     WireError { code, message: error.message().chars().take(2048).collect(), retry: Retry::Never, details }
 }
 
+/// Agent-task errors name the operation the runtime called, not `model.generate`.
+fn ai_task_error(connection_id: &str, error: &AiError) -> WireError {
+    let mut wire = ai_error(connection_id, error);
+    if matches!(error.code(), AiErrorCode::Timeout | AiErrorCode::Cancelled | AiErrorCode::TransportError) {
+        wire.details = ErrorDetails::Operation(OperationDetails { operation: Some("agent.run".into()) });
+    }
+    wire
+}
+
 // The wire and host modules both use the name `FinishReason`; alias the wire one where the host
 // own type is already in scope.
 use super::mastra_protocol::FinishReason as FinishReasonWire;
@@ -1301,11 +1366,7 @@ impl ChatBackend for MastraBackend {
     }
 
     fn cancel(&mut self) {
-        if let Ok(slot) = self.task_control.lock()
-            && let Some(control) = slot.as_ref()
-        {
-            control.cancel();
-        }
+        self.task_control.cancel();
         let Some(turn) = self.end_active() else { return };
         let _ = self.port.cancel_turn(&turn.scope, CancelReason::User);
         // The host owns the terminal transition: a runtime that never answers cannot leave the
@@ -1352,11 +1413,7 @@ impl ChatBackend for MastraBackend {
     }
 
     fn answer_permission(&mut self, key: u64, option: Option<&str>) {
-        if let Ok(slot) = self.task_control.lock()
-            && let Some(control) = slot.as_ref()
-        {
-            let _ = control.answer(key, option);
-        }
+        let _ = self.task_control.answer(key, option);
     }
 
     fn authenticate(&mut self, method: &str) {
@@ -1384,6 +1441,8 @@ impl ChatBackend for MastraBackend {
 
     fn shutdown(&mut self, wait: bool) {
         self.stopped = true;
+        // A task in flight must see cancellation before its process is reaped.
+        self.task_control.cancel();
         let _ = self.port.shutdown();
         if wait {
             self.port.wait_stopped(SHUTDOWN_WAIT);

@@ -242,7 +242,7 @@ impl AiError {
         self
     }
 
-    pub(super) fn invalid(field: &'static str) -> Self {
+    pub(crate) fn invalid(field: &'static str) -> Self {
         Self {
             code: AiErrorCode::InvalidRequest,
             message_id: "ui.host_ai_invalid_request",
@@ -260,7 +260,7 @@ impl AiError {
         }
     }
 
-    pub(super) fn internal(operation: &'static str) -> Self {
+    pub(crate) fn internal(operation: &'static str) -> Self {
         Self {
             code: AiErrorCode::InternalError,
             message_id: if operation == "read_secret" { "ui.host_ai_key_unavailable" } else { "ui.host_ai_internal_error" },
@@ -280,6 +280,10 @@ impl AiError {
 
     pub(super) fn auth_required() -> Self {
         Self { code: AiErrorCode::AuthRequired, message_id: "ui.ai_http_key", details: AiErrorDetails::None, compatibility: [false; 2] }
+    }
+
+    pub(super) fn auth_required_task() -> Self {
+        Self { code: AiErrorCode::AuthRequired, message_id: "ui.host_ai_acp_auth_required", details: AiErrorDetails::None, compatibility: [false; 2] }
     }
 
     pub(super) fn unsupported(capability: &'static str) -> Self {

@@ -22,7 +22,7 @@ pub use connections::{AcpBinding, ConnectionBinding, ConnectionCatalog};
 #[allow(unused_imports)]
 pub(crate) use task::{
     AcpTaskExecutor, PermissionAnswer, TaskCommand, TaskControl, TaskOutcome, TaskPermissionState, TaskProgress, TaskProposal, TaskRequest,
-    TaskStamp, TaskToolState,
+    TaskStamp, TaskToolState, parse_proposal,
 };
 pub use types::{
     AgentDescription, AiCapabilities, AiError, AiErrorCode, AiErrorDetails, AiLimits, ArtifactReadFn, ArtifactRef, CallContext, CallScope, ClockFn,
