@@ -11205,8 +11205,8 @@
       "originId": "in-73c2e4c2e886ff07d524",
       "originalPath": "packages/mastra-runtime/DEPENDENCIES.md",
       "sourceRevision": null,
-      "digest": "sha256:f1fa07efe490686d5b2ba41ee2f9596ddb7851227cd7b137312b459f6840ebb1",
-      "sizeBytes": 4361,
+      "digest": "sha256:ca5dcca78d43c2216d3533431bb90c2464f0edf1288d0111ebf8586cc04b6f17",
+      "sizeBytes": 3653,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -17911,8 +17911,8 @@
       "originId": "in-b335630551682c19a781",
       "originalPath": "packages/mastra-runtime/README.md",
       "sourceRevision": null,
-      "digest": "sha256:695b4c2bb7950b83f830e4ac59cd04ddd183ab926068fd2379f638a6dad58d39",
-      "sizeBytes": 12616,
+      "digest": "sha256:2872e1d2d0980eeb114d8680b773dd4a35ee37289e737d7a4c8679d3da0bc6e0",
+      "sizeBytes": 12677,
       "licenseIds": [
         "lic-runtime"
       ],
@@ -24488,8 +24488,8 @@
   "outputs": [
     {
       "path": "DEPENDENCIES.md",
-      "digest": "sha256:f1fa07efe490686d5b2ba41ee2f9596ddb7851227cd7b137312b459f6840ebb1",
-      "sizeBytes": 4361,
+      "digest": "sha256:ca5dcca78d43c2216d3533431bb90c2464f0edf1288d0111ebf8586cc04b6f17",
+      "sizeBytes": 3653,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
@@ -24497,8 +24497,8 @@
     },
     {
       "path": "README.md",
-      "digest": "sha256:695b4c2bb7950b83f830e4ac59cd04ddd183ab926068fd2379f638a6dad58d39",
-      "sizeBytes": 12616,
+      "digest": "sha256:2872e1d2d0980eeb114d8680b773dd4a35ee37289e737d7a4c8679d3da0bc6e0",
+      "sizeBytes": 12677,
       "role": "code",
       "licenseIds": [
         "lic-runtime"
