@@ -130,6 +130,11 @@ impl HostAi {
         self.deps.shared.connections.bind_acp(connection_id)
     }
 
+    /// Whether the connection is an ACP agent whose own sign-in methods apply.
+    pub(crate) fn is_acp(&self, connection_id: &str) -> bool {
+        self.deps.shared.connections.is_acp(connection_id)
+    }
+
     /// Retain one composer attachment for this session/turn and return only its opaque reference.
     /// The bytes never enter a protocol frame, a log or the panel.
     pub(crate) fn store_attachment(&self, session: &SessionKey, bytes: Arc<[u8]>, media_type: &str) -> Result<ArtifactRef, AiError> {

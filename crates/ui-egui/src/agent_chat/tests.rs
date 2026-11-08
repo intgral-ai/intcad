@@ -8114,6 +8114,32 @@ fn agent_login_file_does_not_claim_a_verified_sign_in() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn mastra_acp_auth_required_shows_the_agents_own_methods() {
+    let mut app = app_with_discovered_login();
+    app.agent_chat.mastra = true;
+    app.agent_chat.set_state(State::Starting);
+    let methods = vec![acp::AuthMethod {
+        id: "chatgpt".into(),
+        name: "Login with ChatGPT".into(),
+        description: "Use the agent account".into(),
+        kind: acp::AuthKind::Agent,
+    }];
+    app.agent_chat.on_event(Event::AuthRequired { methods: methods.clone() });
+    assert_eq!(app.agent_chat.state(), State::NeedsAuth, "the ready runtime must not hide a signed-out connection");
+    assert_eq!(app.agent_chat.auth, methods, "the agent's real methods are shown, not a guessed key state");
+    assert_eq!(app.agent_chat.login_results.get("qwen"), Some(&false));
+    assert_eq!(crate::agent_chat::assistant_mark(&app), crate::agent_chat::AssistantMark::NeedsAuth);
+
+    // Sign-in success arrives as the connection's own evidence, then readiness is re-emitted.
+    app.agent_chat.on_event(Event::ConnectionAuth { available: true });
+    app.agent_chat.on_event(Event::Ready { agent: "Mastra · modeling".into(), images: false });
+    assert_eq!(app.agent_chat.connection_auth, Some(true));
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    assert_eq!(app.agent_chat.login_results.get("qwen"), Some(&true));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn agent_login_follows_chat_authentication_results() {
     let mut app = app_with_discovered_login();
     app.preferences.agents.push(agents::AgentConfig { id: "other".into(), name: "Other agent".into(), ..Default::default() });
@@ -13221,7 +13247,7 @@ mod mastra_backend_tests {
     use crate::agent_chat::backend::ChatBackend;
     use crate::agent_chat::context::{self, Context, Entry, Kind as ContextKind};
     use crate::agent_chat::host_ai;
-    use crate::agent_chat::mastra_backend::{self, FrozenBinding, MastraBackend, MastraConfig, PortNotice, test_support};
+    use crate::agent_chat::mastra_backend::{self, ConnectionAuthReport, FrozenBinding, MastraBackend, MastraConfig, PortNotice, test_support};
     use crate::agent_chat::mastra_protocol::*;
     use crate::agent_chat::runtime_client;
     use crate::agent_chat::runtime_client::{ClientNotice, IdSource};
@@ -13252,7 +13278,8 @@ mod mastra_backend_tests {
         DocumentStamp { document_id: Id::literal("doc-main"), revision: Revision::from_u64(7) }
     }
 
-    fn config(auth: Arc<Mutex<Option<bool>>>) -> MastraConfig {
+    fn config(auth: Arc<Mutex<Option<ConnectionAuthReport>>>) -> MastraConfig {
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         MastraConfig {
             connection_id: "api-1".into(),
             model: "m1".into(),
@@ -13261,13 +13288,14 @@ mod mastra_backend_tests {
             tools: None,
             instructions: String::new(),
             connection_auth: auth,
+            progress: mastra_backend::ProgressQueue::new(wake),
             frozen_binding: Arc::new(Mutex::new(None)),
             validation: None,
             wake: Arc::new(|| {}),
         }
     }
 
-    fn backend() -> (MastraBackend, Arc<Mutex<test_support::Log>>, Arc<Mutex<Option<bool>>>) {
+    fn backend() -> (MastraBackend, Arc<Mutex<test_support::Log>>, Arc<Mutex<Option<ConnectionAuthReport>>>) {
         let log = Arc::new(Mutex::new(test_support::Log::default()));
         let auth = Arc::new(Mutex::new(None));
         let backend = MastraBackend::with_port(config(Arc::clone(&auth)), Box::new(test_support::TestPort::new(Arc::clone(&log))), ids());
@@ -13400,7 +13428,7 @@ mod mastra_backend_tests {
         panic!("the local validation worker did not finish");
     }
 
-    fn app() -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<Mutex<Option<bool>>>) {
+    fn app() -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<Mutex<Option<ConnectionAuthReport>>>) {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
         app.preferences.agents = vec![agents::AgentConfig {
             id: "api-1".into(),
@@ -13603,7 +13631,7 @@ mod mastra_backend_tests {
         assert!(!app.agent_chat.login_results.contains_key("api-1"));
 
         // The connection's own report arrives separately, and is distinct from runtime readiness.
-        *auth.lock().unwrap() = Some(false);
+        *auth.lock().unwrap() = Some(ConnectionAuthReport::default());
         poll(&mut app, &ctx);
         assert_eq!(app.agent_chat.runtime, Some(RuntimeStatus::Ready), "the runtime is still ready");
         assert_eq!(app.agent_chat.connection_auth, Some(false));
@@ -13613,7 +13641,7 @@ mod mastra_backend_tests {
         assert_eq!(agent_chat::assistant_mark(&app), agent_chat::AssistantMark::Stopped, "a failed runtime outranks the auth hint");
         app.agent_chat.set_state(State::Ready);
 
-        *auth.lock().unwrap() = Some(true);
+        *auth.lock().unwrap() = Some(ConnectionAuthReport { available: true, ..Default::default() });
         poll(&mut app, &ctx);
         assert_eq!(app.agent_chat.connection_auth, Some(true));
         assert_eq!(app.agent_chat.login_results.get("api-1"), Some(&true));
@@ -14321,6 +14349,7 @@ mod mastra_backend_tests {
             tools: None,
             instructions: String::new(),
             connection_auth: Arc::new(Mutex::new(None)),
+            progress: mastra_backend::ProgressQueue::new(Arc::new(|| {})),
             frozen_binding: Arc::new(Mutex::new(None)),
             validation: Some(Arc::clone(&host)),
             wake: Arc::new(|| {}),
@@ -14923,6 +14952,7 @@ done
             tools: None,
             instructions: String::new(),
             connection_auth: Arc::clone(&auth),
+            progress: mastra_backend::ProgressQueue::new(Arc::new(|| {})),
             frozen_binding: Arc::new(std::sync::Mutex::new(None)),
             validation: None,
             wake: Arc::new(|| {}),
@@ -15172,14 +15202,16 @@ done
     }
 
     #[test]
-    fn mastra_with_acp_is_gated_with_an_actionable_message() {
+    fn mastra_with_acp_is_no_longer_gated() {
         let mut app = app_with_discovered_login();
         app.preferences.chat_execution = agents::Execution::Mastra;
         connect(&mut app, &egui::Context::default());
-        assert_eq!(app.agent_chat.state(), State::Failed);
-        assert!(app.agent_chat.backend.is_none(), "a gated ACP workflow must not start a backend");
         let items = format!("{:?}", app.agent_chat.items);
-        assert!(items.contains(&crate::i18n::tr("ui.mastra_acp_tasks_unavailable").to_string()), "{items}");
+        assert!(!items.contains("ui.mastra_acp_tasks_unavailable"), "the old ACP gate message must not appear: {items}");
+        // Without a resolvable runtime this still fails, but for the runtime, not because a
+        // workflow cannot use ACP.
+        assert_eq!(app.agent_chat.state(), State::Failed);
+        assert!(app.agent_chat.backend.is_none());
     }
 
     #[test]
@@ -15324,5 +15356,268 @@ done
             "params over the per-command byte bound are invalid"
         );
         assert!(host_ai::parse_proposal(&proposal(vec![command("parameters.change", serde_json::json!({}))]), &source, 64, Some(&allowed)).is_ok());
+    }
+    /// A backend whose runtime session is already ready, over the deterministic test port.
+    fn ready_backend(
+        connection: &str,
+        auth: Arc<std::sync::Mutex<Option<mastra_backend::ConnectionAuthReport>>>,
+        progress: Arc<mastra_backend::ProgressQueue>,
+        slot: Arc<mastra_backend::TaskControlSlot>,
+        host: Arc<HostAi>,
+    ) -> (mastra_backend::MastraBackend, Arc<std::sync::Mutex<mastra_backend::test_support::Log>>) {
+        use crate::agent_chat::mastra_protocol::*;
+        let config = mastra_backend::MastraConfig {
+            connection_id: connection.into(),
+            model: String::new(),
+            workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
+            bridge: None,
+            tools: None,
+            instructions: String::new(),
+            connection_auth: auth,
+            progress,
+            frozen_binding: Arc::new(std::sync::Mutex::new(None)),
+            validation: None,
+            wake: Arc::new(|| {}),
+        };
+        let log = Arc::new(std::sync::Mutex::new(mastra_backend::test_support::Log::default()));
+        let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);
+        let mut backend =
+            mastra_backend::MastraBackend::with_port(config, Box::new(mastra_backend::test_support::TestPort::new(Arc::clone(&log))), ids);
+        backend.set_task_control_for_test(slot);
+        backend.attach_host_for_test(host);
+        mastra_backend::test_support::Log::inject_client(
+            &mut log.lock().unwrap(),
+            runtime_client::ClientNotice::RuntimeReady(mastra_backend::test_support::runtime_info("1")),
+        );
+        let _ = backend.poll();
+        let (request_id, scope) = {
+            let log = log.lock().unwrap();
+            let record = log.requests.last().expect("a session.start request");
+            (record.id.clone(), record.scope.clone())
+        };
+        log.lock().unwrap().inject_client(runtime_client::ClientNotice::RequestFinished {
+            request_id,
+            scope,
+            result: Ok(RuntimeReply::SessionStart(SessionStartResult { state: ReadyState::Ready, workflow_id: Id::literal("modeling") })),
+        });
+        let _ = backend.poll();
+        (backend, log)
+    }
+
+    #[test]
+    fn unauthenticated_connection_exposes_methods_signs_in_and_then_runs_a_task() {
+        use crate::agent_chat::backend::ChatBackend;
+        let update = text("s-auth", &proposal_text(40));
+        let script = r#"
+AUTH='{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[{"id":"chatgpt","name":"Login with ChatGPT","description":"Use the agent account"}]}'
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$AUTH" ;;
+    *'"method":"authenticate"'*) : > {DIR}/signed-in; printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/new"'*)
+      if [ -f {DIR}/signed-in ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s-auth"}}\n' "$id"
+      else
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"Authentication required"}}\n' "$id"
+      fi ;;
+    *'"method":"session/prompt"'*) cat {DIR}/update1; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+    *) ;;
+  esac
+done
+"#;
+        let command = peer("panel-auth", script, &[("update1", update)]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let description = host.describe_agent("acp-task", "").unwrap();
+        assert_eq!(description.state, ConnectionState::AuthRequired);
+
+        let auth = Arc::new(std::sync::Mutex::new(None));
+        let progress = mastra_backend::ProgressQueue::new(Arc::new(|| {}));
+        let slot = Arc::new(mastra_backend::TaskControlSlot::default());
+        let (mut panel, _log) = ready_backend("acp-task", Arc::clone(&auth), progress, slot, Arc::clone(&host));
+        panel.report_description_for_test(description);
+        let events = panel.poll();
+        let methods = events.iter().find_map(|event| match event {
+            backend::Event::AuthRequired { methods } => Some(methods.clone()),
+            _ => None,
+        });
+        let methods = methods.expect("the panel is given the agent's real auth methods");
+        assert_eq!((methods[0].id.as_str(), methods[0].name.as_str()), ("chatgpt", "Login with ChatGPT"));
+        assert!(events.iter().any(|event| matches!(event, backend::Event::ConnectionAuth { available: false })));
+
+        panel.authenticate("chatgpt");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut ready = false;
+        while Instant::now() < deadline && !ready {
+            ready = panel.poll().iter().any(|event| matches!(event, backend::Event::Ready { .. }));
+            if !ready {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(ready, "a successful sign-in re-emits Ready");
+        assert_eq!(host.describe_agent("acp-task", "").unwrap().state, ConnectionState::Available, "the connection's own probe says signed in");
+
+        let binding = host.bind_acp("acp-task").unwrap();
+        let (result, _) = run(&host, &binding, request("Widen the block", Duration::from_secs(20)));
+        assert!(result.is_ok(), "an authenticated task starts after sign-in: {result:?}");
+    }
+
+    #[test]
+    fn a_task_permission_reaches_the_panel_and_its_answer_reaches_the_peer() {
+        use crate::agent_chat::backend::ChatBackend;
+        let script = r#"
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) PROMPT=$id
+      printf '{"jsonrpc":"2.0","id":"perm1","method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t","title":"Write a note"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}\n'
+      while IFS= read -r next; do
+        case "$next" in *'"id":"perm1"'*) printf '%s\n' "$next" > {DIR}/answer; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$PROMPT"; break ;; esac
+      done ;;
+    *) ;;
+  esac
+done
+"#;
+        let command = peer("panel-permission", script, &[]);
+        let (host, _) = fixture_host("acp-task", &command);
+        let auth = Arc::new(std::sync::Mutex::new(None));
+        let progress = mastra_backend::ProgressQueue::new(Arc::new(|| {}));
+        let slot = Arc::new(mastra_backend::TaskControlSlot::default());
+        let (mut panel, _log) = ready_backend("acp-task", auth, Arc::clone(&progress), Arc::clone(&slot), Arc::clone(&host));
+        panel.set_document("doc-main", 7);
+        panel.prompt(&[crate::agent_chat::backend::PromptPart::Text("write a note".into())]);
+        assert!(panel.active_binding().is_some());
+
+        let control = Arc::new(TaskControl::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = Arc::clone(&host);
+        let c = Arc::clone(&control);
+        let s = Arc::clone(&slot);
+        let queue = Arc::clone(&progress);
+        std::thread::spawn(move || {
+            let _guard = s.acquire(Arc::clone(&c)).unwrap();
+            let result = h.agent_run(&h.bind_acp("acp-task").unwrap(), request("write a note", Duration::from_secs(30)), &c, &mut |update| {
+                queue.publish(update);
+            });
+            let _ = tx.send(result);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut permission = None;
+        while Instant::now() < deadline && permission.is_none() {
+            permission = panel.poll().into_iter().find_map(|event| match event {
+                backend::Event::Permission { key, title, options, .. } => Some((key, title, options)),
+                _ => None,
+            });
+            if permission.is_none() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let (key, title, options) = permission.expect("the panel receives a real permission request");
+        assert_eq!(title, "Write a note");
+        assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["allow", "deny"]);
+
+        assert!(slot.issued(key), "the current task issued the panel key");
+        panel.answer_permission(key, Some("deny"));
+        let dir = std::path::Path::new(command.split_whitespace().last().unwrap()).parent().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && !dir.join("answer").exists() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let answer = std::fs::read_to_string(dir.join("answer")).expect("the peer got the answer");
+        assert!(answer.contains("\"optionId\":\"reject\""), "the deny answer reaches the agent: {answer}");
+        let outcome = rx.recv_timeout(Duration::from_secs(10)).expect("the task ends");
+        assert_eq!(outcome.unwrap_err().code(), AiErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn a_retired_permission_key_cannot_answer_a_later_task() {
+        use crate::agent_chat::backend::ChatBackend;
+        let (host, _) = fixture_host("acp-task", "true");
+        let auth = Arc::new(std::sync::Mutex::new(None));
+        let slot = Arc::new(mastra_backend::TaskControlSlot::default());
+        let (mut backend, _log) = ready_backend("acp-task", auth, mastra_backend::ProgressQueue::new(Arc::new(|| {})), Arc::clone(&slot), host);
+        let first = Arc::new(TaskControl::default());
+        let first_key = first.next_key();
+        let guard = slot.acquire(Arc::clone(&first)).unwrap();
+        backend.answer_permission(first_key, Some("allow"));
+        assert_eq!(first.take_answers().unwrap(), vec![(first_key, PermissionAnswer::Selected("allow".into()))]);
+        drop(guard);
+
+        let second = Arc::new(TaskControl::default());
+        let second_key = second.next_key();
+        let _guard = slot.acquire(Arc::clone(&second)).unwrap();
+        backend.answer_permission(first_key, Some("deny"));
+        assert!(second.take_answers().unwrap().is_empty(), "a retired task's key cannot answer a later task");
+        backend.answer_permission(second_key, Some("allow"));
+        assert_eq!(second.take_answers().unwrap(), vec![(second_key, PermissionAnswer::Selected("allow".into()))]);
+    }
+
+    #[test]
+    fn direct_chat_and_workflow_task_sessions_stay_independent() {
+        use crate::agent_chat::backend::ChatBackend;
+        let script = r#"
+n=0
+while IFS= read -r line; do
+  id=${line#*'"id":'}
+  id=${id%%,*}
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"},"authMethods":[]}}\n' "$id" ;;
+    *'"method":"session/new"'*) n=$((n+1)); SID="s-$$-$n"; printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s"}}\n' "$id" "$SID" ;;
+    *'"method":"session/prompt"'*)
+      SID=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
+      printf '%s|%s\n' "$SID" "$line" >> {DIR}/sessions
+      case "$line" in
+        *'"text":"workflow task"'*) sed "s/SESSION/$SID/" {DIR}/proposal ;;
+        *) ;;
+      esac
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+    *) ;;
+  esac
+done
+"#;
+        let command = peer("direct-task", script, &[("proposal", text("SESSION", &proposal_text(40)))]);
+        let dir = std::path::Path::new(command.split_whitespace().last().unwrap()).parent().unwrap().to_path_buf();
+        let argv = acp::split_command(&command);
+        let start = backend::StartContext { cwd: dir.clone(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut direct = acp_client::AcpBackend::start(&argv, start).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut ready = false;
+        while Instant::now() < deadline && !ready {
+            ready = direct.poll().iter().any(|event| matches!(event, backend::Event::Ready { .. }));
+            if !ready {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(ready, "the direct chat agent starts");
+        direct.prompt(&[crate::agent_chat::backend::PromptPart::Text("direct hello".into())]);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut ended = false;
+        while Instant::now() < deadline && !ended {
+            ended = direct.poll().iter().any(|event| matches!(event, backend::Event::TurnEnded { .. }));
+            if !ended {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(ended, "the direct chat turn ends");
+        direct.shutdown(true);
+
+        let (host, _) = fixture_host("acp-task", &command);
+        let binding = host.bind_acp("acp-task").unwrap();
+        let (outcome, _) = run(&host, &binding, request("workflow task", Duration::from_secs(20)));
+        let outcome = outcome.unwrap();
+        let sessions = std::fs::read_to_string(dir.join("sessions")).unwrap_or_default();
+        let lines: Vec<&str> = sessions.lines().collect();
+        let direct_line = lines.iter().find(|line| line.contains("direct hello")).expect("the direct prompt was sent");
+        let task_line = lines.iter().find(|line| line.contains("workflow task")).expect("the task prompt was sent");
+        let direct_sid = direct_line.split('|').next().unwrap_or_default();
+        let task_sid = task_line.split('|').next().unwrap_or_default();
+        assert_ne!(direct_sid, task_sid, "a task never uses the direct-chat session");
+        assert!(outcome.agent_session_id.starts_with("s-"), "{}", outcome.agent_session_id);
+        assert!(!task_line.contains("direct hello") && !direct_line.contains("workflow task"));
     }
 }

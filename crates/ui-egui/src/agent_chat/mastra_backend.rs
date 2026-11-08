@@ -22,7 +22,7 @@ use serde::de::DeserializeOwned;
 
 use solidcraft_engine::validation as validation_port;
 
-use super::acp::McpBridge;
+use super::acp::{AuthMethod, McpBridge};
 use super::backend::{ChatBackend, Event, PromptPart, ToolStatus};
 use super::host_ai::{
     self, AiError, AiErrorCode, AiErrorDetails, AiLimits, CallContext, CallScope, ContinuationId, Delivery, FinishReason, GenerateOptions,
@@ -88,6 +88,11 @@ impl TaskControlSlot {
         }
     }
 
+    /// Whether the task currently holding the slot issued this permission key.
+    pub(crate) fn issued(&self, key: u64) -> bool {
+        self.current.lock().ok().and_then(|current| current.as_ref().map(|control| control.issued(key))).unwrap_or(false)
+    }
+
     pub(crate) fn cancel(&self) {
         if let Ok(current) = self.current.lock()
             && let Some(control) = current.as_ref()
@@ -109,6 +114,108 @@ impl Drop for TaskControlGuard<'_> {
     fn drop(&mut self) {
         self.slot.clear(&self.control);
     }
+}
+
+/// Most ACP task progress items kept for the next frame. The queue is bounded so a talkative
+/// agent cannot grow memory without limit; the oldest item is dropped first.
+const MAX_PANEL_PROGRESS: usize = 512;
+
+/// Host-worker to panel hand-off for ACP task progress. `TaskProgress` is the bounded ACP
+/// information the task executor emits; this queue never carries a raw ACP object.
+pub(crate) struct ProgressQueue {
+    queue: Mutex<VecDeque<AgentProgress>>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl ProgressQueue {
+    pub(crate) fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Arc<Self> {
+        Arc::new(Self { queue: Mutex::new(VecDeque::new()), wake })
+    }
+
+    /// Convert and queue one task update, and return the wire event for the runtime.
+    pub(crate) fn publish(&self, progress: TaskProgress) -> AgentProgress {
+        let event = task_progress_event(progress);
+        if let Ok(mut queue) = self.queue.lock() {
+            if queue.len() >= MAX_PANEL_PROGRESS {
+                queue.pop_front();
+            }
+            queue.push_back(event.clone());
+        }
+        (self.wake)();
+        event
+    }
+
+    fn drain(&self) -> Vec<AgentProgress> {
+        self.queue.lock().map(|mut queue| queue.drain(..).collect()).unwrap_or_default()
+    }
+}
+
+/// What a connection probe found, kept apart from runtime readiness. `acp` distinguishes an
+/// ACP agent (whose own sign-in methods the panel can show) from an endpoint connection.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ConnectionAuthReport {
+    pub available: bool,
+    pub acp: bool,
+    pub methods: Vec<AuthMethod>,
+}
+
+impl ConnectionAuthReport {
+    fn from_description(acp: bool, description: host_ai::AgentDescription) -> Self {
+        Self { available: description.state == host_ai::ConnectionState::Available, acp, methods: description.auth_methods }
+    }
+}
+
+/// The bounded ACP task progress shapes mapped onto the panel's existing text, tool, plan and
+/// permission events. No arbitrary ACP object crosses this boundary.
+fn task_progress_event(progress: TaskProgress) -> AgentProgress {
+    let session = match &progress {
+        TaskProgress::Text { session, .. }
+        | TaskProgress::Tool { session, .. }
+        | TaskProgress::Plan { session, .. }
+        | TaskProgress::Permission { session, .. } => session.clone(),
+    };
+    let agent_session_id = Id::parse(&session).unwrap_or_else(|_| Id::literal("session"));
+    let content = match progress {
+        TaskProgress::Text { text, .. } => AgentProgressContent::Text(ProgressText { text }),
+        TaskProgress::Tool { call_id, title, state, .. } => AgentProgressContent::Tool(ToolProgress {
+            call_id: Id::parse(&call_id).unwrap_or_else(|_| Id::literal("tool")),
+            title,
+            state: match state {
+                TaskToolState::Running => StageState::Running,
+                TaskToolState::Completed => StageState::Completed,
+                TaskToolState::Failed => StageState::Failed,
+            },
+        }),
+        TaskProgress::Plan { steps, .. } => AgentProgressContent::Plan(WorkflowPlan {
+            steps: steps
+                .into_iter()
+                .take(64)
+                .enumerate()
+                .filter_map(|(index, (title, state))| {
+                    Some(PlanStep {
+                        id: Id::parse(&format!("s{}", index + 1)).ok()?,
+                        title,
+                        state: match state.as_str() {
+                            "completed" => StepState::Completed,
+                            "failed" => StepState::Failed,
+                            "in_progress" | "running" => StepState::Running,
+                            _ => StepState::Pending,
+                        },
+                    })
+                })
+                .collect(),
+        }),
+        TaskProgress::Permission { key, title, state, .. } => AgentProgressContent::Permission(PermissionProgress {
+            permission_id: Id::parse(&format!("p{key}")).unwrap_or_else(|_| Id::literal("permission")),
+            title,
+            state: match state {
+                TaskPermissionState::Waiting => PermissionState::Waiting,
+                TaskPermissionState::Allowed => PermissionState::Allowed,
+                TaskPermissionState::Denied => PermissionState::Denied,
+            },
+        }),
+    };
+    AgentProgress { agent_session_id, content }
 }
 
 /// The host-owned local validation service. It routes the runtime's `validation.*` calls to the
@@ -676,7 +783,7 @@ fn validation_wire(error: validation_port::ValidationError) -> WireError {
 
 /// What a Mastra backend is told before it starts. The execution choice is already made; this is
 /// only the connection, workflow and launch identity it uses.
-pub struct MastraConfig {
+pub(crate) struct MastraConfig {
     /// The existing AI connection (`AgentConfig.id`) the workflow's model calls use.
     pub connection_id: String,
     /// The model selected for that connection when the backend started.
@@ -690,9 +797,12 @@ pub struct MastraConfig {
     pub tools: Option<std::sync::mpsc::Sender<crate::control::ControlRequest>>,
     /// Chat instructions copied into every new session.
     pub instructions: String,
-    /// Set on the host worker when a `connection.describe` call answers; polled by the panel as
-    /// [`Event::ConnectionAuth`], never as runtime readiness.
-    pub connection_auth: Arc<Mutex<Option<bool>>>,
+    /// Set on the host worker when a connection probe or `connection.describe` call answers;
+    /// polled by the panel as [`Event::AuthRequired`] / [`Event::ConnectionAuth`], never as
+    /// runtime readiness.
+    pub connection_auth: Arc<Mutex<Option<ConnectionAuthReport>>>,
+    /// ACP task progress from the host worker, bounded and mapped to panel events.
+    pub progress: Arc<ProgressQueue>,
     /// The connection/model pair frozen for the turn in progress; host calls must match it.
     pub frozen_binding: Arc<Mutex<Option<(String, String)>>>,
     /// The host-owned local validation port, when this build can run it. Without it the
@@ -723,7 +833,6 @@ struct ActiveTurn {
 /// port delivers runtime notices.
 pub(crate) enum PortNotice {
     Client(Box<ClientNotice>),
-    #[cfg(test)]
     Progress(AgentProgress),
 }
 
@@ -791,7 +900,7 @@ impl Port for LivePort {
 
 /// The backend. Construct with [`MastraBackend::start`]; it starts the runtime off the window
 /// thread and reports readiness through [`Event::RuntimeReady`].
-pub struct MastraBackend {
+pub(crate) struct MastraBackend {
     port: Box<dyn Port>,
     ids: Arc<dyn IdSource>,
     config: MastraConfig,
@@ -800,6 +909,9 @@ pub struct MastraBackend {
     model_budget: Option<Arc<AtomicU32>>,
     agent_budget: Option<Arc<AtomicU32>>,
     task_control: Arc<TaskControlSlot>,
+    progress: Arc<ProgressQueue>,
+    auth_methods: Vec<AuthMethod>,
+    connection_signed_out: bool,
     next_model: String,
     next_connection: String,
     runtime_ready: bool,
@@ -823,7 +935,7 @@ pub struct MastraBackend {
 impl MastraBackend {
     /// Start the runtime and its bounded client. Returns an error text suitable for the panel
     /// when the process cannot start at all; protocol failures arrive as events later.
-    pub fn start(
+    pub(crate) fn start(
         mut config: MastraConfig,
         mut launch: RuntimeLaunch,
         host: Arc<HostAi>,
@@ -869,6 +981,7 @@ impl MastraBackend {
                 Arc::clone(&model_budget),
                 Arc::clone(&agent_budget),
                 Arc::clone(&task_control),
+                Arc::clone(&config.progress),
                 Arc::clone(&config.frozen_binding),
                 config.validation.as_ref().map(Arc::clone),
             ),
@@ -882,6 +995,7 @@ impl MastraBackend {
         let connection = config.connection_id.clone();
         let model = config.model.clone();
         let auth = Arc::clone(&config.connection_auth);
+        let probe_wake = Arc::clone(&config.wake);
         let mut backend = Self::with_port(config, Box::new(LivePort { client: runtime, sender, drain_bytes }), ids);
         backend.host = Some(host);
         backend.runtime_instance = Some(runtime_instance);
@@ -895,15 +1009,16 @@ impl MastraBackend {
         backend.events.push_back(Event::Documents(false));
         backend.events.push_back(Event::ToolsAvailable(backend.config.bridge.is_some()));
         // The connection's sign-in state is checked once, off the window thread, and kept apart
-        // from runtime readiness. A failure leaves it unknown rather than guessing.
+        // from runtime readiness. For an ACP connection this is the real session probe, so the
+        // panel gets the agent's own methods instead of a guessed key state.
         let probe = backend.host.as_ref().map(Arc::clone);
         let _ = std::thread::Builder::new().name("mastra-connection-probe".into()).spawn(move || {
             let Some(host) = probe else { return };
-            let Ok(binding) = host.bind(&connection, &model) else { return };
-            let Ok(description) = host.describe(&binding) else { return };
+            let Ok(description) = host.describe_agent(&connection, &model) else { return };
             if let Ok(mut reported) = auth.lock() {
-                *reported = Some(description.state == super::host_ai::ConnectionState::Available);
+                *reported = Some(ConnectionAuthReport::from_description(host.is_acp(&connection), description));
             }
+            (probe_wake)();
         });
         Ok(backend)
     }
@@ -911,6 +1026,7 @@ impl MastraBackend {
     pub(crate) fn with_port(config: MastraConfig, port: Box<dyn Port>, ids: Arc<dyn IdSource>) -> Self {
         let next_model = config.model.clone();
         let next_connection = config.connection_id.clone();
+        let progress = Arc::clone(&config.progress);
         Self {
             port,
             ids,
@@ -920,6 +1036,9 @@ impl MastraBackend {
             model_budget: None,
             agent_budget: None,
             task_control: Arc::new(TaskControlSlot::default()),
+            progress,
+            auth_methods: Vec::new(),
+            connection_signed_out: false,
             next_model,
             next_connection,
             runtime_ready: false,
@@ -982,6 +1101,19 @@ impl MastraBackend {
     #[cfg(test)]
     pub(crate) fn attach_host_for_test(&mut self, host: Arc<HostAi>) {
         self.host = Some(host);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_task_control_for_test(&mut self, slot: Arc<TaskControlSlot>) {
+        self.task_control = slot;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn report_description_for_test(&mut self, description: host_ai::AgentDescription) {
+        let acp = self.host.as_ref().is_some_and(|host| host.is_acp(&self.config.connection_id));
+        if let Ok(mut reported) = self.config.connection_auth.lock() {
+            *reported = Some(ConnectionAuthReport::from_description(acp, description));
+        }
     }
 
     #[cfg(test)]
@@ -1340,9 +1472,12 @@ impl MastraBackend {
                     // A terminal auth failure belongs to the AI connection, never to runtime
                     // readiness, so it updates the separate connection state.
                     if let Ok(mut reported) = self.config.connection_auth.lock() {
-                        *reported = Some(false);
+                        *reported = Some(ConnectionAuthReport {
+                            available: false,
+                            acp: self.host.as_ref().is_some_and(|host| host.is_acp(&self.config.connection_id)),
+                            methods: self.auth_methods.clone(),
+                        });
                     }
-                    self.push(Event::ConnectionAuth { available: false });
                 }
                 if finished.state == TurnTerminal::ValidatedSuccess {
                     // The runtime's proposal is not acceptance: this host must find the report it
@@ -1388,8 +1523,12 @@ impl MastraBackend {
         }
     }
 
-    #[cfg(test)]
     fn map_progress(&mut self, progress: AgentProgress) {
+        // Progress belongs to the turn that is running. A stopped or replaced turn's late
+        // updates never become panel items, so its permission cannot leak into a later task.
+        if self.active.is_none() {
+            return;
+        }
         match progress.content {
             AgentProgressContent::Text(text) => self.push(Event::Text { thought: false, text: text.text }),
             AgentProgressContent::Tool(tool) => {
@@ -1418,13 +1557,16 @@ impl MastraBackend {
                 self.push(Event::Plan(steps));
             }
             AgentProgressContent::Permission(permission) => {
+                let title =
+                    if permission.title.trim().is_empty() { crate::i18n::tr("ui.host_ai_task_permission").to_string() } else { permission.title };
                 if permission.state == PermissionState::Waiting
                     && let Some(key) = permission.permission_id.as_str().strip_prefix('p').and_then(|k| k.parse::<u64>().ok())
+                    && self.task_control.issued(key)
                 {
                     // The ACP task owner maps its own option ids to the panel's two answers.
                     self.push(Event::Permission {
                         key,
-                        title: permission.title,
+                        title,
                         kind: Some("task".into()),
                         options: vec![
                             super::acp::PermissionOption {
@@ -1441,15 +1583,18 @@ impl MastraBackend {
                     });
                     return;
                 }
-                // Approval itself belongs to the ACP task owner; a no-longer-waiting progress is
-                // shown as a card, never as a live button.
+                if permission.state == PermissionState::Waiting {
+                    // Waiting for a task that no longer holds the slot: never a live button.
+                    return;
+                }
+                // A resolved permission is shown as a card, never as a live button.
                 let status = match permission.state {
                     PermissionState::Waiting => Some(ToolStatus::InProgress),
                     PermissionState::Allowed | PermissionState::Denied => Some(ToolStatus::Completed),
                 };
                 self.push(Event::Tool {
                     id: permission.permission_id.to_string(),
-                    title: Some(permission.title),
+                    title: Some(title),
                     kind: Some("permission".into()),
                     status,
                     input: None,
@@ -1461,7 +1606,6 @@ impl MastraBackend {
 
     fn on_notice(&mut self, notice: PortNotice) {
         match notice {
-            #[cfg(test)]
             PortNotice::Progress(progress) => self.map_progress(progress),
             PortNotice::Client(notice) => self.on_client_notice(*notice),
         }
@@ -1535,13 +1679,20 @@ impl MastraBackend {
     }
 
     fn emit_ready(&mut self) {
+        // A known unauthenticated ACP connection never becomes ready: the panel keeps the
+        // sign-in box open until the agent proves a real session works.
+        if self.connection_signed_out {
+            return;
+        }
         if !self.models_sent {
             self.models_sent = true;
             let model = self.next_model.clone();
-            self.push(Event::Models {
-                current: model.clone(),
-                available: vec![super::acp::ModelInfo { id: model.clone(), name: model, description: String::new() }],
-            });
+            if !model.is_empty() {
+                self.push(Event::Models {
+                    current: model.clone(),
+                    available: vec![super::acp::ModelInfo { id: model.clone(), name: model, description: String::new() }],
+                });
+            }
         }
         self.push(Event::Ready { agent: format!("Mastra · {}", self.config.workflow_id), images: false });
     }
@@ -1590,11 +1741,12 @@ fn runtime_services(
     host: Arc<HostAi>,
     ids: Arc<dyn IdSource>,
     admission: Arc<RuntimeAdmission>,
-    connection_auth: Arc<Mutex<Option<bool>>>,
+    connection_auth: Arc<Mutex<Option<ConnectionAuthReport>>>,
     runtime_instance: Arc<Mutex<Option<String>>>,
     budget: Arc<AtomicU32>,
     agent_budget: Arc<AtomicU32>,
     task_control: Arc<TaskControlSlot>,
+    progress: Arc<ProgressQueue>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
     validation: Option<Arc<HostValidation>>,
 ) -> RuntimeServices {
@@ -1609,6 +1761,7 @@ fn runtime_services(
             budget,
             agent_budget,
             task_control,
+            progress,
             runtime_instance,
             frozen_binding,
             validation: validation.map(|service| Arc::downgrade(&service)),
@@ -1633,10 +1786,11 @@ impl ScopeLifecycle for ClosedLifecycle {
 /// and no egui frame is involved.
 struct HostCalls {
     host: Arc<HostAi>,
-    connection_auth: Arc<Mutex<Option<bool>>>,
+    connection_auth: Arc<Mutex<Option<ConnectionAuthReport>>>,
     budget: Arc<AtomicU32>,
     agent_budget: Arc<AtomicU32>,
     task_control: Arc<TaskControlSlot>,
+    progress: Arc<ProgressQueue>,
     runtime_instance: Arc<Mutex<Option<String>>>,
     frozen_binding: Arc<Mutex<Option<(String, String)>>>,
     /// Weak so dropping the backend drops the port and stops its worker even while the runtime
@@ -1651,6 +1805,7 @@ impl HostDispatch for HostCalls {
         let budget = Arc::clone(&self.budget);
         let agent_budget = Arc::clone(&self.agent_budget);
         let task_control = Arc::clone(&self.task_control);
+        let progress = Arc::clone(&self.progress);
         let instance = Arc::clone(&self.runtime_instance);
         let frozen = Arc::clone(&self.frozen_binding);
         let validation = self.validation.as_ref().and_then(std::sync::Weak::upgrade);
@@ -1659,7 +1814,7 @@ impl HostDispatch for HostCalls {
             let result = if cancelled {
                 Err(cancelled_error("operation"))
             } else {
-                handle_call(&host, &auth, &budget, &agent_budget, &task_control, &instance, &frozen, validation.as_deref(), call, &reply)
+                handle_call(&host, &auth, &budget, &agent_budget, &task_control, &progress, &instance, &frozen, validation.as_deref(), call, &reply)
             };
             let _ = reply.finish(result);
         });
@@ -1671,10 +1826,11 @@ impl HostDispatch for HostCalls {
 
 fn handle_call(
     host: &HostAi,
-    auth: &Mutex<Option<bool>>,
+    auth: &Mutex<Option<ConnectionAuthReport>>,
     budget: &AtomicU32,
     agent_budget: &AtomicU32,
     task_control: &TaskControlSlot,
+    progress: &ProgressQueue,
     runtime_instance: &Mutex<Option<String>>,
     frozen_binding: &Mutex<Option<(String, String)>>,
     validation: Option<&HostValidation>,
@@ -1689,7 +1845,7 @@ fn handle_call(
             let connection = params.connection_id.to_string();
             let description = host.describe_agent(&connection, &params.model_id).map_err(|error| ai_error(&connection, &error))?;
             if let Ok(mut reported) = auth.lock() {
-                *reported = Some(description.state == host_ai::ConnectionState::Available);
+                *reported = Some(ConnectionAuthReport::from_description(host.is_acp(&connection), description.clone()));
             }
             let capabilities = description.capabilities;
             Ok(HostReply::ConnectionDescribe(ConnectionDescribeResult {
@@ -1712,7 +1868,13 @@ fn handle_call(
                 auth_methods: description
                     .auth_methods
                     .into_iter()
-                    .filter_map(|method| Some(AuthMethod { id: Id::parse(&method.id).ok()?, name: method.name, description: method.description }))
+                    .filter_map(|method| {
+                        Some(super::mastra_protocol::AuthMethod {
+                            id: Id::parse(&method.id).ok()?,
+                            name: method.name,
+                            description: method.description,
+                        })
+                    })
                     .collect(),
             }))
         }
@@ -1854,59 +2016,8 @@ fn handle_call(
                     std::thread::sleep(Duration::from_millis(10));
                 }
             });
-            let mut emit = |progress: TaskProgress| {
-                let event = match progress {
-                    TaskProgress::Text { session, text } => AgentProgress {
-                        agent_session_id: Id::parse(&session).unwrap_or_else(|_| Id::literal("session")),
-                        content: AgentProgressContent::Text(ProgressText { text }),
-                    },
-                    TaskProgress::Tool { session, call_id, title, state } => AgentProgress {
-                        agent_session_id: Id::parse(&session).unwrap_or_else(|_| Id::literal("session")),
-                        content: AgentProgressContent::Tool(ToolProgress {
-                            call_id: Id::parse(&call_id).unwrap_or_else(|_| Id::literal("tool")),
-                            title,
-                            state: match state {
-                                TaskToolState::Running => StageState::Running,
-                                TaskToolState::Completed => StageState::Completed,
-                                TaskToolState::Failed => StageState::Failed,
-                            },
-                        }),
-                    },
-                    TaskProgress::Plan { session, steps } => AgentProgress {
-                        agent_session_id: Id::parse(&session).unwrap_or_else(|_| Id::literal("session")),
-                        content: AgentProgressContent::Plan(WorkflowPlan {
-                            steps: steps
-                                .into_iter()
-                                .take(64)
-                                .enumerate()
-                                .filter_map(|(index, (title, state))| {
-                                    Some(PlanStep {
-                                        id: Id::parse(&format!("s{}", index + 1)).ok()?,
-                                        title,
-                                        state: match state.as_str() {
-                                            "completed" => StepState::Completed,
-                                            "failed" => StepState::Failed,
-                                            "in_progress" | "running" => StepState::Running,
-                                            _ => StepState::Pending,
-                                        },
-                                    })
-                                })
-                                .collect(),
-                        }),
-                    },
-                    TaskProgress::Permission { session, key, title, state } => AgentProgress {
-                        agent_session_id: Id::parse(&session).unwrap_or_else(|_| Id::literal("session")),
-                        content: AgentProgressContent::Permission(PermissionProgress {
-                            permission_id: Id::parse(&format!("p{key}")).unwrap_or_else(|_| Id::literal("permission")),
-                            title,
-                            state: match state {
-                                TaskPermissionState::Waiting => PermissionState::Waiting,
-                                TaskPermissionState::Allowed => PermissionState::Allowed,
-                                TaskPermissionState::Denied => PermissionState::Denied,
-                            },
-                        }),
-                    },
-                };
+            let mut emit = |update: TaskProgress| {
+                let event = progress.publish(update);
                 let _ = reply.emit(CallProgress::AgentProgress(event));
             };
             let result = host.agent_run(&binding, request, &control, &mut emit);
@@ -2213,12 +2324,27 @@ impl ChatBackend for MastraBackend {
         for notice in self.port.drain() {
             self.on_notice(notice);
         }
+        for progress in self.progress.drain() {
+            self.on_notice(PortNotice::Progress(progress));
+        }
         if let Some(error) = self.host_bridge.as_ref().and_then(HostBridge::take_error) {
             self.push(Event::Error(error));
         }
         let reported = self.config.connection_auth.lock().ok().and_then(|mut reported| reported.take());
-        if let Some(available) = reported {
-            self.push(Event::ConnectionAuth { available });
+        if let Some(report) = reported {
+            self.connection_signed_out = report.acp && !report.available;
+            if report.available {
+                self.push(Event::ConnectionAuth { available: true });
+                if self.session_ready && self.active.is_none() {
+                    self.emit_ready();
+                }
+            } else {
+                if report.acp {
+                    self.auth_methods = report.methods.clone();
+                    self.push(Event::AuthRequired { methods: report.methods });
+                }
+                self.push(Event::ConnectionAuth { available: false });
+            }
         }
         self.events.drain(..).collect()
     }
@@ -2300,6 +2426,8 @@ impl ChatBackend for MastraBackend {
     }
 
     fn answer_permission(&mut self, key: u64, option: Option<&str>) {
+        // The task owner refuses a key it did not issue; a stale panel answer must never reach a
+        // later task's permission map.
         let _ = self.task_control.answer(key, option);
     }
 
@@ -2310,11 +2438,16 @@ impl ChatBackend for MastraBackend {
         let connection = self.config.connection_id.clone();
         let method = method.to_string();
         let auth = Arc::clone(&self.config.connection_auth);
+        let methods = self.auth_methods.clone();
         let wake = Arc::clone(&self.config.wake);
         let _ = std::thread::Builder::new().name("mastra-agent-auth".into()).spawn(move || {
-            let available = host.authenticate_agent(&connection, &method).is_ok_and(|d| d.state == super::host_ai::ConnectionState::Available);
+            let acp = host.is_acp(&connection);
+            let report = match host.authenticate_agent(&connection, &method) {
+                Ok(description) => ConnectionAuthReport::from_description(acp, description),
+                Err(_) => ConnectionAuthReport { available: false, acp, methods },
+            };
             if let Ok(mut reported) = auth.lock() {
-                *reported = Some(available);
+                *reported = Some(report);
             }
             wake();
         });

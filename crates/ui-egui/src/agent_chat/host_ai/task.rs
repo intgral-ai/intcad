@@ -104,7 +104,7 @@ impl TaskControl {
         // Only a key this task actually asked the panel about can be answered. Keys are
         // process-wide unique, so an answer for a retired task is refused instead of reaching a
         // later task's permission map.
-        if !self.issued.lock().map_err(|_| AiError::internal("task_permission"))?.contains(&key) {
+        if !self.issued(key) {
             return Err(AiError::invalid("permission"));
         }
         let answer = match option {
@@ -113,6 +113,11 @@ impl TaskControl {
         };
         self.answers.lock().map_err(|_| AiError::internal("task_permission"))?.insert(key, answer);
         Ok(())
+    }
+
+    /// Whether this task asked the panel about `key`.
+    pub(crate) fn issued(&self, key: u64) -> bool {
+        self.issued.lock().is_ok_and(|issued| issued.contains(&key))
     }
 
     pub(crate) fn next_key(&self) -> u64 {
@@ -180,7 +185,7 @@ struct LiveProcess {
 impl LiveProcess {
     fn request(&mut self, method: &str, params: Value) -> u64 {
         self.next_id = self.next_id.saturating_add(1);
-        self.proc.send(&acp::request(self.next_id, method, params));
+        self.proc.send_blocking(&acp::request(self.next_id, method, params));
         self.next_id
     }
 
@@ -405,7 +410,7 @@ impl AcpTaskExecutor {
             for (key, answer) in control.take_answers()? {
                 let Some((rpc, options)) = open.remove(&key) else { continue };
                 let (selected, state, denied) = resolve_answer(&answer, &options);
-                live.proc.send(&acp::permission_reply(rpc, selected.as_deref()));
+                live.proc.send_blocking(&acp::permission_reply(rpc, selected.as_deref()));
                 emit(TaskProgress::Permission { session: session.clone(), key, title: String::new(), state });
                 if denied {
                     return Err(AiError::permission_denied(&format!("p{key}")));
@@ -474,7 +479,7 @@ impl AcpTaskExecutor {
                         }
                         Incoming::Permission { session: update_session, rpc, title, options, .. } => {
                             if !live.accepts(&update_session) {
-                                live.proc.send(&acp::permission_reply(rpc, None));
+                                live.proc.send_blocking(&acp::permission_reply(rpc, None));
                                 continue;
                             }
                             let key = control.next_key();
@@ -487,7 +492,7 @@ impl AcpTaskExecutor {
                             });
                         }
                         Incoming::Unsupported { rpc, .. } => {
-                            live.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "SolidCraft task sessions serve no host tools"));
+                            live.proc.send_blocking(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "SolidCraft task sessions serve no host tools"));
                         }
                         Incoming::AuthStatus(_) | Incoming::Ignored => {}
                         Incoming::ModeChanged(_) | Incoming::ModelChanged(_) | Incoming::ConfigOptions { .. } => {}
@@ -499,7 +504,7 @@ impl AcpTaskExecutor {
             }
         }
         for (_, (rpc, _)) in open.drain() {
-            live.proc.send(&acp::permission_reply(rpc, None));
+            live.proc.send_blocking(&acp::permission_reply(rpc, None));
         }
         let proposal = parse_proposal(&text, &request.source, request.remaining_commands, request.allowed_commands.as_deref())?;
         Ok(TaskOutcome { agent_session_id: session, text, stop_reason: stop_reason.unwrap_or_default(), proposal, usage })
@@ -514,10 +519,10 @@ impl AcpTaskExecutor {
         control: &TaskControl,
     ) -> Result<(), AiError> {
         for (_, (rpc, _)) in open.drain() {
-            live.proc.send(&acp::permission_reply(rpc, None));
+            live.proc.send_blocking(&acp::permission_reply(rpc, None));
         }
         let _ = control.take_answers();
-        live.proc.send(&acp::notification("session/cancel", serde_json::json!({"sessionId": session})));
+        live.proc.send_blocking(&acp::notification("session/cancel", serde_json::json!({"sessionId": session})));
         if prompt == 0 {
             live.reusable = false;
             live.shutdown();
@@ -631,10 +636,10 @@ fn reply(live: &LiveProcess, id: u64, deadline: Instant, control: &TaskControl) 
                         };
                     }
                     Incoming::Permission { rpc, .. } => {
-                        live.proc.send(&acp::permission_reply(rpc, None));
+                        live.proc.send_blocking(&acp::permission_reply(rpc, None));
                     }
                     Incoming::Unsupported { rpc, .. } => {
-                        live.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "SolidCraft task sessions serve no host tools"));
+                        live.proc.send_blocking(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "SolidCraft task sessions serve no host tools"));
                     }
                     _ => {}
                 }

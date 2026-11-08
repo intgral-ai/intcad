@@ -1,14 +1,16 @@
 # Workflow ACP tasks (HostAi slice)
 
-This branch adds the **HostAi-level** task executor behind the protocol's
-`agent.run`. It does not enable the user-selectable Mastra-on-ACP path in the panel.
+This branch lets the panel offer a Mastra workflow on an ACP agent. It builds on the
+HostAi-level task executor behind the protocol's `agent.run` and adds the user-facing
+half: the agent's own sign-in flow and answerable permission requests.
 
-- The panel still refuses `(Mastra, ACP)` with an actionable message. Direct chat with
-  that agent keeps working. The runtime call, sign-in event and permission UI are a
-  follow-up issue, not part of merged #25.
+- The panel no longer refuses `(Mastra, ACP)`. Direct chat with the same agent keeps
+  working and stays a separate process and history.
 - The task executor, not the chat panel, owns the ACP process, session, authentication,
-  cancellation and permission state. Panel event adaptation stays in
-  `mastra_backend.rs` for a future wiring change.
+  cancellation and permission state. Panel event adaptation lives in
+  `mastra_backend.rs`.
+- The authorized real Codex login/task smoke test remains a human follow-up; the
+  deterministic protocol peers cover the automated paths.
 
 ## Ownership
 
@@ -26,8 +28,24 @@ This branch adds the **HostAi-level** task executor behind the protocol's
 
 `HostAi::describe_agent` starts a real ACP session and reports the agent's actual
 authentication methods. Runtime readiness alone never changes a connection to
-authenticated. The panel does not yet render those methods or call the agent's
-`authenticate` request from the workflow path; that is the follow-up UI wiring.
+authenticated. The panel's connection probe and every `connection.describe` call use
+that description: an unauthenticated ACP connection emits `Event::AuthRequired` with
+the agent's own methods, and the existing sign-in box routes the chosen method through
+`HostAi::authenticate_agent` to the agent's `authenticate` request. A successful
+sign-in re-emits `Event::Ready` and the separate connection-auth state. No credential
+store is added; Codex and the other agents keep their own accounts.
+
+## Permissions and progress
+
+ACP task text, tools, plans and permission requests are mapped to the panel's existing
+`Event::Text`, `Event::Tool`, `Event::Plan` and `Event::Permission`. A waiting
+permission is emitted only while the task that issued its process-wide key still owns
+the single task-control slot. The panel's Allow or Deny answer routes through
+`TaskControl::answer` to that task's real ACP request. A stale or retired key is
+refused, so a stopped or replaced turn cannot answer a later task.
+
+Progress travels from the host worker to the panel through a bounded queue; no raw ACP
+object is forwarded. Only the shapes the protocol already documents become events.
 
 ## Proposal mode
 

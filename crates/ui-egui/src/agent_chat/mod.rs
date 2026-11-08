@@ -705,6 +705,9 @@ impl AgentChat {
         let signed_in = if self.mastra {
             match &e {
                 Event::ConnectionAuth { available } => Some(*available),
+                // AUTH_REQUIRED from the ACP connection's own probe is evidence of no sign-in,
+                // exactly as it is for a direct backend.
+                Event::AuthRequired { .. } => Some(false),
                 _ => None,
             }
         } else {
@@ -1040,7 +1043,25 @@ fn working_dir() -> std::path::PathBuf {
 /// Start the agent: the chat's control endpoint for its MCP bridge if needed, the process.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn sync_ai_connections(app: &SolveApp) -> Result<(), host_ai::AiError> {
-    app.services.agent_ai.connections().replace(&app.preferences.agents)
+    // Preferences hold the endpoints and custom ACP agents. Discovered ACP agents live only in
+    // detection, so publish the selected ones as connections too: a Mastra workflow uses HostAi,
+    // and HostAi must know the same agent the panel picked.
+    let mut configs = app.preferences.agents.clone();
+    if let Some(detection) = &app.agent_chat.detection {
+        for found in &detection.found {
+            if configs.iter().any(|config| config.id == found.id) {
+                continue;
+            }
+            configs.push(agents::AgentConfig {
+                id: found.id.to_string(),
+                name: found.name.to_string(),
+                kind: agents::Kind::Acp,
+                command: found.argv.iter().map(|argument| panel::quote(argument)).collect::<Vec<_>>().join(" "),
+                ..Default::default()
+            });
+        }
+    }
+    app.services.agent_ai.connections().replace(&configs)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1070,24 +1091,15 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     };
     let execution = app.preferences.chat_execution;
-    // ACP tasks exist in HostAi, but this panel cannot yet show the agent's sign-in methods or
-    // answer its permission requests. Do not offer a Mastra workflow on an ACP agent until that
-    // wiring lands; direct chat with the same agent keeps working.
-    if execution == agents::Execution::Mastra && entry.kind == agents::Kind::Acp {
-        // Codex is discovered, never bundled. Say what is missing before modeling starts;
-        // the panel still cannot show an ACP agent's sign-in or permission requests (#4).
-        if entry.id == "codex" {
-            let detection = app.agent_chat.detection.clone().unwrap_or_default();
-            let prerequisite = discover::codex_prerequisite(&detection);
-            if !prerequisite.is_ready() {
-                app.agent_chat.notice(prerequisite.message(), true);
-                app.agent_chat.state = Some(State::Failed);
-                return;
-            }
+    // Codex is discovered, never bundled. Say what is missing before modeling starts.
+    if execution == agents::Execution::Mastra && entry.kind == agents::Kind::Acp && entry.id == "codex" {
+        let detection = app.agent_chat.detection.clone().unwrap_or_default();
+        let prerequisite = discover::codex_prerequisite(&detection);
+        if !prerequisite.is_ready() {
+            app.agent_chat.notice(prerequisite.message(), true);
+            app.agent_chat.state = Some(State::Failed);
+            return;
         }
-        app.agent_chat.notice(tr("ui.mastra_acp_tasks_unavailable"), true);
-        app.agent_chat.state = Some(State::Failed);
-        return;
     }
     let mastra_command = app.preferences.mastra_runtime_command.clone();
     let mastra_workflow = app.preferences.mastra_workflow_id.clone();
@@ -1138,55 +1150,59 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
     let started: Result<Box<dyn ChatBackend>, String> = match (execution, entry.kind) {
-        (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_acp_tasks_unavailable").to_string()),
-        (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic) => (|| -> Result<Box<dyn ChatBackend>, String> {
-            let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
-            let backend::StartContext { cwd, bridge, tools, wake, .. } = start;
-            // Installed packages always use the validated application-relative runtime. A source
-            // checkout may still name a development command while debugging; it is never used as
-            // a fallback by an installed package or a release build.
-            let launch = match packaged_runtime::resolve_current_metadata(&packaged_runtime::expectations()) {
-                Ok(launch) => (launch.executable, launch.args, launch.cwd),
-                Err(error) => {
-                    let development = (cfg!(debug_assertions) && !mastra_command.trim().is_empty())
-                        .then(|| acp::split_command(&mastra_command))
-                        .filter(|argv| !argv.is_empty());
-                    if let Some(mut argv) = development {
-                        let executable = std::path::PathBuf::from(argv.remove(0));
-                        (executable, argv.into_iter().map(std::ffi::OsString::from).collect(), cwd.clone())
-                    } else {
-                        return Err(trf("ui.mastra_runtime_unusable", &[("reason", &error.to_string())]));
+        (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic | agents::Kind::Acp) => {
+            (|| -> Result<Box<dyn ChatBackend>, String> {
+                let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
+                let backend::StartContext { cwd, bridge, tools, wake, .. } = start;
+                let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(wake);
+                let progress = mastra_backend::ProgressQueue::new(Arc::clone(&wake));
+                // Installed packages always use the validated application-relative runtime. A source
+                // checkout may still name a development command while debugging; it is never used as
+                // a fallback by an installed package or a release build.
+                let launch = match packaged_runtime::resolve_current_metadata(&packaged_runtime::expectations()) {
+                    Ok(launch) => (launch.executable, launch.args, launch.cwd),
+                    Err(error) => {
+                        let development = (cfg!(debug_assertions) && !mastra_command.trim().is_empty())
+                            .then(|| acp::split_command(&mastra_command))
+                            .filter(|argv| !argv.is_empty());
+                        if let Some(mut argv) = development {
+                            let executable = std::path::PathBuf::from(argv.remove(0));
+                            (executable, argv.into_iter().map(std::ffi::OsString::from).collect(), cwd.clone())
+                        } else {
+                            return Err(trf("ui.mastra_runtime_unusable", &[("reason", &error.to_string())]));
+                        }
                     }
+                };
+                let workflow_id =
+                    if mastra_workflow.trim().is_empty() { mastra_backend::DEFAULT_WORKFLOW.to_string() } else { mastra_workflow.trim().to_string() };
+                if mastra_protocol::Id::parse(&workflow_id).is_err() {
+                    return Err(tr("ui.mastra_workflow_invalid").to_string());
                 }
-            };
-            let workflow_id =
-                if mastra_workflow.trim().is_empty() { mastra_backend::DEFAULT_WORKFLOW.to_string() } else { mastra_workflow.trim().to_string() };
-            if mastra_protocol::Id::parse(&workflow_id).is_err() {
-                return Err(tr("ui.mastra_workflow_invalid").to_string());
-            }
-            let config = mastra_backend::MastraConfig {
-                connection_id: entry.id.clone(),
-                model: entry.model.clone(),
-                workflow_id,
-                bridge,
-                tools,
-                instructions,
-                connection_auth: Arc::new(std::sync::Mutex::new(None)),
-                frozen_binding: Arc::new(std::sync::Mutex::new(None)),
-                validation: mastra_backend::HostValidation::local(),
-                wake: Arc::from(wake),
-            };
-            let launch = runtime_client::RuntimeLaunch {
-                executable: launch.0,
-                args: launch.1,
-                cwd: launch.2,
-                host_version: env!("CARGO_PKG_VERSION").into(),
-                limits: mastra_protocol::Limits::default(),
-            };
-            let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);
-            let admission = runtime_client::RuntimeAdmission::new(8).map(Arc::new).map_err(|_| tr("ui.mastra_runtime_failed").to_string())?;
-            mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
-        })(),
+                let config = mastra_backend::MastraConfig {
+                    connection_id: entry.id.clone(),
+                    model: entry.model.clone(),
+                    workflow_id,
+                    bridge,
+                    tools,
+                    instructions,
+                    connection_auth: Arc::new(std::sync::Mutex::new(None)),
+                    progress,
+                    frozen_binding: Arc::new(std::sync::Mutex::new(None)),
+                    validation: mastra_backend::HostValidation::local(),
+                    wake,
+                };
+                let launch = runtime_client::RuntimeLaunch {
+                    executable: launch.0,
+                    args: launch.1,
+                    cwd: launch.2,
+                    host_version: env!("CARGO_PKG_VERSION").into(),
+                    limits: mastra_protocol::Limits::default(),
+                };
+                let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);
+                let admission = runtime_client::RuntimeAdmission::new(8).map(Arc::new).map_err(|_| tr("ui.mastra_runtime_failed").to_string())?;
+                mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+            })()
+        }
         (agents::Execution::Direct, agents::Kind::Acp) if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
         (agents::Execution::Direct, agents::Kind::Acp) => {
             acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)

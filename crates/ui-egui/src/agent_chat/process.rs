@@ -298,6 +298,7 @@ struct Pipes {
     io_workers: AtomicU8,
     receiver_gone: AtomicBool,
     state: Mutex<PipeState>,
+    writes: AtomicU64,
     ready: Condvar,
     stop: Arc<Stop>,
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -333,6 +334,7 @@ impl Pipes {
                 exit_sent: false,
                 tail: StderrTail::new(limits),
             }),
+            writes: AtomicU64::new(0),
             ready: Condvar::new(),
             stop: Arc::new(Stop { origin: Instant::now(), at: AtomicU64::new(u64::MAX) }),
             wake,
@@ -399,6 +401,39 @@ impl Pipes {
     }
     fn send_tracked(&self, ticket: u64, bytes: Vec<u8>, lane: PipeLane) -> Result<(), ProcessIoError> {
         self.enqueue(Some(ticket), bytes, lane)
+    }
+
+    /// Enqueue one frame and wait until the writer has put it on the child's pipe. Used by
+    /// off-frame task threads, where a reply must not be queued and then discarded by shutdown.
+    fn send_ack(&self, bytes: Vec<u8>, lane: PipeLane) -> Result<(), ProcessIoError> {
+        let before = self.writes.load(Ordering::Acquire);
+        let mut queued = false;
+        for _ in 0..256 {
+            match self.enqueue(None, bytes.clone(), lane) {
+                Ok(()) => {
+                    queued = true;
+                    break;
+                }
+                Err(ProcessIoError::ResourceExhausted) => std::thread::yield_now(),
+                Err(error) => return Err(error),
+            }
+        }
+        if !queued {
+            return Err(ProcessIoError::ResourceExhausted);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut state = self.state.lock().map_err(|_| ProcessIoError::Closed)?;
+        while self.writes.load(Ordering::Acquire) == before {
+            if self.stop.requested() || state.input_closed {
+                return Err(ProcessIoError::Closed);
+            }
+            if Instant::now() >= deadline {
+                return Err(ProcessIoError::ResourceExhausted);
+            }
+            let (next, _) = self.ready.wait_timeout(state, Duration::from_millis(10)).map_err(|_| ProcessIoError::Closed)?;
+            state = next;
+        }
+        Ok(())
     }
     fn enqueue(&self, ticket: Option<u64>, bytes: Vec<u8>, lane: PipeLane) -> Result<(), ProcessIoError> {
         if self.stop.requested() {
@@ -1069,6 +1104,9 @@ fn write_input(mut stdin: impl Write, io: Arc<Pipes>) {
             }
         };
         let result = stdin.write_all(&write.bytes).and_then(|()| stdin.flush());
+        if result.is_ok() {
+            io.writes.fetch_add(1, Ordering::Release);
+        }
         let charge = write.bytes.capacity();
         let lane = write.lane;
         let ticket = write.ticket;
@@ -1322,6 +1360,19 @@ impl AgentProcess {
             let mut bytes = msg.to_string().into_bytes();
             bytes.push(b'\n');
             if let Err(error) = io.send(bytes, PipeLane::Data) {
+                io.fail(error);
+            }
+        }
+    }
+
+    /// Send from an off-frame task thread and wait until the frame is on the child's pipe.
+    /// The window path above tries the bounded transport lock once; a task must not lose its
+    /// permission reply because that lock was momentarily held or because shutdown won the race.
+    pub fn send_blocking(&self, msg: &serde_json::Value) {
+        if let Some(io) = &self.to_agent {
+            let mut bytes = msg.to_string().into_bytes();
+            bytes.push(b'\n');
+            if let Err(error) = io.send_ack(bytes, PipeLane::Data) {
                 io.fail(error);
             }
         }
