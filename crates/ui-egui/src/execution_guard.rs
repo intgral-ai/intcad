@@ -91,9 +91,6 @@ fn check_step(step: &Value, raw: Option<&str>) -> Result<(), GuardRefusal> {
     let Some(raw) = raw else { return Ok(()) };
     // Canonical ids are for capability decisions only; dispatch receives the original spelling.
     let Some(spec) = solidcraft_engine::find_command(raw) else {
-        if raw.eq_ignore_ascii_case("document.snapshot.capture") {
-            return Err(unsupported("document.snapshot.capture"));
-        }
         return Ok(()); // Keep the engine's original unknown-command diagnostic.
     };
     let id = spec.id;
@@ -129,6 +126,7 @@ fn check_step(step: &Value, raw: Option<&str>) -> Result<(), GuardRefusal> {
         id,
         "document.inspect"
             | "document.revision"
+            | "document.snapshot.capture"
             | "engine.commands"
             | "engine.describe"
             | "inspect.measure"

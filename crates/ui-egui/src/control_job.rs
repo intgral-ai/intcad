@@ -426,6 +426,15 @@ impl SolveApp {
         {
             return self.answer_on_a_copy(req, id, params);
         }
+        // A snapshot freezes and writes a large artifact: answer on a copy even when the general
+        // agent-off-thread preference is off, so a large container never blocks a frame.
+        if matches!(req.method.as_str(), "engine.execute" | "command")
+            && self.control_answering.len() < MAX_ANSWERING
+            && let Some((command, params)) = executed(&req.params)
+            && spec_id(command) == Some("document.snapshot.capture")
+        {
+            return self.answer_on_a_copy(req, "document.snapshot.capture", params);
+        }
         if !self.preferences.agent_off_thread {
             return Some(req);
         }
@@ -463,6 +472,11 @@ impl SolveApp {
         // reads this pinned copy; answered rechecks the live source, never the scratch stamp.
         let source = req.guarded.as_ref().map(|_| self.session.document_stamp());
         let mut copy = self.session.scratch();
+        if id == "document.snapshot.capture" {
+            // `scratch` drops the file path; a snapshot must resolve relative design links from
+            // the caller's design folder, never from the process working directory.
+            copy.path = self.session.path.clone();
+        }
         if let Some(level) = level {
             copy.param_check = level;
         }
@@ -590,6 +604,10 @@ impl SolveApp {
 pub(crate) mod test_support {
     use super::*;
 
+    /// The candidate store is process-global; tests that replace it take this lock so parallel
+    /// libtest threads cannot swap it under one another. A poisoned lock still runs the test.
+    pub(crate) static CANDIDATE_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A real copy reading, already computed, held just before the owner's answer path.
     pub(crate) fn completed_read(app: &mut SolveApp, req: ControlRequest, id: &'static str, params: Value) -> ControlJob {
         let source = req.guarded.as_ref().map(|_| app.session.document_stamp());
@@ -606,5 +624,64 @@ pub(crate) mod test_support {
     pub(crate) fn answer_completed(app: &mut SolveApp, job: ControlJob) {
         let reply = within_wait(app, &job.done).expect("a pre-completed receiver takes the immediate branch");
         app.answered(job, reply);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::scenario::Harness;
+
+    /// #11: a snapshot capture is answered on a copy off the window thread even when the general
+    /// agent-off-thread preference is off, and the copy keeps the caller's design path so a
+    /// relative design link resolves from the design's folder.
+    #[test]
+    fn snapshot_capture_answers_on_a_copy_with_the_callers_path() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.apply_off_thread = Some(std::time::Duration::ZERO);
+        h.app.preferences.agent_off_thread = false;
+        let dir = h.dir.clone();
+        let part_path = dir.join("Part.sc");
+        let mut part = solidcraft_engine::Session::default();
+        part.execute("solid.box", &json!({"length": 20, "width": 10, "height": 5})).unwrap();
+        part.execute("file.save", &json!({"path": part_path})).unwrap();
+        let assembly_path = dir.join("Assembly.sc");
+        let mut assembly = solidcraft_engine::Session::default();
+        let inserted = assembly.execute("component.insert_design", &json!({"path": part_path})).unwrap();
+        assembly.execute("file.save", &json!({"path": assembly_path})).unwrap();
+        let component = inserted["component"].as_u64().unwrap();
+        assembly.path = Some(assembly_path.to_string_lossy().into_owned());
+        assembly.doc_mut().links.get_mut(&component).unwrap().path = "Part.sc".into();
+        h.app.session = assembly;
+
+        let store = dir.join("candidates");
+        solidcraft_engine::cmd::set_candidate_store(Some(store.clone()));
+        let stamp = h.app.session.document_stamp();
+        let (req, rx) = crate::control::ControlRequest::new(
+            "engine.execute",
+            json!({"command":"document.snapshot.capture","params":{},
+                "expectedDocument":{"documentId":stamp.document_id,"revision":stamp.revision.to_string()}}),
+        );
+        let gate = crate::history_off_thread_tests::guarded_workers::gate();
+        assert!(h.app.offload_control(&h.ctx, req).is_none(), "the capture runs off the window thread");
+        gate.computed();
+        gate.release();
+        h.app.poll_control_jobs(&h.ctx);
+        let reply = rx.try_recv().expect("the off-frame capture answered");
+        assert_eq!(reply["ok"], true, "{reply}");
+        let candidate = &reply["result"]["candidate"];
+        let id = candidate["candidateId"].as_str().unwrap();
+        let verified = solidcraft_engine::io::candidate::lookup(&store, id).unwrap();
+        let design = verified.files.iter().find(|file| file.path == "design.sc").unwrap();
+        let captured = solidcraft_engine::io::read_design(&design.bytes).unwrap();
+        assert_eq!(
+            captured.links.get(&component).map(|link| link.path.as_str()),
+            Some(format!("inputs/design-link-{component}.sc").as_str()),
+            "the captured link names the frozen input, read with the caller's design path"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

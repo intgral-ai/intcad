@@ -101,7 +101,7 @@ fn check_step(step: &Value, raw: Option<&str>) -> Result<(), GuardedCallError> {
     let Some(raw) = raw else { return Ok(()) };
     // Resolve only for policy. The original spelling/params go to the existing command path.
     let Some(spec) = solidcraft_engine::find_command(raw) else {
-        return if raw.eq_ignore_ascii_case("document.snapshot.capture") { Err(unsupported("document.snapshot.capture")) } else { Ok(()) };
+        return Ok(()); // Keep the engine's original unknown-command diagnostic.
     };
     let id = spec.id;
     let excluded =
@@ -135,6 +135,7 @@ fn check_step(step: &Value, raw: Option<&str>) -> Result<(), GuardedCallError> {
         id,
         "document.inspect"
             | "document.revision"
+            | "document.snapshot.capture"
             | "engine.commands"
             | "engine.describe"
             | "inspect.measure"

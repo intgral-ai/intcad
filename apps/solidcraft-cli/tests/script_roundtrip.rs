@@ -162,3 +162,54 @@ fn script_export_warns_about_omitted_print_faces_on_stderr() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// #11: the CLI captures a native snapshot through the command channel, and the captured design
+/// reopens independently of the live session and its file.
+#[test]
+fn cli_captures_a_native_snapshot_that_reopens_after_the_live_design_is_gone() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-cli-snapshot-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("candidates");
+    let script = dir.join("capture.json");
+    let results = dir.join("results.json");
+    std::fs::write(
+        &script,
+        json!({"commands": [
+            {"command": "parameters.add", "params": {"name": "width", "expression": "12 mm"}},
+            {"command": "solid.box", "params": {"length": "width", "width": 20, "height": 6}},
+            {"command": "document.revision", "params": {}},
+            {"command": "document.snapshot.capture", "params": {}},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+        .arg("run")
+        .arg(&script)
+        .args(["--results", "--json-out"])
+        .arg(&results)
+        .env("SOLIDCRAFT_CANDIDATE_DIR", &store)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let replies: Value = serde_json::from_slice(&std::fs::read(&results).unwrap()).unwrap();
+    let revision = &replies.as_array().unwrap()[2];
+    let candidate = &replies.as_array().unwrap()[3]["candidate"];
+    assert_eq!(candidate["source"]["revision"], revision["revision"].to_string(), "a canonical decimal revision");
+    assert_eq!(candidate["source"]["documentId"], revision["document_id"]);
+    assert_eq!(candidate["artifact"]["mediaType"], "application/zip");
+    let id = candidate["candidateId"].as_str().unwrap();
+
+    let verified = solidcraft_engine::io::candidate::lookup(&store, id).unwrap();
+    assert_eq!(verified.candidate.manifest_digest, candidate["manifestDigest"]);
+    assert_eq!(verified.candidate.candidate_digest, candidate["candidateDigest"]);
+    let design = verified.files.iter().find(|file| file.path == "design.sc").unwrap();
+    let reopened_path = dir.join("reopened.sc");
+    std::fs::write(&reopened_path, &design.bytes).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("doc.open", &json!({"path": reopened_path.to_string_lossy()})).unwrap();
+    assert_eq!(reopened.doc.param("width").map(|p| p.expr.as_str()), Some("12 mm"));
+    assert_eq!(reopened.doc.features.len(), 1, "the native feature history reopens");
+    std::fs::remove_dir_all(dir).unwrap();
+}

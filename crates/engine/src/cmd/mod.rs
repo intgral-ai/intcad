@@ -58,6 +58,7 @@ pub use sketch_construction::{
 pub use sketch_create::{tangent_arc_preview, tangent_arc_starts_at};
 pub use sketch_import::drawing_import_command;
 pub use sketch_modify::{TrimHover, extend_arc_preview, extend_end_at, extend_preview, trim_hover, trim_piece};
+pub use snapshot::set_candidate_store;
 pub use view_dxf::sketch::exportable as view_dxf_exportable;
 pub(crate) use view_navigation::camera_form;
 pub use view_navigation::standard_view;
@@ -123,6 +124,7 @@ mod sketch_inspect;
 mod sketch_modify;
 mod sketch_project;
 mod sketch_store;
+mod snapshot;
 mod surface;
 mod surface_analysis;
 mod surface_boundary;
@@ -355,6 +357,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(file::COMMANDS.iter());
     v.extend(print_face::COMMANDS.iter());
     v.extend(metadata::COMMANDS.iter());
+    v.extend(snapshot::COMMANDS.iter());
     v.extend(inspect::COMMANDS.iter());
     v.extend(compare::COMMANDS.iter());
     v.extend(compare_picture::COMMANDS.iter());
