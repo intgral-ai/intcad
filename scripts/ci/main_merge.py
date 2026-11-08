@@ -286,6 +286,14 @@ def contract_ts_commands():
             ["npm", "run", "verify:schema", "-w", RUNTIME_PACKAGE]]
 
 
+def packages_commands():
+    """Nonpublishing packaging regressions (no Rust build, no publisher)."""
+    return [["python3", "-I", "packaging/tests/nightly_test.py"],
+            ["python3", "-I", "packaging/tests/windows_icon_test.py"],
+            ["python3", "-I", "packaging/tests/apprun_test.py"],
+            ["python3", "-I", "packaging/tests/flatpak_test.py"]]
+
+
 def artifact_commands():
     """Validate the reviewed desktop runtime distribution policy and source records."""
     return [["cargo", "xtask", "runtime-artifact", "--mode", "policy"]]
@@ -347,6 +355,8 @@ def execute_workflow(plan_file, job, out, *, full=False):
         argvs = artifact_commands()
     elif job == "integration":
         argvs = integration_commands()
+    elif job == "packages":
+        argvs = packages_commands()
     else:
         raise ValueError(job + ": executable owner handoff is not integrated; no placeholder receipt is permitted")
     selection = junit = None
