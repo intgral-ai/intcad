@@ -1,6 +1,13 @@
-# SolidCraft brand kit
+# open-skyfall brand kit
 
-Logo files for stickers, shirts, the web and social posts. Everything in `logo/` is drawn
+The product mark for this fork is `logo/open-skyfall-mark.svg` (master) and
+`logo/open-skyfall-mark-1024.png` (light-card render). It uses Intgral's V22
+compact-integrated I mark from the team design system.
+
+The SolidCraft files below are the upstream project's brand kit. They stay for attribution and
+for the upstream compatibility record; they are not the mark this fork displays.
+
+Logo files for stickers, shirts, the web and social posts. Everything in the SolidCraft set is drawn
 from the app icon (`assets/icons/app/macos/source/SolidCraft.icon/Assets/03-solid-blue-cutout.svg`),
 which is also the last frame of the loading animation (`assets/styles/web/loading-logo.svg`).
 The SVGs are plain paths: no scripts, fonts, animation or external links, so any printer can use them.

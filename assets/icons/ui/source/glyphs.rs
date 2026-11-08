@@ -110,7 +110,7 @@ pub(crate) fn breadcrumb(p: &egui::Painter, c: egui::Pos2, col: Color32) {
 }
 
 pub(crate) fn brand_mark(p: &egui::Painter, c: Pos2) {
-    brand_mark_styled(p, c, 20.0, crate::theme::Tokens::get().logo, true);
+    brand_mark_styled(p, c, 24.0, crate::theme::Tokens::get().logo, false);
 }
 
 /// The same original mark as a single quiet silhouette, without face seams or outlines.
@@ -118,51 +118,40 @@ pub(crate) fn brand_mark_silhouette(p: &egui::Painter, c: Pos2, height: f32, ink
     brand_mark_styled(p, c, height, [ink; 3], false);
 }
 
-fn brand_mark_styled(p: &egui::Painter, c: Pos2, height: f32, colours: [Color32; 3], edges: bool) {
-    let s = height / 412.217;
-    let m = |pts: &[(f32, f32)]| -> Vec<egui::Pos2> { pts.iter().map(|&(x, y)| pos2(c.x + (x - 178.5) * s, c.y + (y - 206.1) * s)).collect() };
-    // egui only fills convex shapes, so each face is a few overlapping convex pieces.
+fn brand_mark_styled(p: &egui::Painter, c: Pos2, height: f32, colours: [Color32; 3], _edges: bool) {
+    // Intgral's V22 compact-integrated "I" mark: the same seven faces as
+    // `assets/branding/logo/open-skyfall-mark.svg`, fitted to the application bar.
+    // Its drawing box is 104.5 x 244.5 SVG units; the faces are filled polygons.
+    let s = height / 244.5;
+    let m = |pts: &[(f32, f32)]| -> Vec<egui::Pos2> { pts.iter().map(|&(x, y)| pos2(c.x + (x - 599.4) * s, c.y + (y - 344.75) * s)).collect() };
     let face = |col: Color32, pts: &[(f32, f32)]| {
         p.add(egui::Shape::convex_polygon(m(pts), col, Stroke::NONE));
     };
-    // The faces are separated by gaps that show the application bar, not by white lines.
-    let [light, mid, dark] = colours;
-    let edge_col = crate::theme::Tokens::get().app_bar;
-    face(light, &[(3.5, 105.9), (177.0, 5.8), (263.4, 55.6), (263.8, 156.0), (177.0, 406.4)]);
-    face(light, &[(177.0, 206.1), (263.8, 156.0), (350.5, 206.2), (350.5, 306.3), (177.0, 406.4)]);
-    face(mid, &[(3.5, 105.9), (177.0, 206.1), (177.0, 406.4)]);
-    face(mid, &[(3.5, 105.9), (3.5, 205.7), (90.3, 256.2), (177.0, 206.1)]);
-    face(mid, &[(177.0, 206.1), (90.3, 256.2), (90.0, 356.2), (177.0, 406.4)]);
-    face(dark, &[(264.1, 155.8), (177.0, 206.1), (177.0, 406.4), (263.8, 256.2)]);
-    face(dark, &[(263.8, 256.2), (350.5, 206.2), (350.5, 306.3), (177.0, 406.4)]);
-    face(dark, &[(177.0, 206.1), (177.0, 406.4), (350.5, 306.3)]);
-    face(dark, &[(263.8, 55.9), (263.8, 156.0), (177.1, 105.9)]);
-    if !edges {
-        return;
-    }
-    // The seams between the faces and around the mark, in the bar's colour, so they read as gaps.
-    let edge = Stroke::new(10.0 * s, edge_col);
-    let line = |pts: &[(f32, f32)]| {
-        p.add(egui::Shape::line(m(pts), edge));
-    };
-    line(&[(263.8, 55.9), (177.1, 105.9), (263.8, 156.0), (263.8, 256.2), (350.6, 206.1)]);
-    line(&[(5.0, 105.9), (178.5, 206.1), (178.5, 406.4)]);
-    line(&[(177.0, 206.1), (263.8, 156.0)]);
-    p.add(egui::Shape::closed_line(
-        m(&[
-            (178.5, 5.8),
-            (5.0, 105.9),
-            (5.0, 206.1),
-            (91.7, 256.2),
-            (91.7, 356.4),
-            (178.5, 406.4),
-            (352.0, 306.3),
-            (352.0, 206.1),
-            (265.2, 156.0),
-            (265.2, 55.9),
-        ]),
-        edge,
-    ));
+    let [front, mid, dark] = colours;
+    // The isometric top and side faces, then the white front face over them.
+    face(dark, &[(547.1514, 436.0), (573.1514, 436.0), (581.6514, 431.0925), (555.6514, 431.0925)]);
+    face(dark, &[(617.1514, 436.0), (643.1514, 436.0), (651.6514, 431.0925), (625.6514, 431.0925)]);
+    face(dark, &[(643.1514, 436.0), (643.1514, 467.0), (651.6514, 462.0925), (651.6514, 431.0925)]);
+    face(dark, &[(617.1514, 258.4075), (617.1514, 436.0), (625.6514, 431.0925), (625.6514, 253.5)]);
+    face(mid, &[(547.1514, 227.4075), (643.1514, 227.4075), (651.6514, 222.5), (555.6514, 222.5)]);
+    face(dark, &[(643.1514, 227.4075), (643.1514, 258.4075), (651.6514, 253.5), (651.6514, 222.5)]);
+    face(
+        front,
+        &[
+            (547.1514, 227.4075),
+            (643.1514, 227.4075),
+            (643.1514, 258.4075),
+            (617.1514, 258.4075),
+            (617.1514, 436.0),
+            (643.1514, 436.0),
+            (643.1514, 467.0),
+            (547.1514, 467.0),
+            (547.1514, 436.0),
+            (573.1514, 436.0),
+            (573.1514, 258.4075),
+            (547.1514, 258.4075),
+        ],
+    );
 }
 
 pub(crate) fn cross(p: &egui::Painter, r: Rect, s: Stroke) {

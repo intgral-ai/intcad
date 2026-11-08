@@ -5,14 +5,14 @@
   <id>io.tangencylabs.solidcraft</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT OR Apache-2.0</project_license>
-  <name>SolidCraft</name>
+  <name>open-skyfall</name>
   <summary>Independent parametric 3D CAD</summary>
-  <developer id="io.github.bherbruck">
-    <name>SolidCraft contributors</name>
+  <developer id="io.github.intgral-ai">
+    <name>Intgral</name>
   </developer>
   <description>
     <p>
-      SolidCraft is an open-source parametric 3D CAD application written in Rust. Sketch on a
+      open-skyfall is an open-source parametric 3D CAD application written in Rust. Sketch on a
       plane, constrain and dimension the sketch, turn profiles into solids on a feature
       timeline, and change a parameter to watch the timeline rebuild.
     </p>
@@ -26,9 +26,9 @@
   </description>
   <launchable type="desktop-id">io.tangencylabs.solidcraft.desktop</launchable>
   <icon type="stock">io.tangencylabs.solidcraft</icon>
-  <url type="homepage">https://docs.solidcraft.io/</url>
-  <url type="bugtracker">https://github.com/bherbruck/solidcraft/issues</url>
-  <url type="help">https://docs.solidcraft.io/</url>
+  <url type="homepage">https://github.com/intgral-ai/open-skyfall-desktop</url>
+  <url type="bugtracker">https://github.com/intgral-ai/open-skyfall-desktop/issues</url>
+  <url type="help">https://github.com/intgral-ai/open-skyfall-desktop#readme</url>
   <categories>
     <category>Graphics</category>
     <category>3DGraphics</category>
@@ -42,7 +42,7 @@
   <screenshots>
     <screenshot type="default">
       <caption>A sample part with its sketches and feature timeline</caption>
-      <image>https://raw.githubusercontent.com/bherbruck/solidcraft/main/docs/screenshots/sample-plate.png</image>
+      <image>https://raw.githubusercontent.com/intgral-ai/open-skyfall-desktop/main/docs/screenshots/sample-plate.png</image>
     </screenshot>
   </screenshots>
   <requires>

@@ -1,6 +1,6 @@
 {
-  "name": "SolidCraft",
-  "short_name": "SolidCraft",
+  "name": "open-skyfall",
+  "short_name": "open-skyfall",
   "description": "Open-source parametric CAD built in Rust.",
   "start_url": "./",
   "scope": "./",

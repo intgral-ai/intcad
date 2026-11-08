@@ -9,8 +9,8 @@ version = "0.40.0-rc.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
-authors = ["SolidCraft contributors"]
-repository = "https://github.com/bherbruck/solidcraft"
+authors = ["Intgral"]
+repository = "https://github.com/intgral-ai/open-skyfall-desktop"
 
 [workspace.dependencies]
 robust = "1.2"

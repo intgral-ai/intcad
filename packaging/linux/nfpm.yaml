@@ -19,8 +19,8 @@ release: 1
 section: graphics
 priority: optional
 maintainer: ${SOLIDCRAFT_MAINTAINER}
-vendor: SolidCraft contributors
-homepage: https://docs.solidcraft.io/
+vendor: Intgral
+homepage: https://github.com/intgral-ai/open-skyfall-desktop
 license: MIT OR Apache-2.0
 description: |-
   Open-source, independent parametric 3D CAD

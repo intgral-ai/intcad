@@ -35,7 +35,7 @@ impl NativeMenu {
             Ok(())
         };
         application.append(&PredefinedMenuItem::about(
-            Some("About SolidCraft"),
+            Some("About open-skyfall"),
             Some(AboutMetadata { name: Some("SolidCraft".into()), version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() }),
         ))?;
         application.append(&PredefinedMenuItem::separator())?;

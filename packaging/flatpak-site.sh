@@ -100,15 +100,15 @@ for arch in x86_64 aarch64; do
     test "$(ostree --repo="$repo_dir" show --print-metadata-key=ostree.endoflife-rebase "$legacy_ref")" = "'$new_ref'"
   done
 done
-flatpak build-update-repo --title="SolidCraft" --comment='Official SolidCraft releases' \
-  --description='Official Flatpak repository for SolidCraft' \
+flatpak build-update-repo --title="open-skyfall" --comment='Official open-skyfall releases' \
+  --description='Official Flatpak repository for open-skyfall' \
   --homepage="https://github.com/$GITHUB_REPOSITORY" --default-branch=stable "$repo_dir"
 test -s "$repo_dir/summary"
 cat >"$site/flatpak/solidcraft.flatpakrepo" <<META
 [Flatpak Repo]
-Title=SolidCraft
-Comment=Official SolidCraft releases
-Description=Official Flatpak repository for SolidCraft
+Title=open-skyfall
+Comment=Official open-skyfall releases
+Description=Official Flatpak repository for open-skyfall
 Url=$base_url/flatpak/repo/
 Homepage=https://github.com/$GITHUB_REPOSITORY
 META

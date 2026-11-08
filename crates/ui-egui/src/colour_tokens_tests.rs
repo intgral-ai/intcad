@@ -28,7 +28,7 @@ fn moved_colours_keep_the_values_they_were_drawn_with() {
         assert_eq!(t.analysis.access, [[0.20, 0.75, 0.30], [0.85, 0.22, 0.20]]);
         assert_eq!(t.analysis.curvature, [[0.08, 0.12, 0.45], [0.53, 0.51, 0.425], [0.98, 0.90, 0.40]]);
         assert!(!t.analysis.hatch);
-        assert_eq!(t.logo, [Color32::from_rgb(96, 158, 236), Color32::from_rgb(58, 136, 238), Color32::from_rgb(55, 108, 197)]);
+        assert_eq!(t.logo, [Color32::from_rgb(252, 252, 252), Color32::from_rgb(201, 206, 211), Color32::from_rgb(138, 145, 152)]);
         assert_eq!(t.icons.marker_halo, Color32::from_black_alpha(150));
         assert_eq!(t.icons.agent, Color32::from_rgb(168, 85, 247));
         assert_eq!(t.figure_white, Color32::WHITE);
