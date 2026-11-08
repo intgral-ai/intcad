@@ -49,7 +49,7 @@ def approval_for(target):
     }[target]
 
 
-def make_runtime(directory, target="x86_64-unknown-linux-gnu", *, codex=False, ee=False, approve=True):
+def make_runtime(directory, target="x86_64-unknown-linux-gnu", *, codex=False, credential=False, ee=False, approve=True):
     runtime = Path(directory)
     runtime.mkdir(parents=True, exist_ok=True)
     files = {
@@ -64,6 +64,8 @@ def make_runtime(directory, target="x86_64-unknown-linux-gnu", *, codex=False, e
     files[node] = b"#!/bin/sh\nexit 0\n"
     if codex:
         files["node_modules/codex-acp/cli.js"] = b"codex\n"
+    if credential:
+        files[".codex/auth.json"] = b'{"token":"not a real credential"}\n'
     if ee:
         files["node_modules/@mastra/core/ee/index.js"] = b"enterprise\n"
     for relative, body in files.items():
@@ -173,6 +175,13 @@ class RuntimeValidation(unittest.TestCase):
         self.assertIn("Codex", result.stderr)
         self.assertIn("discovered, not bundled", result.stderr)
 
+    def test_codex_credentials_are_rejected(self):
+        runtime, policy = make_runtime(self.tmp / "runtime", credential=True)
+        result = validate(runtime, policy)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Codex", result.stderr)
+        self.assertIn("auth.json", result.stderr)
+
     def test_enterprise_paths_are_rejected_even_after_copy(self):
         runtime, policy = make_runtime(self.tmp / "runtime", ee=True)
         result = validate(runtime, policy)
@@ -250,6 +259,14 @@ class StageGate(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Codex", result.stderr)
         self.assertFalse(self.dest.exists(), "no package tree may contain a bundled Codex")
+
+    def test_a_codex_credential_is_rejected_at_the_staging_boundary(self):
+        runtime, policy = make_runtime(self.tmp / "runtime", credential=True)
+        result = self.run_stage(runtime, policy=policy)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Codex", result.stderr)
+        self.assertIn("auth.json", result.stderr)
+        self.assertFalse(self.dest.exists(), "no package tree may contain a Codex credential")
 
     def test_unsupported_targets_are_rejected(self):
         runtime, policy = make_runtime(self.tmp / "runtime")

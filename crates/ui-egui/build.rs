@@ -64,6 +64,9 @@ fn mastra_expectations() -> Result<(), String> {
     let crate_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|e| e.to_string())?;
     let root = std::path::Path::new(&crate_dir).join("../..");
     println!("cargo:rerun-if-env-changed=SOLIDCRAFT_GIT_REVISION_OVERRIDE");
+    println!("cargo:rerun-if-env-changed=SOLIDCRAFT_WITH_MASTRA");
+    println!("cargo:rerun-if-env-changed=SOLIDCRAFT_RELEASE");
+    const UNBOUND_REVISION: &str = "0000000000000000000000000000000000000000";
     let digest = |relative: &str| -> Result<String, String> {
         let path = root.join(relative);
         println!("cargo:rerun-if-changed={}", path.display());
@@ -77,10 +80,19 @@ fn mastra_expectations() -> Result<(), String> {
         serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))
     };
 
-    let revision = std::env::var("SOLIDCRAFT_GIT_REVISION_OVERRIDE").ok().filter(|value| value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit())).or_else(|| {
-        git(&["rev-parse", "HEAD"]).filter(|r| r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit()))
-    })
-    .ok_or_else(|| "cannot determine the full 40-character Git revision needed to bind the packaged Mastra runtime; build from a Git checkout or set SOLIDCRAFT_GIT_REVISION_OVERRIDE".to_string())?;
+    let strict = std::env::var("SOLIDCRAFT_WITH_MASTRA").as_deref() == Ok("1") || std::env::var("SOLIDCRAFT_RELEASE").as_deref() == Ok("1");
+    let override_revision =
+        std::env::var("SOLIDCRAFT_GIT_REVISION_OVERRIDE").ok().filter(|value| value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit()));
+    let git_revision = git(&["rev-parse", "HEAD"]).filter(|r| r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit()));
+    let revision = match override_revision.or(git_revision) {
+        Some(revision) => revision,
+        None if strict => {
+            return Err("cannot determine the full 40-character Git revision needed to bind the packaged Mastra runtime; build from a Git checkout or set SOLIDCRAFT_GIT_REVISION_OVERRIDE".to_string());
+        }
+        // An ordinary source/Nix build has no Git metadata. The sentinel compiles, but the host
+        // refuses to match any installed runtime against it, so the runtime still fails closed.
+        None => UNBOUND_REVISION.to_string(),
+    };
     let contract = digest("schema/mastra-runtime/v1/manifest.json")?;
     let policy = digest("packaging/mastra/policy.json")?;
     let sources = digest("packaging/mastra/source-records.json")?;

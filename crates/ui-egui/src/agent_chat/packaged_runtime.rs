@@ -21,6 +21,9 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
+/// A build without Git metadata carries this sentinel. It can never match a runtime receipt.
+pub const UNBOUND_REVISION: &str = "0000000000000000000000000000000000000000";
+
 /// The reviewed identities compiled into this host build.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expectations {
@@ -53,6 +56,7 @@ pub enum RuntimeError {
     DigestMismatch { path: String },
     UnsafePath { path: String },
     RevisionMismatch { expected: String, found: String },
+    UnboundHostRevision,
     ContractMismatch { expected: String, found: String },
     VersionMismatch { field: &'static str, expected: String, found: String },
     UnapprovedArtifact { inventory: String },
@@ -78,6 +82,10 @@ impl fmt::Display for RuntimeError {
             Self::RevisionMismatch { expected, found } => write!(
                 f,
                 "the Mastra runtime was built from repository revision {found}, but this SolidCraft is {expected}; install the matching package"
+            ),
+            Self::UnboundHostRevision => write!(
+                f,
+                "this SolidCraft build has no Git revision, so it cannot verify the installed Mastra runtime; use a release package or rebuild with SOLIDCRAFT_GIT_REVISION_OVERRIDE"
             ),
             Self::ContractMismatch { expected, found } => {
                 write!(f, "the Mastra runtime carries contract digest {found}, but this SolidCraft requires {expected}; install the matching package")
@@ -228,6 +236,9 @@ fn resolve_mode(exe: &Path, expectations: &Expectations, hash_files: bool) -> Re
 }
 
 fn validate(root: &Path, target: &'static str, expectations: &Expectations, hash_files: bool) -> Result<Launch, RuntimeError> {
+    if expectations.revision == UNBOUND_REVISION {
+        return Err(RuntimeError::UnboundHostRevision);
+    }
     let manifest = root.join("runtime.json");
     let bytes = std::fs::read(&manifest).map_err(|_| RuntimeError::MissingFile { path: "runtime.json".into() })?;
     let receipt: Receipt = serde_json::from_slice(&bytes).map_err(|error| RuntimeError::InvalidManifest { detail: error.to_string() })?;
@@ -594,6 +605,14 @@ mod tests {
         receipt["extra"] = serde_json::json!(true);
         write(&path, serde_json::to_vec(&receipt).unwrap().as_slice());
         assert!(matches!(resolve(&fixture.exe, &approved(&fixture)), Err(RuntimeError::InvalidManifest { .. })));
+    }
+
+    #[test]
+    fn an_unbound_source_build_refuses_the_installed_runtime() {
+        let fixture = fixture("unbound");
+        let mut expectations = approved(&fixture);
+        expectations.revision = UNBOUND_REVISION.into();
+        assert!(matches!(resolve(&fixture.exe, &expectations), Err(RuntimeError::UnboundHostRevision)));
     }
 
     #[test]
