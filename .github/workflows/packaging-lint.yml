@@ -52,7 +52,7 @@ jobs:
       - name: PowerShell
         shell: pwsh
         run: |
-          foreach ($f in Get-ChildItem packaging/windows/*.ps1) {
+          foreach ($f in Get-ChildItem -Path packaging -Recurse -Filter *.ps1) {
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
             if ($errors) { $errors | ForEach-Object { Write-Output "::error file=$($f.Name)::$_" }; exit 1 }

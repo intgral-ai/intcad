@@ -16,6 +16,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # The Mastra runtime remains unapproved (DQ-7/#15). Ordinary release packaging must keep its
+  # previous contents; bundling the workflow is opt-in and needs an explicit owner decision on the
+  # release default (DQ-7/DQ-4) plus approved artifacts for every target.
+  SOLIDCRAFT_WITH_MASTRA: "0"
 
 jobs:
   version:

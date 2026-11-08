@@ -7,7 +7,7 @@
 #   $DIST/solidcraft-cli-<version>-macos-<arch>.zip    the headless CLI (and its solvecraft-cli
 #                                                      compatibility alias) with the licence files
 #
-# Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--sign]
+# Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--sign] [--with-mastra]
 #        packaging/macos/package.sh --build-only <rust-target>
 #
 # --build-only builds just that target (aarch64-apple-darwin or x86_64-apple-darwin) and stops,
@@ -79,12 +79,15 @@ ARCH=universal
 SKIP_BUILD=0
 BUILD_ONLY=
 SIGN=0
+WITH_MASTRA="${SOLIDCRAFT_WITH_MASTRA:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --build-only) BUILD_ONLY="$2"; shift 2 ;;
     --sign) SIGN=1; shift ;;
+    --with-mastra) WITH_MASTRA=1; shift ;;
+    --without-mastra) WITH_MASTRA=0; shift ;;
     -h | --help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -166,29 +169,34 @@ cp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$APP/Contents/Resources/Sol
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
 
-# ---- Mastra runtime (application-relative, pinned Node) -----------------------------------------
-# A universal app carries both architecture slices under mastra/<triple>; a single-arch app uses
-# mastra/ directly. Both are legally gated artifacts and the stage helper fails closed.
+# ---- Mastra runtime (opt-in; application-relative, pinned Node) ---------------------------------
+# Bundling is opt-in because the artifact is still unapproved (DQ-7, #15). A universal app needs
+# both per-slice artifacts: SOLIDCRAFT_MASTRA_ARTIFACT_AARCH64 and _X86_64. A single-arch app
+# uses SOLIDCRAFT_MASTRA_ARTIFACT.
 stage_mastra() {
   local target="$1" variable="$2" dest="$3"
   local artifact="${!variable:-}"
   if [ -z "$artifact" ]; then
-    echo "error: $variable is not set; the $target Mastra runtime is required for macOS $ARCH and is unapproved until #15 records an approval" >&2
-    exit 1
+    echo "error: $variable is not set; the $target Mastra runtime is required for macOS $ARCH with --with-mastra (unapproved until #15)" >&2
+    exit 2
   fi
   "$SCRIPT_DIR/../mastra/stage.sh" --target "$target" --artifact "$artifact" --dest "$dest"
 }
-if [ "$ARCH" = universal ]; then
-  stage_mastra aarch64-apple-darwin SOLIDCRAFT_MASTRA_ARTIFACT_AARCH64 "$APP/Contents/Resources/mastra/aarch64-apple-darwin"
-  stage_mastra x86_64-apple-darwin SOLIDCRAFT_MASTRA_ARTIFACT_X86_64 "$APP/Contents/Resources/mastra/x86_64-apple-darwin"
+if [ "$WITH_MASTRA" = 1 ]; then
+  if [ "$ARCH" = universal ]; then
+    stage_mastra aarch64-apple-darwin SOLIDCRAFT_MASTRA_ARTIFACT_AARCH64 "$APP/Contents/Resources/mastra/aarch64-apple-darwin"
+    stage_mastra x86_64-apple-darwin SOLIDCRAFT_MASTRA_ARTIFACT_X86_64 "$APP/Contents/Resources/mastra/x86_64-apple-darwin"
+  else
+    stage_mastra "${TARGETS[0]}" SOLIDCRAFT_MASTRA_ARTIFACT "$APP/Contents/Resources/mastra"
+  fi
+  mkdir -p "$APP/Contents/Resources/Licenses"
+  mastra_licenses="$(find "$APP/Contents/Resources/mastra" -path '*/licenses/LICENSES.txt' -print -quit)"
+  mastra_notice="$(find "$APP/Contents/Resources/mastra" -path '*/notices/NOTICE.txt' -print -quit)"
+  if [ -n "$mastra_licenses" ]; then cp "$mastra_licenses" "$APP/Contents/Resources/Licenses/MASTRA-LICENSES.txt"; fi
+  if [ -n "$mastra_notice" ]; then cp "$mastra_notice" "$APP/Contents/Resources/Licenses/MASTRA-NOTICE.txt"; fi
 else
-  stage_mastra "${TARGETS[0]}" SOLIDCRAFT_MASTRA_ARTIFACT "$APP/Contents/Resources/mastra"
+  warn "the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)"
 fi
-mkdir -p "$APP/Contents/Resources/Licenses"
-mastra_licenses="$(find "$APP/Contents/Resources/mastra" -path '*/licenses/LICENSES.txt' -print -quit)"
-mastra_notice="$(find "$APP/Contents/Resources/mastra" -path '*/notices/NOTICE.txt' -print -quit)"
-if [ -n "$mastra_licenses" ]; then cp "$mastra_licenses" "$APP/Contents/Resources/Licenses/MASTRA-LICENSES.txt"; fi
-if [ -n "$mastra_notice" ]; then cp "$mastra_notice" "$APP/Contents/Resources/Licenses/MASTRA-NOTICE.txt"; fi
 
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" "$ROOT/assets/platforms/macos/Info.plist.in" >"$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
@@ -200,7 +208,7 @@ sign_code "$APP/Contents/MacOS/solidcraft-cli" "$MACOS_BUNDLE_ID.cli"
 # The bundled pinned Node is nested executable code: sign it before the app bundle.
 if [ -d "$APP/Contents/Resources/mastra" ]; then
   find "$APP/Contents/Resources/mastra" -type f -name node -print0 | while IFS= read -r -d '' node; do
-    sign_code "$node" "$MACOS_BUNDLE_ID.mastra-node"
+    sign_code "$node" "$MACOS_BUNDLE_ID.mastra-node" "$SCRIPT_DIR/node-entitlements.plist"
   done
 fi
 sign_code "$APP" "" "$SCRIPT_DIR/entitlements.plist"
@@ -260,13 +268,15 @@ for arch in "${WANT[@]}"; do
   lipo "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" -verify_arch "$arch"
 done
 test -s "$MNT/SolidCraft.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
-case "$ARCH" in
-  universal)
-    test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/aarch64-apple-darwin/runtime.json"
-    test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/x86_64-apple-darwin/runtime.json"
-    ;;
-  *) test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/runtime.json" ;;
-esac
+if [ "$WITH_MASTRA" = 1 ]; then
+  case "$ARCH" in
+    universal)
+      test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/aarch64-apple-darwin/runtime.json"
+      test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/x86_64-apple-darwin/runtime.json"
+      ;;
+    *) test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/runtime.json" ;;
+  esac
+fi
 # Not --strict: the mounted HFS volume adds Finder info, which strict verification rejects.
 codesign --verify --deep --verbose=2 "$MNT/SolidCraft.app"
 "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" --version

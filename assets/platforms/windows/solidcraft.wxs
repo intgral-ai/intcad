@@ -4,7 +4,7 @@
 
     wix build solidcraft.wxs -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
       -culture en-US -loc solidcraft.en-us.wxl -d Version=1.2.3 -d DisplayVersion=1.2.3-rc.1
-      -d BinDir=... -d IconPath=... -o out.msi
+      -d BinDir=... -d IconPath=... -d HasMastra=0|1 -o out.msi
 
   Per-machine install with a setup wizard: Welcome, install folder (Program Files\SolidCraft by
   default, remembered for upgrades), Ready, progress, and a Finish page with a ticked "Launch
@@ -53,7 +53,9 @@
 
     <Feature Id="Main" Title="SolidCraft" Level="1">
       <ComponentGroupRef Id="SolidcraftFiles" />
+      <?if $(var.HasMastra) = 1 ?>
       <ComponentGroupRef Id="SolidcraftMastra" />
+      <?endif?>
     </Feature>
 
     <!-- WixUI_InstallDir without its licence page (MIT OR Apache-2.0: nothing to accept). -->
@@ -150,6 +152,7 @@
     directory tree so every production dependency and the pinned Node executable is installed;
     omitting any file would make the host reject the runtime as incomplete before a turn.
   -->
+  <?if $(var.HasMastra) = 1 ?>
   <Fragment>
     <DirectoryRef Id="INSTALLFOLDER">
       <Directory Id="MastraFolder" Name="mastra" />
@@ -160,4 +163,5 @@
       <Files Include="$(var.BinDir)\mastra\**" />
     </ComponentGroup>
   </Fragment>
+  <?endif?>
 </Wix>

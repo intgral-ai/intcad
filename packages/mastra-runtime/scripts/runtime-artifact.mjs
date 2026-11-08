@@ -3,7 +3,7 @@
  * Build and verify the reviewed desktop Mastra runtime artifact.
  *
  * The artifact is an unpacked Linux x86_64 tree:
- *   node (official 22.23.4 linux-x64 binary), dist/src, the production
+ *   node (official pinned linux-x64 binary from .nvmrc), dist/src, the production
  *   node_modules closure with every `ee/` path pruned, the protocol schema
  *   bundle, package metadata, consolidated licence/notice files, and the
  *   inventory.json/runtime.json controls.
@@ -11,7 +11,7 @@
  * `--generate` writes packaging/mastra/{inventory.json,LICENSES.txt,NOTICE.txt}
  * and updates the single reviewed policy approval. `--check` rebuilds into a
  * temporary tree and compares it with the committed controls; it does not write
- * to the repository. Both modes require Node 22.23.4 and an installed `npm ci`
+ * to the repository. Both modes require the .nvmrc Node and an installed `npm ci`
  * tree. No package is downloaded here.
  */
 
@@ -32,7 +32,11 @@ const licensesPath = join(repoRoot, "packaging/mastra/LICENSES.txt");
 const noticePath = join(repoRoot, "packaging/mastra/NOTICE.txt");
 const contractManifestPath = join(repoRoot, "schema/mastra-runtime/v1/manifest.json");
 
-const NODE_SOURCE_URL = "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz";
+// One Node pin: the repository .nvmrc. The archive/executable digests below remain the
+// independent official-distribution pins for the linux-x64 artifact.
+const NODE_VERSION = readFileSync(join(repoRoot, ".nvmrc"), "utf8").trim();
+const NODE_ENGINE = `>=${NODE_VERSION} <${Number(NODE_VERSION.split(".")[0]) + 1}`;
+const NODE_SOURCE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz`;
 const NODE_ARCHIVE_DIGEST = "sha256:1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce";
 const NODE_EXECUTABLE_DIGEST = "sha256:94efd062ed066c1a0b332e18249859c905e920eeada5df55d24c99b919629a90";
 const NPM_SOURCE_URL = "https://registry.npmjs.org/npm/-/npm-11.19.0.tgz";
@@ -112,14 +116,14 @@ function copyFile(source, destination) {
 }
 
 function checkPins() {
-  require(process.versions.node === "22.23.4", `Node ${process.versions.node}; expected 22.23.4`);
+  require(process.versions.node === NODE_VERSION, `Node ${process.versions.node}; expected ${NODE_VERSION}`);
   require(existsSync(nodeBinary), `node binary not found: ${nodeBinary}`);
   const observed = digest(readFileSync(nodeBinary));
-  require(observed === NODE_EXECUTABLE_DIGEST, `node binary ${observed}; expected ${NODE_EXECUTABLE_DIGEST} (set --node-bin to the official 22.23.4 linux-x64 binary)`);
+  require(observed === NODE_EXECUTABLE_DIGEST, `node binary ${observed}; expected ${NODE_EXECUTABLE_DIGEST} (set --node-bin to the official ${NODE_VERSION} linux-x64 binary)`);
   const nvmrc = readFileSync(join(repoRoot, ".nvmrc"), "utf8").trim();
-  require(nvmrc === "22.23.4", `.nvmrc is ${nvmrc}`);
+  require(nvmrc === NODE_VERSION, `.nvmrc is ${nvmrc}`);
   const pkg = readJson(packageJsonPath);
-  require(pkg.engines?.node === ">=22.23.4 <23", `engines.node is ${pkg.engines?.node}`);
+  require(pkg.engines?.node === NODE_ENGINE, `engines.node is ${pkg.engines?.node}; expected ${NODE_ENGINE}`);
   require(pkg.version === RUNTIME_VERSION, `runtime version ${pkg.version}`);
   const npmVersion = execFileSync("npm", ["--version"], { cwd: repoRoot, encoding: "utf8" }).trim();
   require(npmVersion === "11.19.0", `npm ${npmVersion}; expected 11.19.0`);
@@ -419,7 +423,7 @@ function renderNotices(dependencyData) {
   const typescriptText = licenseFileText("node_modules/typescript", readJson(join(typescriptDir, "package.json")));
   chunks.push(typescriptText ? typescriptText.toString("utf8") : "The published TypeScript package does not include a separate licence file.");
   chunks.push("");
-  chunks.push("# Node.js 22.23.4");
+  chunks.push(`# Node.js ${NODE_VERSION}`);
   chunks.push(readFileSync(join(repoRoot, "packaging/mastra/NODE-LICENSE.txt"), "utf8"));
   chunks.push("");
   chunks.push("# SolidCraft runtime (MIT OR Apache-2.0)");
@@ -429,7 +433,7 @@ function renderNotices(dependencyData) {
 
   const notice = [];
   notice.push("SolidCraft Mastra runtime — third-party notices");
-  notice.push(`Target: ${TARGET}; Node 22.23.4; npm 11.19.0; runtime ${RUNTIME_VERSION}.`);
+  notice.push(`Target: ${TARGET}; Node ${NODE_VERSION}; npm 11.19.0; runtime ${RUNTIME_VERSION}.`);
   notice.push("The artifact contains no path component named `ee`. However, the shipped `@mastra/core/dist/ee-*.js`/`.cjs`/`.map` files carry Mastra Enterprise License headers and `src/ee/index.ts` source-map provenance. They are NOT approved for distribution, are recorded as needs-human legal review, and the current public `@mastra/core/agent` entry imports them. The artifact is blocked; #14 must not bundle it until legal review or a different build resolves this.");
   notice.push("");
   notice.push("| Package | Version | Licence | Rights holder | Source | Review |");
@@ -443,7 +447,7 @@ function renderNotices(dependencyData) {
     notice.push(`| \`${dep.name}\` | ${dep.version} | ${expression} | ${license.rightsHolder} | ${dep.sourceUrl} | ${review} |`);
   }
   notice.push(`| \`@mastra/core\` enterprise \`dist/ee-*\` | 1.82.0 | LicenseRef-Mastra-Enterprise | Mastra AI and contributors | packaging/mastra/inventory.json (lic-mastra-enterprise) | needs-human — legal review pending |`);
-  notice.push(`| \`node\` | 22.23.4 | MIT | OpenJS Foundation and Node.js contributors | ${NODE_SOURCE_URL} | verified |`);
+  notice.push(`| \`node\` | ${NODE_VERSION} | MIT | OpenJS Foundation and Node.js contributors | ${NODE_SOURCE_URL} | verified |`);
   notice.push(`| \`@intgral-ai/solidcraft-mastra-runtime\` | ${RUNTIME_VERSION} | MIT OR Apache-2.0 | SolidCraft contributors | https://github.com/intgral-ai/open-skyfall-desktop | verified |`);
   notice.push(`| \`typescript\` | 5.9.3 | Apache-2.0 | Microsoft and contributors | build tool only, not shipped | verified |`);
   notice.push("");
@@ -584,7 +588,7 @@ function build() {
     target: TARGET,
     runtimeVersion: RUNTIME_VERSION,
     protocolVersions: ["1.0"],
-    node: { version: "22.23.4", sourceUrl: NODE_SOURCE_URL, archiveDigest: NODE_ARCHIVE_DIGEST, executablePath: "node" },
+    node: { version: NODE_VERSION, sourceUrl: NODE_SOURCE_URL, archiveDigest: NODE_ARCHIVE_DIGEST, executablePath: "node" },
     packageManager: { name: "npm", version: "11.19.0", sourceUrl: NPM_SOURCE_URL, archiveDigest: NPM_ARCHIVE_DIGEST },
     lockfile: { path: "package-lock.json", digest: digest(readFileSync(lockPath)) },
     contractManifest: { path: "schema/mastra-runtime/v1/manifest.json", digest: digest(readFileSync(contractManifestPath)) },
@@ -611,7 +615,7 @@ function build() {
     runtimeVersion: RUNTIME_VERSION,
     protocolVersions: ["1.0"],
     targetTriple: TARGET,
-    nodeVersion: "22.23.4",
+    nodeVersion: NODE_VERSION,
     repositoryRevision: revision,
     contractDigest: digest(readFileSync(contractManifestPath)),
     policyDigest: digest(policyBytes),

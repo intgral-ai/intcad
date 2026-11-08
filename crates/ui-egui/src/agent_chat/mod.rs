@@ -1145,7 +1145,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             // Installed packages always use the validated application-relative runtime. A source
             // checkout may still name a development command while debugging; it is never used as
             // a fallback by an installed package or a release build.
-            let launch = match packaged_runtime::resolve_current(&packaged_runtime::expectations()) {
+            let launch = match packaged_runtime::resolve_current_metadata(&packaged_runtime::expectations()) {
                 Ok(launch) => (launch.executable, launch.args, launch.cwd),
                 Err(error) => {
                     let development = (cfg!(debug_assertions) && !mastra_command.trim().is_empty())

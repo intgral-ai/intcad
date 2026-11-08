@@ -50,12 +50,17 @@ def relative(path, root):
     return os.path.relpath(path, root).replace(os.sep, "/")
 
 
-def validate(runtime, target, revision, contract, policy, sources, runtime_version, node_version):
+def validate(runtime, target, approval, policy_path, revision, contract, policy_digest, sources, runtime_version, node_version):
     if target not in SUPPORTED:
         return fail(f"{target} is not a supported Mastra target; supported: {', '.join(sorted(SUPPORTED))}")
     receipt_path = os.path.join(runtime, "runtime.json")
     if not os.path.isfile(receipt_path):
         return fail(f"{runtime} has no runtime.json; the artifact gate did not produce a receipt")
+    try:
+        with open(policy_path, encoding="utf-8") as handle:
+            policy = json.load(handle)
+    except (OSError, ValueError) as error:
+        return fail(f"cannot read the reviewed policy {policy_path}: {error}")
     try:
         with open(receipt_path, encoding="utf-8") as handle:
             receipt = json.load(handle)
@@ -70,7 +75,7 @@ def validate(runtime, target, revision, contract, policy, sources, runtime_versi
         ("targetTriple", target),
         ("repositoryRevision", revision),
         ("contractDigest", contract),
-        ("policyDigest", policy),
+        ("policyDigest", policy_digest),
         ("sourceRecordsDigest", sources),
         ("runtimeVersion", runtime_version),
         ("nodeVersion", node_version),
@@ -88,6 +93,24 @@ def validate(runtime, target, revision, contract, policy, sources, runtime_versi
     actual = digest(inventory_path)
     if actual != inventory.get("digest"):
         return fail(f"inventory.json digest {actual} does not match runtime.json {inventory.get('digest')}")
+
+    # Admission is approval-aware: a complete tree whose inventory the reviewed policy has not
+    # approved must never be packaged, even if a test seam replaced the xtask gate.
+    approvals = policy.get("approvals")
+    if not isinstance(approvals, list):
+        return fail("policy.approvals must be an array")
+    approved = any(
+        isinstance(item, dict)
+        and item.get("id") == approval
+        and item.get("target") == target
+        and item.get("inventoryDigest") == actual
+        for item in approvals
+    )
+    if not approved:
+        return fail(
+            f"inventory {actual} has no matching approval {approval!r} for {target} in {policy_path}; "
+            "the artifact is not releasable and must not be packaged (see #15)"
+        )
 
     for required in REQUIRED:
         if not os.path.isfile(os.path.join(runtime, required)):
@@ -134,6 +157,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime", required=True)
     parser.add_argument("--target", required=True)
+    parser.add_argument("--policy", required=True)
+    parser.add_argument("--approval", required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--contract-digest", required=True)
     parser.add_argument("--policy-digest", required=True)
@@ -146,6 +171,8 @@ def main():
     return validate(
         args.runtime,
         args.target,
+        args.approval,
+        args.policy,
         args.revision,
         args.contract_digest,
         args.policy_digest,

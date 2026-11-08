@@ -15,7 +15,9 @@
 #   SOLIDCRAFT_MASTRA_ARTIFACT          artifact tree (default: target/mastra-runtime-artifact)
 #   SOLIDCRAFT_MASTRA_INPUTS            input tree   (default: target/mastra-runtime-inputs)
 #   SOLIDCRAFT_MASTRA_APPROVAL          exact approval id from packaging/mastra/policy.json
-#   SOLIDCRAFT_RUNTIME_ARTIFACT_CHECK   test seam: one executable replacing `cargo xtask runtime-artifact`
+#   SOLIDCRAFT_RUNTIME_ARTIFACT_CHECK   TEST ONLY: replaces the xtask gate; requires
+#                                       SOLIDCRAFT_MASTRA_STAGE_TEST=1
+#   SOLIDCRAFT_MASTRA_STAGE_TEST        enables the test-only fake gate and --policy override
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -24,6 +26,8 @@ DEST=
 ARTIFACT="${SOLIDCRAFT_MASTRA_ARTIFACT:-$ROOT/target/mastra-runtime-artifact}"
 INPUTS="${SOLIDCRAFT_MASTRA_INPUTS:-$ROOT/target/mastra-runtime-inputs}"
 APPROVAL="${SOLIDCRAFT_MASTRA_APPROVAL:-}"
+POLICY_FILE="$ROOT/packaging/mastra/policy.json"
+TEST_MODE="${SOLIDCRAFT_MASTRA_STAGE_TEST:-0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -32,7 +36,8 @@ while [ $# -gt 0 ]; do
     --artifact) ARTIFACT="${2:-}"; shift 2 ;;
     --inputs) INPUTS="${2:-}"; shift 2 ;;
     --approval) APPROVAL="${2:-}"; shift 2 ;;
-    -h | --help) sed -n '2,22p' "$0"; exit 0 ;;
+    --policy) POLICY_FILE="${2:-}"; shift 2 ;;
+    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -41,6 +46,11 @@ die() {
   echo "error: $*" >&2
   exit 1
 }
+
+if [ "$TEST_MODE" != 1 ]; then
+  [ -z "${SOLIDCRAFT_RUNTIME_ARTIFACT_CHECK:-}" ] || die "SOLIDCRAFT_RUNTIME_ARTIFACT_CHECK is a test-only seam; refusing to bypass the real runtime-artifact gate"
+  [ "$POLICY_FILE" = "$ROOT/packaging/mastra/policy.json" ] || die "--policy is test-only; release packaging always uses packaging/mastra/policy.json"
+fi
 
 [ -n "$TARGET" ] || die "--target is required"
 [ -n "$DEST" ] || die "--dest is required"
@@ -79,7 +89,7 @@ digest() {
 
 REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 CONTRACT="$(digest schema/mastra-runtime/v1/manifest.json)"
-POLICY="$(digest packaging/mastra/policy.json)"
+POLICY="$(digest "$POLICY_FILE")"
 SOURCES="$(digest packaging/mastra/source-records.json)"
 RUNTIME_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$ROOT/packages/mastra-runtime/package.json")"
 NODE_VERSION="$(tr -d '[:space:]' <"$ROOT/.nvmrc")"
@@ -118,6 +128,8 @@ fi
 python3 "$ROOT/packaging/mastra/validate_runtime.py" \
   --runtime "$ARTIFACT" \
   --target "$TARGET" \
+  --approval "$APPROVAL" \
+  --policy "$POLICY_FILE" \
   --revision "$REVISION" \
   --contract-digest "$CONTRACT" \
   --policy-digest "$POLICY" \

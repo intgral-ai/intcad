@@ -223,6 +223,7 @@ pub enum CodexPrerequisite {
     Ready { version: Option<String> },
     Missing { install: &'static str },
     Unusable { problem: String },
+    AuthenticationRequired,
 }
 
 impl CodexPrerequisite {
@@ -230,22 +231,28 @@ impl CodexPrerequisite {
         matches!(self, Self::Ready { .. })
     }
 
+    /// A localized, user-facing message. The caller never receives raw English diagnostics.
     pub fn message(&self) -> String {
         match self {
-            Self::Ready { .. } => "Codex ACP is installed and ready for tasks".into(),
-            Self::Missing { install } => format!("Codex ACP is not installed; install it with `{install}` and sign in with `codex login`"),
-            Self::Unusable { problem } => format!("Codex ACP is installed but cannot start: {problem}; reinstall it and sign in again"),
+            Self::Ready { .. } => crate::i18n::tr("ui.mastra_codex_ready").to_string(),
+            Self::Missing { install } => crate::i18n::format("ui.mastra_codex_missing", &[("install", install)]),
+            Self::Unusable { problem } => crate::i18n::format("ui.mastra_codex_unusable", &[("problem", problem)]),
+            Self::AuthenticationRequired => crate::i18n::tr("ui.mastra_codex_auth_required").to_string(),
         }
     }
 }
 
 /// The Codex prerequisite from a completed discovery pass. Codex's own authentication file and
-/// key variables are checked by discovery; this function adds the executable/version state.
+/// key variables are checked by discovery; this function keeps a missing executable, a broken
+/// adapter and an unauthenticated installation distinct so the panel can say what to do.
 pub fn codex_prerequisite(detection: &Detection) -> CodexPrerequisite {
     match detection.found.iter().find(|found| found.id == "codex") {
         Some(found) => match &found.problem {
             Some(problem) => CodexPrerequisite::Unusable { problem: problem.clone() },
-            None => CodexPrerequisite::Ready { version: found.version.clone() },
+            None => match found.login {
+                Login::NotLoggedIn => CodexPrerequisite::AuthenticationRequired,
+                Login::LooksLoggedIn | Login::KeyInEnvironment | Login::Unknown => CodexPrerequisite::Ready { version: found.version.clone() },
+            },
         },
         None => CodexPrerequisite::Missing {
             install: KNOWN.iter().find(|known| known.id == "codex").map_or("install the Codex ACP adapter", |known| known.install),
@@ -748,34 +755,42 @@ mod tests {
     /// Codex is discovered, not bundled: the packaged app ships no Codex binary or credential,
     /// and the task path is offered only when the user's own adapter is installed and usable.
     #[test]
-    fn codex_prerequisite_separates_installed_missing_and_broken() {
+    fn codex_prerequisite_separates_installed_missing_broken_and_signed_out() {
         let detection = Detection::default();
         let missing = codex_prerequisite(&detection);
         assert!(matches!(missing, CodexPrerequisite::Missing { .. }));
         assert!(missing.message().contains("npm install -g @agentclientprotocol/codex-acp"));
-        assert!(missing.message().contains("codex login"));
+        assert!(missing.message().contains(crate::i18n::tr("ui.mastra_codex_missing").split("{install}").next().unwrap_or("").trim()));
 
-        let found = |problem: Option<&str>| Detection {
+        let found = |problem: Option<&str>, login: Login| Detection {
             found: vec![Found {
                 id: "codex",
                 name: "Codex",
                 argv: vec!["codex-acp".into()],
                 version: Some("2.2.2".into()),
-                login: Login::LooksLoggedIn,
+                login,
                 problem: problem.map(str::to_string),
                 install: "npm install -g @agentclientprotocol/codex-acp",
             }],
             ..Detection::default()
         };
-        let ready = codex_prerequisite(&found(None));
+        let ready = codex_prerequisite(&found(None, Login::LooksLoggedIn));
         assert_eq!(ready, CodexPrerequisite::Ready { version: Some("2.2.2".into()) });
         assert!(ready.is_ready());
-        assert!(ready.message().contains("ready"));
+        assert_eq!(ready.message(), crate::i18n::tr("ui.mastra_codex_ready"));
 
-        let broken = codex_prerequisite(&found(Some("exited before initialize")));
+        let keyed = codex_prerequisite(&found(None, Login::KeyInEnvironment));
+        assert!(keyed.is_ready(), "a key variable authenticates Codex without its own file");
+
+        let broken = codex_prerequisite(&found(Some("exited before initialize"), Login::LooksLoggedIn));
         assert!(matches!(broken, CodexPrerequisite::Unusable { .. }));
         assert!(!broken.is_ready());
         assert!(broken.message().contains("exited before initialize"));
+
+        let signed_out = codex_prerequisite(&found(None, Login::NotLoggedIn));
+        assert_eq!(signed_out, CodexPrerequisite::AuthenticationRequired);
+        assert!(!signed_out.is_ready());
+        assert_eq!(signed_out.message(), crate::i18n::tr("ui.mastra_codex_auth_required"));
     }
 
     #[test]

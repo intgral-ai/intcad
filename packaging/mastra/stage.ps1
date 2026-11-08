@@ -20,16 +20,27 @@ param(
   [Parameter(Mandatory = $true)] [string] $Dest,
   [string] $Artifact = $(if ($env:SOLIDCRAFT_MASTRA_ARTIFACT) { $env:SOLIDCRAFT_MASTRA_ARTIFACT } else { '' }),
   [string] $Inputs = $(if ($env:SOLIDCRAFT_MASTRA_INPUTS) { $env:SOLIDCRAFT_MASTRA_INPUTS } else { '' }),
-  [string] $Approval = $(if ($env:SOLIDCRAFT_MASTRA_APPROVAL) { $env:SOLIDCRAFT_MASTRA_APPROVAL } else { '' })
+  [string] $Approval = $(if ($env:SOLIDCRAFT_MASTRA_APPROVAL) { $env:SOLIDCRAFT_MASTRA_APPROVAL } else { '' }),
+  [string] $Policy = $(if ($env:SOLIDCRAFT_MASTRA_POLICY) { $env:SOLIDCRAFT_MASTRA_POLICY } else { '' })
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $Artifact) { $Artifact = Join-Path $Root 'target\mastra-runtime-artifact' }
 if (-not $Inputs) { $Inputs = Join-Path $Root 'target\mastra-runtime-inputs' }
+if (-not $Policy) { $Policy = Join-Path $Root 'packaging\mastra\policy.json' }
+$TestMode = $env:SOLIDCRAFT_MASTRA_STAGE_TEST -eq '1'
+$DefaultPolicy = Join-Path $Root 'packaging\mastra\policy.json'
 
 function Fail([string] $Message) {
   Write-Error "error: $Message" -ErrorAction Continue
   exit 1
+}
+
+if (-not $TestMode) {
+  if ($env:SOLIDCRAFT_RUNTIME_ARTIFACT_CHECK) {
+    Fail 'SOLIDCRAFT_RUNTIME_ARTIFACT_CHECK is a test-only seam; refusing to bypass the real runtime-artifact gate'
+  }
+  if ($Policy -ne $DefaultPolicy) { Fail '-Policy is test-only; release packaging always uses packaging\mastra\policy.json' }
 }
 
 switch ($Target) {
@@ -51,7 +62,7 @@ function Get-Digest([string] $Relative) {
 
 $Revision = (& git -C $Root rev-parse HEAD).Trim()
 $Contract = Get-Digest 'schema/mastra-runtime/v1/manifest.json'
-$Policy = Get-Digest 'packaging/mastra/policy.json'
+$PolicyDigest = Get-Digest $Policy
 $Sources = Get-Digest 'packaging/mastra/source-records.json'
 $RuntimeVersion = (Get-Content (Join-Path $Root 'packages\mastra-runtime\package.json') -Raw | ConvertFrom-Json).version
 $NodeVersion = (Get-Content (Join-Path $Root '.nvmrc') -Raw).Trim()
@@ -60,14 +71,14 @@ Write-Output "==> Mastra artifact admission gate ($Target, approval $Approval)"
 if ($env:SOLIDCRAFT_RUNTIME_ARTIFACT_CHECK) {
   & $env:SOLIDCRAFT_RUNTIME_ARTIFACT_CHECK --mode artifact --tree $Artifact --inputs-root $Inputs `
     --approval $Approval --target $Target --expected-revision $Revision `
-    --expected-contract-digest $Contract --expected-policy-digest $Policy --expected-sources-digest $Sources `
+    --expected-contract-digest $Contract --expected-policy-digest $PolicyDigest --expected-sources-digest $Sources `
     --advertised true
 } else {
   Push-Location $Root
   try {
     & cargo xtask runtime-artifact --mode artifact --tree $Artifact --inputs-root $Inputs `
       --approval $Approval --target $Target --expected-revision $Revision `
-      --expected-contract-digest $Contract --expected-policy-digest $Policy --expected-sources-digest $Sources `
+      --expected-contract-digest $Contract --expected-policy-digest $PolicyDigest --expected-sources-digest $Sources `
       --advertised true
   } finally {
     Pop-Location
@@ -79,7 +90,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $Python = if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' }
 & $Python (Join-Path $Root 'packaging\mastra\validate_runtime.py') --runtime $Artifact --target $Target `
-  --revision $Revision --contract-digest $Contract --policy-digest $Policy --sources-digest $Sources `
+  --approval $Approval --policy $Policy --revision $Revision --contract-digest $Contract --policy-digest $PolicyDigest --sources-digest $Sources `
   --runtime-version $RuntimeVersion --node-version $NodeVersion
 if ($LASTEXITCODE -ne 0) { Fail 'the runtime tree failed packaging validation' }
 

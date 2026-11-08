@@ -161,6 +161,21 @@ pub fn resolve_current(expectations: &Expectations) -> Result<Launch, RuntimeErr
     resolve(&exe, expectations)
 }
 
+/// Resolve the installed runtime without reading every artifact byte. This is the cheap check for
+/// the window thread: missing, mismatched and unapproved runtimes still fail before a session
+/// starts, while the multi-hundred-megabyte digest pass is deferred to [`verify_current`] when a
+/// turn begins.
+pub fn resolve_current_metadata(expectations: &Expectations) -> Result<Launch, RuntimeError> {
+    let exe = current_exe().ok_or_else(|| RuntimeError::NotInstalled { searched: PathBuf::from("the application folder") })?;
+    resolve_mode(&exe, expectations, false)
+}
+
+/// Hash the installed artifact against `runtime.json` before a turn. Called off the first turn's
+/// setup so approval drift or a damaged file still stops modeling.
+pub fn verify_current(expectations: &Expectations) -> Result<(), RuntimeError> {
+    resolve_current(expectations).map(|_| ())
+}
+
 fn current_exe() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }
@@ -198,6 +213,10 @@ pub fn roots(exe: &Path) -> Vec<PathBuf> {
 
 /// Resolve and validate the runtime for an executable path. Tests use this directly.
 pub fn resolve(exe: &Path, expectations: &Expectations) -> Result<Launch, RuntimeError> {
+    resolve_mode(exe, expectations, true)
+}
+
+fn resolve_mode(exe: &Path, expectations: &Expectations, hash_files: bool) -> Result<Launch, RuntimeError> {
     let Some(target) = host_target() else {
         return Err(RuntimeError::UnsupportedTarget { target: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH) });
     };
@@ -205,10 +224,10 @@ pub fn resolve(exe: &Path, expectations: &Expectations) -> Result<Launch, Runtim
     let Some(root) = roots.iter().find(|root| root.join("runtime.json").is_file()) else {
         return Err(RuntimeError::NotInstalled { searched: roots.first().cloned().unwrap_or_else(|| PathBuf::from("the application folder")) });
     };
-    validate(root, target, expectations)
+    validate(root, target, expectations, hash_files)
 }
 
-fn validate(root: &Path, target: &'static str, expectations: &Expectations) -> Result<Launch, RuntimeError> {
+fn validate(root: &Path, target: &'static str, expectations: &Expectations, hash_files: bool) -> Result<Launch, RuntimeError> {
     let manifest = root.join("runtime.json");
     let bytes = std::fs::read(&manifest).map_err(|_| RuntimeError::MissingFile { path: "runtime.json".into() })?;
     let receipt: Receipt = serde_json::from_slice(&bytes).map_err(|error| RuntimeError::InvalidManifest { detail: error.to_string() })?;
@@ -269,7 +288,7 @@ fn validate(root: &Path, target: &'static str, expectations: &Expectations) -> R
     if !expectations.approved_inventory_digests.iter().any(|digest| digest == &receipt.provenance_inventory.digest) {
         return Err(RuntimeError::UnapprovedArtifact { inventory: receipt.provenance_inventory.digest.clone() });
     }
-    verify_file(root, &receipt.provenance_inventory)?;
+    verify_file(root, &receipt.provenance_inventory, hash_files)?;
 
     if receipt.artifact_digests.len() > 100_000 {
         return Err(RuntimeError::InvalidManifest { detail: "artifactDigests has too many entries".into() });
@@ -283,7 +302,7 @@ fn validate(root: &Path, target: &'static str, expectations: &Expectations) -> R
         if !is_digest(&entry.digest) {
             return Err(RuntimeError::InvalidManifest { detail: format!("artifactDigests digest for {} is not SHA-256", entry.path) });
         }
-        verify_file(root, entry)?;
+        verify_file(root, entry, hash_files)?;
     }
 
     // Shape checks independent of the digest list: an artifact missing its entry point, Node,
@@ -306,6 +325,15 @@ fn validate(root: &Path, target: &'static str, expectations: &Expectations) -> R
             return Err(RuntimeError::InvalidManifest { detail: format!("artifactDigests omits required file {path}") });
         }
     }
+    let contract_path = "schema/mastra-runtime/v1/manifest.json";
+    if let Some(entry) = receipt.artifact_digests.iter().find(|entry| entry.path == contract_path)
+        && entry.digest != receipt.contract_digest
+    {
+        return Err(RuntimeError::InvalidManifest { detail: "artifactDigests contract manifest digest differs from contractDigest".into() });
+    }
+    if hash_files && hash_file(root, contract_path)? != receipt.contract_digest {
+        return Err(RuntimeError::DigestMismatch { path: contract_path.into() });
+    }
     if !root.join("node_modules").is_dir() {
         return Err(RuntimeError::MissingFile { path: "node_modules".into() });
     }
@@ -316,27 +344,31 @@ fn validate(root: &Path, target: &'static str, expectations: &Expectations) -> R
     Ok(Launch { executable, args: vec![root.join("dist/src/main.js").into_os_string()], cwd: root.to_path_buf(), root: root.to_path_buf() })
 }
 
-fn verify_file(root: &Path, file: &FileRef) -> Result<(), RuntimeError> {
+fn verify_file(root: &Path, file: &FileRef, hash: bool) -> Result<(), RuntimeError> {
     let path = safe_join(root, &file.path)?;
     let metadata = std::fs::symlink_metadata(&path).map_err(|_| RuntimeError::MissingFile { path: file.path.clone() })?;
     if !metadata.file_type().is_file() {
         return Err(RuntimeError::MissingFile { path: file.path.clone() });
     }
-    let mut handle = std::fs::File::open(&path).map_err(|_| RuntimeError::Io { path: file.path.clone() })?;
+    if hash && hash_file(root, &file.path)? != file.digest {
+        return Err(RuntimeError::DigestMismatch { path: file.path.clone() });
+    }
+    Ok(())
+}
+
+fn hash_file(root: &Path, relative: &str) -> Result<String, RuntimeError> {
+    let path = safe_join(root, relative)?;
+    let mut handle = std::fs::File::open(&path).map_err(|_| RuntimeError::Io { path: relative.into() })?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        let read = handle.read(&mut buffer).map_err(|_| RuntimeError::Io { path: file.path.clone() })?;
+        let read = handle.read(&mut buffer).map_err(|_| RuntimeError::Io { path: relative.into() })?;
         if read == 0 {
             break;
         }
         hasher.update(&buffer[..read]);
     }
-    let digest = format!("sha256:{:x}", hasher.finalize());
-    if digest != file.digest {
-        return Err(RuntimeError::DigestMismatch { path: file.path.clone() });
-    }
-    Ok(())
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, RuntimeError> {
@@ -449,7 +481,7 @@ mod tests {
             "targetTriple": host_target().unwrap(),
             "nodeVersion": "22.23.4",
             "repositoryRevision": "0123456789abcdef0123456789abcdef01234567",
-            "contractDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "contractDigest": digest(b"{}\n"),
             "policyDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "sourceRecordsDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "provenanceInventory": {"path": "inventory.json", "digest": inventory},
@@ -462,7 +494,7 @@ mod tests {
     fn expected(inventory: &str) -> Expectations {
         Expectations {
             revision: "0123456789abcdef0123456789abcdef01234567".into(),
-            contract_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            contract_digest: digest(b"{}\n"),
             policy_digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
             sources_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into(),
             runtime_version: "0.1.0".into(),
