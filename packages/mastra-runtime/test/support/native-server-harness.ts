@@ -126,6 +126,11 @@ export function volumeCheck(expected: number): JsonObject {
   };
 }
 
+export interface NativePeerOptions {
+  /** Omit --bridge-fd to exercise a configured bridge with no channel. */
+  readonly bridge?: boolean;
+}
+
 export class NativeRecordedPeer {
   readonly child: ChildProcess;
   readonly frames: Frame[] = [];
@@ -140,19 +145,25 @@ export class NativeRecordedPeer {
     resolve: (frame: Frame) => void;
     timer: NodeJS.Timeout;
   }[] = [];
-  readonly #channel: McpBridgeChannel;
+  readonly #channel: McpBridgeChannel | null;
   #closed = false;
 
-  constructor(t: TestContext, state: NativeState, profiles: Record<string, JsonObject>) {
+  constructor(
+    t: TestContext,
+    state: NativeState,
+    profiles: Record<string, JsonObject>,
+    options: NativePeerOptions = {},
+  ) {
     this.state = state;
     this.#tempDir = mkdtempSync(join(tmpdir(), "solidcraft-mastra-native-"));
     const requirementsFile = join(this.#tempDir, "requirements.json");
     writeFileSync(requirementsFile, JSON.stringify({ profiles }), "utf8");
-    this.child = spawn(
-      process.execPath,
-      [MAIN, "--bridge-fd=3", `--requirements-file=${requirementsFile}`],
-      { stdio: ["pipe", "pipe", "pipe", "pipe"] },
-    );
+    const bridge = options.bridge ?? true;
+    const args = [`--requirements-file=${requirementsFile}`];
+    if (bridge) {
+      args.push("--bridge-fd=3");
+    }
+    this.child = spawn(process.execPath, [MAIN, ...args], { stdio: ["pipe", "pipe", "pipe", "pipe"] });
     this.exit = new Promise<number>((resolve) => {
       this.child.once("exit", (code) => resolve(code ?? -1));
     });
@@ -161,7 +172,7 @@ export class NativeRecordedPeer {
       throw new Error("the runtime did not receive an MCP bridge fd");
     }
     const duplex = bridgeStream as Duplex;
-    this.#channel = streamChannel(duplex, duplex);
+    this.#channel = bridge ? streamChannel(duplex, duplex) : null;
     this.mcp = new FakeMcpPeer({
       tools: defaultTools(true),
       commands: defaultCommands(),
@@ -172,16 +183,18 @@ export class NativeRecordedPeer {
     this.mcp.setHandler("measure", () => textReply(this.measureView()));
     this.mcp.execute((args) => this.onExecute(args));
     this.mcp.batch((args) => this.onBatch(args));
-    this.#channel.receive(
-      (line) => this.mcp.send(line),
-      (reason) => {
-        this.stderr.push(`bridge: ${reason}`);
-      },
-    );
-    this.mcp.receive(
-      (line) => this.#channel.send(line),
-      (reason) => this.#channel.close(reason),
-    );
+    if (this.#channel !== null) {
+      this.#channel.receive(
+        (line) => this.mcp.send(line),
+        (reason) => {
+          this.stderr.push(`bridge: ${reason}`);
+        },
+      );
+      this.mcp.receive(
+        (line) => this.#channel?.send(line),
+        (reason) => this.#channel?.close(reason),
+      );
+    }
 
     this.child.stdin?.on("error", () => undefined);
     let buffer = "";
@@ -206,7 +219,7 @@ export class NativeRecordedPeer {
     });
     t.after(() => {
       this.kill();
-      this.#channel.close("the test ended");
+      this.#channel?.close("the test ended");
       rmSync(this.#tempDir, { recursive: true, force: true });
     });
   }
@@ -223,7 +236,7 @@ export class NativeRecordedPeer {
     return {
       name: "analytic-native-fixture",
       document: this.stamp(),
-      parameters: [...this.state.parameters.entries()].map(([name, parameter]) => ({
+      params: [...this.state.parameters.entries()].map(([name, parameter]) => ({
         name,
         expression: parameter.expression,
         unit: "mm",

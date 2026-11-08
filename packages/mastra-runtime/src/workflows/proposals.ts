@@ -11,7 +11,7 @@ import { invalidRequest } from "../errors.js";
 import { isObject } from "../limits.js";
 import type { JsonObject } from "../protocol.js";
 import type { ModelMessage, ToolCall, ToolDefinition } from "../host-ai/model-client.js";
-import type { DocumentStamp } from "../solidcraft/cad-adapter.js";
+import { isCanonicalRevision, type DocumentStamp } from "../solidcraft/cad-adapter.js";
 import type { CadBatchStep } from "../solidcraft/cad-adapter.js";
 
 export const DECISION_TOOL = "record_decision";
@@ -116,6 +116,7 @@ export const WORKFLOW_TOOLS: readonly ToolDefinition[] = Object.freeze([
 ]);
 
 export function parseDecision(args: JsonObject): Decision {
+  rejectExtraKeys(args, new Set(["decision", "reason", "answer"]), "decision");
   const decision = args["decision"];
   const reason = args["reason"];
   const answer = args["answer"];
@@ -132,6 +133,7 @@ export function parseDecision(args: JsonObject): Decision {
 }
 
 export function parseApplyProposal(args: JsonObject): ApplyProposal {
+  rejectExtraKeys(args, new Set(["commands", "note"]), "commands");
   const raw = args["commands"];
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > 64) {
     throw invalidRequest("A native proposal needs 1..64 commands.", { field: "commands" });
@@ -141,6 +143,7 @@ export function parseApplyProposal(args: JsonObject): ApplyProposal {
     if (!isObject(entry) || typeof entry["command"] !== "string" || entry["command"].length === 0) {
       throw invalidRequest(`Native command ${index} has no command id.`, { field: "commands" });
     }
+    rejectExtraKeys(entry, new Set(["command", "params"]), "commands");
     const params = entry["params"];
     if (params !== undefined && !isObject(params)) {
       throw invalidRequest(`Native command ${index} parameters must be an object.`, { field: "commands" });
@@ -169,14 +172,17 @@ export function parseAcpProposal(text: string, expected: DocumentStamp): AcpProp
   if (!isObject(parsed)) {
     throw invalidRequest("The ACP proposal is not a JSON object.", { field: "proposal" });
   }
+  rejectExtraKeys(parsed, new Set(["source", "commands"]), "proposal");
   const source = parsed["source"];
   if (
     !isObject(source) ||
     typeof source["documentId"] !== "string" ||
-    typeof source["revision"] !== "string"
+    typeof source["revision"] !== "string" ||
+    !isCanonicalRevision(source["revision"])
   ) {
-    throw invalidRequest("The ACP proposal has no document source stamp.", { field: "proposal" });
+    throw invalidRequest("The ACP proposal has no valid document source stamp.", { field: "proposal" });
   }
+  rejectExtraKeys(source, new Set(["documentId", "revision"]), "proposal");
   const commandsRaw = parsed["commands"];
   if (!Array.isArray(commandsRaw) || commandsRaw.length === 0 || commandsRaw.length > 64) {
     throw invalidRequest("The ACP proposal needs 1..64 commands.", { field: "proposal" });
@@ -193,6 +199,7 @@ export function parseAcpProposal(text: string, expected: DocumentStamp): AcpProp
     if (!isObject(entry) || typeof entry["command"] !== "string" || entry["command"].length === 0) {
       throw invalidRequest(`ACP command ${index} has no command id.`, { field: "proposal" });
     }
+    rejectExtraKeys(entry, new Set(["command", "params"]), "proposal");
     const params = entry["params"];
     if (params !== undefined && !isObject(params)) {
       throw invalidRequest(`ACP command ${index} parameters must be an object.`, { field: "proposal" });
@@ -233,4 +240,12 @@ export function toolMessage(callId: string, value: JsonObject, limits = 262_144)
 
 export function errorOutput(error: { readonly code: string; readonly message: string; readonly details: JsonObject }): JsonObject {
   return { ok: false, code: error.code, message: error.message, details: error.details };
+}
+
+function rejectExtraKeys(value: JsonObject, allowed: ReadonlySet<string>, field: string): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw invalidRequest(`Proposal field \`${key}\` is not allowed.`, { field });
+    }
+  }
 }

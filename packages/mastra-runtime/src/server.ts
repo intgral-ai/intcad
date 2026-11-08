@@ -360,8 +360,11 @@ export class RuntimeServer {
         workflowIds: [...WORKFLOW_IDS],
         hostModelCalls: true,
         hostAgentTasks: AGENT_RUN_CAPABILITY.hostAgentTasks,
-        guardedExecute: this.#cadBridge !== undefined,
-        guardedBatch: this.#cadBridge !== undefined,
+        // The bridge schema is only known after session.start/turn.start; the
+        // hello capability must not be inferred from a provisioned channel.
+        // The per-turn adapter checks guarded execute/batch before any write.
+        guardedExecute: false,
+        guardedBatch: false,
         snapshotValidation: false,
       },
       limits: this.#limits,
@@ -806,6 +809,7 @@ export class RuntimeServer {
           modelId: String(turn.binding["modelId"]),
           instructions: session.instructions,
           parts: turn.userMessage.content.map((block) => block.text),
+          history: session.history.messages,
           selection: selectionOf(turn.context),
           requirements,
           profile,

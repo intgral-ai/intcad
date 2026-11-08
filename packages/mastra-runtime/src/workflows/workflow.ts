@@ -144,6 +144,7 @@ interface RunContext {
   appliedAny: boolean;
   checks: CheckResult[];
   checksPassed: boolean;
+  readonly usedCallIds: Set<string>;
 }
 
 export async function runNativeModelingWorkflow(
@@ -166,6 +167,7 @@ export async function runNativeModelingWorkflow(
     appliedAny: false,
     checks: [],
     checksPassed: false,
+    usedCallIds: new Set<string>(),
   };
   const finish = (state: WorkflowTerminalState, reason: string, reasonCode: string, extra: Partial<WorkflowResult> = {}): WorkflowResult =>
     buildResult(context, state, reason, reasonCode, extra);
@@ -177,6 +179,15 @@ export async function runNativeModelingWorkflow(
     recorder.step("inspect", "running");
     recorder.stage("inspect", "Inspect and freeze the bound design", "running");
     const frozen = await inspectAndFreeze(options.cad, input, context.limits);
+    if (!documentStampEquals(input.document, frozen.stamp)) {
+      recorder.stage("inspect", "Inspect and freeze the bound design", "failed");
+      throw new ProtocolError(
+        "STALE_DOCUMENT",
+        "The bound design changed before planning; no native command was executed. Re-inspect and start a new turn.",
+        "never",
+        { expected: input.document, current: frozen.stamp },
+      );
+    }
     context.document = cloneStamp(frozen.stamp);
     recorder.stage("inspect", "Inspect and freeze the bound design", "completed");
     recorder.step("inspect", "completed");
@@ -267,6 +278,14 @@ async function runByok(
       }
       context.recorder.step("decide", "completed");
       context.recorder.stage("plan", "Plan the native modeling stages", "completed");
+      if (!context.checksPassed || !requiredChecksPassed(context.checks)) {
+        context.recorder.step("check", "failed");
+        return finish(
+          "quality_failed",
+          `Fixed stage checks did not pass: ${failedCheckSummary(context.checks) || "no exact check result"}.`,
+          "QUALITY_FAILED",
+        );
+      }
       return validateAndFinish(context, finish);
     }
 
@@ -276,7 +295,7 @@ async function runByok(
     if (result.toolCalls.length > context.limits.toolCalls) {
       return finish("task_failed", "The model returned more tool calls than the negotiated limit.", "MALFORMED_RESPONSE");
     }
-    const seen = new Set<string>();
+    const seen = context.usedCallIds;
     for (const call of result.toolCalls) {
       if (!isId(call.id) || seen.has(call.id)) {
         return finish(
@@ -392,7 +411,8 @@ async function runByok(
           context.recorder.tool(call.id, call.name, "failed", protocolOutput(error));
           throw error;
         }
-        assertActive(context);
+        // Process the returned write facts before the cancellation check: a
+        // mutation that committed while Stop arrived is still a live edit.
         const outcome = await handleWrite(context, call.id, call.name, write);
         if (outcome.kind === "terminal") {
           return outcome.result;
@@ -402,19 +422,18 @@ async function runByok(
       }
 
       if (call.name === PROBE_TOOL) {
+        let output: JsonObject = {
+          ok: false,
+          code: "UNSUPPORTED_CAPABILITY",
+          message: "A speculative candidate probe is unsupported.",
+        };
         try {
           context.options.cad.probe();
-          // `probe` never returns.
-          context.recorder.tool(call.id, call.name, "failed", {
-            ok: false,
-            code: "UNSUPPORTED_CAPABILITY",
-            message: "A speculative candidate probe is unsupported.",
-          });
         } catch (error) {
-          const output = protocolOutput(error);
-          context.recorder.tool(call.id, call.name, "failed", output);
-          messages.push(toolMessage(call.id, output, context.limits.textBytes));
+          output = protocolOutput(error);
         }
+        context.recorder.tool(call.id, call.name, "failed", output);
+        messages.push(toolMessage(call.id, output, context.limits.textBytes));
         continue;
       }
 
@@ -523,7 +542,8 @@ async function runAcp(
       context.recorder.tool(callId, "agent.proposal", "failed", protocolOutput(error));
       throw error;
     }
-    assertActive(context);
+    // Keep a write that committed while cancellation arrived, then let the
+    // handler publish its document and changes before any terminal.
     const outcome = await handleWrite(context, callId, "agent.proposal", write);
     if (outcome.kind === "terminal") {
       return outcome.result;
@@ -546,7 +566,10 @@ async function handleWrite(
     case "applied": {
       context.appliedAny = true;
       context.changes = context.changes === "unknown" ? "unknown" : "applied";
-      context.document = cloneStamp(outcome.after ?? context.options.cad.stamp);
+      adoptAfter(context, write);
+      if (outcome.after === null) {
+        context.document = cloneStamp(context.options.cad.stamp);
+      }
       context.recorder.step("apply", "completed");
       context.recorder.step("check", "running");
       context.recorder.stage("apply", "Apply ordered native commands through the guarded adapter", "completed");
@@ -593,6 +616,7 @@ async function handleWrite(
       return await handleWrite(context, callId, toolName, reconciled, false);
     }
     case "command_failed": {
+      adoptAfter(context, write);
       context.recorder.tool(callId, toolName, "failed", writeOutput(write));
       if (rollbackRestored(write)) {
         context.recorder.step("apply", "pending");
@@ -651,6 +675,7 @@ async function handleWrite(
     }
     case "expectation_failed": {
       // The contract says an expectation mismatch leaves the model built.
+      adoptAfter(context, write);
       context.changes = "applied";
       context.recorder.tool(callId, toolName, "failed", writeOutput(write));
       const message = outcome.error?.message ?? "A native expectation check failed after the design was built.";
@@ -680,6 +705,7 @@ async function handleWrite(
       return { kind: "continue", output };
     }
     case "cancelled": {
+      adoptAfter(context, write);
       if (context.appliedAny || (outcome.completed ?? 0) > 0) {
         context.changes = "applied";
       } else if (outcome.completed === null && outcome.after === null) {
@@ -730,6 +756,14 @@ async function validateAndFinish(
   context: RunContext,
   finish: ResultFactory,
 ): Promise<WorkflowResult> {
+  if (!context.checksPassed || !requiredChecksPassed(context.checks)) {
+    context.recorder.step("check", "failed");
+    return finish(
+      "quality_failed",
+      `Fixed stage checks did not pass: ${failedCheckSummary(context.checks) || "no exact check result"}.`,
+      "QUALITY_FAILED",
+    );
+  }
   const gate = context.options.validation ?? null;
   if (gate === null) {
     return finish(
@@ -905,6 +939,13 @@ function acpTask(context: RunContext, frozen: FrozenInspection): string {
 
 function cloneStamp(stamp: DocumentStamp): DocumentStamp {
   return { documentId: stamp.documentId, revision: stamp.revision };
+}
+
+function adoptAfter(context: RunContext, write: CadWriteResult): void {
+  const after = write.outcome.after;
+  if (after !== null) {
+    context.document = cloneStamp(after);
+  }
 }
 
 export { validateRequirements };

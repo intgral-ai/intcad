@@ -39,6 +39,9 @@ function stage(events: readonly Frame[], stageId: string, state: string): Frame 
 async function handshake(peer: NativeRecordedPeer): Promise<void> {
   const hello = await peer.request("runtime.hello", RUNTIME_SCOPE, helloParams(), "h:hello");
   assert.equal(hello.outcome, "ok");
+  const capabilities = hello.result?.["capabilities"] as JsonObject | undefined;
+  assert.equal(capabilities?.["guardedExecute"], false, "hello must not infer guarded writes from channel presence");
+  assert.equal(capabilities?.["guardedBatch"], false);
   await peer.waitFor((frame) => frame.kind === "event" && frame.event === "runtime.ready");
   const start = await peer.request("session.start", SESSION_SCOPE, sessionParams(), "h:session");
   assert.equal(start.outcome, "ok");
@@ -101,6 +104,9 @@ test("a server turn runs the native workflow: create then parameter edit with pr
   assert.deepEqual(acceptedEdit.result, { state: "accepted" });
 
   request = await modelRequest(peer);
+  const editMessages = (request.params?.["messages"] as JsonObject[] | undefined) ?? [];
+  assert.equal(editMessages.some((message) => message["role"] === "assistant" && JSON.stringify(message["content"]).includes("Created one editable")), true);
+  assert.equal(editMessages.some((message) => message["role"] === "user" && JSON.stringify(message["content"]).includes("Create a 20 x 10 x 5 box")), true);
   peer.replyTools(request, [decisionEdit()]);
   request = await modelRequest(peer);
   peer.replyTools(request, [
@@ -170,6 +176,23 @@ test("a server turn runs at most the configured repair budget and ends quality_f
   assert.equal(stage(events, "check", "failed") !== undefined, true);
   assert.equal(stage(events, "repair", "failed") !== undefined, true);
   assert.equal(peer.frames.filter((frame) => frame.kind === "request" && frame.method === "model.generate").length, 4);
+});
+
+test("a configured bridge with no injected channel fails clearly without model or CAD work", async (t) => {
+  const peer = new NativeRecordedPeer(t, editBase(), { "p-any": { checks: [] } }, { bridge: false });
+  await handshake(peer);
+
+  const turn = turnParams("t-no-channel", "w-no-channel", "p-any", "Try to edit.", peer.stamp());
+  await peer.request("turn.start", turnScope("t-no-channel", "w-no-channel"), turn, "h:turn-no-channel");
+  const finished = await peer.waitFor(
+    (frame) => frame.kind === "event" && frame.event === "turn.finished" && frame.scope?.turnId === "t-no-channel",
+  );
+  const data = eventData(finished);
+  assert.equal(data["state"], "task_failed");
+  assert.match(String(data["reason"]), /did not provision a CAD channel/u);
+  assert.equal(data["changes"], "none");
+  assert.equal(peer.frames.filter((frame) => frame.kind === "request" && frame.method === "model.generate").length, 0);
+  assert.equal(peer.mcp.requests.length, 0);
 });
 
 test("server cancellation stops after the current step and ask ends task_failed with truthful changes", async (t) => {

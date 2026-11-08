@@ -59,6 +59,11 @@ export function initialMessages(
   ].join("\n\n");
   return [
     { role: "system", content: [{ type: "text", text: clamp(system, limits.textBytes) }], toolCalls: [], toolCallId: null },
+    ...(input.history ?? []).map((message) => ({
+      ...message,
+      content: message.content.map((block) => ({ ...block })),
+      toolCalls: message.toolCalls.map((call) => ({ ...call, arguments: { ...call.arguments } })),
+    })),
     {
       role: "user",
       content: [{ type: "text", text: input.parts.join("\n") }],

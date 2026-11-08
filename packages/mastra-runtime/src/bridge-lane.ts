@@ -102,6 +102,9 @@ export function bridgeLane(
           if (active !== null) {
             active = null;
           }
+          // A partial line belongs to the closing turn; never prepend it to the
+          // next turn's MCP session on this lane.
+          buffered = Buffer.alloc(0);
         }
       };
       return {

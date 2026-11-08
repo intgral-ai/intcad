@@ -323,10 +323,16 @@ export class WorkflowHarness {
   unknownOnce = false;
   pendingOnce = false;
   expectationFailedOnce = false;
+  partialFailureOnce = false;
+  duringWrite: (() => void) | null = null;
 
   constructor(t: TestContext, state: NativeState = boxState()) {
     this.state = state;
     this.peer = new FakeMcpPeer({ tools: defaultTools(true), commands: defaultCommands(), documentId: "doc-A", revision: 41n });
+    this.peer.commands.set("solid.fail", {
+      id: "solid.fail",
+      input: { type: "object", additionalProperties: false, properties: {} },
+    });
     this.peer.setHandler("inspect_design", () => textReply(this.designView()));
     this.peer.setHandler("measure", () => textReply(this.measureView()));
     this.peer.execute((args) => this.onExecute(args));
@@ -363,7 +369,7 @@ export class WorkflowHarness {
     return {
       name: "analytic-fixture",
       document: this.peer.stamp(),
-      parameters: [...this.state.parameters.entries()].map(([name, parameter]) => ({
+      params: [...this.state.parameters.entries()].map(([name, parameter]) => ({
         name,
         expression: parameter.expression,
         unit: "mm",
@@ -414,6 +420,7 @@ export class WorkflowHarness {
     this.#history.push(this.snapshot());
     this.writes.push({ name: "execute", args });
     this.stamps.push(this.expectedStamp(args));
+    this.duringWrite?.();
     const applied = this.applyCommand(command, args["params"]);
     if (!applied.ok) {
       return textReply(applied.message, true);
@@ -425,6 +432,7 @@ export class WorkflowHarness {
   onBatch(args: JsonObject): ToolReply {
     this.writes.push({ name: "batch", args });
     this.stamps.push(this.expectedStamp(args));
+    this.duringWrite?.();
     if (this.staleOnce) {
       this.staleOnce = false;
       // Simulate an intervening user edit after the workflow inspected.
@@ -476,6 +484,35 @@ export class WorkflowHarness {
       this.peer.pending(() => textReply({ pending: null, done: true, result: original }));
       return textReply("still running: the guarded batch is being applied", false);
     }
+    if (this.partialFailureOnce) {
+      this.partialFailureOnce = false;
+      const commands = Array.isArray(args["commands"]) ? (args["commands"] as JsonObject[]) : [];
+      const applied: number[] = [];
+      for (const [index, entry] of commands.entries()) {
+        const step = entry as JsonObject;
+        const command = typeof step["command"] === "string" ? step["command"] : "";
+        const params = step["params"] === undefined ? {} : (step["params"] as JsonObject);
+        const result = this.applyCommand(command, params);
+        if (!result.ok) {
+          this.peer.revision += 1n;
+          return guardedReply(
+            {
+              ok: false,
+              completed: index,
+              applied,
+              not_run: commands.slice(index + 1).map((_, offset) => index + 1 + offset),
+              failed: { index, error: result.message },
+              rolled_back: false,
+              documentStamp: this.peer.stamp(),
+            },
+            true,
+          );
+        }
+        applied.push(index);
+      }
+      this.peer.revision += 1n;
+      return guardedReply({ ok: true, completed: commands.length, applied, results: [], documentStamp: this.peer.stamp() });
+    }
     if (this.expectationFailedOnce) {
       this.expectationFailedOnce = false;
       this.peer.revision += 1n;
@@ -507,6 +544,10 @@ export class WorkflowHarness {
       const params = step["params"] === undefined ? {} : (step["params"] as JsonObject);
       const result = this.applyCommand(command, params);
       if (!result.ok) {
+        const previous = this.#history.pop();
+        if (previous !== undefined) {
+          this.state = previous;
+        }
         return guardedReply(
           {
             ok: false,
@@ -576,6 +617,9 @@ export class WorkflowHarness {
       }
       this.state = previous;
       return { ok: true, result: { undone: true } };
+    }
+    if (command === "solid.fail") {
+      return { ok: false, message: "the fixture command failed" };
     }
     return { ok: false, message: `unknown fixture command \`${command}\`` };
   }

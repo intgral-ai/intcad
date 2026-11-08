@@ -153,33 +153,64 @@ independent adaptation of the roles described in contract section 1.5.
 No product-server bootstrap, database, account or route module was adapted. The
 workflow has no credentials, script runtime or durable store.
 
+## Deliberate deviations and seams
+
+- **Direct `HostAiModelClient`, not `createHostAiAgent`.** The turn runner calls
+  #7's one-call client directly and owns every tool round. The Mastra `Agent`
+  wrapper remains a compatibility seam for #7; using it here would hide the
+  ordered tool-call/result identity and the exact next-call boundary this
+  workflow must control. Every round is still exactly one HostAi
+  `model.generate` call with no retry or hidden tool execution.
+- **Prior session history is included.** The server passes the normalized
+  session history (complete prior user/assistant rounds) before the current
+  user turn. The workflow does not resume an old tool loop; it only supplies
+  conversation context.
+- **Initial binding mismatch is stale.** If the first inspection's stamp differs
+  from `TurnBinding.document`, the workflow refuses before planning with
+  `task_failed`/`STALE_DOCUMENT` instead of silently adopting a newer document.
+  A user edit needs a new turn and a fresh binding.
+- **Hello capabilities do not infer guarded writes from channel presence.** The
+  bridge schema is known only after the per-turn MCP handshake, so hello keeps
+  `guardedExecute`/`guardedBatch` false. The workflow verifies the actual
+  discovered execute/batch schemas before any write.
+- **`--requirements-file` is temporary profile delivery.** Until #13 provides
+  the host-resolved frozen profile and report gate, the launch file supplies
+  externally fixed checks. It is not profile ownership, and missing checks never
+  become a pass.
+
 ## Tests and evidence
 
 `test/workflow.test.ts` drives the real `McpClient` + `CadAdapter` over the
 deterministic MCP peer with scripted model replies and original analytic
 geometry (20 × 10 × 5 = 1000 mm³). `test/server-native.test.ts` spawns the built
 `dist/src/main.js`, injects the MCP bridge on an inherited fd and the frozen
-profiles on disk, and speaks real protocol 1.0 turns. It covers:
-
-- create then parameter edit in one process, with two MCP sessions on one lane;
-- protected dimensions and the resulting document stamp/`changes` facts;
-- the bounded repair budget and `quality_failed` terminal;
-- cancellation after the current step, then ask/decline with truthful changes;
-- no `validated_success` while the #13 host gate is absent.
+profiles on disk, and speaks real protocol 1.0 turns. `test/bridge-lane.test.ts`
+covers the reusable bridge lane. Coverage includes:
 
 - the workflow consumes #7's real `HostAiModelClient` with one explicit
-  `model.generate` per round;
+  `model.generate` per round, and carries prior session history into the next
+  native round;
 - native create with an editable feature timeline and tool-result identity;
 - one completed turn remains undoable through the ordinary native `edit.undo`;
-- parameter edit with protected dimensions;
-- bounded repairs and a clear quality failure;
-- distinct model/CAD/wall budgets, cancellation, unsupported probe and unknown;
-- stale re-inspection/replanning without an automatic retry;
+- parameter checks read the native `document.inspect` `params` key, not the
+  fixture-only `parameters` spelling;
+- parameter edit with protected dimensions and the resulting document stamp;
+- bounded repairs, a clear quality failure, and no validation after a failed
+  check even when a passing validation stub is supplied;
+- command failure with and without rollback, plus the adopted terminal stamp
+  for partial failure and expectation mismatch;
+- distinct model/CAD/ACP/validation/wall budgets, cancellation during a write,
+  unsupported probe and unknown effects;
+- stale re-inspection/replanning, the initial binding-stamp check, and a
+  passing report for a changed live stamp remaining historical;
 - pending reconciliation without resending the mutation;
 - no LLM-only success, no success without the #13 handoff;
 - ask/decline after an earlier edit, every batch command counted;
-- ACP proposal source validation and invalid-proposal refusal;
-- malformed fixed requirements refused before planning.
+- strict ACP/apply proposal field rejection, cross-round tool-call identity,
+  and a probe that unexpectedly returns still matching its tool result;
+- malformed fixed requirements refused before planning;
+- server create/edit/repair/cancel/ask turns and a bridge with no channel;
+- bridge-lane partial-line discard between turns.
 
 Run:
 

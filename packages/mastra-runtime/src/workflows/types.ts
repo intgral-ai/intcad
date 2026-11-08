@@ -114,6 +114,8 @@ export interface NativeWorkflowInput {
   readonly modelId: string;
   readonly instructions: string;
   readonly parts: readonly string[];
+  /** Normalized prior session rounds; the current user turn is `parts`. */
+  readonly history?: readonly ModelMessage[];
   readonly selection: readonly JsonObject[];
   readonly requirements: FixedRequirements;
   readonly profile: ProfileRef;

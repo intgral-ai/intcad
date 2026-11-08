@@ -4,7 +4,8 @@ import { test } from "node:test";
 import type { JsonObject } from "../src/protocol.js";
 import { DEFAULT_LIMITS } from "../src/limits.js";
 import { HostAiModelClient, type HostAiTransport } from "../src/host-ai/model-client.js";
-import { runNativeModelingWorkflow } from "../src/workflows/index.js";
+import { evaluateFixedChecks, runNativeModelingWorkflow } from "../src/workflows/index.js";
+import { textReply } from "./support/mcp-peer.js";
 import {
   boxState,
   decisionAsk,
@@ -12,6 +13,7 @@ import {
   decisionEdit,
   applyCall,
   DEFAULT_BUDGETS,
+  FixedValidation,
   fixedRequirements,
   input,
   parameterCheck,
@@ -20,6 +22,7 @@ import {
   recordEvents,
   replyText,
   replyToolCalls,
+  ScriptedModel,
   ScriptedProposalSource,
   toolCall,
   volumeCheck,
@@ -80,10 +83,14 @@ test("create produces editable native features and preserves tool-result identit
   assert.match(applyTool?.content[0]?.text ?? "", /"checkId":"geometry.exact"/u);
 
   assert.deepEqual(result.plan.map((step) => step.id), ["inspect", "decide", "apply", "check", "validate"]);
+  assert.equal(result.plan.find((step) => step.id === "apply")?.state, "completed");
+  assert.equal(result.plan.find((step) => step.id === "check")?.state, "completed");
+  assert.equal(result.plan.find((step) => step.id === "validate")?.state, "completed");
   assert.equal(result.stages.some((stage) => stage.stageId === "inspect" && stage.state === "completed"), true);
   assert.equal(result.stages.some((stage) => stage.stageId === "check" && stage.state === "completed"), true);
   assert.equal(result.stages.some((stage) => stage.stageId === "validate" && stage.state === "completed"), true);
   assert.deepEqual([...new Set(result.tools.map((tool) => tool.callId))], ["call-decision", "call-apply-1"]);
+  assert.equal(result.tools.at(-1)?.state, "completed");
   assert.equal(result.tools.at(-1)?.state, "completed");
 });
 
@@ -424,6 +431,7 @@ test("an expectation mismatch is preserved and does not become success", async (
   assert.equal(result.state, "task_failed");
   assert.equal(result.reasonCode, "EXPECTATION_MISMATCH");
   assert.equal(result.changes, "applied");
+  assert.deepEqual(result.document, { documentId: "doc-A", revision: "42" });
   assert.equal(validation.requests.length, 0);
 });
 
@@ -500,7 +508,7 @@ test("ask/decline stops further mutations and reports earlier live edits truthfu
     modelReplies: [
       replyToolCalls([decisionEdit()]),
       replyToolCalls([applyCall("call-width", widthCommands(40))]),
-      replyToolCalls([decisionAsk("The protected dimension is ambiguous.")]),
+      replyToolCalls([toolCall("call-ask-2", "record_decision", { decision: "ask", reason: "The protected dimension is ambiguous." })]),
     ],
     requirements: fixedRequirements(parameterCheck("width", 40)),
   });
@@ -582,4 +590,338 @@ test("fixed requirements reject malformed or non-finite tolerances before any pl
   assert.equal(result.reasonCode, "INVALID_REQUEST");
   assert.equal(harness.writes.length, 0);
   assert.equal(harness.model?.requests.length ?? 0, 0);
+});
+
+test("protected parameter checks read the real native document.inspect params key", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  await harness.client.connect();
+  harness.peer.setHandler("inspect_design", () =>
+    textReply(
+      JSON.stringify({
+        name: "native-reply",
+        params: [
+          { name: "width", expression: "40", value: 40, unit: "mm", error: null },
+          { name: "depth", expression: "10", value: 10, unit: "mm", error: null },
+          { name: "height", expression: "5", value: 5, unit: "mm", error: null },
+        ],
+        timeline: [],
+        bodies: [],
+      }),
+    ),
+  );
+
+  const checks = await evaluateFixedChecks(
+    harness.adapter,
+    fixedRequirements(parameterRequirements([
+      { name: "width", value: 40 },
+      { name: "depth", value: 10 },
+      { name: "height", value: 5 },
+    ])),
+  );
+  assert.equal(checks[0]?.state, "passed", JSON.stringify(checks[0]));
+  assert.deepEqual(checks[0]?.actual, { width: 40, depth: 10, height: 5 });
+});
+
+test("a model answer after a failed check cannot reach validation or claim checks passed", async (t) => {
+  for (const validation of [null, passedValidation("v-must-not-run")]) {
+    const harness = new WorkflowHarness(t, boxState());
+    const result = await harness.run({
+      modelReplies: [
+        replyToolCalls([decisionEdit()]),
+        replyToolCalls([applyCall("call-wrong", widthCommands(30))]),
+        replyText("Everything passed, honestly."),
+      ],
+      requirements: fixedRequirements(parameterCheck("width", 40)),
+      validation,
+    });
+
+    assert.equal(result.state, "quality_failed");
+    assert.equal(result.reasonCode, "QUALITY_FAILED");
+    assert.match(result.reason, /did not pass/u);
+    assert.doesNotMatch(result.reason, /checks passed/u);
+    assert.equal(result.checks[0]?.state, "failed");
+    assert.equal(result.plan.find((step) => step.id === "check")?.state, "failed");
+    assert.equal(result.tools.at(-1)?.state, "failed");
+    if (validation !== null) {
+      assert.equal(validation.requests.length, 0);
+    }
+  }
+});
+
+test("a partial command failure adopts its resulting stamp and reports applied", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  harness.partialFailureOnce = true;
+  const validation = passedValidation();
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([
+        applyCall("call-partial", [
+          { command: "parameters.change", params: { name: "width", expression: "40" } },
+          { command: "solid.fail", params: {} },
+        ]),
+      ]),
+    ],
+    requirements: fixedRequirements(parameterCheck("width", 40)),
+    validation,
+  });
+
+  assert.equal(result.state, "task_failed");
+  assert.equal(result.reasonCode, "COMMAND_FAILED");
+  assert.equal(result.changes, "applied");
+  assert.deepEqual(result.document, { documentId: "doc-A", revision: "42" });
+  assert.equal(validation.requests.length, 0);
+});
+
+test("a rollback-restored command failure can replan and still finish its checks", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  const validation = passedValidation("v-rollback");
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([
+        applyCall("call-fail", [
+          { command: "parameters.change", params: { name: "width", expression: "40" } },
+          { command: "solid.fail", params: {} },
+        ]),
+      ]),
+      replyToolCalls([applyCall("call-width", widthCommands(40))]),
+      replyText("Recovered after the rolled-back command."),
+    ],
+    requirements: fixedRequirements(parameterCheck("width", 40)),
+    validation,
+  });
+
+  assert.equal(result.state, "validated_success");
+  assert.equal(result.changes, "applied");
+  assert.equal(harness.writes.length, 2);
+  assert.equal(result.budgets.repairs, 1);
+  assert.equal(validation.requests.length, 1);
+});
+
+test("cancellation during an in-flight write keeps the applied edit and its stamp", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  const controller = new AbortController();
+  harness.duringWrite = () => controller.abort();
+  const validation = passedValidation();
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([applyCall("call-cancel-write", widthCommands(40))]),
+    ],
+    requirements: fixedRequirements(parameterCheck("width", 40)),
+    validation,
+    signal: controller.signal,
+  });
+
+  assert.equal(result.state, "cancelled");
+  assert.equal(result.changes, "applied");
+  assert.deepEqual(result.document, { documentId: "doc-A", revision: "42" });
+  assert.equal(harness.state.parameters.get("width")?.value, 40);
+  assert.equal(harness.writes.length, 1);
+  assert.equal(validation.requests.length, 0);
+});
+
+test("the initial inspect must match the frozen turn binding", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  const result = await harness.run({
+    modelReplies: [replyToolCalls([decisionEdit()])],
+    document: { documentId: "doc-A", revision: "40" },
+  });
+
+  assert.equal(result.state, "task_failed");
+  assert.equal(result.reasonCode, "STALE_DOCUMENT");
+  assert.equal(result.changes, "none");
+  assert.equal(harness.model?.requests.length ?? 0, 0);
+  assert.equal(harness.writes.length, 0);
+});
+
+test("prior session history is carried into the next native model round", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyText("No native result this time."),
+    ],
+    history: [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Earlier user request." }],
+        toolCalls: [],
+        toolCallId: null,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Earlier assistant answer." }],
+        toolCalls: [],
+        toolCallId: null,
+      },
+    ],
+  });
+
+  assert.equal(result.state, "task_failed");
+  const messages = harness.model?.requests[0]?.messages ?? [];
+  assert.equal(messages[1]?.role, "user");
+  assert.equal(messages[1]?.content[0]?.text, "Earlier user request.");
+  assert.equal(messages[2]?.role, "assistant");
+  assert.equal(messages[2]?.content[0]?.text, "Earlier assistant answer.");
+  assert.equal(messages.at(-1)?.content[0]?.text, "Make the requested native model change.");
+});
+
+test("tool-call identities are unique across rounds, not only within one reply", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([toolCall("call-dupe", "record_decision", { decision: "edit", reason: "Edit." })]),
+      replyToolCalls([toolCall("call-dupe", "apply_native_commands", { commands: boxCommands() })]),
+    ],
+    requirements: fixedRequirements(volumeCheck(1_000)),
+  });
+
+  assert.equal(result.state, "task_failed");
+  assert.equal(result.reasonCode, "MALFORMED_RESPONSE");
+  assert.equal(harness.writes.length, 0);
+});
+
+test("apply and ACP proposals reject undeclared fields", async (t) => {
+  const applyHarness = new WorkflowHarness(t, boxState());
+  const applyResult = await applyHarness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([
+        toolCall("call-extra", "apply_native_commands", {
+          commands: widthCommands(40),
+          surprise: true,
+        }),
+      ]),
+      replyText("No write was made."),
+    ],
+    requirements: fixedRequirements(parameterCheck("width", 40)),
+  });
+  assert.equal(applyResult.state, "task_failed");
+  assert.equal(applyHarness.writes.length, 0);
+  assert.equal(applyResult.tools.at(-1)?.output?.["code"], "INVALID_REQUEST");
+
+  const acpHarness = new WorkflowHarness(t, boxState());
+  const acpResult = await acpHarness.run({
+    mode: "acp",
+    proposalSource: new ScriptedProposalSource([
+      JSON.stringify({
+        source: { documentId: "doc-A", revision: "41" },
+        commands: [{ command: "parameters.change", params: { name: "width", expression: "40" } }],
+        surprise: true,
+      }),
+    ]),
+    requirements: fixedRequirements(parameterCheck("width", 40)),
+  });
+  assert.equal(acpResult.state, "task_failed");
+  assert.equal(acpResult.reasonCode, "INVALID_PROPOSAL");
+  assert.equal(acpHarness.writes.length, 0);
+});
+
+test("a probe that unexpectedly returns still gets a matching tool result", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  await harness.client.connect();
+  const cad = {
+    get stamp() {
+      return harness.adapter.stamp;
+    },
+    get requiresReconciliation() {
+      return harness.adapter.requiresReconciliation;
+    },
+    capabilities: () => harness.adapter.capabilities(),
+    inspect: (options?: { readonly design?: boolean }) => harness.adapter.inspect(options),
+    readTool: (name: string, args?: JsonObject) => harness.adapter.readTool(name, args),
+    execute: (command: string, params?: JsonObject, options?: { readonly expect?: JsonObject; readonly verbose?: boolean }) =>
+      harness.adapter.execute(command, params, options),
+    batch: (steps: Parameters<typeof harness.adapter.batch>[0], options?: Parameters<typeof harness.adapter.batch>[1]) =>
+      harness.adapter.batch(steps, options),
+    probe: (() => undefined) as unknown as import("../src/workflows/index.js").CadPort["probe"],
+    reconcile: () => harness.adapter.reconcile(),
+    cancel: (reason?: string) => harness.adapter.cancel(reason),
+  };
+  const model = new ScriptedModel([
+    replyToolCalls([decisionEdit()]),
+    replyToolCalls([toolCall("call-probe-return", "probe_cad", {})]),
+    replyText("Probe unavailable."),
+  ]);
+  const events = recordEvents();
+  const result = await runNativeModelingWorkflow(input(), {
+    model,
+    cad,
+    events: events.events,
+    signal: new AbortController().signal,
+    validation: passedValidation(),
+  });
+
+  assert.equal(result.state, "task_failed");
+  const tool = model.requests[2]?.messages.find(
+    (message) => message.role === "tool" && message.toolCallId === "call-probe-return",
+  );
+  assert.notEqual(tool, undefined);
+  assert.equal(result.tools.find((event) => event.callId === "call-probe-return")?.state, "failed");
+});
+
+test("ACP task and validation budgets are distinct and reserved before dispatch", async (t) => {
+  const acpHarness = new WorkflowHarness(t, boxState());
+  const acpSource = new ScriptedProposalSource([
+    JSON.stringify({
+      source: { documentId: "doc-A", revision: "41" },
+      commands: [{ command: "parameters.change", params: { name: "width", expression: "40" } }],
+    }),
+  ]);
+  const acpResult = await acpHarness.run({
+    mode: "acp",
+    proposalSource: acpSource,
+    requirements: fixedRequirements(parameterCheck("width", 40)),
+    budgets: { ...DEFAULT_BUDGETS, agentTasks: 0 },
+  });
+  assert.equal(acpResult.state, "budget_exhausted");
+  assert.match(acpResult.reason, /agentTasks/u);
+  assert.equal(acpSource.requests.length, 0);
+  assert.equal(acpHarness.writes.length, 0);
+
+  const validationHarness = new WorkflowHarness(t, boxState());
+  const validation = passedValidation();
+  const validationResult = await validationHarness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([applyCall("call-box", boxCommands())]),
+      replyText("Created."),
+    ],
+    requirements: fixedRequirements(volumeCheck(1_000)),
+    budgets: { ...DEFAULT_BUDGETS, validationRuns: 0 },
+    validation,
+  });
+  assert.equal(validationResult.state, "budget_exhausted");
+  assert.match(validationResult.reason, /validationRuns/u);
+  assert.equal(validation.requests.length, 0);
+});
+
+test("a passing report for a changed live stamp is historical, not validated success", async (t) => {
+  const harness = new WorkflowHarness(t, boxState());
+  const validation = new FixedValidation(() => {
+    harness.peer.revision += 1n;
+    return {
+      state: "passed",
+      runId: "v-stale",
+      report: { schemaVersion: "1.0", runId: "v-stale", state: "passed" },
+      reason: "Passed for the captured candidate.",
+    };
+  });
+  const result = await harness.run({
+    modelReplies: [
+      replyToolCalls([decisionEdit()]),
+      replyToolCalls([applyCall("call-box", boxCommands())]),
+      replyText("Created."),
+    ],
+    requirements: fixedRequirements(volumeCheck(1_000)),
+    validation,
+  });
+
+  assert.equal(result.state, "quality_failed");
+  assert.equal(result.reasonCode, "STALE_DOCUMENT");
+  assert.equal(result.validationRunId, "v-stale");
+  assert.equal(result.changes, "applied");
+  assert.deepEqual(result.document, { documentId: "doc-A", revision: "43" });
 });

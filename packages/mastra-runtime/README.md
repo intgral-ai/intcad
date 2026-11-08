@@ -75,21 +75,23 @@ npm run check:deps      # direct production licences and ee/ import check
 node dist/src/main.js   # start the built artifact on stdio
 ```
 
-`npm test` currently runs 108 tests. The schema suite checks **899 of 1002**
+`npm test` currently runs 123 tests. The schema suite checks **899 of 1002**
 catalog cases that this layer owns and agrees with the catalog on every one. The
 remaining 103 are reported, not claimed: 93 raw `guard-*` / `native-stamp-*`
 carriers whose decision belongs to the Rust component adapters, and 10 host
 state-machine transcripts owned by the Rust `RuntimeMachine`.
 
-56 of the 108 tests are the SolidCraft MCP adapter suites: a deterministic
+56 of the 123 tests are the SolidCraft MCP adapter suites: a deterministic
 in-memory MCP peer (`test/support/mcp-peer.ts`) supplies every guarded outcome
 class, and every produced `WriteOutcome` is validated against the repository's
-`#/$defs/WriteOutcome` schema rather than a TypeScript copy of it. The 18
+`#/$defs/WriteOutcome` schema rather than a TypeScript copy of it. The 30
 workflow tests in `test/workflow.test.ts` drive a real `McpClient` + `CadAdapter`
-over that peer with scripted HostAi replies and analytic 20×10×5 geometry. Three
+over that peer with scripted HostAi replies and analytic 20×10×5 geometry. Four
 `test/server-native.test.ts` cases spawn the built `dist/src/main.js` with an
 inherited `--bridge-fd`, drive real protocol 1.0 turns and cover create, edit,
-bounded repair, cancellation and ask.
+bounded repair, cancellation, ask and a bridge with no channel. Two
+`test/bridge-lane.test.ts` cases cover per-turn session isolation and partial
+line discard.
 
 ## Contract bundle
 

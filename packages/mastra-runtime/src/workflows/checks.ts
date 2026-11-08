@@ -242,7 +242,9 @@ export function parameterMap(design: JsonObject | null): Readonly<Record<string,
   if (design === null) {
     return result;
   }
-  const raw = design["parameters"];
+  // The native `document.inspect` reply uses `params` (crates/engine inspect).
+  // `parameters` stays only as a compatibility fallback for older fixtures.
+  const raw = design["params"] ?? design["parameters"];
   if (Array.isArray(raw)) {
     for (const entry of raw) {
       if (!isObject(entry) || typeof entry["name"] !== "string") {
