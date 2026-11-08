@@ -48,7 +48,10 @@ Insert Design links are frozen: the linked design's bytes become a `component` i
 rewritten to that relative path. A link that cannot be read, changed since this design last read
 it, has no stable identity, or itself links to another design fails with `DEPENDENCY_CHANGED`
 instead of keeping a mutable live path. A sketch text whose font is a font *file* is a mutable
-external path too: 1.0 refuses it with `INVALID_CANDIDATE` rather than retaining it. Other
+external path too: 1.0 refuses it with `INVALID_CANDIDATE` rather than retaining it. The same
+check applies inside every frozen linked design: a linked design whose own text link names a font
+file is rejected with `INVALID_CANDIDATE`, naming the link and dependency, before any candidate is
+written. Such a font file is never silently skipped, pruned or frozen without a digest. Other
 unsupported captures fail with `INVALID_CANDIDATE`; diagnostics do not echo absolute local paths.
 
 

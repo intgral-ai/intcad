@@ -155,23 +155,30 @@ fn font_is_file(name: &str) -> bool {
     name.contains(['/', '\\']) || [".ttf", ".otf", ".ttc", ".otc"].iter().any(|ext| lower.ends_with(ext))
 }
 
-/// Text may name an installed font family (not a file) or the built-in font. A font file is a
-/// mutable external path; 1.0 refuses it rather than keeping it unfrozen.
-fn reject_font_file_dependencies(design: &Document) -> Result<()> {
+/// The first sketch feature whose text link names a font file, if any.
+fn font_file_feature(design: &Document) -> Option<u64> {
     for feature in &design.features {
         let FeatureKind::Sketch { sketch, .. } = &feature.kind else { continue };
         for link in &sketch.links {
             if let LinkSource::Text { font: Some(font), .. } = &link.source
                 && font_is_file(font)
             {
-                return Err(invalid_candidate(format!(
-                    "sketch feature {} uses a font file; external font files are not frozen in a candidate",
-                    feature.id
-                )));
+                return Some(feature.id);
             }
         }
     }
-    Ok(())
+    None
+}
+
+/// Text may name an installed font family (not a file) or the built-in font. A font file is a
+/// mutable external path; 1.0 refuses it rather than keeping it unfrozen.
+fn reject_font_file_dependencies(design: &Document) -> Result<()> {
+    match font_file_feature(design) {
+        Some(feature) => {
+            Err(invalid_candidate(format!("sketch feature {feature} uses a font file; external font files are not frozen in a candidate")))
+        }
+        None => Ok(()),
+    }
 }
 
 /// One design-link dependency, planned before any bytes are read.
@@ -265,13 +272,19 @@ fn capture(s: &mut Session, _: &Value) -> Result<Value> {
         }
         let linked = solidcraft_io::read_design(&bytes)
             .map_err(|_| dependency_changed(format!("the linked design for component {} is not a readable design", plan.component)))?;
+        let dependency_id = format!("design-link-{}", plan.component);
+        if let Some(feature) = font_file_feature(&linked) {
+            return Err(invalid_candidate(format!(
+                "linked design for component {} (dependency {dependency_id}) uses a font file in sketch feature {feature}; external font files are not frozen in a candidate",
+                plan.component
+            )));
+        }
         if !linked.links.is_empty() {
             return Err(dependency_changed(format!(
                 "the linked design for component {} links to another design; nested dependencies are not supported",
                 plan.component
             )));
         }
-        let dependency_id = format!("design-link-{}", plan.component);
         let path = format!("inputs/{dependency_id}.sc");
         let digest = candidate::digest(&bytes);
         dependency_files.push(CandidateFile { path: path.clone(), bytes });
@@ -439,6 +452,48 @@ mod tests {
         std::fs::write(&part_path, changed).unwrap();
         let refused = assembly.execute("document.snapshot.capture", &json!({})).unwrap_err().to_string();
         assert!(refused.contains("DEPENDENCY_CHANGED"), "{refused}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn store_entry_count(root: &std::path::Path) -> usize {
+        std::fs::read_dir(root).map(|entries| entries.flatten().count()).unwrap_or(0)
+    }
+
+    #[test]
+    fn a_linked_design_with_a_font_file_is_rejected_before_any_candidate_is_written() {
+        let store = scratch("store-linked-font");
+        set_test_candidate_store(store.clone());
+        let dir = scratch("linked-font");
+        let font = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/biz-udp-gothic/BIZUDPGothic-Regular.ttf");
+        let mut part = Session::default();
+        run(&mut part, "solid.box", json!({"length": 20, "width": 10, "height": 5}));
+        run(&mut part, "sketch.create", json!({"plane": "XY"}));
+        run(&mut part, "sketch.text", json!({"text": "Hi", "at": [0, 20], "height": 5, "font": font}));
+        let part_path = dir.join("FontPart.sc");
+        run(&mut part, "file.save", json!({"path": part_path}));
+
+        let mut assembly = Session::default();
+        let inserted = run(&mut assembly, "component.insert_design", json!({"path": part_path}));
+        assert!(inserted["component"].is_u64());
+        let before = store_entry_count(&store);
+        let error = assembly.execute("document.snapshot.capture", &json!({})).unwrap_err().to_string();
+        assert!(error.contains("INVALID_CANDIDATE"), "{error}");
+        assert!(error.contains("linked design") && error.contains("design-link-1"), "names the link: {error}");
+        assert!(error.contains("font file"), "{error}");
+        assert_eq!(store_entry_count(&store), before, "a rejected linked font captures no candidate");
+
+        // A linked design without a font file still freezes and reopens.
+        let mut clean = Session::default();
+        run(&mut clean, "solid.box", json!({"length": 30, "width": 10, "height": 4}));
+        let clean_path = dir.join("CleanPart.sc");
+        run(&mut clean, "file.save", json!({"path": clean_path}));
+        let mut assembly = Session::default();
+        run(&mut assembly, "component.insert_design", json!({"path": clean_path}));
+        let reply = run(&mut assembly, "document.snapshot.capture", json!({}));
+        let verified = candidate::lookup(&store, reply["candidate"]["candidateId"].as_str().expect("candidateId")).expect("verified");
+        let linked = verified.files.iter().find(|file| file.path.starts_with("inputs/design-link-")).expect("frozen linked input");
+        let reopened = solidcraft_io::read_design(&linked.bytes).expect("frozen linked design opens");
+        assert_eq!(reopened.features.len(), 1, "the clean linked history survives");
         let _ = std::fs::remove_dir_all(dir);
     }
 
