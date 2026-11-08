@@ -71,11 +71,16 @@ npm run check:deps      # direct production licences and ee/ import check
 node dist/src/main.js   # start the built artifact on stdio
 ```
 
-`npm test` currently runs 31 tests. The schema suite checks **899 of 1002**
+`npm test` currently runs 87 tests. The schema suite checks **899 of 1002**
 catalog cases that this layer owns and agrees with the catalog on every one. The
 remaining 103 are reported, not claimed: 93 raw `guard-*` / `native-stamp-*`
 carriers whose decision belongs to the Rust component adapters, and 10 host
 state-machine transcripts owned by the Rust `RuntimeMachine`.
+
+56 of the 87 tests are the SolidCraft MCP adapter suites: a deterministic
+in-memory MCP peer (`test/support/mcp-peer.ts`) supplies every guarded outcome
+class, and every produced `WriteOutcome` is validated against the repository's
+`#/$defs/WriteOutcome` schema rather than a TypeScript copy of it.
 
 ## Contract bundle
 
@@ -122,10 +127,60 @@ counts and any mismatch.
   streaming are refused before a HostAi call.
 - A process replacement has no session, normalized history or continuation to
   resume.
+- `src/solidcraft/mcp-client.ts` connects to the host-injected
+  `solidcraft-app` bridge, performs the MCP handshake, discovers tools through
+  `tools/list` and each command's schemas through `describe_command`, validates
+  arguments against those schemas, keeps numeric transport ids bijectively
+  mapped to protocol `Id`s, and exposes the existing `pending`/`running` query
+  on the same connection.
+- `src/solidcraft/cad-adapter.ts` serializes one guarded mutation per turn,
+  bounds every MCP read (including `describe_command` discovery) at four shared
+  slots and serializes reads behind a mutation, binds `expectedDocument` at the
+  execution envelope, and normalizes every outcome to the contract's section 7
+  `WriteOutcome` (`applied`, `command_failed`, `expectation_failed`, `pending`,
+  `stale`, `cancelled`, `unknown`). It reconciles a still-running write through
+  `pending` on the same connection without resending it, reports `unknown` after
+  a disconnect, refuses further writes until reconciliation, and returns
+  `UNSUPPORTED_CAPABILITY` with zero writes for a speculative candidate probe.
+  A definite no-write failure (`command_failed` or a pre-send `cancelled`)
+  reports `after` equal to `before`; `stale` carries the app's current stamp (or
+  null when closed) and is never adopted automatically. 1.0 has no in-turn
+  escape from `unknown`: writes stay refused, the turn ends `outcome_unknown`,
+  and the user starts a new turn and re-inspects.
+
+## Host bridge provisioning contract (open #9 follow-up, not in this PR)
+
+This contract is not implemented by merged #25 and is not part of this PR. The
+open #9 remains its owner; it is a follow-up on #9, not a new issue.
+`src/solidcraft/mcp-client.ts` receives the bridge as an already-open channel,
+not a URL or a token it resolves itself. The host side must:
+
+- resolve `session.start`'s `BridgeRef {name: "solidcraft-app", bridgeId}` to a
+  channel bound to **this turn's** bridge (a fresh `solidcraft-cli mcp` bridge or
+  an equivalent in-process channel). The channel is the same MCP connection for
+  the whole turn, so the app's `pending` slot belongs to it;
+- inject the trusted turn association and cancellation flag. The runtime never
+  sends `sessionId`, `turnId`, `workflowRunId` or `expectedDocument` from model
+  arguments; `CadAdapter` rejects those keys inside CAD params;
+- wire `turn.cancel` to the `AbortSignal` passed in `CadTurnAssociation.signal`
+  (write admission closes independently of the runtime);
+- advertise `guardedExecute`/`guardedBatch` in `runtime.hello` once this
+  provisioning exists. Until then the runtime's hello reports both `false`.
+
+The channel shape is `McpBridgeChannel` (`send`, `receive`, `close`) or
+`streamChannel(readable, writable)` for a child process's pipes. A bridge that
+lacks `describe_command`, a usable command schema or the guarded
+`expectedDocument` field is refused rather than used unguarded.
 
 ## Not in this package
 
-- Native CAD tools, guarded execute/batch and the authoring loop (#9, #10).
+- The native authoring workflow, stage checks and repair scheduling (#10).
+- Host-side bridge provisioning and the chat tool-event/undo projection:
+  resolving `session.start`'s `BridgeRef` to a per-turn channel, injecting the
+  trusted turn/cancel association, projecting the adapter's evidence and stamps
+  through the existing chat tool events and undo boundary, and advertising
+  `guardedExecute`/`guardedBatch` in `runtime.hello`. The open #9 remains the
+  owner of this follow-up; merged #25 does not provide it.
 - ACP task execution (#4).
 - Snapshot capture, local validation and report verification (#11–#13).
 - Installed packaging, Node bundling and the full dependency/licence inventory
