@@ -434,6 +434,7 @@ test("a lost pending slot is unknown, blocks new writes and is never resubmitted
   assertConforms(blocked);
   assert.equal(blocked.outcome.state, "command_failed");
   assert.equal(blocked.outcome.completed, 0);
+  assert.equal(blocked.outcome.after, null, "an unresolved earlier effect cannot report a known stamp");
   assert.equal(blocked.outcome.error?.code, "OUTCOME_UNKNOWN");
   assert.equal(peer.toolCallsNamed("execute").length, 1, "no replacement mutation is sent");
   assert.throws(
@@ -472,6 +473,7 @@ test("a disconnect after submission returns unknown and admits no replacement wr
   const blocked = await adapter.execute("parameters.change", { name: "height" });
   assertConforms(blocked);
   assert.equal(blocked.outcome.state, "command_failed");
+  assert.equal(blocked.outcome.after, null, "an unresolved earlier effect cannot report a known stamp");
   assert.equal(blocked.outcome.error?.code, "OUTCOME_UNKNOWN");
   assert.equal(peer.toolCallsNamed("execute").length, 1, "a lost connection never resends");
 

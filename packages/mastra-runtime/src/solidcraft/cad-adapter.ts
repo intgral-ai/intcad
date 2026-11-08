@@ -1242,7 +1242,7 @@ export class CadAdapter {
         state: "command_failed",
         request: this.#request(reservation),
         before: cloneStamp(context.before),
-        after: cloneStamp(context.before),
+        after: null,
         completed: 0,
         rollback: rollbackNone(isBatch),
         expectation: null,

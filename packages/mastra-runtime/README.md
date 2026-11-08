@@ -148,12 +148,12 @@ counts and any mismatch.
   escape from `unknown`: writes stay refused, the turn ends `outcome_unknown`,
   and the user starts a new turn and re-inspects.
 
-## Host bridge provisioning contract (new host follow-up, not in this PR)
+## Host bridge provisioning contract (open #9 follow-up, not in this PR)
 
-This contract is not implemented by merged #25 and is not part of this PR. A
-new host follow-up must own it. `src/solidcraft/mcp-client.ts` receives the
-bridge as an already-open channel, not a URL or a token it resolves itself. The
-host side must:
+This contract is not implemented by merged #25 and is not part of this PR. The
+open #9 remains its owner; it is a follow-up on #9, not a new issue.
+`src/solidcraft/mcp-client.ts` receives the bridge as an already-open channel,
+not a URL or a token it resolves itself. The host side must:
 
 - resolve `session.start`'s `BridgeRef {name: "solidcraft-app", bridgeId}` to a
   channel bound to **this turn's** bridge (a fresh `solidcraft-cli mcp` bridge or
@@ -179,8 +179,8 @@ lacks `describe_command`, a usable command schema or the guarded
   resolving `session.start`'s `BridgeRef` to a per-turn channel, injecting the
   trusted turn/cancel association, projecting the adapter's evidence and stamps
   through the existing chat tool events and undo boundary, and advertising
-  `guardedExecute`/`guardedBatch` in `runtime.hello`. This is a new follow-up
-  host task; merged #25 does not provide it.
+  `guardedExecute`/`guardedBatch` in `runtime.hello`. The open #9 remains the
+  owner of this follow-up; merged #25 does not provide it.
 - ACP task execution (#4).
 - Snapshot capture, local validation and report verification (#11–#13).
 - Installed packaging, Node bundling and the full dependency/licence inventory
