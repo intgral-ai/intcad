@@ -7,6 +7,8 @@
 //!   duplicate ids, as `serde_json` pretty-prints them.
 //! - `tests/KNOWN_FAILING_TESTS`: one test a line with its cause, sorted, each test once
 //!   (checked only; `cargo xtask known-failing` reads it).
+//! - `tests/KNOWN_FAILURE_EXCEPTIONS`: one narrow, expiring exception a line with every bound
+//!   field, sorted, each test once (checked only; `cargo xtask known-failure-exception` reads it).
 //! - `tests/kernel-cases/CASES`: every kernel rig case, sorted; it only shrinks, since new kernel
 //!   cases go to solidcore's corpus (checked only).
 //! - Growing Rust lists: no written array lengths on more than ten lines of entries.
@@ -46,9 +48,10 @@ pub fn run(root: &Path, fix: bool) -> Result<(), String> {
     crate::pending::check_locales(root)?;
     crate::pending::check_attribution(root)?;
     crate::known_failing::check_list(root)?;
+    crate::known_failure_exception::check_list(root)?;
     crate::kernel_cases::check_cases_list(root)?;
     println!(
-        "lists: growing arrays checked; message catalogs, the known-failing tests and the kernel rig cases sorted (no new rig case); pending locale and attribution files fold cleanly"
+        "lists: growing arrays checked; message catalogs, the known-failing tests, the known-failure exceptions and the kernel rig cases sorted (no new rig case); pending locale and attribution files fold cleanly"
     );
     Ok(())
 }
