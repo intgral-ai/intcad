@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use super::MODEL_LIST_CAP;
 use super::acp::ModelInfo;
 use super::agents::Protocol;
-use super::backend::{ChatBackend, Event, HttpFn, HttpRequest, PromptPart, StartContext, ToolStatus};
+use super::backend::{ChatBackend, Event, HookVerdict, HttpFn, HttpRequest, PromptPart, StartContext, ToolStatus, TurnHook};
 use super::host_ai::go::{go_protocol, is_opencode_go};
 use super::host_ai::provider::{self, ANTHROPIC_VERSION, ProviderCall, ProviderReply, ProviderState, Reply, WireProtocol as GoProtocol, endpoint};
 use super::host_ai::{AiError, AiErrorCode, AiErrorDetails, ConnectionBinding, FinishReason, HostAi, TurnControl};
@@ -80,10 +80,18 @@ pub struct ApiBackend {
     events: Receiver<(Option<Arc<TurnControl>>, Event)>,
     turn: Arc<TurnControl>,
     mcp: Option<ProcessHandle>,
+    hook: Option<Arc<dyn TurnHook>>,
 }
 
 impl ApiBackend {
     pub fn start(cfg: ApiConfig, ctx: StartContext) -> Result<ApiBackend, String> {
+        Self::start_with_hook(cfg, ctx, None)
+    }
+
+    /// Start the one native Direct loop with a minimal task lifecycle hook. The hook never owns a
+    /// provider, session or tool registry; the same MCP bridge and control gate still execute
+    /// every call.
+    pub fn start_with_hook(cfg: ApiConfig, ctx: StartContext, hook: Option<Arc<dyn TurnHook>>) -> Result<ApiBackend, String> {
         let binding = cfg.host_ai.bind(&cfg.connection_id, &cfg.model).map_err(direct_error)?;
         let protocol = binding.protocol();
         // One stable session ID per chat for OpenCode Go's routing and prompt cache.
@@ -102,6 +110,7 @@ impl ApiBackend {
         let turn = Arc::new(TurnControl::new());
         let parent = Arc::clone(&turn);
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(ctx.wake);
+        let worker_hook = hook.clone();
         std::thread::spawn(move || {
             let mut w = Worker {
                 cfg,
@@ -120,10 +129,11 @@ impl ApiBackend {
                 turn: parent,
                 in_turn: false,
                 no_reasoning: Default::default(),
+                hook: worker_hook,
             };
             w.run(cmd_rx);
         });
-        Ok(ApiBackend { cmds: Some(cmd_tx), events, turn, mcp: handle })
+        Ok(ApiBackend { cmds: Some(cmd_tx), events, turn, mcp: handle, hook })
     }
 }
 
@@ -155,6 +165,9 @@ impl ChatBackend for ApiBackend {
     }
     fn cancel(&mut self) {
         self.turn.cancel();
+        if let Some(hook) = &self.hook {
+            hook.on_cancel();
+        }
     }
     fn set_model(&mut self, model: &str) {
         if let Some(c) = &self.cmds {
@@ -218,6 +231,9 @@ struct Worker {
     in_turn: bool,
     /// Set once the endpoint refused tools together with a reasoning effort: later requests ask for none.
     no_reasoning: std::cell::Cell<bool>,
+    /// The optional host task lifecycle seam. The loop, session, provider, tool registry and gate
+    /// are unchanged.
+    hook: Option<Arc<dyn TurnHook>>,
 }
 
 impl Worker {
@@ -337,12 +353,12 @@ impl Worker {
             Ok(binding) if binding.protocol() == self.protocol => binding,
             Ok(_) => {
                 self.emit(Event::Error(crate::i18n::tr("ui.host_ai_reconnect_required").into()));
-                self.emit(Event::TurnEnded { reason: "error".into() });
+                self.end_turn("error");
                 return;
             }
             Err(error) => {
                 self.emit(Event::Error(direct_error(error)));
-                self.emit(Event::TurnEnded { reason: "error".into() });
+                self.end_turn("error");
                 return;
             }
         };
@@ -362,29 +378,29 @@ impl Worker {
             // goes back to it, so no half-finished round is left to confuse the next message.
             let sound = self.history.len();
             if self.turn.check().is_err() {
-                self.emit(Event::TurnEnded { reason: "cancelled".into() });
+                self.end_turn("cancelled");
                 return;
             }
             let reply = match self.request() {
                 Ok(_) if self.turn.check().is_err() => {
                     self.history.truncate(sound);
-                    self.emit(Event::TurnEnded { reason: "cancelled".into() });
+                    self.end_turn("cancelled");
                     return;
                 }
                 Ok(r) => r,
                 Err(_) if self.turn.check().is_err() => {
                     self.history.truncate(sound);
-                    self.emit(Event::TurnEnded { reason: "cancelled".into() });
+                    self.end_turn("cancelled");
                     return;
                 }
                 Err(e) => {
                     self.emit(Event::Error(e));
-                    self.emit(Event::TurnEnded { reason: "error".into() });
+                    self.end_turn("error");
                     return;
                 }
             };
             if reply.calls.is_empty() {
-                self.emit(Event::TurnEnded { reason: reply.stop.into() });
+                self.end_turn(reply.stop);
                 return;
             }
             // Anthropic takes every result of a round in one user message; OpenAI takes one
@@ -405,19 +421,30 @@ impl Worker {
                     input: c.arguments.as_ref().ok().filter(|a| a.is_object()).cloned(),
                     output: None,
                 });
-                let (text, failed) = if self.turn.check().is_err() {
-                    ("cancelled by the user".to_string(), true)
+                let (text, failed, result_value) = if self.turn.check().is_err() {
+                    ("cancelled by the user".to_string(), true, json!({"ok": false, "cancelled": true}))
                 } else if let Err(e) = &c.arguments {
                     // A call whose arguments do not parse is answered, never run with `{}`.
-                    (format!("Not run: {e}"), true)
+                    (format!("Not run: {e}"), true, json!({"ok": false, "error": "the arguments did not parse"}))
                 } else if !self.tool_names.iter().any(|n| n == &c.name) {
-                    (format!("unknown tool `{}`", c.name), true)
+                    (format!("unknown tool `{}`", c.name), true, json!({"ok": false, "error": "unknown tool"}))
                 } else {
-                    match self.mcp_call("tools/call", json!({"name": c.name, "arguments": args})) {
-                        Ok(r) => tool_text(&r),
-                        Err(e) => (e, true),
+                    let verdict = self.hook.as_ref().map(|hook| hook.on_tool_request(&c.name, &args)).unwrap_or(HookVerdict::Allow);
+                    match verdict {
+                        // The same native loop; the host task policy can only narrow a call.
+                        HookVerdict::Deny(reason) => (format!("Not run: {reason}"), true, json!({"ok": false, "error": reason})),
+                        HookVerdict::Allow => match self.mcp_call("tools/call", json!({"name": c.name, "arguments": args})) {
+                            Ok(r) => {
+                                let (text, failed) = tool_text(&r);
+                                (text, failed, r)
+                            }
+                            Err(e) => (e.clone(), true, json!({"ok": false, "error": e})),
+                        },
                     }
                 };
+                if let Some(hook) = &self.hook {
+                    hook.on_tool_result(&c.name, &result_value, failed);
+                }
                 if self.turn.check().is_err() {
                     break;
                 }
@@ -439,13 +466,21 @@ impl Worker {
             }
             if self.turn.check().is_err() {
                 self.history.truncate(sound);
-                self.emit(Event::TurnEnded { reason: "cancelled".into() });
+                self.end_turn("cancelled");
                 return;
             }
             if self.protocol == Protocol::Anthropic && !results.is_empty() {
                 self.history.push(json!({"role": "user", "content": results}));
             }
         }
+    }
+
+    /// The one place a native turn ends: notify the host hook, then publish the existing event.
+    fn end_turn(&mut self, reason: &str) {
+        if let Some(hook) = &self.hook {
+            hook.on_turn_end(reason);
+        }
+        self.emit(Event::TurnEnded { reason: reason.into() });
     }
 
     /// Keep the conversation bounded and starting at a user message, so neither protocol sees a
@@ -4200,6 +4235,352 @@ mod tests {
         b.shutdown(true);
     }
 
+    /// Plain chat with no task hook (the default `ApiBackend::start`) keeps the existing loop:
+    /// a tool call is still run and answered, the turn ends normally, and no task policy exists.
+    #[test]
+    fn plain_chat_without_a_task_hook_is_unchanged() {
+        let answers = std::sync::Mutex::new(vec![
+            json!({"choices": [{"message": {"role": "assistant", "content": "Hello."}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "Measuring.", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "measure", "arguments": "{}"}}]}}]}),
+        ]);
+        let http: HttpFn = Arc::new(move |r: &HttpRequest| {
+            if r.method == "GET" {
+                return Ok((200, b"{\"data\":[]}".to_vec()));
+            }
+            let a = answers.lock().unwrap().pop().unwrap_or(json!({}));
+            Ok((200, a.to_string().into_bytes()))
+        });
+        let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", None, http, "");
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hello".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "Hello.")), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::Tool { status: Some(ToolStatus::Failed), .. })), "{events:?}");
+        assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason.is_empty()), "{events:?}");
+        b.shutdown(true);
+    }
+
+    /// The native Direct loop can carry a host task controller through minimal lifecycle hooks:
+    /// the same Worker, MCP bridge, provider and tool loop. The tool itself is scripted; the
+    /// controller's terminal truth and the hook wiring are real.
+    #[cfg(unix)]
+    struct LoopTools {
+        document: solidcraft_agent_task::DocumentRef,
+        snapshots: u32,
+    }
+
+    #[cfg(unix)]
+    impl LoopTools {
+        fn new() -> Self {
+            Self { document: solidcraft_agent_task::DocumentRef { project_id: "p".into(), document_id: "doc-loop".into(), version: 1 }, snapshots: 0 }
+        }
+    }
+
+    #[cfg(unix)]
+    impl solidcraft_agent_task::ToolPort for LoopTools {
+        fn inspect(&mut self, _document: &solidcraft_agent_task::DocumentRef) -> Result<String, solidcraft_agent_task::PortError> {
+            Ok("an L bracket with four mounting holes".into())
+        }
+        fn current_document(&mut self) -> Result<solidcraft_agent_task::DocumentRef, solidcraft_agent_task::PortError> {
+            Ok(self.document.clone())
+        }
+        fn capture_snapshot(
+            &mut self,
+            document: &solidcraft_agent_task::DocumentRef,
+            purpose: solidcraft_agent_task::SnapshotPurpose,
+        ) -> Result<solidcraft_agent_task::SnapshotRef, solidcraft_agent_task::PortError> {
+            self.snapshots += 1;
+            Ok(solidcraft_agent_task::SnapshotRef {
+                id: format!("loop-snap-{}", self.snapshots),
+                document: document.clone(),
+                digest: format!("sha256:loop-{}", self.snapshots),
+                purpose,
+            })
+        }
+        fn run_checks(
+            &mut self,
+            _document: &solidcraft_agent_task::DocumentRef,
+            required: &[String],
+        ) -> Result<Vec<solidcraft_agent_task::CheckResult>, solidcraft_agent_task::PortError> {
+            Ok(required.iter().map(|id| solidcraft_agent_task::CheckResult { check_id: id.clone(), passed: true, detail: "host".into() }).collect())
+        }
+    }
+
+    #[cfg(unix)]
+    struct LoopValidation;
+
+    #[cfg(unix)]
+    impl solidcraft_agent_task::ValidationPort for LoopValidation {
+        fn validate(
+            &mut self,
+            snapshot: &solidcraft_agent_task::SnapshotRef,
+            profile: &solidcraft_agent_task::ValidationProfileRef,
+        ) -> Result<solidcraft_agent_task::ValidationReport, solidcraft_agent_task::PortError> {
+            Ok(solidcraft_agent_task::ValidationReport {
+                run_id: "loop-validation".into(),
+                profile: profile.clone(),
+                snapshot: snapshot.clone(),
+                document: snapshot.document.clone(),
+                passed: true,
+                checks: vec![
+                    solidcraft_agent_task::CheckResult { check_id: "input.integrity".into(), passed: true, detail: String::new() },
+                    solidcraft_agent_task::CheckResult { check_id: "native.rebuild".into(), passed: true, detail: String::new() },
+                ],
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    struct LoopHook {
+        state: Mutex<(solidcraft_agent_task::TaskController, LoopTools, LoopValidation)>,
+        seen: Mutex<Vec<String>>,
+    }
+
+    #[cfg(unix)]
+    impl LoopHook {
+        fn new() -> Arc<Self> {
+            let profile =
+                solidcraft_agent_task::ValidationProfileRef { profile_id: "native-basic".into(), version: "1.0.0".into(), digest: "sha256:x".into() };
+            let registry = solidcraft_agent_task::skill::builtins(profile, solidcraft_agent_task::Budget::finite(4, 8, 0, 60_000)).unwrap();
+            let spec = solidcraft_agent_task::TaskSpec {
+                skill_id: solidcraft_agent_task::TEXT_TO_CAD_ID.into(),
+                input: "bracket".into(),
+                document: solidcraft_agent_task::DocumentRef { project_id: "p".into(), document_id: "doc-loop".into(), version: 1 },
+                selection: Vec::new(),
+                requirements: None,
+                budget: solidcraft_agent_task::Budget::finite(4, 8, 0, 60_000),
+            };
+            let permission = solidcraft_agent_task::PermissionContext {
+                principal: "test".into(),
+                approval_mode: solidcraft_agent_task::ApprovalMode::Ask,
+                allow_list: Vec::new(),
+                turn_valid: true,
+            };
+            let mut controller = solidcraft_agent_task::TaskController::start(
+                &registry,
+                spec,
+                permission,
+                Arc::new(solidcraft_agent_task::SystemClock),
+                Box::new(solidcraft_agent_task::InMemoryStore::new()),
+            )
+            .unwrap();
+            let mut tools = LoopTools::new();
+            controller.begin(&mut tools).unwrap();
+            Arc::new(Self { state: Mutex::new((controller, tools, LoopValidation)), seen: Mutex::new(Vec::new()) })
+        }
+
+        fn result(&self) -> Option<solidcraft_agent_task::TaskResult> {
+            self.state.lock().unwrap().0.result().cloned()
+        }
+
+        fn seen(&self) -> Vec<String> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    #[cfg(unix)]
+    impl TurnHook for LoopHook {
+        fn on_tool_request(&self, tool: &str, arguments: &Value) -> HookVerdict {
+            self.seen.lock().unwrap().push(format!("request {tool}"));
+            let mut state = self.state.lock().unwrap();
+            let (controller, tools, _) = &mut *state;
+            match controller.on_tool_request(tool, arguments, tools) {
+                solidcraft_agent_task::ToolDecision::Allow => HookVerdict::Allow,
+                solidcraft_agent_task::ToolDecision::Deny(reason) => HookVerdict::Deny(reason),
+            }
+        }
+
+        fn on_tool_result(&self, tool: &str, _result: &Value, failed: bool) {
+            self.seen.lock().unwrap().push(format!("result {tool} failed={failed}"));
+            let mut state = self.state.lock().unwrap();
+            let (controller, tools, _) = &mut *state;
+            if !failed && matches!(tool, "execute" | "batch" | "set_parameter") {
+                tools.document.version += 1;
+            }
+            controller.on_tool_result(
+                tool,
+                if failed { solidcraft_agent_task::ToolOutcome::Failed } else { solidcraft_agent_task::ToolOutcome::Completed },
+                "native loop",
+            );
+        }
+
+        fn on_turn_end(&self, reason: &str) {
+            self.seen.lock().unwrap().push(format!("end {reason}"));
+            let mut state = self.state.lock().unwrap();
+            let (controller, tools, validation) = &mut *state;
+            let _ = controller.on_turn_end(tools, validation);
+        }
+
+        fn on_cancel(&self) {
+            self.seen.lock().unwrap().push("cancel".into());
+            self.state.lock().unwrap().0.on_cancel("the user stopped the message");
+        }
+    }
+
+    #[cfg(unix)]
+    fn fake_mcp(dir: &std::path::Path) -> std::path::PathBuf {
+        let log = dir.join("mcp.log");
+        let script = r#"#!/bin/sh
+log="LOG_PATH"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"fake","version":"1"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"execute","description":"d","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}],"isError":false}}\n' "$id" ;;
+  esac
+done
+"#;
+        let script = script.replace("LOG_PATH", &log.display().to_string());
+        let path = dir.join("fake-mcp");
+        std::fs::write(&path, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        log
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_native_direct_loop_drives_a_host_owned_task_to_validated_success() {
+        let dir = std::env::temp_dir().join(format!("sc-agent-task-loop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = fake_mcp(&dir);
+        // Pop order: the tool call first, then the final prose answer.
+        let answers = Mutex::new(vec![
+            json!({"choices": [{"message": {"role": "assistant", "content": "Done."}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "Making it.", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "execute", "arguments": "{\"command\":\"parameters.change\",\"params\":{\"name\":\"thickness\",\"expression\":\"8 mm\"}}"}}]}}]}),
+        ]);
+        let http: HttpFn = Arc::new(move |r: &HttpRequest| {
+            if r.method == "GET" {
+                return Ok((200, b"{\"data\":[]}".to_vec()));
+            }
+            let a = answers.lock().unwrap().pop().unwrap_or(json!({}));
+            Ok((200, a.to_string().into_bytes()))
+        });
+        let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", None, http, "");
+        let hook = LoopHook::new();
+        let ctx = StartContext {
+            cwd: dir.clone(),
+            bridge: Some(crate::agent_chat::acp::McpBridge { cli: dir.join("fake-mcp"), port: 1 }),
+            tools: None,
+            wake: Box::new(|| {}),
+        };
+        let mut b = ApiBackend::start_with_hook(cfg, ctx, Some(hook.clone())).unwrap();
+        let mut events = Vec::new();
+        let start = std::time::Instant::now();
+        while !events.iter().any(|e| matches!(e, Event::Ready { .. })) && start.elapsed() < Duration::from_secs(10) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        b.prompt(&[PromptPart::Text("change the bracket thickness to 8 mm".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(events.iter().any(|e| matches!(e, Event::Tool { status: Some(ToolStatus::Completed), .. })), "{events:?}");
+        let result = hook.result().expect("the hook produced a terminal");
+        assert_eq!(result.terminal, solidcraft_agent_task::TaskTerminal::ValidatedSuccess, "{result:?}");
+        let seen = hook.seen();
+        assert!(seen.iter().any(|s| s == "request execute"), "{seen:?}");
+        assert!(seen.iter().any(|s| s.starts_with("result execute")), "{seen:?}");
+        assert!(seen.iter().any(|s| s.starts_with("end ")), "{seen:?}");
+        let log = std::fs::read_to_string(&log).unwrap();
+        assert!(log.contains("\"method\":\"tools/call\""), "the native loop executed the CAD tool: {log}");
+        b.shutdown(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_early_model_end_on_the_native_loop_never_reports_success() {
+        let dir = std::env::temp_dir().join(format!("sc-agent-task-early-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _log = fake_mcp(&dir);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| {
+            if r.method == "GET" {
+                return Ok((200, b"{\"data\":[]}".to_vec()));
+            }
+            Ok((200, json!({"choices": [{"message": {"role": "assistant", "content": "It is done."}}]}).to_string().into_bytes()))
+        });
+        let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", None, http, "");
+        let hook = LoopHook::new();
+        let ctx = StartContext {
+            cwd: dir.clone(),
+            bridge: Some(crate::agent_chat::acp::McpBridge { cli: dir.join("fake-mcp"), port: 1 }),
+            tools: None,
+            wake: Box::new(|| {}),
+        };
+        let mut b = ApiBackend::start_with_hook(cfg, ctx, Some(hook.clone())).unwrap();
+        let mut events = Vec::new();
+        let start = std::time::Instant::now();
+        while !events.iter().any(|e| matches!(e, Event::Ready { .. })) && start.elapsed() < Duration::from_secs(10) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        b.prompt(&[PromptPart::Text("make the bracket".into())]);
+        let _ = wait_for_turn(&mut b);
+        let result = hook.result().expect("the hook produced a terminal");
+        assert_eq!(result.terminal, solidcraft_agent_task::TaskTerminal::Incomplete, "{result:?}");
+        assert_ne!(result.terminal, solidcraft_agent_task::TaskTerminal::ValidatedSuccess);
+        b.shutdown(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cancelling_the_native_loop_reaches_the_task_as_cancelled() {
+        let dir = std::env::temp_dir().join(format!("sc-agent-task-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _log = fake_mcp(&dir);
+        let (release_tx, release_rx) = channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let seen = Arc::new(Mutex::new(0_u32));
+        let log = seen.clone();
+        let http: HttpFn = Arc::new(move |r: &HttpRequest| {
+            if r.method == "GET" {
+                return Ok((200, b"{\"data\":[]}".to_vec()));
+            }
+            *log.lock().unwrap() += 1;
+            let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(20));
+            Ok((200, json!({"choices": [{"message": {"role": "assistant", "content": "late"}}]}).to_string().into_bytes()))
+        });
+        let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", None, http, "");
+        let hook = LoopHook::new();
+        let ctx = StartContext {
+            cwd: dir.clone(),
+            bridge: Some(crate::agent_chat::acp::McpBridge { cli: dir.join("fake-mcp"), port: 1 }),
+            tools: None,
+            wake: Box::new(|| {}),
+        };
+        let mut b = ApiBackend::start_with_hook(cfg, ctx, Some(hook.clone())).unwrap();
+        let mut events = Vec::new();
+        let start = std::time::Instant::now();
+        while !events.iter().any(|e| matches!(e, Event::Ready { .. })) && start.elapsed() < Duration::from_secs(10) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        b.prompt(&[PromptPart::Text("hang".into())]);
+        let start = std::time::Instant::now();
+        while *seen.lock().unwrap() == 0 && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        b.cancel();
+        let mut events = Vec::new();
+        let start = std::time::Instant::now();
+        while !events.iter().any(|e| matches!(e, Event::TurnEnded { .. })) && start.elapsed() < Duration::from_secs(10) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = release_tx.send(());
+        let result = hook.result().expect("the hook produced a terminal");
+        assert_eq!(result.terminal, solidcraft_agent_task::TaskTerminal::Cancelled, "{result:?}");
+        assert!(hook.seen().iter().any(|s| s == "cancel"));
+        b.shutdown(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Cancel while a model request is in flight ends the turn at once (the request is
     /// abandoned, its late answer dropped), leaves no half-finished round in the history and
     /// the next message goes through.
@@ -4962,6 +5343,7 @@ mod tests {
             turn: Arc::new(TurnControl::new()),
             in_turn: true,
             no_reasoning: Default::default(),
+            hook: None,
         };
         (w, seen)
     }

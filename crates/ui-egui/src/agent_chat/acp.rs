@@ -808,6 +808,22 @@ mod tests {
         }
     }
 
+    /// ACP's own permission auto-answer only skips a duplicate question for the bridge's tools.
+    /// What the bridge then sends is still a normal control request: the same CAD gate sees it,
+    /// so an ACP agent cannot bypass the gate by naming the MCP tool differently.
+    #[test]
+    fn a_bridge_tool_name_never_bypasses_the_cad_gate() {
+        let bridge_tool = format!("mcp__{BRIDGE_NAME}__execute");
+        assert!(is_bridge_tool(&bridge_tool, None), "the panel may auto-answer the agent's own question");
+        let write = json!({"command": "solid.box", "params": {"length": 10}});
+        assert_eq!(crate::agent_chat::gate::request("engine.execute", &write, 0), crate::agent_chat::gate::Verdict::Run { change: true });
+        let refused = json!({"command": "diagnostics.crash_reports", "params": {}});
+        assert!(matches!(crate::agent_chat::gate::request("engine.execute", &refused, 0), crate::agent_chat::gate::Verdict::Refuse(_)));
+        // The same for a batch the bridge would send.
+        let batch = json!({"commands": [{"command": "solid.box", "params": {}}, {"command": "file.save", "params": {"path": "/etc/x"}}]});
+        assert!(matches!(crate::agent_chat::gate::request("engine.batch", &batch, 0), crate::agent_chat::gate::Verdict::Ask(_)));
+    }
+
     #[test]
     fn the_session_gets_the_bridged_mcp_server_without_a_token_or_any_path() {
         let b = McpBridge { cli: "/opt/solidcraft/solidcraft-cli".into(), port: 41234 };

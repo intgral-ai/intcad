@@ -142,6 +142,25 @@ pub struct StartContext {
     pub wake: Box<dyn Fn() + Send + Sync>,
 }
 
+/// What a native tool loop may do with one model tool call. A denial stops the call before the
+/// MCP/control boundary; it is not a second permission system, only a policy observer beside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HookVerdict {
+    Allow,
+    Deny(String),
+}
+
+/// A minimal lifecycle seam inside a native agent loop. The same loop, session, provider, tool
+/// registry and gate stay in place; a host task controller only observes and may narrow a call.
+pub trait TurnHook: Send + Sync {
+    fn on_tool_request(&self, _tool: &str, _arguments: &Value) -> HookVerdict {
+        HookVerdict::Allow
+    }
+    fn on_tool_result(&self, _tool: &str, _result: &Value, _failed: bool) {}
+    fn on_turn_end(&self, _reason: &str) {}
+    fn on_cancel(&self) {}
+}
+
 /// A chat backend. Methods never block the frame; replies arrive through [`ChatBackend::poll`].
 pub trait ChatBackend {
     /// What arrived since the last call.

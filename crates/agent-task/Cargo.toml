@@ -1,0 +1,13 @@
+[package]
+name = "solidcraft-agent-task"
+description = "Native AI harness task contract, skills, ports and host-owned CAD task controller (no UI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

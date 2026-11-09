@@ -48,6 +48,8 @@ mod process;
 pub mod runtime_client;
 pub mod settings;
 pub mod summary;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod task_bridge;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
