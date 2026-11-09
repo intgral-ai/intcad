@@ -549,7 +549,10 @@ jobs:
           OUT: ${{ github.workspace }}/action-matrix
         run: |
           mkdir -p "$OUT"
-          export ACTION_MATRIX_SHARD="$SHARD/16" ACTION_MATRIX_RESULTS="$OUT/results-$SHARD.json" ACTION_MATRIX_TIMINGS="$OUT/timings-$SHARD.jsonl" ACTION_MATRIX_WORKDIR="$OUT/raw-$SHARD"
+          # The current baseline (tests/action_matrix/baseline-current.json) gates this shard;
+          # the historical baseline is compared report-only. Both reports are uploaded with the
+          # shard so a red run shows the drift without hiding it. All 16 shards still run.
+          export ACTION_MATRIX_SHARD="$SHARD/16" ACTION_MATRIX_RESULTS="$OUT/results-$SHARD.json" ACTION_MATRIX_TIMINGS="$OUT/timings-$SHARD.jsonl" ACTION_MATRIX_WORKDIR="$OUT/raw-$SHARD" ACTION_MATRIX_HISTORICAL_REPORT="$OUT/historical-delta-$SHARD.txt" ACTION_MATRIX_CURRENT_REPORT="$OUT/current-gate-$SHARD.txt"
           cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_shard)' --test-threads 2
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
