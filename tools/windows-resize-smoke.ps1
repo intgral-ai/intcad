@@ -36,13 +36,14 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
     public static string Text(IntPtr h) { var s = new System.Text.StringBuilder(256); GetWindowTextW(h, s, 256); return s.ToString(); }
     public static string Class(IntPtr h) { var s = new System.Text.StringBuilder(256); GetClassNameW(h, s, 256); return s.ToString(); }
-    // The process's visible top-level window titled SolidCraft (the app's main window; the
-    // process has other top-level windows, such as the IME's).
+    // The process's visible top-level window titled open-skyfall (the app's main window; the
+    // process has other top-level windows, such as the IME's). Older builds still say SolidCraft.
     public static IntPtr MainWindow(uint pid) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, l) => {
             uint p; GetWindowThreadProcessId(h, out p);
-            if (p == pid && IsWindowVisible(h) && Text(h).StartsWith("SolidCraft")) { found = h; return false; }
+            var title = Text(h);
+            if (p == pid && IsWindowVisible(h) && (title.StartsWith("open-skyfall") || title.StartsWith("SolidCraft"))) { found = h; return false; }
             return true;
         }, IntPtr.Zero);
         return found;
