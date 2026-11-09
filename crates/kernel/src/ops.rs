@@ -39,10 +39,17 @@ pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
         // would nest the others inside the result as voids (#55): union the pieces that meet
         // and join the rest back untouched. Where that does not apply (one piece, every piece
         // meeting, or the pieces cannot be told apart) the ordinary union keeps its fast path.
-        if op == BoolOp::Union
-            && let Ok(Some(by_lump)) = guard("union by lump", || union_by_lumps(a, b))
-        {
-            return Ok(Some(by_lump));
+        if op == BoolOp::Union {
+            match guard("union by lump", || union_by_lumps(a, b)) {
+                Ok(Some(by_lump)) => return Ok(Some(by_lump)),
+                Ok(None) => {}
+                Err(e) => {
+                    // Do not hide a by-lump refusal behind the ordinary path: under validation
+                    // that checks nothing it could return the nested body this path avoids.
+                    log::debug!(target: "smlib", "union by lump: {e}");
+                    return Err(e);
+                }
+            }
         }
         let r = guard("SMLib boolean", || crate::smlib_boolean::smlib_boolean(a, b, op));
         with_operand_roles(a, b, op, r)
@@ -53,26 +60,28 @@ pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
 /// pieces union with `b` one at a time (the first a single piece, which SMLib handles), the
 /// pieces apart from `b` join back untouched. SMLib nests a disconnected piece of a multi-lump
 /// first operand inside the result as a void, losing material and failing its own check (#55).
+/// A piece meets `b` when their exact boxes, each grown by its tolerance, overlap: exact geometry,
+/// no tessellation (a box that overlaps without touching is still unioned, which is sound).
 /// `None` where the ordinary union applies: `a` is in one piece, `b` is not one piece (a tool
 /// spanning pieces is outside this case), every piece meets `b`, or a piece cannot be told
-/// apart; an error reading the pieces also leaves the ordinary path to fail in its own words.
+/// apart. An error reading the pieces is returned, never hidden behind the ordinary path.
 fn union_by_lumps(a: &Body, b: &Body) -> Result<Option<Body>> {
     if a.is_mesh() || b.is_mesh() {
         return Ok(None);
     }
-    let lumps = a.lumps()?;
-    if lumps.len() < 2 || b.lumps()?.len() != 1 {
+    // Cheap guards before building `a`'s parts: both bodies' material regions are read from the
+    // record, and only a multi-lump `a` with a single-lump tool takes this path.
+    if a.record().material_regions().len() < 2 || b.record().material_regions().len() != 1 {
         return Ok(None);
     }
+    let lumps = a.lumps()?;
     let mut meeting = Vec::new();
     let mut apart_lumps = Vec::new();
     for lump in lumps {
         if apart(&lump, b)? {
             apart_lumps.push(lump);
-        } else if lump.meets(b)? {
-            meeting.push(lump);
         } else {
-            apart_lumps.push(lump);
+            meeting.push(lump);
         }
     }
     // Every piece meets the tool: one connected result, which the ordinary union makes.
@@ -82,7 +91,8 @@ fn union_by_lumps(a: &Body, b: &Body) -> Result<Option<Body>> {
     // No piece meets the tool: the whole body and the tool are apart, side by side.
     if meeting.is_empty() {
         let Some(body) = join_apart(&[a.clone(), b.clone()])? else { return Ok(None) };
-        return Ok(Some(body.inherit_split_lines(&[a, b])));
+        let body = body.inherit_split_lines(&[a, b]).with_preserved_union_planar_sources(&[a, b])?;
+        return Ok(Some(body));
     }
     let Some(first) = meeting.first() else { return Ok(None) };
     let Some(first_result) = boolean(first, b, BoolOp::Union)? else { return Ok(None) };
@@ -103,7 +113,10 @@ fn union_by_lumps(a: &Body, b: &Body) -> Result<Option<Body>> {
         let refs: Vec<&History> = parts.iter().collect();
         crate::history::of_part(&part, &counts).over(&refs).ok()
     });
-    let body = body.with_checked_history(history, &[(a.face_count(), a.edge_count()), (b.face_count(), b.edge_count())]).inherit_split_lines(&[a, b]);
+    let body = body
+        .with_checked_history(history, &[(a.face_count(), a.edge_count()), (b.face_count(), b.edge_count())])
+        .inherit_split_lines(&[a, b])
+        .with_preserved_union_planar_sources(&[a, b])?;
     Ok(Some(body))
 }
 

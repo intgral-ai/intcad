@@ -331,6 +331,54 @@ fn a_cut_of_two_pieces_composes_the_pieces() {
     assert_eq!(targets.len(), 12);
 }
 
+/// A body in three pieces, a tool meeting the first two: the meeting pieces union by lump and
+/// the third joins back. Every face and edge is over the body and the tool.
+#[test]
+fn a_union_meeting_two_pieces_of_three_keeps_the_third() {
+    let left = boxed(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
+    let middle = boxed(20.0, 0.0, 0.0, 30.0, 10.0, 10.0);
+    let right = boxed(40.0, 0.0, 0.0, 50.0, 10.0, 10.0);
+    let a = crate::join_apart(&[left, middle, right]).unwrap().unwrap();
+    assert_eq!(a.shell_count(), 3);
+    let tool = boxed(5.0, -1.0, 0.0, 25.0, 11.0, 10.0);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert_eq!(r.shell_count(), 2);
+    let h = verified(&r, &[&a, &tool], 0.02);
+    let operands: BTreeSet<usize> = h
+        .faces
+        .iter()
+        .flat_map(|f| &f.origins)
+        .filter_map(|o| match *o {
+            FaceOrigin::Face { operand, .. } => Some(operand),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(operands, BTreeSet::from([0, 1]), "{}", show(h));
+}
+
+/// A body in several pieces and a tool apart from all of them: every piece is kept, and the
+/// history is over the body and the tool.
+#[test]
+fn a_union_of_a_body_in_pieces_with_a_loose_tool_keeps_every_piece() {
+    let left = boxed(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
+    let right = boxed(20.0, 0.0, 0.0, 30.0, 10.0, 10.0);
+    let a = crate::join_apart(&[left, right]).unwrap().unwrap();
+    let tool = boxed(40.0, 0.0, 0.0, 50.0, 10.0, 10.0);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert_eq!(r.shell_count(), 3);
+    let h = verified(&r, &[&a, &tool], 0.02);
+    let operands: BTreeSet<usize> = h
+        .faces
+        .iter()
+        .flat_map(|f| &f.origins)
+        .filter_map(|o| match *o {
+            FaceOrigin::Face { operand, .. } => Some(operand),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(operands, BTreeSet::from([0, 1]), "{}", show(h));
+}
+
 /// A boolean with a triangle mesh: the mesh's faces are its triangles (and it has no edges).
 #[test]
 fn faceted_tool() {
