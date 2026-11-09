@@ -411,18 +411,20 @@ skills are offered:
 
 - **Text-to-CAD** asks the same agent to create or change a parametric design. The host note
   tells it to inspect before editing, use the native CAD tools and keep features and parameters
-  editable. The host checks and validates the result; the agent's prose is not success.
+  editable. This entry only selects and binds the turn; the Text-to-CAD task (#67) adds the
+  host-owned write policy, result snapshots and validation. The agent's prose is not success.
 - **Anatomy** asks the agent to explain the current design or selection using host facts. The
-  turn is read-only: geometry, parameters, feature history and undo do not change. Only names the
-  host supplies can become clickable references.
+  host refuses a write request from an Anatomy turn, so geometry, parameters, feature history and
+  undo do not change. Only names the host supplies can become clickable references.
 
 Selecting a skill freezes the skill version, the current document identity and revision, the
 selection and the connection/model on that turn. The conversation shows the binding and its
 terminal. Switching to another skill or document cannot rewrite a running turn's binding.
 
-Direct/BYOK is the Beta path verified first. Ordinary ACP Chat remains available, but ACP skill
-execution is labeled unverified until it is tested on the same host policy. A backend that cannot
-run a skill refuses before the model call.
+Direct/BYOK runs the Beta skill path. Until a real credential-backed turn is recorded, the panel
+labels skill execution unverified. Ordinary ACP Chat remains available, but ACP skill execution is
+also labeled unverified until it is tested on the same host policy. A backend that cannot run a
+skill refuses before the model call.
 
 The existing approval gate, Stop, stale-write rejection and per-turn undo still control every CAD
 write. A skill adds no second agent loop, provider, session store or tool registry.

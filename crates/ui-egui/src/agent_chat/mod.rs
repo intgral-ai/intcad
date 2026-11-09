@@ -2146,6 +2146,14 @@ fn pump_tools(app: &mut SolveApp) {
         let refuse = |req: ControlRequest, e: String| {
             let _ = req.reply.send(json!({"ok": false, "error": e}));
         };
+        // Anatomy is read-only for the whole turn: a write request never reaches the gate.
+        let skill = app.agent_chat.skill_binding.as_ref().map_or(app.agent_chat.skill, |binding| binding.skill);
+        if skill.read_only() && matches!(gate::request(&req.method, &req.params, 0), gate::Verdict::Run { change: true } | gate::Verdict::Ask(_)) {
+            let reason = tr("ui.agent_chat_skill_read_only").to_string();
+            app.agent_chat.notice(reason.clone(), true);
+            refuse(req, reason);
+            continue;
+        }
         let undo_len = app.session.undo.len();
         let Some(turn) = app.agent_chat.turn.as_mut() else {
             refuse(req, "the agent chat has no message in progress".into());

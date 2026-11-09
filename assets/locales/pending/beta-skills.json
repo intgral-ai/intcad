@@ -10,12 +10,13 @@
     "ui.agent_chat_skill_error": "Skill turn failed",
     "ui.agent_chat_skill_plain": "Plain Chat",
     "ui.agent_chat_skill_plain_tip": "Use ordinary Chat with no built-in skill.",
+    "ui.agent_chat_skill_read_only": "Anatomy is read-only: it cannot change geometry, parameters, feature history or undo.",
     "ui.agent_chat_skill_selection": " · {n} selected",
     "ui.agent_chat_skill_text_to_cad": "Text-to-CAD",
     "ui.agent_chat_skill_text_to_cad_tip": "Create or change a parametric design from this message; the host checks and validates the result.",
     "ui.agent_chat_skill_tip": "Choose the built-in skill for the next message.",
-    "ui.agent_chat_skill_unverified": "ACP skill execution is unverified on this host.",
-    "ui.agent_chat_skill_unsupported": "This connection cannot run a built-in skill. Use Direct/BYOK or plain Chat."
+    "ui.agent_chat_skill_unsupported": "This connection cannot run a built-in skill. Use Direct/BYOK or plain Chat.",
+    "ui.agent_chat_skill_unverified": "ACP skill execution is unverified on this host."
   },
   "ar": {
     "ui.agent_chat_skill": "المهارة",
@@ -28,12 +29,13 @@
     "ui.agent_chat_skill_error": "فشلت جولة المهارة",
     "ui.agent_chat_skill_plain": "دردشة عادية",
     "ui.agent_chat_skill_plain_tip": "استخدم الدردشة العادية بدون مهارة مدمجة.",
+    "ui.agent_chat_skill_read_only": "تشريح للقراءة فقط: لا يمكنه تغيير الهندسة أو المعاملات أو تاريخ الميزات أو التراجع.",
     "ui.agent_chat_skill_selection": " · {n} محدد",
     "ui.agent_chat_skill_text_to_cad": "نص إلى CAD",
     "ui.agent_chat_skill_text_to_cad_tip": "أنشئ أو غيّر تصميماً بارامترياً من هذه الرسالة؛ يتحقق المضيف من النتيجة ويتحقق منها.",
     "ui.agent_chat_skill_tip": "اختر المهارة المدمجة للرسالة التالية.",
-    "ui.agent_chat_skill_unverified": "تنفيذ المهارة عبر ACP غير متحقق منه على هذا المضيف.",
-    "ui.agent_chat_skill_unsupported": "هذا الاتصال لا يستطيع تشغيل مهارة مدمجة. استخدم Direct/BYOK أو الدردشة العادية."
+    "ui.agent_chat_skill_unsupported": "هذا الاتصال لا يستطيع تشغيل مهارة مدمجة. استخدم Direct/BYOK أو الدردشة العادية.",
+    "ui.agent_chat_skill_unverified": "تنفيذ المهارة عبر ACP غير متحقق منه على هذا المضيف."
   },
   "he": {
     "ui.agent_chat_skill": "מיומנות",
@@ -46,12 +48,13 @@
     "ui.agent_chat_skill_error": "תור המיומנות נכשל",
     "ui.agent_chat_skill_plain": "צ'אט רגיל",
     "ui.agent_chat_skill_plain_tip": "השתמש בצ'אט רגיל בלי מיומנות מובנית.",
+    "ui.agent_chat_skill_read_only": "אנטומיה היא לקריאה בלבד: היא אינה יכולה לשנות גאומטריה, פרמטרים, היסטוריית תכונות או ביטול.",
     "ui.agent_chat_skill_selection": " · {n} נבחרו",
     "ui.agent_chat_skill_text_to_cad": "טקסט ל-CAD",
     "ui.agent_chat_skill_text_to_cad_tip": "צור או שנה עיצוב פרמטרי מההודעה הזו; המארח בודק ומאמת את התוצאה.",
     "ui.agent_chat_skill_tip": "בחר את המיומנות המובנית להודעה הבאה.",
-    "ui.agent_chat_skill_unverified": "הרצת מיומנות ב-ACP אינה מאומתת במארח הזה.",
-    "ui.agent_chat_skill_unsupported": "החיבור הזה אינו יכול להריץ מיומנות מובנית. השתמש ב-Direct/BYOK או בצ'אט רגיל."
+    "ui.agent_chat_skill_unsupported": "החיבור הזה אינו יכול להריץ מיומנות מובנית. השתמש ב-Direct/BYOK או בצ'אט רגיל.",
+    "ui.agent_chat_skill_unverified": "הרצת מיומנות ב-ACP אינה מאומתת במארח הזה."
   },
   "ja": {
     "ui.agent_chat_skill": "スキル",
@@ -64,12 +67,13 @@
     "ui.agent_chat_skill_error": "スキルのターンが失敗しました",
     "ui.agent_chat_skill_plain": "通常チャット",
     "ui.agent_chat_skill_plain_tip": "組み込みスキルなしの通常チャットを使います。",
+    "ui.agent_chat_skill_read_only": "アナトミーは読み取り専用です。ジオメトリ、パラメータ、フィーチャ履歴、元に戻す操作は変更できません。",
     "ui.agent_chat_skill_selection": " · {n} 件選択",
     "ui.agent_chat_skill_text_to_cad": "テキストからCAD",
     "ui.agent_chat_skill_text_to_cad_tip": "このメッセージからパラメトリック設計を作成または変更します。ホストが結果を検査して検証します。",
     "ui.agent_chat_skill_tip": "次のメッセージに使う組み込みスキルを選びます。",
-    "ui.agent_chat_skill_unverified": "このホストでは ACP のスキル実行は未検証です。",
-    "ui.agent_chat_skill_unsupported": "この接続では組み込みスキルを実行できません。Direct/BYOK または通常チャットを使ってください。"
+    "ui.agent_chat_skill_unsupported": "この接続では組み込みスキルを実行できません。Direct/BYOK または通常チャットを使ってください。",
+    "ui.agent_chat_skill_unverified": "このホストでは ACP のスキル実行は未検証です。"
   },
   "vi": {
     "ui.agent_chat_skill": "Kỹ năng",
@@ -82,12 +86,13 @@
     "ui.agent_chat_skill_error": "Lượt kỹ năng thất bại",
     "ui.agent_chat_skill_plain": "Trò chuyện thường",
     "ui.agent_chat_skill_plain_tip": "Dùng trò chuyện thường không có kỹ năng tích hợp.",
+    "ui.agent_chat_skill_read_only": "Giải phẫu chỉ đọc: không thể thay đổi hình học, tham số, lịch sử tính năng hoặc hoàn tác.",
     "ui.agent_chat_skill_selection": " · đã chọn {n}",
     "ui.agent_chat_skill_text_to_cad": "Văn bản sang CAD",
     "ui.agent_chat_skill_text_to_cad_tip": "Tạo hoặc thay đổi thiết kế tham số từ tin nhắn này; máy chủ kiểm tra và xác thực kết quả.",
     "ui.agent_chat_skill_tip": "Chọn kỹ năng tích hợp cho tin nhắn tiếp theo.",
-    "ui.agent_chat_skill_unverified": "Thực thi kỹ năng qua ACP chưa được xác minh trên máy chủ này.",
-    "ui.agent_chat_skill_unsupported": "Kết nối này không thể chạy kỹ năng tích hợp. Hãy dùng Direct/BYOK hoặc trò chuyện thường."
+    "ui.agent_chat_skill_unsupported": "Kết nối này không thể chạy kỹ năng tích hợp. Hãy dùng Direct/BYOK hoặc trò chuyện thường.",
+    "ui.agent_chat_skill_unverified": "Thực thi kỹ năng qua ACP chưa được xác minh trên máy chủ này."
   },
   "zh": {
     "ui.agent_chat_skill": "技能",
@@ -100,11 +105,12 @@
     "ui.agent_chat_skill_error": "技能轮次失败",
     "ui.agent_chat_skill_plain": "普通聊天",
     "ui.agent_chat_skill_plain_tip": "使用不调用内置技能的普通聊天。",
+    "ui.agent_chat_skill_read_only": "结构说明为只读：不能更改几何、参数、特征历史或撤销。",
     "ui.agent_chat_skill_selection": " · 已选择 {n} 项",
     "ui.agent_chat_skill_text_to_cad": "文本转 CAD",
     "ui.agent_chat_skill_text_to_cad_tip": "根据此消息创建或更改参数化设计；宿主会检查并验证结果。",
     "ui.agent_chat_skill_tip": "为下一条消息选择内置技能。",
-    "ui.agent_chat_skill_unverified": "此宿主上的 ACP 技能执行尚未验证。",
-    "ui.agent_chat_skill_unsupported": "此连接无法运行内置技能。请使用 Direct/BYOK 或普通聊天。"
+    "ui.agent_chat_skill_unsupported": "此连接无法运行内置技能。请使用 Direct/BYOK 或普通聊天。",
+    "ui.agent_chat_skill_unverified": "此宿主上的 ACP 技能执行尚未验证。"
   }
 }

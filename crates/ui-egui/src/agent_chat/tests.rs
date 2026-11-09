@@ -15390,3 +15390,20 @@ fn the_chat_offers_plain_text_to_cad_and_anatomy() {
     assert_eq!(h.app.agent_chat.skill, skill::Skill::Anatomy);
     assert_eq!(h.app.agent_chat.skill.title(), tr("ui.agent_chat_skill_anatomy"));
 }
+
+#[test]
+fn an_anatomy_turn_refuses_a_write_before_the_gate() {
+    use std::time::Duration;
+    let (mut app, _script, ctx) = app_with_script();
+    app.agent_chat.skill = skill::Skill::Anatomy;
+    send(&mut app, &ctx, "explain the cover".into());
+    let (request, reply) = ControlRequest::new("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
+    let (tx, rx) = channel();
+    tx.send(request).unwrap();
+    app.agent_chat.tools_rx = Some(rx);
+    pump_tools(&mut app);
+    let answer = reply.recv_timeout(Duration::from_secs(1)).expect("the refusal reply");
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(answer["error"].as_str().is_some_and(|text| text.contains("read-only")), "{answer}");
+    assert!(app.control_held.is_empty(), "no write reached execution");
+}

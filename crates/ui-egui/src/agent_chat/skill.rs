@@ -98,12 +98,67 @@ impl Skill {
         }
     }
 
+    /// Read-only tools the descriptor permits. The existing gate remains the executor; this list
+    /// is the skill's declared surface, not a second registry.
+    pub fn allowed_read_tools(self) -> &'static [&'static str] {
+        match self {
+            Skill::Plain => &[],
+            Skill::TextToCad | Skill::Anatomy => &[
+                "list_commands",
+                "describe_command",
+                "inspect_design",
+                "measure",
+                "body_topology",
+                "check_parameters",
+                "engine.commands",
+                "engine.describe",
+                "document.inspect",
+                "document.revision",
+                "inspect.measure",
+                "inspect.clearance",
+                "inspect.interference",
+            ],
+        }
+    }
+
+    /// Write tools the descriptor permits. Anatomy has none.
+    pub fn allowed_write_tools(self) -> &'static [&'static str] {
+        match self {
+            Skill::Plain | Skill::Anatomy => &[],
+            Skill::TextToCad => &["execute", "batch", "set_parameter", "engine.execute", "engine.batch"],
+        }
+    }
+
+    /// What the host can claim for the skill. Validation is a separate host report, never the
+    /// model's prose.
+    pub fn capabilities(self) -> Value {
+        serde_json::json!({
+            "read": !self.allowed_read_tools().is_empty(),
+            "write": !self.allowed_write_tools().is_empty(),
+            "validation": self == Skill::TextToCad,
+        })
+    }
+
+    /// The acceptance case the Beta verifies for this descriptor.
+    pub fn acceptance(self) -> &'static str {
+        match self {
+            Skill::Plain => "plain-chat-unchanged",
+            Skill::TextToCad => "beta-text-to-cad-l-bracket-5-to-8-mm",
+            Skill::Anatomy => "beta-anatomy-cover-base-click",
+        }
+    }
+
     /// The immutable descriptor a UI or receipt can show.
     pub fn descriptor(self) -> Value {
         serde_json::json!({
             "id": self.id(),
             "version": self.version(),
             "title": self.title(),
+            "systemNote": self.prompt_note(),
+            "readTools": self.allowed_read_tools(),
+            "writeTools": self.allowed_write_tools(),
+            "capabilities": self.capabilities(),
+            "acceptance": self.acceptance(),
             "readOnly": self.read_only(),
             "builtin": true,
         })
@@ -202,6 +257,13 @@ mod tests {
         assert!(!Skill::TextToCad.read_only());
         assert!(Skill::TextToCad.prompt_note().is_some_and(|note| note.contains("native CAD tools")));
         assert!(Skill::Anatomy.prompt_note().is_some_and(|note| note.contains("read-only")));
+        assert!(!Skill::TextToCad.allowed_read_tools().is_empty());
+        assert!(!Skill::TextToCad.allowed_write_tools().is_empty());
+        assert!(Skill::Anatomy.allowed_write_tools().is_empty(), "Anatomy declares no write tool");
+        assert_eq!(Skill::Anatomy.capabilities()["write"], false);
+        assert_eq!(Skill::TextToCad.capabilities()["validation"], true);
+        assert_eq!(Skill::Anatomy.acceptance(), "beta-anatomy-cover-base-click");
+        assert_eq!(Skill::TextToCad.descriptor()["acceptance"], "beta-text-to-cad-l-bracket-5-to-8-mm");
     }
 
     #[test]
