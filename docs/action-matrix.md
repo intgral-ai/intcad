@@ -2,9 +2,46 @@
 
 The action matrix tries every ordinary action on every face, edge, vertex and body of the final
 bodies of a corpus of real designs, through the same commands and parameters the desktop sends,
-and records what works. [`tests/action_matrix/baseline.json`](../tests/action_matrix/baseline.json)
-is a ratchet: an action that passed there and fails now is a regression and fails the test.
-The test is [`apps/solidcraft-cli/tests/action_matrix.rs`](../apps/solidcraft-cli/tests/action_matrix.rs).
+and records what works. The test is
+[`apps/solidcraft-cli/tests/action_matrix.rs`](../apps/solidcraft-cli/tests/action_matrix.rs).
+
+## Two baselines: the gate and the historical record
+
+The SMLib migration changed a large part of the matrix's results in one step ([#58]). Two files
+keep that honest without hiding anything:
+
+- **`tests/action_matrix/baseline-current.json`** is the **gate**. It is the pass/fail map of one
+  whole 16-shard run of the matrix (no local units, no raw fallback), with the provenance of that
+  run: measurement source
+  revision, develop base, run id, all 16 shards, date, exact command and `ACTION_MATRIX_*`
+  variables, the action-matrix format version, the toolchain (recorded, not gated), and the
+  `solidcore`/`solidcore-record` pins from `Cargo.lock`. It also records, for every currently
+  failing action, its `kind`, a **normalized signature** and the linked issue (`#55` for the
+  multi-lump union's material-loss cases, `#58` for every other upstream cause).
+- **`tests/action_matrix/baseline.json`** stays unchanged as the **historical record** from before
+  the migration. The harness still compares against it and prints the delta (regressions, fixes,
+  actions it never saw), but that comparison is **report-only**: it no longer fails the job. This
+  keeps upstream improvements and regressions visible ([#58]) without using a stale file as a gate.
+
+### The gate, item by item
+
+For every action this run was expected to produce (a whole run, one of the 16 shards, or the pull
+request sample), the harness fails on:
+
+| Change | Why |
+|---|---|
+| an action recorded as passing that now fails | a new failure |
+| an action recorded as failing whose normalized signature changes | a worse or different failure. An action recorded with `timeout` is treated as **unknown**: a later timeout, error or pass is reported but not judged, because a timeout is a resource condition, not a stable CAD result |
+| an action in the current baseline that is absent from the results | an unexpected skip or cancel; the shard plan and the baseline must agree |
+| an action in the results that is not in the current baseline | an unrecorded new action |
+| a design in the current baseline that is no longer in the corpus | deleting a design must be recorded; without this check its baseline actions simply vanish from the expected set |
+| an action recorded as failing that now passes | the gate must be tightened in the same pull request |
+| an empty or missing shard result | all 16 shard files are required for a merge and for every blessing; the job is never skipped or allowed to fail. A local diagnostic run may set `ACTION_MATRIX_ALLOW_PARTIAL_SHARDS=1`, which is refused for blessing |
+| a `solidcore`/`solidcore-record` pin in `Cargo.lock` that differs from the provenance | regenerate the current baseline (the toolchain does not gate) |
+
+The normalization collapses whitespace and replaces numbers with `<n>`, except a status code after
+`status`: `solid.hole: operation failed (status 1001)` keeps `1001`, while coordinates, sizes and
+counts do not make a signature move from run to run.
 
 ## Running it
 
@@ -16,16 +53,21 @@ The test is [`apps/solidcraft-cli/tests/action_matrix.rs`](../apps/solidcraft-cl
   [`tests/action_matrix/costs.json`](../tests/action_matrix/costs.json): what each design took on a
   runner. A design that takes more than ten minutes is split into slices (actions by a hash of their name, each
   slice loading the design again), and the pieces go largest first to the shard with the least
-  work. A design not in costs.json yet counts as two minutes. Each shard uploads its outcomes and
-  timings (artifact `action-matrix-k`); with all sixteen in one folder,
-  `cargo xtask action-matrix --from DIR --bless` writes the baseline and costs.json from them
-  without running anything. `ACTION_MATRIX_SHARD=k/n ACTION_MATRIX_SHARD_LIST=1` prints the plan.
+  work. A design not in costs.json yet counts as two minutes. Each shard uploads its outcomes,
+  timings and both reports (artifact `action-matrix-k`); with all sixteen in one folder,
+  `cargo xtask action-matrix --from DIR --bless-current --bless-costs` rewrites the current
+  baseline and costs without running anything (`--bless` rewrites the historical file instead).
+  `ACTION_MATRIX_SHARD=k/n ACTION_MATRIX_SHARD_LIST=1` prints the plan.
 - **Determinism** (nightly, "Action matrix determinism"): `action_matrix_determinism` runs one
   action in 8 of every design that takes at most five minutes twice on one runner and lists every action whose outcome changed; it fails when a
   family of pieces passes a different number of times.
-- **Locally**: `cargo xtask action-matrix` runs it whole (a few hours on one machine now; the nightly shards' artifacts and `--from` are quicker). Add `--bless` to
-  rewrite the baseline after a fix (newly passing actions are listed when you don't), and
-  `--results FILE` to keep every outcome with its message and the command that was sent.
+- **Locally**: `cargo xtask action-matrix` runs it whole (a few hours on one machine now; the
+  shards' artifacts and `--from` are quicker). Add `--results FILE` to keep every outcome with
+  its message and the command that was sent. `--bless-current` (or
+  `ACTION_MATRIX_BLESS_CURRENT=1`) rewrites only `baseline-current.json`; `--bless-costs` rewrites
+  only `costs.json` from the shard timings; `--bless` still rewrites only the historical
+  `baseline.json` and is not used to silence drift. `--bless` and `--bless-current` cannot be
+  combined.
   `ACTION_MATRIX_FILTER=oracle/23` runs only the designs whose name contains it;
   `ACTION_MATRIX_JOBS` sets how many designs run at once.
   For a quick local look, `ACTION_MATRIX_ACTIONS=edge.fillet,edge.chamfer` tries only those actions (never
@@ -38,19 +80,76 @@ The test is [`apps/solidcraft-cli/tests/action_matrix.rs`](../apps/solidcraft-cl
   (from `apps/solidcraft-cli`).
 
 Each design runs in its own process, so an action that hangs (90 s without a result) or aborts is
-recorded as `timeout` or `crash` and the rest of the design still runs. An action that passes in the baseline and
-times out is listed but not judged (and stays passing when blessed): the slowest actions take 40 to
-80 s on a busy runner and land either side of the limit from night to night. Loading a design, before
-its first action, may take up to 300 s (the largest take several times longer on a loaded CI
-runner than here). None did in this run.
+recorded as `timeout` or `crash` and the rest of the design still runs. In the **historical**
+report, an action that passed there and times out is listed but not judged: the slowest actions
+take 40 to 80 s on a busy runner and land either side of the limit from night to night. The
+**current** gate is stricter: a timeout of an action recorded as passing is a new failure. An action
+the baseline recorded with `timeout` is unknown and is not judged when it later times out, errors or
+passes: a timeout is a resource condition, not a stable CAD result. It stays recorded as failing
+until a clean run gives a non-timeout result, and a recorded *error* that now passes is still a
+tightening demand. To tighten a timeout-recorded action, regenerate the current baseline from a
+clean run that records the new pass; reviewing that regeneration is the approval. Loading a
+design, before its first action, may take up
+to 300 s (the largest take several times longer on a loaded CI runner than here). None did in the
+measurement run.
 
 Pieces that share a name (`#2`, `~3`) are numbered by where they lie, and the numbers of pieces
-lying almost level can swap between runs (#569). The ratchet therefore counts passes per family of
-pieces (the name without its numbers) and samples whole families, so a swap is not a regression.
+lying almost level can swap between runs (#569). The **historical** report therefore counts passes
+per family of pieces (the name without its numbers) and samples whole families, so a swap is not a
+regression there. The **current** gate is exact-key by design: a swap shows up as one missing and
+one unrecorded action, which is a prompt to regenerate the current baseline after reviewing that
+the piece count did not change. `+edit` and `+unfold` outcomes are sampled, sliced and assigned
+with the action they follow (`base_action`), not by their own hash.
 
 Each open cause below has a small reproduction among the ignored tests at the end of
 `action_matrix.rs` (`cargo test --profile ci -p solidcraft-cli --test action_matrix -- --ignored`
 lists which still fail; skip `action_matrix_` to leave out the matrix itself).
+
+### Regenerating and approving the current baseline
+
+1. Run all 16 shards on the exact tree you want to record (CI keeps the `results-*.json` files and
+   the `timings-*.jsonl` files as the `action-matrix-*` artifacts).
+2. Download them into one directory and regenerate **only** the current baseline and the measured
+   costs:
+
+   ```sh
+   cargo xtask action-matrix --bless-current --bless-costs --from DIR
+   ```
+
+   `DIR` may be flat (`results-1.json`, ...) or the artifact download layout
+   (`action-matrix-1/results-1.json`, ...). The command refuses an empty or missing shard, refuses
+   an empty run, refuses a local subset (`ACTION_MATRIX_FILTER`/`ACTIONS`/`VALIDITY`/`UNFOLD`) and
+   refuses fewer than 16 shards for a blessing. It writes
+   `tests/action_matrix/baseline-current.json` and `tests/action_matrix/costs.json`, never
+   `baseline.json`. `--bless` (historical) and `--bless-current` cannot be combined;
+   `--bless-costs` alone rewrites only the costs. To record the run in the provenance, set
+   `ACTION_MATRIX_SOURCE_REVISION`, `ACTION_MATRIX_DEVELOP_BASE`, `ACTION_MATRIX_RUN_ID`,
+   `ACTION_MATRIX_DATE`, `ACTION_MATRIX_TOOLCHAIN` and `ACTION_MATRIX_COMMAND` (they default to the
+   checked-out `HEAD`, an empty base, `local`, the local toolchain, and a clearly marked template;
+   set `ACTION_MATRIX_COMMAND` to the real CI invocation).
+3. Review the diff like code: new failures, changed signatures and every newly failing action need
+   an issue link and a sentence in the pull request. **Never blind-bless**: a regeneration that
+   turns a real failure into a pass, or hides a new signature, is a review stop.
+4. Bump `CURRENT_FORMAT` in `action_matrix.rs` if the file's shape or the gate's rules change; the
+   parser rejects an older format and tells you to regenerate.
+5. Do **not** batch re-bless `baseline.json` to make the historical report look green. Fixing an
+   action is a code change in the normal way; the historical delta stays visible until the
+   current baseline is deliberately moved (for example after an upstream SMLib release) with the
+   same review.
+
+The costs file is what cuts the 16 shards and slices a design longer than ten minutes. A design
+missing from it counts as 120 s, which can under-plan a heavy design and time its shard out; after
+a clean run, `--bless-costs --from DIR` records the measured `secs` and `load` from the shards'
+timings.
+
+The current baseline's provenance pins are checked against `Cargo.lock` on every gated run. A
+`solidcore` or `solidcore-record` bump fails the gate with "regenerate the current baseline";
+the toolchain line is recorded for diagnosis but does not gate, because a floating `stable`
+changes without changing geometry. Core Beta CAD operations still have their own strict
+end-to-end acceptance; an upstream action-matrix status does not waive it.
+
+[#55]: https://github.com/intgral-ai/open-skyfall-desktop/issues/55
+[#58]: https://github.com/intgral-ai/open-skyfall-desktop/issues/58
 
 ## The corpus
 
@@ -106,6 +205,10 @@ else a feature's, by 10%, one that the design itself survives) and checks the ne
 resolves; it is recorded as `<action>+edit`.
 
 ## Results
+
+The numbers below are the **historical** run from before the SMLib migration. They are kept for
+comparison; the current gate's report (and `baseline-current.json`) is authoritative for today's
+tree.
 
 **30567 of 35576 actions pass (85.9%)** on 104 designs; the edit round passes 1370 of 1386.
 

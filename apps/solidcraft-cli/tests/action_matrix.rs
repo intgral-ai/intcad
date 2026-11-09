@@ -9,14 +9,20 @@
 //! is healthy. A sample of passes also gets an edit round: a driving parameter changes and the
 //! new feature must still resolve.
 //!
-//! `tests/action_matrix/baseline.json` is a ratchet: an action that passed there and fails now
-//! fails the test (a regression). Newly passing actions are reported; record them with
-//! `cargo xtask action-matrix --bless` (or `ACTION_MATRIX_BLESS=1` on [`action_matrix_all`]).
+//! `tests/action_matrix/baseline-current.json` is the gate: the pass/fail map of a fixed,
+//! reproducible run of the whole matrix, its provenance (revisions, run, 16 shards, pins) and a
+//! normalized failure signature per failing action. A new failure, a changed failure signature, a
+//! missing action, an action that is not in the baseline, or a formerly failing action that now
+//! passes fails the test. `tests/action_matrix/baseline.json` is kept unchanged as the historical
+//! record and is compared report-only: its regressions and fixes are printed but no longer fail
+//! the job (see docs/action-matrix.md and issue #58).
+//! Regenerate only the current baseline with `cargo xtask action-matrix --bless-current --from DIR`
+//! (or `ACTION_MATRIX_BLESS_CURRENT=1` on [`action_matrix_all`]); `--bless` still rewrites only the
+//! historical file, and is not used to hide drift.
 //! Every CI run checks a fixed sample ([`action_matrix_sample`], under a minute); the full matrix
-//! is the ignored [`action_matrix_shard`], which the nightly "Action matrix" jobs run one shard
-//! each (`ACTION_MATRIX_SHARD=k/n`), cut by what each design costs (`tests/action_matrix/costs.json`).
+//! is the ignored [`action_matrix_shard`], which the "Action matrix" jobs run one shard each
+//! (`ACTION_MATRIX_SHARD=k/n`), cut by what each design costs (`tests/action_matrix/costs.json`).
 //! [`action_matrix_determinism`] runs a sample twice and lists any action whose outcome changed.
-//! See docs/action-matrix.md.
 //!
 //! Each design runs in a child process (this test binary, [`action_matrix_worker`]) so an action
 //! that hangs or aborts is recorded as such and the rest of the design still runs.
@@ -70,6 +76,15 @@ fn root() -> PathBuf {
 fn baseline_path() -> PathBuf {
     root().join("tests/action_matrix/baseline.json")
 }
+
+/// The gate's baseline: a reproducible whole-matrix run of the current tree, never edited by the
+/// historical `--bless` path.
+fn current_baseline_path() -> PathBuf {
+    root().join("tests/action_matrix/baseline-current.json")
+}
+
+/// The current baseline's on-disk format. Bump it when the shape or the gate's rules change.
+const CURRENT_FORMAT: u64 = 1;
 
 // ---------------------------------------------------------------------------------------------
 // The corpus
@@ -591,7 +606,7 @@ fn key(design: &str, entity: &str, action: &str) -> String {
 
 /// An entity's name without piece numbers (`#2`, `~3`, ` (2)`): pieces that share a name are
 /// numbered by where they lie, and the numbers of pieces lying almost level can swap between runs
-/// (issue #569), so the ratchet counts passes per family of pieces.
+/// (issue #569), so the historical report counts passes per family of pieces.
 fn family(entity: &str) -> String {
     let mut out = String::with_capacity(entity.len());
     let mut chars = entity.chars().peekable();
@@ -996,7 +1011,7 @@ fn write_baseline(results: &[Value]) {
             m.entry(design).or_default().entry(entity).or_default().extend(actions.as_str().unwrap_or("").split_whitespace().map(str::to_string));
         }
     }
-    // A timeout of an action that passed keeps it passing (see [`ratchet`]).
+    // A timeout of an action that passed keeps it passing (see [`historical_delta`]).
     let base = read_baseline();
     for o in results {
         let (design, entity, action) = (o["design"].as_str().unwrap_or(""), o["entity"].as_str().unwrap_or(""), o["action"].as_str().unwrap_or(""));
@@ -1023,16 +1038,29 @@ fn write_baseline(results: &[Value]) {
     std::fs::write(baseline_path(), s).unwrap();
 }
 
-/// Compare with the baseline: fail on regressions, report new passes.
-fn ratchet(results: &[Value], full: bool) {
+/// The historical `baseline.json` comparison: the record of upstream SMLib drift (#58), kept
+/// unchanged so improvements and regressions stay visible. It is **report-only**; the gate is the
+/// current baseline below.
+struct HistoricalDelta {
+    regressions: Vec<String>,
+    fixed: Vec<String>,
+    fresh: usize,
+    slow: Vec<String>,
+    passed: usize,
+    total: usize,
+    baseline_len: usize,
+}
+
+fn historical_delta(results: &[Value]) -> HistoricalDelta {
     let base = read_baseline();
     // Passes per family of pieces (design, entity without piece numbers, action): in the
     // baseline, over the same names this run tried, and in this run.
     let mut fam: BTreeMap<String, (usize, usize, Vec<String>, Vec<String>)> = BTreeMap::new();
     let mut fresh = 0usize;
     // An action that passed in the baseline and now runs past ACTION_TIMEOUT is listed but not
-    // judged: on a busy runner the slowest actions (40-80 s on oracle 41's tube) land either side
-    // of the limit from one night to the next. An error or a crash is judged as usual.
+    // counted: on a busy runner the slowest actions (40-80 s on oracle 41's tube) land either side
+    // of the limit from one night to the next. This is only the historical report; the current
+    // gate judges a timeout of a passing action as a new failure.
     let mut slow = Vec::new();
     for o in results {
         let (design, entity, action) = (o["design"].as_str().unwrap_or(""), o["entity"].as_str().unwrap_or(""), o["action"].as_str().unwrap_or(""));
@@ -1067,7 +1095,24 @@ fn ratchet(results: &[Value], full: bool) {
         }
     }
     let passed = results.iter().filter(|o| o["ok"].as_bool() == Some(true)).count();
-    eprintln!("action matrix: {passed} of {} actions pass ({} in the baseline)", results.len(), base.len());
+    HistoricalDelta { regressions, fixed, fresh, slow, passed, total: results.len(), baseline_len: base.len() }
+}
+
+/// Write a report next to stderr when the harness is asked for a file (CI uploads them).
+fn write_report(env: &str, text: &str) {
+    if let Some(path) = std::env::var_os(env) {
+        let path = PathBuf::from(path);
+        if let Err(e) = std::fs::write(&path, text) {
+            eprintln!("could not write {env} {}: {e}", path.display());
+        }
+    }
+}
+
+/// Print the historical delta and write the raw results when asked. `--bless` still rewrites only
+/// the historical file (a manual record update); it never changes the current gate.
+fn report_historical(results: &[Value], full: bool) {
+    let d = historical_delta(results);
+    let mut out = format!("action matrix: {} of {} actions pass ({} in the historical baseline)\n", d.passed, d.total, d.baseline_len);
     if std::env::var_os("ACTION_MATRIX_RESULTS").is_some() {
         let p = PathBuf::from(std::env::var_os("ACTION_MATRIX_RESULTS").unwrap_or_default());
         std::fs::write(&p, serde_json::to_string(&results).unwrap()).unwrap();
@@ -1075,46 +1120,675 @@ fn ratchet(results: &[Value], full: bool) {
     }
     if full && std::env::var_os("ACTION_MATRIX_BLESS").is_some() {
         write_baseline(results);
-        eprintln!("baseline written: {}", baseline_path().display());
+        eprintln!("historical baseline written: {}", baseline_path().display());
+        write_report("ACTION_MATRIX_HISTORICAL_REPORT", &out);
         return;
     }
-    if !slow.is_empty() {
-        eprintln!(
-            "{} actions that pass in the baseline ran past the {} s limit this time (not judged):\n{}",
-            slow.len(),
+    if !d.slow.is_empty() {
+        out += &format!(
+            "historical baseline: {} actions that passed there ran past the {} s limit this time (not judged):\n{}\n",
+            d.slow.len(),
             ACTION_TIMEOUT.as_secs(),
-            slow.join("\n")
+            d.slow.join("\n")
         );
     }
-    if !fixed.is_empty() || fresh > 0 {
-        eprintln!(
-            "{} actions pass now that failed in the baseline, and {fresh} are not in it: record them with `cargo xtask action-matrix --bless`:\n{}",
-            fixed.len(),
-            fixed.iter().take(50).cloned().collect::<Vec<_>>().join("\n")
+    if !d.fixed.is_empty() || d.fresh > 0 {
+        out += &format!(
+            "historical baseline: {} actions pass now that failed there, and {} are not in it (report only; not a gate):\n{}\n",
+            d.fixed.len(),
+            d.fresh,
+            d.fixed.iter().take(50).cloned().collect::<Vec<_>>().join("\n")
         );
     }
+    if !d.regressions.is_empty() {
+        out += &format!(
+            "historical baseline: {} actions that passed there fail now (report only; the current baseline gates them):\n{}\n",
+            d.regressions.len(),
+            d.regressions.iter().take(50).cloned().collect::<Vec<_>>().join("\n")
+        );
+    }
+    eprint!("{out}");
+    write_report("ACTION_MATRIX_HISTORICAL_REPORT", &out);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The current baseline: the gate
+
+#[derive(Clone, Debug)]
+struct CurrentFailure {
+    kind: String,
+    signature: String,
+    issue: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CurrentBaseline {
+    provenance: Value,
+    /// design :: entity :: action → passed.
+    entries: BTreeMap<String, bool>,
+    /// design :: entity :: action → the normalized failure recorded there.
+    failures: BTreeMap<String, CurrentFailure>,
+}
+
+/// Canonical failure text: whitespace is collapsed and numbers are replaced by `<n>` (a status
+/// code after `status` is kept, because a different status is a different failure). The result's
+/// message is already capped at 400 characters by [`outcome`].
+fn normalize_signature(kind: &str, message: &str) -> String {
+    let mut text = String::new();
+    let mut keep_status = false;
+    for word in message.split_whitespace() {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        if keep_status {
+            text.push_str(word);
+            keep_status = false;
+            continue;
+        }
+        // `status`, `(status` and `status:` all introduce the code we keep.
+        if word.trim_matches(|c: char| !c.is_alphanumeric()) == "status" {
+            text.push_str(word);
+            keep_status = true;
+            continue;
+        }
+        text.push_str(&normalize_numbers(word));
+    }
+    format!("{kind}: {text}")
+}
+
+/// Replace every run that starts with an ASCII digit with `<n>`: `0.5`, `-27.0`, `1e-5`, `G1` and
+/// `Test #4` all become stable text.
+fn normalize_numbers(word: &str) -> String {
+    let chars: Vec<char> = word.chars().collect();
+    let mut out = String::with_capacity(word.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if (chars[i] == '-' || chars[i] == '+') && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+            i += 1;
+        }
+        if i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+            while i < chars.len() {
+                let c = chars[i];
+                if c.is_ascii_digit() || c == '.' {
+                    i += 1;
+                } else if (c == 'e' || c == 'E')
+                    && i + 1 < chars.len()
+                    && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '+' || chars[i + 1] == '-')
+                {
+                    i += 2;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    break;
+                } else {
+                    break;
+                }
+            }
+            out.push_str("<n>");
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+impl CurrentBaseline {
+    fn parse(text: &str) -> Result<Self, String> {
+        let v: Value = serde_json::from_str(text).map_err(|e| format!("current baseline is not JSON: {e}"))?;
+        let format = v["format"].as_u64().unwrap_or(0);
+        if format != CURRENT_FORMAT {
+            return Err(format!("current baseline format {format} is not {CURRENT_FORMAT}; regenerate it"));
+        }
+        let mut entries = BTreeMap::new();
+        for (design, entities) in v["designs"].as_object().into_iter().flatten() {
+            for (entity, actions) in entities.as_object().into_iter().flatten() {
+                for a in actions.as_str().unwrap_or("").split_whitespace() {
+                    let (ok, action) = match a.strip_prefix('!') {
+                        Some(action) => (false, action),
+                        None => (true, a),
+                    };
+                    entries.insert(key(design, entity, action), ok);
+                }
+            }
+        }
+        if entries.is_empty() {
+            return Err("current baseline has no actions; regenerate it".into());
+        }
+        let mut failures = BTreeMap::new();
+        for (k, f) in v["failures"].as_object().into_iter().flatten() {
+            failures.insert(
+                k.clone(),
+                CurrentFailure {
+                    kind: f["kind"].as_str().unwrap_or("").to_string(),
+                    signature: f["signature"].as_str().unwrap_or("").to_string(),
+                    issue: f["issue"].as_str().unwrap_or("").to_string(),
+                },
+            );
+        }
+        for (k, ok) in &entries {
+            if !ok && !failures.contains_key(k) {
+                return Err(format!("current baseline records {k} as failing but has no signature for it"));
+            }
+        }
+        for k in failures.keys() {
+            if entries.get(k) != Some(&false) {
+                return Err(format!("current baseline has a signature for {k} but does not record it as failing"));
+            }
+        }
+        Ok(CurrentBaseline { provenance: v["provenance"].clone(), entries, failures })
+    }
+
+    fn read() -> Result<Self, String> {
+        let path = current_baseline_path();
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}; regenerate the current baseline", path.display()))?;
+        Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
+fn read_current_baseline() -> Result<CurrentBaseline, String> {
+    CurrentBaseline::read()
+}
+
+/// The `solidcore` and `solidcore-record` pins in `Cargo.lock`, as name → `version source`.
+fn lock_pins(lock: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for block in lock.split("[[package]]").skip(1) {
+        let mut name = None;
+        let mut version = None;
+        let mut source = None;
+        for line in block.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("name = ") {
+                name = Some(v.trim_matches('"').to_string());
+            } else if let Some(v) = line.strip_prefix("version = ") {
+                version = Some(v.trim_matches('"').to_string());
+            } else if let Some(v) = line.strip_prefix("source = ") {
+                source = Some(v.trim_matches('"').to_string());
+            }
+        }
+        if let (Some(name), Some(version), Some(source)) = (name, version, source)
+            && (name == "solidcore" || name == "solidcore-record")
+        {
+            out.insert(name, format!("{version} {source}"));
+        }
+    }
+    out
+}
+
+/// The pins recorded in the current baseline must match `Cargo.lock`. The toolchain is recorded in
+/// the provenance but not gated (a floating `stable` changes without changing geometry).
+fn check_pins(baseline: &CurrentBaseline, lock: &str) -> Result<(), String> {
+    let now = lock_pins(lock);
+    let recorded = baseline.provenance["pins"].as_object().cloned().unwrap_or_default();
+    let mut changed = Vec::new();
+    for name in ["solidcore", "solidcore-record"] {
+        let was = recorded.get(name).and_then(Value::as_str).unwrap_or("");
+        let is = now.get(name).map(String::as_str).unwrap_or("");
+        if was != is {
+            changed.push(format!("{name}: baseline {was:?}, Cargo.lock {is:?}"));
+        }
+    }
+    if changed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the solidcore pins in Cargo.lock differ from tests/action_matrix/baseline-current.json ({}); regenerate the current baseline and say why in the pull request",
+            changed.join("; ")
+        ))
+    }
+}
+
+fn check_baseline_pins(baseline: &CurrentBaseline) -> Result<(), String> {
+    let lock = std::fs::read_to_string(root().join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
+    check_pins(baseline, &lock)
+}
+
+fn split_key(k: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = k.splitn(3, " :: ");
+    Some((parts.next()?, parts.next()?, parts.next()?))
+}
+
+/// An action's base name: the edit and unfold rounds are sampled, sliced and assigned with the
+/// action they follow, not by their own hash (the worker emits `<action>+edit` only when
+/// `<action>` itself ran).
+fn base_action(action: &str) -> &str {
+    action.strip_suffix("+edit").or_else(|| action.strip_suffix("+unfold")).unwrap_or(action)
+}
+
+/// The actions this run is expected to produce: every baseline action for a whole run, or the
+/// ones the deterministic shard plan assigns to `k/n`. A sliced design's actions follow the
+/// worker's `stable_hash("{entity} {action}") % n == j` split.
+fn expected_keys(baseline: &CurrentBaseline, shard: Option<(usize, usize)>) -> BTreeSet<String> {
+    let Some((k, n)) = shard else {
+        return baseline.entries.keys().cloned().collect();
+    };
+    let shards = plan(&design_names(), &read_costs(), n);
+    let mut out = BTreeSet::new();
+    for unit in &shards[k] {
+        let prefix = format!("{} :: ", unit.design);
+        for key in baseline.entries.keys().filter(|key| key.starts_with(&prefix)) {
+            let Some((_, entity, action)) = split_key(key) else { continue };
+            let expected = match unit.slice {
+                None => true,
+                // The load outcome is written once, by the first slice, whatever its hash.
+                Some((j, _)) if entity == "design" && action == "load" => j == 0,
+                Some((j, ns)) => stable_hash(&format!("{entity} {}", base_action(action))) % ns as u64 == j as u64,
+            };
+            if expected {
+                out.insert(key.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The current baseline's gate result. An empty `violations` is a pass.
+struct CurrentGateReport {
+    checked: usize,
+    passing: usize,
+    failing: usize,
+    violations: Vec<String>,
+}
+
+fn gate_current(baseline: &CurrentBaseline, results: &[Value], expected: &BTreeSet<String>) -> CurrentGateReport {
+    let mut actual: BTreeMap<String, (bool, String, String)> = BTreeMap::new();
+    for o in results {
+        let k = key(o["design"].as_str().unwrap_or(""), o["entity"].as_str().unwrap_or(""), o["action"].as_str().unwrap_or(""));
+        let ok = o["ok"].as_bool() == Some(true);
+        actual.insert(k, (ok, o["kind"].as_str().unwrap_or("").to_string(), o["message"].as_str().unwrap_or("").to_string()));
+    }
+    let mut violations = Vec::new();
+    if actual.is_empty() {
+        violations.push("no action results: the shard produced an empty results file (an unexpected skip or cancel fails the gate)".into());
+    }
+    for k in expected {
+        if !actual.contains_key(k) {
+            violations.push(format!("missing action (expected on this shard/run, absent from the results): {k}"));
+        }
+    }
+    let mut passing = 0;
+    let mut failing = 0;
+    for (k, (ok, kind, message)) in &actual {
+        let Some(&was) = baseline.entries.get(k) else {
+            violations.push(format!("action not in the current baseline: {k}: {kind}: {message}"));
+            continue;
+        };
+        if !expected.contains(k) {
+            violations.push(format!("action not assigned to this shard/run (the shard plan and the baseline disagree): {k}"));
+            continue;
+        }
+        if *ok {
+            passing += 1;
+        } else {
+            failing += 1;
+        }
+        if was && !ok {
+            violations.push(format!("new failure (passed in the current baseline): {k}: {kind}: {message}"));
+        } else if !was && *ok {
+            // A recorded timeout is unknown, not a stable failure: the same action may time out,
+            // error or pass on another run because of the runner. It is not a tightening demand.
+            // A recorded error that now passes is a real improvement and must be recorded.
+            if !baseline.failures.get(k).is_some_and(|f| f.kind == "timeout") {
+                violations.push(format!(
+                    "now passes but the current baseline records it failing; tighten the baseline in the same pull request (`cargo xtask action-matrix --bless-current`): {k}"
+                ));
+            }
+        } else if !was {
+            let signature = normalize_signature(kind, message);
+            match baseline.failures.get(k) {
+                // A timeout is a resource condition, not a stable failure signature. An action
+                // already failing may time out today and error tomorrow (or the reverse); it is
+                // still the same recorded failure, so it is reported but not judged. A timeout of
+                // an action that passed is still a new failure above.
+                Some(f) if f.kind == "timeout" || kind.as_str() == "timeout" => {}
+                Some(f) if f.signature == signature => {}
+                Some(f) => violations.push(format!(
+                    "failure signature changed for {k} (recorded kind {} against {}; worsened or different):\n  baseline: {}\n  now:      {signature}",
+                    f.kind, f.issue, f.signature
+                )),
+                None => violations.push(format!("failing action has no signature in the current baseline: {k}")),
+            }
+        }
+    }
+    CurrentGateReport { checked: expected.len(), passing, failing, violations }
+}
+
+fn assert_current(report: CurrentGateReport) {
+    let mut out = format!(
+        "current baseline: {} expected actions, {} pass, {} fail, {} violation(s)\n",
+        report.checked,
+        report.passing,
+        report.failing,
+        report.violations.len()
+    );
+    if !report.violations.is_empty() {
+        out += &format!("{}\n", report.violations.join("\n"));
+    }
+    eprint!("{out}");
+    write_report("ACTION_MATRIX_CURRENT_REPORT", &out);
     assert!(
-        regressions.is_empty(),
-        "{} actions that passed in tests/action_matrix/baseline.json fail now (if that is intended, record it with `cargo xtask action-matrix --bless` and say why in the pull request):\n{}",
-        regressions.len(),
-        regressions.join("\n")
+        report.violations.is_empty(),
+        "{} action-matrix result(s) differ from tests/action_matrix/baseline-current.json (the gate; the historical baseline is report-only). If the current tree really changed, regenerate the current baseline with `cargo xtask action-matrix --bless-current --from DIR` and say why in the pull request:\n{}",
+        report.violations.len(),
+        report.violations.join("\n")
     );
 }
 
-/// Pull requests: a fixed sample of the matrix (one action in [`PR_SAMPLE`]) against the ratchet.
+/// Local debug runs (`ACTION_MATRIX_FILTER`, `ACTIONS`, `VALIDITY`, `UNFOLD`) deliberately run a
+/// subset or add outcomes: they are not a whole-baseline result and must not be gated (or blessed).
+fn local_subset_run() -> bool {
+    ["ACTION_MATRIX_FILTER", "ACTION_MATRIX_ACTIONS", "ACTION_MATRIX_VALIDITY", "ACTION_MATRIX_UNFOLD"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+}
+
+/// The current baseline is a whole-matrix record. A local subset or a short shard set must never
+/// replace it, and a diagnostic gate may only use a short set with an explicit override.
+const REQUIRED_SHARDS: usize = 16;
+
+fn blessing_allowed(local_subset: bool, merge: bool, shards: usize, partial_override: bool) -> Result<(), String> {
+    if local_subset {
+        return Err("refusing to bless a local subset run (ACTION_MATRIX_FILTER/ACTIONS/VALIDITY/UNFOLD); run the whole matrix".into());
+    }
+    if merge && (partial_override || shards != REQUIRED_SHARDS) {
+        return Err(format!(
+            "refusing to bless from {shards} shards{}; the current baseline needs all {REQUIRED_SHARDS} shard results (ACTION_MATRIX_ALLOW_PARTIAL_SHARDS is diagnostic-only)",
+            if partial_override { " with ACTION_MATRIX_ALLOW_PARTIAL_SHARDS" } else { "" }
+        ));
+    }
+    Ok(())
+}
+
+fn bless_flags_are_exclusive(historical: bool, current: bool) -> Result<(), String> {
+    if historical && current {
+        Err("ACTION_MATRIX_BLESS and ACTION_MATRIX_BLESS_CURRENT are both set; choose one (the historical and current baselines are separate)".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn merge_shard_count() -> Result<usize, String> {
+    let want = std::env::var("ACTION_MATRIX_SHARDS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(REQUIRED_SHARDS);
+    if want != REQUIRED_SHARDS && std::env::var_os("ACTION_MATRIX_ALLOW_PARTIAL_SHARDS").is_none() {
+        return Err(format!(
+            "ACTION_MATRIX_SHARDS={want}: the current baseline gate needs all {REQUIRED_SHARDS} shards; only a local diagnostic may set ACTION_MATRIX_ALLOW_PARTIAL_SHARDS=1 (never to bless)"
+        ));
+    }
+    if want != REQUIRED_SHARDS {
+        eprintln!("current baseline: DIAGNOSTIC ONLY, {want}/{REQUIRED_SHARDS} shards (ACTION_MATRIX_ALLOW_PARTIAL_SHARDS)");
+    }
+    Ok(want)
+}
+
+/// Check the discovered shard files. Returns whether this is a partial (diagnostic) set: a partial
+/// set is allowed only with the explicit local override, never for a blessing or a gate.
+fn check_merge_shards(found: &BTreeSet<usize>, want: usize, allow_partial: bool) -> Result<bool, String> {
+    let absent: Vec<String> = (1..=want).filter(|n| !found.contains(n)).map(|n| format!("results-{n}.json")).collect();
+    if absent.is_empty() {
+        Ok(false)
+    } else if allow_partial {
+        eprintln!("current baseline: DIAGNOSTIC ONLY, {} of {want} shard results (missing {})", found.len(), absent.join(", "));
+        Ok(true)
+    } else {
+        Err(format!(
+            "missing shard results (the workflow keeps all {want} shards; an unexpected skip or cancel fails the gate): {}",
+            absent.join(", ")
+        ))
+    }
+}
+
+fn check_merge_shard_nonempty(name: &str, shard: &[Value]) -> Result<(), String> {
+    if shard.is_empty() { Err(format!("{name} is an empty shard result (an unexpected skip or cancel fails the gate)")) } else { Ok(()) }
+}
+
+/// Every design recorded in the baseline must still be in the corpus. Otherwise deleting a design
+/// would make its baseline actions disappear from [`expected_keys`] and silently pass the shard
+/// and sample gates.
+fn missing_baseline_designs(baseline: &CurrentBaseline, designs: &BTreeSet<String>) -> Vec<String> {
+    let mut missing: Vec<String> = baseline
+        .entries
+        .keys()
+        .filter_map(|k| split_key(k).map(|(design, _, _)| design))
+        .filter(|design| !designs.contains(*design))
+        .map(str::to_string)
+        .collect();
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
+/// The blessing guard: a current baseline that exists must not lose a design. `None` is the first
+/// blessing (no file yet). Shared by the no-merge whole-matrix bless and the merge bless so a
+/// deleted design cannot be written away by either path.
+fn check_bless_current_designs(baseline: Option<&CurrentBaseline>, designs: &BTreeSet<String>) -> Result<(), String> {
+    let Some(baseline) = baseline else { return Ok(()) };
+    let missing = missing_baseline_designs(baseline, designs);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the current baseline records designs that are no longer in the corpus (deleting a design must be recorded in the same pull request, not blessed away): {}",
+            missing.join(", ")
+        ))
+    }
+}
+
+fn existing_current_baseline() -> Option<CurrentBaseline> {
+    if current_baseline_path().exists() { Some(read_current_baseline().unwrap_or_else(|e| panic!("{e}"))) } else { None }
+}
+
+fn assert_all_baseline_designs(baseline: &CurrentBaseline) {
+    let designs: BTreeSet<String> = design_names().into_iter().collect();
+    check_bless_current_designs(Some(baseline), &designs).unwrap_or_else(|e| panic!("{e}"));
+}
+
+fn gate_shard(results: &[Value], shard: (usize, usize)) {
+    if local_subset_run() {
+        eprintln!("current baseline: not gated (a local subset run)");
+        return;
+    }
+    let baseline = read_current_baseline().unwrap_or_else(|e| panic!("{e}"));
+    check_baseline_pins(&baseline).unwrap_or_else(|e| panic!("{e}"));
+    assert_all_baseline_designs(&baseline);
+    let expected = expected_keys(&baseline, Some(shard));
+    assert_current(gate_current(&baseline, results, &expected));
+}
+
+fn gate_full(results: &[Value]) {
+    if local_subset_run() {
+        eprintln!("current baseline: not gated (a local subset run)");
+        return;
+    }
+    let baseline = read_current_baseline().unwrap_or_else(|e| panic!("{e}"));
+    check_baseline_pins(&baseline).unwrap_or_else(|e| panic!("{e}"));
+    assert_all_baseline_designs(&baseline);
+    let expected = expected_keys(&baseline, None);
+    assert_current(gate_current(&baseline, results, &expected));
+}
+
+/// The pull request sample: the same deterministic one-in-[`PR_SAMPLE`] subset, with the same
+/// slow-loading designs left out, must match the current baseline.
+fn gate_sample(results: &[Value]) {
+    if local_subset_run() {
+        eprintln!("current baseline: not gated (a local subset run)");
+        return;
+    }
+    let baseline = read_current_baseline().unwrap_or_else(|e| panic!("{e}"));
+    check_baseline_pins(&baseline).unwrap_or_else(|e| panic!("{e}"));
+    assert_all_baseline_designs(&baseline);
+    let costs = read_costs();
+    let ran: BTreeSet<String> =
+        design_names().into_iter().filter(|n| !(SLOW.contains(&n.as_str()) || costs.get(n).is_some_and(|c| c.load > SAMPLE_MAX_LOAD_SECS))).collect();
+    let expected: BTreeSet<String> = baseline
+        .entries
+        .keys()
+        .filter(|k| {
+            split_key(k).is_some_and(|(design, entity, action)| {
+                // The load outcome is written for every design in the sample; the actions follow
+                // the sample hash (with the edit round following its base action).
+                ran.contains(design)
+                    && (entity == "design" && action == "load"
+                        || stable_hash(&key(design, &family(entity), base_action(action))).is_multiple_of(PR_SAMPLE))
+            })
+        })
+        .cloned()
+        .collect();
+    assert_current(gate_current(&baseline, results, &expected));
+}
+
+/// The issue a currently failing action is recorded against: the multi-lump union's material-loss
+/// cases belong to #55, everything else to the tracking issue #58.
+fn failure_issue(design: &str, kind: &str, message: &str) -> &'static str {
+    let boolean_inner_shells =
+        design.contains("partial_face_contact_pattern") && (message.contains("Bad Inner shells") || message.contains("Bad Inner Shells"));
+    if boolean_inner_shells && kind != "timeout" { "#55" } else { "#58" }
+}
+
+fn provenance_from_env() -> Value {
+    let lock = std::fs::read_to_string(root().join("Cargo.lock")).unwrap_or_default();
+    let pins: BTreeMap<String, String> = lock_pins(&lock);
+    let source_revision = std::env::var("ACTION_MATRIX_SOURCE_REVISION").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| {
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "unknown".into())
+    });
+    let toolchain = std::env::var("ACTION_MATRIX_TOOLCHAIN").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| {
+        Command::new("rustc")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "unknown".into())
+    });
+    json!({
+        "source_revision": source_revision,
+        "develop_base": std::env::var("ACTION_MATRIX_DEVELOP_BASE").unwrap_or_default(),
+        "run_id": std::env::var("ACTION_MATRIX_RUN_ID").unwrap_or_else(|_| "local".into()),
+        "date": std::env::var("ACTION_MATRIX_DATE").unwrap_or_else(|_| "unknown".into()),
+        "note": std::env::var("ACTION_MATRIX_NOTE").unwrap_or_default(),
+        "shards": std::env::var("ACTION_MATRIX_SHARDS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(16),
+        "command": std::env::var("ACTION_MATRIX_COMMAND").unwrap_or_else(|_| {
+            "template (not the measured invocation): ACTION_MATRIX_SHARD=k/16 ACTION_MATRIX_RESULTS=DIR/results-k.json ACTION_MATRIX_TIMINGS=DIR/timings-k.jsonl ACTION_MATRIX_WORKDIR=DIR/raw-k ACTION_MATRIX_HISTORICAL_REPORT=DIR/historical-delta-k.txt ACTION_MATRIX_CURRENT_REPORT=DIR/current-gate-k.txt cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_shard)' --test-threads 2".into()
+        }),
+        "env_kind": "descriptive: the command above is the real CI invocation; these are the per-shard variable shapes",
+        "env": {
+            "ACTION_MATRIX_SHARD": "descriptive: k/16 for each shard k = 1..16",
+            "ACTION_MATRIX_JOBS": "2",
+            "ACTION_MATRIX_RESULTS": "descriptive: DIR/results-k.json",
+            "ACTION_MATRIX_TIMINGS": "descriptive: DIR/timings-k.jsonl",
+            "ACTION_MATRIX_WORKDIR": "descriptive: DIR/raw-k",
+            "ACTION_MATRIX_HISTORICAL_REPORT": "descriptive: DIR/historical-delta-k.txt",
+            "ACTION_MATRIX_CURRENT_REPORT": "descriptive: DIR/current-gate-k.txt",
+            "ACTION_MATRIX_FILTER": "unset",
+            "ACTION_MATRIX_ACTIONS": "unset",
+            "ACTION_MATRIX_SAMPLE": "1",
+            "ACTION_MATRIX_VALIDITY": "unset",
+            "ACTION_MATRIX_UNFOLD": "unset",
+            "ACTION_MATRIX_BLESS": "unset",
+            "ACTION_MATRIX_BLESS_CURRENT": "unset",
+            "ACTION_MATRIX_BLESS_COSTS": "unset",
+        },
+        "action_matrix_format": CURRENT_FORMAT,
+        "toolchain": toolchain,
+        "pins": pins,
+    })
+}
+
+/// Render `baseline-current.json` from a full run's results. It records the pass/fail map, the
+/// normalized signature and issue of every failure, and the provenance. It never touches
+/// `baseline.json`.
+fn render_current_baseline(results: &[Value], provenance: &Value) -> Result<String, String> {
+    if results.is_empty() {
+        return Err("refusing to write an empty current baseline".into());
+    }
+    let mut designs: BTreeMap<&str, BTreeMap<&str, Vec<String>>> = BTreeMap::new();
+    let mut failures: BTreeMap<String, CurrentFailure> = BTreeMap::new();
+    for o in results {
+        let (design, entity, action) = (o["design"].as_str().unwrap_or(""), o["entity"].as_str().unwrap_or(""), o["action"].as_str().unwrap_or(""));
+        let k = key(design, entity, action);
+        let ok = o["ok"].as_bool() == Some(true);
+        let kind = o["kind"].as_str().unwrap_or("");
+        let message = o["message"].as_str().unwrap_or("");
+        designs.entry(design).or_default().entry(entity).or_default().push(if ok { action.to_string() } else { format!("!{action}") });
+        if !ok {
+            failures.insert(
+                k,
+                CurrentFailure {
+                    kind: kind.to_string(),
+                    signature: normalize_signature(kind, message),
+                    issue: failure_issue(design, kind, message).to_string(),
+                },
+            );
+        }
+    }
+    let mut s = String::from(
+        "{\n \"about\": \"The action matrix's current gate: design, entity, the actions tried on it (failing ones marked !), the normalized failure signature and issue of each failure, and the provenance of the whole-matrix run that recorded it. This file gates CI; tests/action_matrix/baseline.json stays as the historical report. apps/solidcraft-cli/tests/action_matrix.rs, docs/action-matrix.md. Regenerate with cargo xtask action-matrix --bless-current --from DIR.\",\n \"format\": ",
+    );
+    s += &format!("{CURRENT_FORMAT},\n \"provenance\": ");
+    let pretty = serde_json::to_string_pretty(provenance).unwrap_or_else(|_| "{}".into());
+    s += &pretty.replace('\n', "\n ");
+    s += ",\n \"designs\": {\n";
+    let design_count = designs.len();
+    for (i, (design, entities)) in designs.into_iter().enumerate() {
+        s += &format!("  {}: {{\n", json!(design));
+        let n = entities.len();
+        for (j, (entity, mut actions)) in entities.into_iter().enumerate() {
+            actions.sort_by(|a, b| a.trim_start_matches('!').cmp(b.trim_start_matches('!')));
+            s += &format!("   {}: {}{}\n", json!(entity), json!(actions.join(" ")), if j + 1 < n { "," } else { "" });
+        }
+        s += &format!("  }}{}\n", if i + 1 < design_count { "," } else { "" });
+    }
+    s += " },\n \"failures\": {\n";
+    let failure_count = failures.len();
+    for (i, (k, f)) in failures.into_iter().enumerate() {
+        let line = json!({"kind": f.kind, "signature": f.signature, "issue": f.issue});
+        s += &format!("  {}: {}{}\n", json!(k), line, if i + 1 < failure_count { "," } else { "" });
+    }
+    s += " }\n}\n";
+    Ok(s)
+}
+
+/// Write the rendered current baseline. It never writes `baseline.json`.
+fn write_current_baseline(results: &[Value], provenance: &Value) -> Result<(), String> {
+    let s = render_current_baseline(results, provenance)?;
+    let path = current_baseline_path();
+    std::fs::create_dir_all(path.parent().ok_or("no baseline directory")?).map_err(|e| e.to_string())?;
+    std::fs::write(&path, s).map_err(|e| format!("{}: {e}", path.display()))?;
+    let baseline = CurrentBaseline::parse(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)?;
+    eprintln!(
+        "current baseline written: {} ({} designs, {} failures)",
+        path.display(),
+        baseline.entries.keys().filter_map(|k| split_key(k).map(|(d, _, _)| d)).collect::<BTreeSet<_>>().len(),
+        baseline.failures.len()
+    );
+    Ok(())
+}
+
+/// Pull requests: a fixed sample of the matrix (one action in [`PR_SAMPLE`]). The historical
+/// baseline is reported; the current baseline gates the sampled subset.
 #[test]
 fn action_matrix_sample() {
     let results = run_matrix(PR_SAMPLE);
     assert!(results.len() > 300, "only {} actions ran", results.len());
-    ratchet(&results, false);
+    report_historical(&results, false);
+    gate_sample(&results);
 }
 
-/// One shard of the whole matrix against the ratchet: `ACTION_MATRIX_SHARD=k/n` (the nightly
-/// "Action matrix" CI jobs run the n shards side by side, `--run-ignored only`). Shards are cut by
-/// what each design costs (tests/action_matrix/costs.json), see [`plan`].
+/// One shard of the whole matrix: `ACTION_MATRIX_SHARD=k/n` (the "Action matrix" CI jobs run the n
+/// shards side by side, `--run-ignored only`). Shards are cut by what each design costs
+/// (tests/action_matrix/costs.json), see [`plan`]. The historical baseline is reported; the
+/// current baseline gates this shard's deterministic slice of it.
 /// `ACTION_MATRIX_SHARD_LIST=1` only prints the plan.
 #[test]
-#[ignore = "heavy: the nightly Action matrix CI jobs run it, one shard each"]
+#[ignore = "heavy: the Action matrix CI jobs run it, one shard each"]
 fn action_matrix_shard() {
     let Some((k, n)) = std::env::var("ACTION_MATRIX_SHARD").ok().and_then(|v| parse_part(&v)) else { panic!("set ACTION_MATRIX_SHARD=k/n") };
     let shards = plan(&design_names(), &read_costs(), n);
@@ -1127,7 +1801,8 @@ fn action_matrix_shard() {
         return;
     }
     let results = run_units(1, &shards[k]);
-    ratchet(&results, false);
+    report_historical(&results, false);
+    gate_shard(&results, (k, n));
 }
 
 /// Determinism: a sample of the matrix (one family in [`DETERMINISM_SAMPLE`], the heaviest
@@ -1191,40 +1866,117 @@ fn action_matrix_determinism() {
     );
 }
 
-/// The whole matrix at once (`cargo xtask action-matrix`): `ACTION_MATRIX_BLESS=1` rewrites the
-/// baseline; `ACTION_MATRIX_RESULTS=file.json` keeps every outcome with its message.
+/// The whole matrix at once (`cargo xtask action-matrix`): the historical baseline is reported;
+/// the current baseline gates the whole run. `ACTION_MATRIX_BLESS_CURRENT=1` rewrites only
+/// `tests/action_matrix/baseline-current.json`; `ACTION_MATRIX_BLESS_COSTS=1` rewrites only
+/// `tests/action_matrix/costs.json`; `ACTION_MATRIX_BLESS=1` rewrites only the historical file
+/// (it does not touch costs). Blessing refuses a local subset and, from a merge, anything but all
+/// 16 shard results. A plain diagnostic run is not a blessing and is only gated when complete.
+/// `ACTION_MATRIX_RESULTS=file.json` keeps every outcome with its message.
 /// `ACTION_MATRIX_MERGE=DIR` runs nothing and takes the outcomes from the `results-*.json` files
-/// in DIR instead (the nightly shards' artifacts), and the timings from its `timings-*.jsonl`
-/// files, which `ACTION_MATRIX_BLESS` then also writes to tests/action_matrix/costs.json.
+/// in DIR (or in its `action-matrix-*/` subdirectories, as the CI artifacts download) instead, and
+/// the timings from the `timings-*.jsonl` files.
 #[test]
 #[ignore = "cargo xtask action-matrix runs it (CI runs it as the action_matrix_shard jobs)"]
 fn action_matrix_all() {
+    bless_flags_are_exclusive(std::env::var_os("ACTION_MATRIX_BLESS").is_some(), std::env::var_os("ACTION_MATRIX_BLESS_CURRENT").is_some())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let blessing =
+        ["ACTION_MATRIX_BLESS", "ACTION_MATRIX_BLESS_CURRENT", "ACTION_MATRIX_BLESS_COSTS"].iter().any(|name| std::env::var_os(name).is_some());
     let Some(dir) = std::env::var_os("ACTION_MATRIX_MERGE").map(PathBuf::from) else {
+        // Refuse blessing a diagnostic subset; a plain diagnostic run must still work (the gate
+        // skips itself for a local subset).
+        if blessing {
+            blessing_allowed(local_subset_run(), false, REQUIRED_SHARDS, false).unwrap_or_else(|e| panic!("{e}"));
+        }
+        if std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some() {
+            panic!("costs come from the shard timings; use --from DIR with --bless-costs");
+        }
         let results = run_matrix(1);
-        ratchet(&results, true);
+        report_historical(&results, true);
+        if std::env::var_os("ACTION_MATRIX_BLESS").is_some() {
+            return;
+        }
+        if std::env::var_os("ACTION_MATRIX_BLESS_CURRENT").is_some() {
+            let designs: BTreeSet<String> = design_names().into_iter().collect();
+            let existing = existing_current_baseline();
+            check_bless_current_designs(existing.as_ref(), &designs).unwrap_or_else(|e| panic!("{e}"));
+            write_current_baseline(&results, &provenance_from_env()).unwrap_or_else(|e| panic!("{e}"));
+            return;
+        }
+        gate_full(&results);
         return;
     };
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            files.extend(std::fs::read_dir(&p).into_iter().flatten().flatten().map(|e| e.path()));
+        } else {
+            files.push(p);
+        }
+    }
+    files.sort();
     let mut results: Vec<Value> = Vec::new();
     let mut timings: Vec<Value> = Vec::new();
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
-    files.sort();
+    let mut shards_seen = BTreeSet::new();
     for f in files {
         let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
         let text = std::fs::read_to_string(&f).unwrap_or_default();
-        if name.starts_with("results-") && name.ends_with(".json") {
-            results.extend(serde_json::from_str::<Vec<Value>>(&text).unwrap_or_else(|e| panic!("{name}: {e}")));
+        if let Some(n) = name.strip_prefix("results-").and_then(|n| n.strip_suffix(".json")).and_then(|n| n.parse::<usize>().ok()) {
+            let shard: Vec<Value> = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            check_merge_shard_nonempty(&name, &shard).unwrap_or_else(|e| panic!("{e}"));
+            shards_seen.insert(n);
+            results.extend(shard);
         } else if name.starts_with("timings-") {
             timings.extend(text.lines().filter_map(|l| serde_json::from_str(l).ok()));
         }
     }
-    let ran: BTreeSet<&str> = results.iter().filter_map(|o| o["design"].as_str()).collect();
-    let missing: Vec<String> = design_names().into_iter().filter(|d| !ran.contains(d.as_str())).collect();
-    assert!(missing.is_empty(), "no results for {}", missing.join(", "));
+    let want = merge_shard_count().unwrap_or_else(|e| panic!("{e}"));
+    let partial =
+        check_merge_shards(&shards_seen, want, std::env::var_os("ACTION_MATRIX_ALLOW_PARTIAL_SHARDS").is_some()).unwrap_or_else(|e| panic!("{e}"));
+    // Only a blessing needs the whole run and all 16 shards. A plain diagnostic merge with
+    // ACTION_MATRIX_ALLOW_PARTIAL_SHARDS is allowed and only gated when it is complete.
+    if blessing {
+        blessing_allowed(local_subset_run(), true, shards_seen.len(), std::env::var_os("ACTION_MATRIX_ALLOW_PARTIAL_SHARDS").is_some())
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    let complete = !partial && want == REQUIRED_SHARDS;
+    if complete {
+        let ran: BTreeSet<&str> = results.iter().filter_map(|o| o["design"].as_str()).collect();
+        let missing: Vec<String> = design_names().into_iter().filter(|d| !ran.contains(d.as_str())).collect();
+        assert!(missing.is_empty(), "no results for {}", missing.join(", "));
+    }
     results.sort_by_key(|o| key(o["design"].as_str().unwrap_or(""), o["entity"].as_str().unwrap_or(""), o["action"].as_str().unwrap_or("")));
-    if std::env::var_os("ACTION_MATRIX_BLESS").is_some() && !timings.is_empty() {
+    // Costs are a separate blessing: --bless stays historical-only.
+    let bless_costs = std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some();
+    if bless_costs {
+        assert!(
+            !timings.is_empty(),
+            "--bless-costs needs the shards' timings-*.jsonl files; refusing to guess costs from an incomplete artifact set"
+        );
         write_costs(&timings);
     }
-    ratchet(&results, true);
+    report_historical(&results, true);
+    if std::env::var_os("ACTION_MATRIX_BLESS").is_some() {
+        return;
+    }
+    if std::env::var_os("ACTION_MATRIX_BLESS_CURRENT").is_some() {
+        let designs: BTreeSet<String> = design_names().into_iter().collect();
+        let existing = existing_current_baseline();
+        check_bless_current_designs(existing.as_ref(), &designs).unwrap_or_else(|e| panic!("{e}"));
+        write_current_baseline(&results, &provenance_from_env()).unwrap_or_else(|e| panic!("{e}"));
+        return;
+    }
+    if bless_costs {
+        eprintln!("costs written; the current baseline gate was not run");
+        return;
+    }
+    if !complete {
+        eprintln!("current baseline: diagnostic only; not gated ({} of {REQUIRED_SHARDS} shard results)", shards_seen.len());
+        return;
+    }
+    gate_full(&results);
 }
 
 /// tests/action_matrix/costs.json from the shards' timings: per design, its whole time (a sliced
@@ -1749,4 +2501,275 @@ fn the_ribbed_lid_builds_the_same_body_every_time() {
     for _ in 0..5 {
         assert_eq!(fingerprint(), first);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The current baseline's gate: unit and negative fixtures (small, no design loads).
+
+const FIXTURE_BASELINE: &str = r##"{
+ "format": 1,
+ "provenance": {
+  "pins": {
+   "solidcore": "1.0.1 git+https://example.invalid/solidcore?rev=aaaa#aaaa",
+   "solidcore-record": "0.1.0 git+https://example.invalid/solidcore?rev=bbbb#bbbb"
+  }
+ },
+ "designs": {
+  "demo/part": {
+   "Body/F2:top": "body.move !face.hole",
+   "Body/body": "body.copy"
+  }
+ },
+ "failures": {
+  "demo/part :: Body/F2:top :: face.hole": {
+   "kind": "error",
+   "signature": "error: solid.hole: operation failed (status 1001)",
+   "issue": "#58"
+  }
+ }
+}"##;
+
+const FIXTURE_LOCK: &str = r#"[[package]]
+name = "solidcore"
+version = "1.0.1"
+source = "git+https://example.invalid/solidcore?rev=aaaa#aaaa"
+
+[[package]]
+name = "solidcore-record"
+version = "0.1.0"
+source = "git+https://example.invalid/solidcore?rev=bbbb#bbbb"
+"#;
+
+fn fixture() -> (CurrentBaseline, BTreeSet<String>) {
+    let baseline = CurrentBaseline::parse(FIXTURE_BASELINE).unwrap();
+    let expected = baseline.entries.keys().cloned().collect();
+    (baseline, expected)
+}
+
+fn line(design: &str, entity: &str, action: &str, ok: bool, kind: &str, message: &str) -> Value {
+    json!({"design": design, "entity": entity, "action": action, "ok": ok, "kind": kind, "message": message})
+}
+
+fn unchanged() -> Vec<Value> {
+    vec![
+        line("demo/part", "Body/F2:top", "body.move", true, "", ""),
+        line("demo/part", "Body/F2:top", "face.hole", false, "error", "solid.hole: operation failed (status 1001)"),
+        line("demo/part", "Body/body", "body.copy", true, "", ""),
+    ]
+}
+
+fn violations(baseline: &CurrentBaseline, expected: &BTreeSet<String>, results: &[Value]) -> Vec<String> {
+    gate_current(baseline, results, expected).violations
+}
+
+#[test]
+fn current_baseline_accepts_an_unchanged_run() {
+    let (baseline, expected) = fixture();
+    assert_eq!(violations(&baseline, &expected, &unchanged()), Vec::<String>::new());
+}
+
+#[test]
+fn current_baseline_fails_a_new_failure() {
+    let (baseline, expected) = fixture();
+    let mut results = unchanged();
+    results[0] = line("demo/part", "Body/F2:top", "body.move", false, "error", "boom");
+    let v = violations(&baseline, &expected, &results);
+    assert!(v.iter().any(|x| x.contains("new failure") && x.contains("body.move")), "{v:?}");
+}
+
+#[test]
+fn current_baseline_fails_a_changed_signature() {
+    let (baseline, expected) = fixture();
+    let mut results = unchanged();
+    results[1] = line("demo/part", "Body/F2:top", "face.hole", false, "error", "solid.hole: operation failed (status 1027)");
+    let v = violations(&baseline, &expected, &results);
+    assert!(v.iter().any(|x| x.contains("failure signature changed") && x.contains("face.hole")), "{v:?}");
+}
+
+#[test]
+fn current_baseline_fails_a_missing_action() {
+    let (baseline, expected) = fixture();
+    let mut results = unchanged();
+    results.pop();
+    let v = violations(&baseline, &expected, &results);
+    assert!(v.iter().any(|x| x.contains("missing action") && x.contains("body.copy")), "{v:?}");
+}
+
+#[test]
+fn current_baseline_fails_an_extra_action() {
+    let (baseline, expected) = fixture();
+    let mut results = unchanged();
+    results.push(line("demo/part", "Body/new", "body.pattern", true, "", ""));
+    let v = violations(&baseline, &expected, &results);
+    assert!(v.iter().any(|x| x.contains("action not in the current baseline") && x.contains("body.pattern")), "{v:?}");
+}
+
+#[test]
+fn current_baseline_fails_an_improvement() {
+    let (baseline, expected) = fixture();
+    let mut results = unchanged();
+    results[1] = line("demo/part", "Body/F2:top", "face.hole", true, "", "");
+    let v = violations(&baseline, &expected, &results);
+    assert!(v.iter().any(|x| x.contains("now passes") && x.contains("face.hole")), "{v:?}");
+}
+
+#[test]
+fn current_baseline_fails_empty_results() {
+    let (baseline, expected) = fixture();
+    let v = violations(&baseline, &expected, &[]);
+    assert!(v.iter().any(|x| x.contains("no action results")), "{v:?}");
+}
+
+#[test]
+fn current_baseline_judges_a_timeout_of_a_passing_action() {
+    let (baseline, expected) = fixture();
+    let mut results = unchanged();
+    results[0] = line("demo/part", "Body/F2:top", "body.move", false, "timeout", "no result after 90 s");
+    let v = violations(&baseline, &expected, &results);
+    assert!(v.iter().any(|x| x.contains("new failure") && x.contains("body.move")), "{v:?}");
+}
+
+#[test]
+fn current_baseline_accepts_a_timeout_of_an_already_failing_action() {
+    let (baseline, expected) = fixture();
+    let mut results = unchanged();
+    results[1] = line("demo/part", "Body/F2:top", "face.hole", false, "timeout", "no result after 90 s");
+    let v = violations(&baseline, &expected, &results);
+    // The action was already failing, so a timeout is still the same recorded failure.
+    assert_eq!(v, Vec::<String>::new());
+}
+
+#[test]
+fn boolean_bad_inner_shells_link_to_55() {
+    assert_eq!(
+        failure_issue("regressions/partial_face_contact_pattern", "error", "SmBrep::Test #12 Bad Inner shells: NonInfiniteRegion Inner"),
+        "#55"
+    );
+    assert_eq!(failure_issue("demo/part", "error", "boom"), "#58");
+}
+
+#[test]
+fn current_baseline_round_trips_through_the_writer() {
+    let provenance = json!({"pins": {"solidcore": "a", "solidcore-record": "b"}});
+    let text = render_current_baseline(&unchanged(), &provenance).unwrap();
+    let parsed = CurrentBaseline::parse(&text).unwrap();
+    assert_eq!(parsed.entries.len(), 3);
+    assert_eq!(parsed.entries.get("demo/part :: Body/F2:top :: body.move"), Some(&true));
+    assert_eq!(parsed.entries.get("demo/part :: Body/F2:top :: face.hole"), Some(&false));
+    let failure = parsed.failures.get("demo/part :: Body/F2:top :: face.hole").expect("the failure");
+    assert_eq!(failure.signature, "error: solid.hole: operation failed (status 1001)");
+    assert_eq!(failure.issue, "#58");
+    assert!(render_current_baseline(&[], &provenance).is_err());
+}
+
+#[test]
+fn current_baseline_fails_a_pin_mismatch() {
+    let (baseline, _) = fixture();
+    assert!(check_pins(&baseline, FIXTURE_LOCK).is_ok());
+    let changed = FIXTURE_LOCK.replace("rev=aaaa", "rev=cccc");
+    let err = check_pins(&baseline, &changed).unwrap_err();
+    assert!(err.contains("regenerate the current baseline"), "{err}");
+}
+
+#[test]
+fn signatures_canonicalize_numbers_and_whitespace() {
+    assert_eq!(normalize_signature("error", "a  0.5 mm\nb"), "error: a <n> mm b");
+    assert_eq!(normalize_signature("error", "failed (status 1001)"), "error: failed (status 1001)");
+    assert_eq!(normalize_signature("error", "at [-1.5, 2e-3, +4]"), "error: at [<n>, <n>, <n>]");
+    assert_eq!(normalize_signature("error", "G1 and Test #4"), "error: G<n> and Test #<n>");
+}
+
+#[test]
+fn edit_and_unfold_actions_follow_their_base_action() {
+    assert_eq!(base_action("face.hole+edit"), "face.hole");
+    assert_eq!(base_action("edge.fillet+unfold"), "edge.fillet");
+    assert_eq!(base_action("face.hole"), "face.hole");
+}
+
+#[test]
+fn blessing_refuses_a_local_subset_or_a_short_shard_set() {
+    assert!(blessing_allowed(true, false, REQUIRED_SHARDS, false).is_err());
+    assert!(blessing_allowed(false, true, REQUIRED_SHARDS - 1, false).is_err());
+    assert!(blessing_allowed(false, true, REQUIRED_SHARDS, true).is_err());
+    assert!(blessing_allowed(false, true, REQUIRED_SHARDS, false).is_ok());
+    assert!(blessing_allowed(false, false, REQUIRED_SHARDS, false).is_ok());
+}
+
+#[test]
+fn no_merge_bless_refuses_a_deleted_design() {
+    // The no-merge whole-matrix bless uses the same guard as the merge bless: a baseline that
+    // exists may not lose a design.
+    let (baseline, _) = fixture();
+    let full: BTreeSet<String> = ["demo/part".to_string()].into_iter().collect();
+    assert!(check_bless_current_designs(Some(&baseline), &full).is_ok());
+    let without = BTreeSet::new();
+    let err = check_bless_current_designs(Some(&baseline), &without).unwrap_err();
+    assert!(err.contains("demo/part"), "{err}");
+    assert!(check_bless_current_designs(None, &without).is_ok());
+}
+
+#[test]
+fn merge_shard_discovery_rejects_missing_and_empty_shards() {
+    let all: BTreeSet<usize> = (1..=REQUIRED_SHARDS).collect();
+    assert!(!check_merge_shards(&all, REQUIRED_SHARDS, false).unwrap());
+    let short: BTreeSet<usize> = (1..=REQUIRED_SHARDS).filter(|n| *n != 7 && *n != 15).collect();
+    let err = check_merge_shards(&short, REQUIRED_SHARDS, false).unwrap_err();
+    assert!(err.contains("results-7.json") && err.contains("results-15.json"), "{err}");
+    // The documented diagnostic override turns a missing shard into a partial set, not an error.
+    assert!(check_merge_shards(&short, REQUIRED_SHARDS, true).unwrap());
+    assert!(check_merge_shard_nonempty("results-1.json", &unchanged()).is_ok());
+    let err = check_merge_shard_nonempty("results-1.json", &[]).unwrap_err();
+    assert!(err.contains("empty shard result"), "{err}");
+}
+
+#[test]
+fn deleting_a_design_is_caught_by_the_shard_and_sample_checks() {
+    let (baseline, _) = fixture();
+    let all: BTreeSet<String> = ["demo/part".to_string()].into_iter().collect();
+    assert!(missing_baseline_designs(&baseline, &all).is_empty());
+    let without: BTreeSet<String> = BTreeSet::new();
+    assert_eq!(missing_baseline_designs(&baseline, &without), vec!["demo/part".to_string()]);
+}
+
+#[test]
+fn a_recorded_timeout_that_becomes_an_error_is_not_a_signature_change() {
+    let (mut baseline, expected) = fixture();
+    let key = "demo/part :: Body/F2:top :: face.hole";
+    let failure = baseline.failures.get_mut(key).expect("the recorded failure");
+    failure.kind = "timeout".into();
+    failure.signature = "timeout: no result after <n> s".into();
+    let mut results = unchanged();
+    results[1] = line("demo/part", "Body/F2:top", "face.hole", false, "error", "solid.hole: a different error");
+    assert_eq!(violations(&baseline, &expected, &results), Vec::<String>::new());
+}
+
+#[test]
+fn a_recorded_timeout_that_now_passes_is_not_a_tightening_demand() {
+    let (mut baseline, expected) = fixture();
+    let key = "demo/part :: Body/F2:top :: face.hole";
+    let failure = baseline.failures.get_mut(key).expect("the recorded failure");
+    failure.kind = "timeout".into();
+    failure.signature = "timeout: no result after <n> s".into();
+    let mut results = unchanged();
+    results[1] = line("demo/part", "Body/F2:top", "face.hole", true, "", "");
+    assert_eq!(violations(&baseline, &expected, &results), Vec::<String>::new());
+}
+
+#[test]
+fn bless_flags_cannot_be_combined() {
+    assert!(bless_flags_are_exclusive(true, true).is_err());
+    assert!(bless_flags_are_exclusive(true, false).is_ok());
+    assert!(bless_flags_are_exclusive(false, true).is_ok());
+}
+
+#[test]
+fn historical_deltas_are_report_only() {
+    // Any historical pass turned into a failure is a delta the report prints; it does not fail.
+    let base = read_baseline();
+    let (k, _) = base.iter().find(|(_, ok)| **ok).expect("a historical pass");
+    let (design, entity, action) = split_key(k.as_str()).expect("a key");
+    let results = vec![line(design, entity, action, false, "error", "boom")];
+    let delta = historical_delta(&results);
+    assert!(!delta.regressions.is_empty());
+    report_historical(&results, false); // prints; must not panic or assert.
 }

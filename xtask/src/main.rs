@@ -95,12 +95,15 @@ commands:
                   from the junit report. --raw-exit also binds the job to nextest's real exit
                   (0 pass or 100 test failure); --report writes the same text as the log to PATH.
                   CI's raw property job runs it after nextest
-  action-matrix [--bless] [--results FILE] [--from DIR]
+  action-matrix [--bless | --bless-current] [--bless-costs] [--results FILE] [--from DIR]
                   try every ordinary action on every face, edge, vertex and body of the design
-                  corpus and compare with tests/action_matrix/baseline.json (--bless rewrites it;
-                  --results keeps every outcome with its message; --from takes the outcomes of the
-                  nightly shards' artifacts in DIR instead of running, and --bless then also
-                  rewrites tests/action_matrix/costs.json). See docs/action-matrix.md
+                  corpus: the current baseline gates the run, the historical file is report-only.
+                  --bless-current rewrites only tests/action_matrix/baseline-current.json;
+                  --bless rewrites only the historical tests/action_matrix/baseline.json (they
+                  cannot be combined); --bless-costs rewrites only the measured
+                  tests/action_matrix/costs.json from --from's timings; --results keeps every
+                  outcome with its message; --from takes all 16 shards' artifacts in DIR instead of
+                  running. See docs/action-matrix.md
   book [--no-build]
                   generate docs/book's command reference and screenshots, then mdbook build
                   into target/book
@@ -167,7 +170,13 @@ fn main() -> ExitCode {
         Some("oracle") => cmd_oracle(rest.iter().position(|a| *a == "--cli").and_then(|i| rest.get(i + 1)).copied()),
         Some("action-matrix") => {
             let arg = |name: &str| rest.iter().position(|a| *a == name).and_then(|i| rest.get(i + 1)).copied();
-            cmd_action_matrix(rest.contains(&"--bless"), arg("--results"), arg("--from"))
+            cmd_action_matrix(
+                rest.contains(&"--bless"),
+                rest.contains(&"--bless-current"),
+                rest.contains(&"--bless-costs"),
+                arg("--results"),
+                arg("--from"),
+            )
         }
         Some("book") => book::run(&root(), !rest.contains(&"--no-build")),
         Some("external-corpus") => external_corpus::run(&root(), &rest),
@@ -234,7 +243,13 @@ pub fn metadata() -> Result<serde_json::Value, String> {
 }
 
 /// The full action matrix (apps/solidcraft-cli/tests/action_matrix.rs), with the ci profile.
-fn cmd_action_matrix(bless: bool, results: Option<&str>, from: Option<&str>) -> Result<(), String> {
+fn cmd_action_matrix(bless: bool, bless_current: bool, bless_costs: bool, results: Option<&str>, from: Option<&str>) -> Result<(), String> {
+    if bless && bless_current {
+        return Err("--bless (historical) and --bless-current (gate) cannot be combined; choose one".into());
+    }
+    if bless_costs && from.is_none() {
+        return Err("--bless-costs needs --from DIR with the shards' timings-*.jsonl files".into());
+    }
     let mut c = cargo();
     c.args([
         "test",
@@ -252,6 +267,12 @@ fn cmd_action_matrix(bless: bool, results: Option<&str>, from: Option<&str>) -> 
     ]);
     if bless {
         c.env("ACTION_MATRIX_BLESS", "1");
+    }
+    if bless_current {
+        c.env("ACTION_MATRIX_BLESS_CURRENT", "1");
+    }
+    if bless_costs {
+        c.env("ACTION_MATRIX_BLESS_COSTS", "1");
     }
     if let Some(r) = results {
         let p = std::path::absolute(r).map_err(|e| format!("{r}: {e}"))?;
