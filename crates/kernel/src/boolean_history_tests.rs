@@ -442,6 +442,39 @@ fn a_union_where_every_box_overlaps_and_the_tool_cuts_the_inner_piece() {
     verified(&r, &[&a, &tool], 0.02);
 }
 
+/// A tool wholly inside one piece is absorbed by that piece's union, not joined as an
+/// overlapping separate solid (the reverse containment case).
+#[test]
+fn a_tool_inside_a_piece_of_a_multi_lump_body_is_absorbed() {
+    let big = certified_box(0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 1);
+    let small = certified_box(30.0, 0.0, 0.0, 40.0, 10.0, 10.0, 2);
+    let a = crate::join_apart(&[big, small]).unwrap().unwrap();
+    assert_eq!(a.shell_count(), 2);
+    let tool = certified_box(5.0, 5.0, 5.0, 6.0, 6.0, 6.0, 3);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert!(r.validity().is_empty(), "{:?}", r.validity());
+    assert_eq!(r.shell_count(), 2);
+    let v = crate::measure(&r).unwrap().volume;
+    assert!((v - 9000.0).abs() < 0.02, "{v}");
+    verified(&r, &[&a, &tool], 0.02);
+}
+
+/// A piece wholly inside the tool is absorbed by the tool's union (the forward containment
+/// case).
+#[test]
+fn a_piece_inside_the_tool_is_absorbed() {
+    let big = certified_box(0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 1);
+    let small = certified_box(30.0, 0.0, 0.0, 40.0, 10.0, 10.0, 2);
+    let a = crate::join_apart(&[big, small]).unwrap().unwrap();
+    let tool = certified_box(25.0, -5.0, -5.0, 45.0, 15.0, 15.0, 3);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert!(r.validity().is_empty(), "{:?}", r.validity());
+    assert_eq!(r.shell_count(), 2);
+    let v = crate::measure(&r).unwrap().volume;
+    assert!((v - 16000.0).abs() < 0.02, "{v}");
+    verified(&r, &[&a, &tool], 0.02);
+}
+
 /// A boolean with a triangle mesh: the mesh's faces are its triangles (and it has no edges).
 #[test]
 fn faceted_tool() {
