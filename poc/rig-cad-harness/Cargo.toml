@@ -1,0 +1,37 @@
+[package]
+name = "cad-rig-harness"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Deliberately outside the main workspace: Rig's MSRV (1.97.1) is above the
+# product workspace's 1.95, so this spike must not change the product build.
+[workspace]
+
+[lib]
+name = "cad_rig_harness"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cad-harness"
+path = "src/bin/cad_harness.rs"
+
+[dependencies]
+# The fake provider is Rig's own deterministic scripted model. No network
+# provider, no reqwest/rustls in this spike.
+rig = { version = "=0.46.0", default-features = false, features = ["agent", "test-utils", "derive"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# The real CAD path. These are path dependencies on the product workspace;
+# they do not make this crate a member of it.
+solidcraft-engine = { path = "../../crates/engine" }
+solidcraft-io = { path = "../../crates/io" }
+solidcraft-doc = { path = "../../crates/doc" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
