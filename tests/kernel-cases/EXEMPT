@@ -67,6 +67,7 @@ document.metadata                 document metadata and revisions
 document.metadata.remove          document metadata and revisions
 document.metadata.set             document metadata and revisions
 document.revision                 document metadata and revisions
+document.snapshot.capture         snapshot capture is covered by crates/engine/src/cmd/snapshot.rs tests
 edit.checkpoint                   undo, redo and checkpoints: an earlier state restored, no new geometry
 edit.redo                         undo, redo and checkpoints: an earlier state restored, no new geometry
 edit.repeat                       repeats the last command, whose own case grades it
