@@ -2257,6 +2257,11 @@ impl ChatBackend for MastraBackend {
         self.push(Event::TurnEnded { reason: "cancelled".into() });
     }
 
+    /// The retired Mastra runtime is not a Beta skill path.
+    fn skill_support(&self, _skill: super::skill::Skill) -> super::backend::SkillSupport {
+        super::backend::SkillSupport::Unsupported
+    }
+
     fn new_session(&mut self) {
         self.cancel();
         if !self.runtime_ready || self.stopped {

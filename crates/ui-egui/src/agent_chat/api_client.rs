@@ -175,6 +175,10 @@ impl ChatBackend for ApiBackend {
     }
     fn answer_permission(&mut self, _key: u64, _option: Option<&str>) {}
     fn authenticate(&mut self, _method: &str) {}
+    /// Direct/BYOK is the Beta skill path verified first.
+    fn skill_support(&self, _skill: super::skill::Skill) -> super::backend::SkillSupport {
+        super::backend::SkillSupport::Supported
+    }
     fn pid(&self) -> Option<u32> {
         self.mcp.as_ref().and_then(ProcessHandle::pid)
     }
