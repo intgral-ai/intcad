@@ -111,10 +111,11 @@ recorded before a commit; focused checks are feedback, not a replacement.
 
 `tests/KNOWN_FAILURE_EXCEPTIONS` is a narrow, expiring exception for reviewed test
 failures. It is not a second `tests/KNOWN_FAILING_TESTS`: the raw property job still
-runs, still records its real exit and JUnit report, and is still red for a known
-failure. The separate grader may excuse only a failure bound to one exact entry and
-only while that entry is valid; any other failure, an unmatched failure, a missing
-or skipped test, or an excused test that passed fails the job.
+runs and saves its real, possibly nonzero exit, its JUnit report, and its selection.
+The raw step is neutralized only so the separate grader can decide the job; any
+unexcused failure still fails the job. The grader may excuse only a failure bound to
+one exact entry and only while that entry is valid; any other failure, an unmatched
+failure, a missing or skipped test, or an excused test that passed fails the job.
 
 One entry per line, sorted, with every field present:
 
@@ -123,11 +124,13 @@ One entry per line, sorted, with every field present:
 ```
 
 `cargo xtask lists` checks the file is sorted, unique, complete, and has a valid
-date. `cargo xtask known-failure-exception --junit PATH` fails when an entry is
-expired, when its test did not run, when that test passed (remove the line), when
-the failure text does not contain the recorded signature and every input marker,
-or when any other test failed. When it excuses a failure it prints `KNOWN FAILURE`
-with the issue, test, owner, seed, and expiry.
+date. `cargo xtask known-failure-exception --junit PATH --selection selection.json`
+fails when an entry is expired, when its test did not run, when that test passed
+(remove the line), when the failure text does not contain the recorded signature
+and every input marker, when a selected non-ignored test is missing from the JUnit
+report, or when any other test failed. When it excuses a failure it prints
+`KNOWN FAILURE` with the issue, test, owner, seed, and expiry. Success and failure
+reports both name the excused known failure before the unexcused problems.
 
 The only entry today is issue #56: `solidcraft-kernel::boolean_props::translation_invariant`,
 seed `cc 0f8ee4d4597db6bdec2ad2cc7e5cfe7d4ebba351e24642118135da34bf489d0c`, owned by

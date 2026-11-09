@@ -511,7 +511,7 @@ jobs:
           echo "raw nextest exit: $raw (the grader below decides; the raw run is still saved)"
       - name: Excuse only the reviewed known failure (#56)
         run: |
-          cargo run --locked --package xtask -- known-failure-exception --junit target/nextest/ci/junit.xml --raw-exit "$(cat target/nextest/ci/raw-exit.txt)" --report target/nextest/ci/known-failure-exception.txt
+          cargo run --locked --package xtask -- known-failure-exception --junit target/nextest/ci/junit.xml --selection selection.json --raw-exit "$(cat target/nextest/ci/raw-exit.txt)" --report target/nextest/ci/known-failure-exception.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
