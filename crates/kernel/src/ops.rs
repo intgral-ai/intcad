@@ -56,15 +56,15 @@ pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
     })
 }
 
-/// `a` union `b` when `a` is in several pieces and only some of them meet `b`: the meeting
-/// pieces union with `b` one at a time (the first a single piece, which SMLib handles), the
-/// pieces apart from `b` join back untouched. SMLib nests a disconnected piece of a multi-lump
-/// first operand inside the result as a void, losing material and failing its own check (#55).
-/// A piece meets `b` when their exact boxes, each grown by its tolerance, overlap: exact geometry,
-/// no tessellation (a box that overlaps without touching is still unioned, which is sound).
-/// `None` where the ordinary union applies: `a` is in one piece, `b` is not one piece (a tool
-/// spanning pieces is outside this case), every piece meets `b`, or a piece cannot be told
-/// apart. An error reading the pieces is returned, never hidden behind the ordinary path.
+/// `a` union `b` when `a` is in several pieces and `b` is one: the pieces that meet `b` union
+/// with it one at a time (the first a single piece, which SMLib handles), the pieces apart from
+/// `b` join back untouched. SMLib nests a disconnected piece of a multi-lump first operand
+/// inside the result as a void, losing material and failing its own check (#55). A box meeting
+/// is not contact: a piece may overlap the tool's box while sitting in a cavity the tool misses,
+/// so each piece is classified on its own (exact bound, then exact distance/containment) rather
+/// than assuming all-overlap is all-meet. `None` where the ordinary union applies: `a` is in one
+/// piece or `b` is not one piece (a tool spanning pieces is outside this case). An error reading
+/// the pieces is returned, never hidden behind the ordinary path.
 fn union_by_lumps(a: &Body, b: &Body) -> Result<Option<Body>> {
     if a.is_mesh() || b.is_mesh() {
         return Ok(None);
@@ -80,16 +80,17 @@ fn union_by_lumps(a: &Body, b: &Body) -> Result<Option<Body>> {
     for lump in lumps {
         if apart(&lump, b)? {
             apart_lumps.push(lump);
-        } else {
+        } else if lump_meets(&lump, b)? {
             meeting.push(lump);
+        } else {
+            apart_lumps.push(lump);
         }
     }
-    // Every piece meets the tool: one connected result, which the ordinary union makes.
-    if apart_lumps.is_empty() {
-        return Ok(None);
-    }
-    // No piece meets the tool: the whole body and the tool are apart, side by side.
+    // Box overlap is not contact: a lump can have a box over the tool while sitting in a cavity
+    // the tool misses (see the probe in the history tests). Every lump is therefore classified
+    // on its own and the meeting ones union one at a time, even when no lump is box-apart.
     if meeting.is_empty() {
+        // No piece meets the tool: the whole body and the tool are apart, side by side.
         let Some(body) = join_apart(&[a.clone(), b.clone()])? else { return Ok(None) };
         let body = body.inherit_split_lines(&[a, b]).with_preserved_union_planar_sources(&[a, b])?;
         return Ok(Some(body));
@@ -118,6 +119,35 @@ fn union_by_lumps(a: &Body, b: &Body) -> Result<Option<Body>> {
         .inherit_split_lines(&[a, b])
         .with_preserved_union_planar_sources(&[a, b])?;
     Ok(Some(body))
+}
+
+/// Whether `lump` meets `tool`: their exact faces and edges come within the larger record
+/// tolerance, or, with no exact contact, the lump lies wholly inside the tool's material (a
+/// union absorbs it). Exact geometry and SMLib's point classification; the meshes only propose
+/// where the exact distance is worked out ([`crate::body_distance`]).
+fn lump_meets(lump: &Body, tool: &Body) -> Result<bool> {
+    let tol = lump.record().tolerance.max(tool.record().tolerance);
+    let chord = |body: &Body| (body.size() * 1e-4).max(1e-6);
+    let (lump_chord, tool_chord) = (chord(lump), chord(tool));
+    let lump_mesh = lump.mesh(&crate::MeshTolerance::chord(lump_chord))?;
+    let tool_mesh = tool.mesh(&crate::MeshTolerance::chord(tool_chord))?;
+    let (a, b) = (crate::DistanceShape::new(lump, &lump_mesh, lump_chord), crate::DistanceShape::new(tool, &tool_mesh, tool_chord));
+    if crate::body_distance(&a, &b, tol)?.is_some_and(|d| d.exact && d.distance <= tol) {
+        return Ok(true);
+    }
+    // No exact contact: a lump whose face point is inside the tool's material is absorbed by
+    // the union. The point is on the lump's boundary, so real contact would have been found
+    // above; a point outside means the lump sits apart (in a cavity the tool misses).
+    let Some(point) = lump_face_point(lump)? else { return Ok(false) };
+    Ok(matches!(tool.classify_point(point)?, crate::PointClass::Inside | crate::PointClass::OnBoundary))
+}
+
+/// A point inside one face of `body`, on its surface (SMLib's own point), for asking whether a
+/// lump with no exact contact lies inside another body's material.
+fn lump_face_point(body: &Body) -> Result<Option<Vec3>> {
+    let (sm, _) = crate::native::smlib_body_ordered(body)?;
+    let points = sm.face_points().map_err(|e| KernelError::smlib("SMLib face point", e))?;
+    Ok(points.first().map(|p| Vec3::new(p[0], p[1], p[2])))
 }
 
 /// The first meeting piece's history over [`a`, `b`]: its union with the tool is over the piece
