@@ -1488,12 +1488,15 @@ fn local_subset_run() -> bool {
 /// replace it, and a diagnostic gate may only use a short set with an explicit override.
 const REQUIRED_SHARDS: usize = 16;
 
-fn blessing_allowed(local_subset: bool, merge: bool, shards: usize) -> Result<(), String> {
+fn blessing_allowed(local_subset: bool, merge: bool, shards: usize, partial_override: bool) -> Result<(), String> {
     if local_subset {
         return Err("refusing to bless a local subset run (ACTION_MATRIX_FILTER/ACTIONS/VALIDITY/UNFOLD); run the whole matrix".into());
     }
-    if merge && shards != REQUIRED_SHARDS {
-        return Err(format!("refusing to bless from {shards} shards; the current baseline needs all {REQUIRED_SHARDS} shard results"));
+    if merge && (partial_override || shards != REQUIRED_SHARDS) {
+        return Err(format!(
+            "refusing to bless from {shards} shards{}; the current baseline needs all {REQUIRED_SHARDS} shard results (ACTION_MATRIX_ALLOW_PARTIAL_SHARDS is diagnostic-only)",
+            if partial_override { " with ACTION_MATRIX_ALLOW_PARTIAL_SHARDS" } else { "" }
+        ));
     }
     Ok(())
 }
@@ -1519,10 +1522,15 @@ fn merge_shard_count() -> Result<usize, String> {
     Ok(want)
 }
 
-fn check_merge_shards(found: &BTreeSet<usize>, want: usize) -> Result<(), String> {
+/// Check the discovered shard files. Returns whether this is a partial (diagnostic) set: a partial
+/// set is allowed only with the explicit local override, never for a blessing or a gate.
+fn check_merge_shards(found: &BTreeSet<usize>, want: usize, allow_partial: bool) -> Result<bool, String> {
     let absent: Vec<String> = (1..=want).filter(|n| !found.contains(n)).map(|n| format!("results-{n}.json")).collect();
     if absent.is_empty() {
-        Ok(())
+        Ok(false)
+    } else if allow_partial {
+        eprintln!("current baseline: DIAGNOSTIC ONLY, {} of {want} shard results (missing {})", found.len(), absent.join(", "));
+        Ok(true)
     } else {
         Err(format!(
             "missing shard results (the workflow keeps all {want} shards; an unexpected skip or cancel fails the gate): {}",
@@ -1551,14 +1559,29 @@ fn missing_baseline_designs(baseline: &CurrentBaseline, designs: &BTreeSet<Strin
     missing
 }
 
+/// The blessing guard: a current baseline that exists must not lose a design. `None` is the first
+/// blessing (no file yet). Shared by the no-merge whole-matrix bless and the merge bless so a
+/// deleted design cannot be written away by either path.
+fn check_bless_current_designs(baseline: Option<&CurrentBaseline>, designs: &BTreeSet<String>) -> Result<(), String> {
+    let Some(baseline) = baseline else { return Ok(()) };
+    let missing = missing_baseline_designs(baseline, designs);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the current baseline records designs that are no longer in the corpus (deleting a design must be recorded in the same pull request, not blessed away): {}",
+            missing.join(", ")
+        ))
+    }
+}
+
+fn existing_current_baseline() -> Option<CurrentBaseline> {
+    if current_baseline_path().exists() { Some(read_current_baseline().unwrap_or_else(|e| panic!("{e}"))) } else { None }
+}
+
 fn assert_all_baseline_designs(baseline: &CurrentBaseline) {
     let designs: BTreeSet<String> = design_names().into_iter().collect();
-    let missing = missing_baseline_designs(baseline, &designs);
-    assert!(
-        missing.is_empty(),
-        "the current baseline records designs that are no longer in the corpus (deleting a design must be recorded in the same pull request): {}",
-        missing.join(", ")
-    );
+    check_bless_current_designs(Some(baseline), &designs).unwrap_or_else(|e| panic!("{e}"));
 }
 
 fn gate_shard(results: &[Value], shard: (usize, usize)) {
@@ -1655,14 +1678,15 @@ fn provenance_from_env() -> Value {
         "command": std::env::var("ACTION_MATRIX_COMMAND").unwrap_or_else(|_| {
             "template (not the measured invocation): ACTION_MATRIX_SHARD=k/16 ACTION_MATRIX_RESULTS=DIR/results-k.json ACTION_MATRIX_TIMINGS=DIR/timings-k.jsonl ACTION_MATRIX_WORKDIR=DIR/raw-k ACTION_MATRIX_HISTORICAL_REPORT=DIR/historical-delta-k.txt ACTION_MATRIX_CURRENT_REPORT=DIR/current-gate-k.txt cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_shard)' --test-threads 2".into()
         }),
+        "env_kind": "descriptive: the command above is the real CI invocation; these are the per-shard variable shapes",
         "env": {
-            "ACTION_MATRIX_SHARD": "k/16 (1..16)",
+            "ACTION_MATRIX_SHARD": "descriptive: k/16 for each shard k = 1..16",
             "ACTION_MATRIX_JOBS": "2",
-            "ACTION_MATRIX_RESULTS": "DIR/results-k.json",
-            "ACTION_MATRIX_TIMINGS": "DIR/timings-k.jsonl",
-            "ACTION_MATRIX_WORKDIR": "DIR/raw-k",
-            "ACTION_MATRIX_HISTORICAL_REPORT": "DIR/historical-delta-k.txt",
-            "ACTION_MATRIX_CURRENT_REPORT": "DIR/current-gate-k.txt",
+            "ACTION_MATRIX_RESULTS": "descriptive: DIR/results-k.json",
+            "ACTION_MATRIX_TIMINGS": "descriptive: DIR/timings-k.jsonl",
+            "ACTION_MATRIX_WORKDIR": "descriptive: DIR/raw-k",
+            "ACTION_MATRIX_HISTORICAL_REPORT": "descriptive: DIR/historical-delta-k.txt",
+            "ACTION_MATRIX_CURRENT_REPORT": "descriptive: DIR/current-gate-k.txt",
             "ACTION_MATRIX_FILTER": "unset",
             "ACTION_MATRIX_ACTIONS": "unset",
             "ACTION_MATRIX_SAMPLE": "1",
@@ -1845,8 +1869,9 @@ fn action_matrix_determinism() {
 /// The whole matrix at once (`cargo xtask action-matrix`): the historical baseline is reported;
 /// the current baseline gates the whole run. `ACTION_MATRIX_BLESS_CURRENT=1` rewrites only
 /// `tests/action_matrix/baseline-current.json`; `ACTION_MATRIX_BLESS_COSTS=1` rewrites only
-/// `tests/action_matrix/costs.json`; `ACTION_MATRIX_BLESS=1` still rewrites only the historical
-/// file. Blessing refuses a local subset and, from a merge, anything but all 16 shard results.
+/// `tests/action_matrix/costs.json`; `ACTION_MATRIX_BLESS=1` rewrites only the historical file
+/// (it does not touch costs). Blessing refuses a local subset and, from a merge, anything but all
+/// 16 shard results. A plain diagnostic run is not a blessing and is only gated when complete.
 /// `ACTION_MATRIX_RESULTS=file.json` keeps every outcome with its message.
 /// `ACTION_MATRIX_MERGE=DIR` runs nothing and takes the outcomes from the `results-*.json` files
 /// in DIR (or in its `action-matrix-*/` subdirectories, as the CI artifacts download) instead, and
@@ -1856,8 +1881,14 @@ fn action_matrix_determinism() {
 fn action_matrix_all() {
     bless_flags_are_exclusive(std::env::var_os("ACTION_MATRIX_BLESS").is_some(), std::env::var_os("ACTION_MATRIX_BLESS_CURRENT").is_some())
         .unwrap_or_else(|e| panic!("{e}"));
+    let blessing =
+        ["ACTION_MATRIX_BLESS", "ACTION_MATRIX_BLESS_CURRENT", "ACTION_MATRIX_BLESS_COSTS"].iter().any(|name| std::env::var_os(name).is_some());
     let Some(dir) = std::env::var_os("ACTION_MATRIX_MERGE").map(PathBuf::from) else {
-        blessing_allowed(local_subset_run(), false, REQUIRED_SHARDS).unwrap_or_else(|e| panic!("{e}"));
+        // Refuse blessing a diagnostic subset; a plain diagnostic run must still work (the gate
+        // skips itself for a local subset).
+        if blessing {
+            blessing_allowed(local_subset_run(), false, REQUIRED_SHARDS, false).unwrap_or_else(|e| panic!("{e}"));
+        }
         if std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some() {
             panic!("costs come from the shard timings; use --from DIR with --bless-costs");
         }
@@ -1867,6 +1898,9 @@ fn action_matrix_all() {
             return;
         }
         if std::env::var_os("ACTION_MATRIX_BLESS_CURRENT").is_some() {
+            let designs: BTreeSet<String> = design_names().into_iter().collect();
+            let existing = existing_current_baseline();
+            check_bless_current_designs(existing.as_ref(), &designs).unwrap_or_else(|e| panic!("{e}"));
             write_current_baseline(&results, &provenance_from_env()).unwrap_or_else(|e| panic!("{e}"));
             return;
         }
@@ -1899,17 +1933,27 @@ fn action_matrix_all() {
         }
     }
     let want = merge_shard_count().unwrap_or_else(|e| panic!("{e}"));
-    check_merge_shards(&shards_seen, want).unwrap_or_else(|e| panic!("{e}"));
-    blessing_allowed(local_subset_run(), true, want).unwrap_or_else(|e| panic!("{e}"));
-    let ran: BTreeSet<&str> = results.iter().filter_map(|o| o["design"].as_str()).collect();
-    let missing: Vec<String> = design_names().into_iter().filter(|d| !ran.contains(d.as_str())).collect();
-    assert!(missing.is_empty(), "no results for {}", missing.join(", "));
+    let partial =
+        check_merge_shards(&shards_seen, want, std::env::var_os("ACTION_MATRIX_ALLOW_PARTIAL_SHARDS").is_some()).unwrap_or_else(|e| panic!("{e}"));
+    // Only a blessing needs the whole run and all 16 shards. A plain diagnostic merge with
+    // ACTION_MATRIX_ALLOW_PARTIAL_SHARDS is allowed and only gated when it is complete.
+    if blessing {
+        blessing_allowed(local_subset_run(), true, shards_seen.len(), std::env::var_os("ACTION_MATRIX_ALLOW_PARTIAL_SHARDS").is_some())
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    let complete = !partial && want == REQUIRED_SHARDS;
+    if complete {
+        let ran: BTreeSet<&str> = results.iter().filter_map(|o| o["design"].as_str()).collect();
+        let missing: Vec<String> = design_names().into_iter().filter(|d| !ran.contains(d.as_str())).collect();
+        assert!(missing.is_empty(), "no results for {}", missing.join(", "));
+    }
     results.sort_by_key(|o| key(o["design"].as_str().unwrap_or(""), o["entity"].as_str().unwrap_or(""), o["action"].as_str().unwrap_or("")));
-    let bless_costs = std::env::var_os("ACTION_MATRIX_BLESS").is_some() || std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some();
+    // Costs are a separate blessing: --bless stays historical-only.
+    let bless_costs = std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some();
     if bless_costs {
         assert!(
             !timings.is_empty(),
-            "--bless/--bless-costs needs the shards' timings-*.jsonl files; refusing to guess costs from an incomplete artifact set"
+            "--bless-costs needs the shards' timings-*.jsonl files; refusing to guess costs from an incomplete artifact set"
         );
         write_costs(&timings);
     }
@@ -1918,15 +1962,18 @@ fn action_matrix_all() {
         return;
     }
     if std::env::var_os("ACTION_MATRIX_BLESS_CURRENT").is_some() {
-        if current_baseline_path().exists() {
-            let baseline = read_current_baseline().unwrap_or_else(|e| panic!("{e}"));
-            assert_all_baseline_designs(&baseline);
-        }
+        let designs: BTreeSet<String> = design_names().into_iter().collect();
+        let existing = existing_current_baseline();
+        check_bless_current_designs(existing.as_ref(), &designs).unwrap_or_else(|e| panic!("{e}"));
         write_current_baseline(&results, &provenance_from_env()).unwrap_or_else(|e| panic!("{e}"));
         return;
     }
-    if std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some() {
+    if bless_costs {
         eprintln!("costs written; the current baseline gate was not run");
+        return;
+    }
+    if !complete {
+        eprintln!("current baseline: diagnostic only; not gated ({} of {REQUIRED_SHARDS} shard results)", shards_seen.len());
         return;
     }
     gate_full(&results);
@@ -2641,19 +2688,35 @@ fn edit_and_unfold_actions_follow_their_base_action() {
 
 #[test]
 fn blessing_refuses_a_local_subset_or_a_short_shard_set() {
-    assert!(blessing_allowed(true, false, REQUIRED_SHARDS).is_err());
-    assert!(blessing_allowed(false, true, REQUIRED_SHARDS - 1).is_err());
-    assert!(blessing_allowed(false, true, REQUIRED_SHARDS).is_ok());
-    assert!(blessing_allowed(false, false, REQUIRED_SHARDS).is_ok());
+    assert!(blessing_allowed(true, false, REQUIRED_SHARDS, false).is_err());
+    assert!(blessing_allowed(false, true, REQUIRED_SHARDS - 1, false).is_err());
+    assert!(blessing_allowed(false, true, REQUIRED_SHARDS, true).is_err());
+    assert!(blessing_allowed(false, true, REQUIRED_SHARDS, false).is_ok());
+    assert!(blessing_allowed(false, false, REQUIRED_SHARDS, false).is_ok());
+}
+
+#[test]
+fn no_merge_bless_refuses_a_deleted_design() {
+    // The no-merge whole-matrix bless uses the same guard as the merge bless: a baseline that
+    // exists may not lose a design.
+    let (baseline, _) = fixture();
+    let full: BTreeSet<String> = ["demo/part".to_string()].into_iter().collect();
+    assert!(check_bless_current_designs(Some(&baseline), &full).is_ok());
+    let without = BTreeSet::new();
+    let err = check_bless_current_designs(Some(&baseline), &without).unwrap_err();
+    assert!(err.contains("demo/part"), "{err}");
+    assert!(check_bless_current_designs(None, &without).is_ok());
 }
 
 #[test]
 fn merge_shard_discovery_rejects_missing_and_empty_shards() {
     let all: BTreeSet<usize> = (1..=REQUIRED_SHARDS).collect();
-    assert!(check_merge_shards(&all, REQUIRED_SHARDS).is_ok());
+    assert!(!check_merge_shards(&all, REQUIRED_SHARDS, false).unwrap());
     let short: BTreeSet<usize> = (1..=REQUIRED_SHARDS).filter(|n| *n != 7 && *n != 15).collect();
-    let err = check_merge_shards(&short, REQUIRED_SHARDS).unwrap_err();
+    let err = check_merge_shards(&short, REQUIRED_SHARDS, false).unwrap_err();
     assert!(err.contains("results-7.json") && err.contains("results-15.json"), "{err}");
+    // The documented diagnostic override turns a missing shard into a partial set, not an error.
+    assert!(check_merge_shards(&short, REQUIRED_SHARDS, true).unwrap());
     assert!(check_merge_shard_nonempty("results-1.json", &unchanged()).is_ok());
     let err = check_merge_shard_nonempty("results-1.json", &[]).unwrap_err();
     assert!(err.contains("empty shard result"), "{err}");

@@ -87,7 +87,9 @@ take 40 to 80 s on a busy runner and land either side of the limit from night to
 the baseline recorded with `timeout` is unknown and is not judged when it later times out, errors or
 passes: a timeout is a resource condition, not a stable CAD result. It stays recorded as failing
 until a clean run gives a non-timeout result, and a recorded *error* that now passes is still a
-tightening demand. Loading a design, before its first action, may take up
+tightening demand. To tighten a timeout-recorded action, regenerate the current baseline from a
+clean run that records the new pass; reviewing that regeneration is the approval. Loading a
+design, before its first action, may take up
 to 300 s (the largest take several times longer on a loaded CI runner than here). None did in the
 measurement run.
 
