@@ -55,6 +55,9 @@ fn join_into_one_piece_of_a_multi_lump_body_keeps_the_other_pieces() {
         assert_eq!(body.shell_count(), 3, "{command}");
         let measured = solidcraft_kernel::measure(body).unwrap().volume;
         assert!((measured - expected).abs() < 0.02, "{command}: {measured} mm³, expected {expected}");
+        // The join keeps its history over the two operands, so naming and undo follow it.
+        let history = body.history().unwrap_or_else(|| panic!("{command}: the join kept no history"));
+        assert_eq!(history.operands, 2, "{command}");
         println!("{command}: {measured:.6} / {expected:.6} mm³, {} shells", body.shell_count());
     }
 }
