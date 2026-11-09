@@ -11,7 +11,6 @@
 # --junit PATH` is the CI gate. `expires` is the first day the entry is invalid
 # (UTC), so the last valid day is the day before it.
 #
-# No active exceptions. The one-time #56 exception was removed after the full
-# raw property lane passed its previously excused test; #56 remains a kernel
-# issue for a dedicated exact-input regression test. Do not re-add without a
-# new reviewed decision.
+# One-time CTO exception for #56, approved for this exact failure only. The
+# owner removes the line when the kernel fix lands; agents must not renew it.
+solidcraft-kernel::boolean_props::translation_invariant | issue=#56 | owner=repository owner (CTO) | expires=2026-12-08 | seed=cc 0f8ee4d4597db6bdec2ad2cc7e5cfe7d4ebba351e24642118135da34bf489d0c | signature=SmBSplineSurface::Test #5 Bad NonMonotonic CPts;[owner SmSphere] | input=minimal failing input: a = Sph { at: [ 0.0, 0.0, 5.0, ], r: 2.5, };b = Box { at: [ 0.0, 0.0, 0.0, ], size: [ 5.0, 5.0, 5.0, ], };off = 100000.0 | why=proptest seed cc 0f8ee4d4597db6bdec2ad2cc7e5cfe7d4ebba351e24642118135da34bf489d0c: SMLib's check refuses the moved sphere's non-monotonic B-spline control net; a kernel/SMLib fix removes this line (see also seed cc 00931f1657c5f31ab3593ef30eb6f452eddcf3fd0662d280ca2f6a86a409666b)
