@@ -507,6 +507,9 @@ fn check(r: Result<(), TestCaseError>) {
     }
 }
 
+/// #61: the point-tangency refusal is an expected safe refusal, not an ignored bug case. The
+/// property tests above execute it; these plain tests pin the exact accepted case and the cases
+/// that must still fail.
 fn bad_vertex_gap(offset: f64) -> String {
     format!(
         "SMLib boolean: SMLib's check refuses the result: 1 failed tests:\n{BAD_VERTEX_GAP} (offset={offset}, tolerance= 2e-05) [owner SmVertex]\n"
