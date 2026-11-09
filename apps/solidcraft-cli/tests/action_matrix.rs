@@ -1433,11 +1433,11 @@ fn gate_current(baseline: &CurrentBaseline, results: &[Value], expected: &BTreeS
         } else if !was {
             let signature = normalize_signature(kind, message);
             match baseline.failures.get(k) {
-                // A timeout is a resource condition, not a failure signature. An action already
-                // failing may time out today and error tomorrow; it is still the same recorded
-                // failure, so it is reported but not judged. A timeout of an action that passed
-                // is still a new failure above.
-                _ if kind.as_str() == "timeout" => {}
+                // A timeout is a resource condition, not a stable failure signature. An action
+                // already failing may time out today and error tomorrow (or the reverse); it is
+                // still the same recorded failure, so it is reported but not judged. A timeout of
+                // an action that passed is still a new failure above.
+                Some(f) if f.kind == "timeout" || kind.as_str() == "timeout" => {}
                 Some(f) if f.signature == signature => {}
                 Some(f) => violations.push(format!(
                     "failure signature changed for {k} (recorded kind {} against {}; worsened or different):\n  baseline: {}\n  now:      {signature}",
@@ -1479,6 +1479,83 @@ fn local_subset_run() -> bool {
         .any(|name| std::env::var_os(name).is_some())
 }
 
+/// The current baseline is a whole-matrix record. A local subset or a short shard set must never
+/// replace it, and a diagnostic gate may only use a short set with an explicit override.
+const REQUIRED_SHARDS: usize = 16;
+
+fn blessing_allowed(local_subset: bool, merge: bool, shards: usize) -> Result<(), String> {
+    if local_subset {
+        return Err("refusing to bless a local subset run (ACTION_MATRIX_FILTER/ACTIONS/VALIDITY/UNFOLD); run the whole matrix".into());
+    }
+    if merge && shards != REQUIRED_SHARDS {
+        return Err(format!("refusing to bless from {shards} shards; the current baseline needs all {REQUIRED_SHARDS} shard results"));
+    }
+    Ok(())
+}
+
+fn bless_flags_are_exclusive(historical: bool, current: bool) -> Result<(), String> {
+    if historical && current {
+        Err("ACTION_MATRIX_BLESS and ACTION_MATRIX_BLESS_CURRENT are both set; choose one (the historical and current baselines are separate)".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn merge_shard_count() -> Result<usize, String> {
+    let want = std::env::var("ACTION_MATRIX_SHARDS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(REQUIRED_SHARDS);
+    if want != REQUIRED_SHARDS && std::env::var_os("ACTION_MATRIX_ALLOW_PARTIAL_SHARDS").is_none() {
+        return Err(format!(
+            "ACTION_MATRIX_SHARDS={want}: the current baseline gate needs all {REQUIRED_SHARDS} shards; only a local diagnostic may set ACTION_MATRIX_ALLOW_PARTIAL_SHARDS=1 (never to bless)"
+        ));
+    }
+    if want != REQUIRED_SHARDS {
+        eprintln!("current baseline: DIAGNOSTIC ONLY, {want}/{REQUIRED_SHARDS} shards (ACTION_MATRIX_ALLOW_PARTIAL_SHARDS)");
+    }
+    Ok(want)
+}
+
+fn check_merge_shards(found: &BTreeSet<usize>, want: usize) -> Result<(), String> {
+    let absent: Vec<String> = (1..=want).filter(|n| !found.contains(n)).map(|n| format!("results-{n}.json")).collect();
+    if absent.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "missing shard results (the workflow keeps all {want} shards; an unexpected skip or cancel fails the gate): {}",
+            absent.join(", ")
+        ))
+    }
+}
+
+fn check_merge_shard_nonempty(name: &str, shard: &[Value]) -> Result<(), String> {
+    if shard.is_empty() { Err(format!("{name} is an empty shard result (an unexpected skip or cancel fails the gate)")) } else { Ok(()) }
+}
+
+/// Every design recorded in the baseline must still be in the corpus. Otherwise deleting a design
+/// would make its baseline actions disappear from [`expected_keys`] and silently pass the shard
+/// and sample gates.
+fn missing_baseline_designs(baseline: &CurrentBaseline, designs: &BTreeSet<String>) -> Vec<String> {
+    let mut missing: Vec<String> = baseline
+        .entries
+        .keys()
+        .filter_map(|k| split_key(k).map(|(design, _, _)| design))
+        .filter(|design| !designs.contains(*design))
+        .map(str::to_string)
+        .collect();
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
+fn assert_all_baseline_designs(baseline: &CurrentBaseline) {
+    let designs: BTreeSet<String> = design_names().into_iter().collect();
+    let missing = missing_baseline_designs(baseline, &designs);
+    assert!(
+        missing.is_empty(),
+        "the current baseline records designs that are no longer in the corpus (deleting a design must be recorded in the same pull request): {}",
+        missing.join(", ")
+    );
+}
+
 fn gate_shard(results: &[Value], shard: (usize, usize)) {
     if local_subset_run() {
         eprintln!("current baseline: not gated (a local subset run)");
@@ -1486,6 +1563,7 @@ fn gate_shard(results: &[Value], shard: (usize, usize)) {
     }
     let baseline = read_current_baseline().unwrap_or_else(|e| panic!("{e}"));
     check_baseline_pins(&baseline).unwrap_or_else(|e| panic!("{e}"));
+    assert_all_baseline_designs(&baseline);
     let expected = expected_keys(&baseline, Some(shard));
     assert_current(gate_current(&baseline, results, &expected));
 }
@@ -1497,6 +1575,7 @@ fn gate_full(results: &[Value]) {
     }
     let baseline = read_current_baseline().unwrap_or_else(|e| panic!("{e}"));
     check_baseline_pins(&baseline).unwrap_or_else(|e| panic!("{e}"));
+    assert_all_baseline_designs(&baseline);
     let expected = expected_keys(&baseline, None);
     assert_current(gate_current(&baseline, results, &expected));
 }
@@ -1510,6 +1589,7 @@ fn gate_sample(results: &[Value]) {
     }
     let baseline = read_current_baseline().unwrap_or_else(|e| panic!("{e}"));
     check_baseline_pins(&baseline).unwrap_or_else(|e| panic!("{e}"));
+    assert_all_baseline_designs(&baseline);
     let costs = read_costs();
     let ran: BTreeSet<String> =
         design_names().into_iter().filter(|n| !(SLOW.contains(&n.as_str()) || costs.get(n).is_some_and(|c| c.load > SAMPLE_MAX_LOAD_SECS))).collect();
@@ -1567,16 +1647,25 @@ fn provenance_from_env() -> Value {
         "date": std::env::var("ACTION_MATRIX_DATE").unwrap_or_else(|_| "unknown".into()),
         "note": std::env::var("ACTION_MATRIX_NOTE").unwrap_or_default(),
         "shards": std::env::var("ACTION_MATRIX_SHARDS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(16),
-        "command": "ACTION_MATRIX_SHARD=k/16 ACTION_MATRIX_RESULTS=DIR/results-k.json ACTION_MATRIX_TIMINGS=DIR/timings-k.jsonl ACTION_MATRIX_WORKDIR=DIR/raw-k cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_shard)' --test-threads 2",
+        "command": std::env::var("ACTION_MATRIX_COMMAND").unwrap_or_else(|_| {
+            "template (not the measured invocation): ACTION_MATRIX_SHARD=k/16 ACTION_MATRIX_RESULTS=DIR/results-k.json ACTION_MATRIX_TIMINGS=DIR/timings-k.jsonl ACTION_MATRIX_WORKDIR=DIR/raw-k ACTION_MATRIX_HISTORICAL_REPORT=DIR/historical-delta-k.txt ACTION_MATRIX_CURRENT_REPORT=DIR/current-gate-k.txt cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_shard)' --test-threads 2".into()
+        }),
         "env": {
-            "ACTION_MATRIX_SHARD": "k/16",
+            "ACTION_MATRIX_SHARD": "k/16 (1..16)",
             "ACTION_MATRIX_JOBS": "2",
-            "ACTION_MATRIX_FILTER": "",
-            "ACTION_MATRIX_ACTIONS": "",
+            "ACTION_MATRIX_RESULTS": "DIR/results-k.json",
+            "ACTION_MATRIX_TIMINGS": "DIR/timings-k.jsonl",
+            "ACTION_MATRIX_WORKDIR": "DIR/raw-k",
+            "ACTION_MATRIX_HISTORICAL_REPORT": "DIR/historical-delta-k.txt",
+            "ACTION_MATRIX_CURRENT_REPORT": "DIR/current-gate-k.txt",
+            "ACTION_MATRIX_FILTER": "unset",
+            "ACTION_MATRIX_ACTIONS": "unset",
             "ACTION_MATRIX_SAMPLE": "1",
-            "ACTION_MATRIX_VALIDITY": "",
-            "ACTION_MATRIX_UNFOLD": "",
-            "ACTION_MATRIX_BLESS": "",
+            "ACTION_MATRIX_VALIDITY": "unset",
+            "ACTION_MATRIX_UNFOLD": "unset",
+            "ACTION_MATRIX_BLESS": "unset",
+            "ACTION_MATRIX_BLESS_CURRENT": "unset",
+            "ACTION_MATRIX_BLESS_COSTS": "unset",
         },
         "action_matrix_format": CURRENT_FORMAT,
         "toolchain": toolchain,
@@ -1750,16 +1839,23 @@ fn action_matrix_determinism() {
 
 /// The whole matrix at once (`cargo xtask action-matrix`): the historical baseline is reported;
 /// the current baseline gates the whole run. `ACTION_MATRIX_BLESS_CURRENT=1` rewrites only
-/// `tests/action_matrix/baseline-current.json`; `ACTION_MATRIX_BLESS=1` still rewrites only the
-/// historical file. `ACTION_MATRIX_RESULTS=file.json` keeps every outcome with its message.
+/// `tests/action_matrix/baseline-current.json`; `ACTION_MATRIX_BLESS_COSTS=1` rewrites only
+/// `tests/action_matrix/costs.json`; `ACTION_MATRIX_BLESS=1` still rewrites only the historical
+/// file. Blessing refuses a local subset and, from a merge, anything but all 16 shard results.
+/// `ACTION_MATRIX_RESULTS=file.json` keeps every outcome with its message.
 /// `ACTION_MATRIX_MERGE=DIR` runs nothing and takes the outcomes from the `results-*.json` files
 /// in DIR (or in its `action-matrix-*/` subdirectories, as the CI artifacts download) instead, and
-/// the timings from the `timings-*.jsonl` files, which `ACTION_MATRIX_BLESS` then also writes to
-/// tests/action_matrix/costs.json. All [`ACTION_MATRIX_SHARDS`] shard files are required.
+/// the timings from the `timings-*.jsonl` files.
 #[test]
 #[ignore = "cargo xtask action-matrix runs it (CI runs it as the action_matrix_shard jobs)"]
 fn action_matrix_all() {
+    bless_flags_are_exclusive(std::env::var_os("ACTION_MATRIX_BLESS").is_some(), std::env::var_os("ACTION_MATRIX_BLESS_CURRENT").is_some())
+        .unwrap_or_else(|e| panic!("{e}"));
     let Some(dir) = std::env::var_os("ACTION_MATRIX_MERGE").map(PathBuf::from) else {
+        blessing_allowed(local_subset_run(), false, REQUIRED_SHARDS).unwrap_or_else(|e| panic!("{e}"));
+        if std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some() {
+            panic!("costs come from the shard timings; use --from DIR with --bless-costs");
+        }
         let results = run_matrix(1);
         report_historical(&results, true);
         if std::env::var_os("ACTION_MATRIX_BLESS").is_some() {
@@ -1790,25 +1886,26 @@ fn action_matrix_all() {
         let text = std::fs::read_to_string(&f).unwrap_or_default();
         if let Some(n) = name.strip_prefix("results-").and_then(|n| n.strip_suffix(".json")).and_then(|n| n.parse::<usize>().ok()) {
             let shard: Vec<Value> = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert!(!shard.is_empty(), "{name} is an empty shard result (an unexpected skip or cancel fails the gate)");
+            check_merge_shard_nonempty(&name, &shard).unwrap_or_else(|e| panic!("{e}"));
             shards_seen.insert(n);
             results.extend(shard);
         } else if name.starts_with("timings-") {
             timings.extend(text.lines().filter_map(|l| serde_json::from_str(l).ok()));
         }
     }
-    let want: usize = std::env::var("ACTION_MATRIX_SHARDS").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
-    let absent: Vec<String> = (1..=want).filter(|n| !shards_seen.contains(n)).map(|n| format!("results-{n}.json")).collect();
-    assert!(
-        absent.is_empty(),
-        "missing shard results (the workflow keeps all {want} shards; an unexpected skip or cancel fails the gate): {}",
-        absent.join(", ")
-    );
+    let want = merge_shard_count().unwrap_or_else(|e| panic!("{e}"));
+    check_merge_shards(&shards_seen, want).unwrap_or_else(|e| panic!("{e}"));
+    blessing_allowed(local_subset_run(), true, want).unwrap_or_else(|e| panic!("{e}"));
     let ran: BTreeSet<&str> = results.iter().filter_map(|o| o["design"].as_str()).collect();
     let missing: Vec<String> = design_names().into_iter().filter(|d| !ran.contains(d.as_str())).collect();
     assert!(missing.is_empty(), "no results for {}", missing.join(", "));
     results.sort_by_key(|o| key(o["design"].as_str().unwrap_or(""), o["entity"].as_str().unwrap_or(""), o["action"].as_str().unwrap_or("")));
-    if std::env::var_os("ACTION_MATRIX_BLESS").is_some() && !timings.is_empty() {
+    let bless_costs = std::env::var_os("ACTION_MATRIX_BLESS").is_some() || std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some();
+    if bless_costs {
+        assert!(
+            !timings.is_empty(),
+            "--bless/--bless-costs needs the shards' timings-*.jsonl files; refusing to guess costs from an incomplete artifact set"
+        );
         write_costs(&timings);
     }
     report_historical(&results, true);
@@ -1816,7 +1913,15 @@ fn action_matrix_all() {
         return;
     }
     if std::env::var_os("ACTION_MATRIX_BLESS_CURRENT").is_some() {
+        if current_baseline_path().exists() {
+            let baseline = read_current_baseline().unwrap_or_else(|e| panic!("{e}"));
+            assert_all_baseline_designs(&baseline);
+        }
         write_current_baseline(&results, &provenance_from_env()).unwrap_or_else(|e| panic!("{e}"));
+        return;
+    }
+    if std::env::var_os("ACTION_MATRIX_BLESS_COSTS").is_some() {
+        eprintln!("costs written; the current baseline gate was not run");
         return;
     }
     gate_full(&results);
@@ -2527,6 +2632,54 @@ fn edit_and_unfold_actions_follow_their_base_action() {
     assert_eq!(base_action("face.hole+edit"), "face.hole");
     assert_eq!(base_action("edge.fillet+unfold"), "edge.fillet");
     assert_eq!(base_action("face.hole"), "face.hole");
+}
+
+#[test]
+fn blessing_refuses_a_local_subset_or_a_short_shard_set() {
+    assert!(blessing_allowed(true, false, REQUIRED_SHARDS).is_err());
+    assert!(blessing_allowed(false, true, REQUIRED_SHARDS - 1).is_err());
+    assert!(blessing_allowed(false, true, REQUIRED_SHARDS).is_ok());
+    assert!(blessing_allowed(false, false, REQUIRED_SHARDS).is_ok());
+}
+
+#[test]
+fn merge_shard_discovery_rejects_missing_and_empty_shards() {
+    let all: BTreeSet<usize> = (1..=REQUIRED_SHARDS).collect();
+    assert!(check_merge_shards(&all, REQUIRED_SHARDS).is_ok());
+    let short: BTreeSet<usize> = (1..=REQUIRED_SHARDS).filter(|n| *n != 7 && *n != 15).collect();
+    let err = check_merge_shards(&short, REQUIRED_SHARDS).unwrap_err();
+    assert!(err.contains("results-7.json") && err.contains("results-15.json"), "{err}");
+    assert!(check_merge_shard_nonempty("results-1.json", &unchanged()).is_ok());
+    let err = check_merge_shard_nonempty("results-1.json", &[]).unwrap_err();
+    assert!(err.contains("empty shard result"), "{err}");
+}
+
+#[test]
+fn deleting_a_design_is_caught_by_the_shard_and_sample_checks() {
+    let (baseline, _) = fixture();
+    let all: BTreeSet<String> = ["demo/part".to_string()].into_iter().collect();
+    assert!(missing_baseline_designs(&baseline, &all).is_empty());
+    let without: BTreeSet<String> = BTreeSet::new();
+    assert_eq!(missing_baseline_designs(&baseline, &without), vec!["demo/part".to_string()]);
+}
+
+#[test]
+fn a_recorded_timeout_that_becomes_an_error_is_not_a_signature_change() {
+    let (mut baseline, expected) = fixture();
+    let key = "demo/part :: Body/F2:top :: face.hole";
+    let failure = baseline.failures.get_mut(key).expect("the recorded failure");
+    failure.kind = "timeout".into();
+    failure.signature = "timeout: no result after <n> s".into();
+    let mut results = unchanged();
+    results[1] = line("demo/part", "Body/F2:top", "face.hole", false, "error", "solid.hole: a different error");
+    assert_eq!(violations(&baseline, &expected, &results), Vec::<String>::new());
+}
+
+#[test]
+fn bless_flags_cannot_be_combined() {
+    assert!(bless_flags_are_exclusive(true, true).is_err());
+    assert!(bless_flags_are_exclusive(true, false).is_ok());
+    assert!(bless_flags_are_exclusive(false, true).is_ok());
 }
 
 #[test]
