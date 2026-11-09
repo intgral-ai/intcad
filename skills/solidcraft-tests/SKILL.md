@@ -30,6 +30,6 @@ A failing test cannot merge without its fix (it turns `main` red): include it, o
 - The kernel's reference is the ladder (`tests/kernel-cases/ladder/`, `cargo xtask kernel-cases --ladder`, `docs/kernel-ladder.md`).
 - Kernel PRs run `kernel-rig.yml` (areas by `PATHS` against `KNOWN_FAILING`, the ladder against its golden). In the same PR a fix drops its line, a pin bump's new failure adds one, a changed ladder result is re-recorded (`--record "why"`), a new command gets an `EXEMPT` line (`tests/kernel-cases/README.md`).
 - Maintainers' PRs run native, GPU and reference tests on affected packages; others wait for `approved-for-ci`. `release-gate.yml` runs all before develop replaces main.
-- The action matrix gates on a reproducible current baseline (`--bless-current` after all 16 shards); the historical `baseline.json` is report-only (#58). Never blind-bless: `docs/action-matrix.md`.
+- Action matrix: current baseline gates; historical `baseline.json` is report-only (#58). `docs/action-matrix.md`.
 - PRs skip a few heavy tests, run in the merge queue, nightly and on `main`. Check them after merging (`.config/nextest.toml`).
 - Mutation testing: `docs/mutation-testing.md`.

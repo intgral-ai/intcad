@@ -84,15 +84,17 @@ commands:
                   on a test that failed and is not listed, and on a listed test that passed
                   (fixed: take its line off); a listed test that did not run is neither. CI's
                   test jobs run it after nextest
-  known-failure-exception --junit PATH... [--exceptions FILE] [--today YYYY-MM-DD] [--raw-exit CODE] [--report PATH]
+  known-failure-exception --junit PATH... [--exceptions FILE] [--selection FILE] [--today YYYY-MM-DD] [--raw-exit CODE] [--report PATH]
                   grade a nextest run's junit report (a file, or every .xml under a directory)
                   against the reviewed, expiring exceptions in tests/KNOWN_FAILURE_EXCEPTIONS
                   (or FILE): an exception excuses only its exact test when that test ran, failed
                   with the recorded signature and fixed-input markers, and has not expired;
                   fails on any other failure, an unmatched failure, a missing or skipped test,
-                  an excused test that passed, and an expired entry. --raw-exit also binds the
-                  job to nextest's real exit (0 pass or 100 test failure); --report writes the
-                  same text as the log to PATH. CI's raw property job runs it after nextest
+                  an excused test that passed, and an expired entry. --selection binds the run
+                  to nextest's list JSON and fails when a selected, non-ignored test is missing
+                  from the junit report. --raw-exit also binds the job to nextest's real exit
+                  (0 pass or 100 test failure); --report writes the same text as the log to PATH.
+                  CI's raw property job runs it after nextest
   action-matrix [--bless] [--bless-current] [--results FILE] [--from DIR]
                   try every ordinary action on every face, edge, vertex and body of the design
                   corpus: the current baseline gates the run, the historical file is report-only.

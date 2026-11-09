@@ -1,13 +1,15 @@
-//! `cargo xtask known-failure-exception --junit PATH... [--exceptions FILE] [--today YYYY-MM-DD]
-//! [--raw-exit CODE] [--report PATH]`: grade a nextest run against the reviewed, expiring
-//! exceptions in `tests/KNOWN_FAILURE_EXCEPTIONS`.
+//! `cargo xtask known-failure-exception --junit PATH... [--exceptions FILE] [--selection FILE]
+//! [--today YYYY-MM-DD] [--raw-exit CODE] [--report PATH]`: grade a nextest run against the
+//! reviewed, expiring exceptions in `tests/KNOWN_FAILURE_EXCEPTIONS`.
 //!
 //! This is deliberately narrower than `cargo xtask known-failing`. An entry names one nextest
 //! test, its issue, an owner, the day it stops being valid, the proptest seed, the exact failure
 //! signature and the fixed-input markers. The raw run still happens; CI only excuses a failure
 //! when the same test really ran, really failed, and its failure text contains the recorded
-//! signature and every input marker. A missing test, a skipped test, an excused test that passed,
-//! an expired entry, an unmatched failure, or any other failed test fails the gate.
+//! signature and every input marker. With `--selection`, a selected test that is not ignored must
+//! also appear in the junit report. A missing test, a skipped test, an excused test that passed,
+//! an expired entry, an unmatched failure, or any other failed test fails the gate. Every report,
+//! success or failure, names each excused known failure before the unexcused problems.
 //!
 //! Entry format, one test a line, sorted by test id exactly once:
 //!
@@ -19,13 +21,14 @@
 //! proptest minimal input can be written on one line. `expires` is the first invalid day (UTC),
 //! so the last valid day is the day before it. There is no renewal.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use quick_xml::Reader;
 use quick_xml::escape::unescape;
 use quick_xml::events::{BytesStart, Event};
+use serde_json::Value;
 
 pub const LIST: &str = "tests/KNOWN_FAILURE_EXCEPTIONS";
 
@@ -65,6 +68,7 @@ struct Outcome {
 pub fn run(root: &Path, rest: &[&str]) -> Result<(), String> {
     let mut reports = Vec::new();
     let mut exceptions = root.join(LIST);
+    let mut selection = None;
     let mut today = today_utc();
     let mut report_path = None;
     let mut raw_exit = None;
@@ -73,6 +77,11 @@ pub fn run(root: &Path, rest: &[&str]) -> Result<(), String> {
         match *arg {
             "--junit" => reports.push(PathBuf::from(args.next().ok_or("--junit needs a junit file or a directory of them")?)),
             "--exceptions" => exceptions = PathBuf::from(args.next().ok_or("--exceptions needs a file")?),
+            "--selection" => {
+                let path = PathBuf::from(args.next().ok_or("--selection needs a nextest list json file")?);
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                selection = Some(selection_required(&text).map_err(|e| format!("{}: {e}", path.display()))?);
+            }
             "--today" => {
                 let text = args.next().ok_or("--today needs YYYY-MM-DD")?;
                 today = parse_date(text).map_err(|e| format!("--today {text}: {e}"))?;
@@ -105,10 +114,9 @@ pub fn run(root: &Path, rest: &[&str]) -> Result<(), String> {
     }
     let text = std::fs::read_to_string(&exceptions).map_err(|e| format!("{}: {e}", exceptions.display()))?;
     let parsed = parse_exceptions(&text).map_err(|e| format!("{}: {e}", exceptions.display()))?;
-    let result = check_raw_exit(raw_exit, &outcomes).and_then(|()| grade(&parsed, &outcomes, today));
+    let result = grade(&parsed, &outcomes, today, raw_exit, selection.as_ref());
     let body = match &result {
-        Ok(report) => report.clone(),
-        Err(error) => format!("known-failure-exception: FAILED\n{error}"),
+        Ok(report) | Err(report) => report.clone(),
     };
     if let Some(path) = &report_path {
         if let Some(parent) = path.parent()
@@ -123,7 +131,7 @@ pub fn run(root: &Path, rest: &[&str]) -> Result<(), String> {
             println!("{report}");
             Ok(())
         }
-        Err(error) => Err(error),
+        Err(report) => Err(report),
     }
 }
 
@@ -298,6 +306,54 @@ fn merge(all: &mut BTreeMap<String, Outcome>, xml: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The test ids a nextest list report says are selected and not `#[ignore]`d. A selected ignored
+/// test is allowed to be absent from the junit report; a selected required test is not.
+fn selection_required(json: &str) -> Result<BTreeSet<String>, String> {
+    let value: Value = serde_json::from_str(json).map_err(|e| format!("not a nextest list: {e}"))?;
+    let suites = value.get("rust-suites").and_then(Value::as_object).ok_or("selection has no rust-suites")?;
+    let count = value.get("test-count").and_then(Value::as_u64).ok_or("selection has no test-count")?;
+    let mut required = BTreeSet::new();
+    let mut listed = 0usize;
+    for (binary, suite) in suites {
+        let suite = suite.as_object().ok_or_else(|| format!("suite {binary} is not an object"))?;
+        let binary_id = suite.get("binary-id").and_then(Value::as_str).ok_or_else(|| format!("suite {binary} has no binary-id"))?;
+        if binary_id != binary {
+            return Err(format!("suite {binary} has binary-id {binary_id}"));
+        }
+        let status = suite.get("status").and_then(Value::as_str).unwrap_or("listed");
+        if !matches!(status, "listed" | "skipped") {
+            return Err(format!("suite {binary} has status {status}"));
+        }
+        let cases = suite.get("testcases").and_then(Value::as_object).ok_or_else(|| format!("suite {binary} has no testcases"))?;
+        if status == "skipped" && !cases.is_empty() {
+            return Err(format!("skipped suite {binary} has testcases"));
+        }
+        for (name, case) in cases {
+            let case = case.as_object().ok_or_else(|| format!("test {binary}::{name} is not an object"))?;
+            let ignored = case.get("ignored").and_then(Value::as_bool).ok_or_else(|| format!("test {binary}::{name} has no ignored flag"))?;
+            let matched = case
+                .get("filter-match")
+                .and_then(|filter| filter.get("status"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("test {binary}::{name} has no filter-match status"))?;
+            if !matches!(matched, "matches" | "mismatch") {
+                return Err(format!("test {binary}::{name} has filter-match {matched}"));
+            }
+            listed += 1;
+            if matched == "matches" && !ignored {
+                required.insert(format!("{binary_id}::{name}"));
+            }
+        }
+    }
+    if count as usize != listed {
+        return Err(format!("selection test-count {count} disagrees with {listed} testcases"));
+    }
+    if required.is_empty() {
+        return Err("selection has no required tests".into());
+    }
+    Ok(required)
+}
+
 /// Every test a junit report ran, as `<suite>::<test case>`, with whether it failed and the text
 /// of its `failure`/`error` elements. A skipped case did not run and is left out. A case that
 /// passed on a retry (nextest's `flakyFailure`) passed.
@@ -399,7 +455,13 @@ fn check_raw_exit(raw_exit: Option<i32>, outcomes: &BTreeMap<String, Outcome>) -
     }
 }
 
-fn grade(exceptions: &[Exception], outcomes: &BTreeMap<String, Outcome>, today: Date) -> Result<String, String> {
+fn grade(
+    exceptions: &[Exception],
+    outcomes: &BTreeMap<String, Outcome>,
+    today: Date,
+    raw_exit: Option<i32>,
+    selection: Option<&BTreeSet<String>>,
+) -> Result<String, String> {
     let mut problems = Vec::new();
     let mut excused: Vec<&Exception> = Vec::new();
     for exception in exceptions {
@@ -445,27 +507,36 @@ fn grade(exceptions: &[Exception], outcomes: &BTreeMap<String, Outcome>, today: 
             }
         }
     }
+    if let Some(required) = selection {
+        for test in required {
+            if !outcomes.contains_key(test) {
+                problems.push(format!("SELECTION: a required selected test did not run (missing, skipped, or filtered): {test}"));
+            }
+        }
+    }
+    if let Err(error) = check_raw_exit(raw_exit, outcomes) {
+        problems.push(error);
+    }
     for (test, outcome) in outcomes {
         if outcome.failed && !exceptions.iter().any(|exception| exception.test == *test) {
             problems.push(format!("REGRESSION, failed and not excused by {LIST}: {test}"));
         }
     }
-    if !problems.is_empty() {
-        let ran = outcomes.len();
-        let passed = outcomes.values().filter(|outcome| !outcome.failed).count();
-        return Err(format!(
-            "known-failure-exception: {ran} ran, {passed} pass, {} failed; {} problem(s):\n  {}",
-            ran - passed,
-            problems.len(),
-            problems.join("\n  ")
-        ));
-    }
-    Ok(report(exceptions, outcomes, today, &excused))
+    let report = report(exceptions, outcomes, today, &excused, &problems, raw_exit);
+    if problems.is_empty() { Ok(report) } else { Err(report) }
 }
 
-fn report(exceptions: &[Exception], outcomes: &BTreeMap<String, Outcome>, today: Date, excused: &[&Exception]) -> String {
+fn report(
+    exceptions: &[Exception],
+    outcomes: &BTreeMap<String, Outcome>,
+    today: Date,
+    excused: &[&Exception],
+    problems: &[String],
+    raw_exit: Option<i32>,
+) -> String {
     let ran = outcomes.len();
     let passed = outcomes.values().filter(|outcome| !outcome.failed).count();
+    let failed = ran - passed;
     let mut text = String::new();
     text.push_str(&format!("KNOWN FAILURE EXCEPTIONS: {} active, {} excused on {today} (UTC)\n", exceptions.len(), excused.len()));
     for exception in excused {
@@ -477,16 +548,27 @@ fn report(exceptions: &[Exception], outcomes: &BTreeMap<String, Outcome>, today:
         text.push_str(&format!("  input: {}\n", exception.input.join(" ; ")));
         text.push_str(&format!("  why: {}\n", exception.why));
     }
-    text.push_str(&format!(
-        "known-failure-exception: {ran} ran, {passed} pass, {} known failure(s) excused, 0 unexcused; the raw job is still red for a known failure\n",
-        ran - passed
-    ));
+    if let Some(code) = raw_exit {
+        text.push_str(&format!("raw nextest exit: {code} (saved; the grader decides the job)\n"));
+    }
+    if problems.is_empty() {
+        text.push_str(&format!(
+            "known-failure-exception: {ran} ran, {passed} pass, {failed} known failure(s) excused, 0 unexcused; only the known failure(s) above were excused\n"
+        ));
+    } else {
+        text.push_str("known-failure-exception: FAILED\n");
+        text.push_str(&format!(
+            "known-failure-exception: {ran} ran, {passed} pass, {failed} failed; {} problem(s):\n  {}\n",
+            problems.len(),
+            problems.join("\n  ")
+        ));
+    }
     text
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Date, Exception, Outcome, check_raw_exit, grade, junit_outcomes, parse_date, parse_exceptions};
+    use super::{Date, Exception, Outcome, check_raw_exit, grade, junit_outcomes, parse_date, parse_exceptions, selection_required};
     use std::collections::BTreeMap;
 
     const LIST: &str = "solidcraft-kernel::boolean_props::translation_invariant | issue=#56 | owner=repository owner (CTO) | expires=2026-12-08 | seed=cc 0f8ee4d4597db6bdec2ad2cc7e5cfe7d4ebba351e24642118135da34bf489d0c | signature=SmBSplineSurface::Test #5 Bad NonMonotonic CPts;[owner SmSphere] | input=minimal failing input: a = Sph { at: [ 0.0, 0.0, 5.0, ], r: 2.5, };b = Box { at: [ 0.0, 0.0, 0.0, ], size: [ 5.0, 5.0, 5.0, ], };off = 100000.0 | why=issue #56\n";
@@ -527,6 +609,24 @@ global rejects: 0</failure>
 </testsuites>
 "#;
 
+    const SELECTION: &str = r#"{
+    "rust-build-meta": {"target-directory": "target"},
+    "test-count": 5,
+    "rust-suites": {
+        "solidcraft-kernel::boolean_props": {
+            "binary-id": "solidcraft-kernel::boolean_props",
+            "status": "listed",
+            "testcases": {
+                "box_box_exact": {"ignored": false, "filter-match": {"status": "matches"}},
+                "translation_invariant": {"ignored": false, "filter-match": {"status": "matches"}},
+                "commutative": {"ignored": false, "filter-match": {"status": "matches"}},
+                "crossing_cylinders_union_moved_far": {"ignored": true, "filter-match": {"status": "matches"}},
+                "filtered_out": {"ignored": false, "filter-match": {"status": "mismatch", "reason": "not selected"}}
+            }
+        }
+    }
+}"#;
+
     fn exceptions() -> Vec<Exception> {
         parse_exceptions(LIST).unwrap()
     }
@@ -537,6 +637,10 @@ global rejects: 0</failure>
 
     fn before_expiry() -> Date {
         Date { year: 2026, month: 11, day: 8 }
+    }
+
+    fn graded(exceptions: &[Exception], outcomes: &BTreeMap<String, Outcome>, today: Date) -> Result<String, String> {
+        grade(exceptions, outcomes, today, None, None)
     }
 
     /// The report with the one failure element removed, so the excused test passed.
@@ -555,7 +659,7 @@ global rejects: 0</failure>
 
     #[test]
     fn only_issue_56_is_excused_and_the_report_names_the_binding() {
-        let report = grade(&exceptions(), &outcomes(REPORT), before_expiry()).unwrap();
+        let report = graded(&exceptions(), &outcomes(REPORT), before_expiry()).unwrap();
         assert!(report.contains("KNOWN FAILURE"), "{report}");
         assert!(report.contains("#56"), "{report}");
         assert!(report.contains("translation_invariant"), "{report}");
@@ -570,7 +674,7 @@ global rejects: 0</failure>
             r#"<testcase name="commutative" classname="solidcraft-kernel::boolean_props"/>"#,
             r#"<testcase name="commutative" classname="solidcraft-kernel::boolean_props"><failure message="boom">other failure</failure></testcase>"#,
         );
-        let error = grade(&exceptions(), &outcomes(&xml), before_expiry()).unwrap_err();
+        let error = graded(&exceptions(), &outcomes(&xml), before_expiry()).unwrap_err();
         assert!(error.contains("REGRESSION, failed and not excused"), "{error}");
         assert!(error.contains("commutative"), "{error}");
     }
@@ -578,12 +682,12 @@ global rejects: 0</failure>
     #[test]
     fn an_expired_exception_fails_on_its_expiry_day_and_after() {
         for today in [Date { year: 2026, month: 12, day: 8 }, Date { year: 2026, month: 12, day: 9 }] {
-            let error = grade(&exceptions(), &outcomes(REPORT), today).unwrap_err();
+            let error = graded(&exceptions(), &outcomes(REPORT), today).unwrap_err();
             assert!(error.contains("EXPIRED"), "{error}");
             assert!(error.contains("#56"), "{error}");
             assert!(error.contains("2026-12-08"), "{error}");
         }
-        assert!(grade(&exceptions(), &outcomes(REPORT), Date { year: 2026, month: 12, day: 7 }).is_ok());
+        assert!(graded(&exceptions(), &outcomes(REPORT), Date { year: 2026, month: 12, day: 7 }).is_ok());
     }
 
     #[test]
@@ -595,7 +699,7 @@ global rejects: 0</failure>
             ),
             skipped(),
         ] {
-            let error = grade(&exceptions(), &outcomes(&xml), before_expiry()).unwrap_err();
+            let error = graded(&exceptions(), &outcomes(&xml), before_expiry()).unwrap_err();
             assert!(error.contains("MISSING"), "{error}");
             assert!(error.contains("translation_invariant"), "{error}");
         }
@@ -604,19 +708,19 @@ global rejects: 0</failure>
     #[test]
     fn a_different_signature_or_input_does_not_match() {
         let wrong_signature = REPORT.replace("Bad NonMonotonic CPts", "Some Other Failure");
-        let error = grade(&exceptions(), &outcomes(&wrong_signature), before_expiry()).unwrap_err();
+        let error = graded(&exceptions(), &outcomes(&wrong_signature), before_expiry()).unwrap_err();
         assert!(error.contains("UNMATCHED"), "{error}");
         assert!(error.contains("signature"), "{error}");
 
         let wrong_input = REPORT.replace("off = 100000.0", "off = 1000.0");
-        let error = grade(&exceptions(), &outcomes(&wrong_input), before_expiry()).unwrap_err();
+        let error = graded(&exceptions(), &outcomes(&wrong_input), before_expiry()).unwrap_err();
         assert!(error.contains("UNMATCHED"), "{error}");
         assert!(error.contains("input marker"), "{error}");
     }
 
     #[test]
     fn an_excused_test_that_passed_must_leave_the_list() {
-        let error = grade(&exceptions(), &outcomes(&without_failure()), before_expiry()).unwrap_err();
+        let error = graded(&exceptions(), &outcomes(&without_failure()), before_expiry()).unwrap_err();
         assert!(error.contains("FIXED"), "{error}");
         assert!(error.contains("remove its line"), "{error}");
     }
@@ -676,5 +780,84 @@ global rejects: 0</failure>
         assert_eq!(all.get("solidcraft-kernel::boolean_props::translation_invariant").map(|outcome| outcome.failed), Some(false));
         super::merge(&mut all, REPORT).unwrap();
         assert_eq!(all.get("solidcraft-kernel::boolean_props::translation_invariant").map(|outcome| outcome.failed), Some(true));
+    }
+
+    #[test]
+    fn a_failure_report_still_names_the_excused_issue_56() {
+        let xml = REPORT.replace(
+            r#"<testcase name="commutative" classname="solidcraft-kernel::boolean_props"/>"#,
+            r#"<testcase name="commutative" classname="solidcraft-kernel::boolean_props"><failure message="boom">other failure</failure></testcase>"#,
+        );
+        let report = graded(&exceptions(), &outcomes(&xml), before_expiry()).unwrap_err();
+        for expected in [
+            "KNOWN FAILURE EXCEPTIONS: 1 active, 1 excused",
+            "KNOWN FAILURE: #56 (solidcraft-kernel::boolean_props::translation_invariant)",
+            "owner: repository owner (CTO)",
+            "seed: cc 0f8ee4d4597db6bdec2ad2cc7e5cfe7d4ebba351e24642118135da34bf489d0c",
+            "expires: 2026-12-08 (UTC; first invalid day, no renewal)",
+            "known-failure-exception: FAILED",
+            "REGRESSION, failed and not excused by tests/KNOWN_FAILURE_EXCEPTIONS: solidcraft-kernel::boolean_props::commutative",
+        ] {
+            assert!(report.contains(expected), "missing `{expected}` in:\n{report}");
+        }
+    }
+
+    #[test]
+    fn a_raw_exit_failure_still_names_the_excused_issue_56() {
+        let report = grade(&exceptions(), &outcomes(REPORT), before_expiry(), Some(0), None).unwrap_err();
+        assert!(report.contains("KNOWN FAILURE: #56"), "{report}");
+        assert!(report.contains("RAW EXIT"), "{report}");
+    }
+
+    #[test]
+    fn the_committed_exception_is_pinned_to_issue_56() {
+        let path = crate::root().join(super::LIST);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let exceptions = parse_exceptions(&text).unwrap();
+        assert_eq!(exceptions.len(), 1, "the one-time exception file must contain exactly one entry");
+        let exception = &exceptions[0];
+        assert_eq!(exception.test, "solidcraft-kernel::boolean_props::translation_invariant");
+        assert_eq!(exception.issue, "#56");
+        assert_eq!(exception.owner, "repository owner (CTO)");
+        assert_eq!(exception.expires, Date { year: 2026, month: 12, day: 8 });
+        assert_eq!(exception.seed, "cc 0f8ee4d4597db6bdec2ad2cc7e5cfe7d4ebba351e24642118135da34bf489d0c");
+        assert_eq!(exception.signature, vec!["SmBSplineSurface::Test #5 Bad NonMonotonic CPts".to_string(), "[owner SmSphere]".to_string()]);
+        assert_eq!(exception.input.len(), 3);
+        assert!(exception.input[0].starts_with("minimal failing input:"));
+        assert!(exception.input[0].contains("Sph { at: [ 0.0, 0.0, 5.0, ], r: 2.5, }"));
+        assert!(exception.input[1].contains("Box { at: [ 0.0, 0.0, 0.0, ], size: [ 5.0, 5.0, 5.0, ], }"));
+        assert_eq!(exception.input[2], "off = 100000.0");
+    }
+
+    #[test]
+    fn a_selection_check_allows_an_ignored_test_and_blocks_a_missing_required_test() {
+        let selection = selection_required(SELECTION).unwrap();
+        assert!(selection.contains("solidcraft-kernel::boolean_props::box_box_exact"));
+        assert!(!selection.contains("solidcraft-kernel::boolean_props::crossing_cylinders_union_moved_far"));
+        assert!(!selection.contains("solidcraft-kernel::boolean_props::filtered_out"));
+        assert!(grade(&exceptions(), &outcomes(REPORT), before_expiry(), Some(100), Some(&selection)).is_ok());
+
+        let missing = REPORT.replace(r#"<testcase name="commutative" classname="solidcraft-kernel::boolean_props"/>"#, "");
+        let report = grade(&exceptions(), &outcomes(&missing), before_expiry(), Some(100), Some(&selection)).unwrap_err();
+        assert!(report.contains("SELECTION: a required selected test did not run"), "{report}");
+        assert!(report.contains("commutative"), "{report}");
+        assert!(report.contains("KNOWN FAILURE: #56"), "{report}");
+
+        let skipped = REPORT.replace(
+            r#"<testcase name="commutative" classname="solidcraft-kernel::boolean_props"/>"#,
+            r#"<testcase name="commutative" classname="solidcraft-kernel::boolean_props"><skipped/></testcase>"#,
+        );
+        let report = grade(&exceptions(), &outcomes(&skipped), before_expiry(), Some(100), Some(&selection)).unwrap_err();
+        assert!(report.contains("SELECTION: a required selected test did not run"), "{report}");
+        assert!(report.contains("commutative"), "{report}");
+    }
+
+    #[test]
+    fn a_malformed_selection_fails() {
+        assert!(selection_required("not json").unwrap_err().contains("not a nextest list"));
+        assert!(selection_required("{}").unwrap_err().contains("rust-suites"));
+        assert!(selection_required(r#"{"rust-suites":{}, "test-count":0}"#).unwrap_err().contains("no required tests"));
+        let wrong_count = SELECTION.replace(r#""test-count": 5"#, r#""test-count": 6"#);
+        assert!(selection_required(&wrong_count).unwrap_err().contains("disagrees"));
     }
 }
