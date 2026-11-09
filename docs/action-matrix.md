@@ -31,7 +31,7 @@ request sample), the harness fails on:
 | Change | Why |
 |---|---|
 | an action recorded as passing that now fails | a new failure |
-| an action recorded as failing whose normalized signature changes | a worse or different failure (a `timeout` is a resource condition, not a stable signature: an action already failing may time out today and error tomorrow, or the reverse; it is reported but not judged) |
+| an action recorded as failing whose normalized signature changes | a worse or different failure. An action recorded with `timeout` is treated as **unknown**: a later timeout, error or pass is reported but not judged, because a timeout is a resource condition, not a stable CAD result |
 | an action in the current baseline that is absent from the results | an unexpected skip or cancel; the shard plan and the baseline must agree |
 | an action in the results that is not in the current baseline | an unrecorded new action |
 | a design in the current baseline that is no longer in the corpus | deleting a design must be recorded; without this check its baseline actions simply vanish from the expected set |
@@ -83,10 +83,11 @@ Each design runs in its own process, so an action that hangs (90 s without a res
 recorded as `timeout` or `crash` and the rest of the design still runs. In the **historical**
 report, an action that passed there and times out is listed but not judged: the slowest actions
 take 40 to 80 s on a busy runner and land either side of the limit from night to night. The
-**current** gate is stricter: a timeout of an action recorded as passing is a new failure, while a
-timeout of an action already recorded as failing is reported but not judged, and a baseline that
-recorded a timeout does not fail when the same action now errors (or the reverse): a timeout is a
-resource condition, not a stable failure signature. Loading a design, before its first action, may take up
+**current** gate is stricter: a timeout of an action recorded as passing is a new failure. An action
+the baseline recorded with `timeout` is unknown and is not judged when it later times out, errors or
+passes: a timeout is a resource condition, not a stable CAD result. It stays recorded as failing
+until a clean run gives a non-timeout result, and a recorded *error* that now passes is still a
+tightening demand. Loading a design, before its first action, may take up
 to 300 s (the largest take several times longer on a loaded CI runner than here). None did in the
 measurement run.
 

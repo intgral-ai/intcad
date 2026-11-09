@@ -1427,9 +1427,14 @@ fn gate_current(baseline: &CurrentBaseline, results: &[Value], expected: &BTreeS
         if was && !ok {
             violations.push(format!("new failure (passed in the current baseline): {k}: {kind}: {message}"));
         } else if !was && *ok {
-            violations.push(format!(
-                "now passes but the current baseline records it failing; tighten the baseline in the same pull request (`cargo xtask action-matrix --bless-current`): {k}"
-            ));
+            // A recorded timeout is unknown, not a stable failure: the same action may time out,
+            // error or pass on another run because of the runner. It is not a tightening demand.
+            // A recorded error that now passes is a real improvement and must be recorded.
+            if !baseline.failures.get(k).is_some_and(|f| f.kind == "timeout") {
+                violations.push(format!(
+                    "now passes but the current baseline records it failing; tighten the baseline in the same pull request (`cargo xtask action-matrix --bless-current`): {k}"
+                ));
+            }
         } else if !was {
             let signature = normalize_signature(kind, message);
             match baseline.failures.get(k) {
@@ -2672,6 +2677,18 @@ fn a_recorded_timeout_that_becomes_an_error_is_not_a_signature_change() {
     failure.signature = "timeout: no result after <n> s".into();
     let mut results = unchanged();
     results[1] = line("demo/part", "Body/F2:top", "face.hole", false, "error", "solid.hole: a different error");
+    assert_eq!(violations(&baseline, &expected, &results), Vec::<String>::new());
+}
+
+#[test]
+fn a_recorded_timeout_that_now_passes_is_not_a_tightening_demand() {
+    let (mut baseline, expected) = fixture();
+    let key = "demo/part :: Body/F2:top :: face.hole";
+    let failure = baseline.failures.get_mut(key).expect("the recorded failure");
+    failure.kind = "timeout".into();
+    failure.signature = "timeout: no result after <n> s".into();
+    let mut results = unchanged();
+    results[1] = line("demo/part", "Body/F2:top", "face.hole", true, "", "");
     assert_eq!(violations(&baseline, &expected, &results), Vec::<String>::new());
 }
 
