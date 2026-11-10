@@ -1,0 +1,76 @@
+name: Verify Beta installers
+
+# Non-building verification of the published v0.1.0-beta.1 assets. This workflow
+# is dispatched from a throwaway branch; it never changes the tag, the release or
+# the product source.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS DMG mount and arch check
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the published DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download v0.1.0-beta.1 --repo "$GITHUB_REPOSITORY" --pattern '*.dmg' --dir dist
+      - name: Mount, verify both architectures and report the bundle
+        run: |
+          set -euo pipefail
+          DMG="$(ls dist/*.dmg | head -1)"
+          MNT="$(mktemp -d)"
+          hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
+          APP="$(find "$MNT" -maxdepth 1 -name '*.app' -type d | head -1)"
+          test -n "$APP"
+          ls -la "$MNT" "$APP/Contents/MacOS"
+          lipo "$APP/Contents/MacOS/SolidCraft" -verify_arch arm64
+          lipo "$APP/Contents/MacOS/SolidCraft" -verify_arch x86_64
+          lipo -info "$APP/Contents/MacOS/SolidCraft"
+          codesign --verify --deep --verbose=2 "$APP"
+          "$APP/Contents/MacOS/SolidCraft" --version
+          hdiutil detach "$MNT"
+
+  windows:
+    name: Windows MSI install and executable check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the published x64 MSI
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          gh release download v0.1.0-beta.1 --repo "$env:GITHUB_REPOSITORY" --pattern '*windows-x64*.msi' --dir dist
+          Get-ChildItem dist
+      - name: Install the MSI and find the expected executables
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem dist -Filter *.msi | Select-Object -First 1
+          if (-not $msi) { throw 'no x64 MSI downloaded' }
+          $log = Join-Path $env:RUNNER_TEMP 'msi-install.log'
+          $process = Start-Process msiexec.exe -ArgumentList @('/i', "`"$($msi.FullName)`"", '/qn', '/norestart', '/L*v', "`"$log`"") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+              Get-Content $log
+              throw "msiexec exited $($process.ExitCode)"
+          }
+          $dir = 'C:\Program Files\SolidCraft'
+          if (-not (Test-Path $dir)) { throw "install directory missing: $dir" }
+          Get-ChildItem $dir | Format-Table Name, Length
+          $app = Join-Path $dir 'solidcraft.exe'
+          $cli = Join-Path $dir 'solidcraft-cli.exe'
+          if (-not (Test-Path $app)) { throw "missing $app" }
+          if (-not (Test-Path $cli)) { throw "missing $cli" }
+          & $cli --version
+          if ($LASTEXITCODE -ne 0) { throw "solidcraft-cli --version exited $LASTEXITCODE" }
