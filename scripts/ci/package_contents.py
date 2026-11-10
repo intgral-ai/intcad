@@ -29,7 +29,7 @@ from pathlib import Path
 
 RUNTIME_COMPONENTS = frozenset(("mastra", "node_modules", "ee"))
 RUNTIME_BASENAMES = frozenset(("node", "node.exe"))
-IGNORED_SUFFIXES = (".zsync", ".sha256", ".blockmap")
+IGNORED_SUFFIXES = (".zsync", ".sha256", ".blockmap", ".json")
 
 
 def digest(path):
