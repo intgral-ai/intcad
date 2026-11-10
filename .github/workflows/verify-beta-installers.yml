@@ -31,7 +31,7 @@ jobs:
       - name: Mount, verify both architectures and report the bundle
         run: |
           set -euo pipefail
-          DMG="$(ls dist/*.dmg | head -1)"
+          DMG="$(find dist -maxdepth 1 -name '*.dmg' -print -quit)"
           MNT="$(mktemp -d)"
           hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
           APP="$(find "$MNT" -maxdepth 1 -name '*.app' -type d | head -1)"
