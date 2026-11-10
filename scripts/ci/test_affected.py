@@ -64,7 +64,7 @@ class Synthetic(unittest.TestCase):
     def test_full_triggers(self):
         for p in ["Cargo.lock", "Cargo.toml", ".cargo/config.toml", ".config/nextest.toml", "rust-toolchain.toml",
                   ".github/workflows/ci.yml", "vendor/x/lib.rs", "tests/oracle/a.json", "assets/a.png",
-                  "scripts/ci/affected.py", "unknown.txt"]:
+                  "scripts/build-runtime.sh", "unknown.txt"]:
             self.assertEqual(affected.select(SYNTH, ["crates/alone/a.rs", p]), (True, []), p)
 
     def test_docs_only_selects_nothing(self):
@@ -76,7 +76,8 @@ class Synthetic(unittest.TestCase):
                   "scripts/triage/triage.test.js", "vendor/README.md", "SECURITY.md", ".gitignore", ".npmrc",
                   "attribution/pending/mastra-runtime.md",
                   "assets/locales/pending/host-bridge.json",
-                  "assets/platforms/windows/solidcraft.wxs"]:
+                  "assets/platforms/windows/solidcraft.wxs",
+                  "scripts/ci/plan.py", "scripts/ci/beta_gate.py"]:
             self.assertEqual(affected.select(SYNTH, [p]), (False, []), p)
 
     def test_windows_metadata_selects_packages_and_preserves_triggers(self):
@@ -193,9 +194,18 @@ class MonorepoSelection(unittest.TestCase):
                 for job in ("contract-rust", "runtime", "contract-ts", "integration", "artifact-policy"):
                     self.decision(result, job, "run", "selected_change")
 
+    def test_ci_tooling_selects_the_repository_owner_not_the_rust_matrix(self):
+        for path in ("scripts/ci/plan.py", "scripts/ci/beta_gate.py", "scripts/ci/test_gate.py"):
+            with self.subTest(path=path):
+                result = self.select(path)
+                self.assertEqual(result["scope"], "affected")
+                self.assertEqual(result["rustPackages"], [])
+                self.decision(result, "repo", "run", "always")
+                self.decision(result, "rust", "not_applicable", "no_relevant_change")
+
     def test_shared_rust_and_ci_builds_select_every_existing_consumer(self):
         for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", ".config/nextest.toml",
-                     ".github/workflows/docker.yml", "scripts/ci/plan.py", "scripts/build-runtime.sh"):
+                     ".github/workflows/docker.yml", "scripts/build-runtime.sh"):
             with self.subTest(path=path):
                 result = self.select(path)
                 self.assertTrue(result["rustFull"])
@@ -250,7 +260,7 @@ class MonorepoSelection(unittest.TestCase):
         self.decision(result, "rust", "run", "selected_change")
 
     def test_pr_test_lane_is_bounded_on_shared_inputs(self):
-        for path in ("Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/ci/plan.py"):
+        for path in ("Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/build-runtime.sh"):
             with self.subTest(path=path):
                 result = self.select(path)
                 self.assertEqual(result["rustTestPackages"], ["xtask"])

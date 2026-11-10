@@ -63,7 +63,7 @@ def contract_path(path):
 def shared_path(path):
     return (path in affected.FULL_FILES or path.startswith("rust-toolchain")
             or path.startswith((".cargo/", ".config/", ".github/workflows/", ".github/actions/"))
-            or (path.startswith("scripts/") and not path.startswith(("scripts/claim/", "scripts/triage/"))))
+            or (path.startswith("scripts/") and not path.startswith(("scripts/claim/", "scripts/triage/", "scripts/ci/"))))
 
 
 def policy_path(path):
