@@ -1,0 +1,14 @@
+[package]
+name = "solidcraft-agent-task-engine"
+description = "Real engine/snapshot/validation ports for the native AI harness task controller (headless, no UI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+solidcraft-agent-task = { workspace = true }
+solidcraft-engine = { workspace = true }
+serde_json = { workspace = true }
