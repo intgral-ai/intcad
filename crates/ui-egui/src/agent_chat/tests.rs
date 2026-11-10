@@ -8717,6 +8717,8 @@ struct Script {
     /// Observe the host's trusted flag at the external cancellation boundary, without
     /// inventing a terminal event (a provider need not ever acknowledge Stop).
     cancel_observer: Arc<Mutex<Option<CancelObserver>>>,
+    /// What this scripted backend claims for a built-in skill.
+    support: skill::SkillSupport,
 }
 
 impl Script {
@@ -8760,6 +8762,9 @@ impl ChatBackend for Script {
     }
     fn authenticate(&mut self, _: &str) {}
     fn shutdown(&mut self, _: bool) {}
+    fn skill_support(&self, _: skill::Skill) -> skill::SkillSupport {
+        self.support
+    }
 }
 
 /// An app whose agent is scripted and ready.
@@ -15325,4 +15330,92 @@ done
         );
         assert!(host_ai::parse_proposal(&proposal(vec![command("parameters.change", serde_json::json!({}))]), &source, 64, Some(&allowed)).is_ok());
     }
+}
+
+#[test]
+fn a_skill_turn_binds_the_current_document_and_shows_a_host_terminal() {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.skill = skill::Skill::TextToCad;
+    let stamp = app.session.document_stamp();
+    send(&mut app, &ctx, "make the bracket".into());
+    let prompts = script.prompts();
+    let sent = prompts.last().expect("one prompt");
+    assert!(
+        sent.iter().any(|part| matches!(part, PromptPart::Text(text) if text.contains("Host skill text-to-cad"))),
+        "the same native prompt carries the skill note"
+    );
+    let binding = app.agent_chat.skill_binding.as_ref().expect("a frozen skill binding");
+    assert_eq!(binding.skill, skill::Skill::TextToCad);
+    assert_eq!(binding.document_id, stamp.document_id);
+    assert_eq!(binding.revision, stamp.revision);
+    assert_eq!(binding.version, skill::VERSION);
+    assert!(matches!(app.agent_chat.items.iter().rev().find(|item| matches!(item, Item::Skill { .. })), Some(Item::Skill { terminal: None, .. })));
+    app.agent_chat.on_event(Event::TurnEnded { reason: String::new() });
+    let Some(Item::Skill { terminal: Some(terminal), .. }) = app.agent_chat.items.iter().rev().find(|item| matches!(item, Item::Skill { .. })) else {
+        panic!("the skill item keeps a terminal");
+    };
+    assert_eq!(terminal, tr("ui.agent_chat_skill_done"));
+}
+
+#[test]
+fn an_unsupported_backend_refuses_a_skill_before_the_model_call() {
+    let script = Script { support: skill::SkillSupport::Unsupported, ..Default::default() };
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.agent_chat.backend = Some(Box::new(script.clone()));
+    app.agent_chat.state = Some(State::Ready);
+    app.agent_chat.skill = skill::Skill::Anatomy;
+    let ctx = crate::fonts::test_context();
+    send(&mut app, &ctx, "explain the cover".into());
+    assert!(script.prompts().is_empty(), "no model call was made");
+    assert!(app.agent_chat.skill_binding.is_none(), "no turn was bound");
+    assert!(matches!(app.agent_chat.items.last(), Some(Item::Notice { error: true, .. })));
+}
+
+#[test]
+fn the_chat_offers_plain_text_to_cad_and_anatomy() {
+    use crate::scenario::handle_at;
+    let mut h = narrow_chat();
+    h.app.agent_chat.state = Some(State::Ready);
+    h.frames(3);
+    let at = handle_at("agent_chat:skill").expect("the skill picker");
+    h.call("ui.click", json!({"x": at.x, "y": at.y}));
+    h.frames(2);
+    for id in ["plain", "text-to-cad", "anatomy"] {
+        assert!(handle_at(&format!("agent_chat:skill:{id}")).is_some(), "choice {id}");
+    }
+    let at = handle_at("agent_chat:skill:anatomy").expect("the Anatomy choice");
+    h.call("ui.click", json!({"x": at.x, "y": at.y}));
+    h.frames(2);
+    assert_eq!(h.app.agent_chat.skill, skill::Skill::Anatomy);
+    assert_eq!(h.app.agent_chat.skill.title(), tr("ui.agent_chat_skill_anatomy"));
+}
+
+#[test]
+fn an_anatomy_turn_refuses_a_write_before_the_gate() {
+    use std::time::Duration;
+    let (mut app, _script, ctx) = app_with_script();
+    app.agent_chat.skill = skill::Skill::Anatomy;
+    send(&mut app, &ctx, "explain the cover".into());
+    let (request, reply) = ControlRequest::new("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
+    let (tx, rx) = channel();
+    tx.send(request).unwrap();
+    app.agent_chat.tools_rx = Some(rx);
+    pump_tools(&mut app);
+    let answer = reply.recv_timeout(Duration::from_secs(1)).expect("the refusal reply");
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(answer["error"].as_str().is_some_and(|text| text.contains("read-only")), "{answer}");
+    assert!(app.control_held.is_empty(), "no write reached execution");
+}
+
+#[test]
+fn a_skill_turn_freezes_the_current_selection_labels() {
+    let (mut app, _script, ctx) = app_with_script();
+    app.session.execute("solid.box", &json!({"length": 10, "width": 10, "height": 5, "body_name": "Plate"})).unwrap();
+    app.session.selection = vec![solidcraft_engine::Sel::Body { name: "Plate".into() }];
+    app.agent_chat.skill = skill::Skill::TextToCad;
+    app.agent_chat.attach_selection = true;
+    send(&mut app, &ctx, "make the plate 20 mm wide".into());
+    let binding = app.agent_chat.skill_binding.as_ref().expect("a frozen binding");
+    assert!(binding.selection.iter().any(|label| label == "Plate"), "{:?}", binding.selection);
+    assert!(!binding.is_stale(&app.session.document_stamp().document_id, app.session.document_stamp().revision));
 }

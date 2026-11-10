@@ -47,6 +47,7 @@ mod process;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime_client;
 pub mod settings;
+pub mod skill;
 pub mod summary;
 
 use std::sync::Arc;
@@ -256,6 +257,17 @@ pub enum Item {
         output: Option<String>,
     },
     Plan(Vec<(String, String)>),
+    /// A built-in skill turn: the frozen descriptor, document revision, model and its terminal.
+    Skill {
+        title: String,
+        version: String,
+        document_id: String,
+        revision: u64,
+        model: String,
+        selection: usize,
+        support: skill::SkillSupport,
+        terminal: Option<String>,
+    },
     /// The agent asks before running something of its own (its options, its words).
     Permission {
         key: u64,
@@ -371,6 +383,10 @@ pub struct AgentChat {
     images: bool,
     /// The agent takes documents (PDFs) in a message.
     documents: bool,
+    /// The built-in skill selected for the next message; ordinary Chat is the default.
+    pub skill: skill::Skill,
+    /// The running or latest skill turn's frozen binding. A new turn replaces it.
+    pub skill_binding: Option<skill::Binding>,
     /// Send a picture of the view with the next message.
     pub attach_view: bool,
     /// Send what is selected in the model with the next message.
@@ -690,6 +706,21 @@ impl AgentChat {
         }
     }
 
+    /// Mark the latest open skill item with the turn's terminal. The host owns this line; a model
+    /// message cannot replace it with a claim of success.
+    fn finish_skill_turn(&mut self, reason: &str) {
+        let terminal = match reason {
+            "" => tr("ui.agent_chat_skill_done").to_string(),
+            "cancelled" => tr("ui.agent_chat_skill_cancelled").to_string(),
+            "error" => tr("ui.agent_chat_skill_error").to_string(),
+            other => other.to_string(),
+        };
+        if let Some(Item::Skill { terminal: open, .. }) = self.items.iter_mut().rev().find(|item| matches!(item, Item::Skill { terminal: None, .. }))
+        {
+            *open = Some(terminal);
+        }
+    }
+
     /// Ask the agent to sign in by itself (an "agent" login method: it opens the browser).
     pub fn authenticate(&mut self, method: &str) {
         if let Some(b) = self.backend.as_mut() {
@@ -880,6 +911,7 @@ impl AgentChat {
                     self.state = Some(State::Ready);
                 }
                 self.ended = Some(reason.clone());
+                self.finish_skill_turn(&reason);
                 if std::mem::take(&mut self.discard_end) {
                     return Some(Outcome::TurnEnd);
                 }
@@ -1704,9 +1736,18 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
         ai_sync_failed(app, error);
         return;
     }
+    // A skill is a host mode of this same turn. An unsupported backend is refused before the
+    // model call; an untested one runs but is labeled, never presented as verified.
+    let skill = app.agent_chat.skill;
+    let support = app.agent_chat.backend.as_ref().map_or(skill::SkillSupport::Unsupported, |backend| backend.skill_support(skill));
+    if skill != skill::Skill::Plain && support == skill::SkillSupport::Unsupported {
+        app.agent_chat.notice(tr("ui.agent_chat_skill_unsupported").to_string(), true);
+        return;
+    }
     let (pictures, documents) = (app.agent_chat.images, app.agent_chat.documents);
     let changed = app.agent_chat.seen.as_deref().and_then(|seen| changed_note(seen, &app.session.doc));
-    let notes: Vec<&str> = note.into_iter().chain(changed.as_deref()).collect();
+    let skill_note = skill.prompt_note();
+    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(note).chain(changed.as_deref()).collect();
     let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
     // The whole message stays within the cap: the files' text gets what the words leave.
     let budget = MAX_PROMPT.saturating_sub(lead.chars().count() + FILE_NAMES_ROOM);
@@ -1746,6 +1787,37 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     app.agent_chat.steering = false;
     app.agent_chat.ended = None;
     let stamp = app.session.document_stamp();
+    if skill == skill::Skill::Plain {
+        app.agent_chat.skill_binding = None;
+    } else {
+        let selection: Vec<String> = at
+            .and_then(|index| app.agent_chat.items.get(index))
+            .and_then(|item| match item {
+                Item::User { context, .. } => Some(context.items.iter().map(|entry| entry.label.clone()).collect()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let binding = skill::Binding::new(
+            skill,
+            stamp.document_id.clone(),
+            stamp.revision,
+            app.agent_chat.model.clone(),
+            app.agent_chat.running_id.clone(),
+            selection,
+            support,
+        );
+        app.agent_chat.push(Item::Skill {
+            title: skill.title().into(),
+            version: binding.version.clone(),
+            document_id: binding.document_id.clone(),
+            revision: binding.revision,
+            model: binding.model.clone(),
+            selection: binding.selection.len(),
+            support,
+            terminal: None,
+        });
+        app.agent_chat.skill_binding = Some(binding);
+    }
     let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
     if let Some(b) = app.agent_chat.backend.as_mut() {
         b.set_document(&stamp.document_id, stamp.revision);
@@ -2074,6 +2146,14 @@ fn pump_tools(app: &mut SolveApp) {
         let refuse = |req: ControlRequest, e: String| {
             let _ = req.reply.send(json!({"ok": false, "error": e}));
         };
+        // Anatomy is read-only for the whole turn: a write request never reaches the gate.
+        let skill = app.agent_chat.skill_binding.as_ref().map_or(app.agent_chat.skill, |binding| binding.skill);
+        if skill.read_only() && matches!(gate::request(&req.method, &req.params, 0), gate::Verdict::Run { change: true } | gate::Verdict::Ask(_)) {
+            let reason = tr("ui.agent_chat_skill_read_only").to_string();
+            app.agent_chat.notice(reason.clone(), true);
+            refuse(req, reason);
+            continue;
+        }
         let undo_len = app.session.undo.len();
         let Some(turn) = app.agent_chat.turn.as_mut() else {
             refuse(req, "the agent chat has no message in progress".into());
@@ -2787,6 +2867,9 @@ pub fn status(app: &SolveApp) -> Value {
                 json!({"tool": id, "title": title, "kind": kind, "status": status.map(|s| format!("{s:?}")), "input": input, "output": output})
             }
             Item::Plan(p) => json!({"plan": p}),
+            Item::Skill { title, version, document_id, revision, model, selection, support, terminal } => {
+                json!({"skill": title, "version": version, "documentId": document_id, "revision": revision, "model": model, "selection": selection, "support": format!("{support:?}"), "terminal": terminal})
+            }
             Item::Permission { title, options, answer, .. } => {
                 json!({"permission": title, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
             }

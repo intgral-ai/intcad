@@ -964,6 +964,29 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
                         let permissions = permissions.backing_on_hover_text(mode.label());
                         crate::scenario::publish_rect("agent_chat:permissions", permissions.rect);
                         crate::scenario::publish_handle("agent_chat:permissions", permissions.rect.center());
+                        // The built-in skill for the next turn. The running turn keeps its frozen
+                        // binding even while the picker is disabled.
+                        let current_skill = app.agent_chat.skill;
+                        let skill = ui
+                            .add_enabled_ui(!busy, |ui| {
+                                ui.allocate_ui(vec2(Tokens::get().space_24 * 5.0, Tokens::get().control_height), |ui| {
+                                    ui_kit::dropdown_menu(ui, "sc_agent_skill", current_skill.title(), |ui| {
+                                        for choice in skill::Skill::ALL {
+                                            let row = ui_kit::list_picker(ui, choice.id(), choice.title(), choice == current_skill)
+                                                .backing_on_hover_text(choice.description());
+                                            crate::scenario::publish_handle(&format!("agent_chat:skill:{}", choice.id()), row.rect.center());
+                                            if row.clicked() {
+                                                app.agent_chat.skill = choice;
+                                            }
+                                        }
+                                    })
+                                })
+                                .inner
+                            })
+                            .inner
+                            .backing_on_hover_text(tr("ui.agent_chat_skill_tip"));
+                        crate::scenario::publish_rect("agent_chat:skill", skill.rect);
+                        crate::scenario::publish_handle("agent_chat:skill", skill.rect.center());
                         // A message waits for files still being read.
                         let reading = !app.agent_chat.loading.is_empty();
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1737,6 +1760,7 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
     let mut undo: Option<usize> = None;
     let mut open_gallery: Option<Gallery> = None;
     let current_doc = app.session.doc.clone();
+    let stamp = app.session.document_stamp();
     let units = summary::Units { units: &app.session.doc.units, decimals: app.preferences.length_decimals };
     for (n, item) in app.agent_chat.items.iter().enumerate() {
         match item {
@@ -1803,6 +1827,28 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                             };
                             tool_card(ui, n + offset, &call);
                         }
+                    }
+                });
+            }
+            Item::Skill { title, version, document_id, revision, model, selection, support, terminal } => {
+                ui_kit::assistant_tool_frame(ui, false, |ui| {
+                    ui.spacing_mut().item_spacing.y = Tokens::get().space_2;
+                    let mut line = trf(
+                        "ui.agent_chat_skill_binding",
+                        &[("skill", title), ("version", version), ("document", document_id), ("revision", &revision.to_string()), ("model", model)],
+                    );
+                    if *selection > 0 {
+                        line.push_str(&trf("ui.agent_chat_skill_selection", &[("n", &selection.to_string())]));
+                    }
+                    ui.label(RichText::new(line).color(t.text_dim).size(t.font_small));
+                    if *support == skill::SkillSupport::Unverified {
+                        ui.label(RichText::new(tr("ui.agent_chat_skill_unverified")).color(t.warning).size(t.font_caption));
+                    }
+                    if *document_id != stamp.document_id || *revision != stamp.revision {
+                        ui.label(RichText::new(tr("ui.agent_chat_skill_binding_stale")).color(t.warning).size(t.font_caption));
+                    }
+                    if let Some(terminal) = terminal {
+                        ui.label(RichText::new(terminal).color(t.text_dim).size(t.font_caption));
                     }
                 });
             }
