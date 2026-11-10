@@ -2,6 +2,7 @@
 """Tests for the actual-package content recorder."""
 
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -111,6 +112,20 @@ class PackageContents(unittest.TestCase):
             covered = [item for item in data["checked"] if item.get("coveredBy")]
             self.assertEqual([item["name"] for item in covered], ["SolidCraft.exe"])
             self.assertEqual(covered[0]["coveredBy"], "solidcraft.zip")
+
+    def test_appimage_path_is_resolved_before_extracting_in_another_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "fake.AppImage"
+            app.write_text("#!/bin/sh\nmkdir -p squashfs-root/usr/bin\ntouch squashfs-root/usr/bin/solidcraft\n")
+            app.chmod(0o755)
+            previous = os.getcwd()
+            os.chdir(root)
+            try:
+                names = contents.names_appimage(Path("fake.AppImage"))
+            finally:
+                os.chdir(previous)
+            self.assertIn("usr/bin/solidcraft", [name.replace("\\", "/") for name in names])
 
     def test_derived_package_records_source_name_and_digest(self):
         with tempfile.TemporaryDirectory() as directory:
