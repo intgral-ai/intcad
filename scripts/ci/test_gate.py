@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -697,6 +698,8 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
             target = root / "dist/release"
             target.mkdir(parents=True)
+            (root / "scripts/ci").mkdir(parents=True)
+            shutil.copyfile(HERE / "package_contents.py", root / "scripts/ci/package_contents.py")
             env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-linux-x86_64", PACKAGE_TARGET="x86_64-unknown-linux-gnu")
             command = [sys.executable, "-c", script]
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
