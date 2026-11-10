@@ -121,7 +121,11 @@ jobs:
               problems.append('execution evidence: ' + str(error))
 
           contract = Path('schema/mastra-runtime/v1/manifest.json')
-          digest = 'sha256:' + hashlib.sha256(contract.read_bytes()).hexdigest() if contract.is_file() else None
+          try:
+              contract_bytes = subprocess.check_output(['git', 'show', 'HEAD:' + contract.as_posix()])
+              digest = 'sha256:' + hashlib.sha256(contract_bytes).hexdigest()
+          except subprocess.CalledProcessError:
+              digest = None
           if digest is None:
               problems.append('#5: missing same-checkout contract manifest/digest')
           expected = {

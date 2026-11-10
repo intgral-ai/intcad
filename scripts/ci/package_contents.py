@@ -141,6 +141,9 @@ def names_snap(path):
 
 
 def names_appimage(path):
+    # Extraction runs in a temporary working directory, so the AppImage path
+    # must be absolute; the package job hands us a relative dist/release path.
+    path = Path(path).resolve()
     with tempfile.TemporaryDirectory(prefix="contents-appimage-") as directory:
         env = dict(os.environ)
         env["APPIMAGE_EXTRACT_AND_RUN"] = "1"

@@ -146,8 +146,16 @@ jobs:
                       result.update(block)
               return result.hexdigest()
           manifest = Path('schema/mastra-runtime/v1/manifest.json')
+          # The contract is a committed source input. `git show` gives the exact
+          # blob on every runner; a Windows checkout may otherwise convert its
+          # line endings and produce a different digest from Linux/macOS.
+          try:
+              contract = subprocess.check_output(['git', 'show', 'HEAD:' + manifest.as_posix()])
+              contract_digest = 'sha256:' + hashlib.sha256(contract).hexdigest()
+          except subprocess.CalledProcessError:
+              contract_digest = None
           data = dict(version=1, packageId=os.environ['PACKAGE_ID'], sourceRevision=sha,
-                      target=os.environ['PACKAGE_TARGET'], contractDigest='sha256:' + digest(manifest) if manifest.is_file() else None,
+                      target=os.environ['PACKAGE_TARGET'], contractDigest=contract_digest,
                       artifacts=[dict(name=p.name, sha256=digest(p)) for p in files])
           (directory / 'build.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
 
