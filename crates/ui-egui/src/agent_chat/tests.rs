@@ -15419,3 +15419,66 @@ fn a_skill_turn_freezes_the_current_selection_labels() {
     assert!(binding.selection.iter().any(|label| label == "Plate"), "{:?}", binding.selection);
     assert!(!binding.is_stale(&app.session.document_stamp().document_id, app.session.document_stamp().revision));
 }
+
+fn app_with_cover_and_base() -> crate::scenario::Harness {
+    let mut h = narrow_chat();
+    h.app.session.execute("solid.box", &json!({"length": 60, "width": 40, "height": 5, "body_name": "Cover"})).unwrap();
+    h.app.session.execute("solid.box", &json!({"length": 60, "width": 40, "height": 20, "body_name": "Base"})).unwrap();
+    h
+}
+
+#[test]
+fn clicking_host_names_in_an_anatomy_answer_selects_the_cover_and_base() {
+    use crate::scenario::handle_at;
+    let mut h = app_with_cover_and_base();
+    let refs = object_ref::collect(&mut h.app.session);
+    let cover = refs.iter().position(|r| r.label == "Cover").expect("Cover reference");
+    let base = refs.iter().position(|r| r.label == "Base").expect("Base reference");
+    h.app.agent_chat.items.push(Item::AgentRefs { text: "The Cover sits on the Base.".into(), refs });
+    h.frames(3);
+    let stamp = h.app.session.document_stamp();
+    let undo = h.app.session.undo.len();
+    let doc = h.app.session.doc.clone();
+    for (index, name) in [(cover, "Cover"), (base, "Base")] {
+        let at = handle_at(&format!("agent_chat:object:{index}")).expect("a clickable host name");
+        h.call("ui.click", json!({"x": at.x, "y": at.y}));
+        h.frames(2);
+        assert!(
+            h.app.session.selection.iter().any(|sel| matches!(sel, solidcraft_engine::Sel::Body { name: selected } if selected == name)),
+            "{name} is selected: {:?}",
+            h.app.session.selection
+        );
+    }
+    assert_eq!(h.app.session.document_stamp(), stamp, "selection does not change the document");
+    assert_eq!(h.app.session.undo.len(), undo, "selection adds no undo step");
+    assert!(std::sync::Arc::ptr_eq(&doc, &h.app.session.doc), "selection does not replace the design");
+}
+
+#[test]
+fn a_stale_anatomy_reference_reports_unavailable_and_selects_nothing() {
+    use crate::scenario::handle_at;
+    let mut h = app_with_cover_and_base();
+    let refs = object_ref::collect(&mut h.app.session);
+    let cover = refs.iter().position(|r| r.label == "Cover").expect("Cover reference");
+    h.app.agent_chat.items.push(Item::AgentRefs { text: "The Cover sits on the Base.".into(), refs });
+    h.frames(3);
+    let before = h.app.session.selection.clone();
+    // The user changes the design after the answer was made.
+    h.app.session.execute("solid.box", &json!({"length": 1, "width": 1, "height": 1, "body_name": "Later"})).unwrap();
+    h.frames(2);
+    let at = handle_at(&format!("agent_chat:object:{cover}")).expect("the old clickable name");
+    h.call("ui.click", json!({"x": at.x, "y": at.y}));
+    h.frames(2);
+    assert_eq!(h.app.session.selection, before, "no selection was made");
+    assert!(matches!(h.app.agent_chat.items.last(), Some(Item::Notice { error: true, .. })), "the panel says the target is unavailable");
+}
+
+#[test]
+fn host_reference_collection_never_selects_a_same_name_from_another_document() {
+    let mut first = app_with_cover_and_base();
+    let refs = object_ref::collect(&mut first.app.session);
+    let cover = refs.iter().find(|r| r.label == "Cover").cloned().expect("Cover reference");
+    first.app.session = solidcraft_engine::Session::default();
+    first.app.session.execute("solid.box", &json!({"length": 1, "width": 1, "height": 1, "body_name": "Cover"})).unwrap();
+    assert!(object_ref::resolve(&mut first.app.session, &cover).is_err());
+}
