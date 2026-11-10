@@ -9,9 +9,12 @@
 #![forbid(unsafe_code)]
 
 pub mod contract;
+pub mod controller;
 pub mod ports;
 pub mod skill;
 
+#[cfg(test)]
+mod controller_tests;
 #[cfg(test)]
 mod tests;
 
@@ -19,5 +22,6 @@ pub use contract::{
     ApprovalMode, ArtifactRef, Budget, CheckResult, DocumentRef, PermissionContext, RequirementsRef, RunId, SnapshotPurpose, SnapshotRef, TaskEvent,
     TaskId, TaskResult, TaskSpec, TaskState, TaskTerminal, ToolOutcome, ValidationProfileRef, ValidationReport,
 };
+pub use controller::{TaskController, TaskError, ToolDecision, TurnAction};
 pub use ports::{Clock, InMemoryStore, ManualClock, MemoryPort, NoMemory, PortError, SystemClock, TaskStore, ToolPort, ValidationPort};
 pub use skill::{ANATOMY_ID, Skill, SkillError, SkillRegistry, StagePolicy, TEXT_TO_CAD_ID, ToolKind};
