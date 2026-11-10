@@ -234,6 +234,22 @@ def main():
             report["checked"].append({"name": path.name, "sha256": digest(path), "format": kind, "entries": len(names)})
             report["markers"].extend({"name": path.name, "path": name} for name in names if marker(name))
 
+        # A standalone app executable is one binary, not an install tree. Its bytes are
+        # a subset of the MSI/zip payload built from the same stage; the covering
+        # artifact is inspected above, so it cannot hide a sidecar on its own.
+        covered = next((item["name"] for item in report["checked"]
+                        if item["name"].lower().endswith((".msi", ".zip"))), None)
+        if covered:
+            still_unchecked = []
+            for item in report["unchecked"]:
+                if item["name"].lower().endswith(".exe") and any(p.name == item["name"] for p in map(Path, args.artifacts)):
+                    path = next(p for p in map(Path, args.artifacts) if p.name == item["name"])
+                    report["checked"].append({"name": path.name, "sha256": digest(path), "format": "covered",
+                                              "entries": 0, "coveredBy": covered})
+                else:
+                    still_unchecked.append(item)
+            report["unchecked"] = still_unchecked
+
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

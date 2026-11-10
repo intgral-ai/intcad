@@ -89,6 +89,25 @@ class PackageContents(unittest.TestCase):
             self.assertEqual(data["checked"], [])
             self.assertEqual([item["name"] for item in data["unchecked"]], ["solidcraft.unknown"])
 
+    def test_a_standalone_exe_is_covered_by_an_inspected_msi_or_zip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "solidcraft.zip"
+            make_zip(package, ["solidcraft.exe"])
+            app = Path(directory) / "SolidCraft.exe"
+            app.write_bytes(b"MZ")
+            report = Path(directory) / "contents.json"
+            result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
+                                     "--package-id", "release-windows-x64",
+                                     "--source-revision", "a" * 40, "--distribution", "native",
+                                     "--out", str(report), str(package), str(app)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(report.read_text())
+            self.assertEqual(data["unchecked"], [])
+            covered = [item for item in data["checked"] if item.get("coveredBy")]
+            self.assertEqual([item["name"] for item in covered], ["SolidCraft.exe"])
+            self.assertEqual(covered[0]["coveredBy"], "solidcraft.zip")
+
     def test_derived_package_records_source_name_and_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "solidcraft-linux-x86_64.tar.gz"
