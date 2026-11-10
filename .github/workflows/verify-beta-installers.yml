@@ -5,6 +5,11 @@ name: Verify Beta installers
 # the product source.
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing prerelease tag to verify
+        type: string
+        default: v0.1.0-beta.1
 
 permissions:
   contents: read
@@ -22,7 +27,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p dist
-          gh release download v0.1.0-beta.1 --repo "$GITHUB_REPOSITORY" --pattern '*.dmg' --dir dist
+          gh release download "${{ inputs.release_tag }}" --repo "$GITHUB_REPOSITORY" --pattern '*.dmg' --dir dist
       - name: Mount, verify both architectures and report the bundle
         run: |
           set -euo pipefail
@@ -52,7 +57,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          gh release download v0.1.0-beta.1 --repo "$env:GITHUB_REPOSITORY" --pattern '*windows-x64*.msi' --dir dist
+          gh release download "${{ inputs.release_tag }}" --repo "$env:GITHUB_REPOSITORY" --pattern '*windows-x64*.msi' --dir dist
           Get-ChildItem dist
       - name: Install the MSI and find the expected executables
         shell: pwsh
