@@ -83,6 +83,7 @@ jobs:
           sys.path.insert(0, 'scripts/ci')
           import gate
           import kernel_rig_plan as rig
+          import release_content as content
 
           if os.environ.get('EVENT_NAME') == 'merge_group' and os.environ.get('GROUP_BASE') != 'refs/heads/main':
               print('release-gate: not_applicable (develop merge group; no stable promotion)')
@@ -155,12 +156,21 @@ jobs:
                   problems.append('package evidence: ' + str(error))
           for identity in sorted(set(expected) - set(descriptors)):
               problems.append(identity + ': missing package descriptor')
-          # Deliberate integration stops, NOT success adapters or a verifier.
-          # #15 owns inventory parsing/verification and its artifact/verified
-          # result. File presence, policy_valid, host_only/not_applicable, or an
-          # arbitrary uploaded "verified" JSON cannot remove either stop.
-          problems.append('#15: required runtime-artifact artifact/verified inventory adapter not integrated; policy/host-only cannot substitute')
-          problems.append('#14: required installed-runtime consumers/evidence not integrated (all release targets)')
+          contents = {}
+          for path in sorted(Path('package-evidence').rglob('contents.json')):
+              try:
+                  data = gate.parse_json(path.read_bytes())
+                  identity = data.get('packageId')
+                  gate.require(identity in expected and identity not in contents,
+                               'unknown/duplicate content descriptor')
+                  contents[identity] = data
+              except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+                  problems.append('package contents: ' + str(error))
+          # #14/#15 (the Mastra installed runtime) are not applicable only when
+          # the workflow declares native distribution AND the built installers
+          # prove it: every canonical package inspected, no runtime markers, and
+          # the digests match build.json. A declaration or a name cannot substitute.
+          problems.extend(content.problems(sha, descriptors, contents))
           for problem in problems:
               print('FAIL: ' + problem)
           sys.exit(1 if problems else 0)
