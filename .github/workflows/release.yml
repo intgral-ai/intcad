@@ -169,13 +169,6 @@ jobs:
           if package_id.startswith(('release-flatpak-', 'release-arch-', 'release-snap-')):
               arch = package_id.rsplit('-', 1)[-1]
               sources = sorted(Path('dist/linux').glob('solidcraft-*-linux-' + arch + '.tar.gz'))
-              # Arch renames a prerelease tarball for pkgver, leaving both copies.
-              # Prefer the exact checkout version the Linux descriptor names.
-              version = os.environ.get('SOLIDCRAFT_VERSION') or os.environ.get('VERSION')
-              if version:
-                  exact = Path('dist/linux') / ('solidcraft-' + version + '-linux-' + arch + '.tar.gz')
-                  if exact.is_file():
-                      sources = [exact]
               if len(sources) != 1:
                   raise SystemExit('derived package needs exactly one source Linux tarball')
               command += ['--derived-from', 'release-linux-' + arch, '--source-artifact', str(sources[0])]
