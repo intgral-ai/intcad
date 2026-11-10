@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Where the catalogs live, and the file the English one must lead.
 const DIR: &str = "assets/locales";
@@ -160,15 +160,54 @@ fn labels_needing_translation(known: &[&str]) -> BTreeMap<String, Vec<String>> {
     out
 }
 
+/// Command labels from the generated `docs/features.md` table. It is written from the same
+/// registry, so the check does not need a nested release CLI build (which used to stall the CI
+/// repository job on a cold cache). A new command lands in this generated file with the normal
+/// regeneration, before its label can be translated.
 fn registry() -> Result<Vec<Value>, String> {
-    let out = crate::cargo()
-        .args(["run", "-q", "--release", "-p", "solidcraft-cli", "--", "commands"])
-        .output()
-        .map_err(|e| format!("solidcraft-cli: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("solidcraft-cli commands failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+    let path = crate::root().join("docs/features.md");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut commands = Vec::new();
+    for line in text.lines() {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 4 {
+            continue;
+        }
+        let label = command_label(cells[1]);
+        let id = cells[2].trim_matches('`');
+        if label.is_empty() || label == "Command" || id.is_empty() || id == "Id" || id.chars().all(|c| c == '-') {
+            continue;
+        }
+        commands.push(json!({"id": id, "label": label}));
     }
-    serde_json::from_slice(&out.stdout).map_err(|e| format!("commands JSON: {e}"))
+    if commands.is_empty() {
+        return Err(format!("{}: no command rows", path.display()));
+    }
+    Ok(commands)
+}
+
+/// The generated table adds the toolbar shortcut in parentheses. Remove only that annotation;
+/// a real label may itself contain parentheses (`Control Point Spline (Degree 5)`).
+fn command_label(raw: &str) -> String {
+    if let Some(start) = raw.find(" *(planned:") {
+        return raw[..start].trim().to_string();
+    }
+    let planned = raw.trim_end_matches('*').trim();
+    if let Some((base, annotation)) = planned.rsplit_once(" (") {
+        let annotation = annotation.trim_end_matches(')').trim();
+        let shortcut = annotation.starts_with("planned:")
+            || annotation.contains("Ctrl+")
+            || annotation.contains("Shift+")
+            || annotation.contains("Alt+")
+            || annotation.contains("Cmd+")
+            || annotation.len() == 1 && annotation.chars().all(|c| c.is_ascii_alphanumeric())
+            || annotation.strip_prefix('F').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            || matches!(annotation, "Escape" | "Delete" | "Tab" | "Enter" | "Space" | "Backspace" | "Home" | "End" | "Insert");
+        if shortcut {
+            return base.trim_end_matches('*').trim().to_string();
+        }
+    }
+    raw.trim().to_string()
 }
 
 /// Write one `cmd.<command id>` entry per still-untranslated label into the English catalog and

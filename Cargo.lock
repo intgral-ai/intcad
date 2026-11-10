@@ -4334,6 +4334,14 @@ name = "solidcraft-3dx-client"
 version = "0.40.0-rc.2"
 
 [[package]]
+name = "solidcraft-agent-task"
+version = "0.40.0-rc.2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "solidcraft-cli"
 version = "0.40.0-rc.2"
 dependencies = [
