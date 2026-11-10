@@ -2250,8 +2250,8 @@ mod tests {
         let budget = Arc::new(ModelCallBudget::new(1).unwrap());
         for part in [
             ContentPart::Document {
-                name: "synthetic.doc".into(),
-                artifact: ArtifactRef { media_type: "application/msword".into(), ..reference.clone() },
+                name: "synthetic.pdf".into(),
+                artifact: ArtifactRef { media_type: "application/pdf".into(), ..reference.clone() },
             },
             ContentPart::Image(ArtifactRef { media_type: "image/gif".into(), ..reference.clone() }),
             ContentPart::Image(ArtifactRef { media_type: "image/webp".into(), ..reference.clone() }),
