@@ -1,0 +1,54 @@
+# Beta promotion to `main`
+
+A Beta can reach `main` while the full kernel release gate is still red for a
+reviewed list of SMLib action-matrix failures. It does **not** make the stable
+release gate green, does not publish, sign or tag anything, and does not waive a
+build, packaging, timeout, missing-shard or evidence failure.
+
+## Two gates, one required context
+
+The `release-gate` workflow is the required `main` check. It chooses its
+evaluation from the promotion branch:
+
+| Branch | Gate | What it accepts |
+|---|---|---|
+| `release/vX.Y.Z` | stable release gate | full `ci`, kernel rig and packages must all really succeed |
+| `release/vX.Y.Z-beta.N` | Beta promotion gate | every build and non-kernel job succeeds; only the itemised action-matrix exceptions are accepted |
+
+The direct `ci` check on the same pull request still runs the affected lane. A
+Beta pull request is never a stable release candidate.
+
+## Beta exception rules
+
+`tests/action_matrix/beta-exceptions.json` binds each accepted failure to:
+
+- its **design / entity / action** identity;
+- its `kind` (`error`, `bad_params`, `timeline_error`, `load`, …);
+- a stable failure class, derived from the error text (for example
+  `shell_backend_1001`, `plane_source_mismatch`, `boolean_multilump_void`);
+- an issue (`#55`, `#83`, `#88` at this revision);
+- the evidence run and source SHA that produced the whole 16-shard matrix.
+
+The Beta gate fails when any of these changes:
+
+- a shard is missing, duplicated, empty of a parseable result, or the total action
+  count differs from the reviewed run;
+- an action fails that is not in the list;
+- a listed action fails with a different `kind` or failure class;
+- a listed action starts passing (the exception must be removed in that change);
+- any required build, test, packaging or platform job is missing or unsuccessful.
+
+Build failures, timeouts, cancellations, result-parse failures and unknown
+platform jobs are never excused. The raw 16-shard results, the property grader
+report, the job conclusions and the package descriptors are kept with the run.
+
+The historical `tests/action_matrix/baseline.json` remains report-only. The Beta
+list is not a baseline refresh and never replaces the full matrix result; the
+Beta evidence always states "Beta accepted exceptions", not "full matrix green".
+
+## Candidate identity
+
+A promotion must be built from the exact candidate SHA. A package descriptor whose
+`sourceRevision` differs, an older BYOK or GUI result, or an artifact built before
+the final merge is not evidence for a new candidate. The stable v0.1.0 release
+continues to require the full `release-gate` without the Beta exceptions.

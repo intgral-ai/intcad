@@ -615,7 +615,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
         self.assertIsNotNone(match, "release-gate needs a source-bound execution/evidence aggregate")
         return "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
 
-    def run_gate(self, *, stale=False, host_only=False, statuses=None):
+    def run_gate(self, *, stale=False, host_only=False, statuses=None, beta=False, beta_evidence=True):
         with tempfile.TemporaryDirectory(prefix=".release-gate-test-", dir=ROOT) as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -624,20 +624,28 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
             (root / "scripts").mkdir()
             (root / "scripts/ci").symlink_to(HERE, target_is_directory=True)
+            head = "release/v1.2.3-beta.2" if beta else "release/v1.2.3"
             value = planner.make_plan(META, [], ABSENT, source_revision=sha,
-                event_name="pull_request", base_ref="main", head_ref="release/v1.2.3",
+                event_name="pull_request", base_ref="main", head_ref=head,
                 full=True, release_required=True, diff_complete=True)
             (root / "selection").mkdir()
             (root / "selection/plan.json").write_bytes(plan_bytes(value))
             (root / "evidence").mkdir()
+            if beta and beta_evidence:
+                (root / "beta-evidence").mkdir()
+                (root / "beta-evidence/beta-gate.json").write_text(json.dumps(
+                    dict(verdict="accepted-beta", sourceRevision=sha, problems=[])))
             package = root / "package-evidence/release-linux-x86_64"
             package.mkdir(parents=True)
             (package / "build.json").write_text(json.dumps(dict(packageId="release-linux-x86_64", sourceRevision="0" * 40 if stale else sha,
                 target="x86_64-unknown-linux-gnu", contractDigest=None, artifacts=[])))
             if host_only:
                 (package / "runtime-artifact.json").write_text(json.dumps(dict(mode="host_only", status="not_applicable")))
-            env = dict(os.environ, GITHUB_SHA=sha, NEEDS_JSON=json.dumps({job: {"result": status} for job, status in
-                (statuses or dict(ci="success", packages="success", **{"kernel-rig": "success"})).items()}))
+            default = dict(ci="failure" if beta else "success", packages="success",
+                           **{"kernel-rig": "success", "beta-gate": "success" if beta else "skipped"})
+            env = dict(os.environ, GITHUB_SHA=sha, EVENT_NAME="pull_request", BASE_REF="main", HEAD_REF=head,
+                       NEEDS_JSON=json.dumps({job: {"result": status} for job, status in
+                (statuses or default).items()}))
             return subprocess.run([sys.executable, "-c", self.script()], cwd=root, env=env,
                                   capture_output=True, text=True)
 
@@ -677,6 +685,22 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
         result = self.run_gate(stale=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("sourceRevision mismatch", result.stdout + result.stderr)
+
+    def test_beta_uses_its_own_accepted_evidence_not_a_failed_ci_wrapper(self):
+        result = self.run_gate(beta=True)
+        output = result.stdout + result.stderr
+        self.assertNotIn("ci: real job result is not success", output)
+        self.assertNotIn("Beta gate did not accept", output)
+        self.assertIn("kernel-rig handoff:", output, "Beta still requires the real rig handoff")
+        result = self.run_gate(beta=True, beta_evidence=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing accepted Beta evidence", result.stdout + result.stderr)
+
+    def test_beta_does_not_excuse_a_beta_gate_failure(self):
+        result = self.run_gate(beta=True, statuses=dict(ci="failure", packages="success",
+                                                        **{"kernel-rig": "success", "beta-gate": "failure"}))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("beta-gate: real job result is not success", result.stdout + result.stderr)
 
     def test_skipped_cancelled_failed_or_missing_required_workflow_cannot_pass(self):
         for status in ("skipped", "cancelled", "failure", "missing"):
