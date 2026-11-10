@@ -15424,6 +15424,9 @@ fn clicking_host_names_in_an_anatomy_answer_selects_the_cover_and_base() {
     let base = refs.iter().position(|r| r.label == "Base").expect("Base reference");
     h.app.agent_chat.items.push(Item::AgentRefs { text: "The Cover sits on the Base.".into(), refs });
     h.frames(3);
+    let stamp = h.app.session.document_stamp();
+    let undo = h.app.session.undo.len();
+    let doc = h.app.session.doc.clone();
     for (index, name) in [(cover, "Cover"), (base, "Base")] {
         let at = handle_at(&format!("agent_chat:object:{index}")).expect("a clickable host name");
         h.call("ui.click", json!({"x": at.x, "y": at.y}));
@@ -15434,6 +15437,9 @@ fn clicking_host_names_in_an_anatomy_answer_selects_the_cover_and_base() {
             h.app.session.selection
         );
     }
+    assert_eq!(h.app.session.document_stamp(), stamp, "selection does not change the document");
+    assert_eq!(h.app.session.undo.len(), undo, "selection adds no undo step");
+    assert!(std::sync::Arc::ptr_eq(&doc, &h.app.session.doc), "selection does not replace the design");
 }
 
 #[test]
