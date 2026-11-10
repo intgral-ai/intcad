@@ -15359,8 +15359,7 @@ fn a_skill_turn_binds_the_current_document_and_shows_a_host_terminal() {
 
 #[test]
 fn an_unsupported_backend_refuses_a_skill_before_the_model_call() {
-    let mut script = Script::default();
-    script.support = skill::SkillSupport::Unsupported;
+    let script = Script { support: skill::SkillSupport::Unsupported, ..Default::default() };
     let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
     app.agent_chat.backend = Some(Box::new(script.clone()));
     app.agent_chat.state = Some(State::Ready);
@@ -15406,4 +15405,17 @@ fn an_anatomy_turn_refuses_a_write_before_the_gate() {
     assert_eq!(answer["ok"], false, "{answer}");
     assert!(answer["error"].as_str().is_some_and(|text| text.contains("read-only")), "{answer}");
     assert!(app.control_held.is_empty(), "no write reached execution");
+}
+
+#[test]
+fn a_skill_turn_freezes_the_current_selection_labels() {
+    let (mut app, _script, ctx) = app_with_script();
+    app.session.execute("solid.box", &json!({"length": 10, "width": 10, "height": 5, "body_name": "Plate"})).unwrap();
+    app.session.selection = vec![solidcraft_engine::Sel::Body { name: "Plate".into() }];
+    app.agent_chat.skill = skill::Skill::TextToCad;
+    app.agent_chat.attach_selection = true;
+    send(&mut app, &ctx, "make the plate 20 mm wide".into());
+    let binding = app.agent_chat.skill_binding.as_ref().expect("a frozen binding");
+    assert!(binding.selection.iter().any(|label| label == "Plate"), "{:?}", binding.selection);
+    assert!(!binding.is_stale(&app.session.document_stamp().document_id, app.session.document_stamp().revision));
 }
