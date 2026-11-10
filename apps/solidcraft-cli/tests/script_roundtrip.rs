@@ -388,6 +388,112 @@ fn cli_validates_a_captured_candidate_and_distinguishes_quality_from_infrastruct
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// #65: the headless CLI consumer prints the same bound skill report a panel displays, requires
+/// live, and keeps the snapshot/report identity fields.
+#[test]
+fn cli_skill_validation_prints_a_bound_report_and_requires_live() {
+    use solidcraft_engine::validation::{
+        MeasurementRequirement, ParameterRequirement, generate_submission_key, text_to_cad_profile, text_to_cad_profile_ref,
+    };
+
+    let dir = std::env::temp_dir().join(format!("solidcraft-cli-skill-validate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let candidates = dir.join("candidates");
+    let validation = dir.join("validation");
+    let script = dir.join("capture.json");
+    let results = dir.join("results.json");
+    std::fs::write(
+        &script,
+        json!({"commands": [
+            {"command": "parameters.add", "params": {"name": "width", "expression": "20 mm"}},
+            {"command": "solid.box", "params": {"length": "width", "width": 10, "height": 5}},
+            {"command": "document.snapshot.capture", "params": {}},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+        .arg("run")
+        .arg(&script)
+        .args(["--results", "--json-out"])
+        .arg(&results)
+        .env("SOLIDCRAFT_CANDIDATE_DIR", &candidates)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let replies: Value = serde_json::from_slice(&std::fs::read(&results).unwrap()).unwrap();
+    let candidate = replies.as_array().unwrap().last().unwrap()["candidate"].clone();
+    let source = candidate["source"].clone();
+    let revision = source["revision"].as_str().unwrap().parse::<u64>().unwrap();
+
+    let profile = text_to_cad_profile(
+        vec![ParameterRequirement { name: "width".into(), value: 20.0, abs_tolerance: 1e-6 }],
+        vec![MeasurementRequirement {
+            command: "inspect.measure".into(),
+            params: json!({}),
+            result_pointer: "/total/volume_mm3".into(),
+            expected: 1000.0,
+            abs_tolerance: 1e-6,
+            rel_tolerance: 0.0,
+        }],
+    )
+    .unwrap();
+    let reference = text_to_cad_profile_ref(&profile).unwrap();
+    let profile_path = dir.join("skill-profile.json");
+    std::fs::write(&profile_path, serde_json::to_string_pretty(&profile).unwrap()).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let request = json!({
+        "candidate": candidate.clone(),
+        "profile": reference.clone(),
+        "requestId": generate_submission_key(now),
+        "live": {"documentId": source["documentId"], "revision": revision},
+    });
+    let request_path = dir.join("skill-request.json");
+    std::fs::write(&request_path, serde_json::to_string_pretty(&request).unwrap()).unwrap();
+    let report_path = dir.join("skill-report.json");
+
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"));
+    cmd.args(["validate", "skill"]).arg(&request_path).args(["--profile"]).arg(&profile_path);
+    cmd.args(["--candidate-dir"]).arg(&candidates).args(["--validation-dir"]).arg(&validation);
+    cmd.args(["--json-out"]).arg(&report_path);
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let report: Value = serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    let run_id = report["runId"].as_str().unwrap();
+    assert_eq!(report["state"], "passed", "{report:#}");
+    assert_eq!(report["snapshotPassed"], true);
+    assert_eq!(report["approved"], true);
+    assert!(report["failure"].is_null());
+    assert_eq!(report["snapshotId"], candidate["candidateId"]);
+    assert_eq!(report["candidateDigest"], candidate["candidateDigest"]);
+    assert_eq!(report["manifestDigest"], candidate["manifestDigest"]);
+    assert_eq!(report["documentId"], source["documentId"]);
+    assert_eq!(report["documentRevision"], source["revision"]);
+    assert_eq!(report["profile"]["profileId"], "text-to-cad");
+    assert_eq!(report["profile"]["version"], "1.0.0");
+    assert_eq!(report["profile"]["digest"], reference.digest.as_str());
+    assert_eq!(report["requiredChecks"], json!(["geometry.exact", "input.integrity", "native.rebuild", "parameters.required"]));
+    assert_eq!(report["checks"].as_array().unwrap().len(), 4);
+    assert!(report["checks"].as_array().unwrap().iter().all(|check| check["required"] == true && check["passed"] == true));
+    let persisted = std::fs::read(validation.join("runs").join(format!("{run_id}.report.json"))).unwrap();
+    assert_eq!(report["report"]["digest"], solidcraft_engine::io::candidate::digest(&persisted));
+    assert_eq!(report["report"]["sizeBytes"], persisted.len());
+
+    // Omitting live never claims approval; the CLI refuses the request before admission.
+    let no_live_request = dir.join("skill-request-no-live.json");
+    let mut request_without_live = request.clone();
+    request_without_live.as_object_mut().unwrap().remove("live");
+    std::fs::write(&no_live_request, serde_json::to_string_pretty(&request_without_live).unwrap()).unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"));
+    cmd.args(["validate", "skill"]).arg(&no_live_request).args(["--profile"]).arg(&profile_path);
+    cmd.args(["--candidate-dir"]).arg(&candidates).args(["--validation-dir"]).arg(&validation);
+    let out = cmd.output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("live"), "{}", String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// #12: a changed captured input byte is rejected before the report can be accepted.
 #[test]
 fn cli_validation_rejects_a_changed_candidate_byte() {

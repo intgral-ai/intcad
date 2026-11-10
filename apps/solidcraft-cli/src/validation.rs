@@ -12,18 +12,19 @@ use serde_json::Value;
 
 use solidcraft_engine::schema::snapshot::CandidateRef;
 use solidcraft_engine::validation::{
-    CheckProfile, Limits, LocalRunner, ProfileRef, RunControl, RunJob, Runner, RunnerIdentity, RunnerOutcome, SystemClock, ValidationPort,
-    native_basic_profile,
+    CheckProfile, Limits, LiveDocument, LocalRunner, ProfileRef, RunControl, RunJob, Runner, RunnerIdentity, RunnerOutcome, SkillValidationRequest,
+    SystemClock, ValidationPort, native_basic_profile, text_to_cad_profile_ref, validate_skill_snapshot,
 };
 
 /// `validate`'s lines in the top-level usage.
-pub const USAGE: &str = "  solidcraft-cli validate submit <request.json> [--profile FILE] [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate status <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate report <runId> [--candidate-dir DIR] [--validation-dir DIR] [--out FILE]\n  solidcraft-cli validate cancel <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n      (submit admits the candidate/profile job, runs the local headless worker and prints its status;\n       a quality failure is a terminal report, not a CLI error. --profile is the complete task profile;\n       native-basic needs none. The request is {candidate, profile, requestId} and requestId is\n       '<unix-ms>:<uuid-v4>'. --json-out/--out write the same JSON to a file.)\n";
+pub const USAGE: &str = "  solidcraft-cli validate submit <request.json> [--profile FILE] [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate skill <request.json> --profile FILE [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate status <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate report <runId> [--candidate-dir DIR] [--validation-dir DIR] [--out FILE]\n  solidcraft-cli validate cancel <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n      (submit admits the candidate/profile job, runs the local headless worker and prints its status;\n       skill uses the same port through the UI-free skill path, requires live {documentId, revision}\n       and prints the bound SkillValidationReport. A quality failure is a terminal report, not a CLI\n       error. --profile is the complete task profile; native-basic needs none. The request is\n       {candidate, profile, requestId[, live]} and requestId is '<unix-ms>:<uuid-v4>'. --json-out/--out\n       write the same JSON to a file.)\n";
 
 struct SubmitRequest {
     candidate: CandidateRef,
     profile: ProfileRequest,
     request_id: String,
     owner: Option<String>,
+    live: Option<LiveDocument>,
 }
 
 struct ProfileRequest {
@@ -43,7 +44,17 @@ fn parse_submit_request(value: &Value) -> Result<SubmitRequest, String> {
     let digest = text("digest").filter(|digest| !digest.is_empty());
     let request_id = object.get("requestId").and_then(Value::as_str).ok_or_else(|| "the request needs requestId".to_string())?.to_string();
     let owner = object.get("owner").and_then(Value::as_str).map(str::to_string);
-    Ok(SubmitRequest { candidate, profile: ProfileRequest { profile_id, version, digest }, request_id, owner })
+    let live = object.get("live").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("live: {error}"))).transpose()?;
+    Ok(SubmitRequest { candidate, profile: ProfileRequest { profile_id, version, digest }, request_id, owner, live })
+}
+
+fn read_request(path: &str) -> Result<SubmitRequest, String> {
+    let value: Value = serde_json::from_str(
+        &solidcraft_engine::io::vfs::read_to_string(path, solidcraft_engine::io::limits::max_design_bytes())
+            .map_err(|error| format!("{path}: {error}"))?,
+    )
+    .map_err(|error| format!("{path}: {error}"))?;
+    parse_submit_request(&value).map_err(|error| format!("{path}: {error}"))
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -144,7 +155,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let candidates = candidate_dir(args);
     // Only the worker host reconciles. Status/report/cancel are read-only observers: opening
     // them must not turn another process's live job into a restart.
-    let port = if mode == "submit" {
+    let port = if mode == "submit" || mode == "skill" {
         open_worker(store, candidates)
     } else {
         ValidationPort::open_read_only(store, candidates).map_err(|error| error.to_string())
@@ -152,12 +163,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     match mode {
         "submit" => {
             let request_path = positionals.get(1).ok_or_else(|| "validate submit needs <request.json>".to_string())?;
-            let value: Value = serde_json::from_str(
-                &solidcraft_engine::io::vfs::read_to_string(request_path, solidcraft_engine::io::limits::max_design_bytes())
-                    .map_err(|error| format!("{request_path}: {error}"))?,
-            )
-            .map_err(|error| format!("{request_path}: {error}"))?;
-            let request = parse_submit_request(&value).map_err(|error| format!("{request_path}: {error}"))?;
+            let request = read_request(request_path)?;
             let profile = resolve_profile(args, &request.profile)?;
             let reference = port.register_profile(profile).map_err(|error| error.to_string())?;
             let supplied = requested_profile(&request.profile);
@@ -175,6 +181,26 @@ pub fn run(args: &[String]) -> Result<(), String> {
             port.pump().map_err(|error| error.to_string())?;
             let status = port.status(&submitted.run_id).map_err(|error| error.to_string())?;
             print_json(&serde_json::to_value(status).map_err(|error| error.to_string())?, output(args))
+        }
+        "skill" => {
+            let request_path = positionals.get(1).ok_or_else(|| "validate skill needs <request.json>".to_string())?;
+            let request = read_request(request_path)?;
+            let live = request.live.ok_or_else(|| "validate skill needs live: {documentId, revision}".to_string())?;
+            let profile = resolve_profile(args, &request.profile)?;
+            let reference = text_to_cad_profile_ref(&profile).map_err(|error| error.to_string())?;
+            let supplied = requested_profile(&request.profile);
+            if !supplied.digest.is_empty() && supplied.digest != reference.digest {
+                return Err(format!(
+                    "PROFILE_UNSUPPORTED: request profile digest {} does not match the resolved profile {}",
+                    supplied.digest, reference.digest
+                ));
+            }
+            if supplied.profile_id != reference.profile_id || supplied.version != reference.version {
+                return Err("PROFILE_UNSUPPORTED: request profile identity does not match --profile".to_string());
+            }
+            let report = validate_skill_snapshot(&port, SkillValidationRequest::new(&request.candidate, profile, request.request_id).with_live(live))
+                .map_err(|error| error.to_string())?;
+            print_json(&serde_json::to_value(report).map_err(|error| error.to_string())?, output(args))
         }
         "status" => {
             let run_id = positionals.get(1).ok_or_else(|| "validate status needs <runId>".to_string())?;

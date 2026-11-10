@@ -39,6 +39,46 @@ exact-geometry commands `inspect.measure`, `model.faces`, `model.edges` or
 `document.inspect`. Any other command is recorded as `unsupported`, which can never
 become a pass. Display meshes are never used.
 
+## Skill-facing path (#65)
+
+`solidcraft_engine::validation::validate_skill_snapshot` is the UI-independent call path used by
+the native Chat skill and by a headless test or CLI. It registers the host-owned profile, submits
+the exact `CandidateRef`, runs the local worker and returns a `SkillValidationReport`. The report
+reference names:
+
+- the snapshot (`snapshotId`, candidate and manifest digests);
+- the captured document (`documentId`, `documentRevision`);
+- the profile (`profileId`, `version`, `digest`);
+- the runner (`runnerId`, `version`, `engineVersion`);
+- the required checks and each check's state;
+- the exact persisted report bytes (`report` artifact id, digest and size).
+
+The Beta Text-to-CAD profile is `text-to-cad` version `1.0.0`. It always requires
+`input.integrity`, `native.rebuild`, `parameters.required` and `geometry.exact`; a caller cannot
+rename, omit or weaken them. Its digest is computed from the complete profile, including the
+task's parameter and measurement requirements.
+
+The request's `requiredChecks` must equal the profile's required check ids exactly. A caller cannot
+narrow coverage by dropping a check, or widen it by naming a check the profile did not require; both
+are refused with `PROFILE_UNSUPPORTED` before a job is admitted.
+
+The report separates `snapshotPassed` from `approved`. `snapshotPassed` means the exact captured
+snapshot completed every required check under the frozen profile. `approved` also requires the
+caller to supply the current live `documentId` and `revision`; omitting the live document can never
+claim approval. A report for snapshot A never approves snapshot B. If a manual parameter change moved
+the revision after capture, the passing report stays historical evidence, `snapshotPassed` remains
+true, and `approved` is false. Re-capture the new revision and submit it again before showing a new
+validated result.
+
+`failure` is the structured terminal reason, distinct from the prose `reason`:
+`kind` is `timeout`, `infrastructure_error`, `quality_failed`, `cancelled` or `unknown`, and `code`
+retains the persisted contract code when there is one. A timeout is `kind: timeout` with
+`code: TIMEOUT`; it is not collapsed into a generic `INTERNAL_ERROR` or a quality failure.
+
+The skill descriptor from #64 has its own schema version `0.1.0`. That is the descriptor format
+version, not the validation profile version. The Beta validation profile here is `text-to-cad`
+`1.0.0`; the two versions are independent and must not be substituted for each other.
+
 ## Runner
 
 The local runner:
@@ -118,6 +158,8 @@ candidate inputs only after retention, and never touches an active job.
 ```sh
 solidcraft-cli validate submit request.json --profile task.json \
     --candidate-dir candidates --validation-dir validation
+solidcraft-cli validate skill request.json --profile task.json \
+    --candidate-dir candidates --validation-dir validation --json-out skill-report.json
 solidcraft-cli validate status <runId> --validation-dir validation
 solidcraft-cli validate report <runId> --validation-dir validation --out report.json
 solidcraft-cli validate cancel <runId> --validation-dir validation
@@ -128,6 +170,14 @@ solidcraft-cli validate cancel <runId> --validation-dir validation
 the request names the `--profile` file. `submit` runs the local worker to a terminal
 state and prints `status`; a quality failure is a successful run with
 `"state": "quality_failed"`, not a CLI error. `native-basic` needs no `--profile`.
+
+`skill` is the UI-free headless consumer of the skill-facing path. Its request also carries
+`live: {documentId, revision}` and it requires the complete `text-to-cad` profile with
+`--profile`. It prints the bound `SkillValidationReport`, including `snapshotPassed`,
+`approved`, `failure` and the persisted report artifact, so a CI job or script can consume the
+same fields as a panel without a Chat dependency. A passing snapshot with a missing or moved live
+document still prints a report, with `approved: false`.
+
 `status`, `report` and `cancel` open the store read-only and never reconcile a live
 worker owned by another process.
 

@@ -105,6 +105,21 @@ fn task() -> CheckProfile {
     .unwrap()
 }
 
+fn beta_skill_profile() -> CheckProfile {
+    text_to_cad_profile(
+        vec![ParameterRequirement { name: "width".into(), value: 20.0, abs_tolerance: 1e-6 }],
+        vec![MeasurementRequirement {
+            command: "inspect.measure".into(),
+            params: json!({}),
+            result_pointer: "/total/volume_mm3".into(),
+            expected: 1000.0,
+            abs_tolerance: 1e-6,
+            rel_tolerance: 0.0,
+        }],
+    )
+    .unwrap()
+}
+
 fn pass_checks(profile: &CheckProfile) -> Vec<CheckOutcome> {
     profile
         .checks
@@ -1361,4 +1376,284 @@ fn start_next_pins_a_recovered_queued_run_or_reports_missing_inputs() {
     assert!(port.start_next().unwrap().is_none());
     assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::InfrastructureError);
     let _ = std::fs::remove_dir_all(root2);
+}
+
+#[test]
+fn skill_validation_binds_the_exact_snapshot_profile_and_live_revision() {
+    let root = scratch("skill-binding");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skill-a", analytic_design());
+    let later = write_candidate(&candidates, "cand-skill-b", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = text_to_cad_profile(
+        vec![ParameterRequirement { name: "width".into(), value: 20.0, abs_tolerance: 1e-6 }],
+        vec![MeasurementRequirement {
+            command: "inspect.measure".into(),
+            params: json!({}),
+            result_pointer: "/total/volume_mm3".into(),
+            expected: 1000.0,
+            abs_tolerance: 1e-6,
+            rel_tolerance: 0.0,
+        }],
+    )
+    .unwrap();
+    let expected_profile = text_to_cad_profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, Arc::new(LocalRunner), Limits::default(), clock.clone());
+    let live = LiveDocument::new("doc-validation", 7);
+    let report = validate_skill_snapshot(
+        &port,
+        SkillValidationRequest::new(&candidate, profile, generate_submission_key(clock.now_ms())).with_live(live.clone()),
+    )
+    .unwrap();
+    assert_eq!(report.state, ValidationState::Passed);
+    assert!(report.snapshot_passed);
+    assert!(report.approved, "{report:?}");
+    assert!(report.failure.is_none());
+    assert_eq!(report.snapshot_id, "cand-skill-a");
+    assert_eq!(report.candidate_digest, candidate.candidate_digest);
+    assert_eq!(report.manifest_digest, candidate.manifest_digest);
+    assert_eq!(report.document_id, "doc-validation");
+    assert_eq!(report.document_revision, "7");
+    assert_eq!(report.profile, expected_profile);
+    assert_eq!(report.runner, LocalRunner::identity());
+    assert_eq!(report.required_checks, TEXT_TO_CAD_REQUIRED_CHECKS);
+    assert_eq!(report.checks.len(), TEXT_TO_CAD_REQUIRED_CHECKS.len());
+    assert!(report.checks.iter().all(|check| check.required && check.passed && check.state == "passed"));
+    assert!(!report.report.digest.is_empty());
+    let summary = summary_fields(&report);
+    assert_eq!(summary["snapshotId"], "cand-skill-a");
+    assert_eq!(summary["documentRevision"], "7");
+    assert_eq!(summary["profile"]["digest"], expected_profile.digest);
+    assert_eq!(summary["snapshotPassed"], true);
+    assert_eq!(summary["approved"], true);
+    assert!(summary["failure"].is_null());
+    assert!(report.approves(&candidate, Some(&live)));
+    assert!(!report.approves(&candidate, None), "omitting the live document never approves");
+    assert!(!report.approves(&candidate, Some(&LiveDocument::new("doc-validation", 8))), "the live revision moved");
+    assert!(!report.approves(&later, Some(&live)), "snapshot A never approves snapshot B");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn skill_validation_keeps_a_stale_live_document_as_historical_evidence() {
+    let root = scratch("skill-stale-live");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skill-stale", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = text_to_cad_profile(
+        vec![ParameterRequirement { name: "width".into(), value: 20.0, abs_tolerance: 1e-6 }],
+        vec![MeasurementRequirement {
+            command: "inspect.measure".into(),
+            params: json!({}),
+            result_pointer: "/total/volume_mm3".into(),
+            expected: 1000.0,
+            abs_tolerance: 1e-6,
+            rel_tolerance: 0.0,
+        }],
+    )
+    .unwrap();
+    let port = port_with(&store, &candidates, Arc::new(LocalRunner), Limits::default(), clock.clone());
+    let report = validate_skill_snapshot(
+        &port,
+        SkillValidationRequest::new(&candidate, profile, generate_submission_key(clock.now_ms())).with_live(LiveDocument::new("doc-validation", 8)),
+    )
+    .unwrap();
+    assert_eq!(report.state, ValidationState::Passed, "the captured snapshot still passed");
+    assert!(report.snapshot_passed);
+    assert!(!report.approved, "a moved live document is not approval");
+    assert!(report.failure.is_none(), "a passed snapshot is historical evidence, not a failure");
+    assert!(report.reason.contains("historical"), "{}", report.reason);
+    assert!(!report.approves(&candidate, Some(&LiveDocument::new("doc-validation", 8))));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn skill_validation_does_not_approve_a_quality_failure() {
+    let root = scratch("skill-quality-failure");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skill-failed", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = text_to_cad_profile(
+        vec![ParameterRequirement { name: "width".into(), value: 20.0, abs_tolerance: 1e-6 }],
+        vec![MeasurementRequirement {
+            command: "inspect.measure".into(),
+            params: json!({}),
+            result_pointer: "/total/volume_mm3".into(),
+            expected: 999.0,
+            abs_tolerance: 1e-6,
+            rel_tolerance: 0.0,
+        }],
+    )
+    .unwrap();
+    let port = port_with(&store, &candidates, Arc::new(LocalRunner), Limits::default(), clock.clone());
+    let report = validate_skill_snapshot(
+        &port,
+        SkillValidationRequest::new(&candidate, profile, generate_submission_key(clock.now_ms())).with_live(LiveDocument::new("doc-validation", 7)),
+    )
+    .unwrap();
+    assert_eq!(report.state, ValidationState::QualityFailed);
+    assert!(!report.approved);
+    assert!(!report.snapshot_passed);
+    assert_eq!(report.failure.as_ref().map(|failure| failure.kind), Some(SkillFailureKind::QualityFailed));
+    assert_eq!(report.failure.as_ref().and_then(|failure| failure.code.as_deref()), None);
+    assert!(!report.approves(&candidate, Some(&LiveDocument::new("doc-validation", 7))));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn skill_validation_keeps_an_infrastructure_failure_distinct_from_a_quality_failure() {
+    let root = scratch("skill-infrastructure-failure");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skill-infrastructure", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    // `solid.box` is a mutating command, not one of the read-only exact-geometry commands, so
+    // the real local runner reports it as unsupported even though the snapshot itself is sound.
+    let profile = text_to_cad_profile(
+        vec![ParameterRequirement { name: "width".into(), value: 20.0, abs_tolerance: 1e-6 }],
+        vec![MeasurementRequirement {
+            command: "solid.box".into(),
+            params: json!({}),
+            result_pointer: "/body_count".into(),
+            expected: 1.0,
+            abs_tolerance: 0.0,
+            rel_tolerance: 0.0,
+        }],
+    )
+    .unwrap();
+    let port = port_with(&store, &candidates, Arc::new(LocalRunner), Limits::default(), clock.clone());
+    let report = validate_skill_snapshot(
+        &port,
+        SkillValidationRequest::new(&candidate, profile, generate_submission_key(clock.now_ms())).with_live(LiveDocument::new("doc-validation", 7)),
+    )
+    .unwrap();
+    assert_eq!(report.state, ValidationState::InfrastructureError);
+    assert_ne!(report.state, ValidationState::QualityFailed, "an unsupported check is not a geometric failure");
+    assert!(!report.approved);
+    assert!(!report.snapshot_passed);
+    assert_eq!(report.failure.as_ref().map(|failure| failure.kind), Some(SkillFailureKind::InfrastructureError));
+    assert!(report.reason.contains("infrastructure_error"), "{}", report.reason);
+    let geometry = report.checks.iter().find(|check| check.check_id == "geometry.exact").unwrap();
+    assert_eq!(geometry.state, "unsupported");
+    assert!(!report.approves(&candidate, Some(&LiveDocument::new("doc-validation", 7))));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn skill_validation_requires_live_for_approval() {
+    let root = scratch("skill-no-live");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skill-no-live", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, Arc::new(LocalRunner), Limits::default(), clock.clone());
+    let report =
+        validate_skill_snapshot(&port, SkillValidationRequest::new(&candidate, beta_skill_profile(), generate_submission_key(clock.now_ms())))
+            .unwrap();
+    assert_eq!(report.state, ValidationState::Passed);
+    assert!(report.snapshot_passed, "the captured snapshot passed on its own");
+    assert!(!report.approved, "omitting the live document can never claim approval");
+    assert!(report.failure.is_none());
+    assert!(report.reason.contains("snapshot evidence"), "{}", report.reason);
+    assert!(!report.approves(&candidate, None));
+    assert!(!report.approves(&candidate, Some(&LiveDocument::new("doc-validation", 7))), "an unapproved report cannot be approved retroactively");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn skill_validation_reports_a_timeout_as_timeout_not_generic_infrastructure() {
+    let root = scratch("skill-timeout");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skill-timeout", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let timeout = Arc::new(FixedRunner {
+        identity: LocalRunner::identity(),
+        outcome: RunnerOutcome::TimedOut { started_at_ms: Some(1), finished_at_ms: 2, message: "too slow".into() },
+    });
+    let port = port_with(&store, &candidates, timeout, Limits::default(), clock.clone());
+    let report = validate_skill_snapshot(
+        &port,
+        SkillValidationRequest::new(&candidate, beta_skill_profile(), generate_submission_key(clock.now_ms()))
+            .with_live(LiveDocument::new("doc-validation", 7)),
+    )
+    .unwrap();
+    assert_eq!(report.state, ValidationState::InfrastructureError);
+    assert!(!report.snapshot_passed);
+    assert!(!report.approved);
+    let failure = report.failure.as_ref().expect("a timeout is a structured failure");
+    assert_eq!(failure.kind, SkillFailureKind::Timeout);
+    assert_eq!(failure.code.as_deref(), Some("TIMEOUT"));
+    assert!(report.reason.contains("TIMEOUT"), "{}", report.reason);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn skill_validation_reports_a_worker_failure_as_infrastructure_not_timeout() {
+    let root = scratch("skill-worker-failure");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skill-worker-failure", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let failure = Arc::new(FixedRunner {
+        identity: LocalRunner::identity(),
+        outcome: RunnerOutcome::Infrastructure { started_at_ms: Some(1), finished_at_ms: 2, message: "worker crashed".into() },
+    });
+    let port = port_with(&store, &candidates, failure, Limits::default(), clock.clone());
+    let report = validate_skill_snapshot(
+        &port,
+        SkillValidationRequest::new(&candidate, beta_skill_profile(), generate_submission_key(clock.now_ms()))
+            .with_live(LiveDocument::new("doc-validation", 7)),
+    )
+    .unwrap();
+    assert_eq!(report.state, ValidationState::InfrastructureError);
+    assert!(!report.approved);
+    let failure = report.failure.as_ref().expect("a worker failure is a structured failure");
+    assert_eq!(failure.kind, SkillFailureKind::InfrastructureError);
+    assert_eq!(failure.code.as_deref(), Some("INTERNAL_ERROR"));
+    assert_ne!(failure.kind, SkillFailureKind::Timeout);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn skill_validation_refuses_a_weakened_profile_or_an_unsupported_required_check() {
+    let root = scratch("skill-profile-guard");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-skill-profile-guard", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = text_to_cad_profile(
+        vec![ParameterRequirement { name: "width".into(), value: 20.0, abs_tolerance: 1e-6 }],
+        vec![MeasurementRequirement {
+            command: "inspect.measure".into(),
+            params: json!({}),
+            result_pointer: "/total/volume_mm3".into(),
+            expected: 1000.0,
+            abs_tolerance: 1e-6,
+            rel_tolerance: 0.0,
+        }],
+    )
+    .unwrap();
+    let port = port_with(&store, &candidates, Arc::new(LocalRunner), Limits::default(), clock.clone());
+
+    let mut weakened = profile.clone();
+    weakened.checks.retain(|check| check.check_id != "geometry.exact");
+    let error =
+        validate_skill_snapshot(&port, SkillValidationRequest::new(&candidate, weakened, generate_submission_key(clock.now_ms()))).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ProfileUnsupported);
+
+    let mut widened = SkillValidationRequest::new(&candidate, profile.clone(), generate_submission_key(clock.now_ms()));
+    widened.required_checks.push("measurement.future".into());
+    let error = validate_skill_snapshot(&port, widened).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ProfileUnsupported);
+
+    let mut narrowed = SkillValidationRequest::new(&candidate, profile, generate_submission_key(clock.now_ms()));
+    narrowed.required_checks.retain(|check| check != "geometry.exact");
+    let error = validate_skill_snapshot(&port, narrowed).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ProfileUnsupported, "a narrowed coverage list cannot silently approve");
+    assert_eq!(port.store.count_admissions(), 0, "a refused profile is never admitted");
+    let _ = std::fs::remove_dir_all(root);
 }

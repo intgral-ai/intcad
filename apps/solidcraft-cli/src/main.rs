@@ -22,7 +22,7 @@
 //!                                                             MCP server on stdio (docs/mcp.md)
 //! solidcraft-cli mcp setup [--dry-run] [--client NAME] [--live] (alias: mcp install) add it to OpenCode, Claude Desktop, Claude Code, Cursor
 //! solidcraft-cli licences                                     open-skyfall's licence and the third-party licences
-//! solidcraft-cli validate submit|status|report|cancel ...     immutable candidate validation (docs/validation.md)
+//! solidcraft-cli validate submit|skill|status|report|cancel ... immutable candidate validation (docs/validation.md)
 //! solidcraft-cli icon --out F.png|F.ico [--size N]             the app icon (packaging; drawn, not a file)
 //!
 //! --debug (with any command)                                  open-skyfall's debug log on stderr (or RUST_LOG=LEVEL)
