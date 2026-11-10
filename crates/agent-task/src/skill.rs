@@ -214,7 +214,9 @@ pub fn text_to_cad(profile: ValidationProfileRef, budget: Budget) -> Skill {
             require_validation_after_apply: true,
         },
         validation_profile: profile,
-        required_checks: vec!["input.integrity".into(), "native.rebuild".into()],
+        // #65's fixed Beta profile owns four required checks; the controller verifies each one on
+        // the trusted report rather than trusting a host probe.
+        required_checks: vec!["geometry.exact".into(), "input.integrity".into(), "native.rebuild".into(), "parameters.required".into()],
         budget,
         acceptance: "phase1-text-to-cad-e2e".into(),
     }

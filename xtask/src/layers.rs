@@ -58,6 +58,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("doc", Class::Layer(2)),
     ("io", Class::Layer(3)),
     ("engine", Class::Layer(4)),
+    // real engine/snapshot/validation ports for the native AI harness task controller (no UI)
+    ("agent-task-engine", Class::Layer(4)),
     ("ui-egui", Class::Layer(5)),
     ("gpu", Class::Layer(5)),
     ("mcp", Class::Layer(5)),
@@ -78,6 +80,8 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     // The UI hosts the chat MCP server over the Mastra bridge lane (#9); the server never
     // depends on the UI.
     &["mcp", "ui-egui"],
+    // The task controller's real engine ports sit beside the engine, below the UI.
+    &["engine", "agent-task-engine"],
     &["smlib", "kernel"],
     &["step", "kernel"],
 ];

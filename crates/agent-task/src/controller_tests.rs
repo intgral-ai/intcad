@@ -91,7 +91,11 @@ struct FakeValidation {
 
 impl FakeValidation {
     fn new(pass: bool) -> Self {
-        Self { pass, required: vec!["input.integrity".into(), "native.rebuild".into()], calls: 0 }
+        Self {
+            pass,
+            required: vec!["geometry.exact".into(), "input.integrity".into(), "native.rebuild".into(), "parameters.required".into()],
+            calls: 0,
+        }
     }
 }
 
@@ -271,8 +275,10 @@ fn validation_must_use_the_host_owned_profile_and_bind_the_final_version() {
                 document: snapshot.document.clone(),
                 passed: true,
                 checks: vec![
+                    CheckResult { check_id: "geometry.exact".into(), passed: true, detail: String::new() },
                     CheckResult { check_id: "input.integrity".into(), passed: true, detail: String::new() },
                     CheckResult { check_id: "native.rebuild".into(), passed: true, detail: String::new() },
+                    CheckResult { check_id: "parameters.required".into(), passed: true, detail: String::new() },
                 ],
             })
         }
