@@ -1761,6 +1761,8 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
     let mut approval: Option<(u64, Option<bool>)> = None;
     let mut undo: Option<usize> = None;
     let mut open_gallery: Option<Gallery> = None;
+    // The user asked the host to revalidate the current revision after a manual parameter change.
+    let mut revalidate_task = false;
     let current_doc = app.session.doc.clone();
     let stamp = app.session.document_stamp();
     let units = summary::Units { units: &app.session.doc.units, decimals: app.preferences.length_decimals };
@@ -1867,6 +1869,14 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                     if let Some(terminal) = terminal {
                         ui.label(RichText::new(terminal).color(t.text_dim).size(t.font_caption));
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if app.agent_chat.task.is_some() {
+                            let button = ui_kit::button(ui, tr("ui.agent_chat_task_revalidate"), ui_kit::Button::Small);
+                            crate::scenario::publish_handle("agent_chat:task:revalidate", button.rect.center());
+                            if button.clicked() {
+                                revalidate_task = true;
+                            }
+                        }
                     }
                 });
             }
@@ -1981,6 +1991,10 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
             Ok(selection) => crate::viewport::select(app, Some(selection), false, false),
             Err(reason) => app.agent_chat.notice(reason, true),
         }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if revalidate_task && let Err(error) = super::task_runtime::revalidate(app) {
+        app.agent_chat.notice(error, true);
     }
     let (mut send_now_clicked, mut send_queue_clicked) = (false, false);
     let mut remove: Option<usize> = None;

@@ -6,6 +6,7 @@
     "ui.agent_chat_task_incomplete": "Host task incomplete",
     "ui.agent_chat_task_quality_failed": "Host quality check failed",
     "ui.agent_chat_task_repair": "Host requested repair round {round}",
+    "ui.agent_chat_task_revalidate": "Validate current revision",
     "ui.agent_chat_task_unavailable": "The host task could not start: {error}",
     "ui.agent_chat_task_unknown": "Host task outcome unknown",
     "ui.agent_chat_task_validated": "Host validated the design"
@@ -17,6 +18,7 @@
     "ui.agent_chat_task_incomplete": "مهمة المضيف غير مكتملة",
     "ui.agent_chat_task_quality_failed": "فشل فحص الجودة لدى المضيف",
     "ui.agent_chat_task_repair": "طلب المضيف جولة إصلاح {round}",
+    "ui.agent_chat_task_revalidate": "تحقق من المراجعة الحالية",
     "ui.agent_chat_task_unavailable": "تعذر بدء مهمة المضيف: {error}",
     "ui.agent_chat_task_unknown": "نتيجة مهمة المضيف غير معروفة",
     "ui.agent_chat_task_validated": "تحقق المضيف من التصميم"
@@ -28,6 +30,7 @@
     "ui.agent_chat_task_incomplete": "משימת המארח לא הושלמה",
     "ui.agent_chat_task_quality_failed": "בדיקת האיכות של המארח נכשלה",
     "ui.agent_chat_task_repair": "המארח ביקש סבב תיקון {round}",
+    "ui.agent_chat_task_revalidate": "אמת את הגרסה הנוכחית",
     "ui.agent_chat_task_unavailable": "לא ניתן היה להתחיל את משימת המארח: {error}",
     "ui.agent_chat_task_unknown": "תוצאת משימת המארח אינה ידועה",
     "ui.agent_chat_task_validated": "המארח אימת את העיצוב"
@@ -39,6 +42,7 @@
     "ui.agent_chat_task_incomplete": "ホストのタスクは未完了です",
     "ui.agent_chat_task_quality_failed": "ホストの品質チェックに失敗しました",
     "ui.agent_chat_task_repair": "ホストが修復ラウンド {round} を要求しました",
+    "ui.agent_chat_task_revalidate": "現在のリビジョンを検証",
     "ui.agent_chat_task_unavailable": "ホストのタスクを開始できませんでした: {error}",
     "ui.agent_chat_task_unknown": "ホストのタスク結果は不明です",
     "ui.agent_chat_task_validated": "ホストが設計を検証しました"
@@ -50,6 +54,7 @@
     "ui.agent_chat_task_incomplete": "Tác vụ máy chủ chưa hoàn tất",
     "ui.agent_chat_task_quality_failed": "Kiểm tra chất lượng của máy chủ thất bại",
     "ui.agent_chat_task_repair": "Máy chủ yêu cầu vòng sửa {round}",
+    "ui.agent_chat_task_revalidate": "Xác thực bản sửa đổi hiện tại",
     "ui.agent_chat_task_unavailable": "Không thể bắt đầu tác vụ máy chủ: {error}",
     "ui.agent_chat_task_unknown": "Kết quả tác vụ máy chủ không xác định",
     "ui.agent_chat_task_validated": "Máy chủ đã xác thực thiết kế"
@@ -61,6 +66,7 @@
     "ui.agent_chat_task_incomplete": "主机任务未完成",
     "ui.agent_chat_task_quality_failed": "主机质量检查失败",
     "ui.agent_chat_task_repair": "主机请求第 {round} 轮修复",
+    "ui.agent_chat_task_revalidate": "验证当前修订版",
     "ui.agent_chat_task_unavailable": "无法启动主机任务：{error}",
     "ui.agent_chat_task_unknown": "主机任务结果未知",
     "ui.agent_chat_task_validated": "主机已验证设计"
