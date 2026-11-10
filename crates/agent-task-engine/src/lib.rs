@@ -565,6 +565,8 @@ pub struct LiveTask {
     snapshots: Arc<Mutex<BTreeMap<String, CandidateRef>>>,
     live: Arc<Mutex<Option<task::DocumentRef>>>,
     profile_ref: task::ValidationProfileRef,
+    candidate_root: std::path::PathBuf,
+    validation_store: std::path::PathBuf,
 }
 
 impl LiveTask {
@@ -578,7 +580,7 @@ impl LiveTask {
         spec: task::TaskSpec,
         permission: task::PermissionContext,
     ) -> Result<Self, String> {
-        let port = EngineValidationPort::open(validation_store, candidate_root).map_err(|e| e.to_string())?;
+        let port = EngineValidationPort::open(validation_store.clone(), candidate_root.clone()).map_err(|e| e.to_string())?;
         let engine_profile = text_to_cad_profile_ref(&profile).map_err(|e| e.to_string())?;
         let core_profile =
             task::ValidationProfileRef { profile_id: engine_profile.profile_id, version: engine_profile.version, digest: engine_profile.digest };
@@ -594,7 +596,15 @@ impl LiveTask {
         let registry = task::skill::builtins(core_profile.clone(), spec.budget.clone()).map_err(|e| e.to_string())?;
         let controller = task::TaskController::start(&registry, spec, permission, Arc::new(task::SystemClock), Box::new(task::InMemoryStore::new()))
             .map_err(|e| e.to_string())?;
-        let mut task = Self { controller, validation, snapshots, live, profile_ref: core_profile };
+        let mut task = Self {
+            controller,
+            validation,
+            snapshots,
+            live,
+            profile_ref: core_profile,
+            candidate_root: candidate_root.clone(),
+            validation_store: validation_store.clone(),
+        };
         task.begin(session)?;
         Ok(task)
     }
@@ -639,9 +649,23 @@ impl LiveTask {
         Ok(snapshot)
     }
 
-    /// Validate the live revision explicitly, after a person changed a parameter by hand. The
-    /// controller's task is terminal by then, so this is a separate host validation over the
-    /// same profile and snapshot store, not a model turn and not a second agent loop.
+    /// Validate the live revision under a different host-owned profile (the Beta create turn
+    /// uses 5 mm; the manual change uses 8 mm). A profile id/version cannot hold two digests in
+    /// one registry, so the revalidation profile gets its own store while sharing the snapshot
+    /// lookup and the live document.
+    pub fn revalidate_with(&mut self, session: &mut Session, profile: CheckProfile) -> Result<Revalidation, String> {
+        let port =
+            EngineValidationPort::open(self.validation_store.join("revalidate"), self.candidate_root.clone()).map_err(|error| error.to_string())?;
+        let engine_profile = text_to_cad_profile_ref(&profile).map_err(|error| error.to_string())?;
+        let core =
+            task::ValidationProfileRef { profile_id: engine_profile.profile_id, version: engine_profile.version, digest: engine_profile.digest };
+        self.validation =
+            EngineTaskValidation { port, snapshots: Arc::clone(&self.snapshots), live: Arc::clone(&self.live), profile, core_profile: core.clone() };
+        self.profile_ref = core;
+        self.revalidate(session)
+    }
+
+    /// Validate the live revision under the profile this task currently holds.
     pub fn revalidate(&mut self, session: &mut Session) -> Result<Revalidation, String> {
         let required = self.controller.skill().required_checks.clone();
         let profile = self.profile_ref.clone();

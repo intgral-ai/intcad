@@ -534,7 +534,18 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
     if chat_turn_cancelled(req.chat_turn.as_deref()) {
         return Outcome::Done(cancelled_request_response(&req.method, &req.params, req.guarded.is_some()));
     }
-    crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req))
+    // The Text-to-CAD task narrows the existing gate before a request can reach it. A denial is
+    // returned to the agent as an error and executes nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(reason) = crate::agent_chat::task_runtime::before_tool(app, &req.method, &req.params, req.chat_turn.as_ref()) {
+        return Outcome::Done(json!({"ok": false, "error": format!("refused by the host task: {reason}")}));
+    }
+    let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req));
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Outcome::Done(reply) = &out {
+        crate::agent_chat::task_runtime::after_tool(app, &req.method, &req.params, reply, req.chat_turn.as_ref());
+    }
+    out
 }
 
 fn handle_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
@@ -739,6 +750,8 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             let Some(id) = execute_command(p) else { return err("missing `command`") };
             wrap(execute(app, id, p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}))))
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        "agent.task.revalidate" => wrap(crate::agent_chat::task_runtime::revalidate(app)),
         "engine.batch" => batch(app, p, guarded),
         "ui.agent_cursor" => {
             let s = &mut app.ui.agent_cursor;

@@ -50,6 +50,8 @@ pub mod runtime_client;
 pub mod settings;
 pub mod skill;
 pub mod summary;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod task_runtime;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -393,6 +395,10 @@ pub struct AgentChat {
     pub skill: skill::Skill,
     /// The running or latest skill turn's frozen binding. A new turn replaces it.
     pub skill_binding: Option<skill::Binding>,
+    /// The host-owned task for a Text-to-CAD skill turn (#67). It observes the existing tool
+    /// boundary; it is not a second agent loop, provider, session or tool registry.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) task: Option<task_runtime::Runtime>,
     /// Send a picture of the view with the next message.
     pub attach_view: bool,
     /// Send what is selected in the model with the next message.
@@ -1772,6 +1778,9 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     }
     let (pictures, documents) = (app.agent_chat.images, app.agent_chat.documents);
     let changed = app.agent_chat.seen.as_deref().and_then(|seen| changed_note(seen, &app.session.doc));
+    #[cfg(not(target_arch = "wasm32"))]
+    let skill_note = skill.prompt_note().map(|note| task_runtime::prompt_note(skill, note));
+    #[cfg(target_arch = "wasm32")]
     let skill_note = skill.prompt_note();
     let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(note).chain(changed.as_deref()).collect();
     let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
@@ -1842,7 +1851,19 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
             support,
             terminal: None,
         });
-        app.agent_chat.skill_binding = Some(binding);
+        app.agent_chat.skill_binding = Some(binding.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        if binding.skill == skill::Skill::TextToCad
+            && let Err(error) = task_runtime::begin(app, &binding)
+        {
+            // An unverified Text-to-CAD turn must not run and look verified: refuse before the
+            // model call, tell the user why, and leave the design untouched.
+            app.agent_chat.notice(trf("ui.agent_chat_task_unavailable", &[("error", &error)]), true);
+            app.agent_chat.finish_skill_turn("error");
+            app.agent_chat.state = Some(State::Ready);
+            end_turn(app);
+            return;
+        }
     }
     let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
     if let Some(b) = app.agent_chat.backend.as_mut() {
@@ -1957,6 +1978,8 @@ pub fn cancel(app: &mut SolveApp) {
     if let Some(turn) = &app.agent_chat.turn {
         turn.active.store(false, std::sync::atomic::Ordering::Relaxed);
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    task_runtime::cancel(app, "the user stopped the message");
     app.agent_chat.steering = false;
     app.agent_chat.stopped = true;
     crate::edit_in_place::forget_after_turn(app);
@@ -2345,6 +2368,8 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
             Some(Outcome::TurnEnd) => {
                 app.agent_chat.attach_anatomy_refs(&mut app.session);
                 end_turn(app);
+                #[cfg(not(target_arch = "wasm32"))]
+                task_runtime::on_turn_end(app);
                 after_turn(app, ctx);
             }
             Some(Outcome::Permission { key, .. }) if app.agent_chat.turn.is_none() => {
