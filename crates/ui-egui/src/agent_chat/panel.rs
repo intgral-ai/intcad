@@ -1755,6 +1755,8 @@ fn scroll_while_selecting(ui: &egui::Ui) {
 fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let mut answer: Option<(usize, Option<String>)> = None;
+    // A click on a host object name in an Anatomy answer.
+    let mut object_click: Option<object_ref::ObjectRef> = None;
     // Allow (true), Deny (false), Always allow (None).
     let mut approval: Option<(u64, Option<bool>)> = None;
     let mut undo: Option<usize> = None;
@@ -1806,6 +1808,22 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                         let resp = ui.interact(drawn, Id::new(("agent_chat_msg", n)), Sense::hover());
                         copy_message_menu(ui, &resp, n, text);
                     }
+                }
+            }
+            Item::AgentRefs { text, refs } => {
+                let before = ui.cursor();
+                ui_kit::assistant_prose(ui, |ui| {
+                    super::markdown_view::show_objects(ui, n, text, refs, &mut |index| {
+                        if let Some(reference) = refs.get(index) {
+                            object_click = Some(reference.clone());
+                        }
+                    });
+                });
+                if !text.is_empty() {
+                    copy_message_button(ui, n, text);
+                    let drawn = egui::Rect::from_x_y_ranges(before.x_range(), before.min.y..=ui.cursor().min.y);
+                    let resp = ui.interact(drawn, Id::new(("agent_chat_msg", n)), Sense::hover());
+                    copy_message_menu(ui, &resp, n, text);
                 }
             }
             Item::Tool { .. } => {
@@ -1956,6 +1974,12 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                     ui.add(egui::Label::new(RichText::new(text).color(if *error { t.error } else { t.text_dim })).wrap());
                 });
             }
+        }
+    }
+    if let Some(reference) = object_click {
+        match object_ref::resolve(&mut app.session, &reference) {
+            Ok(selection) => crate::viewport::select(app, Some(selection), false, false),
+            Err(reason) => app.agent_chat.notice(reason, true),
         }
     }
     let (mut send_now_clicked, mut send_queue_clicked) = (false, false);
