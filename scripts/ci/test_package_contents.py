@@ -62,6 +62,10 @@ class PackageContents(unittest.TestCase):
             self.assertIn("mastra/runtime/node_modules/x", paths)
             self.assertIn("lib/node", paths)
 
+    def test_an_empty_runtime_directory_is_not_a_bundled_runtime(self):
+        self.assertEqual(contents.marker_entries(["portable/mastra/"]), [])
+        self.assertTrue(contents.marker_entries(["portable/mastra/", "portable/mastra/runtime.json"]))
+
     def test_other_runtime_component_and_node_sidecar_are_markers(self):
         self.assertTrue(contents.marker("../ee/app/main.js"))
         self.assertTrue(contents.marker("resources/node.exe"))
