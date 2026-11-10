@@ -80,6 +80,15 @@ def problems(source_revision, descriptors, contents):
             for name, digest in _artifacts(build).items()
             if name not in ignored
         }
+        covered = {
+            item.get("name"): item.get("coveredBy")
+            for item in report.get("checked") or []
+            if isinstance(item, dict) and item.get("coveredBy")
+        }
+        for name, covering in sorted(covered.items()):
+            if covering not in checked or covering == name:
+                failures.append(identity + ": " + str(name) + " claims coverage by a package that was not inspected: "
+                                + str(covering))
         if checked != expected:
             missing = sorted(set(expected) - set(checked))
             extra = sorted(set(checked) - set(expected))

@@ -96,6 +96,18 @@ class NativeContentDecision(unittest.TestCase):
         contents["release-flatpak-x86_64"]["derivedFrom"] = "release-macos"
         self.assertTrue(content.problems(SHA, descriptors, contents))
 
+    def test_a_covered_standalone_exe_needs_its_covering_package(self):
+        descriptors = {"release-windows-x64": build("release-windows-x64", [("solidcraft.zip", DG), ("SolidCraft.exe", DG2)])}
+        contents = {
+            "release-windows-x64": report("release-windows-x64", [("solidcraft.zip", DG), ("SolidCraft.exe", DG2)]),
+        }
+        contents["release-windows-x64"]["checked"][1]["coveredBy"] = "solidcraft.zip"
+        self.assertEqual(content.problems(SHA, descriptors, contents), [])
+        contents["release-windows-x64"]["checked"][1]["coveredBy"] = "missing.zip"
+        problems = content.problems(SHA, descriptors, contents)
+        self.assertTrue(problems)
+        self.assertIn("claims coverage", problems[0])
+
     def test_explicit_mastra_distribution_stays_blocked(self):
         descriptors = {"release-linux-x86_64": build("release-linux-x86_64", [("solidcraft.tar.gz", DG)])}
         contents = {"release-linux-x86_64": report("release-linux-x86_64", [("solidcraft.tar.gz", DG)],

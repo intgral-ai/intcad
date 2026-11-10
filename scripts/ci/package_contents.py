@@ -29,7 +29,7 @@ from pathlib import Path
 
 RUNTIME_COMPONENTS = frozenset(("mastra", "node_modules", "ee"))
 RUNTIME_BASENAMES = frozenset(("node", "node.exe"))
-IGNORED_SUFFIXES = (".zsync", ".sha256", ".blockmap")
+IGNORED_SUFFIXES = (".zsync", ".sha256", ".blockmap", ".json")
 
 
 def digest(path):
@@ -40,11 +40,37 @@ def digest(path):
     return result.hexdigest()
 
 
+def marker_entries(names):
+    """Marker files, and marker directories that actually contain something.
+
+    The Windows package deliberately stages an empty ``mastra`` folder so the WiX
+    harvest has a stable directory. An empty folder is not a bundled runtime; a
+    directory with any child, or any file named like a runtime, is.
+    """
+    lowered = [(name, str(name).replace("\\", "/").rstrip("/").lower()) for name in names]
+    found = []
+    for original, name in lowered:
+        parts = [part for part in name.split("/") if part]
+        is_dir = str(original).endswith(("/", "\\"))
+        hit = False
+        for index, part in enumerate(parts):
+            if part in RUNTIME_COMPONENTS:
+                if parts[index + 1:]:
+                    hit = True
+                elif is_dir and not any(other != name and other.startswith(name + "/") for _, other in lowered):
+                    continue
+                else:
+                    hit = True
+                break
+        if not hit and parts and parts[-1] in RUNTIME_BASENAMES:
+            hit = True
+        if hit:
+            found.append({"name": str(original), "path": str(original)})
+    return found
+
+
 def marker(path):
-    parts = [part.lower() for part in str(path).replace("\\", "/").split("/") if part]
-    if any(part in RUNTIME_COMPONENTS for part in parts):
-        return True
-    return bool(parts) and parts[-1] in RUNTIME_BASENAMES
+    return bool(marker_entries([path]))
 
 
 def _walk(root):
@@ -217,7 +243,7 @@ def main():
         except Exception as error:  # noqa: BLE001 - any failure is unverified content
             report["unchecked"].append({"name": source.name, "reason": str(error)})
         else:
-            report["markers"].extend({"name": source.name, "path": name} for name in names if marker(name))
+            report["markers"].extend(marker_entries(names))
     else:
         for value in args.artifacts:
             path = Path(value)
@@ -232,7 +258,23 @@ def main():
                 report["unchecked"].append({"name": path.name, "reason": str(error)})
                 continue
             report["checked"].append({"name": path.name, "sha256": digest(path), "format": kind, "entries": len(names)})
-            report["markers"].extend({"name": path.name, "path": name} for name in names if marker(name))
+            report["markers"].extend(marker_entries(names))
+
+        # A standalone app executable is one binary, not an install tree. Its bytes are
+        # a subset of the MSI/zip payload built from the same stage; the covering
+        # artifact is inspected above, so it cannot hide a sidecar on its own.
+        covered = next((item["name"] for item in report["checked"]
+                        if item["name"].lower().endswith((".msi", ".zip"))), None)
+        if covered:
+            still_unchecked = []
+            for item in report["unchecked"]:
+                if item["name"].lower().endswith(".exe") and any(p.name == item["name"] for p in map(Path, args.artifacts)):
+                    path = next(p for p in map(Path, args.artifacts) if p.name == item["name"])
+                    report["checked"].append({"name": path.name, "sha256": digest(path), "format": "covered",
+                                              "entries": 0, "coveredBy": covered})
+                else:
+                    still_unchecked.append(item)
+            report["unchecked"] = still_unchecked
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
