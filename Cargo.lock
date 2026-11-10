@@ -4606,6 +4606,8 @@ dependencies = [
  "serde_json_canonicalizer",
  "sha2 0.10.9",
  "solidcore-record",
+ "solidcraft-agent-task",
+ "solidcraft-agent-task-engine",
  "solidcraft-engine",
  "solidcraft-gpu",
  "solidcraft-mcp",
