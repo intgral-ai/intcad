@@ -37,6 +37,7 @@ mod markdown_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod mastra_backend;
 pub mod mastra_protocol;
+pub mod object_ref;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod packaged_runtime;
 mod panel;
@@ -245,6 +246,11 @@ pub enum Item {
     Agent {
         thought: bool,
         text: String,
+    },
+    /// An Anatomy answer with the host object references frozen when the turn ended.
+    AgentRefs {
+        text: String,
+        refs: Vec<object_ref::ObjectRef>,
     },
     Tool {
         id: String,
@@ -719,6 +725,26 @@ impl AgentChat {
         {
             *open = Some(terminal);
         }
+    }
+
+    /// Freeze host object references onto the final Anatomy answer. The names come from the
+    /// current document; the model's text cannot add or remove a clickable target.
+    fn attach_anatomy_refs(&mut self, session: &mut solidcraft_engine::Session) {
+        if !self.skill_binding.as_ref().is_some_and(|binding| binding.skill == skill::Skill::Anatomy) {
+            return;
+        }
+        let last_user = self.items.iter().rposition(|item| matches!(item, Item::User { .. })).unwrap_or(0);
+        let Some(index) = self.items.iter().rposition(|item| matches!(item, Item::Agent { thought: false, .. })) else {
+            return;
+        };
+        if index < last_user {
+            return;
+        }
+        let Some(Item::Agent { text, .. }) = self.items.get(index) else {
+            return;
+        };
+        let text = text.clone();
+        self.items[index] = Item::AgentRefs { text, refs: object_ref::collect(session) };
     }
 
     /// Ask the agent to sign in by itself (an "agent" login method: it opens the browser).
@@ -2317,6 +2343,7 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         let refused = if matches!(e, Event::ModelRejected(_)) { app.agent_chat.model_revert.as_ref().map(|r| r.saved.clone()) } else { None };
         match app.agent_chat.on_event(e) {
             Some(Outcome::TurnEnd) => {
+                app.agent_chat.attach_anatomy_refs(&mut app.session);
                 end_turn(app);
                 after_turn(app, ctx);
             }
@@ -2863,6 +2890,7 @@ pub fn status(app: &SolveApp) -> Value {
         .map(|i| match i {
             Item::User { text, image, pictures, context, files } => json!({"user": text, "image": image, "pictures": pictures.len(), "files": files, "context": context.items.iter().map(|i| json!({"label": i.label, "detail": i.detail})).collect::<Vec<_>>(), "context_omitted": context.omitted}),
             Item::Agent { thought, text } => json!({"agent": text, "thought": thought}),
+            Item::AgentRefs { text, refs } => json!({"agent": text, "objectRefs": refs.iter().map(|r| json!({"label": r.label, "kind": format!("{:?}", r.kind), "revision": r.revision})).collect::<Vec<_>>()}),
             Item::Tool { id, title, kind, status, input, output } => {
                 json!({"tool": id, "title": title, "kind": kind, "status": status.map(|s| format!("{s:?}")), "input": input, "output": output})
             }
