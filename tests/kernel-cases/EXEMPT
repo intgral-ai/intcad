@@ -67,6 +67,7 @@ document.metadata                 document metadata and revisions
 document.metadata.remove          document metadata and revisions
 document.metadata.set             document metadata and revisions
 document.revision                 document metadata and revisions
+document.snapshot.capture         snapshot capture: crates/engine/src/validation/tests.rs and apps/solidcraft-cli/tests/script_roundtrip.rs
 edit.checkpoint                   undo, redo and checkpoints: an earlier state restored, no new geometry
 edit.redo                         undo, redo and checkpoints: an earlier state restored, no new geometry
 edit.repeat                       repeats the last command, whose own case grades it
