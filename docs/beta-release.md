@@ -5,7 +5,9 @@ is independent of `release-gate.yml` and the `main` promotion. Use it for a Beta
 kernel/release gate is not green and the Beta scope is explicitly narrower.
 
 This page does **not** authorize publishing, signing, a `main` merge, or a stable tag. It records
-the build entry only.
+the build entry only. The per-candidate run IDs, install checks, content evidence and remaining
+gaps belong in [docs/beta-evidence.md](beta-evidence.md); do not carry an older Beta result to a
+new SHA.
 
 ## Entry
 
@@ -43,9 +45,11 @@ the build entry only.
 
 - It is not a `main` release candidate.
 - It does not satisfy `release-gate` (full CI, kernel-rig, all package descriptors and the native
-  content decision).
+  content decision). A successful `release.yml` run alone is package-build evidence, not gate
+  evidence.
 - It does not sign or notarize anything.
 - A real-provider or clean-machine result belongs to the exact commit that produced the asset; it
-  cannot be carried to a different candidate without re-running.
+  cannot be carried to a different candidate without re-running. The published `v0.1.0-beta.1`
+  assets are not evidence for a new candidate.
 
 See `docs/releasing.md` for the production path and `docs/action-matrix.md` for the kernel ratchet.
