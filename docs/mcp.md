@@ -48,7 +48,10 @@ even when the setting is off. With the setting off and no flag, the app listens 
 Bridged, the server finds the app's control token in the token file the app wrote for that port
 ([control-protocol.md](control-protocol.md#token)); `--token T` or `SOLIDCRAFT_CONTROL_TOKEN` give
 it explicitly when the app runs in a sandbox whose data folder the server can't see (prefer the
-variable: command-line arguments are visible to other users in the process list).
+variable: command-line arguments are visible to other users in the process list). The Assistant
+names the folder of its token files to the server it has an agent start (`SOLIDCRAFT_CONTROL_DIR`
+in that server's environment), so an agent that starts its servers with a clean environment, as
+Codex does, still finds the file when the app was given a folder of its own.
 
 A bridged server starts even when no app listens on that port yet, so an MCP client that
 launches it before the app (or after the app was closed) keeps its tools. The server's

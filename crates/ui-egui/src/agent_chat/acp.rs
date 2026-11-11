@@ -176,7 +176,8 @@ pub fn is_bridge_tool(title: &str, kind: Option<&str>) -> bool {
 /// The MCP server the agent starts to reach the design: `solidcraft-cli mcp --connect` bridged to
 /// this app's control port. The server finds the port's token in the token file the app wrote
 /// (docs/control-protocol.md), so the token never travels through the agent, and it keeps its
-/// default folder limits (docs/mcp.md): no `--allow-any-path`.
+/// default folder limits (docs/mcp.md): no `--allow-any-path`. It is told which folder that
+/// file is in ([`McpBridge::to_json`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct McpBridge {
     pub cli: std::path::PathBuf,
@@ -185,11 +186,17 @@ pub struct McpBridge {
 
 impl McpBridge {
     pub fn to_json(&self) -> Value {
+        // The folder of the app's token files, by name. An agent may start its servers with a
+        // clean environment (Codex does): the server then knows nothing of a folder the app
+        // was given (`SOLIDCRAFT_CONTROL_DIR`), looks in the default one, and the app refuses
+        // every tool call as unauthorized. The folder is no secret; the token stays in its file.
+        let folder = solidcraft_engine::control_auth::token_path(self.port)
+            .and_then(|file| file.parent().map(|folder| json!({"name": "SOLIDCRAFT_CONTROL_DIR", "value": folder.to_string_lossy()})));
         json!({
             "name": BRIDGE_NAME,
             "command": self.cli.to_string_lossy(),
             "args": ["mcp", "--connect", format!("127.0.0.1:{}", self.port)],
-            "env": [],
+            "env": folder.into_iter().collect::<Vec<_>>(),
         })
     }
 
@@ -817,6 +824,13 @@ mod tests {
         assert_eq!(s["args"], json!(["mcp", "--connect", "127.0.0.1:41234"]));
         let text = p.to_string();
         assert!(!text.contains("allow-any-path") && !text.contains("TOKEN") && !text.contains("token"), "{text}");
+        // The server is told the folder of the app's token files, not left to the agent's
+        // environment for it: Codex starts its servers with a clean one, and the app's tools
+        // were all refused as unauthorized when the app had been given a folder of its own.
+        let folder =
+            solidcraft_engine::control_auth::token_path(41234).and_then(|file| file.parent().map(|folder| folder.to_string_lossy().into_owned()));
+        assert!(folder.is_some(), "the app has a folder for its token files");
+        assert_eq!(s["env"], json!([{"name": "SOLIDCRAFT_CONTROL_DIR", "value": folder}]));
         assert!(p["_meta"]["claudeCode"]["options"]["disallowedTools"].as_array().is_some_and(|t| t.iter().any(|x| x == "Bash")));
         assert_eq!(session_new_params(std::path::Path::new("/tmp"), None, &json!({}), SYSTEM_NOTE)["mcpServers"], json!([]));
     }

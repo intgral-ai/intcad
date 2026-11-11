@@ -52,6 +52,8 @@ pub mod skill;
 pub mod summary;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod task_runtime;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -401,11 +403,13 @@ pub struct AgentChat {
     pub(crate) task: Option<task_runtime::Runtime>,
     /// Send a picture of the view with the next message.
     pub attach_view: bool,
-    /// Send what is selected in the model with the next message.
-    pub attach_selection: bool,
     /// How many things the current selection is by clicks, kept while the selection and the design
     /// stay as they are: (the selection, the design's address, the count).
     selected_count: Option<(Vec<solidcraft_engine::Sel>, usize, usize)>,
+    /// How the current selection reads, kept as [`Self::selected_count`] is: (the selection, the
+    /// design's address, the description). The host's page shows it as what the agent can see.
+    #[cfg(not(target_arch = "wasm32"))]
+    selected_context: Option<(Vec<solidcraft_engine::Sel>, usize, Context)>,
     /// What the user picked with Pick context for the next message, and how it reads.
     pub picked: Vec<solidcraft_engine::Sel>,
     pub picked_context: Context,
@@ -433,6 +437,19 @@ pub struct AgentChat {
     pub confirm_new: bool,
     /// Where the panel was drawn last (for its shortcuts).
     pub panel_rect: Option<egui::Rect>,
+    /// The desktop host can show the Assistant in a web view ([`web::set_host`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_host: bool,
+    /// The place the panel gave up to the host's web view this frame, and the layer it is in.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_place: Option<(egui::Rect, egui::LayerId)>,
+    /// The colour of the page's own surface, as the page said it ([`web::act`], `surface`): the
+    /// floating panel's frame is filled with it, so the page and the strip beside it are one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_canvas: Option<egui::Color32>,
+    /// Files are being dragged over the host's web view ([`web::dragging`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_drag: bool,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -1576,7 +1593,7 @@ pub fn send(app: &mut SolveApp, ctx: &egui::Context, text: String) {
     // What was picked goes first, then what is selected (without what was picked twice).
     let mut context = std::mem::take(&mut app.agent_chat.picked_context);
     app.agent_chat.picked.clear();
-    if app.agent_chat.attach_selection {
+    if app.preferences.agent_chat_attach_selection {
         let mut selected = context::describe_selection(&mut app.session);
         selected.items.retain(|i| !context.items.contains(i));
         context.merge(selected);
@@ -2851,7 +2868,7 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
         app.agent_chat.attach_view = a;
     }
     if let Some(a) = p.get("attach_selection").and_then(Value::as_bool) {
-        app.agent_chat.attach_selection = a;
+        app.preferences.agent_chat_attach_selection = a;
     }
     if p.get("pick").and_then(Value::as_bool) == Some(true) {
         start_pick(app);
