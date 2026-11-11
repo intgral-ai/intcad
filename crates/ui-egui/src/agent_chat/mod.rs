@@ -3007,6 +3007,14 @@ pub fn status(app: &SolveApp) -> Value {
         state.insert("modelsNote".into(), json!(c.models_note));
         state.insert("customModels".into(), json!(custom_models_accepted(app)));
         state.insert("instructions".into(), json!(app.preferences.agent_instructions));
+        // How the desktop app shows the conversation: whether its host has a web view to offer,
+        // and whether the page in that view has reported to the app yet. The browser build has
+        // no host.
+        #[cfg(not(target_arch = "wasm32"))]
+        let web_view = json!({"host": c.web_host, "page": c.web_canvas.is_some()});
+        #[cfg(target_arch = "wasm32")]
+        let web_view = json!({"host": false, "page": false});
+        state.insert("webView".into(), web_view);
     }
     state
 }

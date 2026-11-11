@@ -92,14 +92,19 @@ and a saved one is put back.
   linked into the exe, so no DLL goes with the app. On a machine without the WebView2 runtime
   the view cannot be made, and the panel draws the built-in conversation.
 
-  **Never run on Windows.** The host file was type-checked for `x86_64-pc-windows-msvc` from a
-  Mac, in a throwaway crate with the app's real UI and engine crates; the app itself cannot be
-  checked there, because a C dependency (`ring`) needs Windows' C headers. The CI job `Windows
-  app startup` builds and starts the app but never opens the Assistant. Not known: whether the
-  page shows, typing and input methods, the keyboard going back to the window, files dropped on
-  the panel, the view over each graphics backend, and a scale other than 100 %. While the page
-  has the keyboard the window reads as unfocused to the app, so what the app does only in a
-  focused window (moving the view by holding a modifier key, for one) waits for a click on it.
+  **Run on Windows in CI only; no person has tried it on a Windows machine.** The host was
+  written on a Mac, where the app cannot even be type-checked for Windows (a C dependency,
+  `ring`, needs Windows' C headers). The CI job `Windows app startup` builds the app and runs
+  `tools/windows-assistant-smoke.ps1`, which opens the Assistant on the runner and checks that
+  the page reports to the app, that a click on the page gives it the keyboard and a click on the
+  rest of the window takes it back, that the view leaves the window's resize edges free in the
+  compact layout, and that WebView2's files are in the app's data folder. Its screenshots are in
+  the job's `platform-windows-startup` artifact. What a run found is in that job's log, not
+  here. The runner has one monitor at 100 % and no graphics card, so not known: input methods,
+  a scale other than 100 %, files dropped on the panel, and the view over a real card's
+  backends. While the page has the keyboard the window reads as unfocused to the app, so what
+  the app does only in a focused window (moving the view by holding a modifier key, for one)
+  waits for a click on it.
 
 Where the app draws its own title bar (Windows and Linux), the window's edges resize it, and a
 native view over them would take the press: the view's place stops short of the window's edges

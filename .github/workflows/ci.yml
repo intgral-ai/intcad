@@ -684,11 +684,14 @@ jobs:
       - run: cargo build -p solidcraft --profile ci --locked
       - run: tools/windows-startup-smoke.ps1 -Exe target/ci/solidcraft.exe
       - run: tools/windows-resize-smoke.ps1 -Exe target/ci/solidcraft.exe
+      - run: tools/windows-assistant-smoke.ps1 -Exe target/ci/solidcraft.exe -Evidence assistant-smoke
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: platform-windows-startup
-          path: runner-image.txt
+          path: |
+            runner-image.txt
+            assistant-smoke/
           if-no-files-found: error
 
   riscv64-gates:
