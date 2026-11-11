@@ -302,7 +302,13 @@ jobs:
           name: release-linux-${{ matrix.arch }}
           path: dist/linux
       - name: Install snapcraft
-        run: sudo snap install snapcraft --classic
+        run: |
+          # The store can reset a snapd download; retry the same install a few times.
+          for attempt in 1 2 3; do
+            if sudo snap install snapcraft --classic; then exit 0; fi
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Build the snap
         run: |
           sudo --preserve-env=SOLIDCRAFT_VERSION,SOLIDCRAFT_BUILD_DATE env "PATH=$PATH" \
