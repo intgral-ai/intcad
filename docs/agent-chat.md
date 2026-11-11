@@ -84,10 +84,11 @@ and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
 - The conversation goes on while the window is behind another one.
 - The Assistant does not open in a window of its own there: its menu has no **Own window**, and
   one chosen earlier goes back to the side panel.
-- On Linux the web view is WebKitGTK and needs an X11 window, which the app opens by default
-  (through XWayland in a Wayland session). The panel's corners are square there, and what you
-  type reaches the message box while the pointer is over the panel. In a native Wayland window
-  (**Preferences › Graphics › Window system**) the built-in panel is drawn.
+- On Linux the web view is WebKitGTK and needs an X11 window, which the app opens by default,
+  in a Wayland session as well (through XWayland). The panel's corners are square there. While
+  you type in the message box the keys are the page's: the app's own shortcuts work again after
+  a click anywhere else in the window. In a native Wayland window (on niri, or with
+  **Preferences › Graphics › Window system** set to Wayland) the built-in panel is drawn.
 - On Windows the web view is WebView2, which Windows 11 has and most Windows 10 machines have;
   on a machine without it the built-in panel is drawn. The panel's corners are square there.
   While you type in the message box the keys are the page's: the app's own shortcuts work again

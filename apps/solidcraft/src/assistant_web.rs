@@ -4,9 +4,12 @@
 //! nothing from outside the app. What it is told and what it may ask for is
 //! `solidcraft_ui_egui::agent_chat::web`.
 //!
-//! On Linux the view is WebKitGTK in a child of the app's X11 window, an XWayland window
-//! included. A native Wayland window has no such child: there the panel draws its own
-//! conversation. winit does not run GTK, so GTK is started here and given its turns each frame.
+//! On Linux the view is WebKitGTK in a child of the app's X11 window, which in a Wayland session
+//! is an XWayland window: the one the app opens there unless it is told otherwise. A native
+//! Wayland window has no such child: there the panel draws its own conversation. winit does not
+//! run GTK, so GTK is started here and given its turns each frame. The X server sends typed keys
+//! to the window that has the keyboard, the app's, so the view's window is given the keyboard
+//! when the page is pressed and the app's window has it back when the rest of it is pressed.
 //!
 //! On Windows the view is WebView2 in a child window of the app's. WebView2 serves no scheme of
 //! the app's own, so the page has an `http` address there that only this view answers, and it
@@ -52,6 +55,9 @@ const SEE_THROUGH: bool = cfg!(target_os = "macos");
 const GTK_AT_WORK: std::time::Duration = std::time::Duration::from_millis(16);
 #[cfg(target_os = "linux")]
 const GTK_AT_REST: std::time::Duration = std::time::Duration::from_millis(100);
+/// While the page has the keyboard and nothing is typed: a first key is not kept waiting long.
+#[cfg(target_os = "linux")]
+const GTK_WITH_KEYBOARD: std::time::Duration = std::time::Duration::from_millis(50);
 /// No more of GTK's turns than this at once: the app's own frame is waiting.
 #[cfg(target_os = "linux")]
 const GTK_TURNS: usize = 256;
@@ -181,6 +187,71 @@ fn start_gtk() -> bool {
     }
 }
 
+/// The keyboard between the app's X11 window and the view's (Linux). The view's window is a
+/// child of the app's, made by another toolkit, and never has the keyboard of its own accord:
+/// until it is given it, typed keys reach the page only while the pointer is over it.
+#[cfg(target_os = "linux")]
+struct Keyboard {
+    /// A connection of its own: neither winit's nor GTK's is reachable.
+    connection: x11rb::rust_connection::RustConnection,
+    app: u32,
+    view: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl Keyboard {
+    /// The app's X11 window and the windows inside it as they are now, before the view is made.
+    fn before(frame: &eframe::Frame) -> Option<(x11rb::rust_connection::RustConnection, u32, Vec<u32>)> {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let app = match frame.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok()?,
+            RawWindowHandle::Xcb(handle) => handle.window.get(),
+            _ => return None,
+        };
+        let (connection, _) = x11rb::connect(None).ok()?;
+        let inside = Self::inside(&connection, app)?;
+        Some((connection, app, inside))
+    }
+
+    fn inside(connection: &x11rb::rust_connection::RustConnection, app: u32) -> Option<Vec<u32>> {
+        use x11rb::protocol::xproto::ConnectionExt;
+        Some(connection.query_tree(app).ok()?.reply().ok()?.children)
+    }
+
+    /// With the view made: its window is the one that was not in the app's window before.
+    fn of(before: Option<(x11rb::rust_connection::RustConnection, u32, Vec<u32>)>) -> Option<Self> {
+        let (connection, app, before) = before?;
+        let view = new_window(&before, &Self::inside(&connection, app)?)?;
+        Some(Self { connection, app, view })
+    }
+
+    /// The window keys go to for the page. GTK makes one window of its own inside the one the
+    /// view was given and takes keys there: a key sent to the outer one, with the pointer
+    /// elsewhere, reaches no one. That window is looked for as the page is pressed, when it is
+    /// surely there; the view's own window stands in when it holds none, or several.
+    fn page(&self) -> u32 {
+        match Self::inside(&self.connection, self.view).as_deref() {
+            Some([page]) => *page,
+            _ => self.view,
+        }
+    }
+
+    fn give(&self, window: u32) -> Result<(), String> {
+        use x11rb::protocol::xproto::{ConnectionExt, InputFocus};
+        // Should the window stop being shown, the keyboard goes to the window it is in.
+        let asked = self.connection.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME).map_err(|error| error.to_string())?;
+        asked.check().map_err(|error| error.to_string())
+    }
+}
+
+/// The window that is among `after` and was not among `before`, when there is exactly one.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn new_window(before: &[u32], after: &[u32]) -> Option<u32> {
+    let mut new = after.iter().copied().filter(|window| !before.contains(window));
+    let window = new.next()?;
+    new.next().is_none().then_some(window)
+}
+
 /// Where the view is in the window and at what size its page is drawn, as last given to it.
 #[derive(Clone, Copy, PartialEq)]
 struct Placed {
@@ -212,12 +283,28 @@ pub struct AssistantWeb {
     /// GTK had something to do in a turn since the last frame.
     #[cfg(target_os = "linux")]
     at_work: bool,
+    /// The page was pressed since the last frame: GTK says so, the app sees no press on a child
+    /// window.
+    #[cfg(target_os = "linux")]
+    pressed: Rc<Cell<bool>>,
+    /// The way to hand the keyboard over, once the view's window is known.
+    #[cfg(target_os = "linux")]
+    keyboard: Option<Keyboard>,
+    /// The view's window was given the keyboard, and the app's has not been given it back.
+    #[cfg(target_os = "linux")]
+    with_keyboard: bool,
 }
 
 impl AssistantWeb {
     /// The host has a web view to offer: the panel may give its conversation up to it.
     pub fn new(solve: &mut SolveApp) -> Self {
-        web::set_host(solve, available());
+        let available = available();
+        if cfg!(target_os = "linux") && !available {
+            note(
+                "this run's window is a native Wayland one, which holds no web view: the panel draws the built-in conversation (Window system: Automatic or X11 in Preferences opens an X11 window)",
+            );
+        }
+        web::set_host(solve, available);
         Self::default()
     }
 
@@ -227,7 +314,11 @@ impl AssistantWeb {
         self.placed = None;
         self.shown = false;
         #[cfg(target_os = "linux")]
-        self.turn_gtk();
+        {
+            self.keyboard = None;
+            self.with_keyboard = false;
+            self.turn_gtk();
+        }
     }
 
     /// GTK's turns (Linux): what the page drew, sent and was told moves in them, and the app's
@@ -314,10 +405,37 @@ impl AssistantWeb {
         #[cfg(target_os = "linux")]
         {
             self.turn_gtk();
-            // The next turn: soon while the page is at work or typed in, seldom while it rests.
+            // A press on the page gives the view's window the keyboard, and a press on the rest
+            // of the app's window gives it back: the app sees only the presses not on the view.
+            if self.pressed.take()
+                && self.shown
+                && let Some(keyboard) = &self.keyboard
+            {
+                match keyboard.give(keyboard.page()) {
+                    Ok(()) => self.with_keyboard = true,
+                    Err(error) => note(&format!("could not be given the keyboard: {error}")),
+                }
+            }
+            if self.with_keyboard
+                && ctx.input(|input| input.pointer.any_pressed())
+                && let Some(keyboard) = &self.keyboard
+            {
+                if let Err(error) = keyboard.give(keyboard.app) {
+                    note(&format!("could not give the keyboard back: {error}"));
+                }
+                self.with_keyboard = false;
+            }
+            // The next turn: soon while the page is at work, seldom while it rests, and between
+            // the two while it has the keyboard and waits for a key.
             if self.shown {
-                let at_work = std::mem::take(&mut self.at_work) || self.focused;
-                ctx.request_repaint_after(if at_work { GTK_AT_WORK } else { GTK_AT_REST });
+                let wait = if std::mem::take(&mut self.at_work) {
+                    GTK_AT_WORK
+                } else if self.with_keyboard || self.focused {
+                    GTK_WITH_KEYBOARD
+                } else {
+                    GTK_AT_REST
+                };
+                ctx.request_repaint_after(wait);
             }
         }
     }
@@ -392,6 +510,9 @@ impl AssistantWeb {
             }
             self.gtk = true;
         }
+        // The windows inside the app's before the view's is made among them.
+        #[cfg(target_os = "linux")]
+        let before = Keyboard::before(frame);
         let inbox = self.inbox.clone();
         let repaint = ctx.clone();
         let (drags, dragged) = (self.drags.clone(), ctx.clone());
@@ -477,6 +598,21 @@ impl AssistantWeb {
                 if let Err(error) = view.zoom(page_zoom(&view, at)) {
                     note(&format!("could not be zoomed: {error}"));
                 }
+                #[cfg(target_os = "linux")]
+                {
+                    use gtk::prelude::WidgetExt;
+                    use wry::WebViewExtUnix;
+                    let (pressed, repaint) = (self.pressed.clone(), ctx.clone());
+                    view.webview().connect_button_press_event(move |_, _| {
+                        pressed.set(true);
+                        repaint.request_repaint();
+                        gtk::glib::Propagation::Proceed
+                    });
+                    self.keyboard = Keyboard::of(before);
+                    if self.keyboard.is_none() {
+                        note("its window was not found among the app's: typed keys reach the page only while the pointer is over it");
+                    }
+                }
                 self.view = Some(view);
                 self.placed = Some(at);
                 self.backed = Some(backing);
@@ -502,13 +638,17 @@ impl AssistantWeb {
             if let Err(error) = view.set_visible(shown) {
                 note(&format!("could not be {}: {error}", if shown { "shown" } else { "hidden" }));
             }
-            // A hidden page cannot keep the keyboard: it goes back to the window. (An X11 child
-            // never took it from the window, and is not to be given it as it is hidden. WebView2
-            // is not asked whether it had it: the window having it twice costs nothing.)
+            // A hidden page cannot keep the keyboard: it goes back to the window. (The X server
+            // gives it back by itself as the view's window is hidden. WebView2 is not asked
+            // whether it had it: the window having it twice costs nothing.)
             if !shown && (self.focused || cfg!(target_os = "windows")) {
                 #[cfg(not(target_os = "linux"))]
                 let _ = view.focus_parent();
                 self.focused = false;
+            }
+            #[cfg(target_os = "linux")]
+            if !shown {
+                self.with_keyboard = false;
             }
         }
         self.shown = shown;
@@ -714,5 +854,16 @@ mod tests {
             assert!(folder.is_absolute(), "{folder:?}");
             assert!(folder.ends_with("assistant-web-view"), "{folder:?}");
         }
+    }
+
+    /// The view's X11 window is the one that appeared in the app's window as the view was made.
+    /// With none new, or more than one, it is not known, and the keyboard is not handed over.
+    #[test]
+    fn the_views_window_is_the_one_new_window_in_the_apps() {
+        assert_eq!(new_window(&[], &[7]), Some(7));
+        assert_eq!(new_window(&[3, 4], &[3, 9, 4]), Some(9));
+        assert_eq!(new_window(&[3, 4], &[3, 4]), None, "the view's window is not there");
+        assert_eq!(new_window(&[3], &[3, 8, 9]), None, "which of two is the view's is not known");
+        assert_eq!(new_window(&[3, 4], &[]), None);
     }
 }
