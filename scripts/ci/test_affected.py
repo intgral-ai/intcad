@@ -259,6 +259,13 @@ class MonorepoSelection(unittest.TestCase):
         self.assertEqual(result["rustTestPackages"], ["xtask"])
         self.decision(result, "rust", "run", "selected_change")
 
+    def test_known_failing_metadata_selects_its_xtask_owner(self):
+        result = self.select("tests/KNOWN_FAILING_TESTS")
+        self.assertEqual(result["scope"], "affected")
+        self.assertEqual(result["rustPackages"], ["xtask"])
+        self.assertEqual(result["rustTestPackages"], ["xtask"])
+        self.decision(result, "rust", "run", "selected_change")
+
     def test_pr_test_lane_is_bounded_on_shared_inputs(self):
         for path in ("Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/build-runtime.sh"):
             with self.subTest(path=path):

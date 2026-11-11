@@ -56,6 +56,7 @@ TEST_DATA = {
     "tests/oracle/": ("apps/solidcraft-cli/", "xtask/"),
     "tests/action_matrix/": ("apps/solidcraft-cli/", "crates/engine/", "xtask/"),
     "tests/kernel-cases/": ("xtask/",),
+    "tests/KNOWN_FAILING_TESTS": ("xtask/",),
 }
 # Checkout helpers that a workflow (not a workspace package) consumes. They are
 # selected as the named platform job instead of the full workspace; a new tool
