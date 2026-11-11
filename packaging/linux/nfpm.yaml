@@ -28,9 +28,10 @@ description: |-
   joints, sheet metal; STEP, IGES, 3MF, STL and OBJ. Includes solidcraft-cli, a
   headless command runner and MCP server for AI agents.
 
-# The binaries link only glibc and libgcc_s directly. Windowing (X11/Wayland, xkbcommon) and the
+# The app links glibc, libgcc_s and, for the Assistant's web view, GTK 3 and WebKitGTK 4.1
+# directly: without those two it does not start. Windowing (X11/Wayland, xkbcommon) and the
 # GPU (Vulkan, EGL/GL) are loaded at runtime with dlopen, so they aren't ELF NEEDED entries and
-# the package tools can't find them: list them here.
+# the package tools can't find them. nfpm reads no ELF file, so all of them are listed here.
 overrides:
   deb:
     # Debian's rename pattern: Replaces + Conflicts + Provides (docs/compatibility.md).
@@ -48,6 +49,9 @@ overrides:
       - libxcursor1
       - libxi6
       - libvulkan1 | libegl1
+      # The Assistant's web view. (GTK 3 was renamed with the 64-bit time_t change.)
+      - libgtk-3-0t64 | libgtk-3-0
+      - libwebkit2gtk-4.1-0
     recommends:
       - mesa-vulkan-drivers
       - libegl-mesa0
@@ -65,6 +69,9 @@ overrides:
       - libXcursor.so.1()(64bit)
       - libXi.so.6()(64bit)
       - (libvulkan.so.1()(64bit) or libEGL.so.1()(64bit))
+      # The Assistant's web view.
+      - libgtk-3.so.0()(64bit)
+      - libwebkit2gtk-4.1.so.0()(64bit)
     recommends:
       - mesa-vulkan-drivers
       - xdg-desktop-portal
