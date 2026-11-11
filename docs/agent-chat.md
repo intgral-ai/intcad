@@ -404,6 +404,48 @@ the agent's own ways to sign in:
 
 Whatever you typed before signing in is sent once the agent is ready.
 
+## Built-in skills
+
+The composer has a skill picker. **Plain Chat** is the default and is unchanged. Two built-in
+skills are offered:
+
+- **Text-to-CAD** asks the same agent to create or change a parametric design. The host note
+  tells it to inspect before editing, use the native CAD tools and keep features and parameters
+  editable. This entry only selects and binds the turn; the Text-to-CAD task (#67) adds the
+  host-owned write policy, result snapshots and validation. The agent's prose is not success.
+- **Anatomy** asks the agent to explain the current design or selection using host facts. The
+  host refuses a write request from an Anatomy turn, so geometry, parameters, feature history and
+  undo do not change. Only names the host supplies can become clickable references.
+
+Selecting a skill freezes the skill version, the current document identity and revision, the
+selection and the connection/model on that turn. The conversation shows the binding and its
+terminal. Switching to another skill or document cannot rewrite a running turn's binding.
+
+Direct/BYOK runs the Beta skill path. Until a real credential-backed turn is recorded, the panel
+labels skill execution unverified. Ordinary ACP Chat remains available, but ACP skill execution is
+also labeled unverified until it is tested on the same host policy. A backend that cannot run a
+skill refuses before the model call.
+
+The existing approval gate, Stop, stale-write rejection and per-turn undo still control every CAD
+write. A skill adds no second agent loop, provider, session store or tool registry.
+
+### Anatomy click-to-locate
+
+An Anatomy answer uses the current design's body and feature names. The host collects those names
+when the turn ends and freezes them to the document identity and revision the answer was made
+from. Only an exact host name at a word boundary becomes a link; the model's prose cannot add a
+target that the host does not know.
+
+Clicking a linked body or feature selects it through the normal viewport selection path, so the
+viewport highlight and Browser reveal are the same as a click in the model. It changes UI selection
+only: geometry, parameters, feature history and the document undo stack are untouched. Parameters
+stay text-only in this version; only bodies and features are clickable.
+
+A link resolves against the live design before selecting. If the design has changed since the
+answer, the target is deleted, or the answer belongs to another document, the panel reports the
+target as unavailable and selects nothing. It never falls back to a same-name object in the
+current document. Ask Anatomy again to get links for the current revision.
+
 ## What the agent can do
 
 The agent reaches the open design only through SolidCraft's own tools (the

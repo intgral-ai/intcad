@@ -202,8 +202,9 @@ def select_workflow(event, mode, release_required, out):
     (out.parent / "paths.nul").write_bytes(raw)
     native = result["jobs"]["rust"]["decision"] == "run"
     full = result["scope"] == "full" or release_required
+    windows = result.get("platform", {}).get("windows", {}).get("decision") == "run"
     outputs = {"plan": json.dumps(result, sort_keys=True, separators=(",", ":")),
-               "full": str(full).lower(), "windows": str(native and full).lower(),
+               "full": str(full).lower(), "windows": str(windows).lower(),
                "deps": str(full or any(p == "Cargo.lock" or p.endswith("Cargo.toml") for p in paths)).lower()}
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
         for key, value in outputs.items():
@@ -226,7 +227,8 @@ def repository_commands(*, full=True):
         commands.append(["cargo", "run", "--locked", "--package", "xtask", "--", *args])
     commands += [["bash", "scripts/test-format-pending.sh"]]
     commands += [["python3", "-I", "scripts/ci/" + name + ".py"] for name in
-                 ("test_affected", "test_gate", "test_main_merge", "test_kernel_rig_plan")]
+                 ("test_affected", "test_gate", "test_main_merge", "test_kernel_rig_plan",
+                  "test_package_contents", "test_release_content")]
     if full:
         commands += [["cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"]]
         commands += [["cargo", "test", "-p", "xtask", name, "--locked"]
@@ -391,8 +393,10 @@ def aggregate_workflow(plan_file, needs_file, receipts_dir):
     full = plan["scope"] == "full" or plan["releaseRequired"]
     extras = ["clippy"] if plan["jobs"]["rust"]["decision"] == "run" else []
     if full and extras:
-        extras += ["doc-tests", "oracle", "windows-fxc", "windows-startup", "property-tests",
+        extras += ["doc-tests", "oracle", "property-tests",
                    "build-tests", "action-matrix", "action-matrix-determinism"]
+    if plan.get("platform", {}).get("windows", {}).get("decision") == "run":
+        extras += ["windows-fxc", "windows-startup"]
     if full or needs.get("changes", {}).get("outputs", {}).get("deps") == "true":
         extras.append("dependency-advisories")
     if os.environ.get("REQUIRE_RISCV") == "true":

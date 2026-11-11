@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -697,6 +698,8 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
             target = root / "dist/release"
             target.mkdir(parents=True)
+            (root / "scripts/ci").mkdir(parents=True)
+            shutil.copyfile(HERE / "package_contents.py", root / "scripts/ci/package_contents.py")
             env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-linux-x86_64", PACKAGE_TARGET="x86_64-unknown-linux-gnu")
             command = [sys.executable, "-c", script]
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
@@ -714,6 +717,11 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             manifest = root / "schema/mastra-runtime/v1/manifest.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_bytes(b"{}\n")
+            # The descriptor reads the committed blob, so commit the fixture first.
+            subprocess.run(["git", "-C", str(root), "add", "schema/mastra-runtime/v1/manifest.json"], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "-q", "-m", "tracked contract fixture"], check=True)
+            env["GITHUB_SHA"] = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads((target / "build.json").read_text())["contractDigest"],
@@ -721,10 +729,6 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             result = subprocess.run(command, cwd=root, env={**env, "GITHUB_SHA": "0" * 40}, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("sourceRevision mismatch", result.stderr)
-            subprocess.run(["git", "-C", str(root), "add", "schema/mastra-runtime/v1/manifest.json"], check=True)
-            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                            "commit", "-q", "-m", "tracked contract fixture"], check=True)
-            env["GITHUB_SHA"] = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
             manifest.write_bytes(b'{"changed":true}\n')
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, "modified tracked bytes cannot be attributed to clean HEAD")

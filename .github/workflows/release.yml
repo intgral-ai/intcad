@@ -22,6 +22,10 @@ env:
   # previous contents; bundling the workflow is opt-in and needs an explicit owner decision on the
   # release default (DQ-7/DQ-4) plus approved artifacts for every target.
   SOLIDCRAFT_WITH_MASTRA: "0"
+  # The native release path. `package_contents.py` must still prove from the built
+  # installer bytes that no Mastra runtime, Node sidecar or old runtime dependency
+  # was bundled before the gate can mark #14/#15 not applicable.
+  SOLIDCRAFT_DISTRIBUTION: "native"
 
 jobs:
   version:
@@ -123,7 +127,7 @@ jobs:
         name: Bind package bytes to this checkout and contract manifest
         shell: python {0}
         run: |
-          import hashlib, json, os, subprocess
+          import hashlib, json, os, subprocess, sys
           from pathlib import Path
           sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           if sha != os.environ['GITHUB_SHA']:
@@ -131,7 +135,8 @@ jobs:
           if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--']).returncode != 0:
               raise SystemExit('dirty tracked package source; rebuild from the immutable checkout')
           directory = Path('dist/release')
-          files = sorted(p for p in directory.iterdir() if p.is_file() and p.name != 'build.json')
+          files = sorted(p for p in directory.iterdir()
+                         if p.is_file() and p.name not in ('build.json', 'contents.json'))
           if not files:
               raise SystemExit('no built package artifacts')
           def digest(path):
@@ -141,10 +146,35 @@ jobs:
                       result.update(block)
               return result.hexdigest()
           manifest = Path('schema/mastra-runtime/v1/manifest.json')
+          # The contract is a committed source input. `git show` gives the exact
+          # blob on every runner; a Windows checkout may otherwise convert its
+          # line endings and produce a different digest from Linux/macOS.
+          try:
+              contract = subprocess.check_output(['git', 'show', 'HEAD:' + manifest.as_posix()])
+              contract_digest = 'sha256:' + hashlib.sha256(contract).hexdigest()
+          except subprocess.CalledProcessError:
+              contract_digest = None
           data = dict(version=1, packageId=os.environ['PACKAGE_ID'], sourceRevision=sha,
-                      target=os.environ['PACKAGE_TARGET'], contractDigest='sha256:' + digest(manifest) if manifest.is_file() else None,
+                      target=os.environ['PACKAGE_TARGET'], contractDigest=contract_digest,
                       artifacts=[dict(name=p.name, sha256=digest(p)) for p in files])
           (directory / 'build.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+
+          # The runtime requirement is decided from the package bytes themselves.
+          # Flatpak/Arch/Snap reuse the inspected Linux tarball in dist/linux.
+          package_id = os.environ['PACKAGE_ID']
+          command = [sys.executable, 'scripts/ci/package_contents.py',
+                     '--package-id', package_id, '--source-revision', sha,
+                     '--distribution', os.environ.get('SOLIDCRAFT_DISTRIBUTION', 'native'),
+                     '--out', str(directory / 'contents.json')]
+          if package_id.startswith(('release-flatpak-', 'release-arch-', 'release-snap-')):
+              arch = package_id.rsplit('-', 1)[-1]
+              sources = sorted(Path('dist/linux').glob('solidcraft-*-linux-' + arch + '.tar.gz'))
+              if len(sources) != 1:
+                  raise SystemExit('derived package needs exactly one source Linux tarball')
+              command += ['--derived-from', 'release-linux-' + arch, '--source-artifact', str(sources[0])]
+          else:
+              command += [str(p) for p in files]
+          subprocess.run(command, check=True)
       - &upload-package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -155,7 +185,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-evidence-${{ env.PACKAGE_ID }}
-          path: dist/release/build.json
+          path: |
+            dist/release/build.json
+            dist/release/contents.json
           if-no-files-found: error
 
   flatpak:

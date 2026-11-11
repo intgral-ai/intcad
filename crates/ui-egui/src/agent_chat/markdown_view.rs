@@ -100,6 +100,50 @@ fn spans(ui: &mut egui::Ui, spans: &[Span], size: f32, color: Color32) {
     }
 }
 
+/// Draw an Anatomy answer with host object names as clickable spans. Plain text keeps the
+/// answer's line breaks and simple headings/bullets; only a host reference can be clicked.
+pub fn show_objects(ui: &mut egui::Ui, _slot: usize, src: &str, refs: &[crate::agent_chat::object_ref::ObjectRef], on_click: &mut dyn FnMut(usize)) {
+    use crate::agent_chat::object_ref::{Segment, segments};
+    let t = Tokens::get();
+    let base = t.font_button;
+    for line in src.lines() {
+        if line.trim().is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+        let (marker, body, size, color) = if let Some(heading) = line.strip_prefix("# ") {
+            ("", heading, t.font_heading, t.text)
+        } else if let Some(heading) = line.strip_prefix("## ") {
+            ("", heading, t.font_subtitle, t.text)
+        } else if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            ("•", item, base, t.text)
+        } else {
+            ("", line, base, t.text)
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if !marker.is_empty() {
+                ui.label(RichText::new(marker).size(size).color(t.text_dim));
+                ui.add_space(4.0);
+            }
+            for segment in segments(body, refs) {
+                match segment {
+                    Segment::Text(text) => {
+                        ui.label(RichText::new(text).size(size).color(color));
+                    }
+                    Segment::Object { label, index } => {
+                        let link = ui.link(RichText::new(label).size(size).color(t.accent));
+                        crate::scenario::publish_handle(&format!("agent_chat:object:{index}"), link.rect.center());
+                        if link.clicked() {
+                            on_click(index);
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
 /// Draw `src` as Markdown. `slot`: the conversation item it belongs to.
 pub fn show(ui: &mut egui::Ui, slot: usize, src: &str) {
     let t = Tokens::get();

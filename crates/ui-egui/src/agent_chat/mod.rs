@@ -37,6 +37,7 @@ mod markdown_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod mastra_backend;
 pub mod mastra_protocol;
+pub mod object_ref;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod packaged_runtime;
 mod panel;
@@ -47,7 +48,10 @@ mod process;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime_client;
 pub mod settings;
+pub mod skill;
 pub mod summary;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod task_runtime;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -245,6 +249,11 @@ pub enum Item {
         thought: bool,
         text: String,
     },
+    /// An Anatomy answer with the host object references frozen when the turn ended.
+    AgentRefs {
+        text: String,
+        refs: Vec<object_ref::ObjectRef>,
+    },
     Tool {
         id: String,
         title: String,
@@ -256,6 +265,17 @@ pub enum Item {
         output: Option<String>,
     },
     Plan(Vec<(String, String)>),
+    /// A built-in skill turn: the frozen descriptor, document revision, model and its terminal.
+    Skill {
+        title: String,
+        version: String,
+        document_id: String,
+        revision: u64,
+        model: String,
+        selection: usize,
+        support: skill::SkillSupport,
+        terminal: Option<String>,
+    },
     /// The agent asks before running something of its own (its options, its words).
     Permission {
         key: u64,
@@ -371,6 +391,14 @@ pub struct AgentChat {
     images: bool,
     /// The agent takes documents (PDFs) in a message.
     documents: bool,
+    /// The built-in skill selected for the next message; ordinary Chat is the default.
+    pub skill: skill::Skill,
+    /// The running or latest skill turn's frozen binding. A new turn replaces it.
+    pub skill_binding: Option<skill::Binding>,
+    /// The host-owned task for a Text-to-CAD skill turn (#67). It observes the existing tool
+    /// boundary; it is not a second agent loop, provider, session or tool registry.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) task: Option<task_runtime::Runtime>,
     /// Send a picture of the view with the next message.
     pub attach_view: bool,
     /// Send what is selected in the model with the next message.
@@ -690,6 +718,41 @@ impl AgentChat {
         }
     }
 
+    /// Mark the latest open skill item with the turn's terminal. The host owns this line; a model
+    /// message cannot replace it with a claim of success.
+    fn finish_skill_turn(&mut self, reason: &str) {
+        let terminal = match reason {
+            "" => tr("ui.agent_chat_skill_done").to_string(),
+            "cancelled" => tr("ui.agent_chat_skill_cancelled").to_string(),
+            "error" => tr("ui.agent_chat_skill_error").to_string(),
+            other => other.to_string(),
+        };
+        if let Some(Item::Skill { terminal: open, .. }) = self.items.iter_mut().rev().find(|item| matches!(item, Item::Skill { terminal: None, .. }))
+        {
+            *open = Some(terminal);
+        }
+    }
+
+    /// Freeze host object references onto the final Anatomy answer. The names come from the
+    /// current document; the model's text cannot add or remove a clickable target.
+    fn attach_anatomy_refs(&mut self, session: &mut solidcraft_engine::Session) {
+        if !self.skill_binding.as_ref().is_some_and(|binding| binding.skill == skill::Skill::Anatomy) {
+            return;
+        }
+        let last_user = self.items.iter().rposition(|item| matches!(item, Item::User { .. })).unwrap_or(0);
+        let Some(index) = self.items.iter().rposition(|item| matches!(item, Item::Agent { thought: false, .. })) else {
+            return;
+        };
+        if index < last_user {
+            return;
+        }
+        let Some(Item::Agent { text, .. }) = self.items.get(index) else {
+            return;
+        };
+        let text = text.clone();
+        self.items[index] = Item::AgentRefs { text, refs: object_ref::collect(session) };
+    }
+
     /// Ask the agent to sign in by itself (an "agent" login method: it opens the browser).
     pub fn authenticate(&mut self, method: &str) {
         if let Some(b) = self.backend.as_mut() {
@@ -880,6 +943,7 @@ impl AgentChat {
                     self.state = Some(State::Ready);
                 }
                 self.ended = Some(reason.clone());
+                self.finish_skill_turn(&reason);
                 if std::mem::take(&mut self.discard_end) {
                     return Some(Outcome::TurnEnd);
                 }
@@ -1704,9 +1768,21 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
         ai_sync_failed(app, error);
         return;
     }
+    // A skill is a host mode of this same turn. An unsupported backend is refused before the
+    // model call; an untested one runs but is labeled, never presented as verified.
+    let skill = app.agent_chat.skill;
+    let support = app.agent_chat.backend.as_ref().map_or(skill::SkillSupport::Unsupported, |backend| backend.skill_support(skill));
+    if skill != skill::Skill::Plain && support == skill::SkillSupport::Unsupported {
+        app.agent_chat.notice(tr("ui.agent_chat_skill_unsupported").to_string(), true);
+        return;
+    }
     let (pictures, documents) = (app.agent_chat.images, app.agent_chat.documents);
     let changed = app.agent_chat.seen.as_deref().and_then(|seen| changed_note(seen, &app.session.doc));
-    let notes: Vec<&str> = note.into_iter().chain(changed.as_deref()).collect();
+    #[cfg(not(target_arch = "wasm32"))]
+    let skill_note = skill.prompt_note().map(|note| task_runtime::prompt_note(skill, note));
+    #[cfg(target_arch = "wasm32")]
+    let skill_note = skill.prompt_note();
+    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(note).chain(changed.as_deref()).collect();
     let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
     // The whole message stays within the cap: the files' text gets what the words leave.
     let budget = MAX_PROMPT.saturating_sub(lead.chars().count() + FILE_NAMES_ROOM);
@@ -1746,6 +1822,49 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     app.agent_chat.steering = false;
     app.agent_chat.ended = None;
     let stamp = app.session.document_stamp();
+    if skill == skill::Skill::Plain {
+        app.agent_chat.skill_binding = None;
+    } else {
+        let selection: Vec<String> = at
+            .and_then(|index| app.agent_chat.items.get(index))
+            .and_then(|item| match item {
+                Item::User { context, .. } => Some(context.items.iter().map(|entry| entry.label.clone()).collect()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let binding = skill::Binding::new(
+            skill,
+            stamp.document_id.clone(),
+            stamp.revision,
+            app.agent_chat.model.clone(),
+            app.agent_chat.running_id.clone(),
+            selection,
+            support,
+        );
+        app.agent_chat.push(Item::Skill {
+            title: skill.title().into(),
+            version: binding.version.clone(),
+            document_id: binding.document_id.clone(),
+            revision: binding.revision,
+            model: binding.model.clone(),
+            selection: binding.selection.len(),
+            support,
+            terminal: None,
+        });
+        app.agent_chat.skill_binding = Some(binding.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        if binding.skill == skill::Skill::TextToCad
+            && let Err(error) = task_runtime::begin(app, &binding)
+        {
+            // An unverified Text-to-CAD turn must not run and look verified: refuse before the
+            // model call, tell the user why, and leave the design untouched.
+            app.agent_chat.notice(trf("ui.agent_chat_task_unavailable", &[("error", &error)]), true);
+            app.agent_chat.finish_skill_turn("error");
+            app.agent_chat.state = Some(State::Ready);
+            end_turn(app);
+            return;
+        }
+    }
     let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
     if let Some(b) = app.agent_chat.backend.as_mut() {
         b.set_document(&stamp.document_id, stamp.revision);
@@ -1859,6 +1978,8 @@ pub fn cancel(app: &mut SolveApp) {
     if let Some(turn) = &app.agent_chat.turn {
         turn.active.store(false, std::sync::atomic::Ordering::Relaxed);
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    task_runtime::cancel(app, "the user stopped the message");
     app.agent_chat.steering = false;
     app.agent_chat.stopped = true;
     crate::edit_in_place::forget_after_turn(app);
@@ -2074,6 +2195,14 @@ fn pump_tools(app: &mut SolveApp) {
         let refuse = |req: ControlRequest, e: String| {
             let _ = req.reply.send(json!({"ok": false, "error": e}));
         };
+        // Anatomy is read-only for the whole turn: a write request never reaches the gate.
+        let skill = app.agent_chat.skill_binding.as_ref().map_or(app.agent_chat.skill, |binding| binding.skill);
+        if skill.read_only() && matches!(gate::request(&req.method, &req.params, 0), gate::Verdict::Run { change: true } | gate::Verdict::Ask(_)) {
+            let reason = tr("ui.agent_chat_skill_read_only").to_string();
+            app.agent_chat.notice(reason.clone(), true);
+            refuse(req, reason);
+            continue;
+        }
         let undo_len = app.session.undo.len();
         let Some(turn) = app.agent_chat.turn.as_mut() else {
             refuse(req, "the agent chat has no message in progress".into());
@@ -2237,7 +2366,10 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         let refused = if matches!(e, Event::ModelRejected(_)) { app.agent_chat.model_revert.as_ref().map(|r| r.saved.clone()) } else { None };
         match app.agent_chat.on_event(e) {
             Some(Outcome::TurnEnd) => {
+                app.agent_chat.attach_anatomy_refs(&mut app.session);
                 end_turn(app);
+                #[cfg(not(target_arch = "wasm32"))]
+                task_runtime::on_turn_end(app);
                 after_turn(app, ctx);
             }
             Some(Outcome::Permission { key, .. }) if app.agent_chat.turn.is_none() => {
@@ -2783,10 +2915,14 @@ pub fn status(app: &SolveApp) -> Value {
         .map(|i| match i {
             Item::User { text, image, pictures, context, files } => json!({"user": text, "image": image, "pictures": pictures.len(), "files": files, "context": context.items.iter().map(|i| json!({"label": i.label, "detail": i.detail})).collect::<Vec<_>>(), "context_omitted": context.omitted}),
             Item::Agent { thought, text } => json!({"agent": text, "thought": thought}),
+            Item::AgentRefs { text, refs } => json!({"agent": text, "objectRefs": refs.iter().map(|r| json!({"label": r.label, "kind": format!("{:?}", r.kind), "revision": r.revision})).collect::<Vec<_>>()}),
             Item::Tool { id, title, kind, status, input, output } => {
                 json!({"tool": id, "title": title, "kind": kind, "status": status.map(|s| format!("{s:?}")), "input": input, "output": output})
             }
             Item::Plan(p) => json!({"plan": p}),
+            Item::Skill { title, version, document_id, revision, model, selection, support, terminal } => {
+                json!({"skill": title, "version": version, "documentId": document_id, "revision": revision, "model": model, "selection": selection, "support": format!("{support:?}"), "terminal": terminal})
+            }
             Item::Permission { title, options, answer, .. } => {
                 json!({"permission": title, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
             }

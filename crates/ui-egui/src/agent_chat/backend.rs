@@ -10,6 +10,7 @@ use serde_json::Value;
 
 pub use super::acp::{AuthMethod, PermissionOption, ToolStatus};
 pub use super::acp::{ConfigChoice, ConfigOption};
+pub use super::skill::SkillSupport;
 
 /// A connection test keeps authentication failures distinct from transport or protocol errors.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +163,11 @@ pub trait ChatBackend {
     /// The trusted cancellation flag of the turn about to start. Backends that bridge tool calls
     /// attach it at the host boundary; model/runtime arguments never supply it.
     fn set_turn_control(&mut self, _active: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
+    /// What this backend can prove for a built-in skill. Unknown backends stay unverified; a
+    /// backend that cannot run the skill refuses before the model call.
+    fn skill_support(&self, _skill: super::skill::Skill) -> SkillSupport {
+        SkillSupport::Unverified
+    }
     /// Answer an [`Event::Permission`] with one of its options (`None`: cancelled).
     fn answer_permission(&mut self, key: u64, option: Option<&str>);
     /// Ask the backend to sign in by itself with one of its methods (it opens the browser).

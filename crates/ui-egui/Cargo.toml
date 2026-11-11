@@ -58,6 +58,9 @@ proc-macro2 = { workspace = true }
 # Pictures pasted into the agent chat; already in the tree, with the same features, through
 # egui-winit's clipboard.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The native AI harness task contract/controller and its real engine ports; both are UI-free.
+solidcraft-agent-task = { workspace = true }
+solidcraft-agent-task-engine = { workspace = true }
 # The existing chat MCP server and its guarded document envelopes; the Mastra runtime's
 # inherited bridge lane is served by this same implementation (no second command catalog).
 solidcraft-mcp = { workspace = true }

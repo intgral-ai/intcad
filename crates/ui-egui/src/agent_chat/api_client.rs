@@ -175,6 +175,11 @@ impl ChatBackend for ApiBackend {
     }
     fn answer_permission(&mut self, _key: u64, _option: Option<&str>) {}
     fn authenticate(&mut self, _method: &str) {}
+    /// Direct/BYOK runs the Beta skill path, but the panel must not claim verification until a
+    /// real credential-backed turn is recorded.
+    fn skill_support(&self, _skill: super::skill::Skill) -> super::backend::SkillSupport {
+        super::backend::SkillSupport::Unverified
+    }
     fn pid(&self) -> Option<u32> {
         self.mcp.as_ref().and_then(ProcessHandle::pid)
     }
@@ -2245,8 +2250,8 @@ mod tests {
         let budget = Arc::new(ModelCallBudget::new(1).unwrap());
         for part in [
             ContentPart::Document {
-                name: "synthetic.pdf".into(),
-                artifact: ArtifactRef { media_type: "application/pdf".into(), ..reference.clone() },
+                name: "synthetic.doc".into(),
+                artifact: ArtifactRef { media_type: "application/msword".into(), ..reference.clone() },
             },
             ContentPart::Image(ArtifactRef { media_type: "image/gif".into(), ..reference.clone() }),
             ContentPart::Image(ArtifactRef { media_type: "image/webp".into(), ..reference.clone() }),

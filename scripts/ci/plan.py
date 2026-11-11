@@ -63,7 +63,7 @@ def contract_path(path):
 def shared_path(path):
     return (path in affected.FULL_FILES or path.startswith("rust-toolchain")
             or path.startswith((".cargo/", ".config/", ".github/workflows/", ".github/actions/"))
-            or (path.startswith("scripts/") and not path.startswith(("scripts/claim/", "scripts/triage/"))))
+            or (path.startswith("scripts/") and not path.startswith(("scripts/claim/", "scripts/triage/", "scripts/ci/"))))
 
 
 def policy_path(path):
@@ -263,6 +263,15 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
            or (inventory["artifactVerifierPresent"] and (selected or policy)), verifier_missing,
            "verifier_not_implemented_host_foundation")
     decide("packages", release_required or packaging, contract_missing + runtime_missing + verifier_missing)
+    # A checkout helper is run by the platform workflow that owns it, not by the
+    # workspace test lane. Only explicitly named tools get here; an unknown tool
+    # still selects the full workspace.
+    windows_paths = sorted(path for path in paths if affected.PLATFORM_TOOLS.get(path) == "windows")
+    platform = {"windows": {
+        "decision": "run" if full or windows_paths else "not_applicable",
+        "reason": "full_validation" if full else "selected_change" if windows_paths else "no_relevant_change",
+        "paths": windows_paths,
+    }}
     return dict(version=1, sourceRevision=source_revision, eventName=event_name,
                 baseRef=base_ref, headRef=head_ref, scope="full" if full else "affected",
                 releaseRequired=release_required, rustFull=rust_full,
@@ -271,7 +280,7 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
                 rustTestShard=PR_TEST_SHARD,
                 rustDeferredPackages=sorted(set(rust_deferred_packages)),
                 rustDeferredTo=NIGHTLY_WORKFLOW if rust_deferred_packages else "",
-                jobs=jobs, openObligations=sorted(obligations))
+                jobs=jobs, platform=platform, openObligations=sorted(obligations))
 
 
 def main():

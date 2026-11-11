@@ -21,6 +21,7 @@ mod keys;
 mod profile;
 mod report;
 mod runner;
+mod skill;
 mod store;
 
 #[cfg(test)]
@@ -38,6 +39,11 @@ pub use report::{
 };
 pub use runner::{
     CheckOutcome, EvidenceBytes, LOCAL_RUNNER_ID, LOCAL_RUNNER_VERSION, LocalRunner, RunControl, RunJob, Runner, RunnerOutcome, local_runner_identity,
+};
+pub use skill::{
+    LiveDocument, SkillCheck, SkillFailure, SkillFailureKind, SkillValidationReport, SkillValidationRequest, TEXT_TO_CAD_PROFILE_ID,
+    TEXT_TO_CAD_PROFILE_VERSION, TEXT_TO_CAD_REQUIRED_CHECKS, request_key, summary_fields, text_to_cad_profile, text_to_cad_profile_ref,
+    validate_beta_profile, validate_skill_snapshot,
 };
 pub use store::MAX_REPORT_BYTES;
 
