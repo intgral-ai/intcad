@@ -118,7 +118,10 @@ def problems(source_revision, descriptors, contents):
             failures.append(identity + ": derived package source is not a verified native package: " + str(source))
             continue
         source_artifacts = _artifacts(descriptors.get(source) or {})
-        if source_artifacts.get(report.get("sourceArtifact")) != report.get("sourceSha256"):
+        source_digest = report.get("sourceSha256")
+        # Arch copies a prerelease tarball under its pkgver name before packaging. The
+        # bytes are the inspected Linux package even when the file name differs.
+        if source_artifacts.get(report.get("sourceArtifact")) != source_digest and source_digest not in source_artifacts.values():
             failures.append(identity + ": derived package source digest does not match the " + str(source)
                             + " package bytes")
     return failures
