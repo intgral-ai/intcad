@@ -1044,20 +1044,43 @@ mod tests {
         const CHILD: &str = "SOLIDCRAFT_AGENT_PATH_TEST";
         if let Some(root) = std::env::var_os(CHILD) {
             let root = PathBuf::from(root);
-            let agent = find_in("solidcraft-test-agent", &search_dirs()).unwrap();
-            // Generous limits: both answer at once, but a whole test run on a loaded machine
-            // can keep `env`, the shell and the script from starting within 3 s.
-            assert_eq!(probe(&agent, Duration::from_secs(20)).version.as_deref(), Some("1.2.3"));
-            let mut p = AgentProcess::spawn(&[agent.to_string_lossy().into_owned()], &root, &[], || {}).unwrap();
-            let message = serde_json::json!({"id": 1, "method": "initialize"});
-            p.send(&message);
-            let reply = p.from_agent.recv_timeout(Duration::from_secs(20)).unwrap();
-            p.shutdown(true);
-            match reply {
-                FromAgent::Line(line) => assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), message),
-                FromAgent::Exited(tail) => panic!("the agent could not start its runtime: {tail:?}"),
+            let start = || -> Result<(), String> {
+                let agent = find_in("solidcraft-test-agent", &search_dirs()).ok_or("the test agent was not found")?;
+                // Generous limits: both answer at once, but a whole test run on a loaded machine
+                // can keep `env`, the shell and the script from starting within 3 s.
+                if probe(&agent, Duration::from_secs(20)).version.as_deref() != Some("1.2.3") {
+                    return Err("the test agent version probe did not answer".into());
+                }
+                let mut p = AgentProcess::spawn(&[agent.to_string_lossy().into_owned()], &root, &[], || {})?;
+                let message = serde_json::json!({"id": 1, "method": "initialize"});
+                p.send(&message);
+                let reply = p.from_agent.recv_timeout(Duration::from_secs(20)).map_err(|error| format!("the agent did not answer: {error}"))?;
+                p.shutdown(true);
+                match reply {
+                    FromAgent::Line(line) => {
+                        let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| format!("invalid agent reply: {error}"))?;
+                        if value != message {
+                            return Err(format!("unexpected agent reply: {value}"));
+                        }
+                        Ok(())
+                    }
+                    FromAgent::Exited(tail) => Err(format!("the agent could not start its runtime: {tail:?}")),
+                }
+            };
+            // A full parallel test run can exhaust the process/pipe pool briefly. Retry only
+            // that resource condition, a bounded number of times, then report the real error.
+            let mut last = String::new();
+            for attempt in 1..=3 {
+                match start() {
+                    Ok(()) => return,
+                    Err(error) if error.contains("process ResourceExhausted") && attempt < 3 => {
+                        last = error;
+                        std::thread::sleep(Duration::from_millis(250 * attempt));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
             }
-            return;
+            panic!("the agent could not start its runtime after 3 attempts: {last}");
         }
 
         let root = std::env::temp_dir().join(format!("sc-agent-desktop-path-{}", std::process::id()));
