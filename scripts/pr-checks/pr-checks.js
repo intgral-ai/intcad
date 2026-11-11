@@ -200,11 +200,11 @@ function branchPolicy({ baseRef, headRef, headRepo, baseRepo, eventName }) {
     return result(false, 'task', 'PR base, source and repository identities must be present.');
   }
   const sameRepo = headRepo.toLowerCase() === baseRepo.toLowerCase();
-  const release = /^release\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(headRef);
+  const release = /^release\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.(?:0|[1-9]\d*))?$/.test(headRef);
   if (headRef.startsWith('release/')) {
     const kind = baseRef === 'develop' ? 'reconciliation' : 'promotion';
     return result(release && sameRepo && (baseRef === 'main' || baseRef === 'develop'), kind,
-      'Only a same-repository release/vX.Y.Z may promote to main or reconcile into develop.');
+      'Only a same-repository release/vX.Y.Z or release/vX.Y.Z-beta.N may promote to main or reconcile into develop.');
   }
   if (headRef.startsWith('hotfix/')) {
     return result(headRef.length > 'hotfix/'.length && sameRepo && baseRef === 'main', 'hotfix',

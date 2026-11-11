@@ -208,6 +208,9 @@ const admissionCases = [
   ['task cannot target stable', 'main', 'feat/example', FORK_REPO, false, 'task'],
   ['integration cannot directly target stable', 'main', 'develop', FORK_REPO, false, 'task'],
   ['versioned promotion', 'main', 'release/v1.2.3', FORK_REPO, true, 'promotion'],
+  ['beta promotion', 'main', 'release/v0.1.0-beta.2', FORK_REPO, true, 'promotion'],
+  ['beta reconciliation', 'develop', 'release/v0.1.0-beta.2', FORK_REPO, true, 'reconciliation'],
+  ['external beta promotion lookalike', 'main', 'release/v0.1.0-beta.2', 'contributor/fork', false, 'promotion'],
   ['zero version components', 'main', 'release/v0.0.0', FORK_REPO, true, 'promotion'],
   ['case-insensitive repository identity', 'main', 'release/v1.2.3', FORK_REPO.toUpperCase(), true, 'promotion'],
   ['external promotion lookalike', 'main', 'release/v1.2.3', 'contributor/fork', false, 'promotion'],
@@ -237,7 +240,7 @@ for (const [name, baseRef, headRef, headRepo, ok, kind] of admissionCases) {
   });
 }
 
-for (const headRef of ['release/v1.2', 'release/1.2.3', 'release/v01.2.3', 'release/v1.2.3-rc.1', 'release/v1.2.3/extra', 'hotfix/', 'sync/upstream-']) {
+for (const headRef of ['release/v1.2', 'release/1.2.3', 'release/v01.2.3', 'release/v1.2.3-rc.1', 'release/v1.2.3-beta', 'release/v1.2.3-beta.01', 'release/v1.2.3/extra', 'hotfix/', 'sync/upstream-']) {
   test(`branchPolicy: malformed reserved source ${headRef} cannot become a task`, () => {
     assert.equal(typeof pc.branchPolicy, 'function');
     for (const baseRef of ['main', 'develop']) {
