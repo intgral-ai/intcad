@@ -85,6 +85,10 @@ pub(crate) fn place(app: &mut SolveApp, ui: &egui::Ui, rect: egui::Rect) {
 /// while the picture viewer is open.
 pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> {
     let (rect, layer) = app.agent_chat.web_place.take()?;
+    // Where the application bar is the title bar, the window's edges resize it. A native view
+    // takes every press on it, so it stays off them: a panel docked to the window's edge keeps
+    // that edge for resizing.
+    let rect = if app.custom_titlebar { rect.intersect(crate::titlebar::inside_resize_zones(ctx)) } else { rect };
     if rect.width() < 1.0 || rect.height() < 1.0 {
         return None;
     }

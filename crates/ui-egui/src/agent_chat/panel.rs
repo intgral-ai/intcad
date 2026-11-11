@@ -853,6 +853,10 @@ fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
             } else {
                 rect.min.x += web::rail();
             }
+        } else {
+            // Docked, the panel reaches the window's edges and the view may stop short of them
+            // (`web::placement`): what shows there is the page's own surface, not another colour.
+            ui.painter().rect_filled(rect, 0.0, web::backing(app, ui.ctx()));
         }
         web::place(app, ui, rect);
         crate::scenario::publish_rect("agent_chat:web", rect);
