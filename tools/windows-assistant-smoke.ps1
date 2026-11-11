@@ -39,6 +39,8 @@ public static class AssistantWin {
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
+    [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
@@ -82,6 +84,14 @@ public static class AssistantWin {
     public static IntPtr At(int x, int y) { POINT p; p.X = x; p.Y = y; return WindowFromPoint(p); }
 }
 '@
+
+# pwsh is not DPI-aware. At a display scale other than 100 % Windows would give this script a
+# smaller, scaled picture of the screen than the one the app's window lives on: its points
+# would miss and its screenshots would hold a corner of the window (found on a person's machine
+# at 125 %, 2026-11-11). Per-monitor awareness (context -4) for this thread, on which every
+# call below is made.
+$dpiBefore = [AssistantWin]::SetThreadDpiAwarenessContext([IntPtr](-4))
+Write-Host ("DPI awareness: per monitor" + $(if ($dpiBefore -eq [IntPtr]::Zero) { ' was NOT taken (an older Windows): positions are right at 100 % only' } else { '' }))
 
 $drawing = $true
 try { Add-Type -AssemblyName System.Drawing } catch { $drawing = $false; Write-Host "no System.Drawing here: $($_.Exception.Message)" }
@@ -130,17 +140,26 @@ function Shot($h, [string]$name) {
     }
 }
 
-# The visible windows inside the app's window, and the largest of them: the web view's.
-function Views($h, [string]$when) {
+# The visible windows inside the app's window, and the web view's among them: the one wry makes
+# for it, of class WRY_WEBVIEW. (Not the largest: with a real graphics card the largest is
+# Chromium's "Intermediate D3D Window", which runs from the panel's corner to the monitor's size
+# and is clipped by its parent; a check of a person's machine found that, 2026-11-11.) With -Any,
+# the largest visible one whatever its class, for the run in which none may be there.
+function Views($h, [string]$when, [switch]$Any) {
     $largest = $null
+    $view = $null
     foreach ($child in [AssistantWin]::Descendants($h)) {
         $r = Rect $child
         $visible = [AssistantWin]::IsWindowVisible($child)
         Write-Host ("$when : child 0x{0:x} class '{1}' at {2},{3} - {4},{5} visible {6} process {7}" -f $child.ToInt64(), [AssistantWin]::Class($child), $r.Left, $r.Top, $r.Right, $r.Bottom, $visible, [AssistantWin]::Owner($child))
         $area = ($r.Right - $r.Left) * ($r.Bottom - $r.Top)
-        if ($visible -and $area -gt 0 -and (-not $largest -or $area -gt $largest.Area)) { $largest = @{ Window = $child; Rect = $r; Area = $area } }
+        if ($visible -and $area -gt 0) {
+            $found = @{ Window = $child; Rect = $r; Area = $area }
+            if (-not $largest -or $area -gt $largest.Area) { $largest = $found }
+            if ([AssistantWin]::Class($child) -eq 'WRY_WEBVIEW' -and (-not $view -or $area -gt $view.Area)) { $view = $found }
+        }
     }
-    $largest
+    if ($Any) { $largest } else { $view }
 }
 
 # A real press and release of the left button at a point of the screen.
@@ -289,7 +308,11 @@ try {
             # The keyboard: to the page on a click in it, back to the window on a click elsewhere.
             # The message box: the text is above the row of buttons at the foot of the page (a
             # click lower down, at 85 px from the foot, opened the menu of one of those buttons).
-            $x = $v.Left + 90; $y = $v.Bottom - 150
+            # (Measured at 100 %; the page is drawn larger at a larger display scale.)
+            $scale = [AssistantWin]::GetDpiForWindow($h) / 96.0
+            if ($scale -le 0) { $scale = 1.0 }
+            Write-Host "display scale of the app's window: $([int]($scale * 100)) %"
+            $x = $v.Left + [int](90 * $scale); $y = $v.Bottom - [int](150 * $scale)
             [void][AssistantWin]::SetCursorPos($x, $y)
             $pt = New-Object AssistantWin+POINT; [void][AssistantWin]::GetCursorPos([ref]$pt)
             if ($pt.X -ne $x -or $pt.Y -ne $y) {
@@ -375,7 +398,7 @@ if ($made) {
         $state = OpenAssistant 60
         Shot $h '05-runtime-hidden'
         [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '05-app-frame-runtime-hidden.png') })
-        $left = Views $h 'runtime hidden'
+        $left = Views $h 'runtime hidden' -Any
         if ($state.webView -and -not $state.webView.host) {
             $fellBack = $true
             Check $true 'with the runtime hidden, the app gives the view up and draws the built-in conversation'
