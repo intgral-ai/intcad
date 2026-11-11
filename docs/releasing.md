@@ -130,7 +130,11 @@ and with its update check off as well (`SOLIDCRAFT_UPDATE_CHECK=0`):
   built, the firewall blocks it and the WebView2 runtime's processes from reaching
   out (a copy of `curl.exe` under the same kind of rule shows the block holds),
   `tools/windows-assistant-smoke.ps1` runs against the installed app, and the MSI
-  is removed again. The arm64 MSI is built but cannot run on the x64 runner.
+  is removed again. The arm64 MSI is built but cannot run on the x64 runner. The
+  32-bit MSI is installed, compared and removed, and its app is **not started**: on
+  a runner the installed 32-bit app showed no window within three minutes, before
+  the Assistant was opened (run 43112420636). No 32-bit build had been started in
+  CI before, and the cause is not known; the step writes this into the job summary.
 
 The page those apps show is itself a build output that is checked in
 (`packages/assistant-web/dist`, so that the app builds without Node). The job

@@ -521,7 +521,8 @@ jobs:
         run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }}
       # The MSI installed for the machine, the Assistant opened in the installed app, the MSI
       # removed again (packaging/windows/installed-check.ps1). An arm64 build does not run on
-      # this x64 runner, so its MSI is built and not installed.
+      # this x64 runner, so its MSI is built and not installed. The 32-bit MSI is installed and
+      # removed, but its app is not started (the script and docs/releasing.md say why).
       - name: Install the MSI and open the Assistant in the installed app
         if: matrix.arch != 'arm64'
         shell: pwsh
