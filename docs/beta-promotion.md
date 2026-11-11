@@ -18,6 +18,12 @@ evaluation from the promotion branch:
 The direct `ci` check on the same pull request still runs the affected lane. A
 Beta pull request is never a stable release candidate.
 
+The historical baseline was recorded on the C++ SMLib backend at
+`ea772a043`; it was never re-blessed after the Rust `solidcore` switch. It is
+therefore **not comparable** with the current pin. The 213 entries are a ratchet
+mismatch first, not proof of a fork-only kernel regression. The attribution and
+the representative upstream comparisons are in `docs/kernel-attribution.md`.
+
 ## Beta exception rules
 
 `tests/action_matrix/beta-exceptions.json` binds each accepted failure to:
