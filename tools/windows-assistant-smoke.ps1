@@ -7,7 +7,10 @@
 # app's error output.
 #
 # On a machine without the WebView2 runtime the view cannot be made. The check then only makes sure
-# that the panel went back to the built-in conversation and that the app still quits cleanly.
+# that the panel went back to the built-in conversation and that the app still quits cleanly. Where
+# the runtime is there, the app is started a second time with the runtime hidden from it (the
+# loader looks where WEBVIEW2_BROWSER_EXECUTABLE_FOLDER says, and an empty folder holds none), to
+# see the same going back.
 #
 # What this can't check on a CI runner (one monitor at 100 %, no GPU): input methods, a scale other
 # than 100 %, files dropped on the panel, and the view over a real graphics card.
@@ -49,13 +52,15 @@ public static class AssistantWin {
     public static string Text(IntPtr h) { var s = new System.Text.StringBuilder(256); GetWindowTextW(h, s, 256); return s.ToString(); }
     public static string Class(IntPtr h) { var s = new System.Text.StringBuilder(256); GetClassNameW(h, s, 256); return s.ToString(); }
     public static uint Process(IntPtr h) { uint p; GetWindowThreadProcessId(h, out p); return p; }
-    // The process's visible top-level window titled SolidCraft, as tools/windows-resize-smoke.ps1
-    // finds it.
+    // The process's visible top-level window with the app's title, as
+    // tools/windows-resize-smoke.ps1 finds it (the process has other top-level windows, such as
+    // the IME's).
     public static IntPtr MainWindow(uint pid) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, l) => {
             uint p; GetWindowThreadProcessId(h, out p);
-            if (p == pid && IsWindowVisible(h) && Text(h).StartsWith("SolidCraft")) { found = h; return false; }
+            var title = Text(h);
+            if (p == pid && IsWindowVisible(h) && (title.StartsWith("open-skyfall") || title.StartsWith("SolidCraft"))) { found = h; return false; }
             return true;
         }, IntPtr.Zero);
         return found;
@@ -159,15 +164,10 @@ function Keys([string]$text) {
 }
 
 $Evidence = (New-Item -ItemType Directory -Force $Evidence).FullName
-$port = 47951
 $root = Join-Path $env:RUNNER_TEMP 'assistant-smoke'
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-$settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'SolidCraft\data'
-Remove-Item -Recurse -Force $settings -ErrorAction SilentlyContinue
 $local = Join-Path $root 'local'
 $crashes = Join-Path $root 'crashes'
-New-Item -ItemType Directory -Force $settings, $local, $crashes | Out-Null
-$token = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
 $exePath = (Resolve-Path $Exe).Path
 # Where WebView2 puts its files when the app does not say where: beside the exe.
 $beside = "$exePath.WebView2"
@@ -176,74 +176,107 @@ $besideBefore = Test-Path $beside
 $runtime = WebView2Runtime
 if ($runtime) { Write-Host "WebView2 runtime: $runtime" } else { Write-Host 'WebView2 runtime: none found in the registry' }
 
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = $exePath
-foreach ($a in @('--sample', '--control', "$port")) { [void]$psi.ArgumentList.Add($a) }
-$psi.UseShellExecute = $false
-$psi.RedirectStandardError = $true
-$psi.RedirectStandardOutput = $true
-$psi.Environment['LOCALAPPDATA'] = $local
-$psi.Environment['SOLIDCRAFT_CRASH_DIR'] = $crashes
-$psi.Environment['SOLIDCRAFT_CONTROL_TOKEN'] = $token
-$p = [System.Diagnostics.Process]::Start($psi)
-$stderr = $p.StandardError.ReadToEndAsync()
-$stdout = $p.StandardOutput.ReadToEndAsync()
+# Start the app with settings of its own and wait for its window and its control channel. The
+# window is put at a known place and size that fits the runner's screen (physical px; the minimum
+# is 960 x 600) and brought to the front.
+function Launch([int]$port, [hashtable]$extra) {
+    $settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'SolidCraft\data'
+    Remove-Item -Recurse -Force $settings -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $settings, $local, $crashes | Out-Null
+    $script:token = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exePath
+    foreach ($a in @('--sample', '--control', "$port")) { [void]$psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.Environment['LOCALAPPDATA'] = $local
+    $psi.Environment['SOLIDCRAFT_CRASH_DIR'] = $crashes
+    $psi.Environment['SOLIDCRAFT_CONTROL_TOKEN'] = $script:token
+    foreach ($k in $extra.Keys) { $psi.Environment[$k] = $extra[$k] }
+    $script:calls = 0
+    $script:p = [System.Diagnostics.Process]::Start($psi)
+    $script:stderr = $script:p.StandardError.ReadToEndAsync()
+    $script:stdout = $script:p.StandardOutput.ReadToEndAsync()
+    $script:h = [IntPtr]::Zero
+    $deadline = (Get-Date).AddSeconds(180)
+    while ($script:h -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline -and -not $script:p.HasExited) {
+        $script:h = [AssistantWin]::MainWindow([uint32]$script:p.Id)
+        if ($script:h -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100 }
+    }
+    if ($script:h -eq [IntPtr]::Zero) { throw "no window (exited: $($script:p.HasExited))" }
+    Write-Host "window: '$([AssistantWin]::Text($script:h))' class '$([AssistantWin]::Class($script:h))'"
+    $script:client = $null
+    while (-not $script:client -and (Get-Date) -lt $deadline -and -not $script:p.HasExited) {
+        try { $script:client = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $port) } catch { Start-Sleep -Milliseconds 500 }
+    }
+    if (-not $script:client) { throw "no control channel (exited: $($script:p.HasExited))" }
+    $script:client.ReceiveTimeout = 120000
+    $stream = $script:client.GetStream()
+    $script:writer = New-Object System.IO.StreamWriter($stream)
+    $script:writer.AutoFlush = $true
+    $script:reader = New-Object System.IO.StreamReader($stream)
+    $sw = [AssistantWin]::GetSystemMetrics(0); $sh = [AssistantWin]::GetSystemMetrics(1)
+    Write-Host "screen: $sw x $sh"
+    [void][AssistantWin]::SetWindowPos($script:h, [IntPtr]::Zero, 20, 20, [Math]::Min(1000, $sw - 40), [Math]::Min(620, $sh - 140), 0x0014) # NOZORDER | NOACTIVATE
+    [void][AssistantWin]::SetForegroundWindow($script:h)
+    Start-Sleep -Milliseconds 500
+}
 
-$calls = 0
 function Call([string]$method, $params = @{}) {
     $script:calls += 1
     $request = @{ id = $script:calls; method = $method; params = $params }
-    if ($script:calls -eq 1) { $request.token = $token }
-    $writer.WriteLine(($request | ConvertTo-Json -Compress -Depth 6))
-    $line = $reader.ReadLine()
+    if ($script:calls -eq 1) { $request.token = $script:token }
+    $script:writer.WriteLine(($request | ConvertTo-Json -Compress -Depth 6))
+    $line = $script:reader.ReadLine()
     if (-not $line) { throw "the control channel closed during $method" }
     $reply = $line | ConvertFrom-Json -AsHashtable
     if (-not $reply.ok) { throw "$method was refused: $line" }
     $reply.result
 }
 
-try {
-    $h = [IntPtr]::Zero
-    $deadline = (Get-Date).AddSeconds(180)
-    while ($h -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline -and -not $p.HasExited) {
-        $h = [AssistantWin]::MainWindow([uint32]$p.Id)
-        if ($h -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100 }
-    }
-    if ($h -eq [IntPtr]::Zero) { throw "no window (exited: $($p.HasExited))" }
-
-    $client = $null
-    while (-not $client -and (Get-Date) -lt $deadline -and -not $p.HasExited) {
-        try { $client = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $port) } catch { Start-Sleep -Milliseconds 500 }
-    }
-    if (-not $client) { throw "no control channel (exited: $($p.HasExited))" }
-    $client.ReceiveTimeout = 120000
-    $stream = $client.GetStream()
-    $writer = New-Object System.IO.StreamWriter($stream)
-    $writer.AutoFlush = $true
-    $reader = New-Object System.IO.StreamReader($stream)
-    [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '00-app-frame-before.png') })
-
-    # A known place and size that fits the runner's screen (physical px; the minimum is 960 x 600).
-    $sw = [AssistantWin]::GetSystemMetrics(0); $sh = [AssistantWin]::GetSystemMetrics(1)
-    Write-Host "screen: $sw x $sh"
-    [void][AssistantWin]::SetWindowPos($h, [IntPtr]::Zero, 20, 20, [Math]::Min(1000, $sw - 40), [Math]::Min(620, $sh - 140), 0x0014) # NOZORDER | NOACTIVATE
-    [void][AssistantWin]::SetForegroundWindow($h)
-    Start-Sleep -Milliseconds 500
-
-    # Open the Assistant, and wait for the page to report or for the host to give the view up.
+# Open the Assistant, and wait for the page to report or for the host to give the view up.
+function OpenAssistant([int]$seconds) {
     $state = Call 'ui.agent_chat' @{ features = $true; open = $true }
-    Check ($null -ne $state.webView) "the Assistant's status says how the conversation is shown (webView: $($state.webView | ConvertTo-Json -Compress))"
-    $until = (Get-Date).AddSeconds(90)
+    $until = (Get-Date).AddSeconds($seconds)
     while ($state.webView -and $state.webView.host -and -not $state.webView.page -and (Get-Date) -lt $until) {
         Start-Sleep -Milliseconds 500
         $state = Call 'ui.agent_chat'
     }
     Start-Sleep -Milliseconds 1500
+    $state
+}
+
+function Quit {
+    $script:writer.WriteLine((@{ id = 9999; method = 'app.quit'; params = @{ force = $true } } | ConvertTo-Json -Compress))
+    Write-Host "quit: $($script:reader.ReadLine())"
+    $script:client.Close()
+    if (-not $script:p.WaitForExit(60000)) { throw 'did not exit after app.quit' }
+    if ($script:p.ExitCode -ne 0) { throw ('exit code 0x{0:x}' -f $script:p.ExitCode) }
+}
+
+# The app's error output of a run, printed and kept; the run is ended if it has not ended.
+function Finish([string]$name) {
+    if ($script:p -and -not $script:p.HasExited) { $script:p.Kill(); $script:p.WaitForExit() }
+    $err = if ($script:stderr) { $script:stderr.Result } else { '' }
+    Set-Content -Path (Join-Path $Evidence "$name-app-error-output.txt") -Value $err
+    Write-Host $err
+    $err
+}
+
+Write-Host '=== the Assistant with the runtime this machine has'
+$made = $false
+try {
+    Launch 47951 @{}
+    [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '00-app-frame-before.png') })
+    $state = OpenAssistant 90
+    Check ($null -ne $state.webView) "the Assistant's status says how the conversation is shown (webView: $($state.webView | ConvertTo-Json -Compress))"
     Shot $h '01-assistant-open'
     [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '01-app-frame-assistant-open.png') })
     $view = Views $h 'assistant open'
 
     if ($state.webView -and $state.webView.host -and $state.webView.page) {
+        $made = $true
         Check $true 'the page in the web view reported to the app'
         Check ($null -ne $view) 'the web view is a visible window inside the app window'
         $w = Rect $h
@@ -320,20 +353,42 @@ try {
     } else {
         Check $false 'the page in the web view reported to the app within 90 s'
     }
-
-    $writer.WriteLine((@{ id = 9999; method = 'app.quit'; params = @{ force = $true } } | ConvertTo-Json -Compress))
-    Write-Host "quit: $($reader.ReadLine())"
-    $client.Close()
-    if (-not $p.WaitForExit(60000)) { throw 'did not exit after app.quit' }
-    if ($p.ExitCode -ne 0) { throw ('exit code 0x{0:x}' -f $p.ExitCode) }
+    Quit
 } catch {
     $failures.Add($_.Exception.Message)
 } finally {
-    if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
+    [void](Finish 'first-run')
 }
-$err = $stderr.Result
-Set-Content -Path (Join-Path $Evidence 'app-error-output.txt') -Value $err
-Write-Host $err
+
+# The same app with no runtime to be found: the panel goes back to the built-in conversation, the
+# app says why on its error output, and it still quits cleanly.
+if ($made) {
+    Write-Host '=== the Assistant with the runtime hidden'
+    $none = Join-Path $root 'no-runtime'
+    New-Item -ItemType Directory -Force $none | Out-Null
+    $fellBack = $false
+    try {
+        Launch 47952 @{ WEBVIEW2_BROWSER_EXECUTABLE_FOLDER = $none }
+        $state = OpenAssistant 60
+        Shot $h '05-runtime-hidden'
+        [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '05-app-frame-runtime-hidden.png') })
+        if ($state.webView -and -not $state.webView.host) {
+            $fellBack = $true
+            Check $true 'with the runtime hidden, the panel draws the built-in conversation'
+        } elseif ($state.webView -and $state.webView.page) {
+            Write-Host 'unknown: the app without a runtime (an empty WEBVIEW2_BROWSER_EXECUTABLE_FOLDER did not keep the view from being made)'
+        } else {
+            Check $false 'with the runtime hidden, the app gives the view up within 60 s'
+        }
+        Quit
+    } catch {
+        $failures.Add("with the runtime hidden: " + $_.Exception.Message)
+    } finally {
+        $said = Finish 'runtime-hidden'
+    }
+    if ($fellBack) { Check ($said -match 'assistant web view: could not be created') "with the runtime hidden, the app's error output says the view could not be created" }
+}
+
 $reports = @(Get-ChildItem -Recurse -Filter report.json $crashes -ErrorAction SilentlyContinue)
 foreach ($r in $reports) { Get-Content $r.FullName | Write-Host }
 if ($reports.Count -gt 0) { $failures.Add('a crash report was written') }
