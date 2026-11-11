@@ -95,9 +95,12 @@ class Properties(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / "target/nextest/ci").mkdir(parents=True)
 
-    def write(self, raw, report):
+    def write(self, raw, report, junit=None):
         (self.root / "target/nextest/ci/raw-exit.txt").write_text(raw)
-        (self.root / "target/nextest/ci/known-failure-exception.txt").write_text(report)
+        if report is not None:
+            (self.root / "target/nextest/ci/known-failure-exception.txt").write_text(report)
+        if junit is not None:
+            (self.root / "target/nextest/ci/junit.xml").write_text(junit)
 
     def test_raw_failure_is_excused_only_by_the_grader(self):
         self.write("100", "KNOWN FAILURE: #56 solidcraft-kernel::boolean_props::translation_invariant\n"
@@ -111,6 +114,26 @@ class Properties(unittest.TestCase):
                 self.write(raw, report)
                 with self.assertRaises(beta_gate.BetaGateError):
                     beta_gate.evaluate_properties(self.root)
+
+    def test_raw_junit_is_accepted_only_for_the_exact_issue_56_failure(self):
+        junit = ("<testsuites><testsuite name='solidcraft-kernel::boolean_props'>"
+                 "<testcase name='translation_invariant'><failure>"
+                 "SmBSplineSurface::Test #5 Bad NonMonotonic CPts [owner SmSphere] "
+                 "a = Sph { r: 2.5 } off = 100000.0</failure></testcase>"
+                 "<testcase name='box_box_exact'/></testsuite></testsuites>")
+        self.write("100", None, junit)
+        self.assertEqual(beta_gate.evaluate_properties(self.root)["source"], "exact-issue-56")
+        changed = junit.replace("NonMonotonic", "Monotonic")
+        self.write("100", None, changed)
+        with self.assertRaisesRegex(beta_gate.BetaGateError, "failure text changed"):
+            beta_gate.evaluate_properties(self.root)
+        extra = junit.replace("</testsuite>", "<testcase name='other'><failure>x</failure></testcase></testsuite>")
+        self.write("100", None, extra)
+        with self.assertRaisesRegex(beta_gate.BetaGateError, "unexpected failures"):
+            beta_gate.evaluate_properties(self.root)
+        self.write("2", None, junit)
+        with self.assertRaisesRegex(beta_gate.BetaGateError, "not a test result"):
+            beta_gate.evaluate_properties(self.root)
 
 
 class Jobs(unittest.TestCase):

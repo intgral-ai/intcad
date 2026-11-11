@@ -45,8 +45,12 @@ The Beta gate fails when any of these changes:
 - any required build, test, packaging or platform job is missing or unsuccessful.
 
 Build failures, timeouts, cancellations, result-parse failures and unknown
-platform jobs are never excused. The raw 16-shard results, the property grader
-report, the job conclusions and the package descriptors are kept with the run.
+platform jobs are never excused. The raw 16-shard results, the property JUnit
+and raw exit (or the later grader report), the job conclusions and the package
+descriptors are kept with the run. Before the reviewed property grader lands,
+the Beta gate reads the raw JUnit itself and accepts only the exact #56 test
+identity and signature; an extra failure, a changed signature or a skipped test
+fails.
 
 The historical `tests/action_matrix/baseline.json` remains report-only. The Beta
 list is not a baseline refresh and never replaces the full matrix result; the

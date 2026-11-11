@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 SHARDS = 16
 EXCEPTIONS = Path("tests/action_matrix/beta-exceptions.json")
@@ -206,18 +207,63 @@ def evaluate_matrix(directory, exceptions):
                 source=dict(data["source"]), problems=problems)
 
 
+PROPERTY_FAILURE = "solidcraft-kernel::boolean_props::translation_invariant"
+PROPERTY_SIGNATURE = ("SmBSplineSurface::Test #5 Bad NonMonotonic CPts", "[owner SmSphere]",
+                      "a = Sph", "r: 2.5", "off = 100000.0")
+
+
+def property_junit(directory):
+    path = Path(directory) / "target/nextest/ci/junit.xml"
+    require(path.is_file(), "properties: missing junit.xml")
+    try:
+        root = ET.fromstring(path.read_bytes())
+    except (OSError, ET.ParseError) as error:
+        raise BetaGateError(f"properties: not a JUnit report: {error}") from error
+    outcomes = {}
+
+    def visit(element, suite=None):
+        if element.tag == "testsuite":
+            suite = element.get("name")
+        if element.tag == "testcase":
+            require(suite is not None and element.get("name"), "properties: testcase without suite/name")
+            identity = f"{suite}::{element.get('name')}"
+            require(identity not in outcomes, f"properties: duplicate test {identity}")
+            tags = {child.tag for child in element}
+            text = " ".join((child.text or "") for child in element)
+            require("skipped" not in tags, f"properties: skipped test is not evidence: {identity}")
+            outcomes[identity] = ("failed" if tags & {"failure", "error"} else "passed", text)
+            return
+        for child in element:
+            visit(child, suite)
+
+    visit(root)
+    require(outcomes, "properties: JUnit has no outcomes")
+    return outcomes
+
+
 def evaluate_properties(directory):
     directory = Path(directory)
     raw = directory / "target/nextest/ci/raw-exit.txt"
-    report = directory / "target/nextest/ci/known-failure-exception.txt"
     require(raw.is_file(), "properties: missing raw-exit.txt")
-    require(report.is_file(), "properties: missing known-failure-exception.txt")
     raw_exit = raw.read_text(encoding="utf-8").strip()
-    text = report.read_text(encoding="utf-8")
     require(raw_exit in ("0", "100"), f"properties: raw nextest exit {raw_exit!r} is not a test result")
-    require("known-failure-exception: FAILED" not in text, "properties: grader reported a failure")
-    require("0 unexcused" in text, "properties: report does not prove zero unexcused failures")
-    return dict(rawExit=int(raw_exit), unexcused=0)
+    report = directory / "target/nextest/ci/known-failure-exception.txt"
+    if report.is_file():
+        text = report.read_text(encoding="utf-8")
+        require("known-failure-exception: FAILED" not in text, "properties: grader reported a failure")
+        require("0 unexcused" in text, "properties: report does not prove zero unexcused failures")
+        return dict(rawExit=int(raw_exit), unexcused=0, source="grader")
+    # Before the grader lands, the Beta gate reads the same raw run directly and
+    # accepts only the exact documented #56 failure. It never accepts a count.
+    outcomes = property_junit(directory)
+    failed = {name: text for name, (outcome, text) in outcomes.items() if outcome == "failed"}
+    require(set(failed) == {PROPERTY_FAILURE},
+            "properties: unexpected failures: " + ", ".join(sorted(set(failed) - {PROPERTY_FAILURE}) or "none"))
+    require(raw_exit == "100", "properties: raw exit does not match the known failure")
+    text = failed[PROPERTY_FAILURE]
+    missing = [marker for marker in PROPERTY_SIGNATURE if marker not in text]
+    require(not missing, "properties: #56 failure text changed; missing " + ", ".join(missing))
+    return dict(rawExit=int(raw_exit), unexcused=0, source="exact-issue-56")
 
 
 REQUIRED_JOBS = (
