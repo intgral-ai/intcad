@@ -304,7 +304,7 @@ dependencies = [
  "futures-lite",
  "parking",
  "polling",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "slab",
  "windows-sys 0.61.2",
 ]
@@ -335,7 +335,7 @@ dependencies = [
  "cfg-if",
  "event-listener",
  "futures-lite",
- "rustix 1.1.5",
+ "rustix 1.1.6",
 ]
 
 [[package]]
@@ -361,7 +361,7 @@ dependencies = [
  "cfg-if",
  "futures-core",
  "futures-io",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "signal-hook-registry",
  "slab",
  "windows-sys 0.61.2",
@@ -731,7 +731,7 @@ checksum = "43b32313e937c8721c9d17ee9bf60699a6402b4b7c2cb6ac1bee0ffcaa4b4e5e"
 dependencies = [
  "bitflags 2.13.2",
  "polling",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "tracing",
 ]
 
@@ -754,7 +754,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "138efcf0940a02ebf0cc8d1eff41a1682a46b431630f4c52450d6265876021fa"
 dependencies = [
  "calloop 0.14.5",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "wayland-backend",
  "wayland-client",
 ]
@@ -1424,7 +1424,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1670,7 +1670,7 @@ version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
 dependencies = [
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "windows-link",
 ]
 
@@ -2545,7 +2545,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "png",
  "thiserror 2.0.21",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3284,7 +3284,7 @@ dependencies = [
  "concurrent-queue",
  "hermit-abi",
  "pin-project-lite",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "windows-sys 0.61.2",
 ]
 
@@ -3745,15 +3745,15 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.2",
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3810,7 +3810,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4239,7 +4239,7 @@ dependencies = [
  "libc",
  "log",
  "memmap2",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "thiserror 2.0.21",
  "wayland-backend",
  "wayland-client",
@@ -4293,7 +4293,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "block2 0.6.2",
  "eframe",
@@ -4331,11 +4331,11 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-3dx-client"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 
 [[package]]
 name = "solidcraft-agent-task"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4343,7 +4343,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-agent-task-engine"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde_json",
  "solidcraft-agent-task",
@@ -4352,7 +4352,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-cli"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "image",
  "log",
@@ -4366,7 +4366,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-derive"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4375,7 +4375,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-doc"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "log",
  "serde",
@@ -4394,7 +4394,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-dynamics"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4405,7 +4405,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-engine"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "image",
  "log",
@@ -4428,7 +4428,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-geom"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4438,7 +4438,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-gpu"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "image",
  "log",
@@ -4459,7 +4459,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-io"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "cadmpeg-core",
  "cadmpeg-ir",
@@ -4470,7 +4470,7 @@ dependencies = [
  "gltf",
  "log",
  "quick-xml",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4486,7 +4486,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-kernel"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "log",
  "proptest",
@@ -4505,7 +4505,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-mcp"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "image",
  "serde_json",
@@ -4515,7 +4515,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-profile"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde_json",
  "web-time",
@@ -4523,7 +4523,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-render"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "image",
  "moxcms",
@@ -4539,7 +4539,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-sketch"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "harfrust",
  "serde",
@@ -4553,7 +4553,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-smlib"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "flate2",
  "log",
@@ -4566,14 +4566,14 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-space-mouse"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "solidcraft-step"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "solidcore-record",
  "solidcraft-geom",
@@ -4582,11 +4582,11 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-testkit"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 
 [[package]]
 name = "solidcraft-ui-egui"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "arboard",
  "egui",
@@ -4625,7 +4625,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-web"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "eframe",
  "egui",
@@ -4761,8 +4761,8 @@ dependencies = [
  "fastrand",
  "getrandom 0.4.3",
  "once_cell",
- "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "rustix 1.1.6",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5003,7 +5003,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5269,7 +5269,7 @@ checksum = "38a91b4eaddff87b1cd1074985e3713da4af2c49742d1b356b2c01670a67a078"
 dependencies = [
  "cc",
  "downcast-rs",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "scoped-tls",
  "smallvec",
  "wayland-sys",
@@ -5282,7 +5282,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3c36a0f861ad76d0901f2800b46321410d9f73f2ea88aac0650d86c32688073"
 dependencies = [
  "bitflags 2.13.2",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "wayland-backend",
  "wayland-scanner",
 ]
@@ -5304,7 +5304,7 @@ version = "0.31.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a52d18780be9b1314328a3de5f930b73d2200112e3849ca6cb11822793fb34d"
 dependencies = [
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "wayland-client",
  "xcursor",
 ]
@@ -5636,7 +5636,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5979,7 +5979,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6016,7 +6016,7 @@ dependencies = [
  "libc",
  "libloading",
  "once_cell",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "x11rb-protocol",
 ]
 
@@ -6069,7 +6069,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "flate2",
  "proc-macro2",
@@ -6165,7 +6165,7 @@ dependencies = [
  "hex",
  "libc",
  "ordered-stream",
- "rustix 1.1.5",
+ "rustix 1.1.6",
  "serde",
  "serde_repr",
  "tracing",
