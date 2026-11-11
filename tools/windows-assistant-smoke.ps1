@@ -287,7 +287,9 @@ try {
             Check ($v.Left -ge $w.Left -and $v.Top -ge $w.Top -and $v.Right -le $w.Right -and $v.Bottom -le $w.Bottom) 'the view lies inside the app window'
 
             # The keyboard: to the page on a click in it, back to the window on a click elsewhere.
-            $x = [int](($v.Left + $v.Right) / 2); $y = $v.Bottom - 85
+            # The message box: the text is above the row of buttons at the foot of the page (a
+            # click lower down, at 85 px from the foot, opened the menu of one of those buttons).
+            $x = $v.Left + 90; $y = $v.Bottom - 150
             [void][AssistantWin]::SetCursorPos($x, $y)
             $pt = New-Object AssistantWin+POINT; [void][AssistantWin]::GetCursorPos([ref]$pt)
             if ($pt.X -ne $x -or $pt.Y -ne $y) {
@@ -373,9 +375,14 @@ if ($made) {
         $state = OpenAssistant 60
         Shot $h '05-runtime-hidden'
         [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '05-app-frame-runtime-hidden.png') })
+        $left = Views $h 'runtime hidden'
         if ($state.webView -and -not $state.webView.host) {
             $fellBack = $true
-            Check $true 'with the runtime hidden, the panel draws the built-in conversation'
+            Check $true 'with the runtime hidden, the app gives the view up and draws the built-in conversation'
+            # The view's toolkit begins with a window of its own in the app's; one left shown
+            # there lies over the built-in conversation as a blank box.
+            $what = if ($left) { Name $left.Window } else { 'none' }
+            Check ($null -eq $left) "with the runtime hidden, no window is left shown over the panel ($what)"
         } elseif ($state.webView -and $state.webView.page) {
             Write-Host 'unknown: the app without a runtime (an empty WEBVIEW2_BROWSER_EXECUTABLE_FOLDER did not keep the view from being made)'
         } else {
