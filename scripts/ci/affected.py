@@ -34,7 +34,7 @@ FULL_FILES = ("Cargo.toml", "Cargo.lock", ".github/workflows/ci.yml")
 # Changes here affect no code: documentation, packaging, the other workflows and GitHub settings,
 # and the GitHub bots' scripts (tested in the repository checks). Root *.md files too, unless
 # embedded (below).
-IGNORED_PREFIXES = ("docs/", "packaging/", "attribution/", "assets/locales/pending/", "assets/platforms/", ".github/", "scripts/claim/", "scripts/triage/")
+IGNORED_PREFIXES = ("docs/", "packaging/", "attribution/", "assets/locales/pending/", "assets/platforms/", ".github/", "scripts/claim/", "scripts/triage/", "scripts/ci/")
 IGNORED_FILES = ("vendor/README.md", ".gitignore", ".npmrc")
 # Root files that a crate embeds (include_str!), so they are not ignorable documentation.
 EMBEDDED = {
@@ -55,6 +55,14 @@ TEST_DATA = {
     "tests/taper/": ("crates/engine/",),
     "tests/oracle/": ("apps/solidcraft-cli/", "xtask/"),
     "tests/action_matrix/": ("apps/solidcraft-cli/", "crates/engine/", "xtask/"),
+    "tests/kernel-cases/": ("xtask/",),
+}
+# Checkout helpers that a workflow (not a workspace package) consumes. They are
+# selected as the named platform job instead of the full workspace; a new tool
+# remains conservative until it is added here with its owning check.
+PLATFORM_TOOLS = {
+    "tools/windows-resize-smoke.ps1": "windows",
+    "tools/windows-startup-smoke.ps1": "windows",
 }
 # Vendored crates (vendor/<crate>/, a [patch] of a crates.io dependency) and the dependency names
 # through which workspace packages reach them: egui-wgpu directly or through eframe. Another
@@ -112,7 +120,7 @@ def select(meta, paths):
     for path in paths:
         if path in FULL_FILES or path.startswith("rust-toolchain"):
             return True, []
-        if path in IGNORED_FILES or path.startswith(IGNORED_PREFIXES):
+        if path in PLATFORM_TOOLS or path in IGNORED_FILES or path.startswith(IGNORED_PREFIXES):
             continue
         if path.startswith(FULL_PREFIXES):
             return True, []
