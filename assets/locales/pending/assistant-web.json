@@ -34,5 +34,65 @@
     "ui.agent_chat_web_selected": "设计中已选中",
     "ui.agent_chat_web_turn": "第 {n} 条消息及其回答",
     "ui.agent_chat_web_with_next": "随下一条消息发送"
+  },
+  "ar": {
+    "ui.agent_chat_add_tip": "إضافة إلى الرسالة",
+    "ui.agent_chat_model_no_match": "لا يوجد نموذج مطابق",
+    "ui.agent_chat_open_picture": "فتح الصورة",
+    "ui.agent_chat_remove_chip": "إزالة",
+    "ui.agent_chat_web_composer": "مربع الرسالة وعناصر التحكم فيه",
+    "ui.agent_chat_web_latest": "الانتقال إلى أحدث رسالة",
+    "ui.agent_chat_web_message": "رسالة",
+    "ui.agent_chat_web_selected": "المحدد في التصميم",
+    "ui.agent_chat_web_turn": "الرسالة {n} وإجابتها",
+    "ui.agent_chat_web_with_next": "يُرسل مع الرسالة التالية"
+  },
+  "he": {
+    "ui.agent_chat_add_tip": "הוספה להודעה",
+    "ui.agent_chat_model_no_match": "אין מודל תואם",
+    "ui.agent_chat_open_picture": "פתיחת התמונה",
+    "ui.agent_chat_remove_chip": "הסרה",
+    "ui.agent_chat_web_composer": "תיבת ההודעה והפקדים שלה",
+    "ui.agent_chat_web_latest": "מעבר להודעה האחרונה",
+    "ui.agent_chat_web_message": "הודעה",
+    "ui.agent_chat_web_selected": "נבחר בתכן",
+    "ui.agent_chat_web_turn": "הודעה {n} והתשובה עליה",
+    "ui.agent_chat_web_with_next": "נשלח עם ההודעה הבאה"
+  },
+  "vi": {
+    "ui.agent_chat_add_tip": "Thêm vào tin nhắn",
+    "ui.agent_chat_model_no_match": "Không có mô hình nào khớp",
+    "ui.agent_chat_open_picture": "Mở ảnh",
+    "ui.agent_chat_remove_chip": "Xóa",
+    "ui.agent_chat_web_composer": "Ô nhập tin nhắn và các nút điều khiển",
+    "ui.agent_chat_web_latest": "Chuyển đến tin nhắn mới nhất",
+    "ui.agent_chat_web_message": "Tin nhắn",
+    "ui.agent_chat_web_selected": "Đang chọn trong thiết kế",
+    "ui.agent_chat_web_turn": "Tin nhắn {n} và câu trả lời",
+    "ui.agent_chat_web_with_next": "Gửi kèm tin nhắn tiếp theo"
+  },
+  "de": {
+    "ui.agent_chat_add_tip": "Zur Nachricht hinzufügen",
+    "ui.agent_chat_model_no_match": "Kein passendes Modell",
+    "ui.agent_chat_open_picture": "Bild öffnen",
+    "ui.agent_chat_remove_chip": "Entfernen",
+    "ui.agent_chat_web_composer": "Nachrichtenfeld und seine Bedienelemente",
+    "ui.agent_chat_web_latest": "Zur neuesten Nachricht springen",
+    "ui.agent_chat_web_message": "Nachricht",
+    "ui.agent_chat_web_selected": "Im Design ausgewählt",
+    "ui.agent_chat_web_turn": "Nachricht {n} und ihre Antwort",
+    "ui.agent_chat_web_with_next": "Wird mit der nächsten Nachricht gesendet"
+  },
+  "ko": {
+    "ui.agent_chat_add_tip": "메시지에 추가",
+    "ui.agent_chat_model_no_match": "일치하는 모델이 없습니다",
+    "ui.agent_chat_open_picture": "이미지 열기",
+    "ui.agent_chat_remove_chip": "제거",
+    "ui.agent_chat_web_composer": "메시지 입력란과 컨트롤",
+    "ui.agent_chat_web_latest": "최신 메시지로 이동",
+    "ui.agent_chat_web_message": "메시지",
+    "ui.agent_chat_web_selected": "디자인에서 선택됨",
+    "ui.agent_chat_web_turn": "메시지 {n} 및 그 응답",
+    "ui.agent_chat_web_with_next": "다음 메시지와 함께 전송"
   }
 }
