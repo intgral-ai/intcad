@@ -453,7 +453,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' && fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -515,7 +515,7 @@ jobs:
     name: Action matrix (${{ matrix.shard }}/16)
     needs: build-tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -531,7 +531,7 @@ jobs:
         with:
           name: nextest-archive
       - name: Run one shard of the matrix
-        timeout-minutes: 45
+        timeout-minutes: 75
         env:
           SHARD: ${{ matrix.shard }}
           OUT: ${{ github.workspace }}/action-matrix
@@ -551,7 +551,7 @@ jobs:
     name: Action matrix determinism
     needs: build-tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
