@@ -27,6 +27,7 @@ CONTRIBUTING.md.
 |---|---|---|
 | Task branch, including an external contributor's task branch | `develop` | Squash |
 | Same-repository `release/vX.Y.Z` | `main` | Merge commit |
+| Same-repository `release/vX.Y.Z-beta.N` | `main` | Merge commit; Beta gate only |
 | Same-repository nonempty `hotfix/*` | `main` | Squash |
 | Same-repository `main` or `release/vX.Y.Z` reconciliation | `develop` | Merge commit |
 | Same-repository reviewed `sync/upstream-*` | `develop` | Merge commit |
@@ -49,6 +50,9 @@ on its constituent reviewed PRs. Its synthetic queue ref is not a task branch.
 ## Promote and reconcile without replacing history
 
 1. Create a temporary `release/vX.Y.Z` branch from the selected `develop` commit.
+   A Beta uses `release/vX.Y.Z-beta.N`; `release-gate` then applies the reviewed
+   Beta exceptions in `tests/action_matrix/beta-exceptions.json` (`docs/beta-promotion.md`).
+   The stable `release/vX.Y.Z` path never uses them.
    Release-specific fixes go to `develop` first; after they land, delete and
    recut the release branch from the fixed `develop` commit. Do not open fix PRs
    against `release/vX.Y.Z`: admission and `ci.yml` support promotion and

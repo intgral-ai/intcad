@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: release-gate-${{ github.event_name }}-${{ github.ref }}
@@ -39,9 +40,60 @@ jobs:
     if: github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main'
     uses: ./.github/workflows/release.yml
 
+  beta-gate:
+    name: Beta promotion gate
+    needs: [ci, kernel-rig, packages]
+    # A Beta promotion is a same-repository release/vX.Y.Z-beta.N PR to main.
+    # The stable release path never takes this branch.
+    if: >-
+      always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+      && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: evidence-*
+          path: evidence
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: action-matrix-*
+          path: matrix
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: full-baseline-properties
+          path: properties
+      - name: Record actual job conclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --jq '{jobs: [.jobs[] | {name, conclusion, status}]}' \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" > jobs.json
+      - name: Evaluate the Beta known exceptions and every other job
+        run: |
+          python3 -I scripts/ci/beta_gate.py evaluate \
+            --plan selection/plan.json --evidence evidence --matrix matrix \
+            --properties properties --jobs jobs.json \
+            --exceptions tests/action_matrix/beta-exceptions.json --out beta-gate.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: beta-gate-evidence
+          path: beta-gate.json
+          if-no-files-found: error
+
   release-gate:
     name: release-gate
-    needs: [ci, kernel-rig, packages]
+    needs: [ci, kernel-rig, packages, beta-gate]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -70,12 +122,22 @@ jobs:
         with:
           name: kernel-rig-handoff-${{ github.sha }}
           path: rig-handoff
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: >-
+          always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+          && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.')
+        with:
+          name: beta-gate-evidence
+          path: beta-evidence
       - name: Evaluate actual full evidence and outstanding owner consumers
         if: always()
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
           GROUP_BASE: ${{ github.event.merge_group.base_ref }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
         run: |
           python3 - <<'PY'
           import hashlib, json, os, re, subprocess, sys
@@ -90,7 +152,15 @@ jobs:
               sys.exit(0)
           problems = []
           needs = gate.parse_json(os.environ['NEEDS_JSON'])
-          for job in ('ci', 'kernel-rig', 'packages'):
+          head = os.environ.get('HEAD_REF', '')
+          merge_head = os.environ.get('GROUP_HEAD', '')
+          beta = (
+              (os.environ.get('EVENT_NAME') == 'pull_request' and os.environ.get('BASE_REF') == 'main'
+               and head.startswith('release/v') and '-beta.' in head)
+              or (os.environ.get('EVENT_NAME') == 'merge_group' and os.environ.get('GROUP_BASE') == 'refs/heads/main'
+                  and merge_head.startswith('refs/heads/release/v') and '-beta.' in merge_head))
+          required = ('kernel-rig', 'packages', 'beta-gate') if beta else ('ci', 'kernel-rig', 'packages')
+          for job in required:
               if needs.get(job, {}).get('result') != 'success':
                   problems.append(job + ': real job result is not success: ' + str(needs.get(job, {}).get('result', 'missing')))
           sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
@@ -112,11 +182,20 @@ jobs:
                   job = receipt.get('jobId')
                   gate.require(job not in receipts, 'duplicate receipt: ' + str(job))
                   receipts[job] = receipt
-              # The audited nested ci aggregate checks its actual per-job needs,
-              # including platform/heavy jobs. Recheck its exact plan/receipts;
-              # a green nested wrapper alone cannot satisfy this context.
-              results = {job: needs.get('ci', {}).get('result') for job in plan['jobs']}
-              problems.extend(gate.evaluate(plan, results, receipts))
+              # The stable gate rechecks the nested ci aggregate's exact plan/receipts;
+              # a green wrapper alone cannot satisfy it. A Beta promotion has the
+              # separate Beta job prove every non-excused job and the itemised
+              # action exceptions, so it does not relabel the stable gate as green.
+              if beta:
+                  beta_file = Path('beta-evidence/beta-gate.json')
+                  gate.require(beta_file.is_file(), 'missing accepted Beta evidence')
+                  beta_result = gate.parse_json(beta_file.read_bytes())
+                  gate.require(beta_result.get('verdict') == 'accepted-beta', 'Beta gate did not accept the candidate')
+                  gate.require(beta_result.get('sourceRevision') == sha, 'Beta gate sourceRevision mismatch')
+                  gate.require(beta_result.get('problems') == [], 'Beta gate reported problems')
+              else:
+                  results = {job: needs.get('ci', {}).get('result') for job in plan['jobs']}
+                  problems.extend(gate.evaluate(plan, results, receipts))
           except (OSError, ValueError, TypeError, KeyError) as error:
               problems.append('execution evidence: ' + str(error))
 
