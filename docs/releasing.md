@@ -103,6 +103,56 @@ missing safe installed desktop/runtime acceptance is explicitly blocking, not a
 skipped successful requirement. Other package desktop `--version` calls exit
 before UI/updater startup; do not replace them with a normal app launch.
 
+### Installed checks of the deb, rpm, AppImage, disk image and MSI
+
+The Assistant's interface is a web view, so the app needs the system's GTK 3 and
+WebKitGTK 4.1 on Linux and uses the WebView2 runtime on Windows. A build tree, or
+the machine that built a package, cannot show that a package brings what the app
+needs. These steps install each package as a user would and open the Assistant in
+the installed app, **with the network taken away from the app** in every case,
+and with its update check off as well (`SOLIDCRAFT_UPDATE_CHECK=0`):
+
+- **Linux** (`packaging/linux/installed-check.sh`): the deb on bare Ubuntu 22.04,
+  Ubuntu 24.04 and Debian 13 containers and the rpm on a bare Fedora container,
+  installed with nothing but what each declares, where the app's file must find
+  every library it names. The AppImage brings no system libraries: on a bare
+  system its launcher must name the missing ones, then they are installed. The
+  package and the test's tools are installed in one container; the app is started
+  only in a second one made from it with `--network none`, which first shows that
+  it reaches nothing. One run is in a Wayland session (sway, with XWayland).
+- **macOS**: the app is copied out of the disk image and started under
+  `packaging/macos/no-network.sb`, a sandbox profile that leaves only this
+  machine's own address; the step first shows that the profile stops `curl`. The
+  runner's download carries no quarantine mark, so **Gatekeeper is not exercised**:
+  an ad-hoc signature does not pass it on a user's Mac.
+- **Windows** (`packaging/windows/installed-check.ps1`): the MSI is installed for
+  the machine, the installed `solidcraft.exe` must be byte for byte the one the job
+  built, the firewall blocks it and the WebView2 runtime's processes from reaching
+  out (a copy of `curl.exe` under the same kind of rule shows the block holds),
+  `tools/windows-assistant-smoke.ps1` runs against the installed app, and the MSI
+  is removed again. The arm64 MSI is built but cannot run on the x64 runner.
+
+The page those apps show is itself a build output that is checked in
+(`packages/assistant-web/dist`, so that the app builds without Node). The job
+`Assistant page` of `packaging-lint.yml` builds it again from a fresh clone of the
+pinned Mastra commit (`packages/assistant-web/tools/build.mjs --check`) and fails
+unless the page, the list of what went into it (`inventory.json`) and its third-party
+notices (`THIRD-PARTY-NOTICES.txt`) are what is checked in, byte for byte. The build
+refuses any file under one of Mastra's enterprise-licensed `ee/` directories and any
+npm package with an unreviewed licence. The deb, rpm, tarball, disk image, MSI and
+portable zip carry the notices as `ASSISTANT-THIRD-PARTY-NOTICES.txt`, and the app
+carries them built in (Help > About > Licences), which is what an AppImage or a
+single downloaded executable has. That list and those notices are what a build tool
+found and what the packages state about themselves, **not** a rights clearance.
+
+`packaging/assistant-check.py` is the check itself on Linux and macOS: the panel
+opens, the page loads and reports in, the app quits with exit code 0 and leaves no
+crash report. Logs and pictures are uploaded as `installed-check-*` artifacts and
+are **not** release evidence: #14's installed-runtime acceptance, signatures and
+notarization stay open. Not covered: the tarball, Flatpak, Snap, Arch and Nix
+packages (none brings or declares the web view's libraries yet), a real GPU, and
+any machine with a person in front of it.
+
 Docker keeps a local image build and HTTP smoke test (`push: false`). Pages keeps
 the book/web build and offline browser test as an ordinary Actions artifact, with
 no release-channel/Flatpak downloads or deployment. Docker/Pages/Flatpak/Snap/

@@ -110,25 +110,18 @@ jobs:
         run: |
           dpkg-deb --info dist/release/*.deb
           dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/solidcraft$|usr/bin/solidcraft-cli$|metainfo|applications|THIRD-PARTY-LICENSES.txt'
+          # The notices of the Assistant's page go with every package that carries the page.
+          dpkg-deb --contents dist/release/*.deb | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
+          rpm -qlp dist/release/*.rpm | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
+          tar -tzf dist/release/*.tar.gz | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
           dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/solvecraft-cli$'
           dpkg-deb --field dist/release/*.deb Replaces Conflicts Provides | grep -F solvecraft
           rpm -qip dist/release/*.rpm
           rpm -qlp dist/release/*.rpm | grep -E '/usr/bin/solidcraft$|THIRD-PARTY-LICENSES.txt'
           tar -tzf dist/release/*.tar.gz | grep -E '/bin/solidcraft$|THIRD-PARTY-LICENSES.txt'
           ldd target/release/solidcraft
-          # The deb and the rpm on bare systems, with nothing but what each declares: the app's
-          # file must find every library it names there. (The runner itself has many libraries
-          # a user's machine may lack, so a look at the runner proves nothing.)
-          docker run --rm -v "$PWD/dist/release:/dist:ro" ubuntu:22.04 bash -ec '
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq --no-install-recommends /dist/solidcraft-*.deb >/dev/null
-            if ldd /usr/bin/solidcraft | grep "not found"; then echo "::error::the deb does not bring these libraries"; exit 1; fi
-            solidcraft-cli --version'
-          docker run --rm -v "$PWD/dist/release:/dist:ro" fedora:44 bash -ec '
-            dnf install -y -q /dist/solidcraft-*.rpm >/dev/null
-            if ldd /usr/bin/solidcraft | grep "not found"; then echo "::error::the rpm does not bring these libraries"; exit 1; fi
-            solidcraft-cli --version'
+          # This runner has the web view's libraries (it built against them), so an AppImage
+          # that starts here says nothing about a user's machine: the next step covers that.
           for appimage in dist/release/*.AppImage; do
             chmod +x "$appimage"
             APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version
@@ -136,6 +129,29 @@ jobs:
             test -s "$appimage.zsync"
           done
           ls dist/release/solvecraft-*-linux-*.AppImage.zsync
+      # Each package on bare systems, with nothing but what it declares, then started there with
+      # the Assistant opened (packaging/linux/installed-check.sh). The tarball has the same
+      # program files as the AppImage and no launcher of its own; it is not installed here.
+      - name: Install the packages on bare systems and open the Assistant
+        env:
+          EVIDENCE: ${{ runner.temp }}/installed-check
+        run: |
+          deb=(dist/release/solidcraft-*.deb)
+          rpm=(dist/release/solidcraft-*.rpm)
+          appimage=(dist/release/solidcraft-*.AppImage)
+          packaging/linux/installed-check.sh ubuntu:22.04 "${deb[0]}" x11
+          packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" x11
+          packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" wayland
+          packaging/linux/installed-check.sh debian:13 "${deb[0]}" x11
+          packaging/linux/installed-check.sh fedora:44 "${rpm[0]}" x11
+          packaging/linux/installed-check.sh ubuntu:24.04 "${appimage[0]}" x11
+      - name: Keep the installed checks' logs and pictures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installed-check-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/installed-check
+          if-no-files-found: warn
       # Shared *build metadata* only: this is neither #15 inventory nor installed
       # acceptance. Null contractDigest explicitly blocks the release gate.
       - &package-evidence
@@ -427,6 +443,40 @@ jobs:
         run: |
           chmod +x target/*-apple-darwin/release/solidcraft target/*-apple-darwin/release/solidcraft-cli target/*-apple-darwin/release/solvecraft-cli
           packaging/macos/package.sh --arch universal --skip-build
+      # The app as a user gets it: copied out of the disk image, started, the Assistant opened
+      # (packaging/assistant-check.py). The app is started without the network, in a sandbox
+      # that leaves only this machine's own address (packaging/macos/no-network.sb). This
+      # runner downloads nothing through a browser, so the image carries no quarantine mark
+      # and Gatekeeper is not asked: an ad-hoc signature does not pass it on a user's Mac, and
+      # this step says nothing about that.
+      - name: Copy the app out of the disk image and open the Assistant
+        run: |
+          DMG="$(find dist/release -maxdepth 1 -name '*.dmg' -print -quit)"
+          MNT="$(mktemp -d)"
+          APPS="$(mktemp -d)"
+          hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
+          cp -R "$MNT/SolidCraft.app" "$APPS/"
+          hdiutil detach "$MNT"
+          EXE="$APPS/SolidCraft.app/Contents/MacOS/SolidCraft"
+          OFFLINE=(sandbox-exec -f "$PWD/packaging/macos/no-network.sb")
+          if "${OFFLINE[@]}" /usr/bin/curl -s -m 5 -o /dev/null https://api.github.com/; then
+            echo "::error::the sandbox does not take the network away on this runner"
+            exit 1
+          fi
+          python3 packaging/assistant-check.py --run-with "${OFFLINE[*]}" --exe "$EXE" --evidence "$RUNNER_TEMP/installed-check/native" --screen
+          # The other half of the universal file, where this runner can run it.
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            python3 packaging/assistant-check.py --run-with "${OFFLINE[*]} arch -x86_64" --exe "$EXE" --evidence "$RUNNER_TEMP/installed-check/x86_64" --screen
+          else
+            echo 'macOS installed check: no Rosetta on this runner, so the Intel half of the app was not started.' >>"$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep the installed check's log and pictures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installed-check-macos
+          path: ${{ runner.temp }}/installed-check
+          if-no-files-found: warn
       - *package-evidence
       - *upload-package
       - *upload-evidence
@@ -469,6 +519,20 @@ jobs:
         env:
           SOLIDCRAFT_ICONS: ${{ github.workspace }}/icons
         run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }}
+      # The MSI installed for the machine, the Assistant opened in the installed app, the MSI
+      # removed again (packaging/windows/installed-check.ps1). An arm64 build does not run on
+      # this x64 runner, so its MSI is built and not installed.
+      - name: Install the MSI and open the Assistant in the installed app
+        if: matrix.arch != 'arm64'
+        shell: pwsh
+        run: ./packaging/windows/installed-check.ps1 -Arch ${{ matrix.arch }} -Evidence "$env:RUNNER_TEMP/installed-check"
+      - name: Keep the installed check's logs and pictures
+        if: always() && matrix.arch != 'arm64'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installed-check-windows-${{ matrix.arch }}
+          path: ${{ runner.temp }}/installed-check
+          if-no-files-found: warn
       - *package-evidence
       - *upload-package
       - *upload-evidence
