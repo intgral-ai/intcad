@@ -87,3 +87,11 @@ A promotion must be built from the exact candidate SHA. A package descriptor who
 `sourceRevision` differs, an older BYOK or GUI result, or an artifact built before
 the final merge is not evidence for a new candidate. The stable v0.1.0 release
 continues to require the full `release-gate` without the Beta exceptions.
+
+## Beta.3 correction evidence
+
+The Beta.3 gate adds the itemised 970 unbaselined identities and the configurable
+180-second action timeout. The Windows MSI was diagnosed on a clean `windows-latest`
+runner: the MSI payload and an isolated `INSTALLFOLDER` install both ran
+`solidcraft-cli 0.1.0-beta.2`; the installed app ran `solidcraft 0.1.0-beta.2`.
+The earlier `0.40.0-rc.2` read was runner contamination, not the installer.
