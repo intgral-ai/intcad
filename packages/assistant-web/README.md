@@ -14,23 +14,40 @@ for a fixed list of actions; both are defined in `crates/ui-egui/src/agent_chat/
 
 ## Building `dist/`
 
-The build needs a checkout of `mastra-ai/mastra` with its packages installed, beside the
-`platform/` folder (`<workspace>/open-source/mastra`), or wherever `MASTRA_CHECKOUT` points.
-`node_modules` here is a symlink to that checkout's
-`packages/playground-ui/node_modules` (not checked in).
+The build needs a checkout of `mastra-ai/mastra` at the commit in `mastra.json`, with its
+packages installed (`pnpm install --frozen-lockfile` in the checkout). `tools/build.mjs` builds
+the page in a scratch folder that holds nothing but the source, and writes down what went in:
+
+```sh
+node packages/assistant-web/tools/build.mjs --mastra <checkout> --write   # dist/ and the two files below
+node packages/assistant-web/tools/build.mjs --mastra <checkout> --check   # what CI runs
+```
+
+Without `--mastra` it takes `MASTRA_CHECKOUT`, or the workspace layout
+(`<workspace>/open-source/mastra` beside the `platform/` folder). Commit `dist/`,
+`THIRD-PARTY-NOTICES.txt` and `inventory.json` together: `--check` compares all three with a
+fresh build byte for byte, and the job `Assistant page` in `.github/workflows/packaging-lint.yml`
+runs it against a fresh clone of the pinned commit. The build refuses:
+
+- a checkout that is not at the pinned commit, or has changes where the page reads it;
+- any module under a directory named `ee/` (Mastra's enterprise licence), and a stylesheet
+  that does not keep Tailwind from scanning those files: no rule of `dist/style.css` may come
+  from a file there;
+- any module from somewhere other than this page, the checkout, an npm package or the bundler;
+- an npm package whose licence is not one of the reviewed expressions listed in the tool.
+
+Build with the tool, not with Vite in this folder. In place, Tailwind also reads whatever lies
+here: it used to scan the last build's `dist/` for class names, so the stylesheet depended on
+what had been built before. `src/assistant.css` now excludes `dist/` and Mastra's `ee/` from
+the scan, and its imports still use the relative path of the workspace layout, which the tool
+recreates in its scratch folder.
+
+To check the page's types against Mastra's components (`tsconfig.json` extends the checkout's
+own, with the same relative path), with `node_modules` here a symlink to the checkout's
+`packages/playground-ui/node_modules` (not checked in):
 
 ```sh
 ln -sfn "$MASTRA_CHECKOUT/packages/playground-ui/node_modules" node_modules
-node node_modules/vite/bin/vite.js build --config vite.config.mjs --configLoader native
-```
-
-`--configLoader native` keeps the build from writing a temporary file into the checkout. The
-stylesheet imports in `src/assistant.css` use the relative path of the workspace layout.
-
-Before building, check the page's types against Mastra's components (`tsconfig.json` extends the
-checkout's own, with the same relative path):
-
-```sh
 node node_modules/typescript/bin/tsc -p tsconfig.json
 ```
 
@@ -39,11 +56,16 @@ The names of the page's words (`StringKey` in `src/host.ts`) and the list the ap
 
 ## What `dist/` is built from
 
+`inventory.json` is the list, taken from the bundler's own record of the modules in the script;
+`THIRD-PARTY-NOTICES.txt` has the licence and notice texts. Both are written by the build. The
+app shows the notices under Help > About > Licences, and the packages carry them as
+`ASSISTANT-THIRD-PARTY-NOTICES.txt`.
+
 | Input | Version | Licence |
 |---|---|---|
-| `mastra-ai/mastra`, `packages/playground-ui` | commit `aa406eaae60717422a1dba07da5b97fb26a0b998`, package `69.0.0-alpha.4` | Apache-2.0; nothing under an `ee/` directory is imported |
-| Mona Sans, Commit Mono (from `packages/playground/src/assets/fonts`) | as in that commit | SIL OFL 1.1 |
-| The npm packages those components import (React, Base UI, lucide, react-markdown and others) | as installed in the checkout | not inventoried yet |
+| `mastra-ai/mastra`, `packages/playground-ui` | the commit and version in `mastra.json` | Apache-2.0; no file under an `ee/` directory is in the script, and the build stops if one is reached |
+| Mona Sans, Commit Mono (from `packages/playground/src/assets/fonts`) | as in that commit | SIL OFL 1.1, the texts beside the fonts |
+| The npm packages those components import (React, Base UI, lucide, react-markdown and others) | the exact versions in `inventory.json` | MIT, ISC and Apache-2.0, each stated by the package and listed there |
 
 ## Status: not cleared for distribution
 
@@ -52,9 +74,11 @@ The names of the page's words (`StringKey` in `src/host.ts`) and the list the ap
   `docs/mastra-distribution.md`) still say that no Mastra source is importable and that the host
   stays Rust; their wording has not been changed, and nothing in `packaging/mastra/` records
   this use.
-- Owed before any build of this leaves the team: the rule change in the owner's words, the rights
-  review those documents describe, a notices file for everything `dist/assistant.js` contains,
-  and `ATTRIBUTION.md` rows (a pending file is in `attribution/pending/assistant-web.md`).
+- Owed before any build of this leaves the team: the rule change in the owner's words, and a
+  review of `inventory.json` and `THIRD-PARTY-NOTICES.txt` by someone who knows licences. Those
+  two files are what a build tool found and what the packages state about themselves; they are
+  not a rights clearance. `ATTRIBUTION.md` rows are pending in
+  `attribution/pending/assistant-web.md`.
 - The package version is an alpha: component interfaces may change between Mastra commits.
 
 ## Where it runs

@@ -112,6 +112,9 @@ if ($Phase -ne 'package') {
   New-Item -ItemType Directory -Force -Path $Stage | Out-Null
   Copy-Item (Join-Path $Bin 'solidcraft.exe'), (Join-Path $Bin 'solidcraft-cli.exe'), (Join-Path $Bin 'solvecraft-cli.exe') $Stage
   foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Stage }
+  # The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
+  # which the app carries built in as well (Help > About > Licences).
+  Copy-Item (Join-Path $Root 'packages\assistant-web\THIRD-PARTY-NOTICES.txt') (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt')
   # Application-relative Mastra runtime. Bundling is opt-in because the artifact is still
   # unapproved (DQ-7, #15). 1.0 supports Windows x86_64 MSVC only; ordinary packaging keeps the
   # previous release behavior and the WXS harvests an empty folder.
@@ -153,6 +156,7 @@ Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
 foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Portable }
+Copy-Item (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt') $Portable
 if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
 $Zip = Join-Path $Dist "solidcraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
