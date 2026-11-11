@@ -97,6 +97,31 @@ class AppRunCli(unittest.TestCase):
         self.assertIn(f"Icon={installed}", desk)
         self.assertNotIn("Icon=io.tangencylabs.solidcraft\n", desk)
 
+    def run_with_ldd(self, ldd_output):
+        """AppRun with an `ldd` that answers `ldd_output`: what the launch wrote, and its error output."""
+        tools = self.tmp / "tools"
+        tools.mkdir()
+        ldd = tools / "ldd"
+        ldd.write_text("#!/bin/sh\ncat <<'EOF'\n" + ldd_output + "EOF\n")
+        ldd.chmod(0o755)
+        env = {**self.env, "PATH": f"{tools}:{os.environ['PATH']}"}
+        done = subprocess.run([str(self.appdir / "AppRun"), "a"], env=env, capture_output=True, text=True, check=True)
+        return done.stdout.strip(), done.stderr
+
+    def test_missing_libraries_are_named_and_the_app_is_started_all_the_same(self):
+        out, said = self.run_with_ldd(
+            "\tlibwebkit2gtk-4.1.so.0 => not found\n\tlibc.so.6 => /lib/libc.so.6 (0x1)\n\tlibgtk-3.so.0 => not found\n"
+        )
+        self.assertEqual(out, "solidcraft a")
+        self.assertIn("this system lacks libgtk-3.so.0 libwebkit2gtk-4.1.so.0.", said)
+        self.assertIn("sudo apt install libwebkit2gtk-4.1-0", said)
+        self.assertIn("sudo dnf install webkit2gtk4.1", said)
+
+    def test_nothing_is_said_when_every_library_is_there(self):
+        out, said = self.run_with_ldd("\tlibgtk-3.so.0 => /usr/lib/libgtk-3.so.0 (0x1)\n\tlibc.so.6 => /lib/libc.so.6 (0x2)\n")
+        self.assertEqual(out, "solidcraft a")
+        self.assertEqual(said, "")
+
 
 if __name__ == "__main__":
     unittest.main()
