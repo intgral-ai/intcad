@@ -149,6 +149,19 @@ class Properties(unittest.TestCase):
                 with self.assertRaises(beta_gate.BetaGateError):
                     beta_gate.evaluate_properties(self.root)
 
+    def test_missing_raw_exit_is_inferred_from_the_real_junit(self):
+        junit = ("<testsuites><testsuite name='solidcraft-kernel::boolean_props'>"
+                 "<testcase name='translation_invariant'><failure>"
+                 "SmBSplineSurface::Test #5 Bad NonMonotonic CPts [owner SmSphere] "
+                 "a = Sph { r: 2.5 } off = 100000.0</failure></testcase>"
+                 "</testsuite></testsuites>")
+        (self.root / "target/nextest/ci/junit.xml").write_text(junit)
+        self.assertEqual(beta_gate.evaluate_properties(self.root)["rawExit"], 100)
+        changed = junit.replace("NonMonotonic", "Monotonic")
+        (self.root / "target/nextest/ci/junit.xml").write_text(changed)
+        with self.assertRaisesRegex(beta_gate.BetaGateError, "failure text changed"):
+            beta_gate.evaluate_properties(self.root)
+
     def test_raw_junit_is_accepted_only_for_the_exact_issue_56_failure(self):
         junit = ("<testsuites><testsuite name='solidcraft-kernel::boolean_props'>"
                  "<testcase name='translation_invariant'><failure>"
