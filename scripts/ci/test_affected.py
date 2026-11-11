@@ -64,7 +64,7 @@ class Synthetic(unittest.TestCase):
     def test_full_triggers(self):
         for p in ["Cargo.lock", "Cargo.toml", ".cargo/config.toml", ".config/nextest.toml", "rust-toolchain.toml",
                   ".github/workflows/ci.yml", "vendor/x/lib.rs", "tests/oracle/a.json", "assets/a.png",
-                  "scripts/ci/affected.py", "unknown.txt"]:
+                  "scripts/build-runtime.sh", "unknown.txt"]:
             self.assertEqual(affected.select(SYNTH, ["crates/alone/a.rs", p]), (True, []), p)
 
     def test_docs_only_selects_nothing(self):
@@ -76,7 +76,8 @@ class Synthetic(unittest.TestCase):
                   "scripts/triage/triage.test.js", "vendor/README.md", "SECURITY.md", ".gitignore", ".npmrc",
                   "attribution/pending/mastra-runtime.md",
                   "assets/locales/pending/host-bridge.json",
-                  "assets/platforms/windows/solidcraft.wxs"]:
+                  "assets/platforms/windows/solidcraft.wxs",
+                  "scripts/ci/plan.py", "scripts/ci/beta_gate.py"]:
             self.assertEqual(affected.select(SYNTH, [p]), (False, []), p)
 
     def test_windows_metadata_selects_packages_and_preserves_triggers(self):
@@ -134,10 +135,12 @@ class MonorepoSelection(unittest.TestCase):
         self.assertEqual(result["rustPackages"], [])
         for job in ("rust", "wasm", "contract-rust", "runtime", "contract-ts", "integration", "packages"):
             self.decision(result, job, "not_applicable", "no_relevant_change")
+        self.assertEqual(result["platform"]["windows"],
+                         {"decision": "not_applicable", "reason": "no_relevant_change", "paths": []})
         self.assertEqual(set(result), {"version", "sourceRevision", "eventName", "baseRef", "headRef", "scope",
                                        "releaseRequired", "rustFull", "rustPackages", "rustTestPackages",
                                        "rustTestShard", "rustDeferredPackages", "rustDeferredTo",
-                                       "jobs", "openObligations"})
+                                       "jobs", "platform", "openObligations"})
         self.assertEqual((result["version"], result["sourceRevision"], result["scope"]), (1, "a" * 40, "affected"))
 
     def test_housekeeping_and_node_config_do_not_select_native_work(self):
@@ -191,9 +194,18 @@ class MonorepoSelection(unittest.TestCase):
                 for job in ("contract-rust", "runtime", "contract-ts", "integration", "artifact-policy"):
                     self.decision(result, job, "run", "selected_change")
 
+    def test_ci_tooling_selects_the_repository_owner_not_the_rust_matrix(self):
+        for path in ("scripts/ci/plan.py", "scripts/ci/beta_gate.py", "scripts/ci/test_gate.py"):
+            with self.subTest(path=path):
+                result = self.select(path)
+                self.assertEqual(result["scope"], "affected")
+                self.assertEqual(result["rustPackages"], [])
+                self.decision(result, "repo", "run", "always")
+                self.decision(result, "rust", "not_applicable", "no_relevant_change")
+
     def test_shared_rust_and_ci_builds_select_every_existing_consumer(self):
         for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", ".config/nextest.toml",
-                     ".github/workflows/docker.yml", "scripts/ci/plan.py", "scripts/build-runtime.sh"):
+                     ".github/workflows/docker.yml", "scripts/build-runtime.sh"):
             with self.subTest(path=path):
                 result = self.select(path)
                 self.assertTrue(result["rustFull"])
@@ -224,8 +236,31 @@ class MonorepoSelection(unittest.TestCase):
                 self.decision(result, "rust", "run", "selected_change")
                 self.assertEqual(result["rustTestPackages"], ["xtask"])
 
+    def test_named_platform_tool_selects_its_platform_check_not_the_workspace(self):
+        result = self.select("tools/windows-resize-smoke.ps1")
+        self.assertEqual(result["scope"], "affected")
+        self.assertEqual(result["rustPackages"], [])
+        self.decision(result, "rust", "not_applicable", "no_relevant_change")
+        self.assertEqual(result["platform"]["windows"],
+                         {"decision": "run", "reason": "selected_change",
+                          "paths": ["tools/windows-resize-smoke.ps1"]})
+
+    def test_unknown_tool_remains_conservative(self):
+        result = self.select("tools/some-new-check.ps1")
+        self.assertEqual(result["scope"], "full")
+        self.decision(result, "rust", "run", "full_validation")
+        self.assertEqual(result["platform"]["windows"],
+                         {"decision": "run", "reason": "full_validation", "paths": []})
+
+    def test_kernel_case_metadata_selects_xtask_not_the_workspace(self):
+        result = self.select("tests/kernel-cases/EXEMPT")
+        self.assertEqual(result["scope"], "affected")
+        self.assertEqual(result["rustPackages"], ["xtask"])
+        self.assertEqual(result["rustTestPackages"], ["xtask"])
+        self.decision(result, "rust", "run", "selected_change")
+
     def test_pr_test_lane_is_bounded_on_shared_inputs(self):
-        for path in ("Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/ci/plan.py"):
+        for path in ("Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/build-runtime.sh"):
             with self.subTest(path=path):
                 result = self.select(path)
                 self.assertEqual(result["rustTestPackages"], ["xtask"])
