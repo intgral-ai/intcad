@@ -42,6 +42,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if ($env:SOLIDCRAFT_WITH_MASTRA -eq '1') { $WithMastra = $true }
+# A same-architecture native build can run its CLI here; an x64 host can also run
+# an x86 build. Cross-arch builds (for example arm64 on x64) cannot and say so.
+$HostArch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+  'X64' { 'x64' }
+  'X86' { 'x86' }
+  'Arm64' { 'arm64' }
+  default { throw "unknown host architecture $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+}
+$CanRun = ($HostArch -eq $Arch) -or ($HostArch -eq 'x64' -and $Arch -eq 'x86')
 
 function Invoke-Native([string] $What, [scriptblock] $Block) {
   Write-Output "==> $What"
