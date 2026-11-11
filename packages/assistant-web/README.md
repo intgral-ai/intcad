@@ -81,8 +81,25 @@ and a saved one is put back.
   input methods (IBus, Fcitx) were not tried. Checked in a container only (Ubuntu 24.04, Xvfb,
   openbox, software Vulkan, WebKitGTK 2.52, GTK 3.24), at window scales 1 and 1.5; not on a real desktop
   or GPU.
-- **Windows** (WebView2): the host is not wired yet and was not built or tested; the built-in
-  conversation is drawn.
+- **Windows**: WebView2, in a child window of the app's. WebView2 serves no scheme of the app's
+  own, so the page has an `http` address there (`http://openskyfall-assistant.localhost/…`, the
+  form `wry` gives a custom scheme), which only this view answers. WebView2 keeps its files in
+  `%LOCALAPPDATA%\SolidCraft\assistant-web-view`, or in the settings folder a run was given
+  (`SOLIDCRAFT_SETTINGS_DIR`); left to itself it would write beside the exe. The view is square
+  and opaque, as on Linux. WebView2 takes the keyboard when it is clicked, and a press on the
+  rest of the window gives it back to the window. A browser's own keys (find, print, reload,
+  zoom, developer tools) are off in the view; the keys of text editing stay. Its loader is
+  linked into the exe, so no DLL goes with the app. On a machine without the WebView2 runtime
+  the view cannot be made, and the panel draws the built-in conversation.
+
+  **Never run on Windows.** The host file was type-checked for `x86_64-pc-windows-msvc` from a
+  Mac, in a throwaway crate with the app's real UI and engine crates; the app itself cannot be
+  checked there, because a C dependency (`ring`) needs Windows' C headers. The CI job `Windows
+  app startup` builds and starts the app but never opens the Assistant. Not known: whether the
+  page shows, typing and input methods, the keyboard going back to the window, files dropped on
+  the panel, the view over each graphics backend, and a scale other than 100 %. While the page
+  has the keyboard the window reads as unfocused to the app, so what the app does only in a
+  focused window (moving the view by holding a modifier key, for one) waits for a click on it.
 
 Where the app draws its own title bar (Windows and Linux), the window's edges resize it, and a
 native view over them would take the press: the view's place stops short of the window's edges
@@ -90,4 +107,5 @@ native view over them would take the press: the view's place stops short of the 
 compact layout.
 
 The Linux packages (deb, rpm, AppImage, Flatpak, snap, the Nix flake) do not name WebKitGTK or
-GTK as dependencies yet.
+GTK as dependencies yet. The Windows installers do not bring the WebView2 runtime: Windows 11
+has it, and a machine without it keeps the built-in conversation.

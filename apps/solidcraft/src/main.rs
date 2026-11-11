@@ -20,7 +20,7 @@
 #[cfg(not(target_os = "macos"))]
 #[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod assistant_web;
 mod come_forward;
 mod control_server;
@@ -102,7 +102,7 @@ struct App {
     #[cfg(target_os = "macos")]
     native_menu: Option<native_menu::NativeMenu>,
     /// The Assistant's conversation as a web view over its panel.
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     assistant_web: assistant_web::AssistantWeb,
     /// A device's own app moving the view (Preferences › Navigation, off by default).
     nav_bridge: nav_bridge::NavBridge,
@@ -250,7 +250,7 @@ impl eframe::App for App {
         }
         self.solve.logic(ctx);
         // The Assistant's page asks and is told with the app's logic, painted or not.
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.assistant_web.logic(&mut self.solve, ctx);
         // The file chooser that opened is not the desktop's own: the user has to be told (#10159).
         #[cfg(target_os = "linux")]
@@ -287,7 +287,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         content_ui(&mut self.solve, ui);
         // After the frame's UI, which says where the Assistant panel is this frame.
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.assistant_web.tick(&mut self.solve, ui.ctx(), frame);
         #[cfg(target_os = "macos")]
         {
@@ -316,7 +316,7 @@ impl eframe::App for App {
     }
     fn on_exit(&mut self) {
         // The Assistant's web view is a child of the window: it goes while the window is there.
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.assistant_web.close();
         // The agent chat's agent and everything it started end with the app.
         solidcraft_ui_egui::agent_chat::shutdown(&mut self.solve);
@@ -1340,7 +1340,7 @@ fn main() -> eframe::Result {
                 app.native_file_menu = native_menu.is_some();
             }
             // The Assistant's conversation is a web view where the host has one.
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let assistant_web = assistant_web::AssistantWeb::new(&mut app);
             mark("app created");
             solidcraft_engine::crash::phase("first frame");
@@ -1357,7 +1357,7 @@ fn main() -> eframe::Result {
                 space_mouse,
                 #[cfg(target_os = "macos")]
                 native_menu,
-                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 assistant_web,
                 nav_bridge,
                 dialog_folder,
