@@ -15,6 +15,12 @@ evaluation from the promotion branch:
 | `release/vX.Y.Z` | stable release gate | full `ci`, kernel rig and packages must all really succeed |
 | `release/vX.Y.Z-beta.N` | Beta promotion gate | every build and non-kernel job succeeds; only the itemised action-matrix exceptions are accepted |
 
+The `main` ruleset requires the `release-gate` context (not the direct affected
+`ci` context): a promotion diff contains the whole develop tree, so the direct
+`ci` lane would select the full matrix again. The `release-gate` workflow still
+runs the full `ci` for stable promotions and runs the Beta evaluation for a
+Beta promotion; no repository setting is bypassed for an individual merge.
+
 The direct `ci` check on the same pull request still runs the affected lane. A
 Beta pull request is never a stable release candidate.
 
