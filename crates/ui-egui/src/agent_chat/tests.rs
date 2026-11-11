@@ -15628,7 +15628,7 @@ fn the_web_page_may_only_ask_for_listed_actions_that_fit_the_chat() {
 
     // The page says what colour its own surface is, for the frame the app draws around it.
     act(&mut h, json!({"type": "surface", "color": "#0e0e0e"})).expect("a colour");
-    assert_eq!(h.app.agent_chat.web_canvas, Some(egui::Color32::from_rgb(14, 14, 14)));
+    assert_eq!(h.app.agent_chat.web_canvas.map(|colour| colour.to_array()), Some([14, 14, 14, 255]));
 
     // The panel's own controls are the page's too.
     act(&mut h, json!({"type": "side", "left": true})).expect("a listed panel control");
