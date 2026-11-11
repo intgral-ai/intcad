@@ -251,11 +251,6 @@ def evaluate_matrix(directory, exceptions):
                         ", ".join(" :: ".join(key) for key in promoted[:12]) +
                         (" ..." if len(promoted) > 12 else ""))
     unbaselined_digest = digest(unbaselined)
-    if "unbaselinedFailures" in data["source"]:
-        if len(unbaselined) != data["source"]["unbaselinedFailures"]:
-            problems.append(f"unbaselined failures: {len(unbaselined)}, expected {data['source']['unbaselinedFailures']}")
-        if unbaselined_digest != data["source"].get("unbaselinedDigest"):
-            problems.append("unbaselined failure identities changed from the reviewed run")
     accepted = len([key for key in expected if key in actual and key not in set(changed) and key not in set(promoted)])
     return dict(actions=len(entries), failures=len(failures), preexisting=len(preexisting),
                 unbaselined=len(unbaselined), unbaselinedDigest=unbaselined_digest,

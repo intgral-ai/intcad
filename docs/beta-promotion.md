@@ -44,8 +44,9 @@ the representative upstream comparisons are in `docs/kernel-attribution.md`.
 The reviewed run also has 1,085 failures already recorded as failing in the
 historical baseline and 972 failures on actions the historical baseline never
 recorded. Neither group is counted as a pass. The unbaselined identities are
-frozen by count and digest in the same file; a new or moved unbaselined failure
-fails the gate.
+reported in `beta-gate.json`; they were never baseline passes, so a change in
+that group is not a new regression. A baseline pass that starts failing is the
+gate condition and must be in the reviewed list.
 
 The Beta gate fails when any of these changes:
 

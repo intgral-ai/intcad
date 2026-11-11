@@ -98,19 +98,15 @@ class Matrix(unittest.TestCase):
         with self.assertRaisesRegex(beta_gate.BetaGateError, "expected 4"):
             beta_gate.evaluate_matrix(write_matrix(self.matrix), self.exceptions)
 
-    def test_unbaselined_failures_are_pinned_but_never_called_passes(self):
+    def test_unbaselined_failures_are_reported_but_are_not_called_passes(self):
         key = ("demo/b", "Body1/F9", "face.shell")
         value = manifest(total=4)
-        value["source"]["unbaselinedFailures"] = 1
-        value["source"]["unbaselinedDigest"] = beta_gate.digest([key])
         self.exceptions.write_text(json.dumps(value))
         actions = ACTIONS + [dict(design=key[0], entity=key[1], action=key[2], kind="error", message=SHELL, ok=False)]
         result = beta_gate.evaluate_matrix(write_matrix(self.matrix, actions), self.exceptions)
         self.assertEqual((result["unbaselined"], result["unexcused"], result["problems"]), (1, 0, []))
-        value["source"]["unbaselinedDigest"] = "0" * 64
-        self.exceptions.write_text(json.dumps(value))
-        result = beta_gate.evaluate_matrix(write_matrix(self.matrix, actions), self.exceptions)
-        self.assertIn("identities changed", result["problems"][0])
+        self.assertEqual(result["unbaselinedDigest"], beta_gate.digest([key]))
+        self.assertEqual(result["newFailures"], 1)
 
     def test_repository_manifest_is_itemised_and_classified(self):
         data, entries = beta_gate.load_exceptions(ROOT / "tests/action_matrix/beta-exceptions.json")

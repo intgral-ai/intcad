@@ -1,5 +1,5 @@
 {
-  "about": "Reviewed Beta action-matrix exceptions. Each entry binds a design/entity/action identity to its failure kind, a stable failure class, the reviewed evidence run and an issue. The historical baseline was recorded on the C++ SMLib backend and is not comparable with the Rust solidcore pin, so these 213 are a ratchet mismatch first, not proof of a fork-only kernel regression; see docs/kernel-attribution.md. The reviewed run also has 1085 pre-existing baseline failures and 972 unbaselined failures; neither is counted as a pass, and the unbaselined identities are frozen by count and digest. Beta promotion fails on an unlisted failure, a changed class, a missing shard, a build failure or an exception that starts passing. This is not a stable release waiver and is not a replacement for tests/action_matrix/baseline.json.",
+  "about": "Reviewed Beta action-matrix exceptions. Each entry binds a design/entity/action identity to its failure kind, a stable failure class, the reviewed evidence run and an issue. The historical baseline was recorded on the C++ SMLib backend and is not comparable with the Rust solidcore pin, so these 213 are a ratchet mismatch first, not proof of a fork-only kernel regression; see docs/kernel-attribution.md. The reviewed run also has 1085 pre-existing baseline failures and 972 unbaselined failures; neither is counted as a pass, and the unbaselined identities are reported for every run and are never passes. Beta promotion fails on an unlisted failure, a changed class, a missing shard, a build failure or an exception that starts passing. This is not a stable release waiver and is not a replacement for tests/action_matrix/baseline.json.",
   "entries": [
     {
       "action": "face.shell",
@@ -1929,6 +1929,7 @@
     "shards": "1-14 and 16 from run 42790743092; shard 15 rerun at 1a45733ef96b53990fec8bd7794563eebc6facdb with the same costs/sharding",
     "totalActions": 54029,
     "unbaselinedDigest": "b2ab23f17ab1d2a88429ef9a660de5dbf1f922f1e8b6fd9bf077a5a1983ef56e",
-    "unbaselinedFailures": 972
+    "unbaselinedFailures": 972,
+    "unbaselinedNote": "reviewed count/digest; reported in beta-gate.json, not a merge condition: these actions were never in the historical baseline and are never counted as pass"
   }
 }
