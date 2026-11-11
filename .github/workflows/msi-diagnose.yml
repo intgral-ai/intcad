@@ -1,0 +1,59 @@
+name: Diagnose Beta MSI
+
+on:
+  push:
+    branches: [verify/msi-diagnose]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Download MSI artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: "43012493350"
+        run: gh run download "$env:RUN_ID" --repo "$env:GITHUB_REPOSITORY" --name release-windows-x64 --dir dist
+      - name: Inspect before, administrative extract, install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "== existing Program Files =="
+          if (Test-Path 'C:\Program Files\SolidCraft') {
+            Get-ChildItem 'C:\Program Files\SolidCraft' | Select-Object Name,Length
+            $old = 'C:\Program Files\SolidCraft\solidcraft-cli.exe'
+            if (Test-Path $old) {
+              "existing cli version:"; & $old --version
+              "existing cli sha: $((Get-FileHash $old -Algorithm SHA256).Hash)"
+            }
+          } else { "no existing Program Files install" }
+          $msi = Get-ChildItem dist -Recurse -Filter *.msi | Select-Object -First 1
+          "msi: $($msi.FullName) sha $((Get-FileHash $msi.FullName -Algorithm SHA256).Hash)"
+          $admin = Join-Path $env:RUNNER_TEMP 'admin-extract'
+          New-Item -ItemType Directory -Force -Path $admin | Out-Null
+          $log1 = Join-Path $env:RUNNER_TEMP 'admin.log'
+          $p1 = Start-Process msiexec.exe -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', '/L*v', "`"$log1`"", "TARGETDIR=$admin") -Wait -PassThru
+          "admin extract exit $($p1.ExitCode)"
+          Get-ChildItem $admin -Recurse -Filter solidcraft-cli.exe | ForEach-Object {
+            "admin cli: $($_.FullName) sha $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
+            & $_.FullName --version
+          }
+          $install = Join-Path $env:RUNNER_TEMP 'isolated-install'
+          New-Item -ItemType Directory -Force -Path $install | Out-Null
+          $log2 = Join-Path $env:RUNNER_TEMP 'install.log'
+          $p2 = Start-Process msiexec.exe -ArgumentList @('/i', "`"$($msi.FullName)`"", '/qn', '/norestart', '/L*v', "`"$log2`"", "INSTALLFOLDER=$install") -Wait -PassThru
+          "install exit $($p2.ExitCode)"
+          Get-ChildItem $install -Recurse -Filter solidcraft-cli.exe | ForEach-Object {
+            "installed cli: $($_.FullName) sha $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
+            & $_.FullName --version
+          }
+          $app = Join-Path $install 'solidcraft.exe'
+          if (Test-Path $app) { "installed app sha: $((Get-FileHash $app -Algorithm SHA256).Hash)"; & $app --version }
+          "where cli: $((Get-Command solidcraft-cli -ErrorAction SilentlyContinue).Source)"
