@@ -65,22 +65,33 @@ and a saved one is put back.
 
 - **macOS**: WKWebView. The view is seen through outside what the page draws, so the panel's
   rounded frame shows around the page.
-- **Linux**: WebKitGTK, in a child of the app's X11 window (an XWayland window included, which
-  is what the app opens by default in a Wayland session). Building needs the system's GTK 3 and
-  WebKitGTK 4.1 development packages (`libgtk-3-dev libwebkit2gtk-4.1-dev` on Debian and
-  Ubuntu), and the built app needs those libraries at run time. A child X11 window is not seen
-  through: the view is square, with the page's own surface colour behind it. winit does not run
-  GTK, so the app gives GTK its turns each frame, and asks for a frame about every 16 ms while
-  the page is at work and every 100 ms while it rests: with the panel open the app draws about
-  ten frames a second even when nothing changes. In a native Wayland window (niri, or **Window
-  system: Wayland** in Preferences) there is no child web view, and the panel draws the built-in
-  conversation.
+- **Linux**: WebKitGTK, in a child of the app's X11 window. In a Wayland session that window is
+  an XWayland one, which is what the app opens there by default: a Wayland desktop gets the page
+  this way. Building needs the system's GTK 3 and WebKitGTK 4.1 development packages
+  (`libgtk-3-dev libwebkit2gtk-4.1-dev` on Debian and Ubuntu), and the built app needs those
+  libraries at run time. A child X11 window is not seen through: the view is square, with the
+  page's own surface colour behind it. winit does not run GTK, so the app gives GTK its turns
+  each frame, and asks for a frame about every 16 ms while the page is at work, every 50 ms
+  while it has the keyboard and every 100 ms while it rests: with the panel open the app draws
+  ten to twenty frames a second even when nothing changes.
 
-  Known limits on Linux: the child window does not take the window's keyboard focus, so typed
-  keys reach the page while the pointer is over the panel and go to the app when it is not; and
-  input methods (IBus, Fcitx) were not tried. Checked in a container only (Ubuntu 24.04, Xvfb,
-  openbox, software Vulkan, WebKitGTK 2.52, GTK 3.24), at window scales 1 and 1.5; not on a real desktop
-  or GPU.
+  The keyboard: the view's window never has it of its own accord, and the X server sends typed
+  keys to the window that has it, the app's. So a press on the page gives the keyboard to the
+  window GTK made inside the view's (`XSetInputFocus`), and a press on the rest of the app's
+  window gives it back. While the page has it, the app's window reads as unfocused to the app,
+  as on Windows. GTK itself is not told (to the X server its window is no top-level one), so
+  the page's `focus` event does not fire.
+
+  A native Wayland window (on niri, with **Window system: Wayland** in Preferences, or where
+  there is no XWayland) holds no child of another toolkit: there the panel draws the built-in
+  conversation, and the app says so once on its error output. To have the page there the view
+  would have to be drawn off screen and painted by the app itself, with every key and pointer
+  event passed on by hand: that is not built.
+
+  Checked in a container only (Ubuntu 24.04, software Vulkan, WebKitGTK 2.52, GTK 3.24): in a
+  Wayland session (sway 1.9 on a headless output, with XWayland) at output scales 1 and 1.5,
+  and on a plain X display (Xvfb, openbox). Not on a real desktop or graphics card, not under
+  GNOME or KDE, and input methods (IBus, Fcitx) were not tried.
 - **Windows**: WebView2, in a child window of the app's. WebView2 serves no scheme of the app's
   own, so the page has an `http` address there (`http://openskyfall-assistant.localhost/…`, the
   form `wry` gives a custom scheme), which only this view answers. WebView2 keeps its files in
