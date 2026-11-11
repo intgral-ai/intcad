@@ -276,9 +276,20 @@ function Quit {
 }
 
 # The app's error output of a run, printed and kept; the run is ended if it has not ended.
+# Nothing here waits without a limit: an app that started and never showed a window (the 32-bit
+# build on a CI runner, 2026-11-11) kept this script waiting for the end of its error output for
+# as long as the job ran. The app is ended with every process it started, and the output is
+# taken as far as it has come if it does not end.
 function Finish([string]$name) {
-    if ($script:p -and -not $script:p.HasExited) { $script:p.Kill(); $script:p.WaitForExit() }
-    $err = if ($script:stderr) { $script:stderr.Result } else { '' }
+    if ($script:p -and -not $script:p.HasExited) {
+        Write-Host 'the app is still running: ending it and every process it started'
+        try { $script:p.Kill($true) } catch { Write-Host "could not end it: $($_.Exception.Message)" }
+        [void]$script:p.WaitForExit(15000)
+    }
+    $err = ''
+    if ($script:stderr) {
+        if ($script:stderr.Wait(15000)) { $err = $script:stderr.Result } else { $err = "(the app's error output did not end within 15 s: a process it started still holds it open)" }
+    }
     Set-Content -Path (Join-Path $Evidence "$name-app-error-output.txt") -Value $err
     Write-Host $err
     $err
@@ -381,6 +392,7 @@ try {
     }
     Quit
 } catch {
+    Write-Host "FAIL: $($_.Exception.Message)"
     $failures.Add($_.Exception.Message)
 } finally {
     [void](Finish 'first-run')
@@ -413,6 +425,7 @@ if ($made) {
         }
         Quit
     } catch {
+        Write-Host "FAIL: with the runtime hidden: $($_.Exception.Message)"
         $failures.Add("with the runtime hidden: " + $_.Exception.Message)
     } finally {
         $said = Finish 'runtime-hidden'
