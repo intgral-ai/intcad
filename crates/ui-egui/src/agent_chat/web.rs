@@ -373,7 +373,7 @@ pub fn state(app: &mut SolveApp) -> String {
         ("viewAttached", "ui.agent_chat_view_attached"),
         ("waiting", "ui.agent_chat_waiting"),
         ("connect", "ui.agent_chat_connect"),
-        ("disconnect", "ui.agent_chat_stop"),
+        ("disconnect", "ui.agent_chat_stop_tip"),
         ("retry", "ui.agent_chat_retry"),
         ("newChat", "ui.agent_chat_new"),
         ("newChatConfirm", "ui.agent_chat_new_confirm"),

@@ -33,7 +33,17 @@ import { Button } from '@/ds/components/Button';
 import { ChatShell } from '@/ds/components/ChatShell';
 import { Combobox } from '@/ds/components/Combobox';
 import type { ComboboxOption } from '@/ds/components/Combobox';
-import { Composer, ComposerActions, ComposerAttachments, ComposerBox, ComposerInput, ComposerRing } from '@/ds/components/Composer';
+import {
+  Composer,
+  ComposerActions,
+  ComposerActionsEnd,
+  ComposerActionsStart,
+  ComposerAttachments,
+  ComposerBox,
+  ComposerInput,
+  ComposerRing,
+  ComposerStatus,
+} from '@/ds/components/Composer';
 import { CopyButton } from '@/ds/components/CopyButton';
 import { DropdownMenu } from '@/ds/components/DropdownMenu';
 import { EmptyState } from '@/ds/components/EmptyState';
@@ -41,6 +51,7 @@ import { MarkdownRenderer } from '@/ds/components/MarkdownRenderer';
 import { Message } from '@/ds/components/Message';
 import { MessageScrollerItem } from '@/ds/components/MessageScroller';
 import { Notice } from '@/ds/components/Notice';
+import { PendingIndicator } from '@/ds/components/PendingIndicator';
 import { Textarea } from '@/ds/components/Textarea';
 import { Txt } from '@/ds/components/Txt';
 import { cn } from '@/lib/utils';
@@ -390,7 +401,11 @@ function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings:
             );
         }
       })}
-      {busy && turn.parts.length === 0 && <Txt variant="caption">{strings.working}</Txt>}
+      {busy && turn.parts.length === 0 && (
+        <div role="status" aria-label={strings.working}>
+          <PendingIndicator className="h-6" />
+        </div>
+      )}
     </div>
   );
 }
@@ -575,7 +590,8 @@ function Queue({ state }: { state: AssistantState }) {
 /**
  * The agent's model, searched by typing; an agent that takes a model it did not list is sent what
  * was typed. The list is the agent's own models, or its model option when it describes itself by
- * options.
+ * options. Mastra's trigger is as wide as its row by default; `w-auto` keeps it to its text, so it
+ * takes no room from the controls beside it and is the one that is cut short in a narrow panel.
  */
 function ModelPicker({ state }: { state: AssistantState }) {
   const { strings } = state;
@@ -616,7 +632,7 @@ function ModelPicker({ state }: { state: AssistantState }) {
       popupWidth="md"
       disabled={state.configPending}
       aria-label={strings.model}
-      className="max-w-36 min-w-0"
+      className="w-auto max-w-40 min-w-0 shrink"
     />
   );
 }
@@ -746,8 +762,8 @@ function AssistantComposer({ state }: { state: AssistantState }) {
             onChange={event => setText(event.target.value)}
             onKeyDown={onKeyDown}
           />
-          <ComposerActions className="flex-wrap gap-y-1">
-            <div className="flex min-w-0 items-center gap-1">
+          <ComposerActions>
+            <ComposerActionsStart className="gap-1">
               <DropdownMenu>
                 <DropdownMenu.Trigger variant="ghost" size="icon-sm" aria-label={strings.add} tooltip={strings.add}>
                   <Plus />
@@ -803,14 +819,9 @@ function AssistantComposer({ state }: { state: AssistantState }) {
                   </DropdownMenu.Content>
                 </DropdownMenu>
               )}
-            </div>
-            <div className="ml-auto flex min-w-0 items-center gap-1.5">
+            </ComposerActionsStart>
+            <ComposerActionsEnd>
               <ModelPicker state={state} />
-              {state.turn && (
-                <Txt variant="caption" role="status" aria-live="polite">
-                  {state.turn}
-                </Txt>
-              )}
               {busy && (
                 <Button type="button" size="icon-sm" className="shrink-0" aria-label={strings.stop} tooltip={strings.stop} onClick={() => post({ type: 'stop' })}>
                   <Square />
@@ -819,7 +830,7 @@ function AssistantComposer({ state }: { state: AssistantState }) {
               <Button type="submit" size="icon-sm" variant="primary" className="shrink-0" aria-label={strings.send} disabled={!canSend}>
                 <ArrowUp />
               </Button>
-            </div>
+            </ComposerActionsEnd>
           </ComposerActions>
         </ComposerBox>
       </ComposerRing>
@@ -857,15 +868,12 @@ function AssistantBar({ state }: { state: AssistantState }) {
   const badge = stateBadge(state);
   // The agent's own settings; its model is picked beside the message box.
   const settings = (state.config ?? []).filter(option => option.category !== 'model');
-  let connect: { label: string; type: 'connect' | 'disconnect' } = { label: strings.connect, type: 'connect' };
-  if (state.running) connect = { label: strings.disconnect, type: 'disconnect' };
-  else if (state.state === 'failed') connect = { label: strings.retry, type: 'connect' };
   return (
     <ChatShell.Bar>
       <ChatShell.Column className="flex-row items-center justify-between gap-2 py-2">
-        <div className="flex min-w-0 items-center gap-1.5">
+        <div className="-m-0.5 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 gap-y-2 overflow-hidden p-0.5">
           <DropdownMenu>
-            <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={strings.switchAgent} tooltip={strings.switchAgent} className="min-w-12">
+            <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={strings.switchAgent} tooltip={strings.switchAgent} className="max-w-full min-w-12">
               <span className="truncate">{name}</span>
               <ChevronDown />
             </DropdownMenu.Trigger>
@@ -902,19 +910,24 @@ function AssistantBar({ state }: { state: AssistantState }) {
               <DropdownMenu.Item onClick={() => post({ type: 'add_agent' })}>{strings.addAgent}</DropdownMenu.Item>
               <DropdownMenu.Item onClick={() => post({ type: 'settings' })}>{strings.settings}</DropdownMenu.Item>
               <DropdownMenu.Item onClick={() => post({ type: 'refresh' })}>{strings.refresh}</DropdownMenu.Item>
+              {/* Stopping the agent is the agent's own matter, said in full here: the square by Send stops only the running message. */}
+              {state.running && (
+                <>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item onClick={() => post({ type: 'disconnect' })}>{strings.disconnect}</DropdownMenu.Item>
+                </>
+              )}
             </DropdownMenu.Content>
           </DropdownMenu>
-          {/* In a narrow panel the agent's name keeps its room: Stop or Connect beside it says the state too. */}
-          <span className="hidden @min-[340px]:inline-flex">
-            <Badge variant={badge.variant} emphasis="subtle" size="sm">
-              {badge.label}
-            </Badge>
-          </span>
+          {/* It wraps out of sight when the name leaves it no room. */}
+          <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+            {badge.label}
+          </Badge>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {state.agent && (
-            <Button type="button" size="sm" variant="ghost" onClick={() => post({ type: connect.type })}>
-              {connect.label}
+          {state.agent && !state.running && (
+            <Button type="button" size="sm" variant="ghost" onClick={() => post({ type: 'connect' })}>
+              {state.state === 'failed' ? strings.retry : strings.connect}
             </Button>
           )}
           <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.newChat} tooltip={strings.newChat} onClick={() => post({ type: 'new_chat' })}>
@@ -1112,6 +1125,14 @@ export function App({ state }: { state: AssistantState | null }) {
                 )}
                 {tasks.length > 0 && <TaskList defaultOpen={busy} hideWhenComplete={false} scrollActiveIntoView={false} tasks={tasks} />}
                 <Queue state={state} />
+                <ComposerStatus role="status" aria-live="polite">
+                  {busy && state.turn && (
+                    <span className="flex items-center gap-1.5 whitespace-nowrap">
+                      <PendingIndicator />
+                      {state.turn}
+                    </span>
+                  )}
+                </ComposerStatus>
                 <AssistantComposer state={state} />
               </ChatShell.Column>
             </ChatShell.Dock>

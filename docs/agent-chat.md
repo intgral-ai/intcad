@@ -47,7 +47,8 @@ when you send a message or press **Connect** (or at launch, when you turned that
 **On macOS, Linux and Windows the Assistant is a web view inside its panel**, and the panel is always part
 of the app's window. The whole of it is drawn by a page
 built from Mastra's playground-ui components (`packages/assistant-web`): the bar with the agent
-(its mode and options under the same menu), the state, **Connect** / **Stop**, **New
+(its mode and options under the same menu, and, while it runs, the row that stops the agent and
+everything it started), the state, **Connect** while the agent is not running, **New
 chat**, the panel's menu (dock on the other side, fold to a strip) and **Close**;
 the conversation, with tool calls as rows that fold, a request for approval with **Allow once**,
 **Always allow** and **Deny** always in view, the plan as a task list above the message box, and
@@ -57,6 +58,11 @@ mode and the skill, and the agent's model beside **Send**: a list you search by 
 also offers what you typed as a model of your own when the agent takes one. What the page shows
 and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
 
+- While a message runs, the number of changes it has made so far shows in a line over the message
+  box, and the square beside **Send** stops that message. The line is gone when the message ends:
+  the conversation then says how many changes it made, with **Undo these changes**.
+- In a narrow panel the message box's controls take two lines, the model and **Send** under the
+  rest, and the bar drops the state rather than cut the agent's name short.
 - Messages that wait (queued behind the running one, or left by **Stop**) sit in a box over the
   message box, so they stay in view: each can be edited or removed, and **Send now** (or
   Ctrl/Cmd+Enter in the message box) stops the running step and sends them next.

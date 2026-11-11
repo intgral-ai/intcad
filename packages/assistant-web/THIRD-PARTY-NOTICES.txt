@@ -10,7 +10,7 @@ do not edit it by hand.
 ================================================================================
 playground-ui (Mastra), 69.0.0-alpha.4
 https://github.com/mastra-ai/mastra at commit aa406eaae60717422a1dba07da5b97fb26a0b998
-Licence: Apache-2.0. 118 source files of packages/playground-ui/src are in the page's script, and its
+Licence: Apache-2.0. 119 source files of packages/playground-ui/src are in the page's script, and its
 stylesheet is built from 12 stylesheets of the checkout. Nothing under a directory named ee/
 is in the page: those parts of Mastra are under a separate enterprise licence, and the build
 stops if a script module, an imported stylesheet or a font comes from one, and keeps its
