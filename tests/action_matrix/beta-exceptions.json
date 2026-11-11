@@ -1,5 +1,5 @@
 {
-  "about": "Reviewed Beta action-matrix exceptions. Each entry binds a design/entity/action identity to its failure kind, a stable failure class, the reviewed evidence run and an issue. The historical baseline was recorded on the C++ SMLib backend and is not comparable with the Rust solidcore pin, so these 213 are a ratchet mismatch first, not proof of a fork-only kernel regression; see docs/kernel-attribution.md. Beta promotion fails on an unlisted failure, a changed class, a missing shard, a build failure or an exception that starts passing. This is not a stable release waiver and is not a replacement for tests/action_matrix/baseline.json.",
+  "about": "Reviewed Beta action-matrix exceptions. Each entry binds a design/entity/action identity to its failure kind, a stable failure class, the reviewed evidence run and an issue. The historical baseline was recorded on the C++ SMLib backend and is not comparable with the Rust solidcore pin, so these 213 are a ratchet mismatch first, not proof of a fork-only kernel regression; see docs/kernel-attribution.md. The reviewed run also has 1085 pre-existing baseline failures and 972 unbaselined failures; neither is counted as a pass, and the unbaselined identities are frozen by count and digest. Beta promotion fails on an unlisted failure, a changed class, a missing shard, a build failure or an exception that starts passing. This is not a stable release waiver and is not a replacement for tests/action_matrix/baseline.json.",
   "entries": [
     {
       "action": "face.shell",
@@ -8,7 +8,7 @@
       "entity": "Lid/F10:+x",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:\nSmLoop::Test #2 Bad Loop Orient: A UpperLoopuse->Edgeuse's 'Inside' is Outside Surface Natural Boundary - loop may have wrong orientation [owner SmLoop]\n"
     },
     {
       "action": "face.shell",
@@ -17,7 +17,7 @@
       "entity": "Lid/F11:+x",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:\nSmLoop::Test #2 Bad Loop Orient: A UpperLoopuse->Edgeuse's 'Inside' is Outside Surface Natural Boundary - loop may have wrong orientation [owner SmLoop]\n"
     },
     {
       "action": "face.shell",
@@ -44,7 +44,7 @@
       "entity": "Lid/F8:-x",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:\nSmLoop::Test #2 Bad Loop Orient: A UpperLoopuse->Edgeuse's 'Inside' is Outside Surface Natural Boundary - loop may have wrong orientation [owner SmLoop]\n"
     },
     {
       "action": "face.shell",
@@ -53,7 +53,7 @@
       "entity": "Lid/F9:-x",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:\nSmLoop::Test #2 Bad Loop Orient: A UpperLoopuse->Edgeuse's 'Inside' is Outside Surface Natural Boundary - loop may have wrong orientation [owner SmLoop]\n"
     },
     {
       "action": "face.shell",
@@ -651,12 +651,12 @@
     },
     {
       "action": "face.hole",
-      "category": "boolean_refused",
+      "category": "boolean_vertex_gap",
       "design": "oracle/18-hole-features",
       "entity": "Plate/F2:side:l3",
       "issue": "#83",
       "kind": "error",
-      "message": "body `Plate`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Plate`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmVertex::Test #1 Bad Vertex Gap: Vertex-Face Gap exceeds XSectTol3d for one (or more) Faces (offset=     3, tolerance= 2e-05) [owner SmVertex]\n"
     },
     {
       "action": "face.hole",
@@ -723,21 +723,21 @@
     },
     {
       "action": "face.extrude",
-      "category": "boolean_refused",
+      "category": "boolean_uv_gap",
       "design": "oracle/24-user-parameters",
       "entity": "Block/F2:start",
       "issue": "#83",
       "kind": "error",
-      "message": "body `Block`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Block`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmTrimmingTools::Test #2 UVEdge/UVEdge Gap: too large V Dir gap between loop Edge endPoints that are not on a singularity (offset=31.415927, tolerance=3.1415927) [owner SmLoop]\nAssertValid skipped: ValidatePointers failed\n"
     },
     {
       "action": "face.press_pull",
-      "category": "boolean_refused",
+      "category": "boolean_uv_gap",
       "design": "oracle/24-user-parameters",
       "entity": "Block/F2:start",
       "issue": "#83",
       "kind": "error",
-      "message": "body `Block`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Block`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmTrimmingTools::Test #2 UVEdge/UVEdge Gap: too large V Dir gap between loop Edge endPoints that are not on a singularity (offset=31.415927, tolerance=3.1415927) [owner SmLoop]\nAssertValid skipped: ValidatePointers failed\n"
     },
     {
       "action": "edge.chamfer",
@@ -813,12 +813,12 @@
     },
     {
       "action": "face.extrude+edit",
-      "category": "boolean_refused",
+      "category": "boolean_uv_gap",
       "design": "oracle/27-sketch-trapezoid",
       "entity": "Trapezoid/F2:start",
       "issue": "#83",
       "kind": "timeline_error",
-      "message": "Extrude2: body `Trapezoid`: the operation failed: SMLib boolean: SMLib's check refuses the result: 2 failed tests:"
+      "message": "Extrude2: body `Trapezoid`: the operation failed: SMLib boolean: SMLib's check refuses the result: 2 failed tests:\nSmTrimmingTools::Test #2 UVEdge/UVEdge Gap: too large V Dir gap between loop Edge endPoints that are not on a singularity (offset=18.849556, tolerance=1.8849556) [owner SmLoop]\nSmTrimmingTools::Test #2 UVEdge/UVEdge Gap: too large V Dir gap between loop Edge endPoints that are not on "
     },
     {
       "action": "edge.chamfer",
@@ -863,7 +863,7 @@
       "entity": "Box/F2:side:l1",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9924648e-06, tolerance=0.00010440652) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.shell",
@@ -872,7 +872,7 @@
       "entity": "Box/F2:side:l2",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9923659e-06, tolerance=0.00010440653) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.shell",
@@ -881,7 +881,7 @@
       "entity": "Box/F2:side:l3",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9924648e-06, tolerance=0.00010440652) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.shell",
@@ -890,7 +890,7 @@
       "entity": "Box/F2:side:l4",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 2 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 2 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9924648e-06, tolerance=0.00010440652) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.shell",
@@ -899,7 +899,7 @@
       "entity": "Box/F2:start",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9923659e-06, tolerance=0.00010440653) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.shell",
@@ -908,7 +908,7 @@
       "entity": "Box/F2:top",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9923656e-06, tolerance=0.00010440653) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.shell",
@@ -917,7 +917,7 @@
       "entity": "Box/F3:blend:F2:side:l1|F2:side:l2",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9923659e-06, tolerance=0.00010440653) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.shell",
@@ -926,7 +926,7 @@
       "entity": "Box/F3:blend:F2:side:l1|F2:side:l4",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9923656e-06, tolerance=0.00010440653) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.shell",
@@ -935,7 +935,7 @@
       "entity": "Box/F3:blend:F2:side:l2|F2:side:l3",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 6 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 6 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.99226e-06, tolerance=0.00010440653) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an "
     },
     {
       "action": "face.shell",
@@ -944,7 +944,7 @@
       "entity": "Box/F3:blend:F2:side:l3|F2:side:l4",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 4 failed tests:\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often an almost kink point - sometimes what's desired) (offset=1.9924648e-06, tolerance=0.00010440652) [owner SmBSplineCurve]\nSmBSplineCurve::Test #13 Bad CurveCusp: 2D BSplineCurve Warning: Extremely small radius of curvature (often a"
     },
     {
       "action": "face.extrude",
@@ -1223,7 +1223,7 @@
       "entity": "Loft/F4:end|F4:side:l2",
       "issue": "#88",
       "kind": "error",
-      "message": "body `Loft`: the operation failed: SMLib chamfer: SMLib's check refuses the result: 7 failed tests:"
+      "message": "body `Loft`: the operation failed: SMLib chamfer: SMLib's check refuses the result: 7 failed tests:\nSmBrep::Test #4 Bad Gap: Edge/Surface gap across Edgeuse larger than tol (offset=0.0016845159, tolerance= 4e-05) [owner SmEdgeuse]\nSmBrep::Test #4 Bad Gap: Edge/Surface gap across Edgeuse larger than tol (offset=0.013344713, tolerance= 4e-05) [owner SmEdgeuse]\nSmBSplineSurface::Test #5 Bad NonMonoto"
     },
     {
       "action": "edge.fillet",
@@ -1232,7 +1232,7 @@
       "entity": "Loft/F4:end|F4:side:l2",
       "issue": "#88",
       "kind": "error",
-      "message": "body `Loft`: the operation failed: SMLib fillet: SMLib's check refuses the result: 10 failed tests:"
+      "message": "body `Loft`: the operation failed: SMLib fillet: SMLib's check refuses the result: 10 failed tests:\nSmBrep::Test #59 Tolerance: Edge tolerance relative to brep tolerance (offset=0.027072147, tolerance=  0.01) [owner SmEdge]\nSmBrep::Test #59 Tolerance: Edge tolerance relative to brep tolerance (offset=0.026591997, tolerance=  0.01) [owner SmEdge]\nSmBrep::Test #59 Tolerance: Edge tolerance relative "
     },
     {
       "action": "edge.fillet",
@@ -1403,7 +1403,7 @@
       "entity": "Lid/F10:+x",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:\nSmLoop::Test #2 Bad Loop Orient: A UpperLoopuse->Edgeuse's 'Inside' is Outside Surface Natural Boundary - loop may have wrong orientation [owner SmLoop]\n"
     },
     {
       "action": "face.shell",
@@ -1412,7 +1412,7 @@
       "entity": "Lid/F11:+x",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:\nSmLoop::Test #2 Bad Loop Orient: A UpperLoopuse->Edgeuse's 'Inside' is Outside Surface Natural Boundary - loop may have wrong orientation [owner SmLoop]\n"
     },
     {
       "action": "face.shell",
@@ -1439,7 +1439,7 @@
       "entity": "Lid/F8:-x",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:\nSmLoop::Test #2 Bad Loop Orient: A UpperLoopuse->Edgeuse's 'Inside' is Outside Surface Natural Boundary - loop may have wrong orientation [owner SmLoop]\n"
     },
     {
       "action": "face.shell",
@@ -1448,7 +1448,7 @@
       "entity": "Lid/F9:-x",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 1 failed tests:\nSmLoop::Test #2 Bad Loop Orient: A UpperLoopuse->Edgeuse's 'Inside' is Outside Surface Natural Boundary - loop may have wrong orientation [owner SmLoop]\n"
     },
     {
       "action": "edge.chamfer",
@@ -1475,7 +1475,7 @@
       "entity": "Block/F2:top|F5:end",
       "issue": "#88",
       "kind": "error",
-      "message": "body `Block`: the operation failed: SMLib fillet: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Block`: the operation failed: SMLib fillet: SMLib's check refuses the result: 1 failed tests:\nSmSurface::Test #1 Bad Surf FlatCorner: Surface Su and Sv Tangents in at least one corner are parallel (tolerance=   0.5) [owner SmBSplineSurface]\n"
     },
     {
       "action": "face.shell",
@@ -1538,7 +1538,7 @@
       "entity": "Body1/F4:bottom",
       "issue": "#83",
       "kind": "error",
-      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmFace::Test #36 Face Near missing Seam: Face Surface Seam has suspicious Edge near seam [owner SmFace]\n"
     },
     {
       "action": "face.shell",
@@ -1641,39 +1641,39 @@
     },
     {
       "action": "face.extrude",
-      "category": "boolean_refused",
+      "category": "boolean_multilump_void",
       "design": "regressions/partial_face_contact_pattern",
       "entity": "Body1/F1:+x",
-      "issue": "#83",
+      "issue": "#55",
       "kind": "error",
-      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmBrep::Test #12 Bad Inner shells: NonInfiniteRegion Inner shell is not geometrically inside its containing outerShell [owner SmBrep]\n"
     },
     {
       "action": "face.press_pull",
-      "category": "boolean_refused",
+      "category": "boolean_multilump_void",
       "design": "regressions/partial_face_contact_pattern",
       "entity": "Body1/F1:+x",
-      "issue": "#83",
+      "issue": "#55",
       "kind": "error",
-      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmBrep::Test #12 Bad Inner shells: NonInfiniteRegion Inner shell is not geometrically inside its containing outerShell [owner SmBrep]\n"
     },
     {
       "action": "face.extrude",
-      "category": "boolean_refused",
+      "category": "boolean_multilump_void",
       "design": "regressions/partial_face_contact_pattern",
       "entity": "Body1/F1:+z",
-      "issue": "#83",
+      "issue": "#55",
       "kind": "error",
-      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmBrep::Test #12 Bad Inner shells: NonInfiniteRegion Inner shell is not geometrically inside its containing outerShell [owner SmBrep]\n"
     },
     {
       "action": "face.press_pull",
-      "category": "boolean_refused",
+      "category": "boolean_multilump_void",
       "design": "regressions/partial_face_contact_pattern",
       "entity": "Body1/F1:+z",
-      "issue": "#83",
+      "issue": "#55",
       "kind": "error",
-      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:"
+      "message": "body `Body1`: the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmBrep::Test #12 Bad Inner shells: NonInfiniteRegion Inner shell is not geometrically inside its containing outerShell [owner SmBrep]\n"
     },
     {
       "action": "face.draft_neutral",
@@ -1835,7 +1835,7 @@
       "entity": "Body1/F5:blend:F2:side:l1|F2:top",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 2 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 2 failed tests:\nSmBrep::Test #18 Region Count: Brep region count not equal a topology traversal region count, must be [owner SmBrep]\nSmBrep::Test #19 Region Connectivity: Regions found by topology traversal should be the same as the Brep's region list [owner SmBrep]\n"
     },
     {
       "action": "face.shell",
@@ -1853,7 +1853,7 @@
       "entity": "Body1/F5:blend:F2:side:l3|F2:top",
       "issue": "#88",
       "kind": "error",
-      "message": "SMLib shell: SMLib's check refuses the result: 2 failed tests:"
+      "message": "SMLib shell: SMLib's check refuses the result: 2 failed tests:\nSmBrep::Test #18 Region Count: Brep region count not equal a topology traversal region count, must be [owner SmBrep]\nSmBrep::Test #19 Region Connectivity: Regions found by topology traversal should be the same as the Brep's region list [owner SmBrep]\n"
     },
     {
       "action": "face.shell",
@@ -1871,7 +1871,7 @@
       "entity": "Body1/F6:end|F6:side:l6",
       "issue": "#88",
       "kind": "error",
-      "message": "body `Body1`: the operation failed: SMLib fillet: SMLib's check refuses the result: 6 failed tests:"
+      "message": "body `Body1`: the operation failed: SMLib fillet: SMLib's check refuses the result: 6 failed tests:\nSmBrep::Test #4 Bad Gap: Edge/Surface gap across Edgeuse larger than tol (offset=0.00011198949, tolerance= 4e-05) [owner SmEdgeuse]\nSmBrep::Test #4 Bad Gap: Edge/Surface gap across Edgeuse larger than tol (offset=0.00011187758, tolerance= 4e-05) [owner SmEdgeuse]\nSmEdge::Test #13 Bad Edge loc: Edge "
     },
     {
       "action": "edge.fillet",
@@ -1880,7 +1880,7 @@
       "entity": "Body1/F6:end|F6:side:l8",
       "issue": "#88",
       "kind": "error",
-      "message": "body `Body1`: the operation failed: SMLib fillet: SMLib's check refuses the result: 6 failed tests:"
+      "message": "body `Body1`: the operation failed: SMLib fillet: SMLib's check refuses the result: 6 failed tests:\nSmBrep::Test #4 Bad Gap: Edge/Surface gap across Edgeuse larger than tol (offset=0.00011198949, tolerance= 4e-05) [owner SmEdgeuse]\nSmBrep::Test #4 Bad Gap: Edge/Surface gap across Edgeuse larger than tol (offset=0.00011187758, tolerance= 4e-05) [owner SmEdgeuse]\nSmEdge::Test #13 Bad Edge loc: Edge "
     },
     {
       "action": "face.draft_neutral",
@@ -1927,6 +1927,8 @@
     "run": 42790743092,
     "sha": "7bf03f6d9f355be8d59843953aba92a3d2947611",
     "shards": "1-14 and 16 from run 42790743092; shard 15 rerun at 1a45733ef96b53990fec8bd7794563eebc6facdb with the same costs/sharding",
-    "totalActions": 54029
+    "totalActions": 54029,
+    "unbaselinedDigest": "b2ab23f17ab1d2a88429ef9a660de5dbf1f922f1e8b6fd9bf077a5a1983ef56e",
+    "unbaselinedFailures": 972
   }
 }

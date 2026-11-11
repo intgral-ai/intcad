@@ -22,8 +22,18 @@ ACTIONS = [
 
 
 def manifest(entries=None, total=3):
-    return dict(format=1, about="test", source=dict(run=1, sha="a" * 40, totalActions=total),
+    return dict(format=1, about="test", source=dict(run=1, sha="a" * 40, totalActions=total, baseline="baseline.json"),
                 entries=entries if entries is not None else [ENTRY])
+
+
+def baseline(extra=()):
+    designs = {
+        "demo/a": {"Body1/F1": "face.shell face.extrude", "Body1/F2": "face.shell"},
+        "demo/b": {"Body1/F1": "edge.fillet"},
+    }
+    for design, entity, action in extra:
+        designs.setdefault(design, {})[entity] = action
+    return dict(about="test", designs=designs)
 
 
 def write_matrix(root, actions=None):
@@ -38,47 +48,55 @@ class Matrix(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.exceptions = self.root / "exceptions.json"
+        self.matrix = self.root / "matrix"
+        self.matrix.mkdir()
+        self.exceptions = self.root / "tests/action_matrix/exceptions.json"
+        self.exceptions.parent.mkdir(parents=True)
         self.exceptions.write_text(json.dumps(manifest()))
+        (self.exceptions.parent / "baseline.json").write_text(json.dumps(baseline()))
+        (self.root / "baseline.json").write_text(json.dumps(baseline()))
+        self.entry = ENTRY
+        self.entry["category"] = beta_gate.category(ENTRY["action"], ENTRY["message"])
 
     def test_valid_matrix(self):
-        result = beta_gate.evaluate_matrix(write_matrix(self.root), self.exceptions)
+        result = beta_gate.evaluate_matrix(write_matrix(self.matrix), self.exceptions)
         self.assertEqual((result["actions"], result["failures"], result["excused"]), (3, 1, 1))
         self.assertEqual(result["problems"], [])
 
     def test_missing_shard_is_not_a_pass(self):
-        write_matrix(self.root)
-        (self.root / "results-7.json").unlink()
+        write_matrix(self.matrix)
+        (self.matrix / "results-7.json").unlink()
         with self.assertRaisesRegex(beta_gate.BetaGateError, "missing shards 7"):
-            beta_gate.evaluate_matrix(self.root, self.exceptions)
+            beta_gate.evaluate_matrix(self.matrix, self.exceptions)
 
     def test_new_failure_is_unexcused(self):
         self.exceptions.write_text(json.dumps(manifest(total=4)))
+        (self.root / "baseline.json").write_text(json.dumps(baseline(extra=(("demo/c", "Body1/F1", "face.shell"),))))
         actions = ACTIONS + [dict(design="demo/c", entity="Body1/F1", action="face.shell", kind="error", message=SHELL, ok=False)]
-        result = beta_gate.evaluate_matrix(write_matrix(self.root, actions), self.exceptions)
+        result = beta_gate.evaluate_matrix(write_matrix(self.matrix, actions), self.exceptions)
         self.assertTrue(result["problems"])
         self.assertIn("unexcused action failures", result["problems"][0])
 
     def test_exception_that_passes_must_be_removed(self):
         actions = [dict(ACTIONS[0], ok=True), ACTIONS[1], ACTIONS[2]]
-        result = beta_gate.evaluate_matrix(write_matrix(self.root, actions), self.exceptions)
+        result = beta_gate.evaluate_matrix(write_matrix(self.matrix, actions), self.exceptions)
         self.assertTrue(result["problems"])
         self.assertIn("now pass", result["problems"][0])
 
     def test_changed_class_or_kind_is_not_excused(self):
         actions = [dict(ACTIONS[0], message="not supported yet: SMLib shell for this geometry"),
                    ACTIONS[1], ACTIONS[2]]
-        result = beta_gate.evaluate_matrix(write_matrix(self.root, actions), self.exceptions)
+        result = beta_gate.evaluate_matrix(write_matrix(self.matrix, actions), self.exceptions)
         self.assertTrue(result["problems"])
         self.assertIn("changed failure class", result["problems"][0])
         actions = [dict(ACTIONS[0], kind="bad_params"), ACTIONS[1], ACTIONS[2]]
-        result = beta_gate.evaluate_matrix(write_matrix(self.root, actions), self.exceptions)
+        result = beta_gate.evaluate_matrix(write_matrix(self.matrix, actions), self.exceptions)
         self.assertIn("changed failure class", result["problems"][0])
 
     def test_total_action_count_must_match_the_reviewed_run(self):
         self.exceptions.write_text(json.dumps(manifest(total=4)))
         with self.assertRaisesRegex(beta_gate.BetaGateError, "expected 4"):
-            beta_gate.evaluate_matrix(write_matrix(self.root), self.exceptions)
+            beta_gate.evaluate_matrix(write_matrix(self.matrix), self.exceptions)
 
     def test_repository_manifest_is_itemised_and_classified(self):
         data, entries = beta_gate.load_exceptions(ROOT / "tests/action_matrix/beta-exceptions.json")
@@ -86,6 +104,8 @@ class Matrix(unittest.TestCase):
         self.assertEqual(len(entries), 213)
         self.assertEqual(len(entries), len({(e["design"], e["entity"], e["action"]) for e in entries.values()}))
         self.assertTrue(all(entry["issue"] in ("#55", "#83", "#88") for entry in entries.values()))
+        self.assertEqual(data["source"]["unbaselinedFailures"], 972)
+        self.assertEqual(len(data["source"]["unbaselinedDigest"]), 64)
 
 
 class Properties(unittest.TestCase):

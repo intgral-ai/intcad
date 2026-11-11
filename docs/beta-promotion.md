@@ -35,13 +35,20 @@ the representative upstream comparisons are in `docs/kernel-attribution.md`.
 - an issue (`#55`, `#83`, `#88` at this revision);
 - the evidence run and source SHA that produced the whole 16-shard matrix.
 
+The reviewed run also has 1,085 failures already recorded as failing in the
+historical baseline and 972 failures on actions the historical baseline never
+recorded. Neither group is counted as a pass. The unbaselined identities are
+frozen by count and digest in the same file; a new or moved unbaselined failure
+fails the gate.
+
 The Beta gate fails when any of these changes:
 
 - a shard is missing, duplicated, empty of a parseable result, or the total action
   count differs from the reviewed run;
-- an action fails that is not in the list;
+- an action that passed in the baseline fails and is not in the list;
 - a listed action fails with a different `kind` or failure class;
 - a listed action starts passing (the exception must be removed in that change);
+- the unbaselined failure count or identity digest changes;
 - any required build, test, packaging or platform job is missing or unsuccessful.
 
 Build failures, timeouts, cancellations, result-parse failures and unknown
