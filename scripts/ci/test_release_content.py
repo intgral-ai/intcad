@@ -108,6 +108,20 @@ class NativeContentDecision(unittest.TestCase):
         self.assertTrue(problems)
         self.assertIn("claims coverage", problems[0])
 
+    def test_a_derived_package_may_alias_the_source_by_digest(self):
+        descriptors = {
+            "release-linux-x86_64": build("release-linux-x86_64", [("solidcraft-0.1.0-beta.1-linux-x86_64.tar.gz", DG)]),
+            "release-arch-x86_64": build("release-arch-x86_64", [("solidcraft-0.1.0-beta.1-linux-x86_64.pkg.tar.zst", DG2)]),
+        }
+        contents = {
+            "release-linux-x86_64": report("release-linux-x86_64", [("solidcraft-0.1.0-beta.1-linux-x86_64.tar.gz", DG)]),
+            "release-arch-x86_64": report("release-arch-x86_64", [], derived="release-linux-x86_64",
+                                          source_name="solidcraft-0.1.0beta.1-linux-x86_64.tar.gz", source_sha=DG),
+        }
+        self.assertEqual(content.problems(SHA, descriptors, contents), [])
+        contents["release-arch-x86_64"]["sourceSha256"] = DG2
+        self.assertTrue(content.problems(SHA, descriptors, contents))
+
     def test_explicit_mastra_distribution_stays_blocked(self):
         descriptors = {"release-linux-x86_64": build("release-linux-x86_64", [("solidcraft.tar.gz", DG)])}
         contents = {"release-linux-x86_64": report("release-linux-x86_64", [("solidcraft.tar.gz", DG)],

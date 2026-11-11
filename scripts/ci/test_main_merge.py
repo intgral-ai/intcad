@@ -467,6 +467,27 @@ else:
                 self.assertIn(job + ":", output)
                 self.needs[job]["result"] = "success"
 
+    def test_platform_tool_selects_windows_jobs_without_the_heavy_matrix(self):
+        value = self.plan(["tools/windows-resize-smoke.ps1"])
+        self.assertEqual(value["scope"], "affected")
+        self.assertEqual(value["jobs"]["rust"]["decision"], "not_applicable")
+        self.assertEqual(value["platform"]["windows"]["decision"], "run")
+        self.policy_event()
+        main_merge.execute_workflow(self.plan_file, "pr-policy", self.root / "receipts/pr-policy")
+        out = self.root / "receipts/repo"
+        commands = main_merge.capture_commands([[sys.executable, "-I", "-c", "pass"]], out)
+        receipt = main_merge.gate.record_receipt(self.plan_file.read_bytes(), "repo", commands, None, None, set())
+        (out / "receipt.json").write_text(json.dumps(receipt))
+        self.needs = {"changes": {"result": "success", "outputs": {"deps": "false"}},
+                      "repo": {"result": "success"}, "pr-policy": {"result": "success"}}
+        status, output = self.aggregate()
+        self.assertEqual(status, 1)
+        for job in ("windows-fxc", "windows-startup"):
+            self.assertIn(job + ":", output)
+            self.assertNotIn("action-matrix:", output)
+        self.needs.update({job: {"result": "success"} for job in ("windows-fxc", "windows-startup")})
+        self.assertEqual(self.aggregate()[0], 0)
+
     def test_actual_cli_native_exit_and_empty_selection_failure(self):
         self.plan(["crates/base/src/lib.rs"])
         script = str(Path(main_merge.__file__).resolve())
