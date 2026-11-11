@@ -16015,3 +16015,24 @@ fn files_dropped_on_the_web_view_join_the_next_message() {
     assert!(matches!(h.app.agent_chat.items.as_slice(), [Item::Notice { error: true, .. }]), "the missing file is said, the empty path is nothing");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The web view is the window's, not one design's: a design opened in another tab, whose
+/// conversation starts afresh, is shown in it too, on the surface colour the page already said.
+#[test]
+fn a_new_tab_shows_its_conversation_in_the_hosts_web_view() {
+    let mut h = crate::scenario::Harness::new();
+    web::set_host(&mut h.app, true);
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    web::act(&mut h.app, &ctx, &json!({"type": "surface", "color": "#0e0e0e"}).to_string()).expect("a colour");
+
+    crate::documents::open_tab(&mut h.app, solidcraft_engine::Session::default()).unwrap();
+    h.frames(3);
+    assert!(h.app.agent_chat.web_host && h.app.agent_chat.web_canvas.is_some(), "the new tab's conversation is the web view's too");
+    assert!(crate::scenario::rect_of("agent_chat:web").is_some(), "the panel gives its room up in the new tab");
+
+    crate::documents::switch(&mut h.app, 0);
+    h.frames(3);
+    assert!(h.app.agent_chat.web_host && crate::scenario::rect_of("agent_chat:web").is_some(), "and back in the first");
+}
