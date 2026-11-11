@@ -101,7 +101,9 @@ and a saved one is put back.
   rest of the window gives it back to the window. A browser's own keys (find, print, reload,
   zoom, developer tools) are off in the view; the keys of text editing stay. Its loader is
   linked into the exe, so no DLL goes with the app. On a machine without the WebView2 runtime
-  the view cannot be made, and the panel draws the built-in conversation.
+  the view cannot be made, and the panel draws the built-in conversation. The view is made
+  hidden and shown once it is whole: where it cannot be made, `wry` leaves the window it began
+  with in the app's window, and a shown one lay over the built-in conversation as a blank box.
 
   **Run on Windows in CI only; no person has tried it on a Windows machine.** The host was
   written on a Mac, where the app cannot even be type-checked for Windows (a C dependency,
@@ -109,8 +111,10 @@ and a saved one is put back.
   `tools/windows-assistant-smoke.ps1`, which opens the Assistant on the runner and checks that
   the page reports to the app, that a click on the page gives it the keyboard and a click on the
   rest of the window takes it back, that the view leaves the window's resize edges free in the
-  compact layout, and that WebView2's files are in the app's data folder. Its screenshots are in
-  the job's `platform-windows-startup` artifact. What a run found is in that job's log, not
+  compact layout, and that WebView2's files are in the app's data folder. It then starts the
+  app once more with the runtime hidden from it, and checks that the panel goes back to the
+  built-in conversation with no window left shown over it. Its screenshots are in the job's
+  `platform-windows-startup` artifact. What a run found is in that job's log, not
   here. The runner has one monitor at 100 % and no graphics card, so not known: input methods,
   a scale other than 100 %, files dropped on the panel, and the view over a real card's
   backends. While the page has the keyboard the window reads as unfocused to the app, so what
