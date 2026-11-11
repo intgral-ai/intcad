@@ -51,7 +51,8 @@ public static class AssistantWin {
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc f, IntPtr l);
     public static string Text(IntPtr h) { var s = new System.Text.StringBuilder(256); GetWindowTextW(h, s, 256); return s.ToString(); }
     public static string Class(IntPtr h) { var s = new System.Text.StringBuilder(256); GetClassNameW(h, s, 256); return s.ToString(); }
-    public static uint Process(IntPtr h) { uint p; GetWindowThreadProcessId(h, out p); return p; }
+    // (Not named Process: PowerShell cannot call a static method of that name.)
+    public static uint Owner(IntPtr h) { uint p; GetWindowThreadProcessId(h, out p); return p; }
     // The process's visible top-level window with the app's title, as
     // tools/windows-resize-smoke.ps1 finds it (the process has other top-level windows, such as
     // the IME's).
@@ -135,7 +136,7 @@ function Views($h, [string]$when) {
     foreach ($child in [AssistantWin]::Descendants($h)) {
         $r = Rect $child
         $visible = [AssistantWin]::IsWindowVisible($child)
-        Write-Host ("$when : child 0x{0:x} class '{1}' at {2},{3} - {4},{5} visible {6} process {7}" -f $child.ToInt64(), [AssistantWin]::Class($child), $r.Left, $r.Top, $r.Right, $r.Bottom, $visible, [AssistantWin]::Process($child))
+        Write-Host ("$when : child 0x{0:x} class '{1}' at {2},{3} - {4},{5} visible {6} process {7}" -f $child.ToInt64(), [AssistantWin]::Class($child), $r.Left, $r.Top, $r.Right, $r.Bottom, $visible, [AssistantWin]::Owner($child))
         $area = ($r.Right - $r.Left) * ($r.Bottom - $r.Top)
         if ($visible -and $area -gt 0 -and (-not $largest -or $area -gt $largest.Area)) { $largest = @{ Window = $child; Rect = $r; Area = $area } }
     }
