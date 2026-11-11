@@ -44,6 +44,49 @@ when you send a message or press **Connect** (or at launch, when you turned that
 
 ## The panel
 
+**On macOS the Assistant is a web view inside its panel**, and the panel is always part of the
+app's window. The whole of it is drawn by a page
+built from Mastra's playground-ui components (`packages/assistant-web`): the bar with the agent
+(its mode and options under the same menu), the state, **Connect** / **Stop**, **New
+chat**, the panel's menu (dock on the other side, fold to a strip) and **Close**;
+the conversation, with tool calls as rows that fold, a request for approval with **Allow once**,
+**Always allow** and **Deny** always in view, the plan as a task list above the message box, and
+**Undo these changes**; and the message box, whose **+** menu has **Choose a file…**, **Paste a
+picture**, **Attach view**, **Attach selection** and **Pick context**, next to the permission
+mode and the skill, and the agent's model beside **Send**: a list you search by typing, which
+also offers what you typed as a model of your own when the agent takes one. What the page shows
+and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
+
+- Messages that wait (queued behind the running one, or left by **Stop**) sit in a box over the
+  message box, so they stay in view: each can be edited or removed, and **Send now** (or
+  Ctrl/Cmd+Enter in the message box) stops the running step and sends them next.
+- A message's pictures show as thumbnails; clicking one opens the app's picture viewer over the
+  window. What a message was sent with shows as chips grouped by kind, and the things picked for
+  the next message can be taken off one by one.
+- In an Anatomy answer, the names of bodies and features that the app listed are underlined:
+  clicking one selects it in the design. Nothing an answer writes itself becomes such a name.
+- Files dropped on the panel are attached to the next message.
+- What is selected in the design shows over the message box, by name and grouped by kind, so you
+  can see what the agent finds when it reads the selection through the app's tools. It is also
+  written into each message, unless **Attach selection** is off (the cross beside it, the **+**
+  menu, or Preferences → AI → Panel).
+- In the floating layout the panel is a rounded surface inside the panel's own border and shadow,
+  rounder than the app's other panels, and the strip at its inner edge is still what you drag to
+  make it wider or narrower. Its text follows the app's zoom.
+- The page loads only its own files, which are part of the app, and sends nothing anywhere: a
+  picture or a link in an agent's answer never loads from the network, and a web link opens in
+  your browser. A message's own pictures are served to the page by the app.
+- A web view lies above everything the app draws, so it steps aside while a menu, a tooltip, a
+  dialog or another floating panel is over its place, and while the picture viewer is open, and
+  comes back when that is gone.
+- While you type in the message box, the Edit menu has **Cut**, **Copy**, **Paste** and
+  **Select All**, and undo and redo stay with the text you are typing.
+- The conversation goes on while the window is behind another one.
+- The Assistant does not open in a window of its own there: its menu has no **Own window**, and
+  one chosen earlier goes back to the side panel.
+- Windows, Linux and the browser still draw the built-in panel, which the rest of this page
+  describes (**Own window** included).
+
 In the floating layout, Assistant fills the viewport height in the shared rounded panel, with
 space around its edges. The compass and navigation bar move into the remaining space beside it. It overlays the model without changing the viewport projection;
 clicks and scrolling over the panel stay in the chat. The docked layout retains its side panel.
@@ -470,7 +513,7 @@ The agent reaches the open design only through SolidCraft's own tools (the
   while you do; click it to open the viewer (the message's pictures one at a time, with **‹** and
   **›** or the arrow keys, closed with Esc or a click outside). A long message scrolls inside its
   box, so **Send** and the buttons beside it stay in view.
-- **Attach selection:** tick it to send what is selected in the model with your message, so the
+- **Attach selection:** on by default (Preferences → AI → Panel keeps your choice): what is selected in the model goes with your message, so the
   agent knows what "this edge" or "that feature" is. The box shows how many things are selected, counted as you clicked them (the two halves of a rim you clicked once are one).
   Faces and edges go with the names and numbers the agent's tools take and with their size and
   place (so they can be found again after an edit), features with their name and kind, bodies with

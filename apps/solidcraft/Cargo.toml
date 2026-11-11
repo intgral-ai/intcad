@@ -99,6 +99,7 @@ block2 = "0.6"
 # Native crash capture (src/native_crash_macos.rs): the signal handler, the faulting module
 # (already in the tree through many crates).
 libc = "0.2"
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["x11"] }

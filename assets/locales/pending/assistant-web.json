@@ -1,0 +1,38 @@
+{
+  "en": {
+    "ui.agent_chat_add_tip": "Add to the message",
+    "ui.agent_chat_model_no_match": "No model matches",
+    "ui.agent_chat_open_picture": "Open picture",
+    "ui.agent_chat_remove_chip": "Remove",
+    "ui.agent_chat_web_composer": "Message box and its controls",
+    "ui.agent_chat_web_latest": "Jump to the latest message",
+    "ui.agent_chat_web_message": "Message",
+    "ui.agent_chat_web_selected": "Selected in the design",
+    "ui.agent_chat_web_turn": "Message {n} and its answer",
+    "ui.agent_chat_web_with_next": "Goes with the next message"
+  },
+  "ja": {
+    "ui.agent_chat_add_tip": "メッセージに追加",
+    "ui.agent_chat_model_no_match": "一致するモデルがありません",
+    "ui.agent_chat_open_picture": "画像を開く",
+    "ui.agent_chat_remove_chip": "削除",
+    "ui.agent_chat_web_composer": "メッセージ入力欄と操作",
+    "ui.agent_chat_web_latest": "最新のメッセージへ移動",
+    "ui.agent_chat_web_message": "メッセージ",
+    "ui.agent_chat_web_selected": "デザインで選択中",
+    "ui.agent_chat_web_turn": "メッセージ {n} とその回答",
+    "ui.agent_chat_web_with_next": "次のメッセージに添付"
+  },
+  "zh": {
+    "ui.agent_chat_add_tip": "添加到消息",
+    "ui.agent_chat_model_no_match": "没有匹配的模型",
+    "ui.agent_chat_open_picture": "打开图片",
+    "ui.agent_chat_remove_chip": "移除",
+    "ui.agent_chat_web_composer": "消息输入框及其控件",
+    "ui.agent_chat_web_latest": "跳到最新消息",
+    "ui.agent_chat_web_message": "消息",
+    "ui.agent_chat_web_selected": "设计中已选中",
+    "ui.agent_chat_web_turn": "第 {n} 条消息及其回答",
+    "ui.agent_chat_web_with_next": "随下一条消息发送"
+  }
+}

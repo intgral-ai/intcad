@@ -645,15 +645,30 @@ fn panel_section(app: &mut SolveApp, ui: &mut egui::Ui) {
             .fold(0.0, f32::max);
         ui_kit::settings_form(ui, label_width, |ui| {
             ui_kit::row(ui, tr("ui.agent_chat_side"), |ui| {
+                // With the host's web view the Assistant stays in the app's window: there is no
+                // window of its own to pick.
+                #[cfg(not(target_arch = "wasm32"))]
+                let sides_only = app.agent_chat.web_host;
+                #[cfg(target_arch = "wasm32")]
+                let sides_only = false;
                 let p = &mut app.preferences;
-                let mut selected = if p.agent_chat_popped { 2 } else { usize::from(p.agent_chat_side != "left") };
+                let mut selected = if p.agent_chat_popped && !sides_only { 2 } else { usize::from(p.agent_chat_side != "left") };
                 let options = [tr("ui.agent_chat_left"), tr("ui.agent_chat_right"), tr("ui.agent_chat_own_window")];
-                if ui_kit::segmented(ui, &mut selected, &options, ui_kit::Segments { intrinsic: true, ..Default::default() }) {
+                let offered = if sides_only { &options[..2] } else { &options[..] };
+                if ui_kit::segmented(ui, &mut selected, offered, ui_kit::Segments { intrinsic: true, ..Default::default() }) {
                     p.agent_chat_popped = selected == 2;
                     if selected < 2 {
                         p.agent_chat_side = if selected == 0 { "left" } else { "right" }.into();
                     }
                 }
+            });
+            // What is selected goes with each message unless this is off (the composer's own
+            // Attach selection is this same setting).
+            ui_kit::row(ui, "", |ui| {
+                let response = ui_kit::checkbox(ui, tr("ui.agent_chat_attach_selection"), &mut app.preferences.agent_chat_attach_selection)
+                    .backing_on_hover_text(tr("ui.agent_chat_attach_selection_tip"));
+                crate::scenario::publish_handle("prefs:agent_chat_attach_selection", response.rect.center());
+                ui_kit::help_icon(ui, tr("ui.agent_chat_attach_selection_tip"));
             });
             ui_kit::row(ui, tr("ui.agent_chat_turn_limit"), |ui| {
                 let p = &mut app.preferences;
