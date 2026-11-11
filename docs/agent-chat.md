@@ -88,6 +88,8 @@ and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
   (through XWayland in a Wayland session). The panel's corners are square there, and what you
   type reaches the message box while the pointer is over the panel. In a native Wayland window
   (**Preferences › Graphics › Window system**) the built-in panel is drawn.
+- Where the app draws its own title bar (Windows and Linux), the web view stays off the window's
+  edges, so an edge beside a docked panel still resizes the window.
 - Windows and the browser still draw the built-in panel, which the rest of this page describes
   (**Own window** included).
 

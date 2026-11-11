@@ -15508,6 +15508,38 @@ fn the_panel_gives_its_room_to_the_hosts_web_view() {
     assert_eq!(web::placement(&mut h.app, &h.ctx), None, "a place is good for the frame that gave it");
 }
 
+/// Where the application bar is the window's title bar, the window's edges resize it, and a
+/// native view would take the presses meant for them: the web view's place stops short of the
+/// edges, so a panel at the window's edge leaves that edge for resizing.
+#[test]
+fn the_web_view_keeps_off_the_windows_resize_edges() {
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.agent_chat", json!({"open": true}));
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    let (_, layer) = h.app.agent_chat.web_place.expect("the place given up to the web view");
+    let window = h.ctx.content_rect();
+    let inside = crate::titlebar::inside_resize_zones(&h.ctx);
+    assert!(window.contains_rect(inside) && inside.width() < window.width() && inside.height() < window.height(), "{inside:?} in {window:?}");
+    // A panel in the window's lower right corner, whatever the layout is.
+    let at_edge = egui::Rect::from_min_max(egui::pos2(window.right() - 300.0, window.top() + 60.0), window.right_bottom());
+
+    h.app.custom_titlebar = false;
+    h.app.agent_chat.web_place = Some((at_edge, layer));
+    assert_eq!(web::placement(&mut h.app, &h.ctx), Some(at_edge), "the system's own frame is outside what the app draws");
+
+    h.app.custom_titlebar = true;
+    h.app.agent_chat.web_place = Some((at_edge, layer));
+    let kept = web::placement(&mut h.app, &h.ctx).expect("still a place");
+    assert_eq!(kept, at_edge.intersect(inside));
+    assert_eq!(kept.left_top(), at_edge.left_top(), "only the window's edges are kept free");
+    assert!(kept.right() < window.right() && kept.bottom() < window.bottom(), "{kept:?} in {window:?}");
+
+    // A place that is all resize edge is no place.
+    h.app.agent_chat.web_place = Some((egui::Rect::from_min_max(egui::pos2(inside.right(), window.top()), window.right_bottom()), layer));
+    assert_eq!(web::placement(&mut h.app, &h.ctx), None);
+}
+
 /// The page is told the transcript and the composer's state in the app's language, with what it
 /// needs to answer one request and not another: an approval by its id, a permission and an undo
 /// by their place.

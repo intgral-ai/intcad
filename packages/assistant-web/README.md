@@ -84,5 +84,10 @@ and a saved one is put back.
 - **Windows** (WebView2): the host is not wired yet and was not built or tested; the built-in
   conversation is drawn.
 
+Where the app draws its own title bar (Windows and Linux), the window's edges resize it, and a
+native view over them would take the press: the view's place stops short of the window's edges
+(`titlebar::inside_resize_zones`), which matters for a panel docked to the window's edge in the
+compact layout.
+
 The Linux packages (deb, rpm, AppImage, Flatpak, snap, the Nix flake) do not name WebKitGTK or
 GTK as dependencies yet.
