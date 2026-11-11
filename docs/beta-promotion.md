@@ -52,11 +52,12 @@ failed Linux/macOS/Windows package.
 - the evidence run and source SHA that produced the whole 16-shard matrix.
 
 The reviewed run also has 1,085 failures already recorded as failing in the
-historical baseline and 972 failures on actions the historical baseline never
-recorded. Neither group is counted as a pass. The unbaselined identities are
-reported in `beta-gate.json`; they were never baseline passes, so a change in
-that group is not a new regression. A baseline pass that starts failing is the
-gate condition and must be in the reviewed list.
+historical baseline and 970 failures on actions the historical baseline never
+recorded. Neither group is counted as a pass. The 970 unbaselined failures are
+itemised by design/entity/action, kind and failure class in the same exception
+file: a **new** unbaselined failure fails the gate, while a listed one that
+starts passing is reported as fixed. A baseline pass that starts failing is the
+213-item gate condition above.
 
 The Beta gate fails when any of these changes:
 
