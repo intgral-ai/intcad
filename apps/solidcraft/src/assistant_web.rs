@@ -1,8 +1,12 @@
-//! The Assistant's web view (macOS): the conversation and the composer drawn by a page in a
-//! native web view, laid over the place the Assistant panel gives up for it in the app's own
+//! The Assistant's web view (macOS and Linux): the conversation and the composer drawn by a page
+//! in a native web view, laid over the place the Assistant panel gives up for it in the app's own
 //! window. The page is built by `packages/assistant-web` and embedded here; it loads nothing from
 //! outside the app. What it is told and what it may ask for is
 //! `solidcraft_ui_egui::agent_chat::web`.
+//!
+//! On Linux the view is WebKitGTK in a child of the app's X11 window, an XWayland window
+//! included. A native Wayland window has no such child: there the panel draws its own
+//! conversation. winit does not run GTK, so GTK is started here and given its turns each frame.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -14,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
-use wry::dpi::{LogicalPosition, LogicalSize};
+use wry::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 use wry::http::{Request, Response, header};
 
 /// The page's own address: a scheme only this web view serves, from the files below.
@@ -26,6 +30,21 @@ const PAGE: &str = "openskyfall-assistant://app/index.html";
 const POLICY: &str = "default-src 'none'; script-src 'self' openskyfall-assistant:; style-src 'self' openskyfall-assistant: 'unsafe-inline'; \
                       font-src 'self' openskyfall-assistant:; img-src 'self' openskyfall-assistant: data: blob:; connect-src 'none'; \
                       base-uri 'none'; form-action 'none'";
+
+/// Outside what the page draws the view is seen through, and the panel's frame shows around the
+/// page's rounded corners (macOS). An X11 child window is not seen through: there the view has the
+/// colour of the page's own surface behind it.
+const SEE_THROUGH: bool = cfg!(target_os = "macos");
+
+/// How often GTK is given its turns while the page is at work or has the keyboard, and while it
+/// rests. Nothing of the page moves between turns, and each turn is a frame of the app.
+#[cfg(target_os = "linux")]
+const GTK_AT_WORK: std::time::Duration = std::time::Duration::from_millis(16);
+#[cfg(target_os = "linux")]
+const GTK_AT_REST: std::time::Duration = std::time::Duration::from_millis(100);
+/// No more of GTK's turns than this at once: the app's own frame is waiting.
+#[cfg(target_os = "linux")]
+const GTK_TURNS: usize = 256;
 
 /// The page as `packages/assistant-web` builds it (see its README.md): name, type, bytes.
 const FILES: &[(&str, &str, &[u8])] = &[
@@ -109,6 +128,40 @@ fn own_address(url: &str) -> bool {
     url == PAGE || url == "about:blank"
 }
 
+/// Whether this run's window can hold the web view at all.
+fn available() -> bool {
+    // On Linux the view is a child of an X11 window; a native Wayland window has no such child.
+    #[cfg(target_os = "linux")]
+    return crate::window_system_now() == Some("x11");
+    #[cfg(not(target_os = "linux"))]
+    true
+}
+
+/// Start GTK for the web view (Linux), once: `false` when it cannot start.
+#[cfg(target_os = "linux")]
+fn start_gtk() -> bool {
+    // In a Wayland session the app's window is an XWayland one, and GDK left to choose opens the
+    // Wayland display. The view is a child of the app's X11 window, on the X11 display.
+    gtk::gdk::set_allowed_backends("x11");
+    // GTK would set the process to the user's locale; the app reads and writes numbers in C's.
+    gtk::disable_setlocale();
+    match gtk::init() {
+        Ok(()) => true,
+        Err(error) => {
+            note(&format!("GTK could not start: {error}"));
+            false
+        }
+    }
+}
+
+/// Where the view is in the window and at what size its page is drawn, as last given to it.
+#[derive(Clone, Copy, PartialEq)]
+struct Placed {
+    rect: egui::Rect,
+    zoom: f32,
+    pixels_per_point: f32,
+}
+
 #[derive(Default)]
 pub struct AssistantWeb {
     view: Option<wry::WebView>,
@@ -118,28 +171,62 @@ pub struct AssistantWeb {
     drags: Rc<RefCell<Vec<Drag>>>,
     /// The pictures the page was last told of.
     pictures: Pictures,
-    placed: Option<(egui::Rect, f32)>,
+    placed: Option<Placed>,
+    /// The colour last put behind the page, where the view is not seen through.
+    backed: Option<egui::Color32>,
     shown: bool,
     /// The state the page was last told, to tell it only changes.
     told: String,
     /// The page has the keyboard.
     focused: bool,
+    /// GTK was started for the view, and takes turns.
+    #[cfg(target_os = "linux")]
+    gtk: bool,
+    /// GTK had something to do in a turn since the last frame.
+    #[cfg(target_os = "linux")]
+    at_work: bool,
 }
 
 impl AssistantWeb {
     /// The host has a web view to offer: the panel may give its conversation up to it.
     pub fn new(solve: &mut SolveApp) -> Self {
-        web::set_host(solve, true);
+        web::set_host(solve, available());
         Self::default()
     }
 
+    /// The view goes before the window it is a child of does.
+    pub fn close(&mut self) {
+        self.view = None;
+        self.placed = None;
+        self.shown = false;
+        #[cfg(target_os = "linux")]
+        self.turn_gtk();
+    }
+
+    /// GTK's turns (Linux): what the page drew, sent and was told moves in them, and the app's
+    /// own event loop gives it none.
+    #[cfg(target_os = "linux")]
+    fn turn_gtk(&mut self) {
+        if !self.gtk {
+            return;
+        }
+        let mut turns = 0;
+        while turns < GTK_TURNS && gtk::events_pending() {
+            gtk::main_iteration_do(false);
+            turns += 1;
+        }
+        self.at_work |= turns > 0;
+    }
+
     /// The page has the keyboard: text editing keys and menu items belong to it.
+    #[cfg(target_os = "macos")]
     pub fn focused(&self) -> bool {
         self.focused && self.shown
     }
 
     /// Undo (or redo) the text being typed in the page: the Edit menu's Undo while the page has
     /// the keyboard.
+    #[cfg(target_os = "macos")]
     pub fn edit_text(&self, redo: bool) {
         if let Some(view) = &self.view
             && let Err(error) = view.evaluate_script(if redo { "document.execCommand('redo')" } else { "document.execCommand('undo')" })
@@ -151,6 +238,8 @@ impl AssistantWeb {
     /// With the app's own logic, which also runs while the window is not painted: act on what
     /// the page asked and tell it what changed, so the conversation never waits for a repaint.
     pub fn logic(&mut self, solve: &mut SolveApp, ctx: &egui::Context) {
+        #[cfg(target_os = "linux")]
+        self.turn_gtk();
         web::advance(solve, ctx);
         let messages: Vec<String> = self.inbox.borrow_mut().drain(..).collect();
         for message in messages {
@@ -184,32 +273,60 @@ impl AssistantWeb {
 
     /// Once a frame, after the app's UI: keep the web view on the place the panel gave it.
     pub fn tick(&mut self, solve: &mut SolveApp, ctx: &egui::Context, frame: &eframe::Frame) {
+        self.keep_place(solve, ctx, frame);
+        #[cfg(target_os = "linux")]
+        {
+            self.turn_gtk();
+            // The next turn: soon while the page is at work or typed in, seldom while it rests.
+            if self.shown {
+                let at_work = std::mem::take(&mut self.at_work) || self.focused;
+                ctx.request_repaint_after(if at_work { GTK_AT_WORK } else { GTK_AT_REST });
+            }
+        }
+    }
+
+    fn keep_place(&mut self, solve: &mut SolveApp, ctx: &egui::Context, frame: &eframe::Frame) {
         let Some(rect) = web::placement(solve, ctx) else {
             self.show(false);
             return;
         };
-        if self.view.is_none() && !self.create(ctx, frame, rect) {
+        let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point() };
+        let backing = web::backing(solve, ctx);
+        if self.view.is_none() && !self.create(ctx, frame, at, backing) {
             // No web view on this machine: the panel draws its own conversation again.
             web::set_host(solve, false);
             ctx.request_repaint();
             return;
         }
-        let zoom = ctx.zoom_factor();
-        if self.placed != Some((rect, zoom))
+        if self.placed != Some(at)
             && let Some(view) = &self.view
         {
-            if let Err(error) = view.set_bounds(bounds(rect, zoom)) {
+            if let Err(error) = view.set_bounds(place(at)) {
                 note(&format!("could not be moved: {error}"));
             }
-            // The page is drawn at the app's own zoom: a point of the page is a point of the app.
-            if self.placed.is_none_or(|(_, before)| before != zoom)
-                && let Err(error) = view.zoom(f64::from(zoom))
+            // The page is drawn at the app's own size: a point of the page is a point of the app.
+            if self.placed.is_none_or(|before| (before.zoom, before.pixels_per_point) != (at.zoom, at.pixels_per_point))
+                && let Err(error) = view.zoom(page_zoom(view, at))
             {
                 note(&format!("could not be zoomed: {error}"));
             }
-            self.placed = Some((rect, zoom));
+            self.placed = Some(at);
+        }
+        // Behind a view that is not seen through: the page's own surface, once the page said it.
+        if !SEE_THROUGH
+            && self.backed != Some(backing)
+            && let Some(view) = &self.view
+        {
+            if let Err(error) = view.set_background_color(opaque(backing)) {
+                note(&format!("could not be given its background: {error}"));
+            }
+            self.backed = Some(backing);
         }
         self.show(true);
+        #[cfg(target_os = "linux")]
+        if let Some(view) = &self.view {
+            fit(view, at);
+        }
         self.tell(solve);
     }
 
@@ -230,21 +347,24 @@ impl AssistantWeb {
         }
     }
 
-    fn create(&mut self, ctx: &egui::Context, frame: &eframe::Frame, rect: egui::Rect) -> bool {
+    fn create(&mut self, ctx: &egui::Context, frame: &eframe::Frame, at: Placed, backing: egui::Color32) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            if !self.gtk && !start_gtk() {
+                return false;
+            }
+            self.gtk = true;
+        }
         let inbox = self.inbox.clone();
         let repaint = ctx.clone();
         let (drags, dragged) = (self.drags.clone(), ctx.clone());
         let pictures = self.pictures.clone();
         // Only files are the app's to take; text dragged within the page stays the page's.
         let files = Cell::new(false);
-        let zoom = ctx.zoom_factor();
         let builder = wry::WebViewBuilder::new()
             .with_custom_protocol(SCHEME.to_string(), move |_view, request| serve(&request, &pictures))
             .with_url(PAGE)
-            .with_bounds(bounds(rect, zoom))
-            // See-through outside what the page draws: the page rounds its own corners, and the
-            // panel's frame (its border and shadow) shows around them.
-            .with_transparent(true)
+            .with_bounds(place(at))
             .with_accept_first_mouse(true)
             .with_navigation_handler(|url| own_address(&url))
             .with_new_window_req_handler(|_url, _features| wry::NewWindowResponse::Deny)
@@ -281,15 +401,19 @@ impl AssistantWeb {
                 inbox.borrow_mut().push(message.into_body());
                 repaint.request_repaint();
             });
+        // See-through outside what the page draws, where a view can be: the page rounds its own
+        // corners, and the panel's frame (its border and shadow) shows around them.
+        let builder = if SEE_THROUGH { builder.with_transparent(true) } else { builder.with_background_color(opaque(backing)) };
         // The builder panics on a window it cannot take; the app goes on without the web view.
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.build_as_child(frame)));
         match built {
             Ok(Ok(view)) => {
-                if let Err(error) = view.zoom(f64::from(zoom)) {
+                if let Err(error) = view.zoom(page_zoom(&view, at)) {
                     note(&format!("could not be zoomed: {error}"));
                 }
                 self.view = Some(view);
-                self.placed = Some((rect, zoom));
+                self.placed = Some(at);
+                self.backed = Some(backing);
                 self.shown = true;
                 true
             }
@@ -312,14 +436,22 @@ impl AssistantWeb {
             if let Err(error) = view.set_visible(shown) {
                 note(&format!("could not be {}: {error}", if shown { "shown" } else { "hidden" }));
             }
-            // A hidden page cannot keep the keyboard: it goes back to the window.
+            // A hidden page cannot keep the keyboard: it goes back to the window. (An X11 child
+            // never took it from the window, and is not to be given it as it is hidden.)
             if !shown && self.focused {
+                #[cfg(not(target_os = "linux"))]
                 let _ = view.focus_parent();
                 self.focused = false;
             }
         }
         self.shown = shown;
     }
+}
+
+/// The view's place in the window. On macOS it is given in the window's own points. Elsewhere it
+/// is given in pixels: WebKitGTK counts points by GTK's scale, which need not be the window's.
+fn place(at: Placed) -> wry::Rect {
+    if cfg!(target_os = "macos") { bounds(at.rect, at.zoom) } else { bounds_in_pixels(at.rect, at.pixels_per_point) }
 }
 
 /// An egui rectangle as the web view's place in the window: egui points times the UI zoom are the
@@ -330,6 +462,57 @@ fn bounds(rect: egui::Rect, zoom: f32) -> wry::Rect {
         position: LogicalPosition::new(f64::from(rect.left()) * zoom, f64::from(rect.top()) * zoom).into(),
         size: LogicalSize::new(f64::from(rect.width()) * zoom, f64::from(rect.height()) * zoom).into(),
     }
+}
+
+/// An egui rectangle as the web view's place in the window's pixels: each edge on the pixel egui
+/// draws it on, so the view neither leaves a gap beside the panel's frame nor covers it.
+fn bounds_in_pixels(rect: egui::Rect, pixels_per_point: f32) -> wry::Rect {
+    let pixel = |point: f32| (f64::from(point) * f64::from(pixels_per_point)).round();
+    let (left, top) = (pixel(rect.left()), pixel(rect.top()));
+    wry::Rect {
+        position: PhysicalPosition::new(left, top).into(),
+        size: PhysicalSize::new((pixel(rect.right()) - left).max(1.0), (pixel(rect.bottom()) - top).max(1.0)).into(),
+    }
+}
+
+/// Give the page the size of its place (Linux), every frame it is shown. wry resizes the X11
+/// window the view is in, but GTK goes on laying the page out at the size that window was made
+/// with, and does so again whenever the view is shown: the page's widget is given its size here,
+/// which costs nothing while it has it.
+#[cfg(target_os = "linux")]
+fn fit(view: &wry::WebView, at: Placed) {
+    use gtk::prelude::WidgetExt;
+    use wry::WebViewExtUnix;
+    let page = view.webview();
+    let size = bounds_in_pixels(at.rect, at.pixels_per_point).size.to_logical::<i32>(f64::from(page.scale_factor().max(1)));
+    page.size_allocate(&gtk::Allocation::new(0, 0, size.width.max(1), size.height.max(1)));
+}
+
+/// The page's zoom at which a point of the page is a point of the app.
+fn page_zoom(view: &wry::WebView, at: Placed) -> f64 {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        zoom_over(at.pixels_per_point, view.webview().scale_factor())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = view;
+        f64::from(at.zoom)
+    }
+}
+
+/// The page's zoom where the engine draws a page point as a whole number of pixels (GTK's scale)
+/// and the app draws a point as `pixels_per_point` of them, a fraction on many screens.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn zoom_over(pixels_per_point: f32, engine_scale: i32) -> f64 {
+    f64::from(pixels_per_point) / f64::from(engine_scale.max(1))
+}
+
+/// A colour with nothing seen through it, as the web view takes one.
+fn opaque(colour: egui::Color32) -> wry::RGBA {
+    (colour.r(), colour.g(), colour.b(), 255)
 }
 
 #[cfg(test)]
@@ -394,6 +577,27 @@ mod tests {
         {
             assert_eq!(picture_kind(bytes), kind, "{bytes:?}");
         }
+    }
+
+    /// Where the view is placed in pixels, its edges are the pixels egui draws the panel's on, at
+    /// a whole scale and at a fraction; and the page is zoomed by what the engine's own scale
+    /// leaves of the app's.
+    #[test]
+    fn the_view_is_placed_on_the_pixels_of_its_panel() {
+        let rect = egui::Rect::from_min_max(egui::pos2(900.5, 40.0), egui::pos2(1260.5, 700.25));
+        for (pixels_per_point, expected) in [(1.0, (901, 40, 360, 660)), (1.25, (1126, 50, 450, 825)), (2.0, (1801, 80, 720, 1321))] {
+            let placed = bounds_in_pixels(rect, pixels_per_point);
+            let position = placed.position.to_physical::<i32>(1.0);
+            let size = placed.size.to_physical::<u32>(1.0);
+            assert_eq!((position.x, position.y, size.width, size.height), expected, "at {pixels_per_point}");
+        }
+        let nothing = bounds_in_pixels(egui::Rect::from_min_max(egui::pos2(10.0, 10.0), egui::pos2(10.0, 10.0)), 1.5).size.to_physical::<u32>(1.0);
+        assert_eq!((nothing.width, nothing.height), (1, 1), "an X11 window has a size");
+        assert_eq!(zoom_over(1.0, 1), 1.0);
+        assert_eq!(zoom_over(1.25, 1), 1.25);
+        assert_eq!(zoom_over(2.5, 2), 1.25);
+        assert_eq!(zoom_over(1.5, 0), 1.5, "a scale GTK did not give");
+        assert_eq!(opaque(egui::Color32::from_rgba_unmultiplied(10, 20, 30, 40)).3, 255);
     }
 
     /// Nothing but the page's own address loads in the view.

@@ -113,6 +113,12 @@ x11rb = { version = "0.13", default-features = false }
 # The desktop's dark or light preference through the XDG Desktop Portal (src/desktop_theme.rs,
 # #7944); already in the tree through eframe's accessibility support (accesskit_unix).
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# The Assistant's web view (src/assistant_web.rs): WebKitGTK in a child of the app's X11 window,
+# which is what wry's `x11` is for. The system's WebKitGTK and GTK are linked as libraries.
+wry = { version = "0.57", default-features = false, features = ["os-webview", "x11"] }
+# GTK itself, which winit does not run: started for the web view and given its turns there (the
+# version wry uses).
+gtk = "0.18"
 
 [build-dependencies]
 embed-resource = "3.0.11"

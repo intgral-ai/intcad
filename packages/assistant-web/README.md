@@ -59,8 +59,30 @@ The names of the page's words (`StringKey` in `src/host.ts`) and the list the ap
 
 ## Where it runs
 
-macOS only so far, and only inside the app's own window: the owner decided on 2026-11-10 that
-the Assistant is a panel of the app, not a separate window, so with the web view the panel's
-**Own window** is not offered and a saved one is put back. The web view host is not wired for
-Windows (WebView2) or Linux (WebKitGTK; a child web view there needs X11) and was not built or
-tested on either. Until it is, those systems draw the built-in conversation.
+Only inside the app's own window: the owner decided on 2026-11-10 that the Assistant is a panel
+of the app, not a separate window, so with the web view the panel's **Own window** is not offered
+and a saved one is put back.
+
+- **macOS**: WKWebView. The view is seen through outside what the page draws, so the panel's
+  rounded frame shows around the page.
+- **Linux**: WebKitGTK, in a child of the app's X11 window (an XWayland window included, which
+  is what the app opens by default in a Wayland session). Building needs the system's GTK 3 and
+  WebKitGTK 4.1 development packages (`libgtk-3-dev libwebkit2gtk-4.1-dev` on Debian and
+  Ubuntu), and the built app needs those libraries at run time. A child X11 window is not seen
+  through: the view is square, with the page's own surface colour behind it. winit does not run
+  GTK, so the app gives GTK its turns each frame, and asks for a frame about every 16 ms while
+  the page is at work and every 100 ms while it rests: with the panel open the app draws about
+  ten frames a second even when nothing changes. In a native Wayland window (niri, or **Window
+  system: Wayland** in Preferences) there is no child web view, and the panel draws the built-in
+  conversation.
+
+  Known limits on Linux: the child window does not take the window's keyboard focus, so typed
+  keys reach the page while the pointer is over the panel and go to the app when it is not; and
+  input methods (IBus, Fcitx) were not tried. Checked in a container only (Ubuntu 24.04, Xvfb,
+  openbox, software Vulkan, WebKitGTK 2.52, GTK 3.24), at window scales 1 and 1.5; not on a real desktop
+  or GPU.
+- **Windows** (WebView2): the host is not wired yet and was not built or tested; the built-in
+  conversation is drawn.
+
+The Linux packages (deb, rpm, AppImage, Flatpak, snap, the Nix flake) do not name WebKitGTK or
+GTK as dependencies yet.

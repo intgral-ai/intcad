@@ -44,8 +44,8 @@ when you send a message or press **Connect** (or at launch, when you turned that
 
 ## The panel
 
-**On macOS the Assistant is a web view inside its panel**, and the panel is always part of the
-app's window. The whole of it is drawn by a page
+**On macOS and Linux the Assistant is a web view inside its panel**, and the panel is always part
+of the app's window. The whole of it is drawn by a page
 built from Mastra's playground-ui components (`packages/assistant-web`): the bar with the agent
 (its mode and options under the same menu), the state, **Connect** / **Stop**, **New
 chat**, the panel's menu (dock on the other side, fold to a strip) and **Close**;
@@ -84,8 +84,12 @@ and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
 - The conversation goes on while the window is behind another one.
 - The Assistant does not open in a window of its own there: its menu has no **Own window**, and
   one chosen earlier goes back to the side panel.
-- Windows, Linux and the browser still draw the built-in panel, which the rest of this page
-  describes (**Own window** included).
+- On Linux the web view is WebKitGTK and needs an X11 window, which the app opens by default
+  (through XWayland in a Wayland session). The panel's corners are square there, and what you
+  type reaches the message box while the pointer is over the panel. In a native Wayland window
+  (**Preferences › Graphics › Window system**) the built-in panel is drawn.
+- Windows and the browser still draw the built-in panel, which the rest of this page describes
+  (**Own window** included).
 
 In the floating layout, Assistant fills the viewport height in the shared rounded panel, with
 space around its edges. The compass and navigation bar move into the remaining space beside it. It overlays the model without changing the viewport projection;
