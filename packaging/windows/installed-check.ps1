@@ -92,8 +92,12 @@ try {
       -Direction Outbound -Program $program -Action Block | Out-Null
   }
   & $probe -s -m 8 -o NUL https://api.github.com/
-  if ($LASTEXITCODE -eq 0) { throw 'the firewall rule does not take the network away on this machine, so the installed app is not started' }
-  Write-Output "ok: the firewall blocks $($blocked.Count) programs from the network (curl under the same rule: exit $LASTEXITCODE)"
+  $probeExit = $LASTEXITCODE
+  # curl is meant to fail here. Its exit code must not stay behind as the last one: a GitHub
+  # Actions step ends with whatever $LASTEXITCODE holds, and failed on it with every check passed.
+  $global:LASTEXITCODE = 0
+  if ($probeExit -eq 0) { throw 'the firewall rule does not take the network away on this machine, so the installed app is not started' }
+  Write-Output "ok: the firewall blocks $($blocked.Count) programs from the network (curl under the same rule: exit $probeExit)"
   $env:SOLIDCRAFT_UPDATE_CHECK = '0'
 
   Write-Output '==> the Assistant in the installed app'
@@ -117,3 +121,4 @@ if ($failure) { throw $failure }
 if (Test-Path (Join-Path $Dir 'solidcraft.exe')) { throw "after the uninstall, solidcraft.exe is still in $Dir" }
 Write-Output 'ok: the uninstall removed the program files'
 Write-Output 'PASS: the installed app'
+exit 0
