@@ -78,7 +78,6 @@ jobs:
   linux:
     name: Linux ${{ matrix.arch }}
     needs: version
-    if: inputs.beta_three_platforms != true || matrix.arch == 'x86_64'
     # Preserve the existing glibc >= 2.35 packaging baseline.
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -435,7 +434,6 @@ jobs:
   windows:
     name: Windows ${{ matrix.arch }} (unsigned)
     needs: [version, icons]
-    if: inputs.beta_three_platforms != true || matrix.arch == 'x64'
     runs-on: windows-latest
     strategy:
       fail-fast: false
