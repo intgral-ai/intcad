@@ -209,9 +209,10 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.plan).jobs.contract-rust.decision == 'run'
     runs-on: ubuntu-24.04
-    # Measured 27m16s cold at 41628f6a5 (mostly test-binary compilation); keep
-    # the PR cap at 30 minutes now that the conformance filter is narrowed.
-    timeout-minutes: 30
+    # Measured 27m16s cold at 41628f6a5 (mostly test-binary compilation); a
+    # loaded standard runner can exceed the old 30-minute cap before the filter
+    # run starts, so allow the same headroom as the other full test jobs.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
