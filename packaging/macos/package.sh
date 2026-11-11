@@ -168,6 +168,9 @@ cp "$ROOT/assets/icons/app/macos/exports/Assets.car" "$APP/Contents/Resources/As
 cp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$APP/Contents/Resources/SolidCraft.icns"
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
+# The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
+# which the app carries built in as well (Help > About > Licences).
+cp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
 
 # ---- Mastra runtime (opt-in; application-relative, pinned Node) ---------------------------------
 # Bundling is opt-in because the artifact is still unapproved (DQ-7, #15). A universal app needs
@@ -272,6 +275,7 @@ for arch in "${WANT[@]}"; do
   lipo "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" -verify_arch "$arch"
 done
 test -s "$MNT/SolidCraft.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
+cmp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$MNT/SolidCraft.app/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
 if [ "$WITH_MASTRA" = 1 ]; then
   case "$ARCH" in
     universal)

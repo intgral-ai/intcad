@@ -1,0 +1,1209 @@
+{
+  "about": "What the Assistant's page is built from. Written by tools/build.mjs; do not edit by hand.",
+  "mastra": {
+    "repository": "https://github.com/mastra-ai/mastra",
+    "commit": "aa406eaae60717422a1dba07da5b97fb26a0b998",
+    "package": "packages/playground-ui",
+    "version": "69.0.0-alpha.4",
+    "licence": "Apache-2.0",
+    "sourceFilesInScript": [
+      "packages/playground-ui/src/ds/components/AgentIndicator/agent-glyph.tsx",
+      "packages/playground-ui/src/ds/components/AgentIndicator/paint.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/coordination.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/documents.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/files.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/interface.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/knowledge-actions.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/knowledge.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/skills.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/terminal.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/poses/thinking.ts",
+      "packages/playground-ui/src/ds/components/AgentIndicator/shapes.ts",
+      "packages/playground-ui/src/ds/components/Arrival/arrival.tsx",
+      "packages/playground-ui/src/ds/components/Arrival/use-watched.ts",
+      "packages/playground-ui/src/ds/components/AttachmentCard/attachment-card.tsx",
+      "packages/playground-ui/src/ds/components/Badge/Badge.tsx",
+      "packages/playground-ui/src/ds/components/Button/Button.tsx",
+      "packages/playground-ui/src/ds/components/ButtonsGroup/buttons-group.tsx",
+      "packages/playground-ui/src/ds/components/ChatShell/chat-shell-context.ts",
+      "packages/playground-ui/src/ds/components/ChatShell/chat-shell.tsx",
+      "packages/playground-ui/src/ds/components/ChatShell/index.ts",
+      "packages/playground-ui/src/ds/components/Code/code.tsx",
+      "packages/playground-ui/src/ds/components/Code/use-highlight.ts",
+      "packages/playground-ui/src/ds/components/CodeBlock/code-block.tsx",
+      "packages/playground-ui/src/ds/components/CodeEditor/highlight.ts",
+      "packages/playground-ui/src/ds/components/Collapsible/collapsible.tsx",
+      "packages/playground-ui/src/ds/components/Combobox/combobox-parts.tsx",
+      "packages/playground-ui/src/ds/components/Combobox/combobox-styles.ts",
+      "packages/playground-ui/src/ds/components/Combobox/combobox.tsx",
+      "packages/playground-ui/src/ds/components/Composer/composer.tsx",
+      "packages/playground-ui/src/ds/components/Composer/use-composer-pointer.ts",
+      "packages/playground-ui/src/ds/components/CopyButton/copy-button.tsx",
+      "packages/playground-ui/src/ds/components/DisclosureChevron/disclosure-chevron.tsx",
+      "packages/playground-ui/src/ds/components/DropdownMenu/dropdown-menu.tsx",
+      "packages/playground-ui/src/ds/components/EmptyState/EmptyState.tsx",
+      "packages/playground-ui/src/ds/components/Field/field-control-aria.ts",
+      "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-column.tsx",
+      "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-error-msg.tsx",
+      "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-help-text.tsx",
+      "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-label.tsx",
+      "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-layout.tsx",
+      "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-message.tsx",
+      "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block.tsx",
+      "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-error-id.ts",
+      "packages/playground-ui/src/ds/components/MarkdownRenderer/arriving.ts",
+      "packages/playground-ui/src/ds/components/MarkdownRenderer/blocks.ts",
+      "packages/playground-ui/src/ds/components/MarkdownRenderer/markdown-renderer.tsx",
+      "packages/playground-ui/src/ds/components/MarkdownRenderer/markdown-table.tsx",
+      "packages/playground-ui/src/ds/components/MarkdownRenderer/table-csv.ts",
+      "packages/playground-ui/src/ds/components/MarkdownRenderer/table-markdown.ts",
+      "packages/playground-ui/src/ds/components/MarkdownRenderer/use-settled.ts",
+      "packages/playground-ui/src/ds/components/Message/message.tsx",
+      "packages/playground-ui/src/ds/components/MessageScroller/message-scroller-context.ts",
+      "packages/playground-ui/src/ds/components/MessageScroller/message-scroller-geometry.ts",
+      "packages/playground-ui/src/ds/components/MessageScroller/message-scroller-glide.ts",
+      "packages/playground-ui/src/ds/components/MessageScroller/message-scroller-trip.ts",
+      "packages/playground-ui/src/ds/components/MessageScroller/message-scroller-visibility-store.ts",
+      "packages/playground-ui/src/ds/components/MessageScroller/message-scroller.tsx",
+      "packages/playground-ui/src/ds/components/Metadata/metadata.tsx",
+      "packages/playground-ui/src/ds/components/Notice/Notice.tsx",
+      "packages/playground-ui/src/ds/components/Notice/notice-button.tsx",
+      "packages/playground-ui/src/ds/components/Notice/notice-message.tsx",
+      "packages/playground-ui/src/ds/components/Notice/notice-root.tsx",
+      "packages/playground-ui/src/ds/components/ProductAvatar/product-identity.ts",
+      "packages/playground-ui/src/ds/components/ScrollArea/scroll-area.tsx",
+      "packages/playground-ui/src/ds/components/Select/select.tsx",
+      "packages/playground-ui/src/ds/components/Shimmer/shimmer.tsx",
+      "packages/playground-ui/src/ds/components/Tabs/tabs-context.ts",
+      "packages/playground-ui/src/ds/components/Tabs/tabs-list.tsx",
+      "packages/playground-ui/src/ds/components/Tabs/tabs-root.tsx",
+      "packages/playground-ui/src/ds/components/Tabs/tabs-tab.tsx",
+      "packages/playground-ui/src/ds/components/Textarea/textarea.tsx",
+      "packages/playground-ui/src/ds/components/ThemeProvider/theme-context.ts",
+      "packages/playground-ui/src/ds/components/Tooltip/tooltip.tsx",
+      "packages/playground-ui/src/ds/components/Txt/Txt.tsx",
+      "packages/playground-ui/src/ds/components/ai/activity/activity.tsx",
+      "packages/playground-ui/src/ds/components/ai/activity/use-relative-paths.ts",
+      "packages/playground-ui/src/ds/components/ai/task-list/task-graph-node.ts",
+      "packages/playground-ui/src/ds/components/ai/task-list/task-graph.tsx",
+      "packages/playground-ui/src/ds/components/ai/task-list/task-list.tsx",
+      "packages/playground-ui/src/ds/components/ai/task-list/use-focused-row-scroll.ts",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-group.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-mono.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-output.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-presentation.ts",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-styles.ts",
+      "packages/playground-ui/src/ds/icons/Icon.tsx",
+      "packages/playground-ui/src/ds/icons/icon-size-classes.ts",
+      "packages/playground-ui/src/ds/primitives/control-icon.ts",
+      "packages/playground-ui/src/ds/primitives/control-size.ts",
+      "packages/playground-ui/src/ds/primitives/floating.ts",
+      "packages/playground-ui/src/ds/primitives/form-element.ts",
+      "packages/playground-ui/src/ds/primitives/menu-item.ts",
+      "packages/playground-ui/src/ds/primitives/menu-scroll-area.tsx",
+      "packages/playground-ui/src/ds/primitives/message-surface.ts",
+      "packages/playground-ui/src/ds/primitives/password-manager-autofill.ts",
+      "packages/playground-ui/src/ds/primitives/popup-anchor.tsx",
+      "packages/playground-ui/src/ds/primitives/portal-container.tsx",
+      "packages/playground-ui/src/ds/primitives/raised-surface.ts",
+      "packages/playground-ui/src/ds/primitives/text.ts",
+      "packages/playground-ui/src/ds/primitives/textarea-control.tsx",
+      "packages/playground-ui/src/ds/primitives/transitions.ts",
+      "packages/playground-ui/src/ds/primitives/trigger-button.tsx",
+      "packages/playground-ui/src/ds/primitives/typography.ts",
+      "packages/playground-ui/src/ds/tokens/animations.ts",
+      "packages/playground-ui/src/ds/tokens/borders.ts",
+      "packages/playground-ui/src/ds/tokens/colors.ts",
+      "packages/playground-ui/src/ds/tokens/fonts.ts",
+      "packages/playground-ui/src/ds/tokens/shadows.ts",
+      "packages/playground-ui/src/ds/tokens/sizes.ts",
+      "packages/playground-ui/src/hooks/use-autoscroll.tsx",
+      "packages/playground-ui/src/hooks/use-copy-to-clipboard.ts",
+      "packages/playground-ui/src/lib/merge-refs.ts",
+      "packages/playground-ui/src/lib/string.ts",
+      "packages/playground-ui/src/lib/toast-api.tsx",
+      "packages/playground-ui/src/lib/tw-merge-config.ts",
+      "packages/playground-ui/src/lib/utils.ts"
+    ],
+    "stylesheetsImported": [
+      "packages/playground-ui/components.css",
+      "packages/playground-ui/src/index.css",
+      "packages/playground-ui/theme.css",
+      "packages/playground-ui/theme/code.css",
+      "packages/playground-ui/theme/colors.css",
+      "packages/playground-ui/theme/data-viz.css",
+      "packages/playground-ui/theme/motion.css",
+      "packages/playground-ui/theme/scale.css",
+      "packages/playground-ui/theme/status.css",
+      "packages/playground-ui/theme/surfaces.css",
+      "packages/playground-ui/theme/typography.css",
+      "packages/playground/src/fonts.css"
+    ],
+    "filesUnderEe": 0
+  },
+  "ownSource": [
+    "src/App.tsx",
+    "src/host.ts",
+    "src/main.tsx"
+  ],
+  "bundler": {
+    "vite": "8.3.5",
+    "tailwindcss": "4.3.3",
+    "@tailwindcss/vite": "4.3.3",
+    "@vitejs/plugin-react": "6.2.1",
+    "helpers": [
+      "rolldown/runtime.js",
+      "vite/modulepreload-polyfill.js",
+      "vite/preload-helper.js"
+    ]
+  },
+  "fonts": [
+    {
+      "file": "CommitMono-400-Regular.woff2",
+      "from": "packages/playground/src/assets/fonts/CommitMono-400-Regular.woff2",
+      "licence": "OFL-1.1"
+    },
+    {
+      "file": "CommitMono-700-Regular.woff2",
+      "from": "packages/playground/src/assets/fonts/CommitMono-700-Regular.woff2",
+      "licence": "OFL-1.1"
+    },
+    {
+      "file": "MonaSans-VariableFont_wdth-wght.ttf",
+      "from": "packages/playground/src/assets/fonts/MonaSans-VariableFont_wdth-wght.ttf",
+      "licence": "OFL-1.1"
+    }
+  ],
+  "fontLicenceFiles": [
+    "OFL-CommitMono.txt",
+    "OFL-MonaSans.txt"
+  ],
+  "packages": [
+    {
+      "name": "@base-ui/react",
+      "version": "1.9.0",
+      "licence": "MIT",
+      "modulesInScript": 256,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@base-ui/utils",
+      "version": "0.5.0",
+      "licence": "MIT",
+      "modulesInScript": 41,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/autocomplete",
+      "version": "6.20.4",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/lang-css",
+      "version": "6.3.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/lang-html",
+      "version": "6.4.12",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/lang-javascript",
+      "version": "6.2.5",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/lang-json",
+      "version": "6.0.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/lang-markdown",
+      "version": "6.5.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/language",
+      "version": "6.13.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/legacy-modes",
+      "version": "6.5.5",
+      "licence": "MIT",
+      "modulesInScript": 7,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/state",
+      "version": "6.7.6",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/streamparser",
+      "version": "6.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@codemirror/view",
+      "version": "6.43.15",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@floating-ui/core",
+      "version": "1.8.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@floating-ui/dom",
+      "version": "1.8.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@floating-ui/react-dom",
+      "version": "2.1.9",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@floating-ui/utils",
+      "version": "0.2.12",
+      "licence": "MIT",
+      "modulesInScript": 2,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@lezer/common",
+      "version": "1.5.5",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@lezer/css",
+      "version": "1.3.9",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@lezer/highlight",
+      "version": "1.2.5",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@lezer/html",
+      "version": "1.3.13",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@lezer/javascript",
+      "version": "1.5.6",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@lezer/json",
+      "version": "1.0.3",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@lezer/lr",
+      "version": "1.4.12",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@lezer/markdown",
+      "version": "1.8.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@marijn/find-cluster-break",
+      "version": "1.0.4",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@ungap/structured-clone",
+      "version": "1.4.0",
+      "licence": "ISC",
+      "modulesInScript": 3,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "bail",
+      "version": "2.0.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "ccount",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "class-variance-authority",
+      "version": "0.7.1",
+      "licence": "Apache-2.0",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "clsx",
+      "version": "2.1.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "comma-separated-tokens",
+      "version": "2.0.3",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "decode-named-character-reference",
+      "version": "1.3.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "devlop",
+      "version": "1.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "escape-string-regexp",
+      "version": "5.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "estree-util-is-identifier-name",
+      "version": "3.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "extend",
+      "version": "3.0.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "hast-util-to-jsx-runtime",
+      "version": "2.3.7",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "hast-util-whitespace",
+      "version": "3.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "html-url-attributes",
+      "version": "3.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "inline-style-parser",
+      "version": "0.2.9",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "is-plain-obj",
+      "version": "4.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "longest-streak",
+      "version": "3.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "lucide-react",
+      "version": "1.67.0",
+      "licence": "ISC",
+      "modulesInScript": 44,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "markdown-table",
+      "version": "3.0.4",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-find-and-replace",
+      "version": "3.0.4",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-from-markdown",
+      "version": "2.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-gfm-autolink-literal",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-gfm-footnote",
+      "version": "2.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-gfm-strikethrough",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-gfm-table",
+      "version": "2.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-gfm-task-list-item",
+      "version": "2.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-gfm",
+      "version": "3.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-phrasing",
+      "version": "4.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-to-hast",
+      "version": "13.2.1",
+      "licence": "MIT",
+      "modulesInScript": 28,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-to-markdown",
+      "version": "2.2.1",
+      "licence": "MIT",
+      "modulesInScript": 49,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "mdast-util-to-string",
+      "version": "4.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-core-commonmark",
+      "version": "2.0.4",
+      "licence": "MIT",
+      "modulesInScript": 23,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-extension-gfm-autolink-literal",
+      "version": "2.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-extension-gfm-footnote",
+      "version": "2.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-extension-gfm-strikethrough",
+      "version": "2.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-extension-gfm-table",
+      "version": "2.1.2",
+      "licence": "MIT",
+      "modulesInScript": 3,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-extension-gfm-task-list-item",
+      "version": "2.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-extension-gfm",
+      "version": "3.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-factory-destination",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-factory-label",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-factory-space",
+      "version": "2.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-factory-title",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-factory-whitespace",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-character",
+      "version": "2.1.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-chunked",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-classify-character",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-combine-extensions",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-decode-numeric-character-reference",
+      "version": "2.0.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-decode-string",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-edit-map",
+      "version": "1.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-html-tag-name",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-normalize-identifier",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-resolve-all",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-sanitize-uri",
+      "version": "2.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark-util-subtokenize",
+      "version": "2.1.0",
+      "licence": "MIT",
+      "modulesInScript": 2,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "micromark",
+      "version": "4.0.3",
+      "licence": "MIT",
+      "modulesInScript": 9,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "property-information",
+      "version": "7.2.0",
+      "licence": "MIT",
+      "modulesInScript": 18,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "react-dom",
+      "version": "19.3.1",
+      "licence": "MIT",
+      "modulesInScript": 4,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "react-markdown",
+      "version": "9.1.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "react",
+      "version": "19.3.1",
+      "licence": "MIT",
+      "modulesInScript": 4,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "remark-gfm",
+      "version": "4.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "remark-parse",
+      "version": "11.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "remark-rehype",
+      "version": "11.1.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "remend",
+      "version": "1.4.0",
+      "licence": "Apache-2.0",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "scheduler",
+      "version": "0.28.0",
+      "licence": "MIT",
+      "modulesInScript": 2,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "sonner",
+      "version": "2.0.7",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "space-separated-tokens",
+      "version": "2.0.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "style-mod",
+      "version": "4.1.4",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "style-to-object",
+      "version": "2.0.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "tailwind-merge",
+      "version": "3.7.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE.md"
+      ]
+    },
+    {
+      "name": "tailwindcss",
+      "version": "4.3.3",
+      "licence": "MIT",
+      "modulesInScript": 0,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "trim-lines",
+      "version": "3.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "trough",
+      "version": "2.2.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "unified",
+      "version": "11.0.5",
+      "licence": "MIT",
+      "modulesInScript": 2,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "unist-util-is",
+      "version": "6.0.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "unist-util-position",
+      "version": "5.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "unist-util-stringify-position",
+      "version": "4.0.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "unist-util-visit-parents",
+      "version": "6.1.0",
+      "licence": "MIT",
+      "modulesInScript": 2,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "unist-util-visit",
+      "version": "5.2.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "use-debounce",
+      "version": "10.1.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "use-sync-external-store",
+      "version": "1.7.0",
+      "licence": "MIT",
+      "modulesInScript": 4,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "vfile-message",
+      "version": "4.0.3",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "vfile",
+      "version": "6.0.3",
+      "licence": "MIT",
+      "modulesInScript": 5,
+      "licenceFiles": [
+        "license"
+      ]
+    },
+    {
+      "name": "w3c-keyname",
+      "version": "2.2.8",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "zwitch",
+      "version": "2.0.4",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "license"
+      ]
+    }
+  ],
+  "built": {
+    "CommitMono-400-Regular.woff2": {
+      "bytes": 68224,
+      "sha256": "b68e6356452ce46e936ea4e17619fc616b03d390b66d6d011b433f7f7aeab565"
+    },
+    "CommitMono-700-Regular.woff2": {
+      "bytes": 68648,
+      "sha256": "7a9524b392e72906c80d0dccd86b80fba53e3a2dab6bcdf40d6fb3e3ab0bd44d"
+    },
+    "MonaSans-VariableFont_wdth-wght.ttf": {
+      "bytes": 348692,
+      "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
+    },
+    "assistant.js": {
+      "bytes": 1507502,
+      "sha256": "c546a784ac289f74d0fc09be484e22cdfe6a236f720540bf5953ca21f00b1021"
+    },
+    "index.html": {
+      "bytes": 822,
+      "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
+    },
+    "style.css": {
+      "bytes": 345922,
+      "sha256": "d2d1080777ef0a2c8e15158807c7923eda1fbcfea5c5555ac389cb9b421a29d9"
+    }
+  }
+}

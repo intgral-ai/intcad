@@ -81,6 +81,9 @@ mkdir -p "$STAGE/usr/share/icons"
 cp -R "$WORK/icons/hicolor" "$STAGE/usr/share/icons/"
 mkdir -p "$STAGE/usr/share/doc/solidcraft"
 copy_docs "$STAGE/usr/share/doc/solidcraft"
+# The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
+# which the app carries built in as well (Help > About > Licences).
+install -Dm644 "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$STAGE/usr/share/doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt"
 
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"

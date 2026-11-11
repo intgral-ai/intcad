@@ -14,6 +14,27 @@ pub const BUILD_DATE: &str = env!("SOLIDCRAFT_BUILD_DATE");
 pub const DOCS_URL: &str = "https://docs.solidcraft.io/";
 const ATTRIBUTION: &str = include_str!("../../../ATTRIBUTION.md");
 use solidcraft_engine::licences::{LICENSE_APACHE, LICENSE_MIT, NOTICE, THIRD_PARTY};
+/// What the Assistant's page holds that is not open-skyfall's own (Mastra's components, the npm
+/// packages they import, the fonts), with the licence texts each part ships:
+/// packages/assistant-web/THIRD-PARTY-NOTICES.txt, written by that folder's build. Built in on the
+/// systems whose app carries the page (apps/solidcraft/src/assistant_web.rs), so a single
+/// downloaded executable carries these notices as it carries the page.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub const ASSISTANT_PAGE_NOTICES: Option<&str> = Some(include_str!("../../../packages/assistant-web/THIRD-PARTY-NOTICES.txt"));
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+pub const ASSISTANT_PAGE_NOTICES: Option<&str> = None;
+
+/// Every licence text the program carries, as one text.
+fn all_licences() -> String {
+    let mut all = solidcraft_engine::licences::all();
+    if let Some(notices) = ASSISTANT_PAGE_NOTICES {
+        all.push('\n');
+        all.push_str(&"=".repeat(80));
+        all.push('\n');
+        all.push_str(notices);
+    }
+    all
+}
 
 #[derive(Default)]
 pub struct HelpState {
@@ -217,9 +238,12 @@ fn about(app: &mut SolveApp, ctx: &egui::Context) {
                     }
                     ui_kit::section(ui, "third_party", crate::i18n::tr("help.third_party"), false, |ui| {
                         if ui_kit::button(ui, crate::i18n::tr_label("Copy all licences"), ui_kit::Button::Normal).clicked() {
-                            ctx.copy_text(solidcraft_engine::licences::all());
+                            ctx.copy_text(all_licences());
                         }
                         ui_kit::text_lines(ui, "sc_third_party", THIRD_PARTY);
+                        if let Some(notices) = ASSISTANT_PAGE_NOTICES {
+                            ui_kit::text_lines(ui, "sc_assistant_page_notices", notices);
+                        }
                     });
                 });
             });
@@ -240,6 +264,17 @@ mod tests {
         let app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let d = diagnostics(&app);
         assert!(d.contains(VERSION) && d.contains(std::env::consts::OS) && d.contains("Renderer: CPU"), "{d}");
+    }
+
+    /// The app that carries the Assistant's page carries the page's third-party notices too.
+    #[test]
+    fn the_assistant_pages_notices_are_built_in_where_the_page_is() {
+        let carries = cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos"));
+        assert_eq!(ASSISTANT_PAGE_NOTICES.is_some(), carries);
+        if let Some(notices) = ASSISTANT_PAGE_NOTICES {
+            assert!(notices.contains("Apache License") && notices.contains("SIL Open Font License"));
+            assert!(all_licences().ends_with(notices));
+        }
     }
 
     /// One feature and one body are counted in the singular (#9085), more in the plural.

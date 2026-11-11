@@ -143,6 +143,11 @@
         <File Id="Notice" Source="$(var.BinDir)\NOTICE" />
         <File Id="ThirdParty" Source="$(var.BinDir)\THIRD-PARTY-LICENSES.txt" />
       </Component>
+      <!-- The third-party notices of the Assistant's page (packages/assistant-web). A component
+           of its own: the one above keeps the files it has always had. -->
+      <Component Id="AssistantPageNotices">
+        <File Id="AssistantNotices" Source="$(var.BinDir)\ASSISTANT-THIRD-PARTY-NOTICES.txt" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
   </Fragment>
 
