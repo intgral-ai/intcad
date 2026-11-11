@@ -1,12 +1,17 @@
-//! The Assistant's web view (macOS and Linux): the conversation and the composer drawn by a page
-//! in a native web view, laid over the place the Assistant panel gives up for it in the app's own
-//! window. The page is built by `packages/assistant-web` and embedded here; it loads nothing from
-//! outside the app. What it is told and what it may ask for is
+//! The Assistant's web view (macOS, Linux and Windows): the conversation and the composer drawn by
+//! a page in a native web view, laid over the place the Assistant panel gives up for it in the
+//! app's own window. The page is built by `packages/assistant-web` and embedded here; it loads
+//! nothing from outside the app. What it is told and what it may ask for is
 //! `solidcraft_ui_egui::agent_chat::web`.
 //!
 //! On Linux the view is WebKitGTK in a child of the app's X11 window, an XWayland window
 //! included. A native Wayland window has no such child: there the panel draws its own
 //! conversation. winit does not run GTK, so GTK is started here and given its turns each frame.
+//!
+//! On Windows the view is WebView2 in a child window of the app's. WebView2 serves no scheme of
+//! the app's own, so the page has an `http` address there that only this view answers, and it
+//! keeps its files in the user's data folder. A machine without the WebView2 runtime has no view:
+//! there the panel draws its own conversation.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -23,7 +28,12 @@ use wry::http::{Request, Response, header};
 
 /// The page's own address: a scheme only this web view serves, from the files below.
 const SCHEME: &str = "openskyfall-assistant";
-const PAGE: &str = "openskyfall-assistant://app/index.html";
+const PAGE: &str = "openskyfall-assistant://localhost/index.html";
+
+/// WebView2 (Windows) has the page at `http://<scheme>.<host>/…`: that is how wry serves a scheme
+/// of the app's own there, and the address a navigation is asked about. The requests still come
+/// to the scheme's handler, in the scheme's form.
+const OVER_HTTP: bool = cfg!(target_os = "windows");
 
 /// Agent output is untrusted text: the page may load only its own files and send nothing out.
 /// The page's `<meta>` says the same; this header is the copy the page cannot change.
@@ -32,8 +42,8 @@ const POLICY: &str = "default-src 'none'; script-src 'self' openskyfall-assistan
                       base-uri 'none'; form-action 'none'";
 
 /// Outside what the page draws the view is seen through, and the panel's frame shows around the
-/// page's rounded corners (macOS). An X11 child window is not seen through: there the view has the
-/// colour of the page's own surface behind it.
+/// page's rounded corners (macOS). A child window (X11, Windows) is not seen through: there the
+/// view has the colour of the page's own surface behind it.
 const SEE_THROUGH: bool = cfg!(target_os = "macos");
 
 /// How often GTK is given its turns while the page is at work or has the keyboard, and while it
@@ -123,9 +133,26 @@ fn picture_kind(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// The page's address as the view has it (see [`OVER_HTTP`]).
+fn page_address(over_http: bool) -> String {
+    if over_http { PAGE.replacen(&format!("{SCHEME}://"), &format!("http://{SCHEME}."), 1) } else { PAGE.to_string() }
+}
+
 /// The page stays the page: nothing else loads in the view, not even another of its own files.
-fn own_address(url: &str) -> bool {
-    url == PAGE || url == "about:blank"
+fn own_address(url: &str, over_http: bool) -> bool {
+    url == page_address(over_http) || url == "about:blank"
+}
+
+/// Where WebView2 keeps its own files (Windows). Left to itself it makes a folder beside the
+/// app's exe, which an installed app may not write to.
+fn data_folder() -> Option<PathBuf> {
+    // A run that was given a settings folder of its own keeps the view's files there as well.
+    let folder = if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_some() {
+        crate::settings_dir().ok().flatten()
+    } else {
+        solidcraft_engine::recovery::data_dir()
+    };
+    folder.map(|folder| folder.join("assistant-web-view"))
 }
 
 /// Whether this run's window can hold the web view at all.
@@ -274,6 +301,16 @@ impl AssistantWeb {
     /// Once a frame, after the app's UI: keep the web view on the place the panel gave it.
     pub fn tick(&mut self, solve: &mut SolveApp, ctx: &egui::Context, frame: &eframe::Frame) {
         self.keep_place(solve, ctx, frame);
+        // WebView2 takes the keyboard when it is clicked, and a press on the rest of the window
+        // does not take it back (Windows): the window is given it. The app sees only the presses
+        // that are not on the view. (The answer names the window that had the keyboard, and
+        // "none" reads as an error.)
+        if cfg!(target_os = "windows")
+            && ctx.input(|input| input.pointer.any_pressed())
+            && let Some(view) = self.view.as_ref().filter(|_| self.shown)
+        {
+            let _ = view.focus_parent();
+        }
         #[cfg(target_os = "linux")]
         {
             self.turn_gtk();
@@ -361,12 +398,33 @@ impl AssistantWeb {
         let pictures = self.pictures.clone();
         // Only files are the app's to take; text dragged within the page stays the page's.
         let files = Cell::new(false);
-        let builder = wry::WebViewBuilder::new()
+        // WebView2 is told where its files go (Windows); the other views keep theirs where the
+        // system has them. It reads this as the view is built.
+        let mut context = cfg!(target_os = "windows").then(|| {
+            let folder = data_folder();
+            if let Some(folder) = &folder
+                && let Err(error) = std::fs::create_dir_all(folder)
+            {
+                note(&format!("could not make its data folder {}: {error}", folder.display()));
+            }
+            wry::WebContext::new(folder)
+        });
+        let builder = match context.as_mut() {
+            Some(context) => wry::WebViewBuilder::new_with_web_context(context),
+            None => wry::WebViewBuilder::new(),
+        };
+        let builder = builder
             .with_custom_protocol(SCHEME.to_string(), move |_view, request| serve(&request, &pictures))
             .with_url(PAGE)
             .with_bounds(place(at))
             .with_accept_first_mouse(true)
-            .with_navigation_handler(|url| own_address(&url))
+            .with_navigation_handler(|url| {
+                let own = own_address(&url, OVER_HTTP);
+                if !own {
+                    note(&format!("would not go to {}", url.chars().take(200).collect::<String>()));
+                }
+                own
+            })
             .with_new_window_req_handler(|_url, _features| wry::NewWindowResponse::Deny)
             // The paths come from the system's drag, never from the page.
             .with_drag_drop_handler(move |event| {
@@ -404,6 +462,14 @@ impl AssistantWeb {
         // See-through outside what the page draws, where a view can be: the page rounds its own
         // corners, and the panel's frame (its border and shadow) shows around them.
         let builder = if SEE_THROUGH { builder.with_transparent(true) } else { builder.with_background_color(opaque(backing)) };
+        // A browser's own keys are not the Assistant's (Windows): F5 would load the page again
+        // and Ctrl+P print it. The keys of text editing stay (WebView2's
+        // `AreBrowserAcceleratorKeysEnabled`, as Microsoft describes it).
+        #[cfg(target_os = "windows")]
+        let builder = {
+            use wry::WebViewBuilderExtWindows;
+            builder.with_browser_accelerator_keys(false)
+        };
         // The builder panics on a window it cannot take; the app goes on without the web view.
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.build_as_child(frame)));
         match built {
@@ -437,8 +503,9 @@ impl AssistantWeb {
                 note(&format!("could not be {}: {error}", if shown { "shown" } else { "hidden" }));
             }
             // A hidden page cannot keep the keyboard: it goes back to the window. (An X11 child
-            // never took it from the window, and is not to be given it as it is hidden.)
-            if !shown && self.focused {
+            // never took it from the window, and is not to be given it as it is hidden. WebView2
+            // is not asked whether it had it: the window having it twice costs nothing.)
+            if !shown && (self.focused || cfg!(target_os = "windows")) {
                 #[cfg(not(target_os = "linux"))]
                 let _ = view.focus_parent();
                 self.focused = false;
@@ -449,7 +516,8 @@ impl AssistantWeb {
 }
 
 /// The view's place in the window. On macOS it is given in the window's own points. Elsewhere it
-/// is given in pixels: WebKitGTK counts points by GTK's scale, which need not be the window's.
+/// is given in pixels: WebKitGTK counts points by GTK's scale, which need not be the window's,
+/// and a child window on Windows is placed in pixels anyway.
 fn place(at: Placed) -> wry::Rect {
     if cfg!(target_os = "macos") { bounds(at.rect, at.zoom) } else { bounds_in_pixels(at.rect, at.pixels_per_point) }
 }
@@ -520,7 +588,7 @@ mod tests {
     use super::*;
 
     fn get_with(path: &str, pictures: &Pictures) -> Response<Cow<'static, [u8]>> {
-        serve(&Request::builder().uri(format!("openskyfall-assistant://app{path}")).body(Vec::new()).unwrap(), pictures)
+        serve(&Request::builder().uri(format!("openskyfall-assistant://localhost{path}")).body(Vec::new()).unwrap(), pictures)
     }
 
     fn get(path: &str) -> Response<Cow<'static, [u8]>> {
@@ -600,22 +668,51 @@ mod tests {
         assert_eq!(opaque(egui::Color32::from_rgba_unmultiplied(10, 20, 30, 40)).3, 255);
     }
 
-    /// Nothing but the page's own address loads in the view.
+    /// Nothing but the page's own address loads in the view: in the scheme's form where the
+    /// view serves the scheme, and in WebView2's `http` form of it on Windows, where the other
+    /// form is no address of the page's.
     #[test]
     fn only_the_pages_own_address_loads() {
-        assert!(own_address(PAGE));
-        assert!(own_address("about:blank"));
-        for url in [
-            "https://example.com/",
-            "http://127.0.0.1:8080/",
-            "file:///etc/passwd",
-            "openskyfall-assistant://elsewhere/index.html",
-            "openskyfall-assistant://app/assistant.js",
-            "openskyfall-assistant://app/picture/a-1",
-            "openskyfall-assistant://app/index.html/../picture/a-1",
-            "javascript:alert(1)",
-        ] {
-            assert!(!own_address(url), "{url}");
+        // What wry makes of the scheme for WebView2, and what a navigation there is asked about.
+        const HTTP: &str = "http://openskyfall-assistant.localhost/index.html";
+        assert_eq!(page_address(false), PAGE);
+        assert_eq!(page_address(true), HTTP);
+        assert!(PAGE.starts_with(&format!("{SCHEME}://localhost/")), "a host WebView2 does not take for a site on the net");
+        for (own, over_http) in [(PAGE, false), (HTTP, true)] {
+            assert!(own_address(own, over_http), "{own}");
+            assert!(own_address("about:blank", over_http));
+            for url in [
+                "https://example.com/",
+                "http://127.0.0.1:8080/",
+                "http://localhost/index.html",
+                "file:///etc/passwd",
+                "openskyfall-assistant://elsewhere/index.html",
+                "openskyfall-assistant://localhost/assistant.js",
+                "openskyfall-assistant://localhost/picture/a-1",
+                "openskyfall-assistant://localhost/index.html/../picture/a-1",
+                "https://openskyfall-assistant.localhost/index.html",
+                "http://openskyfall-assistant.localhost.example.com/index.html",
+                "http://openskyfall-assistant.localhost:8080/index.html",
+                "http://openskyfall-assistant.localhost/assistant.js",
+                "http://openskyfall-assistant.localhost/picture/a-1",
+                "http://openskyfall-assistant.localhost/index.html?x",
+                "http://openskyfall-assistant.elsewhere/index.html",
+                "javascript:alert(1)",
+            ] {
+                assert!(!own_address(url, over_http), "{url}");
+            }
+        }
+        assert!(!own_address(HTTP, false), "the scheme's own form only, where the view serves the scheme");
+        assert!(!own_address(PAGE, true), "WebView2 never has the page there");
+    }
+
+    /// WebView2's files go under a folder of the app's, never beside the exe; a run with a
+    /// settings folder of its own keeps them there.
+    #[test]
+    fn webview2_keeps_its_files_in_a_folder_of_the_apps() {
+        if let Some(folder) = data_folder() {
+            assert!(folder.is_absolute(), "{folder:?}");
+            assert!(folder.ends_with("assistant-web-view"), "{folder:?}");
         }
     }
 }
