@@ -28,15 +28,30 @@ pub mod context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod discover;
 pub mod gate;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod host_ai;
+#[cfg(not(target_arch = "wasm32"))]
+mod host_bridge;
 mod markdown;
 mod markdown_view;
+#[cfg(not(target_arch = "wasm32"))]
+mod mastra_backend;
+pub mod mastra_protocol;
+pub mod object_ref;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod packaged_runtime;
 mod panel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod paste;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod runtime_client;
 pub mod settings;
+pub mod skill;
 pub mod summary;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod task_runtime;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -106,6 +121,25 @@ impl State {
     }
     fn running(self) -> bool {
         matches!(self, State::Starting | State::Ready | State::Busy | State::NeedsAuth)
+    }
+}
+
+/// The Mastra runtime's own lifecycle, kept apart from [`State`] (the conversation) and from the
+/// AI connection's authentication. A ready runtime authenticates nobody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeStatus {
+    Starting,
+    Ready,
+    Stopped,
+}
+
+impl RuntimeStatus {
+    pub fn label(self) -> &'static str {
+        tr(match self {
+            RuntimeStatus::Starting => "ui.mastra_runtime_starting",
+            RuntimeStatus::Ready => "ui.mastra_runtime_ready",
+            RuntimeStatus::Stopped => "ui.mastra_runtime_stopped",
+        })
     }
 }
 
@@ -215,6 +249,11 @@ pub enum Item {
         thought: bool,
         text: String,
     },
+    /// An Anatomy answer with the host object references frozen when the turn ended.
+    AgentRefs {
+        text: String,
+        refs: Vec<object_ref::ObjectRef>,
+    },
     Tool {
         id: String,
         title: String,
@@ -226,6 +265,17 @@ pub enum Item {
         output: Option<String>,
     },
     Plan(Vec<(String, String)>),
+    /// A built-in skill turn: the frozen descriptor, document revision, model and its terminal.
+    Skill {
+        title: String,
+        version: String,
+        document_id: String,
+        revision: u64,
+        model: String,
+        selection: usize,
+        support: skill::SkillSupport,
+        terminal: Option<String>,
+    },
     /// The agent asks before running something of its own (its options, its words).
     Permission {
         key: u64,
@@ -341,6 +391,14 @@ pub struct AgentChat {
     images: bool,
     /// The agent takes documents (PDFs) in a message.
     documents: bool,
+    /// The built-in skill selected for the next message; ordinary Chat is the default.
+    pub skill: skill::Skill,
+    /// The running or latest skill turn's frozen binding. A new turn replaces it.
+    pub skill_binding: Option<skill::Binding>,
+    /// The host-owned task for a Text-to-CAD skill turn (#67). It observes the existing tool
+    /// boundary; it is not a second agent loop, provider, session or tool registry.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) task: Option<task_runtime::Runtime>,
     /// Send a picture of the view with the next message.
     pub attach_view: bool,
     /// Send what is selected in the model with the next message.
@@ -402,6 +460,16 @@ pub struct AgentChat {
     pub agent_id: Option<String>,
     /// The agent the running backend is (for permissions and "always allow").
     running_id: String,
+    /// The Mastra runtime process this conversation uses (`None`: not a workflow backend), shown
+    /// apart from the AI connection's login state.
+    pub runtime: Option<RuntimeStatus>,
+    /// The runtime version as it reported itself.
+    pub runtime_version: Option<String>,
+    /// The selected AI connection's authentication as its own distinct state (`None`: not
+    /// checked yet). Never inferred from [`Event::RuntimeReady`].
+    pub connection_auth: Option<bool>,
+    /// The running backend hands turns to a Mastra workflow, so [`Event::Ready`] is not a sign-in.
+    mastra: bool,
     /// The popped-out chat window was given its saved place (it is open); see `panel::window_builder`.
     pub(crate) window_placed: bool,
     /// The agent's own modes, and the current one.
@@ -491,6 +559,10 @@ impl AgentChat {
         finish_turn(self, session);
         self.clear_config();
         self.stop_backend(wait);
+        self.runtime = None;
+        self.runtime_version = None;
+        self.connection_auth = None;
+        self.mastra = false;
         if self.state.is_some() {
             self.state = Some(State::Off);
         }
@@ -646,6 +718,41 @@ impl AgentChat {
         }
     }
 
+    /// Mark the latest open skill item with the turn's terminal. The host owns this line; a model
+    /// message cannot replace it with a claim of success.
+    fn finish_skill_turn(&mut self, reason: &str) {
+        let terminal = match reason {
+            "" => tr("ui.agent_chat_skill_done").to_string(),
+            "cancelled" => tr("ui.agent_chat_skill_cancelled").to_string(),
+            "error" => tr("ui.agent_chat_skill_error").to_string(),
+            other => other.to_string(),
+        };
+        if let Some(Item::Skill { terminal: open, .. }) = self.items.iter_mut().rev().find(|item| matches!(item, Item::Skill { terminal: None, .. }))
+        {
+            *open = Some(terminal);
+        }
+    }
+
+    /// Freeze host object references onto the final Anatomy answer. The names come from the
+    /// current document; the model's text cannot add or remove a clickable target.
+    fn attach_anatomy_refs(&mut self, session: &mut solidcraft_engine::Session) {
+        if !self.skill_binding.as_ref().is_some_and(|binding| binding.skill == skill::Skill::Anatomy) {
+            return;
+        }
+        let last_user = self.items.iter().rposition(|item| matches!(item, Item::User { .. })).unwrap_or(0);
+        let Some(index) = self.items.iter().rposition(|item| matches!(item, Item::Agent { thought: false, .. })) else {
+            return;
+        };
+        if index < last_user {
+            return;
+        }
+        let Some(Item::Agent { text, .. }) = self.items.get(index) else {
+            return;
+        };
+        let text = text.clone();
+        self.items[index] = Item::AgentRefs { text, refs: object_ref::collect(session) };
+    }
+
     /// Ask the agent to sign in by itself (an "agent" login method: it opens the browser).
     pub fn authenticate(&mut self, method: &str) {
         if let Some(b) = self.backend.as_mut() {
@@ -656,21 +763,39 @@ impl AgentChat {
 
     /// Take in what the backend reported.
     fn on_event(&mut self, e: Event) -> Option<Outcome> {
-        let signed_in = match &e {
-            Event::Ready { .. } => Some(true),
-            Event::AuthRequired { .. } => Some(false),
-            _ => None,
+        // A Mastra runtime's readiness says nothing about the AI connection: only the connection's
+        // own report (or a direct backend's Ready/AuthRequired) marks it signed in.
+        let signed_in = if self.mastra {
+            match &e {
+                Event::ConnectionAuth { available } => Some(*available),
+                _ => None,
+            }
+        } else {
+            match &e {
+                Event::Ready { .. } => Some(true),
+                Event::AuthRequired { .. } => Some(false),
+                _ => None,
+            }
         };
         if let Some(signed_in) = signed_in
             && !self.running_id.is_empty()
         {
             self.login_results.insert(self.running_id.clone(), signed_in);
+            self.connection_auth = Some(signed_in);
             // A newer chat result supersedes the old test, including one still in flight.
             self.settings.tests.remove(&self.running_id);
         }
         match e {
             Event::Documents(documents) => self.documents = documents,
             Event::ToolsAvailable(available) => self.tools_available = Some(available),
+            Event::RuntimeReady { version } => {
+                self.runtime = Some(RuntimeStatus::Ready);
+                self.runtime_version = Some(version);
+            }
+            Event::ConnectionAuth { available } => {
+                self.connection_auth = Some(available);
+                self.auth_status = Some(tr(if available { "ui.mastra_connection_ready" } else { "ui.mastra_connection_signed_out" }).to_string());
+            }
             Event::Ready { agent, images } => {
                 self.agent = agent;
                 self.images = images;
@@ -818,6 +943,7 @@ impl AgentChat {
                     self.state = Some(State::Ready);
                 }
                 self.ended = Some(reason.clone());
+                self.finish_skill_turn(&reason);
                 if std::mem::take(&mut self.discard_end) {
                     return Some(Outcome::TurnEnd);
                 }
@@ -840,6 +966,9 @@ impl AgentChat {
             }
             Event::Exited { tail } => {
                 self.clear_config();
+                if self.mastra {
+                    self.runtime = Some(RuntimeStatus::Stopped);
+                }
                 self.state = Some(if matches!(self.state(), State::Starting | State::Failed) { State::Failed } else { State::Exited });
                 self.steering = false;
                 for item in &mut self.items {
@@ -911,6 +1040,15 @@ fn assistant_mark_for(state: State, login: &str, configured: bool, waiting: usiz
 
 pub(crate) fn assistant_mark(app: &SolveApp) -> AssistantMark {
     let chat = &app.agent_chat;
+    // A stopped or failed runtime outranks an authentication hint; otherwise runtime readiness
+    // is not authentication: a ready workflow runtime whose connection needs a sign-in shows the
+    // sign-in state, not a ready one.
+    if matches!(chat.state(), State::Exited | State::Failed) || chat.stopped || chat.ended.as_deref() == Some("error") {
+        return AssistantMark::Stopped;
+    }
+    if chat.mastra && chat.connection_auth == Some(false) {
+        return AssistantMark::NeedsAuth;
+    }
     let current = agents::current(app);
     assistant_mark_for(
         chat.state(),
@@ -965,6 +1103,26 @@ fn working_dir() -> std::path::PathBuf {
 
 /// Start the agent: the chat's control endpoint for its MCP bridge if needed, the process.
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn sync_ai_connections(app: &SolveApp) -> Result<(), host_ai::AiError> {
+    app.services.agent_ai.connections().replace(&app.preferences.agents)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn direct_host_ai(app: &SolveApp) -> Result<Arc<host_ai::HostAi>, host_ai::AiError> {
+    sync_ai_connections(app)?;
+    host_ai::HostAi::direct(Arc::clone(&app.services.agent_ai), app.services.agent_http.clone(), app.services.secrets.clone())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn ai_sync_failed(app: &mut SolveApp, error: host_ai::AiError) {
+    cancel(app);
+    let text = error.message();
+    if !matches!(app.agent_chat.items.last(), Some(Item::Notice { text: old, error: true }) if old == &text) {
+        app.agent_chat.notice(text, true);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     disconnect(app);
     let Some(entry) = agents::current(app) else {
@@ -975,21 +1133,48 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         chat.picking = Some(true);
         return;
     };
-    // An API agent's key comes from the keychain for this connection only.
-    let key = if entry.kind.is_api() && entry.key {
-        match app.services.secrets.as_ref().map(|s| s.get(&entry.id)) {
-            Some(Ok(k)) => k,
-            Some(Err(e)) => {
-                app.agent_chat.notice(trf("ui.ai_keychain_error", &[("error", &e)]), true);
+    let execution = app.preferences.chat_execution;
+    // ACP tasks exist in HostAi, but this panel cannot yet show the agent's sign-in methods or
+    // answer its permission requests. Do not offer a Mastra workflow on an ACP agent until that
+    // wiring lands; direct chat with the same agent keeps working.
+    if execution == agents::Execution::Mastra && entry.kind == agents::Kind::Acp {
+        // Codex is discovered, never bundled. Say what is missing before modeling starts;
+        // the panel still cannot show an ACP agent's sign-in or permission requests (#4).
+        if entry.id == "codex" {
+            let detection = app.agent_chat.detection.clone().unwrap_or_default();
+            let prerequisite = discover::codex_prerequisite(&detection);
+            if !prerequisite.is_ready() {
+                app.agent_chat.notice(prerequisite.message(), true);
                 app.agent_chat.state = Some(State::Failed);
                 return;
             }
-            None => None,
+        }
+        app.agent_chat.notice(tr("ui.mastra_acp_tasks_unavailable"), true);
+        app.agent_chat.state = Some(State::Failed);
+        return;
+    }
+    let mastra_command = app.preferences.mastra_runtime_command.clone();
+    let mastra_workflow = app.preferences.mastra_workflow_id.clone();
+    let instructions = app.preferences.agent_instructions.clone();
+    if let Err(error) = sync_ai_connections(app) {
+        ai_sync_failed(app, error);
+        app.agent_chat.state = Some(State::Failed);
+        return;
+    }
+    // A Mastra workflow uses HostAi for the connection's model calls, so it needs an endpoint
+    // connection even though the picker may show an ACP agent.
+    let host = if entry.kind.is_api() || execution == agents::Execution::Mastra {
+        match direct_host_ai(app) {
+            Ok(host) => Some(host),
+            Err(error) => {
+                ai_sync_failed(app, error);
+                app.agent_chat.state = Some(State::Failed);
+                return;
+            }
         }
     } else {
         None
     };
-    let http = app.services.agent_http.clone();
     let chat = &mut app.agent_chat;
     if chat.tools_port.is_none()
         && let Some(start) = chat.control_starter.as_mut()
@@ -1016,26 +1201,64 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     chat.tools_available = Some(bridge.is_some());
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
-    let started: Result<Box<dyn ChatBackend>, String> = match entry.kind {
-        agents::Kind::Acp if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
-        agents::Kind::Acp => acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>),
-        kind @ (agents::Kind::Api | agents::Kind::Anthropic) => match http {
-            Some(http) => {
-                let protocol = if kind == agents::Kind::Anthropic { agents::Protocol::Anthropic } else { agents::Protocol::OpenAi };
-                api_client::ApiBackend::start(
-                    api_client::ApiConfig {
-                        name: entry.name.clone(),
-                        protocol,
-                        base_url: entry.base_url.clone(),
-                        model: entry.model.clone(),
-                        key,
-                        http,
-                        request_timeout_s: entry.request_timeout_s,
-                        reasoning_effort: entry.reasoning_effort.clone(),
-                    },
-                    start,
-                )
-                .map(|b| Box::new(b) as Box<dyn ChatBackend>)
+    let started: Result<Box<dyn ChatBackend>, String> = match (execution, entry.kind) {
+        (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_acp_tasks_unavailable").to_string()),
+        (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic) => (|| -> Result<Box<dyn ChatBackend>, String> {
+            let host_ai = host.ok_or_else(|| tr("ui.ai_no_http").to_string())?;
+            let backend::StartContext { cwd, bridge, tools, wake, .. } = start;
+            // Installed packages always use the validated application-relative runtime. A source
+            // checkout may still name a development command while debugging; it is never used as
+            // a fallback by an installed package or a release build.
+            let launch = match packaged_runtime::resolve_current_metadata(&packaged_runtime::expectations()) {
+                Ok(launch) => (launch.executable, launch.args, launch.cwd),
+                Err(error) => {
+                    let development = (cfg!(debug_assertions) && !mastra_command.trim().is_empty())
+                        .then(|| acp::split_command(&mastra_command))
+                        .filter(|argv| !argv.is_empty());
+                    if let Some(mut argv) = development {
+                        let executable = std::path::PathBuf::from(argv.remove(0));
+                        (executable, argv.into_iter().map(std::ffi::OsString::from).collect(), cwd.clone())
+                    } else {
+                        return Err(trf("ui.mastra_runtime_unusable", &[("reason", &error.to_string())]));
+                    }
+                }
+            };
+            let workflow_id =
+                if mastra_workflow.trim().is_empty() { mastra_backend::DEFAULT_WORKFLOW.to_string() } else { mastra_workflow.trim().to_string() };
+            if mastra_protocol::Id::parse(&workflow_id).is_err() {
+                return Err(tr("ui.mastra_workflow_invalid").to_string());
+            }
+            let config = mastra_backend::MastraConfig {
+                connection_id: entry.id.clone(),
+                model: entry.model.clone(),
+                workflow_id,
+                bridge,
+                tools,
+                instructions,
+                connection_auth: Arc::new(std::sync::Mutex::new(None)),
+                frozen_binding: Arc::new(std::sync::Mutex::new(None)),
+                validation: mastra_backend::HostValidation::local(),
+                wake: Arc::from(wake),
+            };
+            let launch = runtime_client::RuntimeLaunch {
+                executable: launch.0,
+                args: launch.1,
+                cwd: launch.2,
+                host_version: env!("CARGO_PKG_VERSION").into(),
+                limits: mastra_protocol::Limits::default(),
+            };
+            let ids: Arc<dyn runtime_client::IdSource> = Arc::new(runtime_client::OsIds);
+            let admission = runtime_client::RuntimeAdmission::new(8).map(Arc::new).map_err(|_| tr("ui.mastra_runtime_failed").to_string())?;
+            mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+        })(),
+        (agents::Execution::Direct, agents::Kind::Acp) if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
+        (agents::Execution::Direct, agents::Kind::Acp) => {
+            acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+        }
+        (agents::Execution::Direct, agents::Kind::Api | agents::Kind::Anthropic) => match host {
+            Some(host_ai) => {
+                api_client::ApiBackend::start(api_client::ApiConfig { connection_id: entry.id.clone(), model: entry.model.clone(), host_ai }, start)
+                    .map(|b| Box::new(b) as Box<dyn ChatBackend>)
             }
             None => Err(tr("ui.ai_no_http").to_string()),
         },
@@ -1047,13 +1270,17 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             chat.backend = Some(b);
             chat.argv = entry.argv.clone();
             chat.running_id = entry.id.clone();
+            chat.mastra = execution == agents::Execution::Mastra;
+            chat.runtime = chat.mastra.then_some(RuntimeStatus::Starting);
+            chat.runtime_version = None;
+            chat.connection_auth = None;
             chat.modes.clear();
             chat.mode.clear();
             chat.models.clear();
             chat.model.clear();
             chat.models_note = None;
             chat.model_revert = None;
-            chat.running_endpoint = if entry.kind.is_api() { entry.base_url.clone() } else { String::new() };
+            chat.running_endpoint = if entry.kind.is_api() && !chat.mastra { entry.base_url.clone() } else { String::new() };
             // An endpoint's models from the last time, until the new list arrives.
             if let Some(list) = chat.models_cache.get(&chat.running_endpoint) {
                 chat.models = list.clone();
@@ -1536,9 +1763,26 @@ fn start_turn(app: &mut SolveApp, text: String, image: bool, at: Option<usize>, 
 /// files are named after the text (text files in full), and pictures go as images to an agent
 /// that takes them. `at` is the message's place in the conversation, where its picture is kept.
 fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usize>, files: Vec<attach::Attachment>, note: Option<&str>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Err(error) = sync_ai_connections(app) {
+        ai_sync_failed(app, error);
+        return;
+    }
+    // A skill is a host mode of this same turn. An unsupported backend is refused before the
+    // model call; an untested one runs but is labeled, never presented as verified.
+    let skill = app.agent_chat.skill;
+    let support = app.agent_chat.backend.as_ref().map_or(skill::SkillSupport::Unsupported, |backend| backend.skill_support(skill));
+    if skill != skill::Skill::Plain && support == skill::SkillSupport::Unsupported {
+        app.agent_chat.notice(tr("ui.agent_chat_skill_unsupported").to_string(), true);
+        return;
+    }
     let (pictures, documents) = (app.agent_chat.images, app.agent_chat.documents);
     let changed = app.agent_chat.seen.as_deref().and_then(|seen| changed_note(seen, &app.session.doc));
-    let notes: Vec<&str> = note.into_iter().chain(changed.as_deref()).collect();
+    #[cfg(not(target_arch = "wasm32"))]
+    let skill_note = skill.prompt_note().map(|note| task_runtime::prompt_note(skill, note));
+    #[cfg(target_arch = "wasm32")]
+    let skill_note = skill.prompt_note();
+    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(note).chain(changed.as_deref()).collect();
     let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
     // The whole message stays within the cap: the files' text gets what the words leave.
     let budget = MAX_PROMPT.saturating_sub(lead.chars().count() + FILE_NAMES_ROOM);
@@ -1577,7 +1821,56 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     app.agent_chat.stopped = false;
     app.agent_chat.steering = false;
     app.agent_chat.ended = None;
+    let stamp = app.session.document_stamp();
+    if skill == skill::Skill::Plain {
+        app.agent_chat.skill_binding = None;
+    } else {
+        let selection: Vec<String> = at
+            .and_then(|index| app.agent_chat.items.get(index))
+            .and_then(|item| match item {
+                Item::User { context, .. } => Some(context.items.iter().map(|entry| entry.label.clone()).collect()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let binding = skill::Binding::new(
+            skill,
+            stamp.document_id.clone(),
+            stamp.revision,
+            app.agent_chat.model.clone(),
+            app.agent_chat.running_id.clone(),
+            selection,
+            support,
+        );
+        app.agent_chat.push(Item::Skill {
+            title: skill.title().into(),
+            version: binding.version.clone(),
+            document_id: binding.document_id.clone(),
+            revision: binding.revision,
+            model: binding.model.clone(),
+            selection: binding.selection.len(),
+            support,
+            terminal: None,
+        });
+        app.agent_chat.skill_binding = Some(binding.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        if binding.skill == skill::Skill::TextToCad
+            && let Err(error) = task_runtime::begin(app, &binding)
+        {
+            // An unverified Text-to-CAD turn must not run and look verified: refuse before the
+            // model call, tell the user why, and leave the design untouched.
+            app.agent_chat.notice(trf("ui.agent_chat_task_unavailable", &[("error", &error)]), true);
+            app.agent_chat.finish_skill_turn("error");
+            app.agent_chat.state = Some(State::Ready);
+            end_turn(app);
+            return;
+        }
+    }
+    let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
     if let Some(b) = app.agent_chat.backend.as_mut() {
+        b.set_document(&stamp.document_id, stamp.revision);
+        if let Some(active) = active {
+            b.set_turn_control(active);
+        }
         b.prompt(&parts);
     }
 }
@@ -1680,6 +1973,13 @@ pub(crate) fn attach_dropped(app: &mut SolveApp, paths: impl Iterator<Item = std
 /// Stop: ask the agent to stop the message it is on; requests waiting for approval are declined.
 /// Messages queued meanwhile stay queued (they wait for Send).
 pub fn cancel(app: &mut SolveApp) {
+    // Revoke writes before any provider/permission callback, even if it never reports an end.
+    // The terminal event still owns finish_turn and its undo bookkeeping.
+    if let Some(turn) = &app.agent_chat.turn {
+        turn.active.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    task_runtime::cancel(app, "the user stopped the message");
     app.agent_chat.steering = false;
     app.agent_chat.stopped = true;
     crate::edit_in_place::forget_after_turn(app);
@@ -1770,7 +2070,7 @@ fn on_permission(app: &mut SolveApp, key: u64, title: String, kind: Option<&str>
 fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
     let chat = &mut app.agent_chat;
     let Some(i) = chat.held.iter().position(|h| h.id == id) else { return };
-    let h = chat.held.remove(i);
+    let mut h = chat.held.remove(i);
     for item in &mut chat.items {
         if let Item::Approval { id: x, answer, .. } = item
             && *x == id
@@ -1779,9 +2079,24 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
         }
     }
     if allow {
-        app.control_held.push_back(h.req);
+        match crate::execution_guard::admit(app, &mut h.req) {
+            Ok(()) => app.control_held.push_back(h.req),
+            Err(error) => {
+                let _ = h.req.reply.send(crate::execution_guard::refusal_json(&error));
+            }
+        }
     } else {
-        let _ = h.req.reply.send(json!({"ok": false, "error": format!("not run: {why}")}));
+        let mut reply = json!({"ok": false, "error": format!("not run: {why}")});
+        // The held request owns its trusted revocation flag. Metadata only selects the carrier;
+        // declining must neither admit the request nor infer authority from why/the current turn.
+        if crate::control::chat_turn_cancelled(h.req.chat_turn.as_deref())
+            && let Some(details) =
+                crate::control::cancelled_request_response(&h.req.method, &h.req.params, h.req.guarded.is_some()).get("errorDetails")
+        {
+            reply["errorDetails"] = details.clone();
+            reply["errorDetails"]["message"] = reply["error"].clone();
+        }
+        let _ = h.req.reply.send(reply);
     }
 }
 
@@ -1880,12 +2195,24 @@ fn pump_tools(app: &mut SolveApp) {
         let refuse = |req: ControlRequest, e: String| {
             let _ = req.reply.send(json!({"ok": false, "error": e}));
         };
+        // Anatomy is read-only for the whole turn: a write request never reaches the gate.
+        let skill = app.agent_chat.skill_binding.as_ref().map_or(app.agent_chat.skill, |binding| binding.skill);
+        if skill.read_only() && matches!(gate::request(&req.method, &req.params, 0), gate::Verdict::Run { change: true } | gate::Verdict::Ask(_)) {
+            let reason = tr("ui.agent_chat_skill_read_only").to_string();
+            app.agent_chat.notice(reason.clone(), true);
+            refuse(req, reason);
+            continue;
+        }
         let undo_len = app.session.undo.len();
         let Some(turn) = app.agent_chat.turn.as_mut() else {
             refuse(req, "the agent chat has no message in progress".into());
             continue;
         };
-        req.chat_turn = Some(Arc::clone(&turn.active));
+        // A bridge backend already attached the exact turn that sent this request. Keep it:
+        // overwriting with the current turn would let a replaced turn borrow new permission.
+        if req.chat_turn.is_none() {
+            req.chat_turn = Some(Arc::clone(&turn.active));
+        }
         turn.requests += 1;
         // Requests without folders of their own stay inside the chat's working folder.
         if let Some(o) = req.params.as_object_mut()
@@ -1919,7 +2246,12 @@ fn pump_tools(app: &mut SolveApp) {
                     }
                     turn.changes += 1;
                 }
-                app.control_held.push_back(req);
+                match crate::execution_guard::admit(app, &mut req) {
+                    Ok(()) => app.control_held.push_back(req),
+                    Err(error) => {
+                        let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
+                    }
+                }
             }
             gate::Verdict::Ask(title) => {
                 let chat = &mut app.agent_chat;
@@ -1987,6 +2319,10 @@ pub(crate) fn take_loaded(app: &mut SolveApp, ctx: &egui::Context) {
 }
 
 pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Err(error) = sync_ai_connections(app) {
+        ai_sync_failed(app, error);
+    }
     settings::poll_tests(&mut app.agent_chat);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(rx) = &app.agent_chat.detecting
@@ -2011,6 +2347,12 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     take_loaded(app, ctx);
+    // The host's current stamp is the final authority for §9.3: a user or turn edit after the
+    // captured snapshot must make the passing report historical, even if no new prompt ran.
+    let stamp = app.session.document_stamp();
+    if let Some(backend) = app.agent_chat.backend.as_mut() {
+        backend.set_document(&stamp.document_id, stamp.revision);
+    }
     let events = app.agent_chat.backend.as_mut().map(|b| b.poll()).unwrap_or_default();
     for e in events {
         let ready = matches!(e, Event::Ready { .. });
@@ -2024,7 +2366,10 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         let refused = if matches!(e, Event::ModelRejected(_)) { app.agent_chat.model_revert.as_ref().map(|r| r.saved.clone()) } else { None };
         match app.agent_chat.on_event(e) {
             Some(Outcome::TurnEnd) => {
+                app.agent_chat.attach_anatomy_refs(&mut app.session);
                 end_turn(app);
+                #[cfg(not(target_arch = "wasm32"))]
+                task_runtime::on_turn_end(app);
                 after_turn(app, ctx);
             }
             Some(Outcome::Permission { key, .. }) if app.agent_chat.turn.is_none() => {
@@ -2407,6 +2752,8 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
         c.key = false;
         app.preferences.agents.retain(|x| x.id != c.id);
         app.preferences.agents.push(c);
+        #[cfg(not(target_arch = "wasm32"))]
+        sync_ai_connections(app).map_err(|error| error.message())?;
     }
     if let Some(id) = p.get("agent").and_then(Value::as_str) {
         if !agents::entries(app).iter().any(|e| e.id == id) {
@@ -2568,10 +2915,14 @@ pub fn status(app: &SolveApp) -> Value {
         .map(|i| match i {
             Item::User { text, image, pictures, context, files } => json!({"user": text, "image": image, "pictures": pictures.len(), "files": files, "context": context.items.iter().map(|i| json!({"label": i.label, "detail": i.detail})).collect::<Vec<_>>(), "context_omitted": context.omitted}),
             Item::Agent { thought, text } => json!({"agent": text, "thought": thought}),
+            Item::AgentRefs { text, refs } => json!({"agent": text, "objectRefs": refs.iter().map(|r| json!({"label": r.label, "kind": format!("{:?}", r.kind), "revision": r.revision})).collect::<Vec<_>>()}),
             Item::Tool { id, title, kind, status, input, output } => {
                 json!({"tool": id, "title": title, "kind": kind, "status": status.map(|s| format!("{s:?}")), "input": input, "output": output})
             }
             Item::Plan(p) => json!({"plan": p}),
+            Item::Skill { title, version, document_id, revision, model, selection, support, terminal } => {
+                json!({"skill": title, "version": version, "documentId": document_id, "revision": revision, "model": model, "selection": selection, "support": format!("{support:?}"), "terminal": terminal})
+            }
             Item::Permission { title, options, answer, .. } => {
                 json!({"permission": title, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
             }

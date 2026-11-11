@@ -964,6 +964,29 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
                         let permissions = permissions.backing_on_hover_text(mode.label());
                         crate::scenario::publish_rect("agent_chat:permissions", permissions.rect);
                         crate::scenario::publish_handle("agent_chat:permissions", permissions.rect.center());
+                        // The built-in skill for the next turn. The running turn keeps its frozen
+                        // binding even while the picker is disabled.
+                        let current_skill = app.agent_chat.skill;
+                        let skill = ui
+                            .add_enabled_ui(!busy, |ui| {
+                                ui.allocate_ui(vec2(Tokens::get().space_24 * 5.0, Tokens::get().control_height), |ui| {
+                                    ui_kit::dropdown_menu(ui, "sc_agent_skill", current_skill.title(), |ui| {
+                                        for choice in skill::Skill::ALL {
+                                            let row = ui_kit::list_picker(ui, choice.id(), choice.title(), choice == current_skill)
+                                                .backing_on_hover_text(choice.description());
+                                            crate::scenario::publish_handle(&format!("agent_chat:skill:{}", choice.id()), row.rect.center());
+                                            if row.clicked() {
+                                                app.agent_chat.skill = choice;
+                                            }
+                                        }
+                                    })
+                                })
+                                .inner
+                            })
+                            .inner
+                            .backing_on_hover_text(tr("ui.agent_chat_skill_tip"));
+                        crate::scenario::publish_rect("agent_chat:skill", skill.rect);
+                        crate::scenario::publish_handle("agent_chat:skill", skill.rect.center());
                         // A message waits for files still being read.
                         let reading = !app.agent_chat.loading.is_empty();
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1068,6 +1091,27 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
     } else if steer {
         // Nothing typed: Ctrl+Enter sends what is already queued.
         send_now(app, ui.ctx());
+    }
+}
+
+/// A workflow backend's two independent facts, shown apart: the runtime process and the selected
+/// AI connection's authentication. A ready runtime never lights the sign-in line.
+#[cfg(not(target_arch = "wasm32"))]
+fn runtime_status(app: &SolveApp, ui: &mut egui::Ui) {
+    if !app.agent_chat.mastra {
+        return;
+    }
+    let t = Tokens::get();
+    if let Some(runtime) = app.agent_chat.runtime {
+        ui.label(RichText::new(runtime.label()).color(t.text_dim).size(t.font_small));
+    }
+    let connection = match app.agent_chat.connection_auth {
+        Some(true) => Some(tr("ui.mastra_connection_ready")),
+        Some(false) => Some(tr("ui.mastra_connection_signed_out")),
+        None => Some(tr("ui.mastra_connection_unknown")),
+    };
+    if let Some(connection) = connection {
+        ui.label(RichText::new(connection).color(t.text_dim).size(t.font_small));
     }
 }
 
@@ -1196,6 +1240,7 @@ fn switcher(app: &mut SolveApp, ui: &mut egui::Ui) {
     if let Some(warning) = settings::model_warning(app) {
         ui.add(egui::Label::new(RichText::new(warning).color(t.warning).size(t.font_small)).wrap());
     }
+    runtime_status(app, ui);
     if let Some(options) = app.agent_chat.config_options.clone() {
         config_selects(app, ui, &options);
     }
@@ -1710,11 +1755,16 @@ fn scroll_while_selecting(ui: &egui::Ui) {
 fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let mut answer: Option<(usize, Option<String>)> = None;
+    // A click on a host object name in an Anatomy answer.
+    let mut object_click: Option<object_ref::ObjectRef> = None;
     // Allow (true), Deny (false), Always allow (None).
     let mut approval: Option<(u64, Option<bool>)> = None;
     let mut undo: Option<usize> = None;
     let mut open_gallery: Option<Gallery> = None;
+    // The user asked the host to revalidate the current revision after a manual parameter change.
+    let mut revalidate_task = false;
     let current_doc = app.session.doc.clone();
+    let stamp = app.session.document_stamp();
     let units = summary::Units { units: &app.session.doc.units, decimals: app.preferences.length_decimals };
     for (n, item) in app.agent_chat.items.iter().enumerate() {
         match item {
@@ -1762,6 +1812,22 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                 }
             }
+            Item::AgentRefs { text, refs } => {
+                let before = ui.cursor();
+                ui_kit::assistant_prose(ui, |ui| {
+                    super::markdown_view::show_objects(ui, n, text, refs, &mut |index| {
+                        if let Some(reference) = refs.get(index) {
+                            object_click = Some(reference.clone());
+                        }
+                    });
+                });
+                if !text.is_empty() {
+                    copy_message_button(ui, n, text);
+                    let drawn = egui::Rect::from_x_y_ranges(before.x_range(), before.min.y..=ui.cursor().min.y);
+                    let resp = ui.interact(drawn, Id::new(("agent_chat_msg", n)), Sense::hover());
+                    copy_message_menu(ui, &resp, n, text);
+                }
+            }
             Item::Tool { .. } => {
                 if n > 0 && matches!(app.agent_chat.items.get(n - 1), Some(Item::Tool { .. })) {
                     continue;
@@ -1780,6 +1846,36 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                                 output: output.as_deref(),
                             };
                             tool_card(ui, n + offset, &call);
+                        }
+                    }
+                });
+            }
+            Item::Skill { title, version, document_id, revision, model, selection, support, terminal } => {
+                ui_kit::assistant_tool_frame(ui, false, |ui| {
+                    ui.spacing_mut().item_spacing.y = Tokens::get().space_2;
+                    let mut line = trf(
+                        "ui.agent_chat_skill_binding",
+                        &[("skill", title), ("version", version), ("document", document_id), ("revision", &revision.to_string()), ("model", model)],
+                    );
+                    if *selection > 0 {
+                        line.push_str(&trf("ui.agent_chat_skill_selection", &[("n", &selection.to_string())]));
+                    }
+                    ui.label(RichText::new(line).color(t.text_dim).size(t.font_small));
+                    if *support == skill::SkillSupport::Unverified {
+                        ui.label(RichText::new(tr("ui.agent_chat_skill_unverified")).color(t.warning).size(t.font_caption));
+                    }
+                    if *document_id != stamp.document_id || *revision != stamp.revision {
+                        ui.label(RichText::new(tr("ui.agent_chat_skill_binding_stale")).color(t.warning).size(t.font_caption));
+                    }
+                    if let Some(terminal) = terminal {
+                        ui.label(RichText::new(terminal).color(t.text_dim).size(t.font_caption));
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if app.agent_chat.task.is_some() {
+                            let button = ui_kit::button(ui, tr("ui.agent_chat_task_revalidate"), ui_kit::Button::Small);
+                            crate::scenario::publish_handle("agent_chat:task:revalidate", button.rect.center());
+                            if button.clicked() {
+                                revalidate_task = true;
+                            }
                         }
                     }
                 });
@@ -1889,6 +1985,16 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                 });
             }
         }
+    }
+    if let Some(reference) = object_click {
+        match object_ref::resolve(&mut app.session, &reference) {
+            Ok(selection) => crate::viewport::select(app, Some(selection), false, false),
+            Err(reason) => app.agent_chat.notice(reason, true),
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if revalidate_task && let Err(error) = super::task_runtime::revalidate(app) {
+        app.agent_chat.notice(error, true);
     }
     let (mut send_now_clicked, mut send_queue_clicked) = (false, false);
     let mut remove: Option<usize> = None;

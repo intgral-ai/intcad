@@ -28,6 +28,7 @@
 
 .EXAMPLE
   pwsh packaging/windows/package.ps1 -Arch x64
+  pwsh packaging/windows/package.ps1 -Arch x64 -WithMastra   # opt-in; fails closed until #15 approves
   pwsh packaging/windows/package.ps1 -Arch arm64     # cross-compiled; needs the MSVC ARM64 build tools
   pwsh packaging/windows/package.ps1 -Arch x64 -Phase stage     # then sign target/windows-package/x64/*.exe
   pwsh packaging/windows/package.ps1 -Arch x64 -Phase package
@@ -35,10 +36,21 @@
 param(
   [ValidateSet('x64', 'x86', 'arm64')] [string] $Arch = 'x64',
   [switch] $SkipBuild,
-  [ValidateSet('all', 'stage', 'package')] [string] $Phase = 'all'
+  [ValidateSet('all', 'stage', 'package')] [string] $Phase = 'all',
+  [switch] $WithMastra
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if ($env:SOLIDCRAFT_WITH_MASTRA -eq '1') { $WithMastra = $true }
+# A same-architecture native build can run its CLI here; an x64 host can also run
+# an x86 build. Cross-arch builds (for example arm64 on x64) cannot and say so.
+$HostArch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+  'X64' { 'x64' }
+  'X86' { 'x86' }
+  'Arm64' { 'arm64' }
+  default { throw "unknown host architecture $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
+}
+$CanRun = ($HostArch -eq $Arch) -or ($HostArch -eq 'x64' -and $Arch -eq 'x86')
 
 function Invoke-Native([string] $What, [scriptblock] $Block) {
   Write-Output "==> $What"
@@ -100,6 +112,16 @@ if ($Phase -ne 'package') {
   New-Item -ItemType Directory -Force -Path $Stage | Out-Null
   Copy-Item (Join-Path $Bin 'solidcraft.exe'), (Join-Path $Bin 'solidcraft-cli.exe'), (Join-Path $Bin 'solvecraft-cli.exe') $Stage
   foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Stage }
+  # Application-relative Mastra runtime. Bundling is opt-in because the artifact is still
+  # unapproved (DQ-7, #15). 1.0 supports Windows x86_64 MSVC only; ordinary packaging keeps the
+  # previous release behavior and the WXS harvests an empty folder.
+  if ($WithMastra) {
+    if ($Arch -ne 'x64') { throw "the built-in Mastra workflow does not ship for Windows $Arch in 1.0; drop -WithMastra" }
+    Invoke-Native 'stage Mastra runtime' { & (Join-Path $PSScriptRoot '..\mastra\stage.ps1') -Target $Target -Dest (Join-Path $Stage 'mastra') }
+  } else {
+    New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'mastra') | Out-Null
+    Write-Output 'the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)'
+  }
 }
 if ($Phase -eq 'stage') {
   Write-Output "staged for signing: $Stage"
@@ -111,11 +133,12 @@ if (-not (Test-Path $Icon)) { throw "Missing package icon: $Icon" }
 
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "solidcraft-$Version-windows-$Arch.msi"
+$HasMastra = if ($WithMastra -and (Test-Path (Join-Path $Stage 'mastra\runtime.json'))) { 1 } else { 0 }
 Invoke-Native 'wix build' {
   wix build (Join-Path $Root 'assets/platforms/windows/solidcraft.wxs') -arch $Arch `
     -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
     -culture en-US -loc (Join-Path $Root 'assets/platforms/windows/solidcraft.en-us.wxl') `
-    -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$Icon" `
+    -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$Icon" -d "HasMastra=$HasMastra" `
     -o $Msi
 }
 Invoke-Native 'MSI shortcut icon validation (ICE50)' {
@@ -130,6 +153,7 @@ Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
 foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Portable }
+if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
 $Zip = Join-Path $Dist "solidcraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip

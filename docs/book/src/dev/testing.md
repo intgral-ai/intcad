@@ -15,6 +15,98 @@ profile and the wasm build check.
 | Kill mid-save | `apps/solidcraft-cli/tests/kill_mid_save.rs` | a save killed at any moment leaves a readable file |
 | Reference tests | `cargo xtask oracle` → [docs/oracle.md](oracle.md) | parts rebuilt from `tests/oracle/*/recipe.json`, compared with analytic or FreeCAD expected values |
 
+## Fork CI selection and evidence
+
+Follow [fork governance](../../../fork-governance.md) for task PRs to `develop`
+(squash) and checked promotion/reconciliation with merge ancestry. The initial
+merge queue is disabled, and the observed repository does not offer auto-merge.
+Zero mandatory independent approvals is not administrator bypass. Exact GitHub
+settings and required contexts still need separate approval, activation and
+read-back.
+
+[`scripts/ci/plan.py`](../../../../scripts/ci/plan.py) emits a source-bound plan
+using the existing Rust reverse-dependency selector and actual consumer inventory.
+Both rename names and deleted inputs count. Unknown or incomplete diffs and shared
+build/CI inputs are conservative. All PRs, including drafts and external PRs, run
+their selected checks; `approved-for-ci` is not a scheduling prerequisite. Ordinary
+documentation does not require native tests, but policy or shared inputs may select
+additional consumers. Scheduled/full validation selects existing full consumers;
+main-target promotion additionally sets `releaseRequired`.
+
+Pull requests use a bounded deterministic lane so a standard two-vCPU runner
+finishes inside 30 minutes. The counted native job tests the packages that
+directly own a changed Rust file plus the `xtask` tooling smoke owner, and runs
+one deterministic eighth of that selection (`--partition count:1/8`, reported in
+the plan as `rustTestShard`). Only packages whose test closure fits the
+30-minute cap are in that lane (`PR_TEST_PACKAGES`); the heavy UI/app/engine
+closure cannot cold-codegen in time even at 1/8. The plan lists every deferred
+package in `rustDeferredPackages` and names
+`.github/workflows/native-baseline.yml` in `rustDeferredTo`; the aggregate prints
+the deferral and never counts it as a passing test. Reverse dependents are still
+built by Clippy and the wasm check and are fully tested by the nightly/full
+workflow. DQ-5 in `docs/fork-governance.md` records the owner decision needed to
+run the heavy suites on every PR instead. Clippy and
+the wasm compile still cover the complete selected consumer scope, including
+shared lockfile, toolchain, `.github/workflows/**`, `.github/actions/**` and `scripts/**`
+inputs. Those inputs
+select `xtask` as the bounded smoke owner; `xtask/**` and `packaging/mastra/**`
+changes always select the xtask tests. The excluded tests are **not** reported as
+passing: the nightly/manual `native-baseline.yml` workflow calls this workflow in
+full mode and runs the complete workspace suite and the complete repository
+checks (owning xtask binary tests, web-offline build and packaging suites). The
+`Format and repository checks` job keeps the fast format, asset, licence, layer,
+list, locale, mesh, skills, selector and bot checks on every PR. When #5's
+contract bundle/consumers are present, the `Mastra contract (Rust)` job runs the
+owned `mastra_` value/codec/bundle/state/retirement conformance tests through
+nextest and emits a counted receipt; it is selected for contract or shared-input
+changes and full/release validation, and fails closed if the tests are absent or
+fail. Process-lifecycle `mastra_peer_` coverage stays in the full native run.
+When #7's runtime package is present, `Mastra runtime (Node)` installs exactly
+Node 22.23.4 and npm 11.19.0, runs `npm ci` from the committed root lockfile and
+the package's typecheck/test/build/verify:schema/check:deps scripts, while
+`Mastra contract (TypeScript)` runs the TypeScript side of the shared fixture
+bundle. Both are command-evidence jobs: their real npm argv/exit codes form the
+receipt, and a present runtime can no longer use the foundation deferral.
+
+The always-evaluated `ci` aggregate in `.github/workflows/ci.yml` checks actual
+selected `needs` via `scripts/ci/main_merge.py` and `scripts/ci/gate.py`. Inspect:
+
+1. The exact checkout SHA, immutable plan bytes/digest, selected jobs and scope.
+2. Real selected job results and matching source/plan-bound receipts. Missing,
+   failed, cancelled or skipped required jobs fail; nonselected jobs are not passes.
+3. Complete, nonempty selected test identities and executed counts, command exits
+   and real reports. An empty filter, no-tests result, skipped case, stale report
+   or constant success flag cannot satisfy a selected consumer.
+4. Explicit `not_applicable` reasons and `openObligations` for absent future
+   consumers on a payload-free host foundation. That is **not runtime tested**.
+   A requested, deleted or partial required input blocks, not a foundation exemption.
+
+The planner keeps `artifact-policy` as an explicit host-foundation non-applicability
+until #15's verifier handoff exists; it is never a silent pass. When that handoff
+lands, the job must run #15's counted `distribution_` tests and its production
+policy and repository host-only CLI modes, then emit a matched receipt. Known policy
+metadata and packaging utility tests select the owning checks, not installed-runtime
+acceptance; unknown packaging/build inputs stay conservative. The #5 contract, #7
+runtime, runtime-required artifact and #14 installed consumers remain owner
+handoffs. A selected job without its real adapter or receipt fails closed; do not
+document future commands as runnable or invent successful stubs.
+
+The stable `release-gate` checks full native/wasm/platform/heavy/package evidence,
+all final package descriptors, the full rig/ladder handoff and required owner
+consumers. Those absent consumers remain blocking; native or packaging success
+cannot waive them. See [releasing](../../../releasing.md) for final-SHA rebuilds
+and the publication quarantine. Host-only or policy validity is not artifact
+admission.
+
+### Raw baseline and diagnostic limits
+
+`.github/workflows/native-baseline.yml` preserves the independent raw native and
+ignored-heavy baseline. Preserve raw exits, named failures and counts separately
+from the reviewed known-failing regression grader. An accepted known failure is
+still raw red; unknown failures block. Do not broaden exclusions or a failure list
+to label the whole suite green. A `cargo xtask ci` run and its actual exit must be
+recorded before a commit; focused checks are feedback, not a replacement.
+
 ## Dependency advisories
 
 Scheduled and manually dispatched CI runs have a separate **Dependency advisories** job that

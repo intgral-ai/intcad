@@ -312,7 +312,7 @@ Grok Build also supports `XAI_API_KEY` for users who choose API authentication.
 - An endpoint's card under Preferences → AI → **Agents** has the same **Model** picker. While the
   agent isn't running, opening the picker lists the models (just viewing the page asks nothing),
   and a pick becomes the model for its next connection. While it runs, a pick changes the chat's
-  model at once.
+  next message's model; a message already running keeps its chosen model.
 - The key goes into the system keychain (Keychain on macOS, Credential Manager on Windows, the
   Secret Service on Linux) and is only ever sent over HTTPS or to this computer. **Test** asks an
   OpenAI-compatible endpoint for its models; an Anthropic-compatible one gets a short message,
@@ -321,7 +321,7 @@ Grok Build also supports `XAI_API_KEY` for users who choose API authentication.
   coding agent, and no cap on model requests per message (Stop ends it). **Request timeout** is how long one model request may
   take: 300 s by default, from 30 s to an hour. A slow local model (a large model on modest
   hardware, or a long message with many tool results) may need more; raise it here or in the
-  endpoint's entry under **Agents**, where a change applies from the next request. A request that
+  endpoint's entry under **Agents**, where a change applies to the next message. A request that
   runs out of time ends the message with the limit it hit and where to raise it. **Reasoning
   effort** is optional and empty by default: nothing is sent and the provider's own default
   applies. When set, the value goes out as `reasoning_effort` on each `/chat/completions`
@@ -334,8 +334,23 @@ protocol, endpoint, model and request timeout, and **Save** changes it in place:
 its permission setting and the tools you always allow for it. A stored key is never shown: leave
 the key field empty to keep it, or type a new one to replace it. A saved key still only goes to
 HTTPS or this computer, so moving an endpoint with a key to a plain `http://` address elsewhere is
-refused. The running conversation takes a new request timeout at once; a new command, endpoint
-or model applies the next time the agent connects.
+refused. Each physical request reads this connection's current key from the original system-keychain
+entry, on a worker, including model listings and explicit compatibility retries. Replacing a key
+therefore affects the next call without reconnecting. A required key that was deleted prevents
+the request; SolidCraft does not fall back to an earlier key.
+
+An accepted message pins its endpoint, protocol, timeout, reasoning defaults and chosen model.
+Editing invocation settings invalidates that active message instead of moving it to a different
+endpoint. Timeout and reasoning edits take effect on the next message; protocol changes require
+reconnecting so that one protocol's history is never replayed through another.
+
+API replies are buffered, not streamed. **Stop** revokes the message and discards late text and
+tool proposals; it cannot interrupt a network call already running. That physical call keeps its
+HTTP slot until the host HTTP function exits. Direct chat and the native one-step HostAi service
+share a process-wide ceiling of two physical calls per original connection ID and eight across
+all windows. Each window has its own connection catalog. At capacity a call is refused rather
+than queued. HostAi itself does not execute tools or run chat rounds; this does not add a runtime
+execution selector to the panel or claim any Mastra wire integration.
 
 For Ollama, choosing a model checks its reported capabilities in the background. If its
 capabilities list lacks `tools`, a warning below the model picker explains that the model can
@@ -388,6 +403,48 @@ the agent's own ways to sign in:
   for a coding agent's key, on purpose.
 
 Whatever you typed before signing in is sent once the agent is ready.
+
+## Built-in skills
+
+The composer has a skill picker. **Plain Chat** is the default and is unchanged. Two built-in
+skills are offered:
+
+- **Text-to-CAD** asks the same agent to create or change a parametric design. The host note
+  tells it to inspect before editing, use the native CAD tools and keep features and parameters
+  editable. This entry only selects and binds the turn; the Text-to-CAD task (#67) adds the
+  host-owned write policy, result snapshots and validation. The agent's prose is not success.
+- **Anatomy** asks the agent to explain the current design or selection using host facts. The
+  host refuses a write request from an Anatomy turn, so geometry, parameters, feature history and
+  undo do not change. Only names the host supplies can become clickable references.
+
+Selecting a skill freezes the skill version, the current document identity and revision, the
+selection and the connection/model on that turn. The conversation shows the binding and its
+terminal. Switching to another skill or document cannot rewrite a running turn's binding.
+
+Direct/BYOK runs the Beta skill path. Until a real credential-backed turn is recorded, the panel
+labels skill execution unverified. Ordinary ACP Chat remains available, but ACP skill execution is
+also labeled unverified until it is tested on the same host policy. A backend that cannot run a
+skill refuses before the model call.
+
+The existing approval gate, Stop, stale-write rejection and per-turn undo still control every CAD
+write. A skill adds no second agent loop, provider, session store or tool registry.
+
+### Anatomy click-to-locate
+
+An Anatomy answer uses the current design's body and feature names. The host collects those names
+when the turn ends and freezes them to the document identity and revision the answer was made
+from. Only an exact host name at a word boundary becomes a link; the model's prose cannot add a
+target that the host does not know.
+
+Clicking a linked body or feature selects it through the normal viewport selection path, so the
+viewport highlight and Browser reveal are the same as a click in the model. It changes UI selection
+only: geometry, parameters, feature history and the document undo stack are untouched. Parameters
+stay text-only in this version; only bodies and features are clickable.
+
+A link resolves against the live design before selecting. If the design has changed since the
+answer, the target is deleted, or the answer belongs to another document, the panel reports the
+target as unavailable and selects nothing. It never falls back to a same-name object in the
+current document. Ask Anatomy again to get links for the current revision.
 
 ## What the agent can do
 

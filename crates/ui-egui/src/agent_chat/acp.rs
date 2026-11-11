@@ -3,8 +3,8 @@
 //! reads messages; the process lives in `process.rs` and the state in `mod.rs`, so everything
 //! here is plain data and tested without an agent.
 //!
-//! What SolidCraft says it can do (`clientCapabilities`): no file system and no terminal (the agent
-//! reaches the design through SolidCraft's MCP server instead), and terminal login, so an agent
+//! What open-skyfall says it can do (`clientCapabilities`): no file system and no terminal (the agent
+//! reaches the design through open-skyfall's MCP server instead), and terminal login, so an agent
 //! that needs one describes a command for the user to run rather than asking for a key.
 
 use serde::Serialize;
@@ -151,7 +151,7 @@ pub fn initialize_params(version: &str) -> Value {
             "auth": {"terminal": true},
             "_meta": {"terminal-auth": true},
         },
-        "clientInfo": {"name": "solidcraft", "title": "SolidCraft", "version": version},
+        "clientInfo": {"name": "solidcraft", "title": "open-skyfall", "version": version},
     })
 }
 
@@ -161,7 +161,7 @@ pub fn initialize_params(version: &str) -> Value {
 pub const BRIDGE_NAME: &str = "solidcraft-app";
 
 /// Whether a permission question is about a tool of the chat's own MCP server, whose calls
-/// SolidCraft's gate checks. The agent writes both values and ACP has nothing better to go on, so
+/// open-skyfall's gate checks. The agent writes both values and ACP has nothing better to go on, so
 /// the test is strict: the whole title is the tool's name as the Claude adapter forms it
 /// (`mcp__solidcraft-app__batch`), one word with no room for a command line, a path or other free
 /// text, and the kind is `other` (the kind an MCP tool has) or not given. Any other title goes
@@ -226,18 +226,27 @@ pub fn wsl_path(path: &std::path::Path) -> std::path::PathBuf {
 
 /// What every session is told about where it is. An agent with no route for it in
 /// [`session_new_params`] doesn't get it.
-pub const SYSTEM_NOTE: &str = "You are running inside SolidCraft, a parametric 3D CAD application, as the user's assistant. \
+pub const SYSTEM_NOTE: &str = "You are running inside open-skyfall, a parametric 3D CAD application, as the user's assistant. \
 The open design is reachable through the `solidcraft-app` MCP server: use its tools (list_commands, batch, execute, inspect_design, \
 measure, screenshot, set_parameter, undo, skill_reference) to read and change the design the user is looking at, and verify with \
 measure or inspect_design. Before building anything beyond one primitive, read `skill_reference` for `solidcraft-modeling` (its \
 SKILL.md has the workflow, its reference.md the command shapes and this version's traps), work the numbers out first, and after \
 each stage compare `measure` with them. Prefer one `batch` over many small calls. Saving, opening or exporting files waits for the user's approval in \
-the chat, and each message allows a limited number of changes. Don't use shell or file tools: work through the SolidCraft tools. \
+the chat, and each message allows a limited number of changes. Don't use shell or file tools: work through the open-skyfall tools. \
 Keep answers short.";
 
 /// The most of the user's custom instructions (#8220) a session gets, in characters: the
 /// Preferences field takes no more, and a longer text from an edited settings file is cut here.
 pub const INSTRUCTIONS_LIMIT: usize = 4000;
+
+/// The ACP system note for workflow-owned tasks. A task session gets no CAD bridge and no host
+/// control token, so the only correct answer is a proposal for the host to validate.
+pub const PROPOSAL_NOTE: &str = "You are running as a workflow task inside SolidCraft, a parametric 3D CAD application. \
+This session has no CAD tools, no shell and no file access. Do not try to change any design. \
+Answer with exactly one JSON object and no prose or code fence: \
+{\"source\":{\"documentId\":\"<id>\",\"revision\":\"<revision>\"},\"commands\":[{\"command\":\"<native command>\",\"params\":{}}]}. \
+Copy the source document id and revision from the task text. Give between 1 and 64 commands that a host can validate and apply. \
+If the task cannot be expressed as commands, answer with an empty command list rather than guessing.";
 
 /// [`SYSTEM_NOTE`] with the user's custom instructions (#8220) after it. Blank instructions leave
 /// the note as it is.
@@ -247,11 +256,11 @@ pub fn system_note(instructions: &str) -> String {
     if text.is_empty() {
         return SYSTEM_NOTE.to_string();
     }
-    format!("{SYSTEM_NOTE}\n\nThe user's custom instructions, set in SolidCraft's preferences:\n{text}")
+    format!("{SYSTEM_NOTE}\n\nThe user's custom instructions, set in open-skyfall's preferences:\n{text}")
 }
 
 /// The Claude Code adapter's own tools that reach the computer rather than the design: turned off
-/// for the session (`_meta.claudeCode.options.disallowedTools`), so it works through SolidCraft's.
+/// for the session (`_meta.claudeCode.options.disallowedTools`), so it works through open-skyfall's.
 pub const CLAUDE_DISALLOWED_TOOLS: &[&str] =
     &["Bash", "BashOutput", "KillShell", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep", "WebFetch", "WebSearch", "Task"];
 
@@ -265,7 +274,7 @@ pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, ini
         "systemPrompt": {"append": note},
         // Hosts may opt a session out of "bypass permissions" (the Claude adapter reads it):
         // every tool call the agent asks about reaches the panel.
-        // Its own shell and file tools are off: the agent works through SolidCraft's tools.
+        // Its own shell and file tools are off: the agent works through open-skyfall's tools.
         "claudeCode": {"options": {"allowDangerouslySkipPermissions": false, "disallowedTools": CLAUDE_DISALLOWED_TOOLS}},
     });
     if takes_antigravity_note(init)
@@ -420,7 +429,7 @@ pub fn auth_methods(init: &Value) -> Vec<AuthMethod> {
                                 .map(|v| v.iter().take(16).filter_map(|x| x.get("name").and_then(Value::as_str).map(str::to_string)).collect())
                                 .unwrap_or_default(),
                         },
-                        // A key the agent would take from the client: SolidCraft never handles
+                        // A key the agent would take from the client: open-skyfall never handles
                         // keys, so this becomes "set it in your environment" instead.
                         _ if m.get("_meta").and_then(|x| x.get("api-key")).is_some() => {
                             let provider = m
@@ -491,11 +500,14 @@ pub enum Incoming {
     },
     /// Text the agent streams (`thought`: its reasoning, shown dimmed).
     Text {
+        /// The upstream ACP session the update belongs to; empty when the peer omitted it.
+        session: String,
         thought: bool,
         text: String,
     },
     /// A new tool call, or news about one (`title`/`status` when they changed).
     Tool {
+        session: String,
         id: String,
         title: Option<String>,
         kind: Option<String>,
@@ -504,9 +516,13 @@ pub enum Incoming {
         output: Option<String>,
     },
     /// The agent's plan: each entry with its status.
-    Plan(Vec<(String, String)>),
+    Plan {
+        session: String,
+        steps: Vec<(String, String)>,
+    },
     /// The agent asks before running a tool call; answered with [`permission_reply`].
     Permission {
+        session: String,
         rpc: Value,
         title: String,
         /// The tool call's kind (`execute`, `edit`, `other`, …), as the agent gives it.
@@ -601,7 +617,13 @@ pub fn parse(line: &str) -> Option<Incoming> {
                         .collect()
                 })
                 .unwrap_or_default();
-            Some(Incoming::Permission { rpc: id.clone(), title, kind, options })
+            Some(Incoming::Permission {
+                session: params.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string(),
+                rpc: id.clone(),
+                title,
+                kind,
+                options,
+            })
         }
         (Some(m), Some(id)) => Some(Incoming::Unsupported { rpc: id.clone(), method: m.to_string() }),
         (Some("session/update"), None) => Some(update(params.get("update")?, params.get("sessionId").and_then(Value::as_str).unwrap_or(""))),
@@ -616,11 +638,12 @@ fn update(u: &Value, session: &str) -> Incoming {
     let s = |k: &str| u.get(k).and_then(Value::as_str).map(str::to_string);
     match u.get("sessionUpdate").and_then(Value::as_str) {
         Some(kind @ ("agent_message_chunk" | "agent_thought_chunk")) => match u.get("content").and_then(content_text) {
-            Some(text) => Incoming::Text { thought: kind == "agent_thought_chunk", text },
+            Some(text) => Incoming::Text { session: session.to_string(), thought: kind == "agent_thought_chunk", text },
             None => Incoming::Ignored,
         },
         Some("tool_call" | "tool_call_update") => match s("toolCallId") {
             Some(id) => Incoming::Tool {
+                session: session.to_string(),
                 id,
                 title: s("title"),
                 kind: s("kind"),
@@ -643,8 +666,10 @@ fn update(u: &Value, session: &str) -> Incoming {
             ConfigParse::Snapshot(options) if !session.is_empty() => Incoming::ConfigOptions { session: session.into(), options },
             _ => Incoming::Ignored,
         },
-        Some("plan") => Incoming::Plan(
-            u.get("entries")
+        Some("plan") => Incoming::Plan {
+            session: session.to_string(),
+            steps: u
+                .get("entries")
                 .and_then(Value::as_array)
                 .map(|a| {
                     a.iter()
@@ -656,7 +681,7 @@ fn update(u: &Value, session: &str) -> Incoming {
                         .collect()
                 })
                 .unwrap_or_default(),
-        ),
+        },
         _ => Incoming::Ignored,
     }
 }
@@ -736,7 +761,7 @@ mod tests {
         assert_ne!(BRIDGE_NAME, "solidcraft");
         assert!(SYSTEM_NOTE.contains(&format!("`{BRIDGE_NAME}` MCP server")), "{SYSTEM_NOTE}");
         assert!(!SYSTEM_NOTE.contains("`solidcraft` MCP server"));
-        // The panel still recognises the bridge's tools as SolidCraft's (agents name them after
+        // The panel still recognises the bridge's tools as open-skyfall's (agents name them after
         // their server, e.g. `mcp__solidcraft-app__batch`).
         assert!(BRIDGE_NAME.contains("solidcraft"));
         assert!(is_bridge_tool(&format!("mcp__{BRIDGE_NAME}__batch"), Some("other")));
@@ -752,11 +777,11 @@ mod tests {
         for title in [
             "",
             "solidcraft",
-            "SolidCraft",
+            "open-skyfall",
             "run solidcraft-cli; ls",
             "solidcraft-cli --version",
             "Edit ~/.local/share/solidcraft/agent-chat/work/notes.txt",
-            // A user's own MCP server (docs/mcp.md), which SolidCraft's gate doesn't see.
+            // A user's own MCP server (docs/mcp.md), which open-skyfall's gate doesn't see.
             "mcp__solidcraft__batch",
             "mcp__solidcraft-live__batch",
             "mcp__other__solidcraft-app",
@@ -915,11 +940,12 @@ mod tests {
     #[test]
     fn updates_permissions_and_replies_are_told_apart() {
         let text = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi"}}}}"#;
-        assert_eq!(parse(text), Some(Incoming::Text { thought: false, text: "Hi".into() }));
+        assert_eq!(parse(text), Some(Incoming::Text { session: "s".into(), thought: false, text: "Hi".into() }));
         let tool = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"ok"}}]}}}"#;
         assert_eq!(
             parse(tool),
             Some(Incoming::Tool {
+                session: "s".into(),
                 id: "t1".into(),
                 title: None,
                 kind: None,
@@ -929,8 +955,8 @@ mod tests {
             })
         );
         let perm = r#"{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t1","title":"batch"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
-        let Some(Incoming::Permission { rpc, title, kind, options }) = parse(perm) else { panic!() };
-        assert_eq!((title.as_str(), options.len(), options[1].kind.as_str()), ("batch", 2, "reject_once"));
+        let Some(Incoming::Permission { session, rpc, title, kind, options }) = parse(perm) else { panic!() };
+        assert_eq!((session.as_str(), title.as_str(), options.len(), options[1].kind.as_str()), ("s", "batch", 2, "reject_once"));
         assert_eq!(kind, None);
         assert_eq!(permission_reply(rpc.clone(), Some("allow"))["result"]["outcome"], json!({"outcome": "selected", "optionId": "allow"}));
         assert_eq!(permission_reply(rpc, None)["result"]["outcome"]["outcome"], "cancelled");

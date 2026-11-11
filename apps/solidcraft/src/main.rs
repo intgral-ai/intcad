@@ -538,9 +538,9 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
             let dialog = save_folder.start(parent.clone()).set_file_name(name);
             let dialog = if exts == [io::DESIGN_EXT, "json"] {
                 if name.ends_with(".json") {
-                    dialog.add_filter("Plain JSON design", &["json"]).add_filter("SolidCraft container", &[io::DESIGN_EXT])
+                    dialog.add_filter("Plain JSON design", &["json"]).add_filter("open-skyfall container", &[io::DESIGN_EXT])
                 } else {
-                    dialog.add_filter("SolidCraft container", &[io::DESIGN_EXT]).add_filter("Plain JSON design", &["json"])
+                    dialog.add_filter("open-skyfall container", &[io::DESIGN_EXT]).add_filter("Plain JSON design", &["json"])
                 }
             } else {
                 dialog.add_filter("File", exts)
@@ -572,6 +572,8 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
         easyprint_upload: Some(std::sync::Arc::new(easyprint_upload)),
         browser_files: None,
         agent_http: Some(std::sync::Arc::new(agent_http)),
+        #[cfg(not(target_arch = "wasm32"))]
+        agent_ai: new_window_ai(),
         secrets: Some(std::sync::Arc::new(Keychain)),
         show_in_folder: Some(Box::new(|path| {
             let folder = std::path::Path::new(path).parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -591,6 +593,19 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
             let _ = command.spawn();
         })),
     }
+}
+
+/// One admission pool per process; catalogs belong to individual windows, never this static.
+#[cfg(not(target_arch = "wasm32"))]
+fn process_wide_http_limiter() -> std::sync::Arc<solidcraft_ui_egui::agent_chat::host_ai::HttpAdmission> {
+    use solidcraft_ui_egui::agent_chat::host_ai::HttpAdmission;
+    static HTTP: std::sync::OnceLock<std::sync::Arc<HttpAdmission>> = std::sync::OnceLock::new();
+    std::sync::Arc::clone(HTTP.get_or_init(|| std::sync::Arc::new(HttpAdmission::default())))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn new_window_ai() -> std::sync::Arc<solidcraft_ui_egui::agent_chat::host_ai::AiShared> {
+    std::sync::Arc::new(solidcraft_ui_egui::agent_chat::host_ai::AiShared::new(process_wide_http_limiter()))
 }
 
 /// HTTPS GET for the update check (docs/updates.md): certificates from the operating system, a
@@ -643,7 +658,7 @@ fn agent_http(r: &solidcraft_ui_egui::agent_chat::backend::HttpRequest) -> Resul
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(r.timeout_s.clamp(1, 3600))))
         .timeout_connect(Some(Duration::from_secs(10)))
-        .user_agent("SolidCraft")
+        .user_agent("open-skyfall")
         .max_redirects(0)
         .build()
         .into();
@@ -726,7 +741,7 @@ fn http_call(url: &str, timeout: std::time::Duration) -> Result<ureq::http::Resp
         .http_status_as_error(false)
         .timeout_global(Some(timeout))
         .timeout_connect(Some(Duration::from_secs(5)))
-        .user_agent("SolidCraft-update-check")
+        .user_agent("open-skyfall-update-check")
         .max_redirects(3)
         .build()
         .into();
@@ -899,7 +914,7 @@ fn app_viewport(custom_titlebar: bool) -> Result<egui::ViewportBuilder, eframe::
     let icon =
         egui::IconData { rgba: app_icon::rgba(64).map_err(|e| eframe::Error::AppCreation(std::io::Error::other(e).into()))?, width: 64, height: 64 };
     Ok(egui::ViewportBuilder::default()
-        .with_title("SolidCraft")
+        .with_title("open-skyfall")
         .with_icon(icon)
         .with_inner_size([1600.0, 1000.0])
         .with_min_inner_size([960.0, 600.0])
@@ -928,7 +943,7 @@ impl Drop for DriverClient {
 
 fn main() -> eframe::Result {
     #[cfg(target_os = "macos")]
-    objc2_foundation::NSProcessInfo::processInfo().setProcessName(objc2_foundation::ns_string!("SolidCraft"));
+    objc2_foundation::NSProcessInfo::processInfo().setProcessName(objc2_foundation::ns_string!("open-skyfall"));
     mark("main");
     // On OCLP-patched Macs, wgpu picks a Metal Shading Language standard that the system's
     // compiler refuses (`invalid value 'metal3.2'`), because the patched OS reports a newer
@@ -1505,6 +1520,24 @@ fn desktop_chooser_fallback(dbus_session: bool, portal_service: bool, wayland_di
 #[cfg(all(test, unix, not(target_os = "macos")))]
 mod backend_tests {
     use super::prefer_x11;
+
+    #[test]
+    fn native_windows_use_independent_catalogs_and_the_process_http_pool() {
+        use solidcraft_ui_egui::agent_chat::{
+            agents::{AgentConfig, Kind},
+            host_ai::AiErrorCode,
+        };
+        let first = super::new_window_ai();
+        let second = super::new_window_ai();
+        assert!(!std::sync::Arc::ptr_eq(&first, &second));
+        assert!(std::sync::Arc::ptr_eq(&super::process_wide_http_limiter(), &super::process_wide_http_limiter()));
+        let config = AgentConfig { id: "window-fixture".into(), kind: Kind::Api, base_url: "http://localhost:18080/v1".into(), ..Default::default() };
+        first.connections().replace(&[config]).unwrap();
+        assert!(first.connections().bind("window-fixture", "chosen").is_ok());
+        assert_eq!(second.connections().bind("window-fixture", "chosen").unwrap_err().code(), AiErrorCode::ConnectionChanged);
+        let services = solidcraft_ui_egui::Services { agent_ai: first, ..Default::default() };
+        assert!(services.agent_ai.connections().bind("window-fixture", "chosen").is_ok());
+    }
 
     #[test]
     fn xwayland_by_default_native_wayland_on_niri_and_the_override_wins() {

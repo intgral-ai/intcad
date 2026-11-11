@@ -10,6 +10,7 @@ use serde_json::Value;
 
 pub use super::acp::{AuthMethod, PermissionOption, ToolStatus};
 pub use super::acp::{ConfigChoice, ConfigOption};
+pub use super::skill::SkillSupport;
 
 /// A connection test keeps authentication failures distinct from transport or protocol errors.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +58,15 @@ pub enum Event {
     Ready {
         agent: String,
         images: bool,
+    },
+    /// A standalone Mastra runtime process is ready. This says nothing about any AI connection's
+    /// authentication, which arrives separately in [`Event::ConnectionAuth`].
+    RuntimeReady {
+        version: String,
+    },
+    /// The selected AI connection's authentication, checked independently of runtime readiness.
+    ConnectionAuth {
+        available: bool,
     },
     /// Text it streams (`thought`: its reasoning, shown dimmed).
     Text {
@@ -147,6 +157,17 @@ pub trait ChatBackend {
     /// The user's custom instructions (#8220), added to the system note of every session that
     /// starts after this call. The panel sets them before the first session and before New chat.
     fn set_instructions(&mut self, _text: &str) {}
+    /// The open document a turn is about to bind to: its identity and actual revision, read when
+    /// the turn starts. Backends that pin a document use it; the others ignore it.
+    fn set_document(&mut self, _document_id: &str, _revision: u64) {}
+    /// The trusted cancellation flag of the turn about to start. Backends that bridge tool calls
+    /// attach it at the host boundary; model/runtime arguments never supply it.
+    fn set_turn_control(&mut self, _active: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
+    /// What this backend can prove for a built-in skill. Unknown backends stay unverified; a
+    /// backend that cannot run the skill refuses before the model call.
+    fn skill_support(&self, _skill: super::skill::Skill) -> SkillSupport {
+        SkillSupport::Unverified
+    }
     /// Answer an [`Event::Permission`] with one of its options (`None`: cancelled).
     fn answer_permission(&mut self, key: u64, option: Option<&str>);
     /// Ask the backend to sign in by itself with one of its methods (it opens the browser).
@@ -170,13 +191,26 @@ pub trait ChatBackend {
 
 /// One HTTP request of the API backend (the desktop host sends it; nothing else in the chat
 /// reaches the network).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct HttpRequest {
     pub method: &'static str,
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
     pub timeout_s: u64,
+}
+
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Even non-auth headers and URL paths/queries may contain credentials or prompt text.
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &"[redacted]")
+            .field("header_count", &self.headers.len())
+            .field("body_bytes", &self.body.as_ref().map(Vec::len))
+            .field("timeout_s", &self.timeout_s)
+            .finish()
+    }
 }
 
 /// Sends an [`HttpRequest`]: the status and the body, or why it failed.
@@ -207,6 +241,57 @@ pub fn base64(data: &[u8]) -> String {
     out
 }
 
+/// Decode standard padded base64 (RFC 4648), as the composer stores an attached picture or PDF.
+pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    if !text.len().is_multiple_of(4) {
+        return Err("base64 length is not a multiple of four".into());
+    }
+    let byte = |c: u8| -> Option<u8> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        })
+    };
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        let last = index + 1 == bytes.len() / 4;
+        let a = byte(chunk[0]).ok_or_else(|| "base64 contains an invalid character".to_string())?;
+        let b = byte(chunk[1]).ok_or_else(|| "base64 contains an invalid character".to_string())?;
+        let c = if chunk[2] == b'=' {
+            if !last || chunk[3] != b'=' {
+                return Err("base64 padding is invalid".into());
+            }
+            0
+        } else {
+            byte(chunk[2]).ok_or_else(|| "base64 contains an invalid character".to_string())?
+        };
+        let d = if chunk[3] == b'=' {
+            if !last {
+                return Err("base64 padding is invalid".into());
+            }
+            0
+        } else {
+            byte(chunk[3]).ok_or_else(|| "base64 contains an invalid character".to_string())?
+        };
+        let value = (u32::from(a) << 18) | (u32::from(b) << 12) | (u32::from(c) << 6) | u32::from(d);
+        out.push((value >> 16) as u8);
+        if chunk[2] != b'=' {
+            out.push((value >> 8) as u8);
+        } else if chunk[3] != b'=' {
+            return Err("base64 padding is invalid".into());
+        }
+        if chunk[3] != b'=' {
+            out.push(value as u8);
+        }
+    }
+    Ok(out)
+}
+
 /// A message's parts as ACP content blocks.
 pub fn content_blocks(parts: &[PromptPart]) -> Vec<Value> {
     parts
@@ -231,6 +316,16 @@ mod tests {
         {
             assert_eq!(base64(i.as_bytes()), o);
         }
+    }
+
+    #[test]
+    fn base64_decodes_the_encoder_output_and_refuses_bad_padding() {
+        for bytes in [b"".as_slice(), b"f", b"fo", b"foo", b"foobar", &[0u8, 255, 1, 2, 3]] {
+            assert_eq!(base64_decode(&base64(bytes)).as_deref(), Ok(bytes));
+        }
+        assert!(base64_decode("abc").is_err());
+        assert!(base64_decode("ab=c").is_err());
+        assert!(base64_decode("!!!!").is_err());
     }
 
     #[test]

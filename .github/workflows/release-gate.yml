@@ -1,74 +1,273 @@
-# The release gate: everything, in full and in parallel, on one branch's head, before that branch
-# replaces main as a release (develop, rebased onto main). Run it by hand:
-#   gh workflow run release-gate.yml --ref develop
-# It calls the workflows that own each check instead of copying their jobs:
-# - ci.yml as Run workflow with cross-compilation: every native suite in full (not scoped), the
-#   reference tests, the doc tests, the GPU path tests, the action matrix (all 16 shards) and its
-#   determinism check, the property tests, the repository checks (web-offline among them),
-#   WebAssembly and RISC-V, Windows D3D12 FXC and Windows app startup;
-# - kernel-rig.yml: every rig area against its KNOWN_FAILING and the ladder against its golden;
-# - release.yml as a dry run (draft false, packages_only): the Linux, Flatpak, Snap, FreeBSD,
-#   macOS, Windows and web packages with their smoke tests and package checks, unsigned (no
-#   secrets are passed, so no signing secret or SignPath quota is used) and without the release
-#   job (checksums, update signing, publishing).
-# The gate passes only when all three pass. Before main is replaced, tag the old main
-# (main-before-develop-<date>) and push the tag.
+# Nonpublishing full validation of this exact PR/group/manual checkout, never an
+# older candidate. A changed promotion merge SHA requires a rebuild, not retagging.
 name: Release gate
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: release-gate-${{ github.ref }}
+  group: release-gate-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   ci:
-    name: CI
+    # Merge groups have no branches filter in Actions. Develop groups use their
+    # ordinary ci context; the release context is required only for main.
+    if: github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main'
     uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
-      # Select checks reads this commit's other runs.
-      actions: read
     with:
+      validation_mode: full
+      release_required: true
       cross_compile: true
 
   kernel-rig:
-    name: Kernel rig
+    if: github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main'
     uses: ./.github/workflows/kernel-rig.yml
-    permissions:
-      contents: read
+    with:
+      full_validation: true
 
   packages:
-    name: Packages
+    if: github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main'
     uses: ./.github/workflows/release.yml
-    # No secrets: the signing steps skip without them. GitHub checks a called workflow's job
-    # permissions before the run, skipped jobs included, so the release job's contents: write must
-    # be granted here; packages_only skips that job, and no step that runs writes to the
-    # repository. actions: read is the Windows job's.
-    permissions:
-      contents: write
-      actions: read
     with:
-      draft: false
-      packages_only: true
+      beta_three_platforms: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.') }}
+
+  beta-gate:
+    name: Beta promotion gate
+    needs: [ci, kernel-rig]
+    # A Beta promotion is a same-repository release/vX.Y.Z-beta.N PR to main.
+    # The stable release path never takes this branch.
+    if: >-
+      always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+      && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: evidence-*
+          path: evidence
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: action-matrix-*
+          path: matrix
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: full-baseline-properties
+          path: properties
+      - name: Record actual job conclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --jq '{jobs: [.jobs[] | {name, conclusion, status}]}' \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" > jobs.json
+      - name: Evaluate the Beta known exceptions and every other job
+        run: |
+          python3 -I scripts/ci/beta_gate.py evaluate \
+            --plan selection/plan.json --evidence evidence --matrix matrix \
+            --properties properties --jobs jobs.json \
+            --exceptions tests/action_matrix/beta-exceptions.json --out beta-gate.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: beta-gate-evidence
+          path: beta-gate.json
+          if-no-files-found: error
 
   release-gate:
     name: release-gate
-    needs: [ci, kernel-rig, packages]
+    needs: [ci, kernel-rig, packages, beta-gate]
     if: always()
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
-      - name: Every part passed
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        with:
+          name: selection-plan
+          path: selection
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        with:
+          pattern: evidence-*
+          path: evidence
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        with:
+          pattern: package-evidence-*
+          path: package-evidence
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        with:
+          name: kernel-rig-handoff-${{ github.sha }}
+          path: rig-handoff
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: >-
+          always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+          && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.')
+        with:
+          name: beta-gate-evidence
+          path: beta-evidence
+      - name: Evaluate actual full evidence and outstanding owner consumers
+        if: always()
         env:
-          CI: ${{ needs.ci.result }}
-          KERNEL_RIG: ${{ needs.kernel-rig.result }}
-          PACKAGES: ${{ needs.packages.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+          GROUP_BASE: ${{ github.event.merge_group.base_ref }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
         run: |
-          echo "ci=$CI kernel-rig=$KERNEL_RIG packages=$PACKAGES"
-          test "$CI" = success
-          test "$KERNEL_RIG" = success
-          test "$PACKAGES" = success
+          python3 - <<'PY'
+          import hashlib, json, os, re, subprocess, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/ci')
+          import gate
+          import kernel_rig_plan as rig
+          import release_content as content
+
+          if os.environ.get('EVENT_NAME') == 'merge_group' and os.environ.get('GROUP_BASE') != 'refs/heads/main':
+              print('release-gate: not_applicable (develop merge group; no stable promotion)')
+              sys.exit(0)
+          problems = []
+          needs = gate.parse_json(os.environ['NEEDS_JSON'])
+          head = os.environ.get('HEAD_REF', '')
+          merge_head = os.environ.get('GROUP_HEAD', '')
+          beta = (
+              (os.environ.get('EVENT_NAME') == 'pull_request' and os.environ.get('BASE_REF') == 'main'
+               and head.startswith('release/v') and '-beta.' in head)
+              or (os.environ.get('EVENT_NAME') == 'merge_group' and os.environ.get('GROUP_BASE') == 'refs/heads/main'
+                  and merge_head.startswith('refs/heads/release/v') and '-beta.' in merge_head))
+          required = ('kernel-rig', 'beta-gate') if beta else ('ci', 'kernel-rig', 'packages')
+          for job in required:
+              if needs.get(job, {}).get('result') != 'success':
+                  problems.append(job + ': real job result is not success: ' + str(needs.get(job, {}).get('result', 'missing')))
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if sha != os.environ['GITHUB_SHA']:
+              problems.append('checkout sourceRevision mismatch')
+          if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--']).returncode != 0:
+              problems.append('dirty tracked release checkout')
+          try:
+              rig.verify_handoff(Path.cwd(), Path('rig-handoff'), sha)
+          except (OSError, ValueError, TypeError, KeyError) as error:
+              problems.append('kernel-rig handoff: ' + str(error))
+          try:
+              plan = gate.BoundPlan(Path('selection/plan.json').read_bytes())
+              gate.require(plan['sourceRevision'] == sha, 'plan sourceRevision mismatch')
+              gate.require(plan['scope'] == 'full' and plan['releaseRequired'], 'release requires full releaseRequired plan')
+              receipts = {}
+              for path in sorted(Path('evidence').rglob('receipt.json')):
+                  receipt = gate.parse_json(path.read_bytes())
+                  job = receipt.get('jobId')
+                  gate.require(job not in receipts, 'duplicate receipt: ' + str(job))
+                  receipts[job] = receipt
+              # The stable gate rechecks the nested ci aggregate's exact plan/receipts;
+              # a green wrapper alone cannot satisfy it. A Beta promotion has the
+              # separate Beta job prove every non-excused job and the itemised
+              # action exceptions, so it does not relabel the stable gate as green.
+              if beta:
+                  beta_file = Path('beta-evidence/beta-gate.json')
+                  gate.require(beta_file.is_file(), 'missing accepted Beta evidence')
+                  beta_result = gate.parse_json(beta_file.read_bytes())
+                  gate.require(beta_result.get('verdict') == 'accepted-beta', 'Beta gate did not accept the candidate')
+                  gate.require(beta_result.get('sourceRevision') == sha, 'Beta gate sourceRevision mismatch')
+                  gate.require(beta_result.get('problems') == [], 'Beta gate reported problems')
+              else:
+                  results = {job: needs.get('ci', {}).get('result') for job in plan['jobs']}
+                  problems.extend(gate.evaluate(plan, results, receipts))
+          except (OSError, ValueError, TypeError, KeyError) as error:
+              problems.append('execution evidence: ' + str(error))
+
+          contract = Path('schema/mastra-runtime/v1/manifest.json')
+          try:
+              contract_bytes = subprocess.check_output(['git', 'show', 'HEAD:' + contract.as_posix()])
+              digest = 'sha256:' + hashlib.sha256(contract_bytes).hexdigest()
+          except subprocess.CalledProcessError:
+              digest = None
+          if digest is None:
+              problems.append('#5: missing same-checkout contract manifest/digest')
+          expected = {
+              **{f'release-{kind}-{arch}': f'{arch}-unknown-linux-gnu'
+                 for kind in ('linux', 'flatpak', 'arch', 'snap') for arch in ('x86_64', 'aarch64')},
+              'release-freebsd-x86_64': 'x86_64-unknown-freebsd',
+              'release-macos': 'universal-apple-darwin',
+              **{f'release-windows-{arch}': target for arch, target in (
+                  ('x64', 'x86_64-pc-windows-msvc'), ('x86', 'i686-pc-windows-msvc'), ('arm64', 'aarch64-pc-windows-msvc'))},
+              'release-web': 'wasm32-unknown-unknown'}
+          if beta:
+              # A Beta is Linux x86_64, macOS universal and Windows x64. The stable
+              # gate above keeps every package format and architecture.
+              expected = {
+                  'release-linux-x86_64': 'x86_64-unknown-linux-gnu',
+                  'release-linux-aarch64': 'aarch64-unknown-linux-gnu',
+                  'release-macos': 'universal-apple-darwin',
+                  'release-windows-x64': 'x86_64-pc-windows-msvc',
+                  'release-windows-x86': 'i686-pc-windows-msvc',
+                  'release-windows-arm64': 'aarch64-pc-windows-msvc',
+              }
+          descriptors = {}
+          for path in sorted(Path('package-evidence').rglob('build.json')):
+              try:
+                  data = gate.parse_json(path.read_bytes())
+                  identity = data.get('packageId')
+                  gate.require(identity in expected and identity not in descriptors, 'unknown/duplicate package descriptor')
+                  descriptors[identity] = data
+                  gate.require(data.get('sourceRevision') == sha, identity + ': sourceRevision mismatch; rebuild at final SHA')
+                  gate.require(data.get('target') == expected[identity], identity + ': target mismatch')
+                  gate.require(digest is not None and data.get('contractDigest') == digest, identity + ': contractDigest mismatch/missing')
+                  artifacts = data.get('artifacts')
+                  gate.require(isinstance(artifacts, list) and artifacts, identity + ': missing artifact identities')
+                  names = set()
+                  for artifact in artifacts:
+                      name = artifact.get('name', '')
+                      gate.require(isinstance(name, str) and name and Path(name).name == name and name not in names,
+                                   identity + ': invalid/duplicate artifact name')
+                      names.add(name)
+                      gate.require(re.fullmatch('[0-9a-f]{64}', artifact.get('sha256', '')) is not None,
+                                   identity + ': missing artifact digest')
+              except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+                  problems.append('package evidence: ' + str(error))
+          for identity in sorted(set(expected) - set(descriptors)):
+              problems.append(identity + ': missing package descriptor')
+          contents = {}
+          for path in sorted(Path('package-evidence').rglob('contents.json')):
+              try:
+                  data = gate.parse_json(path.read_bytes())
+                  identity = data.get('packageId')
+                  gate.require(identity in expected and identity not in contents,
+                               'unknown/duplicate content descriptor')
+                  contents[identity] = data
+              except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+                  problems.append('package contents: ' + str(error))
+          # #14/#15 (the Mastra installed runtime) are not applicable only when
+          # the workflow declares native distribution AND the built installers
+          # prove it: every canonical package inspected, no runtime markers, and
+          # the digests match build.json. A declaration or a name cannot substitute.
+          problems.extend(content.problems(sha, descriptors, contents))
+          for problem in problems:
+              print('FAIL: ' + problem)
+          sys.exit(1 if problems else 0)
+          PY

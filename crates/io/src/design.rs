@@ -88,6 +88,8 @@ struct PackageWriter {
     names: BTreeSet<String>,
     expanded: usize,
     resolved: usize,
+    /// The most expanded bytes this writer may hold (the snapshot's remaining input budget).
+    budget: usize,
 }
 
 /// The uncompressed size a part may have. STEP and mesh blobs may be larger than the
@@ -104,10 +106,23 @@ fn part_limit(name: &str) -> usize {
 
 impl PackageWriter {
     fn new() -> PackageWriter {
-        PackageWriter { zip: zip::ZipWriter::new(Cursor::new(Vec::new())), names: BTreeSet::new(), expanded: 0, resolved: 0 }
+        PackageWriter::with_budget(usize::MAX)
+    }
+    fn with_budget(budget: usize) -> PackageWriter {
+        PackageWriter {
+            zip: zip::ZipWriter::new(Cursor::new(Vec::new())),
+            names: BTreeSet::new(),
+            expanded: 0,
+            resolved: 0,
+            budget: budget.min(max_expanded()),
+        }
     }
     fn finish(self) -> Result<Vec<u8>> {
-        Ok(self.zip.finish().map_err(invalid)?.into_inner())
+        let bytes = self.zip.finish().map_err(invalid)?.into_inner();
+        if bytes.len() > self.budget {
+            return Err(invalid("the design exceeds the remaining snapshot budget"));
+        }
+        Ok(bytes)
     }
     fn part(&mut self, name: &str, bytes: &[u8], compressed: bool) -> Result<()> {
         if bytes.len() > part_limit(name) {
@@ -117,7 +132,7 @@ impl PackageWriter {
             return Ok(());
         }
         self.expanded = self.expanded.checked_add(bytes.len()).ok_or_else(|| invalid("expanded size overflow"))?;
-        if self.expanded > max_expanded() || self.names.len() > MAX_ENTRIES {
+        if self.expanded > max_expanded() || self.names.len() > MAX_ENTRIES || self.expanded > self.budget {
             return Err(invalid("package too large"));
         }
         let method = if compressed { zip::CompressionMethod::Deflated } else { zip::CompressionMethod::Stored };
@@ -260,11 +275,18 @@ pub fn write_design_container_with_thumbnail(
     thumbnail: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
     let _span = solidcraft_profile::span("io", "write_design_container_with_thumbnail");
-    write_container(doc, compression, preview, geometry, thumbnail, max_design())
+    write_container(doc, compression, preview, geometry, thumbnail, max_design(), None)
+}
+
+/// Write a design container whose persisted bytes must fit `budget`, for a snapshot candidate.
+/// The writer refuses before a part would take it past the remaining snapshot input budget.
+pub fn write_design_container_within(doc: &Document, compression: DesignCompression, budget: usize) -> Result<Vec<u8>> {
+    write_container(doc, compression, None, None, None, budget, Some(budget))
 }
 
 /// [`write_design_container_with_thumbnail`] within `budget` bytes for the optional caches (the
-/// container's budget; tests pass less).
+/// container's budget; tests pass less). `design_budget` additionally caps the persisted design
+/// container itself (the snapshot path); normal saves leave it unbounded here.
 fn write_container(
     doc: &Document,
     compression: DesignCompression,
@@ -272,9 +294,13 @@ fn write_container(
     geometry: Option<&solidcraft_doc::SavedModel>,
     thumbnail: Option<&[u8]>,
     budget: usize,
+    design_budget: Option<usize>,
 ) -> Result<Vec<u8>> {
     doc.render.validate().map_err(invalid)?;
-    let mut writer = PackageWriter::new();
+    let mut writer = match design_budget {
+        Some(budget) => PackageWriter::with_budget(budget),
+        None => PackageWriter::new(),
+    };
     let mut features = Vec::with_capacity(doc.features.len());
     for feature in &doc.features {
         let replacements = match &feature.kind {
@@ -1280,12 +1306,12 @@ mod tests {
     #[test]
     fn a_model_cache_too_big_for_the_file_is_left_out_not_a_failed_save() {
         let doc = document();
-        let bytes = write_container(&doc, DesignCompression::Fast, None, Some(&native_geometry()), None, 70_000).unwrap();
+        let bytes = write_container(&doc, DesignCompression::Fast, None, Some(&native_geometry()), None, 70_000, None).unwrap();
         assert!(!parts(&bytes).contains_key("cache/model.json") && !parts(&bytes).contains_key("cache/bodies.bin"));
         assert!(read_design_geometry(&bytes).is_none());
         assert_eq!(crate::read_design(&bytes).unwrap().to_json(), doc.to_json());
         // With room for it, the same model is kept.
-        let bytes = write_container(&doc, DesignCompression::Fast, None, Some(&native_geometry()), None, crate::MAX_DESIGN_BYTES).unwrap();
+        let bytes = write_container(&doc, DesignCompression::Fast, None, Some(&native_geometry()), None, crate::MAX_DESIGN_BYTES, None).unwrap();
         assert!(read_design_geometry(&bytes).is_some());
     }
 

@@ -7,7 +7,7 @@
 #   $DIST/solidcraft-cli-<version>-macos-<arch>.zip    the headless CLI (and its solvecraft-cli
 #                                                      compatibility alias) with the licence files
 #
-# Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--sign]
+# Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--sign] [--with-mastra]
 #        packaging/macos/package.sh --build-only <rust-target>
 #
 # --build-only builds just that target (aarch64-apple-darwin or x86_64-apple-darwin) and stops,
@@ -79,12 +79,15 @@ ARCH=universal
 SKIP_BUILD=0
 BUILD_ONLY=
 SIGN=0
+WITH_MASTRA="${SOLIDCRAFT_WITH_MASTRA:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --build-only) BUILD_ONLY="$2"; shift 2 ;;
     --sign) SIGN=1; shift ;;
+    --with-mastra) WITH_MASTRA=1; shift ;;
+    --without-mastra) WITH_MASTRA=0; shift ;;
     -h | --help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -165,6 +168,36 @@ cp "$ROOT/assets/icons/app/macos/exports/Assets.car" "$APP/Contents/Resources/As
 cp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$APP/Contents/Resources/SolidCraft.icns"
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
+
+# ---- Mastra runtime (opt-in; application-relative, pinned Node) ---------------------------------
+# Bundling is opt-in because the artifact is still unapproved (DQ-7, #15). A universal app needs
+# both per-slice artifacts: SOLIDCRAFT_MASTRA_ARTIFACT_AARCH64 and _X86_64. A single-arch app
+# uses SOLIDCRAFT_MASTRA_ARTIFACT.
+stage_mastra() {
+  local target="$1" variable="$2" dest="$3"
+  local artifact="${!variable:-}"
+  if [ -z "$artifact" ]; then
+    echo "error: $variable is not set; the $target Mastra runtime is required for macOS $ARCH with --with-mastra (unapproved until #15)" >&2
+    exit 2
+  fi
+  "$SCRIPT_DIR/../mastra/stage.sh" --target "$target" --artifact "$artifact" --dest "$dest"
+}
+if [ "$WITH_MASTRA" = 1 ]; then
+  if [ "$ARCH" = universal ]; then
+    stage_mastra aarch64-apple-darwin SOLIDCRAFT_MASTRA_ARTIFACT_AARCH64 "$APP/Contents/Resources/mastra/aarch64-apple-darwin"
+    stage_mastra x86_64-apple-darwin SOLIDCRAFT_MASTRA_ARTIFACT_X86_64 "$APP/Contents/Resources/mastra/x86_64-apple-darwin"
+  else
+    stage_mastra "${TARGETS[0]}" SOLIDCRAFT_MASTRA_ARTIFACT "$APP/Contents/Resources/mastra"
+  fi
+  mkdir -p "$APP/Contents/Resources/Licenses"
+  mastra_licenses="$(find "$APP/Contents/Resources/mastra" -path '*/licenses/LICENSES.txt' -print -quit)"
+  mastra_notice="$(find "$APP/Contents/Resources/mastra" -path '*/notices/NOTICE.txt' -print -quit)"
+  if [ -n "$mastra_licenses" ]; then cp "$mastra_licenses" "$APP/Contents/Resources/Licenses/MASTRA-LICENSES.txt"; fi
+  if [ -n "$mastra_notice" ]; then cp "$mastra_notice" "$APP/Contents/Resources/Licenses/MASTRA-NOTICE.txt"; fi
+else
+  warn "the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)"
+fi
+
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" "$ROOT/assets/platforms/macos/Info.plist.in" >"$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
@@ -172,6 +205,12 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 # unsigned helper in Contents/MacOS. The entitlements go on the bundle (they apply to the main
 # executable): the 3D mouse driver is loaded by the app, not by the CLI.
 sign_code "$APP/Contents/MacOS/solidcraft-cli" "$MACOS_BUNDLE_ID.cli"
+# The bundled pinned Node is nested executable code: sign it before the app bundle.
+if [ -d "$APP/Contents/Resources/mastra" ]; then
+  find "$APP/Contents/Resources/mastra" -type f -name node -print0 | while IFS= read -r -d '' node; do
+    sign_code "$node" "$MACOS_BUNDLE_ID.mastra-node" "$SCRIPT_DIR/node-entitlements.plist"
+  done
+fi
 sign_code "$APP" "" "$SCRIPT_DIR/entitlements.plist"
 codesign --verify --strict --deep --verbose=2 "$APP"
 if [ -n "$SIGN_IDENTITY" ]; then
@@ -215,8 +254,12 @@ test -L "$MNT/Applications" && test "$(readlink "$MNT/Applications")" = /Applica
 test -s "$MNT/.DS_Store" && test -s "$MNT/.VolumeIcon.icns"
 test -s "$MNT/.background.tiff"
 plutil -lint "$MNT/SolidCraft.app/Contents/Info.plist"
-# Check the names Finder/LaunchServices actually use, and the bundle identity.
-for key in CFBundleName CFBundleDisplayName CFBundleExecutable CFBundleIconFile CFBundleIconName; do
+# Check the names Finder/LaunchServices actually use, and the bundle identity. The executable and
+# icon file keep the upstream names so existing bundles and update scripts stay compatible.
+for key in CFBundleName CFBundleDisplayName; do
+  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = open-skyfall
+done
+for key in CFBundleExecutable CFBundleIconFile CFBundleIconName; do
   test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = SolidCraft
 done
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MNT/SolidCraft.app/Contents/Info.plist")" = "$MACOS_BUNDLE_ID"
@@ -229,6 +272,15 @@ for arch in "${WANT[@]}"; do
   lipo "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" -verify_arch "$arch"
 done
 test -s "$MNT/SolidCraft.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
+if [ "$WITH_MASTRA" = 1 ]; then
+  case "$ARCH" in
+    universal)
+      test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/aarch64-apple-darwin/runtime.json"
+      test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/x86_64-apple-darwin/runtime.json"
+      ;;
+    *) test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/runtime.json" ;;
+  esac
+fi
 # Not --strict: the mounted HFS volume adds Finder info, which strict verification rejects.
 codesign --verify --deep --verbose=2 "$MNT/SolidCraft.app"
 "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" --version

@@ -58,13 +58,26 @@ proc-macro2 = { workspace = true }
 # Pictures pasted into the agent chat; already in the tree, with the same features, through
 # egui-winit's clipboard.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The native AI harness task contract/controller and its real engine ports; both are UI-free.
+solidcraft-agent-task = { workspace = true }
+solidcraft-agent-task-engine = { workspace = true }
+# The existing chat MCP server and its guarded document envelopes; the Mastra runtime's
+# inherited bridge lane is served by this same implementation (no second command catalog).
+solidcraft-mcp = { workspace = true }
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
+# Opaque native HostAi continuation and routing identities (already locked).
+getrandom = "=0.3.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Protocol conformance only: no schema evaluator/canonicalizer in the production wire or wasm closure.
+schemars = { workspace = true }
+jsonschema = { version = "=0.60.2", default-features = false }
+serde_json_canonicalizer = "=0.4.1"
 # The offscreen viewport render test opens a device without a window.
 pollster = { workspace = true }
 
 [build-dependencies]
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 # Reads assets/icons/ui/design/palette.toml and aliases.toml into compiled tables.
 toml = { workspace = true }

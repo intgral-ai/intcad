@@ -19,6 +19,8 @@
 //! own edits meanwhile go first: the agent's command is then computed again for the design as it
 //! is and lands after them, never in between. If the design itself was replaced (another tab, a
 //! file opened) the agent's command is refused, saying so, and nothing is applied.
+//! Requests with a document precondition instead keep their original admission: an intervening
+//! edit or departure refuses them before application, without recomputing for a newer base.
 //!
 //! Done within the app's wait ([`crate::dialogs::APPLY_AT_ONCE`]), a request just runs, as
 //! before. Headless use, tests and the web build ([`SolveApp::apply_off_thread`] unset) run
@@ -31,6 +33,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use serde_json::{Value, json};
 
+use solidcraft_engine::DocumentStamp;
 use solidcraft_engine::doc::KeptResults;
 
 use crate::SolveApp;
@@ -154,7 +157,7 @@ enum Work {
     /// was computed for.
     Ahead { commands: Vec<(String, Value)>, doc: Arc<solidcraft_engine::doc::Document>, revision: u64, tries: u8, kept: Arc<KeptResults> },
     /// Run on a copy; the reply comes from there.
-    Answer,
+    Answer { source: Option<DocumentStamp> },
 }
 
 /// A control request computing off the window thread.
@@ -192,6 +195,11 @@ fn spawn(
     scope: Option<solidcraft_engine::io::vfs::PathScope>,
     f: impl FnOnce() -> Option<Value> + Send + 'static,
 ) -> Option<Receiver<Option<Value>>> {
+    #[cfg(test)]
+    let f = match crate::history_off_thread_tests::guarded_workers::spawn(scope.clone(), f) {
+        Ok(rx) => return Some(rx),
+        Err(f) => f,
+    };
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("agent".into())
@@ -258,6 +266,19 @@ fn begin_ahead(
 }
 
 impl SolveApp {
+    /// Both immediate and deferred completion are only cache warming: the original admission
+    /// must still match on the owner before installing kept results or touching history.
+    pub(crate) fn finish_control_ahead(&mut self, ctx: &egui::Context, req: ControlRequest, kept: Arc<KeptResults>) {
+        if req.refuse_cancelled_chat() {
+            return;
+        }
+        if let Err(error) = crate::execution_guard::check_application(self, &req) {
+            let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
+            return;
+        }
+        self.run_with_kept(Some(kept), |app| app.run_control(ctx, req));
+    }
+
     /// Run a control request here with what was computed ahead for it at hand ([`KeptResults`]):
     /// its features are found there rather than computed again on the window thread.
     pub(crate) fn run_with_kept<R>(&mut self, kept: Option<Arc<KeptResults>>, run: impl FnOnce(&mut SolveApp) -> R) -> R {
@@ -372,21 +393,28 @@ impl SolveApp {
     /// behind it go on.
     pub fn stop_agent_command(&mut self) {
         let stopped = match self.control_job.take() {
-            Some(job) => Some((job.req.reply, job.label)),
+            Some(job) => {
+                let response = crate::control::stopped_command_response(&job.req.method, &job.req.params, job.req.guarded.is_some(), &job.label);
+                Some((job.req.reply, response))
+            }
             None => self.agent.stop(),
         };
-        if let Some((reply, label)) = stopped {
-            let _ = reply.send(json!({
-                "ok": false,
-                "stopped": true,
-                "error": format!("stopped: the person at the app stopped `{label}` while it computed; nothing was applied"),
-            }));
+        if let Some((reply, response)) = stopped {
+            let _ = reply.send(response);
         }
     }
 
     /// Take a control request off the window thread when it computes long (see the module
     /// notes). Returns it when it should simply run here now.
-    pub(crate) fn offload_control(&mut self, ctx: &egui::Context, req: ControlRequest) -> Option<ControlRequest> {
+    pub(crate) fn offload_control(&mut self, ctx: &egui::Context, mut req: ControlRequest) -> Option<ControlRequest> {
+        if req.refuse_cancelled_chat() {
+            return None;
+        }
+        // Normally admitted by the queue; direct callers must pin the same live source too.
+        if let Err(error) = crate::execution_guard::admit(self, &mut req) {
+            let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
+            return None;
+        }
         if self.apply_off_thread.is_none() || self.file_load.busy() || self.file_picker.is_some() {
             return Some(req);
         }
@@ -397,6 +425,15 @@ impl SolveApp {
             && let Some((id, params)) = reading(&req)
         {
             return self.answer_on_a_copy(req, id, params);
+        }
+        // A snapshot freezes and writes a large artifact: answer on a copy even when the general
+        // agent-off-thread preference is off, so a large container never blocks a frame.
+        if matches!(req.method.as_str(), "engine.execute" | "command")
+            && self.control_answering.len() < MAX_ANSWERING
+            && let Some((command, params)) = executed(&req.params)
+            && spec_id(command) == Some("document.snapshot.capture")
+        {
+            return self.answer_on_a_copy(req, "document.snapshot.capture", params);
         }
         if !self.preferences.agent_off_thread {
             return Some(req);
@@ -416,7 +453,7 @@ impl SolveApp {
         if within_wait(self, &job.done).is_some() {
             // Computed within the wait: it runs now, as before, finding what was computed.
             let Work::Ahead { kept, .. } = job.work else { return Some(job.req) };
-            self.run_with_kept(Some(kept), |app| app.run_control(ctx, job.req));
+            self.finish_control_ahead(ctx, job.req, kept);
             return None;
         }
         self.control_job = Some(job);
@@ -431,7 +468,15 @@ impl SolveApp {
         // The request's own level (#9184) checks it on the copy, and the reply says so, as
         // `control::handle` does; a word that is no level is refused there.
         let Ok(level) = crate::control::request_param_check(&req.method, &req.params) else { return Some(req) };
+        // Capture on the owner before scratch resets its followed revision. The worker only
+        // reads this pinned copy; answered rechecks the live source, never the scratch stamp.
+        let source = req.guarded.as_ref().map(|_| self.session.document_stamp());
         let mut copy = self.session.scratch();
+        if id == "document.snapshot.capture" {
+            // `scratch` drops the file path; a snapshot must resolve relative design links from
+            // the caller's design folder, never from the process working directory.
+            copy.path = self.session.path.clone();
+        }
         if let Some(level) = level {
             copy.param_check = level;
         }
@@ -456,7 +501,7 @@ impl SolveApp {
             Some(reply)
         });
         let Some(rx) = rx else { return Some(req) };
-        let job = ControlJob { label: label(self, id), req, work: Work::Answer, done: rx, started: crate::now_ms(), steps: None };
+        let job = ControlJob { label: label(self, id), req, work: Work::Answer { source }, done: rx, started: crate::now_ms(), steps: None };
         match within_wait(self, &job.done) {
             Some(reply) => self.answered(job, reply),
             None => self.control_answering.push(job),
@@ -470,7 +515,16 @@ impl SolveApp {
         if job.req.refuse_cancelled_chat() {
             return;
         }
-        let reply = reply.unwrap_or_else(|| json!({"ok": false, "error": format!("`{}` ended without a reply", job.label)}));
+        if let Err(error) = crate::execution_guard::check_application(self, &job.req) {
+            let _ = job.req.reply.send(crate::execution_guard::refusal_json(&error));
+            return;
+        }
+        let mut reply = reply.unwrap_or_else(|| json!({"ok": false, "error": format!("`{}` ended without a reply", job.label)}));
+        if reply["ok"] == true
+            && let Work::Answer { source: Some(source) } = &job.work
+        {
+            reply["documentStamp"] = crate::execution_guard::stamp_json(source);
+        }
         let export = executed(&job.req.params).and_then(|(command, _)| spec_id(command)).is_some_and(|id| ANSWERED_ON_A_COPY.contains(&id));
         if reply["ok"] == true && export {
             let language = crate::i18n::Locale::for_language(&self.preferences.language);
@@ -498,9 +552,14 @@ impl SolveApp {
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-        let Some(job) = &self.control_job else { return };
+        let Some(job) = self.control_job.take() else { return };
         if job.req.refuse_cancelled_chat() {
-            self.control_job = None;
+            return;
+        }
+        // A guarded request never waits for a new base or uses legacy Arc ancestry to decide
+        // its target. In particular, leaving and returning cannot revive its original token.
+        if let Err(error) = crate::execution_guard::check_application(self, &job.req) {
+            let _ = job.req.reply.send(crate::execution_guard::refusal_json(&error));
             return;
         }
         // The design it computes for has left the window (closed, another tab, a file opened):
@@ -508,16 +567,14 @@ impl SolveApp {
         // are for the design shown, don't wait for it.
         let left = matches!(&job.work, Work::Ahead { doc, .. } if !shows_design(&self.session, doc));
         if left {
-            if let Some(job) = self.control_job.take() {
-                let _ = job.req.reply.send(design_replaced(&job.label));
-            }
+            let _ = job.req.reply.send(design_replaced(&job.label));
             return;
         }
         if job.poll().is_none() {
+            self.control_job = Some(job);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         }
-        let Some(job) = self.control_job.take() else { return };
         // A file opening meanwhile: the request waits for it as any design change does.
         if self.file_load.busy() || self.file_picker.is_some() {
             self.control_held.push_front(job.req);
@@ -530,7 +587,7 @@ impl SolveApp {
             let _ = job.req.reply.send(design_replaced(&job.label));
             return;
         }
-        if (!same || s.revision != revision) && tries < MAX_TRIES {
+        if job.req.guarded.is_none() && (!same || s.revision != revision) && tries < MAX_TRIES {
             // A person's edit went first: computed again for the design as it is now.
             if let Some((work, rx, steps)) = begin_ahead(self, &job.req, commands, tries + 1) {
                 self.control_job = Some(ControlJob { work, done: rx, steps: Some(steps), ..job });
@@ -538,7 +595,93 @@ impl SolveApp {
             }
         }
         self.big_operation |= crate::now_ms() - job.started >= crate::recovery_ui::BIG_OPERATION_MS;
-        self.run_with_kept(Some(kept), |app| app.run_control(ctx, job.req));
+        self.finish_control_ahead(ctx, job.req, kept);
         ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// The candidate store is process-global; tests that replace it take this lock so parallel
+    /// libtest threads cannot swap it under one another. A poisoned lock still runs the test.
+    pub(crate) static CANDIDATE_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A real copy reading, already computed, held just before the owner's answer path.
+    pub(crate) fn completed_read(app: &mut SolveApp, req: ControlRequest, id: &'static str, params: Value) -> ControlJob {
+        let source = req.guarded.as_ref().map(|_| app.session.document_stamp());
+        let mut copy = app.session.scratch();
+        let reply = match copy.execute(id, &params) {
+            Ok(v) => json!({"ok":true,"result":v}),
+            Err(e) => json!({"ok":false,"error":e.to_string()}),
+        };
+        let (tx, done) = std::sync::mpsc::channel();
+        tx.send(Some(reply)).unwrap();
+        ControlJob { req, work: Work::Answer { source }, done, started: crate::now_ms(), label: id.into(), steps: None }
+    }
+
+    pub(crate) fn answer_completed(app: &mut SolveApp, job: ControlJob) {
+        let reply = within_wait(app, &job.done).expect("a pre-completed receiver takes the immediate branch");
+        app.answered(job, reply);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::scenario::Harness;
+
+    /// #11: a snapshot capture is answered on a copy off the window thread even when the general
+    /// agent-off-thread preference is off, and the copy keeps the caller's design path so a
+    /// relative design link resolves from the design's folder.
+    #[test]
+    fn snapshot_capture_answers_on_a_copy_with_the_callers_path() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.apply_off_thread = Some(std::time::Duration::ZERO);
+        h.app.preferences.agent_off_thread = false;
+        let dir = h.dir.clone();
+        let part_path = dir.join("Part.sc");
+        let mut part = solidcraft_engine::Session::default();
+        part.execute("solid.box", &json!({"length": 20, "width": 10, "height": 5})).unwrap();
+        part.execute("file.save", &json!({"path": part_path})).unwrap();
+        let assembly_path = dir.join("Assembly.sc");
+        let mut assembly = solidcraft_engine::Session::default();
+        let inserted = assembly.execute("component.insert_design", &json!({"path": part_path})).unwrap();
+        assembly.execute("file.save", &json!({"path": assembly_path})).unwrap();
+        let component = inserted["component"].as_u64().unwrap();
+        assembly.path = Some(assembly_path.to_string_lossy().into_owned());
+        assembly.doc_mut().links.get_mut(&component).unwrap().path = "Part.sc".into();
+        h.app.session = assembly;
+
+        let store = dir.join("candidates");
+        solidcraft_engine::cmd::set_candidate_store(Some(store.clone()));
+        let stamp = h.app.session.document_stamp();
+        let (req, rx) = crate::control::ControlRequest::new(
+            "engine.execute",
+            json!({"command":"document.snapshot.capture","params":{},
+                "expectedDocument":{"documentId":stamp.document_id,"revision":stamp.revision.to_string()}}),
+        );
+        let gate = crate::history_off_thread_tests::guarded_workers::gate();
+        assert!(h.app.offload_control(&h.ctx, req).is_none(), "the capture runs off the window thread");
+        gate.computed();
+        gate.release();
+        h.app.poll_control_jobs(&h.ctx);
+        let reply = rx.try_recv().expect("the off-frame capture answered");
+        assert_eq!(reply["ok"], true, "{reply}");
+        let candidate = &reply["result"]["candidate"];
+        let id = candidate["candidateId"].as_str().unwrap();
+        let verified = solidcraft_engine::io::candidate::lookup(&store, id).unwrap();
+        let design = verified.files.iter().find(|file| file.path == "design.sc").unwrap();
+        let captured = solidcraft_engine::io::read_design(&design.bytes).unwrap();
+        assert_eq!(
+            captured.links.get(&component).map(|link| link.path.as_str()),
+            Some(format!("inputs/design-link-{component}.sc").as_str()),
+            "the captured link names the frozen input, read with the caller's design path"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

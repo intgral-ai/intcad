@@ -21,6 +21,8 @@
       <include path="solidcraft.exe" min-matches="0" />
       <include path="solidcraft-cli.exe" min-matches="0" />
       <include path="solvecraft-cli.exe" min-matches="0" />
+      <!-- The pinned Node nested in the application-relative Mastra runtime is executable code. -->
+      <include path="mastra/node.exe" min-matches="0" />
       <for-each>
         <authenticode-sign />
       </for-each>

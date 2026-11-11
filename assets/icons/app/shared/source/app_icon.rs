@@ -1,53 +1,50 @@
-//! Original SolidCraft mark, shared by desktop, packaging and CLI: the borderless mark, five
-//! faces with transparent gaps between them, drawn from the macOS icon's
-//! `macos/source/SolidCraft.icon/Assets/03-solid-blue-cutout.svg`.
+//! open-skyfall application mark: Intgral's V22 compact-integrated I on a light card.
+//! Shared by desktop, packaging and CLI. The source art is
+//! `assets/branding/logo/open-skyfall-mark.svg`; these are its seven filled faces.
 type P = (f32, f32);
 
-/// One face in that SVG's units: its outline, and its linear gradient from one point and
-/// colour to another.
+/// One filled face in the source SVG's units.
 struct Face {
     outline: &'static [P],
-    from: (P, [u8; 3]),
-    to: (P, [u8; 3]),
+    colour: [u8; 3],
 }
 
-const FACES: [Face; 5] = [
-    // Inner side of the upper step.
+const INK: [u8; 3] = [30, 40, 44];
+
+const FACES: [Face; 7] = [
+    Face { outline: &[(547.1514, 436.0), (573.1514, 436.0), (581.6514, 431.0925), (555.6514, 431.0925)], colour: INK },
+    Face { outline: &[(617.1514, 436.0), (643.1514, 436.0), (651.6514, 431.0925), (625.6514, 431.0925)], colour: INK },
+    Face { outline: &[(643.1514, 436.0), (643.1514, 467.0), (651.6514, 462.0925), (651.6514, 431.0925)], colour: INK },
+    Face { outline: &[(617.1514, 258.4075), (617.1514, 436.0), (625.6514, 431.0925), (625.6514, 253.5)], colour: INK },
+    Face { outline: &[(547.1514, 227.4075), (643.1514, 227.4075), (651.6514, 222.5), (555.6514, 222.5)], colour: INK },
+    Face { outline: &[(643.1514, 227.4075), (643.1514, 258.4075), (651.6514, 253.5), (651.6514, 222.5)], colour: INK },
     Face {
-        outline: &[(547.883, 282.66), (709.797, 188.211), (709.797, 375.985)],
-        from: ((619.14, 179.734), [29, 99, 198]),
-        to: ((694.687, 396.761), [21, 73, 158]),
-    },
-    // Top of the lower step.
-    Face {
-        outline: &[(727.797, 593.626), (727.797, 407.136), (889.571, 500.381)],
-        from: ((619.14, 413.244), [69, 159, 255]),
-        to: ((790.839, 605.547), [35, 121, 231]),
-    },
-    // Right face, with the recess.
-    Face {
-        outline: &[(530.0, 521.17), (691.797, 427.912), (691.797, 655.928), (907.594, 531.545), (907.594, 740.159), (530.0, 957.8)],
-        from: ((632.876, 399.508), [27, 102, 207]),
-        to: ((783.971, 968.175), [18, 69, 150]),
-    },
-    // Left face, stepped.
-    Face {
-        outline: &[(116.406, 510.769), (116.406, 303.529), (494.0, 521.17), (494.0, 957.8), (314.203, 854.167), (314.203, 624.777)],
-        from: ((207.063, 303.357), [37, 141, 245]),
-        to: ((426.837, 968.175), [20, 97, 218]),
-    },
-    // Top of the extruded profile.
-    Face {
-        outline: &[(134.374, 272.334), (512.0, 53.364), (691.828, 157.015), (476.117, 282.846), (673.752, 396.761), (512.0, 489.993)],
-        from: ((385.63, 53.364), [81, 173, 255]),
-        to: ((522.989, 510.769), [43, 131, 241]),
+        outline: &[
+            (547.1514, 227.4075),
+            (643.1514, 227.4075),
+            (643.1514, 258.4075),
+            (617.1514, 258.4075),
+            (617.1514, 436.0),
+            (643.1514, 436.0),
+            (643.1514, 467.0),
+            (547.1514, 467.0),
+            (547.1514, 436.0),
+            (573.1514, 436.0),
+            (573.1514, 258.4075),
+            (547.1514, 258.4075),
+        ],
+        colour: INK,
     },
 ];
 
-/// The mark's extent in SVG units: left, top, width, height.
-const BOUNDS: (f32, f32, f32, f32) = (116.406, 53.364, 791.188, 904.436);
+/// The mark's drawing box in SVG units: width and height.
+const MARK: (f32, f32) = (104.5, 244.5);
+/// The mark's centre in SVG units.
+const CENTRE: (f32, f32) = (599.4, 344.75);
+/// The light card behind the mark.
+const CARD: [u8; 3] = [252, 252, 252];
 
-/// This block is the icon image data
+/// This block is the icon image data.
 pub fn rgba(size: usize) -> Result<Vec<u8>, String> {
     if !(1..=2048).contains(&size) {
         return Err("icon size must be 1..=2048".into());
@@ -56,15 +53,37 @@ pub fn rgba(size: usize) -> Result<Vec<u8>, String> {
     let ss = if size > 512 { 2 } else { 4 };
     let n = size * ss;
     let mut buf = vec![[0u8; 4]; n * n];
-    let (bx, by, bw, bh) = BOUNDS;
-    let s = n as f32 / bh; // SVG units -> samples: the mark fills the height
-    let (ox, oy) = ((n as f32 - bw * s) / 2.0 - bx * s, -by * s); // and is centred sideways
-    // Fill each face's outline (even-odd spans per row, so concave outlines work) with its gradient.
+
+    // A rounded light card, so the dark mark stays visible on light and dark desktops.
+    let radius = n as f32 * 0.22;
+    for y in 0..n {
+        for x in 0..n {
+            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let dx = if cx < radius {
+                radius - cx
+            } else if cx > n as f32 - radius {
+                cx - (n as f32 - radius)
+            } else {
+                0.0
+            };
+            let dy = if cy < radius {
+                radius - cy
+            } else if cy > n as f32 - radius {
+                cy - (n as f32 - radius)
+            } else {
+                0.0
+            };
+            if dx * dx + dy * dy <= radius * radius {
+                buf[y * n + x] = [CARD[0], CARD[1], CARD[2], 255];
+            }
+        }
+    }
+
+    // Fit the mark to 70% of the card's height and centre it.
+    let s = n as f32 * 0.70 / MARK.1;
+    let (ox, oy) = (n as f32 / 2.0 - CENTRE.0 * s, n as f32 / 2.0 - CENTRE.1 * s);
     for face in &FACES {
         let v: Vec<P> = face.outline.iter().map(|p| (ox + p.0 * s, oy + p.1 * s)).collect();
-        let (((fx, fy), c0), ((tx, ty), c1)) = (face.from, face.to);
-        let (gx, gy) = (tx - fx, ty - fy);
-        let g2 = gx * gx + gy * gy;
         let (top, bottom) = v.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
         let mut xs = Vec::with_capacity(v.len());
         for y in ((top - 0.5).ceil() as i32).max(0)..=((bottom - 0.5).floor() as i32).min(n as i32 - 1) {
@@ -79,15 +98,12 @@ pub fn rgba(size: usize) -> Result<Vec<u8>, String> {
             xs.sort_by(f32::total_cmp);
             for &[from, to] in xs.as_chunks::<2>().0 {
                 for x in ((from - 0.5).ceil() as i32).max(0)..=((to - 0.5).floor() as i32).min(n as i32 - 1) {
-                    // The sample's place along the gradient, in SVG units.
-                    let (px, py) = ((x as f32 + 0.5 - ox) / s, (cy - oy) / s);
-                    let t = (((px - fx) * gx + (py - fy) * gy) / g2).clamp(0.0, 1.0);
-                    let mix = |k: usize| (f32::from(c0[k]) + (f32::from(c1[k]) - f32::from(c0[k])) * t).round() as u8;
-                    buf[y as usize * n + x as usize] = [mix(0), mix(1), mix(2), 255];
+                    buf[y as usize * n + x as usize] = [face.colour[0], face.colour[1], face.colour[2], 255];
                 }
             }
         }
     }
+
     // Average each ss x ss block down to one pixel (straight alpha = covered share).
     let mut rgba = Vec::with_capacity(size * size * 4);
     for y in 0..size {
@@ -118,30 +134,30 @@ pub fn rgba(size: usize) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn shared_mark_has_transparency_and_original_colors_at_window_and_package_sizes() {
+    fn mark_has_a_light_card_and_a_dark_isometric_i() {
         for size in [16, 24, 32, 48, 64, 128, 256] {
             let pixels = super::rgba(size).expect("valid size");
             assert_eq!(pixels.len(), size * size * 4);
-            assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 0));
-            assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 255 && p[2] > p[0]));
+            let px = pixels.as_chunks::<4>().0;
+            assert!(px.iter().any(|p| p[3] == 0), "the rounded corners are transparent");
+            assert!(px.iter().any(|p| p[3] == 255 && p[0] > 240), "the card is light");
+            assert!(px.iter().any(|p| p[3] == 255 && p[0] < 80), "the mark is dark");
         }
         assert!(super::rgba(0).is_err());
         assert!(super::rgba(2049).is_err());
     }
 
-    /// Borderless: no white edge lines, and the gaps between faces are see-through. At 256 px
-    /// the gap between the left and right faces (SVG x 494..530) is transparent on the row
-    /// through the middle of the mark, and no opaque pixel is white.
     #[test]
-    fn shared_mark_is_borderless() {
+    fn mark_is_centred_and_clear_of_the_card_edge() {
         let size = 256;
         let pixels = super::rgba(size).expect("valid size");
         let px = |x: usize, y: usize| pixels.as_chunks::<4>().0[y * size + x];
-        let s = size as f32 / 904.436;
-        let gap_x = ((size as f32 - 791.188 * s) / 2.0 + (512.0 - 116.406) * s) as usize;
-        let row = ((750.0 - 53.364) * s) as usize;
-        assert_eq!(px(gap_x, row)[3], 0, "the seam between the left and right faces is a gap");
-        assert!(px(gap_x - 8, row)[3] == 255 && px(gap_x + 8, row)[3] == 255, "faces on both sides of the gap");
-        assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0 || p[0] < 200), "no white edges");
+        // The card fills the centre, and the transparent corners leave the rounded silhouette.
+        assert_eq!(px(size / 2, size / 2)[3], 255);
+        assert_eq!(px(0, 0)[3], 0);
+        assert_eq!(px(size - 1, size - 1)[3], 0);
+        // A dark mark sits between the light card edges at the centre row.
+        assert!(px(size / 2, size / 2)[0] < 80);
+        assert!(px(size / 2, 8)[0] > 240 || px(size / 2, 8)[3] == 0);
     }
 }

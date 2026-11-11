@@ -1,4 +1,9 @@
-# Compatibility with the SolveCraft name
+# Compatibility with the SolveCraft and SolidCraft names
+
+This repository displays the product as **open-skyfall**, an Intgral fork. Internal identifiers
+remain `solidcraft` so designs, scripts, settings and packages keep working: crate and binary
+names, `.sc` and the `solidcraft/N` tag, `SOLIDCRAFT_*` variables, settings folders, app IDs and
+the MCP server. The upstream project keeps the SolidCraft name and logo.
 
 SolidCraft was first called SolveCraft, and builds up to 0.4 kept that name in their
 identifiers after the displayed name changed. 0.5.0 renamed the binaries, release assets and

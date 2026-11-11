@@ -45,7 +45,7 @@ pub struct Provenance {
     pub kind: &'static str,
 }
 pub const ORIGINAL: Provenance = Provenance {
-    author: "SolidCraft contributors",
+    author: "Intgral",
     license: "MIT OR Apache-2.0",
     source: "assets/appearances/starter_pack.rs",
     kind: "original illustrative optical authoring; not measured material data",

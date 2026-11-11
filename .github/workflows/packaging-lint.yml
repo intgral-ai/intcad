@@ -5,7 +5,7 @@ name: Packaging lint
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths: [".github/workflows/**", "packaging/**", "assets/**"]
   pull_request:
     paths: [".github/workflows/**", "packaging/**", "assets/platforms/**"]
@@ -20,11 +20,13 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ACTIONLINT_VERSION: 1.7.12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install tools
         run: |
           sudo apt-get update
@@ -35,18 +37,25 @@ jobs:
         run: '"$RUNNER_TEMP/actionlint" -color'
       - name: shellcheck
         run: shellcheck packaging/*.sh packaging/*/*.sh packaging/linux/AppRun
-      - name: Nightly release selection regression
+      - name: Historical nightly helper and fork publication quarantine regression
         run: python3 packaging/tests/nightly_test.py
+      - name: Source-bound release evidence regression
+        run: python3 -I scripts/ci/test_gate.py
       - name: Windows executable icon validation regression
         run: python3 packaging/tests/windows_icon_test.py
       - name: AppImage CLI wrapper regression
         run: python3 packaging/tests/apprun_test.py
       - name: Flatpak desktop smoke validation regression
         run: python3 packaging/tests/flatpak_test.py
+      - name: Mastra packaged-runtime gate regression
+        run: python3 packaging/tests/mastra_runtime_test.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Mastra source-build revision regression
+        run: packaging/tests/mastra_revision.sh
       - name: PowerShell
         shell: pwsh
         run: |
-          foreach ($f in Get-ChildItem packaging/windows/*.ps1) {
+          foreach ($f in Get-ChildItem -Path packaging -Recurse -Filter *.ps1) {
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
             if ($errors) { $errors | ForEach-Object { Write-Output "::error file=$($f.Name)::$_" }; exit 1 }

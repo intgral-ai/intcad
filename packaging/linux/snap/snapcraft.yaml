@@ -8,10 +8,10 @@
 # at runtime: the gnome extension supplies the desktop libraries and the GPU userspace (mesa,
 # through the gpu-2404 content interface) for the wgpu viewport.
 name: solidcraft
-title: SolidCraft
+title: open-skyfall
 summary: Open-source parametric 3D CAD
 description: |
-  SolidCraft is an open-source parametric 3D CAD application written in Rust. Sketch on a
+  open-skyfall is an open-source parametric 3D CAD application written in Rust. Sketch on a
   plane, constrain and dimension the sketch, turn profiles into solids on a feature timeline,
   and change a parameter to watch the timeline rebuild.
 
@@ -24,10 +24,10 @@ description: |
   The command-line tool is `solidcraft.cli` (for example `solidcraft.cli mcp`).
 adopt-info: solidcraft
 license: MIT OR Apache-2.0
-contact: https://github.com/bherbruck/solidcraft/issues
-website: https://docs.solidcraft.io/
-source-code: https://github.com/bherbruck/solidcraft
-issues: https://github.com/bherbruck/solidcraft/issues
+contact: https://github.com/intgral-ai/open-skyfall-desktop/issues
+website: https://github.com/intgral-ai/open-skyfall-desktop
+source-code: https://github.com/intgral-ai/open-skyfall-desktop
+issues: https://github.com/intgral-ai/open-skyfall-desktop/issues
 icon: stage/share/icons/hicolor/512x512/apps/io.tangencylabs.solidcraft.png
 base: core24
 grade: stable
@@ -71,6 +71,7 @@ parts:
     organize:
       bin/: usr/bin/
       share/: usr/share/
+      lib/: usr/lib/
     override-pull: |
       craftctl default
       craftctl set version="$(cat "$CRAFT_PROJECT_DIR/version.txt")"

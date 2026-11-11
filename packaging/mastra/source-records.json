@@ -1,0 +1,199 @@
+{
+  "schemaVersion": "1.0",
+  "authorizations": [
+    {
+      "id": "vector-studio-owner-declaration",
+      "actor": "Product owner representing intgral-ai",
+      "declaration": "有权代表并授权",
+      "proposition": "The owner has the right to represent intgral-ai and authorizes adapting and redistributing in the PUBLIC intgral-ai/open-skyfall-desktop repository, under MIT OR Apache-2.0, intgral-ai-owned Vector Studio orchestration/agent-loop/model-runtime modules selected in contract section 1.5 at acb5048120b53ae1b4502724b70d1283e8c9daf4. This excludes contract-excluded account/database/server-bootstrap/script-execution code. Third-party code keeps its applicable licenses and requires independent audit; this does not attest that every file is original or authorize arbitrary source.",
+      "sourceRepository": "https://github.com/intgral-ai/intgral-vector-studio",
+      "sourceRevision": "acb5048120b53ae1b4502724b70d1283e8c9daf4",
+      "eligibleRoles": ["agent-loop", "model-runtime", "orchestration"],
+      "excludedRoles": ["account", "database", "script-execution", "server-bootstrap"],
+      "licenseGrant": "MIT OR Apache-2.0",
+      "evidence": "intgral-ai is the rights holder and authorizing entity. It authorized public distribution of the adapted Vector Studio source files on 2026-11-07, under this per-file rights record and not a repository-wide license: no root license was identified in the private source at acb5048120b53ae1b4502724b70d1283e8c9daf4. Imported files retain their applicable notices; each file's license, notices and transitive dependencies are recorded by the per-file audit, with transitive dependencies inventoried when #7 supplies the artifact. This authorization covers neither npm/Node packages nor full runtime coverage. No public permalink or named personal signatory was supplied."
+    }
+  ],
+  "records": [
+    {
+      "id": "agent-loop",
+      "authorizationId": "vector-studio-owner-declaration",
+      "role": "agent-loop",
+      "sourceRepository": "https://github.com/intgral-ai/intgral-vector-studio",
+      "sourceRevision": "acb5048120b53ae1b4502724b70d1283e8c9daf4",
+      "sourcePath": "apps/server/src/mastra/agent-loop/agent-loop.ts",
+      "sourceDigest": "sha256:38293cdd5113cc3a7f219edcf3a45b7a8157a492fbf8404e312663df5eeb4757",
+      "destinationPath": null,
+      "destinationDigest": null,
+      "adaptation": "Adapt the ordered tool-turn loop, decision state, budgets, cancellation, continuity gating and unknown-outcome handling; replace the product PostgreSQL/admission composition and candidate adoption with native ports. No destination exists yet.",
+      "rightsHolder": "intgral-ai",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "requiredNotices": [],
+      "dependencyIds": [],
+      "reviewer": "read-only audit subagent, 2026-11-07",
+      "verdict": "needs-human",
+      "reason": "Eligible agent-loop core, but the file embeds product PostgreSQL/admission composition, raw SQL and candidate adoption; adapting it requires replacing those parts. The authorization lacks a named human signatory and no root license exists, so the record cannot be verified yet.",
+      "thirdPartyReview": {
+        "status": "unverified",
+        "evidence": [
+          "No direct third-party import; relative and @vector-studio/ai-runtime imports only.",
+          "Transitive @mastra/core@1.78.0 is Apache-2.0; its LICENSE.md excludes ee/ directories.",
+          "Transitive zod@4.6.7 is MIT."
+        ]
+      },
+      "verification": {
+        "status": "unverified",
+        "evidence": [
+          "Digest and size reproduced from exported bytes and the pinned Git object.",
+          "No SPDX/copyright header found; no root license exists at the pinned revision.",
+          "No ee/ import found; account/database coupling remains and is not an import candidate as-is.",
+          "Technical audit dated 2026-11-07; named human sign-off not supplied."
+        ]
+      }
+    },
+    {
+      "id": "cad-generation",
+      "authorizationId": "vector-studio-owner-declaration",
+      "role": "orchestration",
+      "sourceRepository": "https://github.com/intgral-ai/intgral-vector-studio",
+      "sourceRevision": "acb5048120b53ae1b4502724b70d1283e8c9daf4",
+      "sourcePath": "packages/ai-runtime/src/workflows/cad-generation.ts",
+      "sourceDigest": "sha256:8af464230b3cac444589f8739e46f829c6b64d0834341ad96eb420018c297830",
+      "destinationPath": null,
+      "destinationDigest": null,
+      "adaptation": "Not an import candidate. Only the workflow/injected-executor separation may inform a native implementation; SCRIPT inputs, script hashes and anatomy-smlibpy/remote executor are excluded.",
+      "rightsHolder": "intgral-ai",
+      "licenseExpression": null,
+      "requiredNotices": [],
+      "dependencyIds": ["mastra-core", "zod"],
+      "reviewer": "read-only audit subagent, 2026-11-07",
+      "verdict": "rejected",
+      "reason": "Effective role is script-execution, an excluded role: SCRIPT-only prepared-source wrapper importing anatomy-smlibpy and a remote CadExecutionPort. Contract 1.2 and 1.5 allow only the workflow/executor separation as a reference, not source import.",
+      "thirdPartyReview": {
+        "status": "unverified",
+        "evidence": [
+          "@mastra/core@1.78.0 is Apache-2.0; its LICENSE.md excludes ee/ directories.",
+          "anatomy-smlibpy declares upstream MIT provenance; retain its notice only if that skill is retained.",
+          "zod@4.6.7 is MIT."
+        ]
+      },
+      "verification": {
+        "status": "unverified",
+        "evidence": [
+          "Excluded role: source accepts only SCRIPT input and imports anatomy-smlibpy plus CadExecutionPort.",
+          "No SPDX/copyright header found; no root license exists at the pinned revision.",
+          "No ee/ import found.",
+          "Pinned digest and size reproduced; record is rejected, not an import candidate."
+        ]
+      }
+    },
+    {
+      "id": "model-runtime",
+      "authorizationId": "vector-studio-owner-declaration",
+      "role": "model-runtime",
+      "sourceRepository": "https://github.com/intgral-ai/intgral-vector-studio",
+      "sourceRevision": "acb5048120b53ae1b4502724b70d1283e8c9daf4",
+      "sourcePath": "packages/ai-runtime/src/models/model-runtime.ts",
+      "sourceDigest": "sha256:338f8e98bd2d8f014047271063d7854d5b54f66d73c8649a9103f7cca0aa7823",
+      "destinationPath": null,
+      "destinationDigest": null,
+      "adaptation": "Provide a desktop Agent factory at this model seam through HostAi; keep compatible Agent/tool-call behavior; replace provider routing, admission and trace storage with desktop scope/capability/budget handling.",
+      "rightsHolder": "intgral-ai",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "requiredNotices": [],
+      "dependencyIds": ["mastra-core", "zod"],
+      "reviewer": "read-only audit subagent, 2026-11-07",
+      "verdict": "needs-human",
+      "reason": "All technical checks pass, but no named human sign-off exists and no root license was identified at the pinned revision. The record stays unimported until that signature and #7's artifact-level Mastra ee/ exclusion are supplied.",
+      "thirdPartyReview": {
+        "status": "unverified",
+        "evidence": [
+          "@mastra/core@1.78.0 is Apache-2.0; its LICENSE.md excludes ee/ directories.",
+          "Exact shipped artifact and ee/ exclusion remain #7 inventory work.",
+          "No non-permissive direct dependency found; zod@4.6.7 is MIT."
+        ]
+      },
+      "verification": {
+        "status": "unverified",
+        "evidence": [
+          "Account/database/bootstrap and script-executor scans found no dependency.",
+          "Digest and size reproduced from exported bytes and the pinned Git object.",
+          "No SPDX/copyright header found; no root license exists at the pinned revision.",
+          "Technical checks pass; named human sign-off not supplied."
+        ]
+      }
+    },
+    {
+      "id": "product-generation-runtime",
+      "authorizationId": "vector-studio-owner-declaration",
+      "role": "orchestration",
+      "sourceRepository": "https://github.com/intgral-ai/intgral-vector-studio",
+      "sourceRevision": "acb5048120b53ae1b4502724b70d1283e8c9daf4",
+      "sourcePath": "apps/server/src/mastra/services/product-generation-runtime.ts",
+      "sourceDigest": "sha256:67bf03fe44c87b6f939c755c26cf548225ee8af578279dfa97d651db5e00a5b7",
+      "destinationPath": null,
+      "destinationDigest": null,
+      "adaptation": "Not an import candidate. Only the session binding/dispatch/terminal-handling pattern may inform desktop ports; PostgreSQL, account/quota and product persistence are excluded.",
+      "rightsHolder": "intgral-ai",
+      "licenseExpression": null,
+      "requiredNotices": [],
+      "dependencyIds": ["mastra-core", "node-crypto"],
+      "reviewer": "read-only audit subagent, 2026-11-07",
+      "verdict": "rejected",
+      "reason": "Effective role is database/account/product-server persistence, all excluded. Contract 1.5 requires replacing PostgreSQL, account/quota services and product routes/publication and forbids importing the product-server bootstrap.",
+      "thirdPartyReview": {
+        "status": "unverified",
+        "evidence": [
+          "@mastra/core@1.78.0 is Apache-2.0; its LICENSE.md excludes ee/ directories.",
+          "No non-permissive direct third-party dependency found.",
+          "node:crypto is a Node.js built-in under the Node.js MIT distribution notice."
+        ]
+      },
+      "verification": {
+        "status": "unverified",
+        "evidence": [
+          "Excluded role: PostgreSQL trace store, app.* SQL, execution claims, owner identity and product-run lifecycle.",
+          "No SPDX/copyright header found; no root license exists at the pinned revision.",
+          "No ee/ import found.",
+          "Pinned digest and size reproduced; record is rejected, not an import candidate."
+        ]
+      }
+    },
+    {
+      "id": "query-proposal",
+      "authorizationId": "vector-studio-owner-declaration",
+      "role": "orchestration",
+      "sourceRepository": "https://github.com/intgral-ai/intgral-vector-studio",
+      "sourceRevision": "acb5048120b53ae1b4502724b70d1283e8c9daf4",
+      "sourcePath": "apps/server/src/mastra/workflows/query-proposal.ts",
+      "sourceDigest": "sha256:56fb644bd1be14a64b27e3f7bf963cd00458326f2cdc54c5eaace4990e3f3d5e",
+      "destinationPath": null,
+      "destinationDigest": null,
+      "adaptation": "Keep staged authoring, explicit decisions and bounded model/tool rounds; replace smlibpy prompts/validation with native command guidance and ConnectedStudioService database/account seams with host ports.",
+      "rightsHolder": "intgral-ai",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "requiredNotices": [],
+      "dependencyIds": ["mastra-core", "zod"],
+      "reviewer": "read-only audit subagent, 2026-11-07",
+      "verdict": "needs-human",
+      "reason": "Selected orchestration module, but it embeds smlibpy prompts and a product database/account authoring port; adapting it requires native command guidance and host ports. The authorization lacks a named human signatory.",
+      "thirdPartyReview": {
+        "status": "unverified",
+        "evidence": [
+          "@mastra/core@1.78.0 is Apache-2.0; its LICENSE.md excludes ee/ directories.",
+          "No non-permissive direct dependency found; zod@4.6.7 is MIT.",
+          "anatomy-smlibpy declares upstream MIT provenance; retain its notice only if that skill is retained."
+        ]
+      },
+      "verification": {
+        "status": "unverified",
+        "evidence": [
+          "No SPDX/copyright header found; no root license exists at the pinned revision.",
+          "No ee/ import found.",
+          "Pinned digest and size reproduced.",
+          "Script prompts and ConnectedStudioService database/account seams remain, so the file needs adaptation."
+        ]
+      }
+    }
+  ]
+}
