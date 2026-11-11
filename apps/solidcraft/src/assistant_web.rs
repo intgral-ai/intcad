@@ -591,12 +591,22 @@ impl AssistantWeb {
             use wry::WebViewBuilderExtWindows;
             builder.with_browser_accelerator_keys(false)
         };
+        // On Windows the view is made hidden and shown once it is whole. Where it cannot be made
+        // (no WebView2 runtime), wry leaves behind the window it began with, and a shown one lay
+        // over the built-in conversation as a blank box. Nor does a view just made take the
+        // keyboard there: a click on it does.
+        let builder = if cfg!(target_os = "windows") { builder.with_visible(false).with_focused(false) } else { builder };
         // The builder panics on a window it cannot take; the app goes on without the web view.
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.build_as_child(frame)));
         match built {
             Ok(Ok(view)) => {
                 if let Err(error) = view.zoom(page_zoom(&view, at)) {
                     note(&format!("could not be zoomed: {error}"));
+                }
+                if cfg!(target_os = "windows")
+                    && let Err(error) = view.set_visible(true)
+                {
+                    note(&format!("could not be shown: {error}"));
                 }
                 #[cfg(target_os = "linux")]
                 {
