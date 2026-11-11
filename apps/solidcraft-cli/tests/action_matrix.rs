@@ -946,7 +946,7 @@ fn run_design(design: &str, out: &Path, sample: u64, slice: Option<(usize, usize
         // Which action was it? The child enumerates them; ask it by running from there with a
         // marker: simplest is to record the index and let the next run name it.
         extra.push(json!({"design": design, "index": i, "edit": in_edit, "kind": if timed_out { "timeout" } else { "crash" },
-                          "message": if timed_out { format!("no result after {} s", ACTION_TIMEOUT.as_secs()) } else { format!("the process ended: {status:?}") }}));
+                          "message": if timed_out { format!("no result after {} s", action_timeout().as_secs()) } else { format!("the process ended: {status:?}") }}));
         from = i as usize + 1;
     }
     // Name the actions that hung or crashed (their index in the design's list).
