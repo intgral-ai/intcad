@@ -50,6 +50,11 @@ pub(crate) fn frame(app: &SolveApp, frame: egui::Frame) -> egui::Frame {
 
 /// How wide the strip at the floating panel's inner edge is that the web view leaves free: the
 /// panel is made wider or narrower by dragging it, and a native view would take the drag.
+/// The colour behind the page where the host's view cannot be seen through (an X11 child
+/// window): the page's own surface once the page has said it, the panel's fill until then.
+pub fn backing(app: &SolveApp, ctx: &egui::Context) -> egui::Color32 {
+    app.agent_chat.web_canvas.unwrap_or_else(|| ctx.global_style().visuals.panel_fill)
+}
 pub(crate) fn rail() -> f32 {
     crate::theme::Tokens::get().space_8
 }
