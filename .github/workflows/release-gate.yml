@@ -39,10 +39,12 @@ jobs:
   packages:
     if: github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main'
     uses: ./.github/workflows/release.yml
+    with:
+      beta_three_platforms: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.') }}
 
   beta-gate:
     name: Beta promotion gate
-    needs: [ci, kernel-rig, packages]
+    needs: [ci, kernel-rig]
     # A Beta promotion is a same-repository release/vX.Y.Z-beta.N PR to main.
     # The stable release path never takes this branch.
     if: >-
@@ -159,7 +161,7 @@ jobs:
                and head.startswith('release/v') and '-beta.' in head)
               or (os.environ.get('EVENT_NAME') == 'merge_group' and os.environ.get('GROUP_BASE') == 'refs/heads/main'
                   and merge_head.startswith('refs/heads/release/v') and '-beta.' in merge_head))
-          required = ('kernel-rig', 'packages', 'beta-gate') if beta else ('ci', 'kernel-rig', 'packages')
+          required = ('kernel-rig', 'beta-gate') if beta else ('ci', 'kernel-rig', 'packages')
           for job in required:
               if needs.get(job, {}).get('result') != 'success':
                   problems.append(job + ': real job result is not success: ' + str(needs.get(job, {}).get('result', 'missing')))
@@ -215,6 +217,14 @@ jobs:
               **{f'release-windows-{arch}': target for arch, target in (
                   ('x64', 'x86_64-pc-windows-msvc'), ('x86', 'i686-pc-windows-msvc'), ('arm64', 'aarch64-pc-windows-msvc'))},
               'release-web': 'wasm32-unknown-unknown'}
+          if beta:
+              # A Beta is Linux x86_64, macOS universal and Windows x64. The stable
+              # gate above keeps every package format and architecture.
+              expected = {
+                  'release-linux-x86_64': 'x86_64-unknown-linux-gnu',
+                  'release-macos': 'universal-apple-darwin',
+                  'release-windows-x64': 'x86_64-pc-windows-msvc',
+              }
           descriptors = {}
           for path in sorted(Path('package-evidence').rglob('build.json')):
               try:

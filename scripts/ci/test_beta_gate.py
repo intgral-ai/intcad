@@ -190,6 +190,9 @@ class Jobs(unittest.TestCase):
         jobs.append(self.job("ci / ci", "failure"))
         return jobs
 
+    def test_beta_does_not_require_the_full_package_format_aggregate(self):
+        self.assertNotIn("packages / All nonpublishing package builds", beta_gate.REQUIRED_JOBS)
+
     def test_all_required_jobs_and_shards(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "jobs.json"

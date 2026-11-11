@@ -30,6 +30,16 @@ therefore **not comparable** with the current pin. The 213 entries are a ratchet
 mismatch first, not proof of a fork-only kernel regression. The attribution and
 the representative upstream comparisons are in `docs/kernel-attribution.md`.
 
+
+## Beta package scope
+
+A Beta promotion packages the three platforms its scope needs: Linux x86_64,
+macOS universal and Windows x64. The stable `release/vX.Y.Z` path keeps every
+package format and architecture (Linux aarch64, Flatpak, Arch, Snap, FreeBSD,
+Windows x86/arm64 and web). A store or format outside the Beta scope, such as the
+Snap store being unreachable, does not excuse a missing Beta descriptor or a
+failed Linux/macOS/Windows package.
+
 ## Beta exception rules
 
 `tests/action_matrix/beta-exceptions.json` binds each accepted failure to:

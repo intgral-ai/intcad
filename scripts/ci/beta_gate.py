@@ -345,7 +345,6 @@ REQUIRED_JOBS = (
     "ci / Dependency advisories",
     "kernel-rig / Build the CLI",
     "kernel-rig / kernel-rig",
-    "packages / All nonpublishing package builds",
 )
 
 
