@@ -75,8 +75,6 @@ Next options, in cost order:
 
 ## Not yet proved
 
-- The Assistant page beside the CAD UI in the same GTK window on native Wayland (the page itself
-  was proven in the earlier `gtk_host.rs`; the production renderer surface is the current blocker).
 - IME/focus/DnD/scaling/menu stacking in this production-renderer GTK window. `wtype "nihao"`
   with fcitx in the focused blit window produced no candidate or committed text in the page
   composer; the WebView text area did not receive the keys even though `niri` reported the window
@@ -102,11 +100,10 @@ Evidence: `evidence/gtk-wgpu-blit-assistant-wayland.jpg`, `gtk-wgpu-blit-assista
 The page's initial state is the production serializer on an empty session; this proves rendering
 and the page/host handshake, not a live agent turn.
 
-On X11 the blit example with the WebKit view aborted under Xvfb (`MESA-EGL: DRI3 error`, core
-dump); the direct-surface `gtk_wgpu_host.rs` renders the CAD UI on X11, and the earlier
-`gtk_host.rs` renders the real page on X11, but the combined blit+page window was not validated
-there. The production eframe/wry X11 host already has the CAD UI + page; no claim is made for the
-blit example on X11.
+On X11 the same window works after forcing `Backends::VULKAN` for the offscreen frame (GTK's
+GLArea context is current; wgpu's GL/EGL backend otherwise fails with `BadAccess`). Evidence:
+`evidence/gtk-wgpu-blit-assistant-x11.jpg`. This is Xvfb/llvmpipe for the combined window; the
+hard-RADV X11 evidence is the direct-surface `gtk_wgpu_host.rs`.
 
 ## Production-host conditions
 
@@ -119,10 +116,12 @@ blit example on X11.
 3. Changes isolated in a Linux host/interface: the experiment is an example only; no production
    host code yet.
 4. No new engine/large fork/licence change: true.
-5. No obvious performance regression / busy loop / disabled security: **partially** measured.
-   Idle (page open, same box, 5 s) is 0 % main CPU for the GTK blit vs 57 % for the production
-   eframe/wry host; RSS is lower. But the blit pays a per-frame GPU→CPU→GPU copy and the
-   interaction frame time, first input, IME, DnD and scaling are not measured. This condition is
-   therefore not met for a production decision.
+5. No obvious performance regression / busy loop / disabled security: **not met**. The earlier
+   idle comparison (GTK 0 % vs production 57 %) is withdrawn: the blit prototype's repaint
+   scheduling was broken (it could draw one frame, and the window was not verifiably drawing).
+   The production page-open 57 % observation is a single-host data point, not a comparison. The
+   reverted working code repaints every 16 ms (not egui's `repaint_delay`), pays a per-frame
+   GPU→CPU→GPU copy, and has no input path; interaction, first input, IME, DnD and scaling are
+   unmeasured. This condition is not met for a production decision.
 
 The experiment therefore remains an experiment; it does not enable a new production host.

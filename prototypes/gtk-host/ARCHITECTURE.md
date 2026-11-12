@@ -38,10 +38,10 @@ feature, while Windows/macOS keep `eframe`; upstream sync touches the host modul
 - A direct wgpu swapchain on GTK's window `wl_surface` is not composited; the offscreen wgpu →
   `GtkGLArea` blit works on both backends.
 - Forcing `Backends::VULKAN` avoids wgpu GL/EGL `BadAccess` while GTK's GLArea context is current.
-- Idle, page open, same box, 5 s (Xvfb, RADV): production eframe/wry main **57%** CPU and
-  668 MB + WebKit 368 MB; GTK blit main **0%** and 363 MB + WebKit 363 MB. Page closed production:
-  0%, 609 MB. The eframe host keeps its main thread busy with the page open; the GTK loop renders
-  only when egui asks.
+- The production eframe/wry host, page open, same box, 5 s (Xvfb, RADV) observed **57%** main
+  CPU and 668 MB + WebKit 368 MB; page closed 0%, 609 MB. An earlier GTK "0%" comparison is
+  withdrawn: the blit prototype's repaint scheduling was broken (it could draw one frame), so no
+  performance comparison is claimed. The production 57% observation stands alone.
 
 ## What is not proved / known gaps
 

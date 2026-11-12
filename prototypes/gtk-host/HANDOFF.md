@@ -32,8 +32,9 @@ Last updated from run `43178617405` (in progress) and prototype `c396b9196`.
 - `gtk_wgpu_blit.rs`: offscreen wgpu → `GtkGLArea` blit; X11 + native Wayland; real `SolveApp` UI,
   real `solid.box` viewport, real Assistant page in one window. Force `Backends::VULKAN` to avoid
   `BadAccess` while GTK's GL context is current.
-- Idle (page open, same box, Xvfb, RADV, 5 s): production eframe/wry main 57% CPU/668 MB + WebKit
-  368 MB; GTK blit main 0%/363 MB + WebKit 363 MB. Page closed production: 0%/609 MB.
+- Idle comparison withdrawn: the GTK blit's repaint scheduling was broken (one-frame loop), so
+  the 0% figure is not comparable. Production eframe/wry page-open 57% CPU/668 MB + WebKit 368 MB
+  is a single-host observation; page closed 0%/609 MB. The working code repaints on a 16 ms timer.
 - Gaps: per-frame GPU→CPU→GPU copy (unmeasured interaction); `wtype` text does not reach the page
   composer in the blit window (focus); DnD/scaling/menu/exit; live agent turn.
 - Docs: `RESPONSIBILITIES.md`, `PRODUCTION-RENDERER.md`, `ARCHITECTURE.md`.
