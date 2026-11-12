@@ -1,5 +1,5 @@
 {
-  "about": "Reviewed Beta action-matrix exceptions. Each entry binds a design/entity/action identity to its failure kind, a stable failure class, the reviewed evidence run and an issue. The historical baseline was recorded on the C++ SMLib backend and is not comparable with the Rust solidcore pin, so these 213 are a ratchet mismatch first, not proof of a fork-only kernel regression; see docs/kernel-attribution.md. The reviewed run also has 1085 pre-existing baseline failures and 972 unbaselined failures; neither is counted as a pass, and the 970 reviewed unbaselined identities are itemised; a new unbaselined failure fails the gate and a listed one that passes is an improvement, never a pass. Beta promotion fails on an unlisted failure, a changed class, a missing shard, a build failure or an exception that starts passing. This is not a stable release waiver and is not a replacement for tests/action_matrix/baseline.json.",
+  "about": "Reviewed Beta action-matrix exceptions. Each entry binds a design/entity/action identity to its failure kind, a stable failure class, the reviewed evidence run and an issue. The historical baseline was recorded on the C++ SMLib backend and is not comparable with the Rust solidcore pin, so these 213 are a ratchet mismatch first, not proof of a fork-only kernel regression; see docs/kernel-attribution.md. The reviewed run also has 1085 pre-existing baseline failures and 972 unbaselined failures; neither is counted as a pass, and the 972 reviewed unbaselined identities are itemised; a new unbaselined failure fails the gate and a listed one that passes is an improvement, never a pass. Beta promotion fails on an unlisted failure, a changed class, a missing shard, a build failure or an exception that starts passing. This is not a stable release waiver and is not a replacement for tests/action_matrix/baseline.json.",
   "entries": [
     {
       "action": "face.shell",
@@ -1927,10 +1927,11 @@
     "run": 42790743092,
     "sha": "7bf03f6d9f355be8d59843953aba92a3d2947611",
     "shards": "1-14 and 16 from run 42790743092; shard 15 rerun at 1a45733ef96b53990fec8bd7794563eebc6facdb with the same costs/sharding",
-    "totalActions": 54029,
+    "totalActions": 54033,
+    "totalActionsNote": "beta.3 run 43114464720 has 4 additional edge.fillet+edit actions because the 300 s action limit let more base fillets complete; the 213 baseline pass-to-fail identities are unchanged",
     "unbaselinedDigest": "b2ab23f17ab1d2a88429ef9a660de5dbf1f922f1e8b6fd9bf077a5a1983ef56e",
-    "unbaselinedFailures": 970,
-    "unbaselinedNote": "itemised reviewed identities from run 43012493350; a new unbaselined failure is rejected, a listed one that passes is reported as fixed"
+    "unbaselinedFailures": 972,
+    "unbaselinedNote": "itemised reviewed identities from run 43012493350; 9 timeout entries were reclassified from their real errors and 2 new blend_check_refused identities were reviewed in run 43114464720; a new unbaselined failure is rejected, a listed one that passes is reported fixed"
   },
   "unbaselined": [
     {
@@ -2914,8 +2915,10 @@
       "category": "other",
       "design": "oracle/04-revolve-vase",
       "entity": "Vase/F2:side:a1|F2:side:l2",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "edge.chamfer",
@@ -4463,11 +4466,13 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_check_refused",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l2@F13.1|F8:side:l4@F13.1",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "edge.chamfer",
@@ -4479,11 +4484,13 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_too_large",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l2@F13.1|F8:top@F13.1#[F11:side:l2@F13.1,F11:side:l3@F13.1,F11:side:l4@F13.1,F11:side:l5@F13.1,F11:side:l6@F13.1,F11:side:l7@F13.1,F4:side:l3@F5.1,F8:side:l2@F13.1,F8:side:l4@F13.1]",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "edge.fillet",
@@ -4783,11 +4790,13 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_too_large",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l7@F13.1|F8:top@F13.1#[F11:side:l2@F13.1,F11:side:l3@F13.1,F11:side:l4@F13.1,F11:side:l5@F13.1,F11:side:l6@F13.1,F11:side:l7@F13.1,F4:side:l3@F5.1,F8:side:l2@F13.1,F8:side:l4@F13.1]",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "edge.chamfer",
@@ -4807,11 +4816,13 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_check_refused",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l7|F8:side:l2",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "edge.chamfer",
@@ -6159,11 +6170,13 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_too_large",
       "design": "regressions/front_triangle_hull_triangle",
       "entity": "FrontTriangle/F11:side:e1|F15:side:c1",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "face.shell",
@@ -6303,11 +6316,13 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_too_large",
       "design": "regressions/front_triangle_hull_triangle",
       "entity": "FrontTriangle/F22:side:a1|F7:side",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "edge.chamfer",
@@ -6351,11 +6366,13 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_too_large",
       "design": "regressions/front_triangle_hull_triangle",
       "entity": "FrontTriangle/F22:side:a2|F7:side",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "edge.normal_plane+edit",
@@ -6455,11 +6472,13 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_too_large",
       "design": "regressions/front_triangle_hull_triangle",
       "entity": "FrontTriangle/F22:side:l1|F7:side",
+      "evidenceRun": 43114464720,
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error",
+      "reclassifiedFrom": "timeout/other"
     },
     {
       "action": "edge.normal_plane+edit",
@@ -7214,6 +7233,16 @@
       "kind": "timeout"
     },
     {
+      "action": "edge.fillet+edit",
+      "category": "blend_check_refused",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:a2|F8:side",
+      "issue": "#88",
+      "kind": "timeline_error",
+      "message": "Fillet1: body `DT2`: the operation failed: SMLib fillet: SMLib's check refuses the result: 2 failed tests:",
+      "reviewedIn": 43114464720
+    },
+    {
       "action": "edge.fillet",
       "category": "other",
       "design": "regressions/loft_join_bracket_hull_triangle",
@@ -7252,6 +7281,16 @@
       "entity": "DT2/F7:side:l1|F8:side",
       "issue": "#88",
       "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet+edit",
+      "category": "blend_check_refused",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:l1|F8:side",
+      "issue": "#88",
+      "kind": "timeline_error",
+      "message": "Fillet1: body `DT2`: the operation failed: SMLib fillet: SMLib's check refuses the result: 3 failed tests:",
+      "reviewedIn": 43114464720
     },
     {
       "action": "edge.fillet",
