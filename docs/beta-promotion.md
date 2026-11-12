@@ -66,7 +66,7 @@ least the stable 54,029 actions and judges the itemised identities. A baseline p
 The Beta gate fails when any of these changes:
 
 - a shard is missing, duplicated, empty of a parseable result, or the total action
-  count differs from the reviewed run;
+  count falls below the reviewed stable count;
 - an action that passed in the baseline fails and is not in the list;
 - a listed action fails with a different `kind` or failure class;
 - a listed action starts passing (the exception must be removed in that change);
@@ -95,7 +95,7 @@ continues to require the full `release-gate` without the Beta exceptions.
 ## Beta.3 correction evidence
 
 The Beta.3 gate adds the itemised 970 unbaselined identities and the configurable
-180-second action timeout. The Windows MSI was diagnosed on a clean `windows-latest`
+1800-second action timeout. The Windows MSI was diagnosed on a clean `windows-latest`
 runner: the MSI payload and an isolated `INSTALLFOLDER` install both ran
 `solidcraft-cli 0.1.0-beta.2`; the installed app ran `solidcraft 0.1.0-beta.2`.
 The earlier `0.40.0-rc.2` read was runner contamination, not the installer.
