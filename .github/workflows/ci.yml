@@ -501,7 +501,12 @@ jobs:
       - name: Raw properties (unknown failures remain failures)
         run: |
           cargo nextest list --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --ignore-default-filter -E 'binary(boolean_props) | binary(atomic_commands)' --message-format json > selection.json
+          set +e
           cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --ignore-default-filter -E 'binary(boolean_props) | binary(atomic_commands)' --test-threads 2
+          raw=$?
+          set -e
+          echo "raw nextest exit: $raw (the known-failing grader below decides)"
+          cargo xtask known-failing --junit target/nextest/ci/junit.xml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
