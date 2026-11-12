@@ -1,59 +1,153 @@
-name: Diagnose Beta MSI
+name: Verify Beta installers
 
+# Non-building verification of the artifacts from one release-gate run. This
+# workflow is dispatched from a throwaway branch; it never changes the tag, the
+# release or the product source. Evidence binds to the run id and the artifact
+# bytes, not to this workflow's checkout SHA.
 on:
-  push:
-    branches: [verify/msi-diagnose]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Release-gate run id whose package artifacts to verify
+        type: string
+        required: true
+        default: "43241626115"
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  linux:
+    name: Linux tarball extract and run
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the run's Linux x86_64 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          mkdir -p dist evidence
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-linux-x86_64 --dir dist
+          find dist -maxdepth 3 -type f | sort | head -40
+      - name: Extract, hash, and run the packaged binaries
+        run: |
+          set -euo pipefail
+          TARBALL="$(find dist -name '*.tar.gz' -print -quit)"
+          test -n "$TARBALL"
+          echo "tarball: $TARBALL" | tee evidence/linux.txt
+          sha256sum "$TARBALL" | tee -a evidence/linux.txt
+          mkdir -p unpack
+          tar -xzf "$TARBALL" -C unpack
+          ROOT="$(find unpack -maxdepth 2 -type d -name bin -printf '%h\n' | head -1)"
+          test -n "$ROOT"
+          echo "root: $ROOT" | tee -a evidence/linux.txt
+          find "$ROOT/bin" -maxdepth 1 -type f -printf '%f\n' | sort | tee -a evidence/linux.txt
+          "$ROOT/bin/solidcraft-cli" --version | tee -a evidence/linux.txt
+          "$ROOT/bin/solidcraft" --version | tee -a evidence/linux.txt
+          sha256sum "$ROOT/bin/solidcraft" "$ROOT/bin/solidcraft-cli" | tee -a evidence/linux.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: verify-linux-installer
+          path: evidence/
+          if-no-files-found: error
+
+  macos:
+    name: macOS DMG mount and app run
+    runs-on: macos-15
+    steps:
+      - name: Download the run's macOS artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          mkdir -p dist evidence
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-macos --dir dist
+          find dist -maxdepth 3 -type f | sort | head -40
+      - name: Mount, hash, inspect architectures, and run the app
+        run: |
+          set -euo pipefail
+          DMG="$(find dist -name '*.dmg' -print -quit)"
+          test -n "$DMG"
+          echo "dmg: $DMG" | tee evidence/macos.txt
+          shasum -a 256 "$DMG" | tee -a evidence/macos.txt
+          MNT="$(mktemp -d)"
+          hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG" | tee -a evidence/macos.txt
+          APP="$(find "$MNT" -maxdepth 1 -name '*.app' -type d | head -1)"
+          test -n "$APP"
+          BIN="$APP/Contents/MacOS/SolidCraft"
+          test -x "$BIN"
+          lipo -info "$BIN" | tee -a evidence/macos.txt
+          lipo "$BIN" -verify_arch arm64 | tee -a evidence/macos.txt
+          lipo "$BIN" -verify_arch x86_64 | tee -a evidence/macos.txt
+          codesign --verify --deep --verbose=2 "$APP" >> evidence/macos.txt 2>&1 || echo "codesign: not valid (unsigned/not notarized is an accepted gap)" | tee -a evidence/macos.txt
+          "$BIN" --version | tee -a evidence/macos.txt
+          shasum -a 256 "$BIN" | tee -a evidence/macos.txt
+          hdiutil detach "$MNT" | tee -a evidence/macos.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: verify-macos-installer
+          path: evidence/
+          if-no-files-found: error
+
   windows:
+    name: Windows MSI install and run
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Download MSI artifact
+      - name: Download the run's Windows x64 artifact
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: "43012493350"
-        run: gh run download "$env:RUN_ID" --repo "$env:GITHUB_REPOSITORY" --name release-windows-x64 --dir dist
-      - name: Inspect before, administrative extract, install
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist,evidence | Out-Null
+          gh run download "$env:RUN_ID" --repo "$env:GITHUB_REPOSITORY" --name release-windows-x64 --dir dist
+          Get-ChildItem dist -Recurse -File | Select-Object FullName,Length | Format-Table
+      - name: Inspect before, extract, install, and run
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          "== existing Program Files =="
+          $out = 'evidence\windows.txt'
+          "== existing Program Files ==" | Tee-Object -FilePath $out
           if (Test-Path 'C:\Program Files\SolidCraft') {
-            Get-ChildItem 'C:\Program Files\SolidCraft' | Select-Object Name,Length
+            Get-ChildItem 'C:\Program Files\SolidCraft' | Select-Object Name,Length | Out-String | Tee-Object -FilePath $out -Append
             $old = 'C:\Program Files\SolidCraft\solidcraft-cli.exe'
             if (Test-Path $old) {
-              "existing cli version:"; & $old --version
-              "existing cli sha: $((Get-FileHash $old -Algorithm SHA256).Hash)"
+              "existing cli version:" | Tee-Object -FilePath $out -Append
+              & $old --version | Tee-Object -FilePath $out -Append
+              "existing cli sha: $((Get-FileHash $old -Algorithm SHA256).Hash)" | Tee-Object -FilePath $out -Append
             }
-          } else { "no existing Program Files install" }
+          } else { "no existing Program Files install" | Tee-Object -FilePath $out -Append }
           $msi = Get-ChildItem dist -Recurse -Filter *.msi | Select-Object -First 1
-          "msi: $($msi.FullName) sha $((Get-FileHash $msi.FullName -Algorithm SHA256).Hash)"
+          if (-not $msi) { throw 'no x64 MSI downloaded' }
+          "msi: $($msi.FullName) sha $((Get-FileHash $msi.FullName -Algorithm SHA256).Hash)" | Tee-Object -FilePath $out -Append
           $admin = Join-Path $env:RUNNER_TEMP 'admin-extract'
           New-Item -ItemType Directory -Force -Path $admin | Out-Null
           $log1 = Join-Path $env:RUNNER_TEMP 'admin.log'
           $p1 = Start-Process msiexec.exe -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', '/L*v', "`"$log1`"", "TARGETDIR=$admin") -Wait -PassThru
-          "admin extract exit $($p1.ExitCode)"
+          "admin extract exit $($p1.ExitCode)" | Tee-Object -FilePath $out -Append
           Get-ChildItem $admin -Recurse -Filter solidcraft-cli.exe | ForEach-Object {
-            "admin cli: $($_.FullName) sha $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
-            & $_.FullName --version
+            "admin cli: $($_.FullName) sha $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" | Tee-Object -FilePath $out -Append
+            & $_.FullName --version | Tee-Object -FilePath $out -Append
           }
           $install = Join-Path $env:RUNNER_TEMP 'isolated-install'
           New-Item -ItemType Directory -Force -Path $install | Out-Null
           $log2 = Join-Path $env:RUNNER_TEMP 'install.log'
           $p2 = Start-Process msiexec.exe -ArgumentList @('/i', "`"$($msi.FullName)`"", '/qn', '/norestart', '/L*v', "`"$log2`"", "INSTALLFOLDER=$install") -Wait -PassThru
-          "install exit $($p2.ExitCode)"
+          "install exit $($p2.ExitCode)" | Tee-Object -FilePath $out -Append
           Get-ChildItem $install -Recurse -Filter solidcraft-cli.exe | ForEach-Object {
-            "installed cli: $($_.FullName) sha $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
-            & $_.FullName --version
+            "installed cli: $($_.FullName) sha $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" | Tee-Object -FilePath $out -Append
+            & $_.FullName --version | Tee-Object -FilePath $out -Append
           }
           $app = Join-Path $install 'solidcraft.exe'
-          if (Test-Path $app) { "installed app sha: $((Get-FileHash $app -Algorithm SHA256).Hash)"; & $app --version }
-          "where cli: $((Get-Command solidcraft-cli -ErrorAction SilentlyContinue).Source)"
+          if (-not (Test-Path $app)) { throw "missing installed app: $app" }
+          "installed app sha: $((Get-FileHash $app -Algorithm SHA256).Hash)" | Tee-Object -FilePath $out -Append
+          & $app --version | Tee-Object -FilePath $out -Append
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: verify-windows-installer
+          path: evidence/
+          if-no-files-found: error
