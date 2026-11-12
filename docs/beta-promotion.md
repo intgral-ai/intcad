@@ -53,12 +53,14 @@ failed Linux/macOS/Windows package.
 
 The reviewed run also has 1,085 failures already recorded as failing in the
 historical baseline and 956 failures on actions the historical baseline never
-recorded. Neither group is counted as a pass. The 972 reviewed unbaselined identities are itemised by design/entity/action,
-kind and failure class in the same exception file. Nine reviewed timeout entries
+recorded. Neither group is counted as a pass. The 956 reviewed unbaselined identities are itemised by design/entity/action,
+kind and failure class in the same exception file. Twelve reviewed timeout entries
 were reclassified to their real errors after the 1800-second action limit let
-them finish, and two new `edge.fillet+edit` identities were reviewed from the
-same run. A **new** unbaselined failure fails the gate; a listed one that starts
-passing is reported as fixed. The action count can grow by up to four
+them finish (nine in the earlier review, three in run 43241626115), and two new
+`edge.fillet+edit` identities were reviewed from the same run. In run 43241626115,
+16 listed loft-join fillets passed and were removed from the list. A **new**
+unbaselined failure fails the gate; a listed one that starts passing is reported
+as fixed and must be removed in the change. The action count can grow by up to four
 `edge.fillet+edit` actions when more base fillets complete; the gate requires at
 least the stable 54,029 actions and judges the itemised identities. A baseline pass that starts failing is the
 213-item gate condition above.
@@ -94,8 +96,13 @@ continues to require the full `release-gate` without the Beta exceptions.
 
 ## Beta.3 correction evidence
 
-The Beta.3 gate adds the itemised 970 unbaselined identities and the configurable
-1800-second action timeout. The Windows MSI was diagnosed on a clean `windows-latest`
-runner: the MSI payload and an isolated `INSTALLFOLDER` install both ran
-`solidcraft-cli 0.1.0-beta.2`; the installed app ran `solidcraft 0.1.0-beta.2`.
-The earlier `0.40.0-rc.2` read was runner contamination, not the installer.
+The Beta.3 gate adds the itemised 956 unbaselined identities and the configurable
+1800-second action timeout. Run `43241626115` at tested merge `196b44b15` produced
+54,033 actions, 2,254 failures, 213 strict exceptions, 956 unbaselined failures,
+and 0 unexcused/changed/fixed actions; three timeout entries were reclassified to
+their real errors and 16 loft-join fillets that passed were removed. The Beta.3
+Windows MSI was verified on a clean `windows-latest` runner (verification run
+`43260751949`): MSI sha `95bb005a…`; administrative extract and isolated
+`INSTALLFOLDER` both `solidcraft-cli 0.1.0-beta.3`; installed app
+`solidcraft 0.1.0-beta.3`. The earlier beta.2/`0.40.0-rc.2` reads were runner
+contamination, not the MSI payload.

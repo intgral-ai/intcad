@@ -130,8 +130,8 @@ class Matrix(unittest.TestCase):
         self.assertEqual(len(entries), 213)
         self.assertEqual(len(entries), len({(e["design"], e["entity"], e["action"]) for e in entries.values()}))
         self.assertTrue(all(entry["issue"] in ("#55", "#83", "#88") for entry in entries.values()))
-        self.assertEqual(data["source"]["unbaselinedFailures"], 972)
-        self.assertEqual(len(data["unbaselined"]), 972)
+        self.assertEqual(data["source"]["unbaselinedFailures"], 956)
+        self.assertEqual(len(data["unbaselined"]), 956)
 
 
 class Properties(unittest.TestCase):
