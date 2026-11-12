@@ -69,8 +69,11 @@ GLArea. `window.ipc` messages (the page's `ready`) arrive at the host.
 
 All four use the same `openskyfall-assistant://` scheme, the IPC shim, the production state
 serializer and the same resource/environment; the only intended variable is the GLArea and the
-page content. Logs record `state` injection, page `ipc` messages, load failures and WebKit
-process termination, not only load-finished.
+page content. Logs record `state` injection, page `ipc` messages, `load-failed`, WebKit
+`web-process-terminated`, and JavaScript `error`/`unhandledrejection` (the injected listeners
+write `PROTO JSERROR`/`PROTO JSREJECT` through the page console), not only load-finished. The
+real page with the GLArea logged neither JavaScript marker and its DOM title shows the setup
+screen.
 
 ## Recommendation
 

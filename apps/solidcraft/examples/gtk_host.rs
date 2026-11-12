@@ -246,7 +246,9 @@ fn main() {
     if let Some(manager) = web.user_content_manager() {
         manager.register_script_message_handler("ipc");
         let shim = UserScript::new(
-            "window.ipc = { postMessage: function (m) { window.webkit.messageHandlers.ipc.postMessage(m); } };",
+            "window.ipc = { postMessage: function (m) { window.webkit.messageHandlers.ipc.postMessage(m); } };\
+             window.addEventListener('error', function (e) { try { console.error('PROTO JSERROR ' + e.message + ' @ ' + (e.filename || '') + ':' + e.lineno); } catch (_) {} });\
+             window.addEventListener('unhandledrejection', function (e) { try { console.error('PROTO JSREJECT ' + String(e.reason)); } catch (_) {} });",
             UserContentInjectedFrames::TopFrame,
             UserScriptInjectionTime::Start,
             &[],
