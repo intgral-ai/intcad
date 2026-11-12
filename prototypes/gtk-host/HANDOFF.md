@@ -1,13 +1,13 @@
 # Handoff: Assistant, packaging and GTK host prototype
 
-Last updated from run `43187753411` (in progress) and prototype `0e83f84d4`.
+Last updated from run `43243621752` (in progress) and prototype `0cb774406`.
 
 ## Branches / PRs
 
 - **PR 110**, branch `integration/pil-290-assistant`: one Web Assistant page, Linux focus/idle
-  fixes, packaging. Head `bf3acc2b6` (Windows UpgradeCode/ARP fixes, gating Snap offline
-  Assistant with the network-namespace isolation proof, nightly-test update). Base
-  `pil-290-packaging`.
+  fixes, packaging. Head `202072454` (Windows UpgradeCode/ARP/repo-root fixes, gating Snap
+  offline Assistant with the network-namespace isolation proof, nightly-test update, software GL
+  for the forced-GL headless Flatpak probe). Base `pil-290-packaging`.
 - **PR 111**, branch `prototype/gtk-host`: disposable GTK 3 host evidence. Head `c396b9196`.
 
 ## Package run evidence
@@ -28,8 +28,14 @@ Last updated from run `43187753411` (in progress) and prototype `0e83f84d4`.
   failed after installing/removing the MSI because the ARP DisplayVersion is the MSI's numeric
   `0.1.0` while the script expected the app's `0.1.0-beta.4`. Fixed in `bf3acc2b6`: ARP is
   compared with `$meta.ProductVersion`; `solidcraft-cli --version` must report the full release.
-- `43187753411` at `bf3acc2b6` (in progress): final exact-SHA run for Windows x64/x86, Snap
-  isolation, Flatpak aarch64 and regressions.
+- `43187753411` at `bf3acc2b6`: Linux/Web/FreeBSD/macOS/Arch/Snap/Flatpak x86_64/Windows x86 and
+  arm64 passed. Windows x64 failed because `webview2-runtime.ps1`'s local `$root` overwrote the
+  caller's `$Root`, so the Assistant smoke path became the EdgeWebView directory; fixed in
+  `5c91281` (`$RepoRoot`, `$runtimeRoot`). Flatpak aarch64 default XWayland page passed, but the
+  forced-GL `--gl-saved-four` probe exited 1 under Xvfb (`Gl, MSAA 1x`); `202072454` selects the
+  software GL driver for that headless probe.
+- `43243621752` at `202072454` (in progress): final exact-SHA run for the Windows repo-root fix,
+  Flatpak aarch64 forced-GL, Snap isolation and all regressions.
 
 
 ## GTK host prototype
