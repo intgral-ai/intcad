@@ -61,7 +61,7 @@ fn main() {
     let area = gtk::GLArea::new();
     area.set_hexpand(true);
     area.set_vexpand(true);
-    area.set_can_focus(true);
+    area.set_can_focus(false);
     area.set_required_version(3, 3);
     let dist = std::env::var("PROTO_DIST").unwrap_or_else(|_| "packages/assistant-web/dist".into());
     let context = webkit2gtk::WebContext::default();
@@ -126,10 +126,17 @@ fn main() {
         web.connect_load_changed(move |_, event| {
             println!("PROTO load {event:?}");
             if event == webkit2gtk::LoadEvent::Finished {
-                let js = format!("if (window.__assistantHost) {{ window.__assistantHost.state({state_for_web}); document.body.setAttribute('data-proto-state','pushed'); }} else {{ window.ipc && window.ipc.postMessage(JSON.stringify({{type:'log',text:'no host object'}})); }}");
+                let js = format!("if (window.__assistantHost) {{ window.__assistantHost.state({state_for_web}); document.body.setAttribute('data-proto-state','pushed'); }} else {{ window.ipc && window.ipc.postMessage(JSON.stringify({{type:'log',text:'no host object'}})); }} var t=document.querySelector('textarea'); if(t) t.focus();");
                 let web_later = web_for_state.clone();
                 gtk::glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                    web_later.grab_focus();
                     web_later.run_javascript(&js, None::<&gtk::gio::Cancellable>, |_| {});
+                    let web_late = web_later.clone();
+                    gtk::glib::timeout_add_local(std::time::Duration::from_millis(1800), move || {
+                        web_late.grab_focus();
+                        web_late.run_javascript("var t=document.querySelector('textarea'); if(t) t.focus();", None::<&gtk::gio::Cancellable>, |_| {});
+                        gtk::glib::ControlFlow::Break
+                    });
                     gtk::glib::ControlFlow::Break
                 });
             }
@@ -138,6 +145,13 @@ fn main() {
             settings.set_enable_write_console_messages_to_stdout(true);
         }
         web.load_uri("openskyfall-assistant://localhost/index.html");
+        let web_focus = web.clone();
+        let window_focus = window.clone();
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(900), move || {
+            window_focus.set_focus(Some(&web_focus));
+            web_focus.grab_focus();
+            gtk::glib::ControlFlow::Break
+        });
     }
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     row.pack_start(&area, true, true, 0);
