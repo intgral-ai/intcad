@@ -77,7 +77,11 @@ Next options, in cost order:
 
 - The Assistant page beside the CAD UI in the same GTK window on native Wayland (the page itself
   was proven in the earlier `gtk_host.rs`; the production renderer surface is the current blocker).
-- IME/focus/DnD/scaling/menu stacking in this production-renderer GTK window.
+- IME/focus/DnD/scaling/menu stacking in this production-renderer GTK window. `wtype "nihao"`
+  with fcitx in the focused blit window produced no candidate or committed text in the page
+  composer; the WebView text area did not receive the keys even though `niri` reported the window
+  focused. The earlier `gtk_host.rs` proved the page's IME on the same backend, so this is a focus
+  hand-off gap in the blit prototype, not a page/IME failure. Do not claim IME here.
 - A real interaction frame-time comparison with the eframe host. The prototype repaints every
   16 ms; the 50.7 fps average on the label run is not an interaction benchmark. The model run used
   llvmpipe, so it is not a real-GPU performance claim.
