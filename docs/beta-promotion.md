@@ -52,11 +52,13 @@ failed Linux/macOS/Windows package.
 - the evidence run and source SHA that produced the whole 16-shard matrix.
 
 The reviewed run also has 1,085 failures already recorded as failing in the
-historical baseline and 970 failures on actions the historical baseline never
-recorded. Neither group is counted as a pass. The 970 unbaselined failures are
-itemised by design/entity/action, kind and failure class in the same exception
-file: a **new** unbaselined failure fails the gate, while a listed one that
-starts passing is reported as fixed. A baseline pass that starts failing is the
+historical baseline and 956 failures on actions the historical baseline never
+recorded. Neither group is counted as a pass. The 972 reviewed unbaselined identities are itemised by design/entity/action,
+kind and failure class in the same exception file. Nine reviewed timeout entries
+were reclassified to their real errors after the 300-second action limit let
+them finish, and two new `edge.fillet+edit` identities were reviewed from the
+same run. A **new** unbaselined failure fails the gate; a listed one that starts
+passing is reported as fixed. A baseline pass that starts failing is the
 213-item gate condition above.
 
 The Beta gate fails when any of these changes:
@@ -87,3 +89,11 @@ A promotion must be built from the exact candidate SHA. A package descriptor who
 `sourceRevision` differs, an older BYOK or GUI result, or an artifact built before
 the final merge is not evidence for a new candidate. The stable v0.1.0 release
 continues to require the full `release-gate` without the Beta exceptions.
+
+## Beta.3 correction evidence
+
+The Beta.3 gate adds the itemised 970 unbaselined identities and the configurable
+180-second action timeout. The Windows MSI was diagnosed on a clean `windows-latest`
+runner: the MSI payload and an isolated `INSTALLFOLDER` install both ran
+`solidcraft-cli 0.1.0-beta.2`; the installed app ran `solidcraft 0.1.0-beta.2`.
+The earlier `0.40.0-rc.2` read was runner contamination, not the installer.
