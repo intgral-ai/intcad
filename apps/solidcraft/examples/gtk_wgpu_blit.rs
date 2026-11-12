@@ -44,10 +44,17 @@ struct State {
     vbo: glow::Buffer,
     tex: glow::Texture,
     offscreen: Option<wgpu::Texture>,
+    gl_format: u32,
     size: (u32, u32),
     frames: u64,
     started: Instant,
-    needs_frame: Rc<Cell<bool>>,
+    frame_at: Rc<Cell<Option<Instant>>>,
+    pending: Rc<RefCell<Vec<egui::Event>>>,
+    stats: bool,
+    last_stat: Instant,
+    last_frames: u64,
+    last_delay: Option<std::time::Duration>,
+    applied_scale: f32,
 }
 
 fn main() {
@@ -146,17 +153,77 @@ fn main() {
     }
     window.add(&row);
 
-    let needs_frame = Rc::new(Cell::new(true));
-    let needs_frame_timer = needs_frame.clone();
+    let frame_at = Rc::new(Cell::new(Some(Instant::now())));
+    let frame_at_timer = frame_at.clone();
+    let pending = Rc::new(RefCell::new(Vec::new()));
+    area.add_events(
+        gtk::gdk::EventMask::BUTTON_PRESS_MASK
+            | gtk::gdk::EventMask::BUTTON_RELEASE_MASK
+            | gtk::gdk::EventMask::POINTER_MOTION_MASK
+            | gtk::gdk::EventMask::SCROLL_MASK,
+    );
+    let press_pending = pending.clone();
+    let press_frame = frame_at.clone();
+    area.connect_button_press_event(move |area, event| {
+        area.grab_focus();
+        let (x, y) = event.position();
+        press_pending.borrow_mut().push(egui::Event::PointerButton {
+            pos: egui::pos2(x as f32, y as f32),
+            button: pointer_button(event.button()),
+            pressed: true,
+            modifiers: modifiers(event.state()),
+        });
+        press_frame.set(Some(Instant::now()));
+        gtk::glib::Propagation::Proceed
+    });
+    let release_pending = pending.clone();
+    let release_frame = frame_at.clone();
+    area.connect_button_release_event(move |_, event| {
+        let (x, y) = event.position();
+        release_pending.borrow_mut().push(egui::Event::PointerButton {
+            pos: egui::pos2(x as f32, y as f32),
+            button: pointer_button(event.button()),
+            pressed: false,
+            modifiers: modifiers(event.state()),
+        });
+        release_frame.set(Some(Instant::now()));
+        gtk::glib::Propagation::Proceed
+    });
+    let motion_pending = pending.clone();
+    let motion_frame = frame_at.clone();
+    area.connect_motion_notify_event(move |_, event| {
+        let (x, y) = event.position();
+        motion_pending.borrow_mut().push(egui::Event::PointerMoved(egui::pos2(x as f32, y as f32)));
+        motion_frame.set(Some(Instant::now()));
+        gtk::glib::Propagation::Proceed
+    });
+    let scroll_pending = pending.clone();
+    let scroll_frame = frame_at.clone();
+    area.connect_scroll_event(move |_, event| {
+        let (dx, dy) = event.delta();
+        scroll_pending.borrow_mut().push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(dx as f32, dy as f32),
+            phase: egui::TouchPhase::Move,
+            modifiers: modifiers(event.state()),
+        });
+        scroll_frame.set(Some(Instant::now()));
+        gtk::glib::Propagation::Proceed
+    });
     let state: Rc<RefCell<Option<State>>> = Rc::new(RefCell::new(None));
     let state_realize = state.clone();
     area.connect_realize(move |area| {
         eprintln!("PROTO blit realize");
         area.make_current();
-        match unsafe { init(area, needs_frame.clone()) } {
+        match unsafe { init(area, frame_at.clone(), pending.clone()) } {
             Ok(s) => *state_realize.borrow_mut() = Some(s),
             Err(error) => eprintln!("PROTO blit setup failed: {error}"),
         }
+    });
+    let state_unrealize = state.clone();
+    area.connect_unrealize(move |area| {
+        area.make_current();
+        *state_unrealize.borrow_mut() = None;
     });
     let state_draw = state.clone();
     area.connect_render(move |area, _| {
@@ -170,7 +237,10 @@ fn main() {
     });
     window.connect_destroy(|_| gtk::main_quit());
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-        if needs_frame_timer.get() {
+        if let Some(at) = frame_at_timer.get()
+            && Instant::now() >= at
+        {
+            frame_at_timer.set(None);
             area.queue_render();
         }
         gtk::glib::ControlFlow::Continue
@@ -189,14 +259,18 @@ impl State {
         }
         let mut raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32))),
+            events: self.pending.borrow_mut().drain(..).collect(),
             ..Default::default()
         };
+        if (self.applied_scale - scale).abs() > f32::EPSILON {
+            self.ctx.set_pixels_per_point(scale);
+            self.applied_scale = scale;
+        }
         let real_ui = std::env::var_os("PROTO_UI").is_some();
         if real_ui {
             self.solve.raw_input_hook(&mut raw);
         }
         let State { solve, ctx, started, frames, .. } = self;
-        self.needs_frame.set(false);
         let mut output = ctx.run_ui(raw, |ui| {
             if real_ui {
                 solve.ui(ui);
@@ -210,6 +284,18 @@ impl State {
         if real_ui {
             solve.logic(ctx);
         }
+        let delay = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay);
+        self.last_delay = Some(delay);
+        self.frame_at.set(if *frames < 2 {
+            Some(Instant::now())
+        } else if delay == std::time::Duration::MAX {
+            None
+        } else {
+            Instant::now().checked_add(delay)
+        });
         let mut renderer = self.rs.renderer.write();
         for (id, deltas) in &output.textures_delta.set {
             for delta in deltas {
@@ -301,7 +387,7 @@ impl State {
                 pw as i32,
                 ph as i32,
                 0,
-                glow::BGRA,
+                self.gl_format,
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(&tight)),
             );
@@ -319,12 +405,33 @@ impl State {
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
         }
         self.frames = self.frames.saturating_add(1);
+        if self.stats {
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_stat).as_secs_f32();
+            if elapsed >= 1.0 {
+                let drawn = self.frames.saturating_sub(self.last_frames);
+                eprintln!("PROTO fps={:.1} frame_ms={:.2} frames={} delay={:?}", drawn as f32 / elapsed, 1000.0 * elapsed / drawn.max(1) as f32, self.frames, self.last_delay);
+                self.last_stat = now;
+                self.last_frames = self.frames;
+            }
+        }
         Ok(())
     }
 }
 
 
-unsafe fn init(area: &gtk::GLArea, needs_frame: Rc<Cell<bool>>) -> Result<State, String> {
+impl Drop for State {
+    fn drop(&mut self) {
+        unsafe {
+            self.gl.delete_program(self.program);
+            self.gl.delete_vertex_array(self.vao);
+            self.gl.delete_buffer(self.vbo);
+            self.gl.delete_texture(self.tex);
+        }
+    }
+}
+
+unsafe fn init(area: &gtk::GLArea, frame_at: Rc<Cell<Option<Instant>>>, pending: Rc<RefCell<Vec<egui::Event>>>) -> Result<State, String> {
     area.make_current();
     let handle = loader();
     if handle.is_null() {
@@ -365,7 +472,17 @@ unsafe fn init(area: &gtk::GLArea, needs_frame: Rc<Cell<bool>>) -> Result<State,
         let _ = solve.session.execute("solid.box", &serde_json::json!({"length": 30, "width": 20, "height": 10}));
     }
     solve.set_wgpu_split(&rs, 24, 0, 4);
-    Ok(State { solve, rs, ctx, gl, program, vao, vbo, tex, offscreen: None, size: (0, 0), frames: 0, started: Instant::now(), needs_frame: needs_frame.clone() })
+    let gl_format = match rs.target_format {
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => glow::BGRA,
+        _ => glow::RGBA,
+    };
+    println!("PROTO blit format={:?} gl_format={:#x}", rs.target_format, gl_format);
+    Ok(State {
+        solve, rs, ctx, gl, program, vao, vbo, tex, offscreen: None, gl_format, size: (0, 0),
+        frames: 0, started: Instant::now(), frame_at, pending,
+        stats: std::env::var_os("PROTO_STATS").is_some(), last_stat: Instant::now(), last_frames: 0,
+        last_delay: None, applied_scale: 0.0,
+    })
 }
 
 unsafe fn gl_setup(gl: &glow::Context) -> Result<(glow::Program, glow::VertexArray, glow::Buffer), String> {
@@ -426,3 +543,22 @@ fn loader() -> *mut core::ffi::c_void {
     }
 }
 
+
+
+fn pointer_button(button: u32) -> egui::PointerButton {
+    match button {
+        1 => egui::PointerButton::Primary,
+        2 => egui::PointerButton::Middle,
+        3 => egui::PointerButton::Secondary,
+        8 => egui::PointerButton::Extra1,
+        9 => egui::PointerButton::Extra2,
+        _ => egui::PointerButton::Primary,
+    }
+}
+
+fn modifiers(state: gtk::gdk::ModifierType) -> egui::Modifiers {
+    let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+    let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+    let alt = state.contains(gtk::gdk::ModifierType::MOD1_MASK);
+    egui::Modifiers { shift, ctrl, alt, mac_cmd: false, command: ctrl }
+}

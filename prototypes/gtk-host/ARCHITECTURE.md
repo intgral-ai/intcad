@@ -1,7 +1,9 @@
-# GTK host: architecture decision material (experiment, not enabled)
+# GTK host: architecture decision material (frozen experiment, not enabled)
 
-This is a decision document from the disposable prototype. It does not enable a new production
-host. PR 110 (eframe/wry) remains the shipping path; native Wayland still shows the diagnostic there.
+**Decision (2026-11-12): the GTK host is paused and frozen as a reproducible prototype.** It is not
+merged and does not enable a new production host. PR 110 (eframe/winit + wry, X11/XWayland) is the
+shipping path; native Wayland embedding is a separate follow-up task and is not counted as
+supported by this stage. Resume entry: `PRODUCTION-RENDERER.md`.
 
 ## Reused unchanged
 
@@ -62,11 +64,14 @@ feature, while Windows/macOS keep `eframe`; upstream sync touches the host modul
 
 ## Recommendation
 
-1. Keep PR 110 (eframe/wry, X11/XWayland + native-Wayland diagnostic) as the shipping path now.
-2. Keep this GTK host experimental. Next milestone: fix focus/IME in the blit window, wire
-   pointer/key events, and measure interaction frame time + idle on X11 and native Wayland.
-3. Replace the CPU copy with GPU interop (DMABUF/EGL import) or a Wayland subsurface; if neither
-   meets the bar, keep eframe and fix its page-idle scheduling instead of moving the host.
-4. Only after 1–3 pass: add a Linux-only GTK host behind a preference/feature with the eframe X11
-   host as fallback, re-run every Linux package, and keep Windows/macOS on eframe. That is a
-   separate architecture decision; it is not authorized by this experiment alone.
+1. PR 110 (eframe/winit + wry, X11/XWayland Assistant) is the shipping path for this stage.
+   Windows/macOS keep their existing hosts.
+2. The GTK prototype is frozen, not merged. Its measurements (idle 0 frames/s, ~52 fps drag under
+   Xvfb, 2× scale, RGBA, DPI, pointer/wheel input) are experiment evidence only: the per-frame
+   GPU→CPU→GPU copy, blocking `poll`, missing keyboard/IME/DnD and the forced-Vulkan fallback
+   remain blockers.
+3. If the GTK direction is resumed, the first step is GPU interop (DMABUF/EGL or a Wayland
+   subsurface), then keyboard/IM, then interaction and IME acceptance. Only after those pass
+   should a Linux-only host behind a preference be considered.
+4. Native Wayland on the shipping eframe/wry host remains diagnostic; it must be recorded as not
+   supported, not as a pass.

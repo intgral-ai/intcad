@@ -1,6 +1,10 @@
-# GTK 3 + production wgpu: first two milestones
+# GTK 3 + production wgpu: disposable prototype (FROZEN)
 
-Disposable experiment. It does not change production code or remove the eframe host.
+**Status: frozen on 2026-11-12. Not merged, not a production host.** The production Linux host
+stays `eframe`/`winit` + `wry` (PR 110). Native Wayland embedding is a separate follow-up task; the
+shipping host keeps the diagnostic fallback there. This document keeps the prototype reproducible:
+runnable code, the measurements that exist, the data path, the known defects, and the entry point
+to resume the investigation.
 
 ## Milestone 1: production renderer in a GTK window
 
@@ -105,6 +109,41 @@ GLArea context is current; wgpu's GL/EGL backend otherwise fails with `BadAccess
 `evidence/gtk-wgpu-blit-assistant-x11.jpg`. This is Xvfb/llvmpipe for the combined window; the
 hard-RADV X11 evidence is the direct-surface `gtk_wgpu_host.rs`.
 
+## Frozen state and measurements
+
+The last runnable code is committed on branch `prototype/gtk-host`. It is an example only; no
+production crate or host changed.
+
+What was fixed and measured before the freeze (X11 under Xvfb, 1400×900; native Wayland on niri,
+RADV GFX1200; `PROTO_UI=1 PROTO_MODEL=1`, a 30×20×10 `solid.box`, real Assistant page open):
+
+| case | result | evidence |
+|---|---|---|
+| idle, X11 | 0 frames/s logged after startup, 0 % main CPU, 362 MB | `gtk-blit-repaint.log/.jpg` |
+| idle, native Wayland | 0 frames/s, 0 % main CPU, 343 MB | not archived as an image; log kept in the run notes |
+| middle-drag orbit, X11 | 50.9–53.1 fps, 18.8–19.7 ms/frame | `gtk-blit-mid-before/after.jpg` |
+| wheel zoom, X11 | viewport changes | `gtk-blit-wheel-before/after.jpg` |
+| 2× scale, X11 | UI fills the window, text at native density | `gtk-blit-scale2.jpg` |
+
+Finding: calling `egui::Context::set_pixels_per_point` every frame makes egui request an immediate
+repaint (`set_zoom_factor`), so the window repainted at 60 fps forever. The code now applies the
+scale only when it changes, and idle drops to 0 frames and 0 % CPU on both backends. This is a
+prototype bug, not a production performance claim.
+
+The prototype does not meet the production bar:
+
+- the blit is a per-frame **GPU → CPU → GPU** copy: `copy_texture_to_buffer` (256-byte rows) →
+  `map` → tight `Vec<u8>` → `tex_image_2d` → quad; there is no DMABUF/EGL interop and no dirty-row
+  upload. Frame cost at 1200×800 is ~19 ms on this machine, dominated by the copy/sync.
+- `device.poll(PollType::Wait { timeout: None })` blocks the GTK loop on the GPU every frame.
+- no keyboard, IME, focus hand-off, drag-and-drop, menus/popovers, or window-edge resize tests in
+  this window; pointer press/move/scroll exist, keyboard does not.
+- the Assistant page receives the production serializer's state snapshot for an empty session; no
+  live agent turn or tool approval is exercised here.
+- X11 drag numbers are from Xvfb (GL through llvmpipe) with the wgpu frame still on RADV; the
+  native-Wayland pointer was not injected (no pointer-injection tool in that session).
+- forced `Backends::VULKAN` has no in-app fallback; a machine without Vulkan gets a blank window.
+
 ## Production-host conditions
 
 1. real `SolveApp`, production wgpu viewport and real page in one window: **yes** on X11 and
@@ -125,3 +164,13 @@ hard-RADV X11 evidence is the direct-surface `gtk_wgpu_host.rs`.
    unmeasured. This condition is not met for a production decision.
 
 The experiment therefore remains an experiment; it does not enable a new production host.
+
+## Resume entry
+
+- Code: `apps/solidcraft/examples/gtk_wgpu_blit.rs` (offscreen wgpu → CPU readback → GtkGLArea
+  blit; `PROTO_UI`, `PROTO_MODEL`, `PROTO_STATS` env switches).
+- Run: `nix develop .#rust --command cargo run -p solidcraft --example gtk_wgpu_blit`, with
+  `PROTO_UI=1 PROTO_MODEL=1` and `GDK_BACKEND=x11|wayland`.
+- Next steps if resumed: GPU interop (DMABUF/EGL or Wayland subsurface) to remove the CPU copy;
+  GTK keyboard/IM context → egui events; then interaction frame time and IME/DnD/scaling tests.
+- Do not merge this branch into production; PR 110 is the shipping path.

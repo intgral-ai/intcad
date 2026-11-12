@@ -1,0 +1,17 @@
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(gtk_wgpu_blit:42539): Gtk-WARNING **: 11:41:07.698: GModule (/nix/store/3s3pcv9mywb4042iswyvw0m6jgqvhwdj-fcitx5-with-addons-5.1.23/lib/gtk-3.0/3.0.0/immodules/im-fcitx5.so) initialization check failed: GLib version too old (micro mismatch)
+
+(gtk_wgpu_blit:42539): Gtk-WARNING **: 11:41:07.698: Loading IM context type 'fcitx' failed
+PROTO blit realize
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+PROTO blit wgpu backend=Vulkan adapter="AMD Radeon RX 9060 XT (RADV GFX1200)"
+PROTO blit format=Rgba8Unorm gl_format=0x1908
+SolidCraft graphics: GPU tessellation ready; bodies are evaluated on the GPU from now on
+PROTO load Started
+PROTO load Committed
+PROTO title Some("Assistant")
+PROTO load Finished
+PROTO ipc Some(Value { inner: TypedObjectRef { inner: 0x5555662a5480, type: JSCValue } })
+PROTO ipc Some(Value { inner: TypedObjectRef { inner: 0x55556668a230, type: JSCValue } })
