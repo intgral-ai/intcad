@@ -58,7 +58,7 @@ betas; 3.0.0-beta-3 or newer works), or remove it.
 ### Linux Flatpak
 
 Install Flatpak using your distribution's package manager. For an installation that receives
-updates, add Flathub for the required Freedesktop runtime and the SolidCraft application feed
+updates, add Flathub for the required GNOME runtime and the SolidCraft application feed
 to the same user installation:
 
 ```sh

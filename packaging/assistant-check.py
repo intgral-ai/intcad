@@ -11,8 +11,9 @@ The app gets folders of its own, so nothing of the user's is read or written, an
 check is turned off (SOLIDCRAFT_UPDATE_CHECK=0). A package check also takes the network away
 from the app it starts (docs/releasing.md): `--run-with` is where a sandbox goes, as in
 `--run-with "sandbox-exec -f packaging/macos/no-network.sb"`; on Linux the whole container has
-none. `--expect built-in` is for a system where the app is meant to draw the built-in
-conversation (no web view there).
+none. `--expect diagnostic` is for a run where the Assistant is meant to say why it has no
+web view (a native Wayland window, or a missing WebView2 runtime); it must still open the
+panel, not crash, and print the reason.
 `--screen` also saves a picture of the whole screen, which is the only picture the page is in:
 the app's own screenshot holds what the app draws, and the page is another window's. Leave it
 out on a person's machine. Windows has its own check, tools/windows-assistant-smoke.ps1.
@@ -115,7 +116,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--exe", required=True, help="the installed app's program file")
     parser.add_argument("--evidence", default="assistant-check", help="folder for the log and the pictures")
-    parser.add_argument("--expect", choices=("page", "built-in"), default="page")
+    parser.add_argument("--expect", choices=("page", "diagnostic"), default="page")
     parser.add_argument("--port", type=int, default=17979)
     parser.add_argument("--wait", type=float, default=90, help="seconds to wait for the page")
     parser.add_argument("--screen", action="store_true", help="also save a picture of the whole screen")
@@ -189,7 +190,8 @@ def main():
             checks.check(web.get("host") is True, "the app made its web view")
             checks.check(web.get("page") is True, "the Assistant's page loaded and reported in")
         else:
-            checks.check(web.get("host") is False, "no web view here, so the panel draws the built-in conversation")
+            checks.check(web.get("host") is False, "the app has no web view here")
+            checks.check(web.get("page") is False, "no page is shown without a host")
 
         # Pictures: what the app draws, and (asked for) the whole screen, which has the page in it.
         frame = evidence / "app-frame.png"
