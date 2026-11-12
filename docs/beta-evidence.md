@@ -410,11 +410,11 @@ and 956 unbaselined exceptions; #113 is not folded into this Beta. The Rust
 
 | Platform | Evidence | Result |
 |---|---|---|
-| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `359b68657e3a9909e728a9bd1b04c42e0ced13cc0e417fdeece85f473d5c3064` | Install/start verification run `43329290768` pending. |
+| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `359b68657e3a9909e728a9bd1b04c42e0ced13cc0e417fdeece85f473d5c3064` | Verification run `43329290768`: extracted and ran on the GitHub runner; `solidcraft-cli 0.1.0-beta.3` and `solidcraft 0.1.0-beta.3`; tar hash matched. |
 | Linux aarch64 | tar sha `a5b5c84adc8a...` | Content scan `markers=[]`, `unchecked=[]`; not launched (no aarch64 host). |
-| Windows x64 | MSI sha `3af65ae6597c2c59d2b3357f39ce1a7a76aa2ce7e726b47d3142c11abff8d1b0` | Install/start verification run `43329290768` pending. |
+| Windows x64 | MSI sha `3af65ae6597c2c59d2b3357f39ce1a7a76aa2ce7e726b47d3142c11abff8d1b0` | Verification run `43329290768` on a clean `windows-latest`: no existing install; admin extract and isolated `INSTALLFOLDER` both `solidcraft-cli 0.1.0-beta.3` (sha `EAFB6139…`); installed app sha `E300B505…` printed `solidcraft 0.1.0-beta.3`. |
 | Windows x86 / arm64 | content scans clean | not launched (no x86/arm64 host). |
-| macOS universal | DMG sha `133c60cc1497fad9f1d1654a498264f8d86a015a3f5ffe9f4e5903bc4f0cda3a` | Install/start verification run `43329290768` pending. |
+| macOS universal | DMG sha `133c60cc1497fad9f1d1654a498264f8d86a015a3f5ffe9f4e5903bc4f0cda3a` | Verification run `43329290768`: mounted; fat binary `x86_64 arm64`; `codesign` valid and satisfies its Designated Requirement; app printed `solidcraft 0.1.0-beta.3`; ejected cleanly. |
 
 The six descriptors (Linux x86_64/aarch64, macOS universal, Windows
 x64/x86/arm64) all bind `sourceRevision=b6aeb8de6...`; their `contents.json`
@@ -422,6 +422,7 @@ reports `markers=[]` and `unchecked=[]`, and the checked files match `build.json
 The stable-only #14/#15 integration stops are not part of the Beta descriptor
 path.
 
-Accepted gaps remain: unsigned/not notarized, no clean physical-machine GUI
+Verification run `43329290768` passed on all three platforms for this tested
+merge. Accepted gaps remain: unsigned/not notarized, no clean physical-machine GUI
 acceptance, and macOS/Windows real BYOK unverified. No tag or public release was
 created; `v0.1.0-beta.1` and its assets remain untouched.
