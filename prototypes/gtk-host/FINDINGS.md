@@ -13,22 +13,39 @@ Run on the host described in `docs/linux-webview-performance.md` (AMD RX 9060 XT
 
 ## Results
 
-| Check | Result |
-|---|---|
-| GTK window on native niri Wayland | yes (`gtk_host` xdg surface) |
-| Real scene GPU draw (GtkGLArea) | yes; the box renders and orbit/zoom changes it |
-| Render-rate loop (`PROTO_SPIN=1`, native) | **60–61 fps**, 16.67 ms/frame |
-| Idle CPU after load (native, no spin) | **1.8 %** of one process, ~254 MB RSS |
-| WebKitGTK page alone (native) | **yes** — `hello webkit` is painted |
-| Assistant page alone (native, WebKitGTK) | load events `Started/Committed/Finished`; console silent |
-| Real page **inside the GL host window** | **no painted page**: the WebView is allocated 430×1118 but stays blank while the GLArea is in the same window |
-| Page alone on Xvfb | not a valid test: WebKitGTK also blank there, even without GLArea; Xvfb lacks the accelerated path |
-| Page keyboard/focus/IME in host | not reached because the page never painted; `wtype`/xdotool text could not be seen |
+The controlled matrix first established the page's host protocol, then varied only page content
+and the GLArea. All runs used the same `openskyfall-assistant://` scheme, the same IPC shim, the
+same production `web::state` serializer and the same niri/XWayland environment.
 
-The negative result is reproducible with the WebView before or after the GLArea, with WebKit
-compositing disabled and with its DMABUF renderer disabled. It is a **GTK 3 limitation of two
-independent GL users in one window** in this environment, not a page/scheme failure: the same
-page engine paints when it is the only GL consumer.
+| page | GLArea | native Wayland | X11/XWayland | evidence |
+|---|---|---|---|---|
+| simple (visible heading/text/input) | no | page visible | page visible | `/tmp/opencode/proto4-wayland-*/simple-without.png`, `.../proto4-x11-*/...` |
+| simple | yes | page visible beside real GL scene | same | `simple-with.png` |
+| real Assistant | no | page visible (setup + composer) | same | `real-without.png` |
+| real Assistant | yes | page visible beside real GL scene | same | `real-with.png` |
+
+The initial blank was therefore **not** a GTK3/GL compositor conflict: the page had received no
+`window.__assistantHost.state(...)`, so `App.tsx` returned `null`. With the IPC shim and a valid
+initial state from the production serializer, the page renders in every group, including with the
+GLArea. `window.ipc` messages (the page's `ready`) arrive at the host.
+
+- Real scene render loop (native, `PROTO_SPIN=1`): **60–61 fps**, 16.67 ms/frame.
+- Idle native host (no spin): **1.8 % CPU**, ~254 MB RSS.
+- Typing `hello assistant` with `wtype` appears in the real composer.
+- Chinese IME: with the flake's matching `fcitx5-gtk` module (`GTK_IM_MODULE_FILE` pointing at a
+  cache built for the app's GTK/GLib), `nihao` produced the **candidate window** (你好, nihao, …)
+  and Space committed `你哈哦` (candidate 1) into the composer. Evidence:
+  `/tmp/opencode/ime-native4-candidates.png`, `ime-native4-text.png`.
+
+## What the prototype still is not
+
+- The CAD renderer is a small **prototype glow renderer** over the real engine scene/camera, not
+  the production wgpu viewport. GPU/rotation proof is real; production rendering integration is
+  not done.
+- The initial Assistant state is a fixture produced by the **production serializer** on an empty
+  session; it proves rendering/initialisation, not a live agent turn, tool approval or streaming.
+- Drag-and-drop, menu stacking, window resize/exit and package behaviour still need the
+  production host or a further prototype; none is claimed here.
 
 ## Other facts checked
 
@@ -41,15 +58,27 @@ page engine paints when it is the only GL consumer.
 - GTK 4 + WebKitGTK 6.0 uses GSK's single renderer and is the next experiment worth time-boxing;
   it was not built here. It would still replace the eframe/winit host and its menus/dialogs.
 
+## Controlled experiment (to fill from the rerun)
+
+| page | GLArea | what is checked |
+|---|---|---|
+| simple | without | visible background, heading and input box |
+| simple | with | the same, beside the real GL viewport |
+| real Assistant | without | DOM has `data-proto-state`, visible composer/setup |
+| real Assistant | with | the same, beside the real GL viewport |
+
+All four use the same `openskyfall-assistant://` scheme, the IPC shim, the production state
+serializer and the same resource/environment; the only intended variable is the GLArea and the
+page content. Logs record `state` injection, page `ipc` messages, load failures and WebKit
+process termination, not only load-finished.
+
 ## Recommendation
 
-Do **not** adopt the GTK 3 host as the production path on this evidence: it cannot show the
-Assistant page beside the CAD GL viewport in the same window. The two viable routes are:
+The GTK 3 host **can** host the real page and the real GL scene in one window, on both X11 and
+native Wayland; the earlier negative conclusion is withdrawn. The remaining cost is the host
+replacement itself (eframe/winit event loop, menus, dialogs, production wgpu viewport, drag and
+drop) and packaging, not page compositing.
 
-1. **WPE texture embedding** — keeps the existing winit host, imports WebKit frames as a wgpu
-   texture, and has the best embedding story; blocked on packaging a WPE runtime for Nix,
-   Flatpak and Snap and on a new licence/notice review.
-2. **GTK 4 + WebKit 6 single-renderer host** — still a large host replacement, but unlike GTK 3
-   it has one GSK scene graph; it needs a separate prototype before any migration.
-
-Until one is chosen and prototyped, X11/XWayland remains the supported Linux Assistant host.
+No migration is proposed without a separate decision. The next evidence should be a production
+renderer integration prototype (wgpu viewport in the GTK window) and the package matrix; WPE is
+no longer justified by a compositing failure, since there is none.

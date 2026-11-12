@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use glow::HasContext;
 use gtk::prelude::*;
-use webkit2gtk::{SettingsExt, URISchemeRequestExt, WebContextExt, WebViewExt};
+use webkit2gtk::{SettingsExt, URISchemeRequestExt, UserContentInjectedFrames, UserContentManagerExt, UserScript, UserScriptInjectionTime, WebContextExt, WebViewExt};
 use solidcraft_engine::Session;
 use solidcraft_render::{Camera, Mat4, Scene};
 
@@ -203,7 +203,15 @@ fn main() {
     area.set_can_focus(true);
     area.set_required_version(3, 3);
     area.add_events(gtk::gdk::EventMask::BUTTON_PRESS_MASK | gtk::gdk::EventMask::BUTTON_RELEASE_MASK | gtk::gdk::EventMask::POINTER_MOTION_MASK | gtk::gdk::EventMask::SCROLL_MASK);
-    row.pack_start(&area, true, true, 0);
+    let no_gl = std::env::var("PROTO_NO_GL").is_ok_and(|v| v != "0");
+    if no_gl {
+        let placeholder = gtk::Label::new(Some("GTK host: GLArea omitted for the no-GL control"));
+        placeholder.set_hexpand(true);
+        placeholder.set_vexpand(true);
+        row.pack_start(&placeholder, true, true, 0);
+    } else {
+        row.pack_start(&area, true, true, 0);
+    }
 
     let dist = std::env::var("PROTO_DIST").unwrap_or_else(|_| {
         format!("{}/packages/assistant-web/dist", std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default())
@@ -235,6 +243,21 @@ fn main() {
         }
     });
     let web = webkit2gtk::WebView::with_context(&context);
+    if let Some(manager) = web.user_content_manager() {
+        manager.register_script_message_handler("ipc");
+        let shim = UserScript::new(
+            "window.ipc = { postMessage: function (m) { window.webkit.messageHandlers.ipc.postMessage(m); } };",
+            UserContentInjectedFrames::TopFrame,
+            UserScriptInjectionTime::Start,
+            &[],
+            &[],
+        );
+        manager.add_script(&shim);
+        manager.connect_script_message_received(Some("ipc"), |_, result| {
+            println!("PROTO ipc {:?}", result.js_value());
+        });
+    }
+    web.connect_web_process_terminated(|_, reason| eprintln!("PROTO web process terminated: {reason:?}"));
     web.set_size_request(430, -1);
     web.connect_size_allocate(|w, a| println!("PROTO web alloc {}x{} at {}x{}", a.width(), a.height(), a.x(), a.y()));
     web.set_hexpand(false);
@@ -245,7 +268,22 @@ fn main() {
         eprintln!("PROTO load failed {uri}: {error}");
         false
     });
-    web.connect_load_changed(|_, event| println!("PROTO load {event:?}"));
+    let mut production = solidcraft_ui_egui::SolveApp::new(Session::default(), solidcraft_ui_egui::Services::default());
+    let state_json = solidcraft_ui_egui::agent_chat::web::state(&mut production);
+    println!("PROTO state bytes={} head={}", state_json.len(), state_json.chars().take(100).collect::<String>());
+    let state_for_web = state_json.clone();
+    let web_for_state = web.clone();
+    web.connect_load_changed(move |_, event| {
+        println!("PROTO load {event:?}");
+        if event == webkit2gtk::LoadEvent::Finished {
+            let js = format!("if (window.__assistantHost) {{ window.__assistantHost.state({state_for_web}); document.body.setAttribute('data-proto-state','pushed'); }} else {{ window.ipc && window.ipc.postMessage(JSON.stringify({{type:'log',text:'no host object'}})); }}");
+            let web_later = web_for_state.clone();
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                web_later.run_javascript(&js, None::<&gtk::gio::Cancellable>, |_| {});
+                gtk::glib::ControlFlow::Break
+            });
+        }
+    });
     if let Some(settings) = WebViewExt::settings(&web) {
         settings.set_enable_write_console_messages_to_stdout(true);
     }
@@ -371,8 +409,13 @@ fn main() {
     // The page gets the keyboard first once the window is up: a native Wayland compositor has no
     // pointer injection here, so typing into the page can be driven with `wtype`.
     let web_focus = web.clone();
+    let window_focus = window.clone();
+    let area_focus = area.clone();
     gtk::glib::timeout_add_local(Duration::from_millis(700), move || {
+        window_focus.set_focus(Some(&web_focus));
         web_focus.grab_focus();
+        println!("PROTO focus web={} area={}", web_focus.has_focus(), area_focus.has_focus());
+        web_focus.run_javascript("setTimeout(function(){var t=document.querySelector('textarea'); if(t){t.focus(); t.setAttribute('data-proto-focused','yes');}},100);", None::<&gtk::gio::Cancellable>, |_| {});
         gtk::glib::ControlFlow::Break
     });
 

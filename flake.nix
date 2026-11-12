@@ -101,8 +101,11 @@
             pkgs.rustfmt
             pkgs.clippy
             pkgs.pkg-config
+            pkgs.fcitx5
+            pkgs.fcitx5-gtk
           ];
           buildInputs = runtimeLibs pkgs;
+          GTK_PATH = "${pkgs.fcitx5-gtk}/lib/gtk-3.0";
           LD_LIBRARY_PATH = libraryPath pkgs;
           # Under target/, which .gitignore already covers.
           CARGO_TARGET_DIR = "target/nix";
