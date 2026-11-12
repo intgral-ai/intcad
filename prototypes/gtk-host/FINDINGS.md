@@ -35,7 +35,8 @@ GLArea. `window.ipc` messages (the page's `ready`) arrive at the host.
 - Chinese IME: with the flake's matching `fcitx5-gtk` module (`GTK_IM_MODULE_FILE` pointing at a
   cache built for the app's GTK/GLib), `nihao` produced the **candidate window** (你好, nihao, …)
   and Space committed `你哈哦` (candidate 1) into the composer. Evidence:
-  `/tmp/opencode/ime-native4-candidates.png`, `ime-native4-text.png`.
+  `/tmp/opencode/ime-native4-candidates.png`, `ime-native4-text.png`. On X11/XWayland the same
+  fcitx module gives `/tmp/opencode/x11-ime-candidates.png`, `x11-ime-text.png` (`你哈哦` committed).
 
 ## What the prototype still is not
 
