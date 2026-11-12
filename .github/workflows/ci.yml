@@ -369,6 +369,8 @@ jobs:
         with:
           name: selection-plan
           path: selection
+      - name: Free unused runner SDKs
+        run: scripts/ci/free-disk.sh
       - name: Software Vulkan and native build dependencies
         run: |
           sudo apt-get update
@@ -459,6 +461,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Free unused runner SDKs
+        run: scripts/ci/free-disk.sh
       - run: scripts/ci/build-jobs.sh
       - name: Native build dependencies
         run: |
