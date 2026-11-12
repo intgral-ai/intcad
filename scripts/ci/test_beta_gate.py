@@ -95,7 +95,7 @@ class Matrix(unittest.TestCase):
 
     def test_total_action_count_must_match_the_reviewed_run(self):
         self.exceptions.write_text(json.dumps(manifest(total=4)))
-        with self.assertRaisesRegex(beta_gate.BetaGateError, "expected 4"):
+        with self.assertRaisesRegex(beta_gate.BetaGateError, "at least 4"):
             beta_gate.evaluate_matrix(write_matrix(self.matrix), self.exceptions)
 
     def test_unbaselined_failures_are_itemised_and_a_new_one_is_rejected(self):
