@@ -395,3 +395,27 @@ Get-AuthenticodeSignature 'C:\Program Files\SolidCraft\solidcraft.exe' |
 Then run the GUI and the BYOK flow on a clean physical machine. Record the exact
 candidate SHA, asset hash, provider, model, prompt, report/snapshot ids and
 screenshots. A run on another SHA is not evidence for this candidate.
+
+## 6. Beta.3 candidate evidence (run 43241626115)
+
+Candidate head `e04a00b2662d062e528e59ee26d0127d48f2e1a8`; PR #106 tested
+merge `196b44b15d0cdd38947af3e60c3b40fe4f013b33` (tree
+`49fd420d3c94245acb35b6cfa6ba068b0e228357`). All descriptors below bind that
+`sourceRevision`.
+
+| Platform | Evidence | Result |
+|---|---|---|
+| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `a9f0426a7561cd35bb0591ef1a4136e953df198ff6d758b1e0f99b05aac3a5bd` | Extracted in a clean `ubuntu:22.04` container: `solidcraft-cli 0.1.0-beta.3`, `solidcraft 0.1.0-beta.3`. |
+| Linux aarch64 | tar sha `8da20bb8cd08805f7d77d8d499f979b34fa2332a46f2e1f73bea614a6b9e1f1f` | Content scan `markers=[]`, `unchecked=[]`; not launched (no aarch64 host). |
+| Windows x64 | MSI sha `95bb005ab6762564bc20dff86b7f346e1f6628f3521c0947f70864d725e8348a` | MSI cabinet CLI/app `FileVersion/ProductVersion 0.1.0-beta.3`; install/start check pending. |
+| Windows x86 / arm64 | content scans clean | not launched (no x86/arm64 host). |
+| macOS universal | pending | First x86_64 build job was cancelled by hosted-runner capacity; retried in the same run. The aarch64 half already reports `solidcraft 0.1.0-beta.3`. |
+
+The package descriptors have `markers=[]` and `unchecked=[]`; the checked files
+match `build.json`. The stable-only #14/#15 integration stops are not part of
+the Beta descriptor path.
+
+Accepted gaps remain: unsigned/not notarized, no clean physical-machine GUI
+acceptance, and macOS/Windows real BYOK unverified. No tag or public release was
+created; `v0.1.0-beta.1` and its assets remain untouched.
+
