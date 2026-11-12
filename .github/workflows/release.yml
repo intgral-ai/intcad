@@ -273,11 +273,18 @@ jobs:
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/linux
+      - name: Install libarchive (bsdtar) for .PKGINFO/.MTREE
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libarchive-tools
       - id: pkgver
         name: Arch version
         env:
           ARCH: ${{ matrix.arch }}
         run: |
+          # Arch pkgver allows no hyphen. The arch-package action derives its version from
+          # the tarball name with ^([A-Za-z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+[^-_]*)-linux-...$,
+          # so a prerelease such as 0.1.0-beta.1 must be handed over as 0.1.0beta.1 or the
+          # action falls back to 0.0.0. The original tarball stays next to the alias; the
+          # package-evidence step below prefers the exact checkout version when both exist.
           pkgver="${VERSION//-/}"
           echo "pkgver=$pkgver" >>"$GITHUB_OUTPUT"
           if [ "$pkgver" != "$VERSION" ]; then
@@ -293,13 +300,26 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PKGVER: ${{ steps.pkgver.outputs.pkgver }}
         run: sudo mv "dist/release/solidcraft-$PKGVER-linux-$ARCH.pkg.tar.zst" "dist/release/solidcraft-$VERSION-linux-$ARCH.pkg.tar.zst"
+      # The arch-package action writes a fixed depends list with no input for more. The app
+      # links libgtk-3.so.0 and libwebkit2gtk-4.1.so.0 directly, so the package must declare
+      # Arch's gtk3 and webkit2gtk-4.1 or a clean install will not start. Rewrite .PKGINFO
+      # (package files and .MTREE are untouched) and then fail unless both are there.
+      - name: Declare the Assistant's runtime libraries
+        env:
+          PKG: dist/release/solidcraft-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+        run: packaging/linux/arch-depends.sh "$PKG" gtk3 webkit2gtk-4.1
       - name: Check the package
         env:
           PKG: dist/release/solidcraft-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
         run: |
           tar --zstd -tf "$PKG" | grep -E '^usr/bin/solidcraft$|^usr/bin/solidcraft-cli$|^usr/share/applications/io\.tangencylabs\.solidcraft\.desktop$'
-          tar --zstd -xOf "$PKG" .PKGINFO | grep -E '^(pkgname|pkgver|arch) = '
-          tar --zstd -xOf "$PKG" .PKGINFO | grep -qx 'pkgname = io.tangencylabs.solidcraft'
+          info="$(mktemp)"
+          tar --zstd -xOf "$PKG" .PKGINFO >"$info"
+          grep -E '^(pkgname|pkgver|arch) = ' "$info"
+          grep -qx 'pkgname = io.tangencylabs.solidcraft' "$info"
+          grep -qx 'depend = gtk3' "$info"
+          grep -qx 'depend = webkit2gtk-4.1' "$info"
+          rm -f "$info"
       - *package-evidence
       - *upload-package
       - *upload-evidence
@@ -339,7 +359,18 @@ jobs:
           snap info --verbose "$snap_file" | head -n 12
           snap connections solidcraft
           solidcraft.cli --version
-          echo 'Snap desktop smoke BLOCKED: no supported updater-off switch; #14 installed runtime validation is still required.' >>"$GITHUB_STEP_SUMMARY"
+          # The gnome extension on core24 is gnome-46-2404. Its content snap stage-packages
+          # libwebkit2gtk-4.1-0 and its SDK supplies GTK 3, so a clean install gets the
+          # Assistant's two libraries without duplicating them in this snap. Check the
+          # mounted content and its connection; the app itself is not started here.
+          snap connections solidcraft | grep -F 'gnome-46-2404'
+          for lib in libgtk-3.so.0 libwebkit2gtk-4.1.so.0; do
+            if [ -z "$(find -L /snap/gnome-46-2404/current -name "$lib" -print -quit)" ]; then
+              echo "::error::the gnome-46-2404 content snap does not provide $lib"
+              exit 1
+            fi
+          done
+          echo 'Snap Assistant desktop smoke NOT run: a strict snap uses the host network, and release policy forbids starting a network-enabled desktop. The gnome extension supplies GTK 3 and WebKitGTK 4.1 (checked above); run packaging/linux/snap-smoke.py on hardware with a session for the Assistant page.' >>"$GITHUB_STEP_SUMMARY"
       - *package-evidence
       - *upload-package
       - *upload-evidence
@@ -443,26 +474,13 @@ jobs:
       # and Gatekeeper is not asked: an ad-hoc signature does not pass it on a user's Mac, and
       # this step says nothing about that.
       - name: Copy the app out of the disk image and open the Assistant
+        # The script checks the embedded page, inventory and notices inside the installed copy,
+        # verifies the local signature, proves the no-network profile works, and opens the
+        # Assistant in both halves of the universal app where the runner can run them.
         run: |
-          DMG="$(find dist/release -maxdepth 1 -name '*.dmg' -print -quit)"
-          MNT="$(mktemp -d)"
-          APPS="$(mktemp -d)"
-          hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
-          cp -R "$MNT/SolidCraft.app" "$APPS/"
-          hdiutil detach "$MNT"
-          EXE="$APPS/SolidCraft.app/Contents/MacOS/SolidCraft"
-          OFFLINE=(sandbox-exec -f "$PWD/packaging/macos/no-network.sb")
-          if "${OFFLINE[@]}" /usr/bin/curl -s -m 5 -o /dev/null https://api.github.com/; then
-            echo "::error::the sandbox does not take the network away on this runner"
-            exit 1
-          fi
-          python3 packaging/assistant-check.py --run-with "${OFFLINE[*]}" --exe "$EXE" --evidence "$RUNNER_TEMP/installed-check/native" --screen
-          # The other half of the universal file, where this runner can run it.
-          if arch -x86_64 /usr/bin/true 2>/dev/null; then
-            python3 packaging/assistant-check.py --run-with "${OFFLINE[*]} arch -x86_64" --exe "$EXE" --evidence "$RUNNER_TEMP/installed-check/x86_64" --screen
-          else
-            echo 'macOS installed check: no Rosetta on this runner, so the Intel half of the app was not started.' >>"$GITHUB_STEP_SUMMARY"
-          fi
+          packaging/macos/installed-check.sh \
+            "$(find dist/release -maxdepth 1 -name '*.dmg' -print -quit)" \
+            "$RUNNER_TEMP/installed-check"
       - name: Keep the installed check's log and pictures
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

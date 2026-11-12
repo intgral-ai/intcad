@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise desktop startup and modelling in the installed Flatpak, without images.
+"""Exercise desktop startup, modelling and the Assistant in the installed Flatpak.
 
 Uses the app's normal sandbox permissions. The control client runs inside that
 sandbox, so this does not grant host network access or save Flatpak overrides.
 Each headless backend has private runtime/configuration directories and a bus.
+The Assistant's page is served by the app itself, so opening it needs no network.
 """
 import argparse
 import base64
@@ -63,7 +64,35 @@ for request in '{"id":2,"method":"engine.execute","params":{"command":"solid.box
   IFS= read -r -t 30 reply <&3
   printf '%s\n' "$reply"
 done
-printf '{"id":4,"method":"ui.screenshot","params":{"path":"%s/frame.png"}}\n' "$work" >&3
+# The Assistant: open the panel and wait for the app's own page to report in. The page is
+# carried inside the app, so this needs no network. Hide the start page first, as it covers
+# the workspace (and the panel) when it happens to be showing.
+printf '{"id":4,"method":"ui.home","params":{"open":false}}\n' >&3
+IFS= read -r -t 30 reply <&3
+printf '%s\n' "$reply"
+printf '{"id":5,"method":"ui.agent_chat","params":{"open":true}}\n' >&3
+IFS= read -r -t 30 reply <&3
+printf '%s\n' "$reply"
+id=6
+deadline=$((SECONDS + 120))
+while :; do
+  printf '{"id":%d,"method":"ui.agent_chat","params":{}}\n' "$id" >&3
+  if ! IFS= read -r -t 30 reply <&3; then
+    echo "the Assistant state got no reply" >&2
+    exit 1
+  fi
+  printf '%s\n' "$reply"
+  if printf '%s' "$reply" | grep -Eq '"page"[[:space:]]*:[[:space:]]*true|"host"[[:space:]]*:[[:space:]]*false|"ok"[[:space:]]*:[[:space:]]*false'; then
+    break
+  fi
+  if ((SECONDS >= deadline)); then
+    echo "the Assistant page never loaded: $reply" >&2
+    exit 1
+  fi
+  sleep .25
+  id=$((id + 1))
+done
+printf '{"id":%d,"method":"ui.screenshot","params":{"path":"%s/frame.png"}}\n' "$((id + 1))" "$work" >&3
 IFS= read -r -t 30 reply <&3
 printf '%s\n' "$reply"
 base64 -w0 "$work/frame.png"
@@ -176,6 +205,21 @@ def frame_statistics(png):
     return {"width": width, "height": height, "nonblack": nonblack, "pixels": width * height}
 
 
+def validate_assistant(replies):
+    """The Assistant panel is open and its own page loaded and reported in."""
+    if not replies:
+        raise ValueError("the Assistant returned no state")
+    for reply in replies:
+        if reply.get("ok") is not True:
+            raise ValueError(f"the Assistant failed: {reply}")
+    state = replies[-1].get("result") or {}
+    web = state.get("webView") or {}
+    if state.get("open") is not True:
+        raise ValueError(f"the Assistant panel did not open: {state}")
+    if web.get("host") is not True or web.get("page") is not True:
+        raise ValueError(f"the Assistant's page did not load: {web}")
+
+
 def probe(gl_saved_four=False):
     shell = SANDBOX_PROBE
     if gl_saved_four:
@@ -184,23 +228,31 @@ def probe(gl_saved_four=False):
                               'printf \'{"msaa":4}\' >"$XDG_DATA_HOME/solidcraft/graphics.json"\n'
                               'export WGPU_BACKEND=gl\nsolidcraft --control')
     result = subprocess.run(["flatpak", "run", "--user", "--command=bash", APP_ID, "-c", shell],
-                            text=True, capture_output=True, timeout=125)
+                            text=True, capture_output=True, timeout=240)
     if result.returncode:
         raise RuntimeError(f"Flatpak desktop exited {result.returncode}\n{result.stderr[-8000:]}")
     lines = result.stdout.splitlines()
-    if len(lines) != 5 or len(lines[4]) > ((MAX_PNG_BYTES + 2) // 3) * 4:
+    if not lines or lines[-1].startswith("{"):
         raise ValueError("invalid presented-frame response")
-    renderer = validate_replies("\n".join(lines[:3]))
-    capture = json.loads(lines[3])
-    if capture.get("id") != 4 or capture.get("ok") is not True or renderer != "gpu":
+    json_lines = [line for line in lines if line.startswith("{")]
+    # ui.inspect, engine.execute, document.inspect; then the Assistant's replies; then the
+    # screenshot reply. The presented frame is the one line that is not JSON.
+    if len(json_lines) < 5 or len(lines[-1]) > ((MAX_PNG_BYTES + 2) // 3) * 4:
+        raise ValueError("invalid presented-frame response")
+    renderer = validate_replies("\n".join(json_lines[:3]))
+    assistant = [json.loads(line) for line in json_lines[3:-1]]
+    validate_assistant(assistant)
+    capture = json.loads(json_lines[-1])
+    if capture.get("id") != len(json_lines) or capture.get("ok") is not True or renderer != "gpu":
         raise ValueError("GPU presented-frame capture failed")
-    statistics = frame_statistics(base64.b64decode(lines[4], validate=True))
+    statistics = frame_statistics(base64.b64decode(lines[-1], validate=True))
     if (capture["result"]["width"], capture["result"]["height"]) != (statistics["width"], statistics["height"]):
         raise ValueError("presented-frame dimensions disagree")
     if gl_saved_four and "SolidCraft graphics: Gl, MSAA 1x (requested 4x)" not in result.stderr:
         raise ValueError("forced GL did not apply the safe sample count")
     mode = "GL saved 4x" if gl_saved_four else "default backend"
-    print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, box=6000 mm³, frame={statistics}")
+    print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, box=6000 mm³, "
+          f"Assistant page loaded, frame={statistics}")
 
 
 def run_backend(backend):
@@ -234,10 +286,10 @@ def run_backend(backend):
                             raise RuntimeError("headless Weston failed: " + (Path(temporary) / "weston.log").read_text())
                         time.sleep(.1)
                 command += [sys.executable, str(Path(__file__).resolve()), "--probe"]
-                subprocess.run(command, env=env, check=True, timeout=150)
+                subprocess.run(command, env=env, check=True, timeout=300)
                 if backend == "wayland":
-                    subprocess.run(command + ["--gl-saved-four"], env=env, check=True, timeout=150)
-                print(f"{backend}: default sandbox desktop startup and modelling PASS")
+                    subprocess.run(command + ["--gl-saved-four"], env=env, check=True, timeout=300)
+                print(f"{backend}: default sandbox desktop startup, modelling and Assistant PASS")
             finally:
                 if compositor:
                     compositor.terminate()

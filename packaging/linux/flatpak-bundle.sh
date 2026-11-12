@@ -8,10 +8,11 @@
 # TARBALL defaults to $DIST/solidcraft-<version>-linux-<arch>.tar.gz from package.sh. The bundle
 # is built for the host architecture (x86_64 or aarch64), which must match the tarball's.
 # Needs flatpak, flatpak-builder and the SVG pixbuf loader (librsvg2-common) for the host's
-# `appstreamcli compose`; the freedesktop runtime and SDK named in the manifest are
-# installed per-user from Flathub. Unless --no-test, the bundle is installed per-user, the CLI
-# is checked, and the desktop creates/measures a box on headless X11 and Wayland. The desktop
-# check also needs python3, dbus-x11, xvfb, xauth and weston; no screenshots are produced.
+# `appstreamcli compose`; the GNOME 51 runtime and SDK named in the manifest are installed
+# per-user from Flathub. Unless --no-test, the bundle is installed per-user, the CLI is checked,
+# and the desktop creates/measures a box and opens the Assistant's page on headless X11 and
+# Wayland. The desktop check also needs python3, dbus-x11, xvfb, xauth and weston; no screenshots
+# are produced.
 # Manifest: packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml.
 # Adapted from PhotoCraft's (storytold/photocraft, Apache-2.0; see ATTRIBUTION.md).
 set -euo pipefail
@@ -25,7 +26,7 @@ TARBALL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-test) TEST=0; shift ;;
-    -h | --help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     -*) echo "unknown argument: $1" >&2; exit 2 ;;
     *) TARBALL="$1"; shift ;;
   esac
@@ -59,7 +60,7 @@ flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --forc
   --default-branch=stable --repo="$WORK/repo" --state-dir="$WORK/state" "$WORK/build" "$WORK/$APP_ID.yml"
 
 OUT="$DIST/$BASENAME.flatpak"
-# --runtime-repo lets `flatpak install` fetch the freedesktop runtime from Flathub if missing.
+# --runtime-repo lets `flatpak install` fetch the GNOME runtime from Flathub if missing.
 flatpak build-bundle --runtime-repo="$FLATHUB" "$WORK/repo" "$OUT" "$APP_ID" stable
 echo "wrote $OUT"
 

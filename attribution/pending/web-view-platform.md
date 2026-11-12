@@ -1,0 +1,3 @@
+| File | Author | Source | Licence |
+|---|---|---|---|
+| packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt | GTK Team, WebKit contributors, Apple Inc., Microsoft Corporation, the gtk-rs and wry authors; notice compiled by SolidCraft contributors | Original compilation of the notices for the desktop web view: system GTK 3 3.24.x (LGPL-2.1-or-later) and WebKitGTK 4.1 2.4x/2.5x (LGPL and BSD-2-Clause) dynamically linked by wry 0.57.2 / gtk 0.18.2 / webkit2gtk 2.0.2 (Apache-2.0 OR MIT / MIT); licence texts from the FSF, GTK, WebKit and the crates' own files; Microsoft Edge WebView2 Runtime and the WebView2 SDK are not redistributed. See docs/web-view-licences.md | LGPL-2.1-or-later, BSD-2-Clause and MIT for the quoted components; the compilation is MIT OR Apache-2.0 |
