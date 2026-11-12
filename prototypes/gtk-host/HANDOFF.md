@@ -1,12 +1,13 @@
 # Handoff: Assistant, packaging and GTK host prototype
 
-Last updated from run `43178617405` (in progress) and prototype `c396b9196`.
+Last updated from run `43187753411` (in progress) and prototype `0e83f84d4`.
 
 ## Branches / PRs
 
 - **PR 110**, branch `integration/pil-290-assistant`: one Web Assistant page, Linux focus/idle
-  fixes, packaging. Head `01e7fdb58` (includes the Windows UpgradeCode fix and the gating Snap
-  offline Assistant step). Base `pil-290-packaging`.
+  fixes, packaging. Head `bf3acc2b6` (Windows UpgradeCode/ARP fixes, gating Snap offline
+  Assistant with the network-namespace isolation proof, nightly-test update). Base
+  `pil-290-packaging`.
 - **PR 111**, branch `prototype/gtk-host`: disposable GTK 3 host evidence. Head `c396b9196`.
 
 ## Package run evidence
@@ -22,8 +23,14 @@ Last updated from run `43178617405` (in progress) and prototype `c396b9196`.
     tessellation with MESA-EGL DRI3). x86_64 passes the same code; open aarch64 gap.
   - Windows x64 failed because the MSI reports `{GUID}` and the script compared unbraced text;
     fixed in `01e7fdb58`. Windows x86/arm64 were not conclusive before cancellation.
-- `43178617405` at `01e7fdb58` (in progress): exact-SHA run for the Windows UpgradeCode fix,
-  Flatpak aarch64 retry and gating Snap offline step.
+- `43178617405` at `01e7fdb58`: Linux both, Web, FreeBSD, macOS builds/universal, Arch both,
+  Snap both (offline Assistant), Flatpak both passed. Windows arm64 passed; Windows x64/x86
+  failed after installing/removing the MSI because the ARP DisplayVersion is the MSI's numeric
+  `0.1.0` while the script expected the app's `0.1.0-beta.4`. Fixed in `bf3acc2b6`: ARP is
+  compared with `$meta.ProductVersion`; `solidcraft-cli --version` must report the full release.
+- `43187753411` at `bf3acc2b6` (in progress): final exact-SHA run for Windows x64/x86, Snap
+  isolation, Flatpak aarch64 and regressions.
+
 
 ## GTK host prototype
 
@@ -35,8 +42,10 @@ Last updated from run `43178617405` (in progress) and prototype `c396b9196`.
 - Idle comparison withdrawn: the GTK blit's repaint scheduling was broken (one-frame loop), so
   the 0% figure is not comparable. Production eframe/wry page-open 57% CPU/668 MB + WebKit 368 MB
   is a single-host observation; page closed 0%/609 MB. The working code repaints on a 16 ms timer.
-- Gaps: per-frame GPU→CPU→GPU copy (unmeasured interaction); `wtype` text does not reach the page
-  composer in the blit window (focus); DnD/scaling/menu/exit; live agent turn.
+- Independent review found the later repaint/performance experiment broken (one-frame loop, DPI,
+  colour, no input, lifecycle); it was reverted to the working `2c93231d8` and the idle/53 fps
+  comparison is withdrawn. Gaps: CPU-copy interaction cost; DPI; input path; focus/IME; DnD/
+  scaling/menu/exit; live agent turn.
 - Docs: `RESPONSIBILITIES.md`, `PRODUCTION-RENDERER.md`, `ARCHITECTURE.md`.
 
 ## Next actions
