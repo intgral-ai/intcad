@@ -1,10 +1,16 @@
-# Nonpublishing full validation of this exact PR/group/manual checkout, never an
-# older candidate. A changed promotion merge SHA requires a rebuild, not retagging.
+# Nonpublishing full validation of this exact PR/group checkout, never an older
+# candidate. A changed promotion merge SHA requires a rebuild, not retagging.
+# A manual dispatch checks out the selected ref and creates a diagnostic context,
+# not the required release-gate context.
 name: Release gate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # A candidate is fixed by an explicit transition, not by every push.
+    # Preparation commits stay on the direct affected CI; a ready PR that gains
+    # a commit has no release-gate for the new SHA until it is marked draft and
+    # ready again.  Draft runs still report the required context, but fail.
+    types: [opened, reopened, ready_for_review]
     branches: [main]
   merge_group:
     types: [checks_requested]
@@ -16,14 +22,41 @@ permissions:
   actions: read
 
 concurrency:
+  # Never cancel a running candidate from this gate.  The reusable ci/rig
+  # workflows use their own caller/ref-scoped groups, so they do not collide
+  # with another pull request or task.
   group: release-gate-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  candidate:
+    name: Candidate mode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      verify: ${{ steps.state.outputs.verify }}
+      reason: ${{ steps.state.outputs.reason }}
+      context: ${{ steps.state.outputs.context }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: state
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          MERGE_BASE: ${{ github.event.merge_group.base_ref }}
+          MERGE_HEAD: ${{ github.event.merge_group.head_ref }}
+        run: python3 -I scripts/ci/release_candidate.py --out "$GITHUB_OUTPUT"
+
   ci:
     # Merge groups have no branches filter in Actions. Develop groups use their
     # ordinary ci context; the release context is required only for main.
-    if: github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main'
+    needs: [candidate]
+    if: needs.candidate.outputs.verify == 'true' && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
     uses: ./.github/workflows/ci.yml
     with:
       validation_mode: full
@@ -31,22 +64,25 @@ jobs:
       cross_compile: true
 
   kernel-rig:
-    if: github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main'
+    needs: [candidate]
+    if: needs.candidate.outputs.verify == 'true' && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
     uses: ./.github/workflows/kernel-rig.yml
     with:
       full_validation: true
 
   packages:
-    if: github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main'
+    needs: [candidate]
+    if: needs.candidate.outputs.verify == 'true' && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
     uses: ./.github/workflows/release.yml
 
   beta-gate:
     name: Beta promotion gate
-    needs: [ci, kernel-rig, packages]
+    needs: [candidate, ci, kernel-rig, packages]
     # A Beta promotion is a same-repository release/vX.Y.Z-beta.N PR to main.
-    # The stable release path never takes this branch.
+    # The stable release path never takes this branch.  The Beta gate only runs
+    # after the candidate jobs and never on a draft/preparation run.
     if: >-
-      always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+      needs.candidate.outputs.verify == 'true' && always() && github.event_name == 'pull_request' && github.base_ref == 'main'
       && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.')
     runs-on: ubuntu-24.04
     steps:
@@ -84,16 +120,38 @@ jobs:
             --plan selection/plan.json --evidence evidence --matrix matrix \
             --properties properties --jobs jobs.json \
             --exceptions tests/action_matrix/beta-exceptions.json --out beta-gate.json
+      - name: Record execution identity for offline re-judgment
+        # Diagnostic evidence only: a recorder failure must not change the
+        # formal Beta decision or block a valid candidate.
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 -I scripts/ci/rejudge.py record \
+            --root . \
+            --plan selection/plan.json --evidence evidence --matrix matrix \
+            --properties properties --jobs jobs.json \
+            --exceptions tests/action_matrix/beta-exceptions.json \
+            --baseline tests/action_matrix/baseline.json \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --repository "$GITHUB_REPOSITORY" --workflow "$GITHUB_WORKFLOW" \
+            --event "$GITHUB_EVENT_NAME" \
+            --runner-os "$RUNNER_OS" --runner-arch "$RUNNER_ARCH" \
+            --runner-image "${ImageOS:-}" \
+            --tree-sha "$(git rev-parse 'HEAD^{tree}')" \
+            --out execution.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: beta-gate-evidence
-          path: beta-gate.json
+          path: |
+            beta-gate.json
+            execution.json
           if-no-files-found: error
 
   release-gate:
-    name: release-gate
-    needs: [ci, kernel-rig, packages, beta-gate]
+    name: ${{ needs.candidate.outputs.context }}
+    needs: [candidate, ci, kernel-rig, packages, beta-gate]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -101,30 +159,35 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Refuse an unfixed candidate
+        if: needs.candidate.outputs.verify != 'true'
+        run: |
+          echo "::error::Release gate not started: ${{ needs.candidate.outputs.reason }}"
+          exit 1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        if: needs.candidate.outputs.verify == 'true' && always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
         with:
           name: selection-plan
           path: selection
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        if: needs.candidate.outputs.verify == 'true' && always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
         with:
           pattern: evidence-*
           path: evidence
           merge-multiple: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        if: needs.candidate.outputs.verify == 'true' && always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
         with:
           pattern: package-evidence-*
           path: package-evidence
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        if: needs.candidate.outputs.verify == 'true' && always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
         with:
           name: kernel-rig-handoff-${{ github.sha }}
           path: rig-handoff
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: >-
-          always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+          needs.candidate.outputs.verify == 'true' && always() && github.event_name == 'pull_request' && github.base_ref == 'main'
           && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.')
         with:
           name: beta-gate-evidence
@@ -138,7 +201,13 @@ jobs:
           GROUP_HEAD: ${{ github.event.merge_group.head_ref }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          CANDIDATE_VERIFY: ${{ needs.candidate.outputs.verify }}
+          CANDIDATE_REASON: ${{ needs.candidate.outputs.reason }}
         run: |
+          if [ "$CANDIDATE_VERIFY" != "true" ]; then
+            echo "::error::Release gate not started: $CANDIDATE_REASON"
+            exit 1
+          fi
           python3 - <<'PY'
           import hashlib, json, os, re, subprocess, sys
           from pathlib import Path

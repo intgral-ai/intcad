@@ -16,7 +16,7 @@ description: "Use when a SolidCraft change is slow, blocks the window, runs long
 - Report medians with the range, the machine, and the cases. The pattern to follow is `docs/perf.md`: what was slow, why, the result, and proof that nothing changed (same bodies, volumes, areas and triangle counts).
 - A speed-up never skips work on a mesh's box: decide with the exact bounds (`Body::exact_bounds`, grown by the record's tolerance as `apart` in `crates/kernel/src/ops.rs` does). A mesh is for display, export, previews and mesh bodies.
 - Do not rewrite kernel code for speed: the kernel is being replaced, and kernel work is paused. Report a slow case with its file under the `kernel-perf` label (CONTRIBUTING.md, "Where help is wanted most").
-- Pull requests run only the tests for what they touch; geometry-heavy tests run in the merge queue. Use `cargo xtask test` with the `ci` profile locally (`skills/solidcraft-tests/SKILL.md`).
+- Pull requests run only the tests for what they touch; geometry-heavy tests run in `native-baseline.yml` and the fixed-SHA `release-gate`. Use `cargo xtask test` with the `ci` profile locally (`skills/solidcraft-tests/SKILL.md`, `docs/validation-policy.md`).
 
 ## The browser build
 - Everything below the apps must build for `wasm32-unknown-unknown`: `cargo xtask wasm` checks every library crate and the web app, and is part of `cargo xtask ci`. Do not add a dependency that cannot.

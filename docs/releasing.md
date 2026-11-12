@@ -21,17 +21,50 @@ versions with `cargo update --workspace --offline`, and folds pending formats wi
 This page does not authorize making those changes now.
 
 Record the **final tested checkout SHA**, not just a branch, tag or version. The
-release gate runs on the main-target PR merge SHA or main merge-group SHA, and can
-also be called manually or by a reusable workflow. An authorized later manual run
-must select the exact reviewed source. A run on another SHA cannot satisfy main's
-required check. No workflow here changes branch protection/settings.
+release gate runs on the main-target PR merge SHA or main merge-group SHA. A
+manual dispatch checks out the selected ref and creates the diagnostic
+`release-gate-diagnostic` context, not the required `release-gate`; it cannot
+satisfy main's required check. No workflow here changes branch protection/settings.
 
-If promotion, conflict resolution or a base update changes that SHA, **rebuild all
-packages and rerun all required validation at the new final SHA**. Do not relabel
-old inventories, receipts or artifacts, move a tag, or claim that equal trees make
-different source revisions interchangeable. Reconcile main back to develop with
-a checked merge commit after promotion; clean up the temporary release branch only
-after both histories are preserved.
+If promotion, conflict resolution or a **base-branch update** changes that merge
+SHA, **rebuild all packages and rerun all required validation at the new merge
+SHA**. The check run is attached to the PR head SHA, while the plan, receipts and
+package descriptors bind the merge SHA. When the base advances, strict up-to-date
+reports the PR as behind and blocks merge even if the old check still shows green;
+this was verified on a temporary docs-only probe (PR #116, `mergeStateStatus:
+BEHIND`). Update the candidate branch, which creates a new head; the old check no
+longer covers that head. Draft→ready alone does **not** merge the new base, so it
+does not clear the behind state. If the new base is already reachable from the
+head, there is no new base content to merge; the head-bound check still covers the
+same head tree. Do not relabel old inventories, receipts or artifacts, move a tag,
+or claim that equal trees make different source revisions interchangeable.
+Reconcile main back to develop with a checked merge commit after promotion; clean
+up the temporary release branch only after both histories are preserved.
+
+## Candidate preparation and explicit verification
+
+The release gate is started by an explicit candidate transition, not by every
+push. Keep the promotion PR draft while preparing. Its direct affected `ci` lane
+still runs on preparation commits; the full `release-gate` does not start.
+
+Mark the PR ready when the candidate is fixed. Opening an already-ready PR,
+reopening it while ready, or `ready_for_review` starts the full gate on that
+candidate. If a commit is added afterwards, the new SHA has no release-gate
+result; the old result is not reused. Convert the PR back to draft and ready again
+to verify the new SHA. A manual dispatch is diagnostic only: its
+`release-gate-diagnostic` context cannot satisfy the required check.
+
+A draft or intermediate run still reports the required `release-gate` name, but
+the job fails with "release gate not started". It never reports success, so it
+cannot satisfy the required context by accident. The later ready run for the same
+SHA is the latest check and is the one the merge evaluates. A superseded
+candidate's old check stays on its old SHA and cannot authorize the new one. Do
+not cancel another task's running CI.
+
+The full flow is: prepare with affected checks -> fix the candidate SHA -> start
+the gate -> read the recorded failure and repair the smallest affected input ->
+start the next full gate at the new SHA -> publish only after the required
+`release-gate` succeeds. See [validation policy](validation-policy.md).
 
 ## What runs without publishing
 

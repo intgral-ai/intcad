@@ -8,7 +8,9 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # ready_for_review starts the fixed-candidate release gate; the direct
+    # affected lane is for preparation commits and is not duplicated there.
+    types: [opened, synchronize, reopened]
     branches: [develop, main]
   merge_group:
   push:
