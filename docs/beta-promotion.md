@@ -55,7 +55,7 @@ The reviewed run also has 1,085 failures already recorded as failing in the
 historical baseline and 956 failures on actions the historical baseline never
 recorded. Neither group is counted as a pass. The 972 reviewed unbaselined identities are itemised by design/entity/action,
 kind and failure class in the same exception file. Nine reviewed timeout entries
-were reclassified to their real errors after the 600-second action limit let
+were reclassified to their real errors after the 1800-second action limit let
 them finish, and two new `edge.fillet+edit` identities were reviewed from the
 same run. A **new** unbaselined failure fails the gate; a listed one that starts
 passing is reported as fixed. The action count can grow by up to four

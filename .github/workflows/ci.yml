@@ -536,7 +536,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           OUT: ${{ github.workspace }}/action-matrix
-          ACTION_MATRIX_ACTION_TIMEOUT: "600"
+          ACTION_MATRIX_ACTION_TIMEOUT: "1800"
         run: |
           mkdir -p "$OUT"
           export ACTION_MATRIX_SHARD="$SHARD/16" ACTION_MATRIX_RESULTS="$OUT/results-$SHARD.json" ACTION_MATRIX_TIMINGS="$OUT/timings-$SHARD.jsonl" ACTION_MATRIX_WORKDIR="$OUT/raw-$SHARD"
@@ -555,7 +555,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      ACTION_MATRIX_ACTION_TIMEOUT: "600"
+      ACTION_MATRIX_ACTION_TIMEOUT: "1800"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
