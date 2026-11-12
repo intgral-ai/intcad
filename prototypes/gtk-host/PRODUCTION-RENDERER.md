@@ -38,19 +38,40 @@ PROTO_UI=1 PROTO_MODEL=1 PROTO_MODEL2=1 GDK_BACKEND=x11 target/nix/debug/example
 This proves the production wgpu renderer **and the real egui CAD UI/viewport** can live in a GTK 3
 window on X11, including a model change that updates the display.
 
-## Native Wayland limitation (specific)
+## Native Wayland: the direct swapchain is not composited, the offscreen blit is
 
-The wgpu surface is created successfully on native Wayland (the adapter/backend print), but GTK 3
-owns the window `wl_surface`'s buffer/commit cycle; presenting a separate wgpu swapchain to the same
-`wl_surface` is not composited over GTK's buffer, so the window stays white. This is a GTK 3
-`wl_surface` ownership limit, not a page/shader/WebKit failure.
+The direct `wgpu::Surface` on GTK's window `wl_surface` is created successfully, but GTK 3 owns
+that surface's buffer/commit cycle; presenting a separate swapchain to it is not composited (white
+window). This is a GTK 3 `wl_surface` ownership limit, not a page/shader/WebKit failure.
 
-Next paths, in cost order:
+`apps/solidcraft/examples/gtk_wgpu_blit.rs` now proves the next path:
 
-1. **Offscreen wgpu → `GtkGLArea` blit**: render the production frame to a wgpu texture, then blit
-   it in GTK's GL surface. Keeps the production renderer; adds a texture copy.
-2. **Wayland subsurface**: wgpu presents to its own `wl_subsurface` under GTK's window.
-3. GTK 4/GSK or WPE: larger host/engine changes, not justified by this result.
+- wgpu renders the production `SolveApp` frame (and the real `solid.box` viewport) to an offscreen
+  texture;
+- the texture is copied to a buffer and mapped (row-aligned);
+- GTK's `GtkGLArea` GL context uploads it with `tex_image_2d` and draws a full-screen quad.
+
+On native Wayland with RADV GFX1200 this shows the real CAD UI and the box; the same code also
+works on X11. Evidence: `evidence/gtk-wgpu-blit-wayland-cad.jpg` (crop of the GTK window; the
+game strip above is another window) and `gtk-wgpu-blit-wayland-cad.log`.
+
+### Data path and its limit
+
+This is a **per-frame GPU → CPU → GPU** copy:
+`wgpu texture → copy_texture_to_buffer (256-byte rows) → map → tight Vec<u8> → GL tex_image_2d →
+GtkGLArea draw`. It is a localization tool, not an automatically acceptable production path. It
+must be measured (CPU time, frame time, memory bandwidth) before any claim. The simple label run
+reported ~53 fps average at 1200×800 on RADV with this copy; the CAD-UI run is the next measurement.
+
+Next options, in cost order:
+
+1. Measure this blit path properly; if the copy is acceptable, keep it as the experimental native
+   Wayland host and improve the upload (persistent texture, dirty rows).
+2. GPU interop: export the wgpu texture as a DMABUF/EGL image and import it into GTK's GL context
+   (no CPU copy); more platform code, but the maintainable target if the copy is too slow.
+3. Wayland subsurface: wgpu presents to its own `wl_subsurface` under GTK's window; avoids the
+   copy but moves input/stacking ownership to the child surface.
+4. GTK 4/GSK or WPE: larger host/engine changes, not justified by this result.
 
 ## Not yet proved
 
