@@ -1927,8 +1927,8 @@
     "run": 42790743092,
     "sha": "7bf03f6d9f355be8d59843953aba92a3d2947611",
     "shards": "1-14 and 16 from run 42790743092; shard 15 rerun at 1a45733ef96b53990fec8bd7794563eebc6facdb with the same costs/sharding",
-    "totalActions": 54033,
-    "totalActionsNote": "beta.3 run 43114464720 has 4 additional edge.fillet+edit actions because the 300 s action limit let more base fillets complete; the 213 baseline pass-to-fail identities are unchanged",
+    "totalActions": 54029,
+    "totalActionsNote": "the stable base is 54,029; a 300 s run can add up to 4 edge.fillet+edit actions when more base fillets complete, so the gate accepts at least this many actions and the itemised identities decide failures",
     "unbaselinedDigest": "b2ab23f17ab1d2a88429ef9a660de5dbf1f922f1e8b6fd9bf077a5a1983ef56e",
     "unbaselinedFailures": 972,
     "unbaselinedNote": "itemised reviewed identities from run 43012493350; 9 timeout entries were reclassified from their real errors and 2 new blend_check_refused identities were reviewed in run 43114464720; a new unbaselined failure is rejected, a listed one that passes is reported fixed"

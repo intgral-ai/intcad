@@ -58,7 +58,9 @@ kind and failure class in the same exception file. Nine reviewed timeout entries
 were reclassified to their real errors after the 300-second action limit let
 them finish, and two new `edge.fillet+edit` identities were reviewed from the
 same run. A **new** unbaselined failure fails the gate; a listed one that starts
-passing is reported as fixed. A baseline pass that starts failing is the
+passing is reported as fixed. The action count can grow by up to four
+`edge.fillet+edit` actions when more base fillets complete; the gate requires at
+least the stable 54,029 actions and judges the itemised identities. A baseline pass that starts failing is the
 213-item gate condition above.
 
 The Beta gate fails when any of these changes:

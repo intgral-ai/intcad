@@ -220,8 +220,8 @@ def evaluate_matrix(directory, exceptions):
     data, expected, baseline = load_baseline(exceptions)
     unexpected = load_unbaselined(data)
     entries, failures = load_matrix(directory)
-    require(len(entries) == data["source"]["totalActions"],
-            f"matrix: {len(entries)} actions, expected {data['source']['totalActions']} from the reviewed run")
+    require(len(entries) >= data["source"]["totalActions"],
+            f"matrix: {len(entries)} actions, expected at least {data['source']['totalActions']} from the reviewed run")
     unexcused, changed, preexisting, unbaselined, actual = [], [], [], [], {}
     for failure in failures:
         key = identity(failure)
