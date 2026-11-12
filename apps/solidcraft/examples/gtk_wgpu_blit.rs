@@ -6,7 +6,7 @@
 
 #![allow(unsafe_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CString;
 use std::rc::Rc;
 use std::time::Instant;
@@ -17,6 +17,7 @@ use eframe::wgpu;
 use glow::HasContext;
 use gtk::prelude::*;
 use solidcraft_engine::Session;
+use webkit2gtk::{SettingsExt, URISchemeRequestExt, UserContentInjectedFrames, UserContentManagerExt, UserScript, UserScriptInjectionTime, WebContextExt, WebViewExt};
 
 const VS: &str = r#"#version 330 core
 layout(location = 0) in vec2 a_pos;
@@ -46,6 +47,7 @@ struct State {
     size: (u32, u32),
     frames: u64,
     started: Instant,
+    needs_frame: Rc<Cell<bool>>,
 }
 
 fn main() {
@@ -61,14 +63,97 @@ fn main() {
     area.set_vexpand(true);
     area.set_can_focus(true);
     area.set_required_version(3, 3);
-    window.add(&area);
+    let dist = std::env::var("PROTO_DIST").unwrap_or_else(|_| "packages/assistant-web/dist".into());
+    let context = webkit2gtk::WebContext::default();
+    if let Some(context) = &context {
+        let dist = dist.clone();
+        context.register_uri_scheme("openskyfall-assistant", move |request| {
+            let uri = request.uri().map(|u| u.to_string()).unwrap_or_default();
+            let name = uri
+                .strip_prefix("openskyfall-assistant://localhost/")
+                .unwrap_or("index.html")
+                .split(['?', '#'])
+                .next()
+                .unwrap_or("index.html");
+            let path = std::path::Path::new(&dist).join(name);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let kind = match path.extension().and_then(|e| e.to_str()) {
+                        Some("js") => "text/javascript",
+                        Some("css") => "text/css",
+                        Some("woff2") => "font/woff2",
+                        Some("ttf") => "font/ttf",
+                        Some("html") => "text/html",
+                        _ => "application/octet-stream",
+                    };
+                    let stream = gtk::gio::MemoryInputStream::from_bytes(&gtk::glib::Bytes::from(&bytes));
+                    request.finish(&stream, bytes.len() as i64, Some(kind));
+                }
+                Err(error) => eprintln!("PROTO page asset {name}: {error}"),
+            }
+        });
+    }
+    let web = context.as_ref().map(webkit2gtk::WebView::with_context);
+    if let Some(web) = &web {
+        if let Some(manager) = web.user_content_manager() {
+            manager.register_script_message_handler("ipc");
+            let shim = UserScript::new(
+                "window.ipc = { postMessage: function (m) { window.webkit.messageHandlers.ipc.postMessage(m); } };\
+                 window.addEventListener('error', function (e) { try { console.error('PROTO JSERROR ' + e.message); } catch (_) {} });",
+                UserContentInjectedFrames::TopFrame,
+                UserScriptInjectionTime::Start,
+                &[],
+                &[],
+            );
+            manager.add_script(&shim);
+            manager.connect_script_message_received(Some("ipc"), |_, result| {
+                println!("PROTO ipc {:?}", result.js_value());
+            });
+        }
+        web.connect_web_process_terminated(|_, reason| eprintln!("PROTO web process terminated: {reason:?}"));
+        web.connect_title_notify(|web| println!("PROTO title {:?}", web.title()));
+        web.set_size_request(430, -1);
+        web.set_hexpand(false);
+        web.set_vexpand(true);
+        web.connect_load_failed(|_, _, uri, error| {
+            eprintln!("PROTO load failed {uri}: {error}");
+            false
+        });
+        let mut production = solidcraft_ui_egui::SolveApp::new(Session::default(), Default::default());
+        let state_json = solidcraft_ui_egui::agent_chat::web::state(&mut production);
+        let state_for_web = state_json.clone();
+        let web_for_state = web.clone();
+        web.connect_load_changed(move |_, event| {
+            println!("PROTO load {event:?}");
+            if event == webkit2gtk::LoadEvent::Finished {
+                let js = format!("if (window.__assistantHost) {{ window.__assistantHost.state({state_for_web}); document.body.setAttribute('data-proto-state','pushed'); }} else {{ window.ipc && window.ipc.postMessage(JSON.stringify({{type:'log',text:'no host object'}})); }}");
+                let web_later = web_for_state.clone();
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                    web_later.run_javascript(&js, None::<&gtk::gio::Cancellable>, |_| {});
+                    gtk::glib::ControlFlow::Break
+                });
+            }
+        });
+        if let Some(settings) = WebViewExt::settings(web) {
+            settings.set_enable_write_console_messages_to_stdout(true);
+        }
+        web.load_uri("openskyfall-assistant://localhost/index.html");
+    }
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    row.pack_start(&area, true, true, 0);
+    if let Some(web) = &web {
+        row.pack_end(web, false, true, 0);
+    }
+    window.add(&row);
 
+    let needs_frame = Rc::new(Cell::new(true));
+    let needs_frame_timer = needs_frame.clone();
     let state: Rc<RefCell<Option<State>>> = Rc::new(RefCell::new(None));
     let state_realize = state.clone();
     area.connect_realize(move |area| {
         eprintln!("PROTO blit realize");
         area.make_current();
-        match unsafe { init(area) } {
+        match unsafe { init(area, needs_frame.clone()) } {
             Ok(s) => *state_realize.borrow_mut() = Some(s),
             Err(error) => eprintln!("PROTO blit setup failed: {error}"),
         }
@@ -85,7 +170,9 @@ fn main() {
     });
     window.connect_destroy(|_| gtk::main_quit());
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-        area.queue_render();
+        if needs_frame_timer.get() {
+            area.queue_render();
+        }
         gtk::glib::ControlFlow::Continue
     });
     window.show_all();
@@ -109,6 +196,7 @@ impl State {
             self.solve.raw_input_hook(&mut raw);
         }
         let State { solve, ctx, started, frames, .. } = self;
+        self.needs_frame.set(false);
         let mut output = ctx.run_ui(raw, |ui| {
             if real_ui {
                 solve.ui(ui);
@@ -236,7 +324,7 @@ impl State {
 }
 
 
-unsafe fn init(area: &gtk::GLArea) -> Result<State, String> {
+unsafe fn init(area: &gtk::GLArea, needs_frame: Rc<Cell<bool>>) -> Result<State, String> {
     area.make_current();
     let handle = loader();
     if handle.is_null() {
@@ -257,7 +345,11 @@ unsafe fn init(area: &gtk::GLArea) -> Result<State, String> {
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
         tex
     };
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    // GTK's GLArea context is current on this thread. wgpu's GL/EGL backend then fails with
+    // BadAccess; force Vulkan (the production app's preferred backend) for the offscreen frame.
+    let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    instance_desc.backends = wgpu::Backends::VULKAN;
+    let instance = wgpu::Instance::new(instance_desc);
     let rs = pollster::block_on(egui_wgpu::RenderState::create(
         &egui_wgpu::WgpuConfiguration::default(),
         &instance,
@@ -273,7 +365,7 @@ unsafe fn init(area: &gtk::GLArea) -> Result<State, String> {
         let _ = solve.session.execute("solid.box", &serde_json::json!({"length": 30, "width": 20, "height": 10}));
     }
     solve.set_wgpu_split(&rs, 24, 0, 4);
-    Ok(State { solve, rs, ctx, gl, program, vao, vbo, tex, offscreen: None, size: (0, 0), frames: 0, started: Instant::now() })
+    Ok(State { solve, rs, ctx, gl, program, vao, vbo, tex, offscreen: None, size: (0, 0), frames: 0, started: Instant::now(), needs_frame: needs_frame.clone() })
 }
 
 unsafe fn gl_setup(gl: &glow::Context) -> Result<(glow::Program, glow::VertexArray, glow::Buffer), String> {
