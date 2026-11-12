@@ -1,13 +1,12 @@
 //! Disposable GTK 3 + production-wgpu host prototype (X11 first; Wayland handle included).
 //!
 //! This is the follow-up to `gtk_host.rs`: instead of a hand-written glow shader, it creates a
-//! `wgpu::Surface` from the GTK window and draws egui with `egui_wgpu::Renderer`, the same
-//! renderer family the production eframe app uses. It is deliberately small: the first milestone
-//! is "the production renderer draws in a GTK window"; the real `SolveApp` UI/scene and the
-//! Assistant page are added on top once this path is proven.
+//! `wgpu::Surface` from the GTK window and uses eframe's `egui_wgpu::RenderState`, the same
+//! renderer family and viewport resources as the production app. `PROTO_UI=1` draws the real
+//! `SolveApp` CAD UI; without it a small egui frame proves the renderer path alone.
 //!
-//! Run on X11:   GDK_BACKEND=x11 cargo run -p solidcraft --example gtk_wgpu_host
-//! Run on Wayland: GDK_BACKEND=wayland cargo run -p solidcraft --example gtk_wgpu_host
+//! Run on X11:   GDK_BACKEND=x11 PROTO_UI=1 cargo run -p solidcraft --example gtk_wgpu_host
+//! Run on Wayland: GDK_BACKEND=wayland PROTO_UI=1 cargo run -p solidcraft --example gtk_wgpu_host
 //!
 //! The backend is printed as `PROTO wgpu backend=...` so evidence records what actually ran.
 
@@ -26,13 +25,13 @@ use gtk::gdk::prelude::DisplayExtManual;
 use gtk::glib::translate::ToGlibPtr;
 use gtk::prelude::*;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle, XlibDisplayHandle, XlibWindowHandle};
+use solidcraft_engine::Session;
 
 struct State {
+    solve: solidcraft_ui_egui::SolveApp,
     surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    rs: egui_wgpu::RenderState,
     config: wgpu::SurfaceConfiguration,
-    renderer: egui_wgpu::Renderer,
     ctx: egui::Context,
     frames: u64,
     started: std::time::Instant,
@@ -92,43 +91,57 @@ impl State {
         if pw == 0 || ph == 0 {
             return Ok(());
         }
-        if self.config.width != pw || self.config.height != ph {
-            self.config.width = pw;
-            self.config.height = ph;
-            self.surface.configure(&self.device, &self.config);
+        let State { solve, surface, rs, config, ctx, frames, started } = self;
+        if config.width != pw || config.height != ph {
+            config.width = pw;
+            config.height = ph;
+            surface.configure(&rs.device, config);
         }
-        let raw = egui::RawInput {
+        let mut raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32))),
             ..Default::default()
         };
-        let output = self.ctx.run_ui(raw, |ui| {
-            {
+        let real_ui = std::env::var_os("PROTO_UI").is_some();
+        if real_ui && *frames == 300 && std::env::var_os("PROTO_MODEL2").is_some() {
+            let _ = solve.session.execute("solid.box", &serde_json::json!({"length": 12, "width": 12, "height": 36, "corner": [30, 0, 0]}));
+        }
+        if real_ui {
+            solve.raw_input_hook(&mut raw);
+        }
+        let output = ctx.run_ui(raw, |ui| {
+            if real_ui {
+                solve.ui(ui);
+            } else {
                 ui.heading("GTK 3 + production wgpu");
                 ui.label("wgpu surface created from the GTK window; egui_wgpu renders this frame.");
-                let elapsed = self.started.elapsed().as_secs_f32();
-                ui.label(format!("frame {} · {:.1} fps average", self.frames, self.frames as f32 / elapsed.max(0.001)));
+                let elapsed = started.elapsed().as_secs_f32();
+                ui.label(format!("frame {} · {:.1} fps average", frames, *frames as f32 / elapsed.max(0.001)));
             }
         });
+        if real_ui {
+            solve.logic(ctx);
+        }
+        let mut output = output;
+        let mut renderer = rs.renderer.write();
         for (id, deltas) in &output.textures_delta.set {
             for delta in deltas {
-                self.renderer.update_texture(&self.device, &self.queue, *id, delta);
+                renderer.update_texture(&rs.device, &rs.queue, *id, delta);
             }
         }
         for id in &output.textures_delta.free {
-            self.renderer.free_texture(id);
+            renderer.free_texture(id);
         }
-        let mut output = output;
         output.textures_delta.clear();
-        let jobs = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+        let jobs = ctx.tessellate(output.shapes, output.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [pw, ph], pixels_per_point: output.pixels_per_point };
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("gtk-wgpu") });
-        self.renderer.update_buffers(&self.device, &self.queue, &mut encoder, &jobs, &screen);
-        let frame = match self.surface.get_current_texture() {
+        let mut encoder = rs.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("gtk-wgpu") });
+        renderer.update_buffers(&rs.device, &rs.queue, &mut encoder, &jobs, &screen);
+        let frame = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Timeout => return Err("surface texture timed out".into()),
             wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&rs.device, config);
                 return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Lost => return Err("surface lost".into()),
@@ -150,34 +163,35 @@ impl State {
                 multiview_mask: None,
             });
             let mut pass = pass.forget_lifetime();
-            self.renderer.render(&mut pass, &jobs, &screen);
+            renderer.render(&mut pass, &jobs, &screen);
         }
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(frame);
-        self.frames = self.frames.saturating_add(1);
+        rs.queue.submit(Some(encoder.finish()));
+        rs.queue.present(frame);
+        *frames = frames.saturating_add(1);
         Ok(())
     }
 }
 
 unsafe fn make_state(area: &gtk::DrawingArea) -> Result<State, String> {
     let gdk_window = area.window().ok_or("the GTK window is not realized")?;
-    let (raw_window_handle, raw_display_handle) = handles(&gdk_window)?;
+    let (raw_window_handle, raw_display_handle) = unsafe { handles(&gdk_window)? };
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let surface = unsafe {
         instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle { raw_window_handle, raw_display_handle: Some(raw_display_handle) })
     }
     .map_err(|error| format!("create_surface: {error}"))?;
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: Some(&surface),
-        ..Default::default()
-    }))
-    .map_err(|error| format!("request_adapter: {error}"))?;
-    println!("PROTO wgpu backend={:?} adapter={:?}", adapter.get_info().backend, adapter.get_info().name);
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-        .map_err(|error| format!("request_device: {error}"))?;
-    let caps = surface.get_capabilities(&adapter);
-    let format = caps.formats.first().copied().ok_or("surface has no format")?;
+    let options = egui_wgpu::RendererOptions { msaa_samples: 1, ..Default::default() };
+    let rs = pollster::block_on(egui_wgpu::RenderState::create(
+        &egui_wgpu::WgpuConfiguration::default(),
+        &instance,
+        Some(&surface),
+        options,
+    ))
+    .map_err(|error| format!("RenderState::create: {error}"))?;
+    println!("PROTO wgpu backend={:?} adapter={:?}", rs.adapter.get_info().backend, rs.adapter.get_info().name);
+    let caps = surface.get_capabilities(&rs.adapter);
+    // The renderer's pipelines were made for `rs.target_format`; the surface must use it.
+    let format = rs.target_format;
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -189,18 +203,15 @@ unsafe fn make_state(area: &gtk::DrawingArea) -> Result<State, String> {
         desired_maximum_frame_latency: 2,
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
-    surface.configure(&device, &config);
-    let renderer = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
-    Ok(State {
-        surface,
-        device,
-        queue,
-        config,
-        renderer,
-        ctx: egui::Context::default(),
-        frames: 0,
-        started: std::time::Instant::now(),
-    })
+    surface.configure(&rs.device, &config);
+    let ctx = egui::Context::default();
+    solidcraft_ui_egui::fonts::setup_bundled_fonts(&ctx);
+    let mut solve = solidcraft_ui_egui::SolveApp::new(Session::default(), Default::default());
+    if std::env::var_os("PROTO_MODEL").is_some() {
+        let _ = solve.session.execute("solid.box", &serde_json::json!({"length": 30, "width": 20, "height": 10}));
+    }
+    solve.set_wgpu_split(&rs, 24, 0, 4);
+    Ok(State { solve, surface, rs, config, ctx, frames: 0, started: std::time::Instant::now() })
 }
 
 unsafe fn handles(window: &gdk::Window) -> Result<(RawWindowHandle, RawDisplayHandle), String> {

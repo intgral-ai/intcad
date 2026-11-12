@@ -1,56 +1,62 @@
-# GTK 3 + production wgpu: first milestone
+# GTK 3 + production wgpu: first two milestones
 
 Disposable experiment. It does not change production code or remove the eframe host.
 
-## What ran
+## Milestone 1: production renderer in a GTK window
 
-`apps/solidcraft/examples/gtk_wgpu_host.rs`:
-
-- a GTK 3 `GtkDrawingArea` window;
-- a real `wgpu::Surface` created from the GTK window's native handle (Xlib or Wayland);
-- the production `eframe::egui_wgpu::Renderer` (the same renderer the app uses), drawing an egui
-  frame — not the glow shader of the earlier `gtk_host.rs` prototype.
-
-Commands (same machine, RX 9060 XT/RADV, niri):
-
-```sh
-GDK_BACKEND=x11     target/nix/debug/examples/gtk_wgpu_host
-GDK_BACKEND=wayland target/nix/debug/examples/gtk_wgpu_host
-```
-
-## Result
+`apps/solidcraft/examples/gtk_wgpu_host.rs` creates a real `wgpu::Surface` from the GTK window's
+native handle (Xlib or Wayland) and uses eframe's **`egui_wgpu::RenderState` / `Renderer`** — the
+same renderer and viewport resources as the production app. No glow shader.
 
 | backend | surface created | content visible | evidence |
 |---|---|---|---|
-| X11/XWayland | yes, Vulkan (RADV GFX1200) | **yes**; egui frame, frame counter | `evidence/gtk-wgpu-x11.jpg`, `gtk-wgpu-x11.log` |
-| native Wayland | yes, Vulkan (RADV GFX1200) | **no**: the GTK window stays white | `evidence/gtk-wgpu-wayland.jpg`, `gtk-wgpu-wayland.log` |
+| X11/XWayland | yes, Vulkan RADV GFX1200 | **yes** | `evidence/gtk-wgpu-x11.jpg` |
+| native Wayland | yes, Vulkan RADV GFX1200 | **no**, GTK window stays white | `evidence/gtk-wgpu-wayland.jpg` |
 
-X11 frame counter: frame 349, 50.7 fps average (the loop requests a frame every 16 ms; this is a
-prototype repaint policy, not production scheduling).
+## Milestone 2: real CAD UI, viewport and a model edit
 
-## The Wayland limitation (specific, not a broad GTK claim)
+`PROTO_UI=1` drives the real `solidcraft_ui_egui::SolveApp` (`raw_input_hook`, `ui`, `logic`) and
+installs the production scene/window split resources with `set_wgpu_split(&rs, 24, 0, 4)`.
 
-On Wayland the wgpu surface is created successfully — the adapter and backend print — but the
-GTK window shows no wgpu content. GTK 3 owns the `wl_surface`'s buffer/commit cycle for the window
-(and its drawing area); presenting a separate wgpu swapchain to the same `wl_surface` is not
-composited over GTK's own buffer. This is the API/ownership boundary to solve, not a page or
-shader failure.
+- **X11, real GPU (RADV GFX1200, niri XWayland):** the open-skyfall toolbar, browser, history,
+  view cube and a real `solid.box` render in the GTK window. Evidence:
+  `evidence/gtk-wgpu-ui-real.jpg`, `gtk-wgpu-ui-real.log`.
+- **X11, software GPU (Xvfb + llvmpipe):** the same UI with a real model edit:
+  `PROTO_MODEL=1` creates a 30×20×10 box; at frame 300 `PROTO_MODEL2=1` adds a
+  12×12×36 box at `corner=[30,0,0]`. The browser goes from **1 body** to **2 bodies** and the
+  viewport updates. Evidence: `evidence/gtk-wgpu-model-before.jpg`,
+  `evidence/gtk-wgpu-model-after.jpg`, `gtk-wgpu-model.log`.
+- Commands:
 
-The next viable paths, in order of cost:
+```sh
+# real GPU, X11
+PROTO_UI=1 PROTO_MODEL=1 GDK_BACKEND=x11 target/nix/debug/examples/gtk_wgpu_host
+# software GPU, two-step edit (Xvfb)
+PROTO_UI=1 PROTO_MODEL=1 PROTO_MODEL2=1 GDK_BACKEND=x11 target/nix/debug/examples/gtk_wgpu_host
+```
 
-1. **Offscreen wgpu → GTK GL blit**: render the production wgpu frame into a texture, then blit
-   that texture in a `GtkGLArea` (GTK's own GL surface). This keeps the production renderer and
-   should work on X11 and Wayland; it adds one texture copy and a GL/EGL hand-off.
-2. **Wayland subsurface**: give wgpu its own `wl_subsurface` under GTK's window surface; GTK keeps
-   the parent, wgpu presents to the child. Needs careful input/stacking ownership.
-3. **GTK 4 + WebKitGTK 6.0 / GSK**: one renderer, but a much larger host migration; not started.
+This proves the production wgpu renderer **and the real egui CAD UI/viewport** can live in a GTK 3
+window on X11, including a model change that updates the display.
 
-WPE is not justified by this result: the failure is GTK 3 `wl_surface` ownership, not WebKit.
+## Native Wayland limitation (specific)
 
-## What this milestone does and does not prove
+The wgpu surface is created successfully on native Wayland (the adapter/backend print), but GTK 3
+owns the window `wl_surface`'s buffer/commit cycle; presenting a separate wgpu swapchain to the same
+`wl_surface` is not composited over GTK's buffer, so the window stays white. This is a GTK 3
+`wl_surface` ownership limit, not a page/shader/WebKit failure.
 
-- Proves: the production `egui_wgpu::Renderer` and a wgpu swapchain can draw in a GTK 3 window on
-  X11, with the real Vulkan adapter.
-- Does not yet prove: the real `SolveApp` CAD UI/scene in that surface, model editing, the
-  Assistant page beside it, IME/focus/DnD, or frame-time parity with the eframe host.
-- The next milestone is the offscreen wgpu texture + GTK GL blit, then `SolveApp` and the page.
+Next paths, in cost order:
+
+1. **Offscreen wgpu → `GtkGLArea` blit**: render the production frame to a wgpu texture, then blit
+   it in GTK's GL surface. Keeps the production renderer; adds a texture copy.
+2. **Wayland subsurface**: wgpu presents to its own `wl_subsurface` under GTK's window.
+3. GTK 4/GSK or WPE: larger host/engine changes, not justified by this result.
+
+## Not yet proved
+
+- The Assistant page beside the CAD UI in the same GTK window on native Wayland (the page itself
+  was proven in the earlier `gtk_host.rs`; the production renderer surface is the current blocker).
+- IME/focus/DnD/scaling/menu stacking in this production-renderer GTK window.
+- A real interaction frame-time comparison with the eframe host. The prototype repaints every
+  16 ms; the 50.7 fps average on the label run is not an interaction benchmark. The model run used
+  llvmpipe, so it is not a real-GPU performance claim.

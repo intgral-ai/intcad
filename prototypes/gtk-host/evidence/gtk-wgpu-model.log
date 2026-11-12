@@ -1,0 +1,9 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+MESA: info: vulkan: No DRI3 support detected - required for presentation
+Note: you can probably enable DRI3 in your Xorg config
+MESA: info: vulkan: No DRI3 support detected - required for presentation
+Note: you can probably enable DRI3 in your Xorg config
+MESA: info: vulkan: No DRI3 support detected - required for presentation
+Note: you can probably enable DRI3 in your Xorg config
+PROTO wgpu backend=Vulkan adapter="llvmpipe (LLVM 21.1.8, 256 bits)"
+SolidCraft graphics: GPU tessellation ready; bodies are evaluated on the GPU from now on
