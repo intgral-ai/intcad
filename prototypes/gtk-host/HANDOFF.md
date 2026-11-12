@@ -1,12 +1,12 @@
 # Handoff: Assistant, packaging and GTK host prototype
 
-Last updated from run `43243621752` (in progress) and prototype `0cb774406`.
+Last updated from run `43257333122` (in progress) and prototype `7a09a8bc4`.
 
 ## Branches / PRs
 
 - **PR 110**, branch `integration/pil-290-assistant`: one Web Assistant page, Linux focus/idle
-  fixes, packaging. Head `202072454` (Windows UpgradeCode/ARP/repo-root fixes, gating Snap
-  offline Assistant with the network-namespace isolation proof, nightly-test update, software GL
+  fixes, packaging. Head `7195aff75` (Windows UpgradeCode/ARP/repo-root/Assistant-smoke evidence
+  fixes, gating Snap offline Assistant with the isolation proof, nightly-test update, software GL
   for the forced-GL headless Flatpak probe). Base `pil-290-packaging`.
 - **PR 111**, branch `prototype/gtk-host`: disposable GTK 3 host evidence. Head `c396b9196`.
 
@@ -34,8 +34,14 @@ Last updated from run `43243621752` (in progress) and prototype `0cb774406`.
   `5c91281` (`$RepoRoot`, `$runtimeRoot`). Flatpak aarch64 default XWayland page passed, but the
   forced-GL `--gl-saved-four` probe exited 1 under Xvfb (`Gl, MSAA 1x`); `202072454` selects the
   software GL driver for that headless probe.
-- `43243621752` at `202072454` (in progress): final exact-SHA run for the Windows repo-root fix,
-  Flatpak aarch64 forced-GL, Snap isolation and all regressions.
+- `43243621752` at `202072454`: Linux/Web/FreeBSD/macOS x86_64/Arch both/Flatpak both/Snap
+  aarch64/Windows x86/arm64 passed. Windows x64 reached the Assistant smoke but failed because
+  `windows-assistant-smoke.ps1` dot-sourced the WebView2 helper and its `$Evidence = ''` parameter
+  replaced the smoke's folder; fixed in `7195aff75` (save/restore). Snap x86_64 failed before the
+  build: `snap install snapcraft` timed out fetching core24 from `api.snapcraft.io` (network
+  flake, not the package).
+- `43257333122` at `7195aff75` (in progress): final exact-SHA run for the Windows Assistant smoke,
+  Snap x86 network retry and all regressions.
 
 
 ## GTK host prototype
