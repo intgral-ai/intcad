@@ -81,3 +81,39 @@ Next options, in cost order:
 - A real interaction frame-time comparison with the eframe host. The prototype repaints every
   16 ms; the 50.7 fps average on the label run is not an interaction benchmark. The model run used
   llvmpipe, so it is not a real-GPU performance claim.
+
+## Milestone 3: the real Assistant page in the same native-Wayland window
+
+The blit window now also packs a WebKitGTK view beside the `GtkGLArea`, using the same
+`openskyfall-assistant://` scheme, IPC shim and production `agent_chat::web::state` serializer as
+the earlier `gtk_host.rs`. On native Wayland the same window shows:
+
+- left: the real CAD UI and the `solid.box` viewport rendered by the production wgpu path and
+  blitted through GTK's GL context;
+- right: the real Assistant page ("Set up an assistant", "Open Preferences", the composer), with
+  `PROTO load Finished`, title `Assistant`, and IPC messages received.
+
+Evidence: `evidence/gtk-wgpu-blit-assistant-wayland.jpg`, `gtk-wgpu-blit-assistant-wayland.log`.
+
+The page's initial state is the production serializer on an empty session; this proves rendering
+and the page/host handshake, not a live agent turn.
+
+On X11 the blit example with the WebKit view aborted under Xvfb (`MESA-EGL: DRI3 error`, core
+dump); the direct-surface `gtk_wgpu_host.rs` renders the CAD UI on X11, and the earlier
+`gtk_host.rs` renders the real page on X11, but the combined blit+page window was not validated
+there. The production eframe/wry X11 host already has the CAD UI + page; no claim is made for the
+blit example on X11.
+
+## Production-host conditions (not yet met)
+
+1. real `SolveApp`, production wgpu viewport and real page in one window: **yes on native
+   Wayland** in this experiment; X11 combined blit not validated.
+2. X11 and native Wayland both running: X11 via the existing production host; the GTK host's X11
+   combined path is unproven.
+3. Changes isolated in a Linux host/interface: the experiment is an example only; no production
+   host code yet.
+4. No new engine/large fork/licence change: true.
+5. No obvious performance regression / busy loop / disabled security: **not measured**; the
+   prototype repaints every 16 ms and uses a per-frame CPU copy, so this is not yet met.
+
+The experiment therefore remains an experiment; it does not enable a new production host.

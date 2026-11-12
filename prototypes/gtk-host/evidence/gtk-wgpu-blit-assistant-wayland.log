@@ -1,0 +1,14 @@
+
+(gtk_wgpu_blit:850871): Gtk-WARNING **: 01:36:26.823: GModule (/nix/store/hls27dbv92i8vyc9w6nq7d8psq9b7bkl-fcitx5-with-addons-5.1.23/lib/gtk-3.0/3.0.0/immodules/im-fcitx5.so) initialization check failed: GLib version too old (micro mismatch)
+
+(gtk_wgpu_blit:850871): Gtk-WARNING **: 01:36:26.823: Loading IM context type 'fcitx' failed
+PROTO blit realize
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+PROTO blit wgpu backend=Vulkan adapter="AMD Radeon RX 9060 XT (RADV GFX1200)"
+SolidCraft graphics: GPU tessellation ready; bodies are evaluated on the GPU from now on
+PROTO load Started
+PROTO load Committed
+PROTO title Some("Assistant")
+PROTO load Finished
+PROTO ipc Some(Value { inner: TypedObjectRef { inner: 0x63ede257f620, type: JSCValue } })
+PROTO ipc Some(Value { inner: TypedObjectRef { inner: 0x63ede2552750, type: JSCValue } })
