@@ -405,11 +405,15 @@ merge `196b44b15d0cdd38947af3e60c3b40fe4f013b33` (tree
 
 | Platform | Evidence | Result |
 |---|---|---|
-| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `a9f0426a7561cd35bb0591ef1a4136e953df198ff6d758b1e0f99b05aac3a5bd` | Extracted in a clean `ubuntu:22.04` container: `solidcraft-cli 0.1.0-beta.3`, `solidcraft 0.1.0-beta.3`. |
+| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `a9f0426a7561cd35bb0591ef1a4136e953df198ff6d758b1e0f99b05aac3a5bd` | Clean `ubuntu:22.04` container and GitHub `ubuntu-24.04` verification run `43260751949` both printed `solidcraft-cli 0.1.0-beta.3` and `solidcraft 0.1.0-beta.3`. |
 | Linux aarch64 | tar sha `8da20bb8cd08805f7d77d8d499f979b34fa2332a46f2e1f73bea614a6b9e1f1f` | Content scan `markers=[]`, `unchecked=[]`; not launched (no aarch64 host). |
-| Windows x64 | MSI sha `95bb005ab6762564bc20dff86b7f346e1f6628f3521c0947f70864d725e8348a` | MSI cabinet CLI/app `FileVersion/ProductVersion 0.1.0-beta.3`; install/start check pending. |
+| Windows x64 | MSI sha `95bb005ab6762564bc20dff86b7f346e1f6628f3521c0947f70864d725e8348a` | Verification run `43260751949` on a clean `windows-latest`: no existing install; admin extract and isolated `INSTALLFOLDER` both `solidcraft-cli 0.1.0-beta.3` (sha `B7B2CA5A…`); installed app sha `7C3990A4…` printed `solidcraft 0.1.0-beta.3`. |
 | Windows x86 / arm64 | content scans clean | not launched (no x86/arm64 host). |
 | macOS universal | pending | First x86_64 build job was cancelled by hosted-runner capacity; retried in the same run. The aarch64 half already reports `solidcraft 0.1.0-beta.3`. |
+
+Verification run `43260751949` tested the exact artifacts: Windows x64 and Linux
+x86_64 passed. The macOS job failed only because `release-macos` did not exist
+yet; it is retried once the gate produces the universal artifact.
 
 The package descriptors have `markers=[]` and `unchecked=[]`; the checked files
 match `build.json`. The stable-only #14/#15 integration stops are not part of
