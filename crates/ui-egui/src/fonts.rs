@@ -601,7 +601,8 @@ const CHINESE_FONT_CANDIDATES: &[&str] = &[
     // Windows: Microsoft YaHei
     "C:\\Windows\\Fonts\\msyh.ttc",
     "C:\\Windows\\Fonts\\msyh.ttf",
-    // macOS: PingFang SC, Hiragino Sans GB, Songti SC, STHeiti, Arial Unicode MS
+    // macOS: PingFang SC (up to macOS 14; later systems keep it among the font assets, see
+    // `macos_asset_font`), Hiragino Sans GB, Songti SC, STHeiti, Arial Unicode MS
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/System/Library/Fonts/STHeiti Light.ttc",
@@ -905,10 +906,113 @@ pub fn setup_fonts(ctx: &egui::Context) {
     setup_fonts_for(ctx, "en", "");
 }
 
+/// Where macOS 15 and later keep the fonts they download as assets. PingFang, the face the
+/// system and its web views draw Chinese in, moved here from `/System/Library/Fonts`; a search
+/// of the old place alone ends at Hiragino Sans GB W3, a lighter face.
+#[cfg(target_os = "macos")]
+const MACOS_FONT_ASSETS: &str = "/System/Library/AssetsV2";
+
+/// The font file `name` among macOS's font assets under `root`
+/// (`com_apple_MobileAsset_Font<N>/<id>.asset/AssetData/<name>`), from the newest set that has
+/// it. Both levels are bounded: the folders are the system's, but nothing is taken on trust.
+#[cfg(all(not(target_arch = "wasm32"), any(target_os = "macos", test)))]
+fn macos_asset_font(root: &std::path::Path, name: &str) -> Option<Vec<u8>> {
+    const MAX_SETS: usize = 16;
+    const MAX_ASSETS: usize = 4096;
+    let folders = |dir: &std::path::Path, keep: fn(&str) -> bool, most: usize| {
+        let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.file_name().and_then(|n| n.to_str()).is_some_and(keep))
+            .take(most)
+            .collect();
+        // By length first, so that set 10 comes after set 9.
+        found.sort_by_key(|path| (path.as_os_str().len(), path.clone()));
+        found
+    };
+    let sets = folders(root, |n| n.starts_with("com_apple_MobileAsset_Font"), MAX_SETS);
+    sets.iter().rev().find_map(|set| {
+        folders(set, |n| n.ends_with(".asset"), MAX_ASSETS).iter().find_map(|asset| try_read_font(&asset.join("AssetData").join(name)))
+    })
+}
+
+/// Whether a font family is the simplified Chinese member of a pan-Chinese collection
+/// (`PingFang SC`, `Noto Sans CJK SC`), not the Hong Kong, Macau, Taiwan or Japanese one.
+#[cfg(all(not(target_arch = "wasm32"), any(target_os = "macos", test)))]
+fn names_simplified_chinese(family: &str) -> bool {
+    family.trim_end().ends_with(" SC")
+}
+
+/// A collection's regular simplified Chinese face as a font of its own, or `bytes` unchanged
+/// when it has none or it is already first. The rest of the font setup reads the first face of
+/// a file, and PingFang's first face is the Hong Kong one; one face is also a sixth of the bytes.
+#[cfg(all(not(target_arch = "wasm32"), any(target_os = "macos", test)))]
+fn simplified_chinese_face(bytes: Vec<u8>) -> Vec<u8> {
+    const MAX_FACES: u32 = 64;
+    let faces = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1).min(MAX_FACES);
+    let wanted = (0..faces).find(|&index| {
+        ttf_parser::Face::parse(&bytes, index).is_ok_and(|face| {
+            face.is_regular()
+                && face.weight() == ttf_parser::Weight::Normal
+                && face
+                    .names()
+                    .into_iter()
+                    .filter(|name| name.name_id == ttf_parser::name_id::FAMILY && name.is_unicode())
+                    .filter_map(|name| name.to_string())
+                    .any(|family| names_simplified_chinese(&family))
+        })
+    });
+    match wanted {
+        Some(index) if index > 0 => face_of_collection(&bytes, index).unwrap_or(bytes),
+        _ => bytes,
+    }
+}
+
+/// One face of a TrueType or OpenType collection as a font file of its own: its table
+/// directory, then the tables it names, each copied once and padded to four bytes. `None` for
+/// bytes that are not a collection, a face it does not have, or a table outside the file.
+/// Checksums are left as they are: the readers here do not verify them.
+#[cfg(all(not(target_arch = "wasm32"), any(target_os = "macos", test)))]
+fn face_of_collection(bytes: &[u8], face: u32) -> Option<Vec<u8>> {
+    const MAX_TABLES: usize = 128;
+    let u16_at = |at: usize| bytes.get(at..at.checked_add(2)?).and_then(|b| <[u8; 2]>::try_from(b).ok()).map(u16::from_be_bytes);
+    let u32_at = |at: usize| bytes.get(at..at.checked_add(4)?).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
+    if bytes.get(..4)? != b"ttcf" || face >= u32_at(8)? {
+        return None;
+    }
+    // The collection header: tag, version, count, then one offset per face.
+    let directory = usize::try_from(u32_at(12usize.checked_add(usize::try_from(face).ok()?.checked_mul(4)?)?)?).ok()?;
+    let tables = usize::from(u16_at(directory.checked_add(4)?)?);
+    if tables == 0 || tables > MAX_TABLES {
+        return None;
+    }
+    // A face's directory: 12 bytes of header, then 16 per table (tag, checksum, offset, length).
+    let header = 12usize.checked_add(tables.checked_mul(16)?)?;
+    let mut font = bytes.get(directory..directory.checked_add(header)?)?.to_vec();
+    for table in 0..tables {
+        let record = 12usize.checked_add(table.checked_mul(16)?)?;
+        let offset = usize::try_from(u32_at(directory.checked_add(record)?.checked_add(8)?)?).ok()?;
+        let length = usize::try_from(u32_at(directory.checked_add(record)?.checked_add(12)?)?).ok()?;
+        let data = bytes.get(offset..offset.checked_add(length)?)?;
+        let moved = u32::try_from(font.len()).ok()?.to_be_bytes();
+        font.get_mut(record.checked_add(8)?..record.checked_add(12)?)?.copy_from_slice(&moved);
+        font.extend_from_slice(data);
+        font.resize(font.len().checked_next_multiple_of(4)?, 0);
+    }
+    ttf_parser::Face::parse(&font, 0).ok()?;
+    Some(font)
+}
+
 /// Find a font covering simplified Chinese in the known candidate paths or by scanning the
 /// system font directories for [`CHINESE_FONT_KEYWORDS`] names.
 #[cfg(not(target_arch = "wasm32"))]
 fn find_system_chinese_font() -> Option<Vec<u8>> {
+    #[cfg(target_os = "macos")]
+    if let Some(bytes) = macos_asset_font(std::path::Path::new(MACOS_FONT_ASSETS), "PingFang.ttc") {
+        return Some(simplified_chinese_face(bytes));
+    }
     for path in CHINESE_FONT_CANDIDATES {
         if let Some(bytes) = try_read_font(std::path::Path::new(path)) {
             return Some(bytes);
@@ -1507,6 +1611,124 @@ mod tests {
         {
             assert!(!is_chinese_font_name(other), "{other} is not a Chinese font");
         }
+    }
+
+    /// A font collection of whole font files, as a test stand-in for a system `.ttc`: the
+    /// header and each face's directory first, with table offsets moved to where the face's
+    /// own bytes now sit.
+    fn collection(faces: &[&[u8]]) -> Vec<u8> {
+        let be32 = |bytes: &[u8], at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+        let mut out = b"ttcf".to_vec();
+        out.extend_from_slice(&0x0001_0000_u32.to_be_bytes());
+        out.extend_from_slice(&(faces.len() as u32).to_be_bytes());
+        let mut at = 12 + 4 * faces.len();
+        for face in faces {
+            out.extend_from_slice(&(at as u32).to_be_bytes());
+            at += face.len().next_multiple_of(4);
+        }
+        for face in faces {
+            let start = out.len();
+            out.extend_from_slice(face);
+            out.resize(out.len().next_multiple_of(4), 0);
+            let tables = u16::from_be_bytes(face[4..6].try_into().unwrap()) as usize;
+            for table in 0..tables {
+                let field = start + 12 + 16 * table + 8;
+                let moved = be32(&out, field) + start as u32;
+                out[field..field + 4].copy_from_slice(&moved.to_be_bytes());
+            }
+        }
+        out
+    }
+
+    fn family(bytes: &[u8], index: u32) -> String {
+        let face = ttf_parser::Face::parse(bytes, index).unwrap();
+        face.names()
+            .into_iter()
+            .find(|name| name.name_id == ttf_parser::name_id::FAMILY && name.is_unicode())
+            .and_then(|name| name.to_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn one_face_of_a_collection_reads_as_a_font_of_its_own() {
+        let both = collection(&[PLEX_SANS, PLEX_MONO]);
+        assert_eq!(ttf_parser::fonts_in_collection(&both), Some(2));
+        assert_eq!([family(&both, 0), family(&both, 1)], [family(PLEX_SANS, 0), family(PLEX_MONO, 0)], "the stand-in collection reads");
+        for (index, whole) in [(0, PLEX_SANS), (1, PLEX_MONO)] {
+            let alone = face_of_collection(&both, index).unwrap();
+            assert!(ttf_parser::fonts_in_collection(&alone).is_none(), "face {index} is a plain font file");
+            assert!(alone.len() <= whole.len().next_multiple_of(4) + 4 * 64, "face {index} carries its own tables only");
+            let (taken, original) = (ttf_parser::Face::parse(&alone, 0).unwrap(), ttf_parser::Face::parse(whole, 0).unwrap());
+            assert_eq!(family(&alone, 0), family(whole, 0));
+            assert_eq!(taken.number_of_glyphs(), original.number_of_glyphs());
+            for c in ['A', 'g', '0', '&'] {
+                let (a, b) = (taken.glyph_index(c).unwrap(), original.glyph_index(c).unwrap());
+                assert_eq!(a, b, "{c}");
+                assert_eq!(taken.glyph_bounding_box(a), original.glyph_bounding_box(b), "{c}");
+                assert_eq!(taken.glyph_hor_advance(a), original.glyph_hor_advance(b), "{c}");
+            }
+        }
+        // Hostile or mistaken input is refused, never read past.
+        assert!(face_of_collection(&both, 2).is_none(), "a face the collection does not have");
+        assert!(face_of_collection(PLEX_SANS, 0).is_none(), "a plain font is not a collection");
+        assert!(face_of_collection(b"ttcf", 0).is_none());
+        for cut in [13, 40, both.len() / 2, both.len() - 1] {
+            assert!(face_of_collection(&both[..cut], 1).is_none(), "cut at {cut}");
+        }
+        let mut wild = both.clone();
+        wild[16..20].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(face_of_collection(&wild, 1).is_none(), "a directory offset outside the file");
+    }
+
+    #[test]
+    fn the_simplified_chinese_face_is_chosen_by_its_family_name() {
+        for family in ["PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC "] {
+            assert!(names_simplified_chinese(family), "{family}");
+        }
+        for family in ["PingFang HK", "PingFang TC", "PingFang MO", "Noto Sans CJK JP", "Hiragino Sans GB", "IBM Plex Sans", "SC"] {
+            assert!(!names_simplified_chinese(family), "{family}");
+        }
+        // No face of these names simplified Chinese: the bytes come back as they went in.
+        let both = collection(&[PLEX_SANS, PLEX_MONO]);
+        assert_eq!(simplified_chinese_face(both.clone()), both);
+        assert_eq!(simplified_chinese_face(PLEX_SANS.to_vec()), PLEX_SANS);
+        assert_eq!(simplified_chinese_face(b"not a font".to_vec()), b"not a font");
+    }
+
+    /// On a Mac that has PingFang among its font assets (macOS 15 and later), the Chinese
+    /// fallback is its simplified face alone. Elsewhere there is nothing to check.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pingfang_among_the_font_assets_gives_its_simplified_chinese_face() {
+        let Some(whole) = macos_asset_font(std::path::Path::new(MACOS_FONT_ASSETS), "PingFang.ttc") else { return };
+        let face = simplified_chinese_face(whole.clone());
+        assert!(ttf_parser::fonts_in_collection(&face).is_none(), "one face, not the collection");
+        assert!(face.len() < whole.len() / 2, "{} of {} bytes", face.len(), whole.len());
+        assert_eq!(family(&face, 0), "PingFang SC");
+        assert!(draws_simplified_chinese(&face));
+        assert_eq!(find_system_chinese_font().as_deref(), Some(face.as_slice()), "it is the font the search returns");
+    }
+
+    #[test]
+    fn mac_font_assets_are_searched_newest_set_first() {
+        let folder = FontFolder::new("mac-assets");
+        let put = |set: &str, asset: &str, file: &str, bytes: &[u8]| {
+            let dir = folder.0.join(set).join(asset).join("AssetData");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(file), bytes).unwrap();
+        };
+        assert!(macos_asset_font(&folder.0, "PingFang.ttc").is_none(), "an empty folder");
+        assert!(macos_asset_font(&folder.0.join("missing"), "PingFang.ttc").is_none(), "no folder at all");
+        put("com_apple_MobileAsset_Font7", "aaaa.asset", "PingFang.ttc", PLEX_MONO);
+        put("com_apple_MobileAsset_Font7", "bbbb.asset", "Other.ttc", PLEX_SANS);
+        put("com_apple_MobileAsset_Other", "cccc.asset", "PingFang.ttc", PLEX_SANS);
+        put("unrelated", "dddd.asset", "PingFang.ttc", PLEX_SANS);
+        assert_eq!(macos_asset_font(&folder.0, "PingFang.ttc").as_deref(), Some(PLEX_MONO), "only font asset sets are read");
+        put("com_apple_MobileAsset_Font8", "eeee.asset", "PingFang.ttc", PLEX_SANS);
+        assert_eq!(macos_asset_font(&folder.0, "PingFang.ttc").as_deref(), Some(PLEX_SANS), "the newest set wins");
+        put("com_apple_MobileAsset_Font9", "ffff.asset", "PingFang.ttc", b"not a font");
+        assert_eq!(macos_asset_font(&folder.0, "PingFang.ttc").as_deref(), Some(PLEX_SANS), "a file that is not a font is passed over");
+        assert!(macos_asset_font(&folder.0, "Missing.ttc").is_none());
     }
 
     /// A temporary font folder, removed when dropped.
