@@ -4117,6 +4117,7 @@ fn prepare_preferences(
     }
     for theme in &new.custom_themes {
         theme.validate_radii()?;
+        crate::theme_files::parse_scrollbar(&theme.scrollbar)?;
         crate::theme_files::parse_icon_palette(&theme.icon_palette)?;
         crate::theme_files::parse_borders(&theme.borders)?;
     }
