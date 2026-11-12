@@ -258,6 +258,7 @@ fn main() {
         });
     }
     web.connect_web_process_terminated(|_, reason| eprintln!("PROTO web process terminated: {reason:?}"));
+    web.connect_title_notify(|web| println!("PROTO title {:?}", web.title()));
     web.set_size_request(430, -1);
     web.connect_size_allocate(|w, a| println!("PROTO web alloc {}x{} at {}x{}", a.width(), a.height(), a.x(), a.y()));
     web.set_hexpand(false);
@@ -415,7 +416,7 @@ fn main() {
         window_focus.set_focus(Some(&web_focus));
         web_focus.grab_focus();
         println!("PROTO focus web={} area={}", web_focus.has_focus(), area_focus.has_focus());
-        web_focus.run_javascript("setTimeout(function(){var t=document.querySelector('textarea'); if(t){t.focus(); t.setAttribute('data-proto-focused','yes');}},100);", None::<&gtk::gio::Cancellable>, |_| {});
+        web_focus.run_javascript("setTimeout(function(){var t=document.querySelector('textarea'); if(t){t.focus(); t.setAttribute('data-proto-focused','yes');} document.title='PROTO DOM '+document.body.innerText.replace(/\\s+/g,' ').slice(0,120);},100);", None::<&gtk::gio::Cancellable>, |_| {});
         gtk::glib::ControlFlow::Break
     });
 

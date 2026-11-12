@@ -55,17 +55,16 @@ GLArea. `window.ipc` messages (the page's `ready`) arrive at the host.
   here has `libwpe`/`cog` but no `wpewebkit`; Ubuntu publishes WPE 2.36 in jammy universe only;
   the Flatpak/Snap runtimes used here ship WebKitGTK, not WPE. WPE would add a second engine and
   a new LGPL/BSD packaging surface.
-- GTK 4 + WebKitGTK 6.0 uses GSK's single renderer and is the next experiment worth time-boxing;
-  it was not built here. It would still replace the eframe/winit host and its menus/dialogs.
+- GTK 4 + WebKitGTK 6.0 was not built; it is not part of this result.
 
-## Controlled experiment (to fill from the rerun)
+## Method
 
 | page | GLArea | what is checked |
 |---|---|---|
 | simple | without | visible background, heading and input box |
-| simple | with | the same, beside the real GL viewport |
+| simple | with | the same, beside the real GL viewport; DOM title: `PROTO DOM PROTO SIMPLE PAGE visible background, text, and input` |
 | real Assistant | without | DOM has `data-proto-state`, visible composer/setup |
-| real Assistant | with | the same, beside the real GL viewport |
+| real Assistant | with | the same, beside the real GL viewport; DOM title: `PROTO DOM No agent found Not connected Set up an assistant …` |
 
 All four use the same `openskyfall-assistant://` scheme, the IPC shim, the production state
 serializer and the same resource/environment; the only intended variable is the GLArea and the
