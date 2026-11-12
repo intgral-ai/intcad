@@ -396,30 +396,32 @@ Then run the GUI and the BYOK flow on a clean physical machine. Record the exact
 candidate SHA, asset hash, provider, model, prompt, report/snapshot ids and
 screenshots. A run on another SHA is not evidence for this candidate.
 
-## 6. Beta.3 candidate evidence (run 43241626115)
+## 6. Beta.3 candidate evidence (run 43317661377)
 
-Candidate head `e04a00b2662d062e528e59ee26d0127d48f2e1a8`; PR #106 tested
-merge `196b44b15d0cdd38947af3e60c3b40fe4f013b33` (tree
-`49fd420d3c94245acb35b6cfa6ba068b0e228357`). All descriptors below bind that
+Candidate head `37ed2534ef273fc5c76b385dfa29bb87b12b8cd4`; PR #106 tested
+merge `b6aeb8de60f9cd649940091e193b64eac8080467` (tree
+`827e1414a106a9c97bab881d4e7837fb83ce44c8`). All descriptors below bind that
 `sourceRevision`.
+
+This promotion is cut before `develop` #113 (`5b1e7dbed`, the baseline
+re-bless/property-lane change). It keeps the authorized old-baseline 213 strict
+and 956 unbaselined exceptions; #113 is not folded into this Beta. The Rust
+1.100 render/UI lint fixes are shared with `develop`.
 
 | Platform | Evidence | Result |
 |---|---|---|
-| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `a9f0426a7561cd35bb0591ef1a4136e953df198ff6d758b1e0f99b05aac3a5bd` | Clean `ubuntu:22.04` container and GitHub `ubuntu-24.04` verification run `43260751949` both printed `solidcraft-cli 0.1.0-beta.3` and `solidcraft 0.1.0-beta.3`. |
-| Linux aarch64 | tar sha `8da20bb8cd08805f7d77d8d499f979b34fa2332a46f2e1f73bea614a6b9e1f1f` | Content scan `markers=[]`, `unchecked=[]`; not launched (no aarch64 host). |
-| Windows x64 | MSI sha `95bb005ab6762564bc20dff86b7f346e1f6628f3521c0947f70864d725e8348a` | Verification run `43260751949` on a clean `windows-latest`: no existing install; admin extract and isolated `INSTALLFOLDER` both `solidcraft-cli 0.1.0-beta.3` (sha `B7B2CA5A…`); installed app sha `7C3990A4…` printed `solidcraft 0.1.0-beta.3`. |
+| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `359b68657e3a9909e728a9bd1b04c42e0ced13cc0e417fdeece85f473d5c3064` | Install/start verification run `43329290768` pending. |
+| Linux aarch64 | tar sha `a5b5c84adc8a...` | Content scan `markers=[]`, `unchecked=[]`; not launched (no aarch64 host). |
+| Windows x64 | MSI sha `3af65ae6597c2c59d2b3357f39ce1a7a76aa2ce7e726b47d3142c11abff8d1b0` | Install/start verification run `43329290768` pending. |
 | Windows x86 / arm64 | content scans clean | not launched (no x86/arm64 host). |
-| macOS universal | pending | First x86_64 build job was cancelled by hosted-runner capacity; retried in the same run. The aarch64 half already reports `solidcraft 0.1.0-beta.3`. |
+| macOS universal | DMG sha `133c60cc1497fad9f1d1654a498264f8d86a015a3f5ffe9f4e5903bc4f0cda3a` | Install/start verification run `43329290768` pending. |
 
-Verification run `43260751949` tested the exact artifacts: Windows x64 and Linux
-x86_64 passed. The macOS job failed only because `release-macos` did not exist
-yet; it is retried once the gate produces the universal artifact.
-
-The package descriptors have `markers=[]` and `unchecked=[]`; the checked files
-match `build.json`. The stable-only #14/#15 integration stops are not part of
-the Beta descriptor path.
+The six descriptors (Linux x86_64/aarch64, macOS universal, Windows
+x64/x86/arm64) all bind `sourceRevision=b6aeb8de6...`; their `contents.json`
+reports `markers=[]` and `unchecked=[]`, and the checked files match `build.json`.
+The stable-only #14/#15 integration stops are not part of the Beta descriptor
+path.
 
 Accepted gaps remain: unsigned/not notarized, no clean physical-machine GUI
 acceptance, and macOS/Windows real BYOK unverified. No tag or public release was
 created; `v0.1.0-beta.1` and its assets remain untouched.
-
