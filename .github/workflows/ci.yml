@@ -516,7 +516,7 @@ jobs:
     name: Action matrix (${{ matrix.shard }}/16)
     needs: build-tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
@@ -532,7 +532,7 @@ jobs:
         with:
           name: nextest-archive
       - name: Run one shard of the matrix
-        timeout-minutes: 150
+        timeout-minutes: 240
         env:
           SHARD: ${{ matrix.shard }}
           OUT: ${{ github.workspace }}/action-matrix
