@@ -118,6 +118,7 @@ x11rb = { version = "0.13", default-features = false }
 solidcraft-render = { workspace = true }
 webkit2gtk = "2.0"
 glow = "0.17"
+gdkx11 = "0.18"
 libc = "0.2"
 # The desktop's dark or light preference through the XDG Desktop Portal (src/desktop_theme.rs,
 # #7944); already in the tree through eframe's accessibility support (accesskit_unix).

@@ -1,0 +1,2 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+PROTO wgpu backend=Vulkan adapter="AMD Radeon RX 9060 XT (RADV GFX1200)"
