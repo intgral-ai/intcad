@@ -541,29 +541,29 @@ class ExecutionEvidence(unittest.TestCase):
 
     def test_cli_native_record_uses_current_allowlist_without_changing_raw_ids(self):
         # Use an existing reviewed identity as a format fixture, never execute it.
-        identity = "solidcraft-cli::action_matrix::action_matrix_sample"
+        identity = "solidcraft-kernel::boolean_props::translation_invariant"
         data = listing()
         suite = data["rust-suites"].pop("solidcraft-sketch")
-        binary = "solidcraft-cli::action_matrix"
-        suite.update(**{"binary-id": binary, "binary-name": "action_matrix", "package-name": "solidcraft-cli",
-                        "package-id": "path+file:///fixture/apps/solidcraft-cli#0.1.0",
-                        "binary-path": "/fixture/target/ci/deps/action_matrix-1234",
-                        "cwd": "/fixture/apps/solidcraft-cli", "kind": "test", "testcases": {
-                            "action_matrix_sample": {"ignored": False, "filter-match": {"status": "matches"}}}})
+        binary = "solidcraft-kernel::boolean_props"
+        suite.update(**{"binary-id": binary, "binary-name": "boolean_props", "package-name": "solidcraft-kernel",
+                        "package-id": "path+file:///fixture/crates/kernel#0.1.0",
+                        "binary-path": "/fixture/target/ci/deps/boolean_props-1234",
+                        "cwd": "/fixture/crates/kernel", "kind": "test", "testcases": {
+                            "translation_invariant": {"ignored": False, "filter-match": {"status": "matches"}}}})
         data["test-count"] = 1
         data["rust-suites"][binary] = suite
         self.write("selection.json", data)
-        self.junit.write_text("<testsuite name='solidcraft-cli::action_matrix'>"
-                              "<testcase name='action_matrix_sample'><failure/></testcase></testsuite>")
-        value = planner.make_plan({"workspace_root": "/fixture", "packages": [{"name": "solidcraft-cli",
-            "manifest_path": "/fixture/apps/solidcraft-cli/Cargo.toml", "dependencies": []}]},
-            ["apps/solidcraft-cli/src/main.rs"], ABSENT, source_revision=SHA, event_name="pull_request",
+        self.junit.write_text("<testsuite name='solidcraft-kernel::boolean_props'>"
+                              "<testcase name='translation_invariant'><failure/></testcase></testsuite>")
+        value = planner.make_plan({"workspace_root": "/fixture", "packages": [{"name": "solidcraft-kernel",
+            "manifest_path": "/fixture/crates/kernel/Cargo.toml", "dependencies": []}]},
+            ["crates/kernel/src/lib.rs"], ABSENT, source_revision=SHA, event_name="pull_request",
             base_ref="develop", head_ref="task", full=False, release_required=False, diff_complete=True)
         path = self.write("plan.json", plan_bytes(value).decode())
         cmds = commands(self.junit)
         for cmd in cmds[:2]:
-            cmd["argv"][cmd["argv"].index("-p") + 1] = "solidcraft-cli"
-            cmd["argv"][cmd["argv"].index("-E") + 1] = "binary(action_matrix)"
+            cmd["argv"][cmd["argv"].index("-p") + 1] = "solidcraft-kernel"
+            cmd["argv"][cmd["argv"].index("-E") + 1] = "binary(boolean_props)"
         args = ["record", "--plan", path, "--job-id", "rust", "--commands", self.write("commands.json", cmds),
                 "--selection", self.selection, "--junit", self.junit, "--out", self.directory / "native.json"]
         result = self.cli(*args)

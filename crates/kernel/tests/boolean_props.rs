@@ -100,27 +100,90 @@ fn close(x: f64, y: f64, scale: f64) -> bool {
     (x - y).abs() <= REL * scale.max(1e-9)
 }
 
+/// Whether the union of a box and a sphere touches at exactly one point and SMLib refused
+/// it with `Bad Vertex Gap`. Such a union has no volume and is not a manifold solid, so the
+/// refusal is the right answer; a sphere that overlaps the box or misses it is not accepted.
+fn point_tangency(a: &Prim, b: &Prim, error: &str) -> bool {
+    let (at, size, c, r) = match (a, b) {
+        (Prim::Box { at, size }, Prim::Sph { at: c, r }) => (at, size, c, *r),
+        (Prim::Sph { at: c, r }, Prim::Box { at, size }) => (at, size, c, *r),
+        _ => return false,
+    };
+    if !error.contains("SMLib boolean: SMLib's check refuses the result") || !error.contains("SmVertex::Test #1 Bad Vertex Gap") {
+        return false;
+    }
+    let min = *at;
+    let max = [at[0] + size[0], at[1] + size[1], at[2] + size[2]];
+    if (0..3).all(|i| c[i] >= min[i] && c[i] <= max[i]) {
+        return false;
+    }
+    let nearest = [c[0].clamp(min[0], max[0]), c[1].clamp(min[1], max[1]), c[2].clamp(min[2], max[2])];
+    let distance = ((c[0] - nearest[0]).powi(2) + (c[1] - nearest[1]).powi(2) + (c[2] - nearest[2]).powi(2)).sqrt();
+    (distance - r).abs() <= 1e-9 * r.max(1.0)
+}
+
+enum Union {
+    Volume(f64),
+    PointTangency,
+}
+
+/// The union's volume, or the accepted exact point tangency. Any other refusal fails the case.
+fn union(a: &Body, b: &Body, pa: &Prim, pb: &Prim) -> Result<Union, TestCaseError> {
+    match boolean(a, b, BoolOp::Union) {
+        Ok(None) => Ok(Union::Volume(0.0)),
+        Ok(Some(body)) => {
+            let bad = body.validity();
+            prop_assert!(bad.is_empty(), "Union result is not a sound solid: {}", bad.join("; "));
+            Ok(Union::Volume(measure(&body).map_err(|e| TestCaseError::fail(format!("measure: {e}")))?.volume))
+        }
+        Err(e) if point_tangency(pa, pb, &e.to_string()) => Ok(Union::PointTangency),
+        Err(e) => Err(TestCaseError::fail(format!("Union returned an error: {e}"))),
+    }
+}
+
 /// Inclusion-exclusion: V(A∪B) + V(A∩B) = V(A) + V(B), and V(A−B) = V(A) − V(A∩B).
 fn identity(a: &Prim, b: &Prim) -> Result<(), TestCaseError> {
     let (ba, bb) = (a.body(), b.body());
     let (va, vb) = (vol(&ba), vol(&bb));
-    let (vu, vi, vc) = (run(&ba, &bb, BoolOp::Union)?, run(&ba, &bb, BoolOp::Intersect)?, run(&ba, &bb, BoolOp::Cut)?);
-    prop_assert!(close(vu + vi, va + vb, va + vb), "union+intersect {} != A+B {} (A {va:.3}, B {vb:.3}, U {vu:.3}, I {vi:.3})", vu + vi, va + vb);
+    let (u, vi, vc) = (union(&ba, &bb, a, b)?, run(&ba, &bb, BoolOp::Intersect)?, run(&ba, &bb, BoolOp::Cut)?);
+    match u {
+        Union::Volume(vu) => prop_assert!(
+            close(vu + vi, va + vb, va + vb),
+            "union+intersect {} != A+B {} (A {va:.3}, B {vb:.3}, U {vu:.3}, I {vi:.3})",
+            vu + vi,
+            va + vb
+        ),
+        Union::PointTangency => prop_assert!(close(vi, 0.0, va + vb), "a point tangency must have no intersection volume (got {vi:.6})"),
+    }
     prop_assert!(close(vc, va - vi, va + vb), "cut {vc:.3} != A-I {:.3}", va - vi);
     Ok(())
 }
 
-fn scale(a: &Prim, b: &Prim, k: f64) -> Result<(), TestCaseError> {
-    let sc = |p: &Prim| match p.clone() {
+fn grid_scale(p: &Prim, k: f64) -> Prim {
+    match p.clone() {
         Prim::Box { at, size } => Prim::Box { at: at.map(|x| x * k), size: size.map(|x| x * k) },
         Prim::Cyl { at, axis, r, h } => Prim::Cyl { at: at.map(|x| x * k), axis, r: r * k, h: h * k },
         Prim::Sph { at, r } => Prim::Sph { at: at.map(|x| x * k), r: r * k },
-    };
-    let (ba, bb, ka, kb) = (a.body(), b.body(), sc(a).body(), sc(b).body());
+    }
+}
+
+fn scale(a: &Prim, b: &Prim, k: f64) -> Result<(), TestCaseError> {
+    let (sa, sb) = (grid_scale(a, k), grid_scale(b, k));
+    let (ba, bb, ka, kb) = (a.body(), b.body(), sa.body(), sb.body());
     let s = vol(&ba) + vol(&bb);
     for op in [BoolOp::Union, BoolOp::Intersect, BoolOp::Cut] {
-        let (one, big) = (run(&ba, &bb, op)?, run(&ka, &kb, op)? / (k * k * k));
-        prop_assert!(close(one, big, s), "{op:?} at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
+        if op == BoolOp::Union {
+            match (union(&ba, &bb, a, b)?, union(&ka, &kb, &sa, &sb)?) {
+                (Union::Volume(one), Union::Volume(big)) => {
+                    prop_assert!(close(one, big / (k * k * k), s), "Union at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
+                }
+                (Union::PointTangency, Union::PointTangency) => {}
+                _ => prop_assert!(false, "Union was refused as a point tangency at one scale only"),
+            }
+        } else {
+            let (one, big) = (run(&ba, &bb, op)?, run(&ka, &kb, op)? / (k * k * k));
+            prop_assert!(close(one, big, s), "{op:?} at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
+        }
     }
     Ok(())
 }
@@ -161,8 +224,18 @@ proptest! {
         let (ba, bb) = (a.body(), b.body());
         let s = vol(&ba) + vol(&bb);
         for op in [BoolOp::Union, BoolOp::Intersect] {
-            let (ab, ba_) = (run(&ba, &bb, op)?, run(&bb, &ba, op)?);
-            prop_assert!(close(ab, ba_, s), "{op:?}: A,B gives {ab:.4} but B,A gives {ba_:.4}");
+            if op == BoolOp::Union {
+                match (union(&ba, &bb, &a, &b)?, union(&bb, &ba, &b, &a)?) {
+                    (Union::Volume(ab), Union::Volume(ba_)) => {
+                        prop_assert!(close(ab, ba_, s), "Union: A,B gives {ab:.4} but B,A gives {ba_:.4}");
+                    }
+                    (Union::PointTangency, Union::PointTangency) => {}
+                    _ => prop_assert!(false, "Union was refused as a point tangency in one order only"),
+                }
+            } else {
+                let (ab, ba_) = (run(&ba, &bb, op)?, run(&bb, &ba, op)?);
+                prop_assert!(close(ab, ba_, s), "{op:?}: A,B gives {ab:.4} but B,A gives {ba_:.4}");
+            }
         }
     }
 
@@ -174,10 +247,26 @@ proptest! {
         let t = Vec3::new(off, -off * 0.7, off * 0.3);
         let mv = |x: &Body| transform(x, t, Vec3::ZERO, Vec3::Z, 0.0).expect("translate");
         let (ta, tb) = (mv(&ba), mv(&bb));
+        let moved = |p: &Prim| match p.clone() {
+            Prim::Box { at, size } => Prim::Box { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], size },
+            Prim::Cyl { at, axis, r, h } => Prim::Cyl { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], axis, r, h },
+            Prim::Sph { at, r } => Prim::Sph { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], r },
+        };
+        let (pa, pb) = (moved(&a), moved(&b));
         let s = vol(&ba) + vol(&bb);
         for op in [BoolOp::Union, BoolOp::Intersect, BoolOp::Cut] {
-            let (here, there) = (run(&ba, &bb, op)?, run(&ta, &tb, op)?);
-            prop_assert!(close(here, there, s), "{op:?} at origin {here:.4}, moved by {off} gives {there:.4}");
+            if op == BoolOp::Union {
+                match (union(&ba, &bb, &a, &b)?, union(&ta, &tb, &pa, &pb)?) {
+                    (Union::Volume(here), Union::Volume(there)) => {
+                        prop_assert!(close(here, there, s), "Union at origin {here:.4}, moved by {off} gives {there:.4}");
+                    }
+                    (Union::PointTangency, Union::PointTangency) => {}
+                    _ => prop_assert!(false, "Union was refused as a point tangency at the origin or moved, not both"),
+                }
+            } else {
+                let (here, there) = (run(&ba, &bb, op)?, run(&ta, &tb, op)?);
+                prop_assert!(close(here, there, s), "{op:?} at origin {here:.4}, moved by {off} gives {there:.4}");
+            }
         }
     }
 
@@ -349,4 +438,21 @@ fn half_cylinder_intersection_scales_with_the_solid() {
             assert!(close(actual, expected, expected), "{op:?} at scale {k}: {actual} != {expected}");
         }
     }
+}
+
+/// The tangency acceptance is narrow: exact point contact with SMLib's `Bad Vertex Gap`
+/// signature only. An overlap, a miss, or another kernel refusal is never accepted.
+#[test]
+fn point_tangency_accepts_only_the_exact_refusal() {
+    let a = Prim::Box { at: [7.5, 10.0, 0.0], size: [15.0, 7.5, 10.0] };
+    // Both bodies touch at (10, 17.5, 10), on the box edge between its top and front faces.
+    let b = Prim::Sph { at: [10.0, 25.0, 10.0], r: 7.5 };
+    let error = "SMLib boolean: SMLib's check refuses the result: 1 failed tests:\nSmVertex::Test #1 Bad Vertex Gap: Vertex-Face Gap exceeds XSectTol3d for one (or more) Faces (offset=0.40569415, tolerance= 2e-05) [owner SmVertex]";
+    assert!(point_tangency(&a, &b, error), "an exact point contact is the accepted refusal");
+    assert!(point_tangency(&b, &a, error), "the refusal does not depend on operand order");
+    let overlap = Prim::Sph { at: [10.0, 15.0, 5.0], r: 7.5 };
+    assert!(!point_tangency(&a, &overlap, error), "an overlapping sphere is not a tangency");
+    let miss = Prim::Sph { at: [10.0, 30.0, 5.0], r: 7.5 };
+    assert!(!point_tangency(&a, &miss, error), "a sphere that misses the box is not a tangency");
+    assert!(!point_tangency(&a, &b, "SMLib boolean: SmBSplineSurface::Test #5 Bad NonMonotonic CPts"), "another refusal is not accepted");
 }
