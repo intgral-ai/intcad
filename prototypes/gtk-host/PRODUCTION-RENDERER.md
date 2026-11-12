@@ -104,38 +104,21 @@ dump); the direct-surface `gtk_wgpu_host.rs` renders the CAD UI on X11, and the 
 there. The production eframe/wry X11 host already has the CAD UI + page; no claim is made for the
 blit example on X11.
 
-## Production-host conditions (not yet met)
+## Production-host conditions
 
-1. real `SolveApp`, production wgpu viewport and real page in one window: **yes on native
-   Wayland** in this experiment; X11 combined blit not validated.
-2. X11 and native Wayland both running: X11 via the existing production host; the GTK host's X11
-   combined path is unproven.
+1. real `SolveApp`, production wgpu viewport and real page in one window: **yes** on X11 and
+   native Wayland in this experiment (`gtk-wgpu-blit-assistant-x11.jpg` and
+   `gtk-wgpu-blit-assistant-wayland.jpg`). The page state is the production serializer on an
+   empty session, so a live agent turn is not part of this proof.
+2. X11 and native Wayland both running: **yes** for the experiment; the production eframe/wry X11
+   host remains the shipping path.
 3. Changes isolated in a Linux host/interface: the experiment is an example only; no production
    host code yet.
 4. No new engine/large fork/licence change: true.
-5. No obvious performance regression / busy loop / disabled security: **not measured**; the
-   prototype repaints every 16 ms and uses a per-frame CPU copy, so this is not yet met.
+5. No obvious performance regression / busy loop / disabled security: **partially** measured.
+   Idle (page open, same box, 5 s) is 0 % main CPU for the GTK blit vs 57 % for the production
+   eframe/wry host; RSS is lower. But the blit pays a per-frame GPU→CPU→GPU copy and the
+   interaction frame time, first input, IME, DnD and scaling are not measured. This condition is
+   therefore not met for a production decision.
 
 The experiment therefore remains an experiment; it does not enable a new production host.
-
-## X11 same-window result and idle comparison
-
-Forcing `Backends::VULKAN` for the offscreen frame (GTK's GLArea context is current; wgpu's GL/EGL
-backend then failed with `BadAccess`) fixed the X11 combined window. Under Xvfb, one GTK window
-now shows the real CAD UI + box on the left and the real Assistant page on the right on X11 too:
-`evidence/gtk-wgpu-blit-assistant-x11.jpg`, `gtk-wgpu-blit-assistant-x11.log`.
-
-Same machine (RX 9060 XT/RADV), Xvfb 1400×900, a 30×20×10 box, the real page open, idle for 5 s:
-
-| host | main idle CPU | main RSS | WebKit network/web RSS |
-|---|---|---|---|
-| production eframe/wry (X11) | **57%** | 668 MB | 85 MB + 283 MB |
-| GTK offscreen wgpu + GtkGLArea (X11) | **0%** | 363 MB | 83 MB + 280 MB |
-| GTK offscreen wgpu + GtkGLArea (native Wayland, RADV) | **0%** | 346 MB | 83 MB + 282 MB |
-
-The eframe/wry measurement is the current production host with the page open; with the page closed
-the same host was 0% and 609 MB. The GTK prototype's loop renders only when
-`egui::Context::has_requested_repaint()`; the production host keeps its main thread busy with the
-page open. This is evidence for the 10 FPS/idle investigation, not a complete performance verdict:
-interaction frame times (rotate/pan/zoom, page typing/streaming) and first-input/IME/DnD are still
-unmeasured, and the Xvfb/llvmpipe environment is not a physical desktop.
