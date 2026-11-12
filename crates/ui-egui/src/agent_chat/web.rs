@@ -12,10 +12,40 @@ const MAX_DETAIL: usize = 8000;
 /// Longest message the page may send (characters).
 const MAX_MESSAGE: usize = 100_000;
 
-/// The desktop host says whether it can show the conversation in a web view. Without it the
-/// panel draws its own conversation, as it does in the browser build and in tests.
+/// Why the desktop host has no web view to offer. The panel shows this as a diagnostic, never as
+/// a second conversation: the Assistant has one interface, the page in the host's view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Problem {
+    /// Linux opened a native Wayland window, which has no X11 child window for WebKitGTK.
+    NativeWayland,
+    /// The view could not be made at all (a missing WebView2 runtime, a GTK/WebKitGTK fault).
+    Failed,
+}
+
+/// The desktop host says whether it can show the conversation in a web view. Without it, and on
+/// the browser build, the panel gives up its conversation to the old egui panel; a desktop host
+/// that cannot make a view says why with [`set_problem`] instead.
 pub fn set_host(app: &mut SolveApp, available: bool) {
     app.agent_chat.web_host = available;
+    if available {
+        app.agent_chat.web_problem = None;
+    }
+}
+
+/// Tell the panel why the host has no view, so it can say what to do instead of drawing a second
+/// chat interface.
+pub fn set_problem(app: &mut SolveApp, problem: Problem) {
+    app.agent_chat.web_problem = Some(problem);
+}
+
+/// The panel's Retry: ask the host to try to make the view again, keeping the conversation.
+pub fn request_retry(app: &mut SolveApp) {
+    app.agent_chat.web_retry = true;
+}
+
+/// The host takes a pending Retry, once.
+pub fn take_retry(app: &mut SolveApp) -> bool {
+    std::mem::take(&mut app.agent_chat.web_retry)
 }
 
 /// The host, with the app's logic: the agent's messages are taken in whether or not the window

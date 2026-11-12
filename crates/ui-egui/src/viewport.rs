@@ -6971,7 +6971,6 @@ pub(crate) fn refresh_layout(app: &mut SolveApp, ctx: &egui::Context) {
         if app.ui.layout == crate::shell::LayoutMode::Floating
             && crate::agent_chat::shown(app)
             && app.agent_chat.open
-            && !app.preferences.agent_chat_popped
             && !app.preferences.agent_chat_minimized
             && let Some(chat) = app.agent_chat.panel_rect.filter(|r| r.is_finite() && r.is_positive())
         {

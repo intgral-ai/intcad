@@ -1,4 +1,10 @@
 //! Assistant presentation primitives; protocol state and action dispatch stay with callers.
+//!
+//! Most of these draw the old egui conversation, which the desktop Assistant replaced with the
+//! page in its web view. They remain for the browser build, the UI gallery and the old panel's
+//! tests, and for the banners the render workspace still uses.
+#![cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
+
 use crate::theme::Tokens;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ui_kit::BackingTooltipExt as _;

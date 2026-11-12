@@ -1556,11 +1556,7 @@ preference_settings! {
     /// so the agent knows what "this" means without asking the app. Off: the agent is sent the
     /// selection only when it reads it through the app's tools, as before this was a setting.
     agent_chat_attach_selection: bool = true, PAGE_ASSISTANT;
-    /// Whether the chat is in its own window instead of the side panel, and that window's place
-    /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
-    /// negative or past the main screen when the window sits on another one).
-    agent_chat_popped: bool = false, PAGE_ASSISTANT;
-    agent_chat_window: Option<[f32; 4]> = None, PAGE_ASSISTANT;
+
     /// Changes the agent may make for one message; 0 is no limit.
     agent_chat_turn_limit: u32 = crate::agent_chat::gate::DEFAULT_TURN_LIMIT, PAGE_ASSISTANT;
     /// Custom instructions (#8220): text the agent chat adds to its system note when a session

@@ -1,0 +1,74 @@
+{
+  "en": {
+    "ui.agent_chat_web_native_wayland_body": "This session opened a native Wayland window, and the Assistant's page is drawn by WebKitGTK in an X11 child window. Set Window system to X11 (or Automatic) in Graphics settings, then restart open-skyfall. The model view itself can stay on Wayland.",
+    "ui.agent_chat_web_native_wayland_title": "The Assistant needs an X11 window",
+    "ui.agent_chat_web_failed_body": "The app could not make the web view. On Linux it needs WebKitGTK 4.1 and GTK 3; on Windows it needs the WebView2 runtime. Install the missing part and retry.",
+    "ui.agent_chat_web_failed_title": "The Assistant's page could not open",
+    "ui.agent_chat_web_retry": "Retry",
+    "ui.agent_chat_web_graphics": "Graphics settings",
+    "ui.agent_chat_web_assistant_settings": "Assistant settings"
+  },
+  "ja": {
+    "ui.agent_chat_web_native_wayland_body": "このセッションはネイティブ Wayland ウィンドウを開きました。アシスタントのページは X11 子ウィンドウ内の WebKitGTK で描画されます。グラフィック設定で「ウィンドウシステム」を X11（または自動）に設定し、open-skyfall を再起動してください。モデル表示自体は Wayland のままで構いません。",
+    "ui.agent_chat_web_native_wayland_title": "アシスタントには X11 ウィンドウが必要です",
+    "ui.agent_chat_web_failed_body": "Web ビューを作成できませんでした。Linux では WebKitGTK 4.1 と GTK 3、Windows では WebView2 ランタイムが必要です。不足しているものをインストールして再試行してください。",
+    "ui.agent_chat_web_failed_title": "アシスタントのページを開けませんでした",
+    "ui.agent_chat_web_retry": "再試行",
+    "ui.agent_chat_web_graphics": "グラフィック設定",
+    "ui.agent_chat_web_assistant_settings": "アシスタント設定"
+  },
+  "zh": {
+    "ui.agent_chat_web_native_wayland_body": "本次会话打开了原生 Wayland 窗口，而助手页面由 X11 子窗口中的 WebKitGTK 绘制。请在“图形”设置中将“窗口系统”设为 X11（或自动），然后重启 open-skyfall。模型视图本身可以继续使用 Wayland。",
+    "ui.agent_chat_web_native_wayland_title": "助手需要 X11 窗口",
+    "ui.agent_chat_web_failed_body": "应用无法创建网页视图。Linux 需要 WebKitGTK 4.1 和 GTK 3；Windows 需要 WebView2 运行时。请安装缺少的组件后重试。",
+    "ui.agent_chat_web_failed_title": "无法打开助手页面",
+    "ui.agent_chat_web_retry": "重试",
+    "ui.agent_chat_web_graphics": "图形设置",
+    "ui.agent_chat_web_assistant_settings": "助手设置"
+  },
+  "de": {
+    "ui.agent_chat_web_native_wayland_body": "Diese Sitzung hat ein natives Wayland-Fenster geöffnet; die Seite des Assistenten wird von WebKitGTK in einem X11-Kindfenster gezeichnet. Stellen Sie in den Grafik-Einstellungen das Fenstersystem auf X11 (oder Automatisch) und starten Sie open-skyfall neu. Die Modellansicht selbst kann auf Wayland bleiben.",
+    "ui.agent_chat_web_native_wayland_title": "Der Assistent benötigt ein X11-Fenster",
+    "ui.agent_chat_web_failed_body": "Die App konnte die Webansicht nicht erstellen. Unter Linux werden WebKitGTK 4.1 und GTK 3 benötigt, unter Windows die WebView2-Laufzeit. Installieren Sie das Fehlende und versuchen Sie es erneut.",
+    "ui.agent_chat_web_failed_title": "Die Seite des Assistenten konnte nicht geöffnet werden",
+    "ui.agent_chat_web_retry": "Erneut versuchen",
+    "ui.agent_chat_web_graphics": "Grafik-Einstellungen",
+    "ui.agent_chat_web_assistant_settings": "Assistenten-Einstellungen"
+  },
+  "ar": {
+    "ui.agent_chat_web_native_wayland_body": "فتحت هذه الجلسة نافذة Wayland أصلية، وتُعرض صفحة المساعد بواسطة WebKitGTK داخل نافذة X11 فرعية. اضبط «نظام النوافذ» على X11 (أو تلقائي) في إعدادات الرسومات، ثم أعد تشغيل open-skyfall. يمكن أن يبقى عرض النموذج على Wayland.",
+    "ui.agent_chat_web_native_wayland_title": "يحتاج المساعد إلى نافذة X11",
+    "ui.agent_chat_web_failed_body": "تعذّر على التطبيق إنشاء عرض الويب. على Linux يلزم WebKitGTK 4.1 وGTK 3، وعلى Windows يلزم WebView2 runtime. ثبّت الجزء الناقص ثم أعد المحاولة.",
+    "ui.agent_chat_web_failed_title": "تعذّر فتح صفحة المساعد",
+    "ui.agent_chat_web_retry": "إعادة المحاولة",
+    "ui.agent_chat_web_graphics": "إعدادات الرسومات",
+    "ui.agent_chat_web_assistant_settings": "إعدادات المساعد"
+  },
+  "he": {
+    "ui.agent_chat_web_native_wayland_body": "הפעלה זו פתחה חלון Wayland מקורי, והעמוד של העוזר מצויר על ידי WebKitGTK בתוך חלון X11 בן. יש להגדיר את מערכת החלונות ל-X11 (או אוטומטי) בהגדרות הגרפיקה, ואז להפעיל מחדש את open-skyfall. תצוגת המודל עצמה יכולה להישאר ב-Wayland.",
+    "ui.agent_chat_web_native_wayland_title": "העוזר זקוק לחלון X11",
+    "ui.agent_chat_web_failed_body": "האפליקציה לא הצליחה ליצור את תצוגת האינטרנט. ב-Linux נדרשים WebKitGTK 4.1 ו-GTK 3; ב-Windows נדרש WebView2 runtime. יש להתקין את הרכיב החסר ולנסות שוב.",
+    "ui.agent_chat_web_failed_title": "לא ניתן היה לפתוח את העמוד של העוזר",
+    "ui.agent_chat_web_retry": "נסה שוב",
+    "ui.agent_chat_web_graphics": "הגדרות גרפיקה",
+    "ui.agent_chat_web_assistant_settings": "הגדרות העוזר"
+  },
+  "vi": {
+    "ui.agent_chat_web_native_wayland_body": "Phiên này đã mở cửa sổ Wayland gốc, và trang của Trợ lý được WebKitGTK vẽ trong cửa sổ con X11. Hãy đặt Hệ thống cửa sổ thành X11 (hoặc Tự động) trong Cài đặt đồ họa, rồi khởi động lại open-skyfall. Chế độ xem mô hình vẫn có thể ở Wayland.",
+    "ui.agent_chat_web_native_wayland_title": "Trợ lý cần cửa sổ X11",
+    "ui.agent_chat_web_failed_body": "Ứng dụng không thể tạo chế độ xem web. Trên Linux cần WebKitGTK 4.1 và GTK 3; trên Windows cần WebView2 runtime. Hãy cài phần còn thiếu rồi thử lại.",
+    "ui.agent_chat_web_failed_title": "Không thể mở trang của Trợ lý",
+    "ui.agent_chat_web_retry": "Thử lại",
+    "ui.agent_chat_web_graphics": "Cài đặt đồ họa",
+    "ui.agent_chat_web_assistant_settings": "Cài đặt Trợ lý"
+  },
+  "ko": {
+    "ui.agent_chat_web_native_wayland_body": "이 세션은 네이티브 Wayland 창을 열었습니다. 어시스턴트 페이지는 X11 자식 창의 WebKitGTK로 그려집니다. 그래픽 설정에서 창 시스템을 X11(또는 자동)로 설정한 뒤 open-skyfall을 다시 시작하세요. 모델 보기 자체는 Wayland에 그대로 둘 수 있습니다.",
+    "ui.agent_chat_web_native_wayland_title": "어시스턴트에는 X11 창이 필요합니다",
+    "ui.agent_chat_web_failed_body": "앱이 웹 보기를 만들지 못했습니다. Linux에는 WebKitGTK 4.1과 GTK 3이, Windows에는 WebView2 런타임이 필요합니다. 빠진 구성 요소를 설치한 뒤 다시 시도하세요.",
+    "ui.agent_chat_web_failed_title": "어시스턴트 페이지를 열 수 없습니다",
+    "ui.agent_chat_web_retry": "다시 시도",
+    "ui.agent_chat_web_graphics": "그래픽 설정",
+    "ui.agent_chat_web_assistant_settings": "어시스턴트 설정"
+  }
+}

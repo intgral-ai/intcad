@@ -3,6 +3,10 @@
 //!
 //! It takes untrusted text and never fails: anything it does not understand stays text, and the
 //! amount of work and output is bounded.
+//!
+//! The desktop Assistant's conversation is the page in the host's web view; this reader stays
+//! for the browser build and the old panel's tests.
+#![cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 
 /// Longest input parsed; the rest is ignored.
 pub const MAX_INPUT: usize = 256 * 1024;
