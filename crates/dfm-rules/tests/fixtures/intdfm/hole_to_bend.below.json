@@ -8,6 +8,16 @@
       "sha256": "37f9bc25d7dfd5ebdd14a9087595e0dda7d4e18c6c30fc5d3bed884e0eab5df4"
     }
   },
+  "comparison": {
+    "measurement_abs_tolerance_mm": 0.001,
+    "notes": "Pair usable round through holes by nearest folded centre, one to one, greedy by increasing distance. A second candidate within ambiguous_within_mm of the chosen one for the same hole is refused, not guessed. After pairing, compare each diameter, depth, position and the model thickness with measurement_abs_tolerance_mm. rule_threshold_rounding_mm is the separate rounding rules._below uses at the limit.",
+    "pairing": {
+      "ambiguous_within_mm": 0.001,
+      "max_centre_distance_mm": 0.05,
+      "method": "nearest_centre_one_to_one"
+    },
+    "rule_threshold_rounding_mm": 1e-06
+  },
   "declared": {
     "material": "5052-H32",
     "process": "press brake",

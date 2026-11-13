@@ -63,7 +63,7 @@ renamed to another rule's id, an inconsistent gate, a non-finite fact or a chang
 | Layer | File | What it does |
 |---|---|---|
 | Facts | `crates/doc/src/sheet_dfm.rs` | measures round through holes, folded positions, edge distance and bend gaps from `SheetBody`; exact lines and arcs only. `edge_mm` counts outline, non-circular openings and pockets, never another round hole's wall (that belongs to `sm.hole_spacing`) |
-| Rules | `crates/dfm-rules/` | pure Rust: validates data, chooses the number, runs the thickness gate and the three hole rules, maps to App states, writes one report |
+| Rules | `crates/dfm-rules/` | pure Rust: validates data, chooses the number, runs the thickness gate and the three hole rules, maps to App states, writes one report; `second_gate` compares recorded and measured facts |
 | App entry | `crates/engine/src/dfm.rs` | converts facts to the rule contract and calls the rules crate; no OCP, no files |
 | Runner | `crates/engine/src/validation/runner.rs` | new `dfm.sheet` check kind; evidence = facts + report; `required = false` |
 | Validation | `crates/engine/src/validation/profile.rs` | validates `dfm.sheet` parameters before a run |
@@ -146,11 +146,11 @@ cargo xtask layers
 | Check | Result |
 |---|---|
 | INTdfm `replay verify tests/fixtures/dfm-replay/v1` | 10 cases, exit 0 |
-| INTdfm `pytest tests/unit/test_replay.py` | 15 passed |
+| INTdfm `pytest tests/unit/test_replay.py` | 16 passed |
 | INTdfm `pytest -m e2e tests/e2e/test_replay_record.py` | 1 passed (real OCP read) |
-| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 20 passed (8 cross-language + 12 App entry) |
+| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 26 passed (8 cross-language + 12 App entry + 6 second-gate) |
 | Rust `cargo test -p solidcraft-doc sheet_dfm --profile ci` | 6 passed |
-| Rust `cargo test -p solidcraft-engine dfm::tests --profile ci` | 4 passed |
+| Rust `cargo test -p solidcraft-engine dfm::tests --profile ci` | 5 passed (including App facts vs recorded facts) |
 | Rust `cargo test -p solidcraft-engine a_dfm_sheet_check --profile ci` | 1 passed |
 | Rust `cargo xtask layers` | 25 crates, no violations |
 | Rust `cargo xtask wasm` | 17 library/web crates build; `solidcraft-dfm-rules` also checked explicitly for wasm32 |
@@ -160,12 +160,14 @@ cargo xtask layers
 
 ## 6. Remaining differences and next tasks
 
-1. **Full three-rule parity:** `sm.hole_min_diameter` has a complete Python/Rust baseline.
-   `sm.hole_to_edge` and `sm.hole_to_bend` have recordings and Rust implementations, but the
-   geometry layer's edge distance and bend-gap facts need the second gate: compare App facts
-   with the recorded `SolidFacts` per hole, not only the rule result.
-2. **Second gate tolerance:** pair holes and bends by position; choose an explicit tolerance for
-   measurement comparison. Do not reuse the rule's 1e-6 threshold rounding.
+1. **Full three-rule parity:** `sm.hole_min_diameter` now has both gates: the rule result matches
+   the Python baseline, and the App's measured facts match the recorded INTdfm facts for the same
+   hole. `sm.hole_to_edge` and `sm.hole_to_bend` still need their edge and bend-gap facts added to
+   the second-gate comparison; their rule results already match the recordings.
+2. **Second gate tolerance:** now pinned in every recording: pair by nearest folded centre, at
+   most 0.05 mm; refuse a second candidate within 0.001 mm; compare diameter, depth, position and
+   thickness at 0.001 mm. The rule threshold's 1e-6 rounding is separate. Extend the same block
+   to bends when the bend facts are compared.
 3. **More cases:** hole-by-slot, hole spanning a bend, blind/tilted hole, countersink, perforation
    array, multiple sheet bodies with different thicknesses.
 4. **App report storage:** add `findings.json`/evidence export and the `.intgral` run identity

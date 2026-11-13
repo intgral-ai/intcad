@@ -288,6 +288,47 @@ mod tests {
     }
 
     #[test]
+    fn the_second_gate_compares_app_facts_with_the_recorded_facts() {
+        let recording: serde_json::Value =
+            serde_json::from_str(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_min_diameter.below.json")).expect("recorded case");
+        let recorded: solidcraft_dfm_rules::Facts = serde_json::from_value(recording["facts"].clone()).expect("recorded facts");
+        let sheet = plate_with_hole(0.5);
+        let measured = rule_facts(&sheet_dfm::facts(&sheet).expect("measured facts"));
+        // The tolerance is the one the recording's contract pins, not a test-local default.
+        let contract = &recording["comparison"];
+        let tolerance = solidcraft_dfm_rules::second_gate::GeometryTolerance {
+            pairing_mm: contract["pairing"]["max_centre_distance_mm"].as_f64().expect("pairing"),
+            ambiguous_mm: contract["pairing"]["ambiguous_within_mm"].as_f64().expect("ambiguous"),
+            measurement_mm: contract["measurement_abs_tolerance_mm"].as_f64().expect("measurement"),
+        };
+        assert_eq!(tolerance.pairing_mm, 0.05);
+        assert_eq!(tolerance.ambiguous_mm, 0.001);
+        assert_eq!(tolerance.measurement_mm, 0.001);
+        let report = solidcraft_dfm_rules::second_gate::compare(&recorded, &measured, tolerance).expect("the same hole");
+        assert_eq!(report.pairs, 1);
+        assert!(report.max_diameter_delta_mm <= tolerance.measurement_mm);
+
+        let mut changed = measured.clone();
+        if let Some(holes) = &mut changed.holes {
+            holes[0].diameter_mm += 0.01;
+        }
+        let mismatch = solidcraft_dfm_rules::second_gate::compare(&recorded, &changed, tolerance).expect_err("a diameter difference must fail");
+        assert!(matches!(mismatch, solidcraft_dfm_rules::second_gate::GeometryMismatch::Diameter { .. }), "{mismatch}");
+
+        let mut moved = measured.clone();
+        if let Some(holes) = &mut moved.holes {
+            holes[0].x_mm += 0.02;
+        }
+        let mismatch = solidcraft_dfm_rules::second_gate::compare(&recorded, &moved, tolerance).expect_err("a moved hole must fail");
+        assert!(matches!(mismatch, solidcraft_dfm_rules::second_gate::GeometryMismatch::Position { .. }), "{mismatch}");
+
+        let mut missing = measured;
+        missing.holes = Some(Vec::new());
+        let mismatch = solidcraft_dfm_rules::second_gate::compare(&recorded, &missing, tolerance).expect_err("a lost hole must fail");
+        assert!(matches!(mismatch, solidcraft_dfm_rules::second_gate::GeometryMismatch::HoleCount { .. }), "{mismatch}");
+    }
+
+    #[test]
     fn a_wrong_body_name_is_refused() {
         let sheet = plate_with_hole(0.5);
         let mut params = parameters(vec![requirement("sm.hole_min_diameter", 0.75, None)]);

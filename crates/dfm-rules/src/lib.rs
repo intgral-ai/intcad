@@ -13,6 +13,8 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+pub mod second_gate;
+
 /// The rules-crate version. It is part of every report.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The report schema version.
