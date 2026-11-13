@@ -1760,6 +1760,8 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
     // Allow (true), Deny (false), Always allow (None).
     let mut approval: Option<(u64, Option<bool>)> = None;
     let mut undo: Option<usize> = None;
+    // Accept (true) or Reject (false) on a previewed turn's card.
+    let mut review_action: Option<(u64, bool)> = None;
     let mut open_gallery: Option<Gallery> = None;
     // The user asked the host to revalidate the current revision after a manual parameter change.
     let mut revalidate_task = false;
@@ -1984,7 +1986,19 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                     ui.add(egui::Label::new(RichText::new(text).color(if *error { t.error } else { t.text_dim })).wrap());
                 });
             }
+            Item::Review(card) => {
+                if let Some(action) = review_card(ui, card, units) {
+                    review_action = Some((card.id, action));
+                }
+            }
         }
+    }
+    match review_action {
+        Some((id, true)) => {
+            let _ = super::review::accept(app, id);
+        }
+        Some((id, false)) => super::review::reject(app, id),
+        None => {}
     }
     if let Some(reference) = object_click {
         match object_ref::resolve(&mut app.session, &reference) {
@@ -2119,6 +2133,77 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
     if let Some(n) = undo {
         undo_changes(app, n);
     }
+}
+
+/// A previewed turn's card: its steps in words, the bodies it would make, change and remove with
+/// their volumes, and Accept and Reject while it waits. `Some(true)`: Accept was pressed,
+/// `Some(false)`: Reject.
+#[cfg(not(target_arch = "wasm32"))]
+fn review_card(ui: &mut egui::Ui, card: &super::review::Card, units: summary::Units) -> Option<bool> {
+    use super::review::{MAX_BODIES, Outcome, volume_text};
+    let t = Tokens::get();
+    let mut action = None;
+    ui_kit::assistant_tool_frame(ui, false, |ui| {
+        ui.spacing_mut().item_spacing.y = t.space_2;
+        ui.label(RichText::new(tr("ui.agent_chat_review_title")).color(t.text).semibold());
+        for words in &card.words {
+            ui.add(egui::Label::new(RichText::new(format!("• {words}")).color(t.text_dim).size(t.font_small)).wrap());
+        }
+        if card.more > 0 {
+            ui.label(RichText::new(trf("ui.agent_chat_review_more_steps", &[("n", &card.more.to_string())])).color(t.text_dim).size(t.font_small));
+        }
+        let lists = [
+            ("ui.agent_chat_review_made", &card.made, t.form_success),
+            ("ui.agent_chat_review_changed", &card.changed, t.warning),
+            ("ui.agent_chat_review_removed", &card.removed, t.preview_cut),
+        ];
+        for (key, bodies, color) in lists {
+            if bodies.is_empty() {
+                continue;
+            }
+            let mut shown: Vec<String> = bodies
+                .iter()
+                .take(MAX_BODIES)
+                .map(|b| match (b.before, b.after) {
+                    (Some(_), Some(_)) => format!("{} ({} → {})", b.name, volume_text(b.before, units), volume_text(b.after, units)),
+                    (None, after) => format!("{} ({})", b.name, volume_text(after, units)),
+                    (before, None) => format!("{} ({})", b.name, volume_text(before, units)),
+                })
+                .collect();
+            if bodies.len() > MAX_BODIES {
+                shown.push(trf("ui.agent_chat_review_more_bodies", &[("n", &(bodies.len() - MAX_BODIES).to_string())]));
+            }
+            ui.horizontal_wrapped(|ui| {
+                status_dot(ui, color, true);
+                let text = trf(key, &[("bodies", &shown.join(", "))]);
+                ui.add(egui::Label::new(RichText::new(text).color(t.text).size(t.font_small)).wrap());
+            });
+        }
+        match card.outcome {
+            Outcome::Waiting => {
+                ui_kit::assistant_actions(ui, |ui| {
+                    let accept = ui_kit::primary_button(ui, tr("ui.agent_chat_review_accept")).backing_on_hover_text(tr("ui.agent_chat_review_accept_tip"));
+                    let reject = ui_kit::button(ui, tr("ui.agent_chat_review_reject"), ui_kit::Button::Normal)
+                        .backing_on_hover_text(tr("ui.agent_chat_review_reject_tip"));
+                    crate::scenario::publish_handle("agent_chat:review_accept", accept.rect.center());
+                    crate::scenario::publish_handle("agent_chat:review_reject", reject.rect.center());
+                    if accept.clicked() {
+                        action = Some(true);
+                    }
+                    if reject.clicked() {
+                        action = Some(false);
+                    }
+                });
+            }
+            Outcome::Accepted => {
+                ui.label(RichText::new(tr("ui.agent_chat_review_accepted")).color(t.text_dim).size(t.font_small));
+            }
+            Outcome::Rejected => {
+                ui.label(RichText::new(tr("ui.agent_chat_review_rejected")).color(t.text_dim).size(t.font_small));
+            }
+        }
+    });
+    action
 }
 
 /// The files that went (or will go) with a message, by name.

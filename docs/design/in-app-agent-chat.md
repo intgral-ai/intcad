@@ -182,6 +182,59 @@ design from before the turn), relabelled "Agent chat: <message>". If the history
 the meantime the start is found by the design it holds; if it's gone, nothing is merged. The
 conversation shows the merged step with an Undo button while it's still the latest thing done.
 
+### Preview, then accept
+
+With Preferences → AI → **Preview the agent's changes before they apply** on (off by default),
+`agent_chat::review` starts each plain chat turn on `Session::scratch()` of the open design. The
+gate still decides every request; an admitted `engine.execute`, `engine.batch`, `document.inspect`
+or `document.revision` is answered on the copy instead of entering the window's queue, and every
+command the gate counts as a change is recorded. `engine.commands` and the `ui.*` methods go to
+the window as before. Files, new designs, `view.pick` and panel layout are refused on a copy. The
+stale-edit guard holds against the copy's own revisions. Until the copy changes, the open design's
+stamp from before the turn still matches it. The view draws the copy over the design with
+`preview::build_sided`: a new face that faces the old body's material (its exact shape decides) is
+in the cut colour, any other new face in the theme's success colour.
+
+When the turn ends with changes, the card lists the steps (the tool-card summaries) and the placed
+bodies made, changed (`Body::same` false and a different volume or outline) and removed, with
+display-mesh volumes. **Accept** checks the open design's stamp against the one taken when the
+turn began ("the design changed since the preview" when they differ), replays the recorded
+commands with `SolveApp::run` under a checkpoint (any failure restores it), and merges them into
+one undo step as a turn without preview does. **Reject** drops the copy. The next prompt starts
+with a note saying which. A new message waits while a card does.
+
+**Open decision: replay or swap** (provisional: replay, 2026-11-13; for Tianwei and Huaiyuan to
+confirm). Replay keeps the stale-edit guard and the per-turn undo step on the code paths every
+turn already uses. On this branch Accept writes the same STEP as running the steps directly, line
+for line apart from the header's time stamp
+(`accept_gives_the_same_step_as_running_the_steps_directly`). Swapping the copy in
+(`Session::accept_computed`) would skip the second evaluation but needs its own undo snapshot and
+guard handling. The copy shares the evaluation cache, so replay mostly reuses what the copy
+computed.
+
+Measured on zhikun (debug-profile tests, `preview_cost_on_a_big_part`, run by hand): a
+420 × 420 × 10 mm plate with a 20 × 20 pattern of holes (406 faces), and a turn that joins a boss
+and cuts a bore.
+
+| | Time | Resident memory |
+|---|---|---|
+| The two steps run directly on the design | 21.1 s | |
+| Copy made at turn start | 0.3 ms | 204 → 206 MB |
+| The two steps on the copy | 20.2 s | → 219 MB |
+| Overlay built | 177 ms | → 222 MB |
+| Card (body changes, volumes) | 153 ms | |
+| Accept (replay, one undo step) | 0.43 ms | → 228 MB |
+
+Known gaps in this first version:
+
+- Requests on the copy run on the window thread, so **Run slow commands in the background** does
+  not apply to them. The 20 s above froze the window.
+- The overlay and card are built on the window thread when the turn ends or the copy changes.
+- An evicted evaluation cache would make Accept compute the steps again.
+- Built-in skills (Text-to-CAD, Anatomy) don't preview.
+- `ui.render` shows the design without the overlay.
+- One card at a time: a new message waits until the user accepts or rejects.
+
 ### Document ownership
 
 Each open design tab owns an `AgentChat`, including its transcript, backend session, agent

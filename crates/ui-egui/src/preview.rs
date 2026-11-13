@@ -379,6 +379,8 @@ pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
         _ if app.params.as_ref().and_then(|p| p.preview_commands()).is_some() => {
             app.params.as_ref().and_then(|p| p.preview_commands()).unwrap_or_default()
         }
+        // No dialog: the agent chat's changes on a copy of the design, while they are previewed.
+        _ if agent_review(app) => return,
         // No dialog, or inputs still missing: nothing to preview.
         _ => {
             app.preview.clear();
@@ -419,6 +421,37 @@ pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
     if app.preview.busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
+}
+
+/// Draw the agent chat's previewed changes ([`crate::agent_chat::review`]) as a feature's preview
+/// is drawn: the copy's bodies in place of the design's, material added tinted, removed material
+/// in the cut colour. Built again only when the copy or the design changes. `false`: nothing is
+/// previewed.
+fn agent_review(app: &mut SolveApp) -> bool {
+    let Some((key, before, after)) = crate::agent_chat::review::overlay(app) else { return false };
+    let tokens = Tokens::get();
+    let mut colors = Colors::from_tokens(&tokens);
+    // Added and removed material are what the user judges here, whatever the dialog preferences:
+    // added in the theme's success colour (green), removed in its cut colour (red), as the
+    // review card's dots show them.
+    colors.added = tokens.form_success.to_srgba_unmultiplied();
+    colors.new_body = tokens.body.lerp_to_gamma(tokens.form_success, 0.45).to_srgba_unmultiplied();
+    colors.tint_new = true;
+    colors.cut_tint = true;
+    let key = job_key(&[], key, colors);
+    if app.preview.shown_key != Some(key) || app.preview.running.is_some() {
+        app.preview.clear();
+        app.preview.started = crate::now_ms();
+        let job = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut built = build_sided(&before, &after, colors);
+            built.bounds = state_bounds(&after);
+            built
+        }))
+        .map_err(|_| "the preview failed".to_string());
+        app.preview.apply(key, job);
+    }
+    app.preview.busy = false;
+    true
 }
 
 /// What tells one preview computation from another: its commands, the document revision they
@@ -662,12 +695,52 @@ fn same(a: &Mesh, b: &Mesh) -> bool {
 /// The preview scene: changed and new bodies (new surface tinted) and, as a ghost, the old
 /// version of changed or removed bodies.
 pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
+    build_with(before, after, c, false)
+}
+
+/// [`build`] for changes that may add and remove material on one body at once (the agent chat's
+/// previewed turn): a new face of a changed body is drawn in the cut colour when it faces material
+/// the body had before (the wall of a hole), in the added colour otherwise (a boss). Which side
+/// is decided on the old body's exact shape.
+pub(crate) fn build_sided(before: &ModelState, after: &ModelState, c: Colors) -> Built {
+    build_with(before, after, c, true)
+}
+
+/// For each face of `m` that `new` marks, whether just outside it lies in `old`'s material.
+fn faces_old_material(m: &Mesh, new: &[bool], old: &solidcraft_engine::kernel::Body) -> Vec<bool> {
+    let mut inward = vec![false; new.len()];
+    let mut seen = vec![false; new.len()];
+    let step = (old.size() * 1e-3).max(1e-4);
+    for (t, f) in m.triangles.iter().zip(&m.tri_face) {
+        let f = *f as usize;
+        if !new.get(f).copied().unwrap_or(false) || seen.get(f).copied().unwrap_or(true) {
+            continue;
+        }
+        let (Some([a, b, c]), Some(na), Some(nb), Some(nc)) =
+            (m.tri(t), m.normals.get(t[0] as usize), m.normals.get(t[1] as usize), m.normals.get(t[2] as usize))
+        else {
+            continue;
+        };
+        let n = *na + *nb + *nc;
+        let len = n.len();
+        if !(len > 1e-12) {
+            continue;
+        }
+        seen[f] = true;
+        let probe = (a + b + c) * (1.0 / 3.0) + n * (step / len);
+        inward[f] = matches!(old.classify_point(probe), Ok(solidcraft_engine::kernel::PointClass::Inside));
+    }
+    inward
+}
+
+fn build_with(before: &ModelState, after: &ModelState, c: Colors, sided: bool) -> Built {
     let mut sc = GpuScene::default();
     let added_color = sc.color(c.added);
     let added_plane = sc.color([c.added[0], c.added[1], c.added[2], 64]);
     let body_color = sc.color(c.body);
     let new_body = sc.color(c.new_body);
     let removed = sc.color(c.removed);
+    let removed_face = sc.color([c.removed[0], c.removed[1], c.removed[2], 255]);
     let edge = sc.color(c.edge);
     let mut replaced = Vec::new();
     for construct in &after.construct {
@@ -721,9 +794,17 @@ pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
             _ => Vec::new(),
         };
         let kept = if old.is_some() { body_color } else { new_body };
+        let inward = match before.body(&a.name) {
+            Some(b) if sided && !new_face.is_empty() => faces_old_material(&am, &new_face, &b.body),
+            _ => Vec::new(),
+        };
         for (t, f) in am.triangles.iter().zip(&am.tri_face) {
             let new = new_face.get(*f as usize).copied().unwrap_or(false);
-            let col = if new && c.tint_new { added_color } else { kept };
+            let col = match (new && c.tint_new, inward.get(*f as usize).copied().unwrap_or(false)) {
+                (true, true) => removed_face,
+                (true, false) => added_color,
+                _ => kept,
+            };
             let through = cut && new;
             for k in t {
                 let i = *k as usize;

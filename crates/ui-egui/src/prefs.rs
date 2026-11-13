@@ -1523,6 +1523,10 @@ preference_settings! {
     /// so the window stays live while they run (#1989, [`crate::control_job`]). Off: they run on
     /// the window thread, and the window waits for each, as before (the default).
     agent_off_thread: bool = false, PAGE_ASSISTANT;
+    /// The agent chat's design changes run on a copy of the design, shown over it, and wait for
+    /// Accept or Reject ([`crate::agent_chat::review`]). Off: they change the open design as they
+    /// come, as before (the default).
+    agent_chat_preview: bool = false, PAGE_ASSISTANT;
     /// Let AI agents connect: the localhost control channel (MCP) opens on the default port at
     /// start-up, unless `--control`/`SOLIDCRAFT_CONTROL_PORT` name one. Read at start-up.
     agent_control: bool = true, PAGE_ASSISTANT;

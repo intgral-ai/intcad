@@ -45,6 +45,7 @@ mod panel;
 pub mod paste;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
+pub mod review;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime_client;
 pub mod settings;
@@ -301,6 +302,9 @@ pub enum Item {
         text: String,
         error: bool,
     },
+    /// A turn whose changes ran on a copy of the design: what it would do, Accept and Reject
+    /// ([`review`]).
+    Review(review::Card),
 }
 
 /// The message being answered: what undo and the limits need.
@@ -503,6 +507,12 @@ pub struct AgentChat {
     turn_warning: Option<String>,
     held: Vec<Held>,
     next_approval: u64,
+    /// The turn's copy of the design, while its changes are previewed ([`review`]).
+    pub(crate) preview: Option<review::Preview>,
+    /// The last preview's id.
+    next_preview: u64,
+    /// What became of the last previewed changes, for the agent's next message.
+    review_note: Option<String>,
     /// The chat's control endpoint: the port, and its requests.
     pub tools_port: Option<u16>,
     tools_rx: Option<Receiver<ControlRequest>>,
@@ -1557,6 +1567,14 @@ pub fn remove_picked(app: &mut SolveApp, at: usize) {
 /// Send what the user typed: now if the agent is ready, queued behind the running message if it
 /// is working, else once it is ready (starting it if needed).
 pub fn send(app: &mut SolveApp, ctx: &egui::Context, text: String) {
+    // The agent's previewed changes wait for Accept or Reject before it gets another message.
+    if review::waiting(&app.agent_chat) && app.agent_chat.state() != State::Busy {
+        if app.agent_chat.input.trim().is_empty() {
+            app.agent_chat.input = text;
+        }
+        app.agent_chat.notice(tr("ui.agent_chat_review_first"), false);
+        return;
+    }
     // A message waits for its files: the words go back in the box until they are read.
     if !app.agent_chat.loading.is_empty() {
         if app.agent_chat.input.trim().is_empty() {
@@ -1679,6 +1697,8 @@ pub fn send_now(app: &mut SolveApp, ctx: &egui::Context) {
         app.agent_chat.steering = true;
         app.agent_chat.stopped = false;
         interrupt(app);
+    } else if review::waiting(&app.agent_chat) {
+        app.agent_chat.notice(tr("ui.agent_chat_review_first"), false);
     } else {
         send_queue(app, ctx, false);
     }
@@ -1695,6 +1715,7 @@ pub fn new_chat(app: &mut SolveApp) {
     decline_all(app, "the chat was cleared");
     end_turn(app);
     let chat = &mut app.agent_chat;
+    review::forget(chat);
     chat.confirm_new = false;
     chat.items.clear();
     chat.turn_warning = None;
@@ -1744,7 +1765,8 @@ pub fn remove_pending(app: &mut SolveApp, index: usize) {
 fn after_turn(app: &mut SolveApp, ctx: &egui::Context) {
     let reason = app.agent_chat.ended.take().unwrap_or_default();
     let steering = std::mem::take(&mut app.agent_chat.steering);
-    if app.agent_chat.state() != State::Ready || app.agent_chat.pending.is_empty() {
+    // Queued messages wait for Send while the turn's changes wait for Accept or Reject.
+    if app.agent_chat.state() != State::Ready || app.agent_chat.pending.is_empty() || review::waiting(&app.agent_chat) {
         return;
     }
     if steering && !matches!(reason.as_str(), "auth" | "error") {
@@ -1778,11 +1800,12 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     }
     let (pictures, documents) = (app.agent_chat.images, app.agent_chat.documents);
     let changed = app.agent_chat.seen.as_deref().and_then(|seen| changed_note(seen, &app.session.doc));
+    let reviewed = app.agent_chat.review_note.take();
     #[cfg(not(target_arch = "wasm32"))]
     let skill_note = skill.prompt_note().map(|note| task_runtime::prompt_note(skill, note));
     #[cfg(target_arch = "wasm32")]
     let skill_note = skill.prompt_note();
-    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(note).chain(changed.as_deref()).collect();
+    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(reviewed.as_deref()).chain(note).chain(changed.as_deref()).collect();
     let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
     // The whole message stays within the cap: the files' text gets what the words leave.
     let budget = MAX_PROMPT.saturating_sub(lead.chars().count() + FILE_NAMES_ROOM);
@@ -1864,6 +1887,10 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
             end_turn(app);
             return;
         }
+    }
+    // A plain chat turn may run on a copy of the design, for the user to accept or reject.
+    if skill == skill::Skill::Plain {
+        review::begin(app);
     }
     let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
     if let Some(b) = app.agent_chat.backend.as_mut() {
@@ -2070,7 +2097,7 @@ fn on_permission(app: &mut SolveApp, key: u64, title: String, kind: Option<&str>
 fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
     let chat = &mut app.agent_chat;
     let Some(i) = chat.held.iter().position(|h| h.id == id) else { return };
-    let mut h = chat.held.remove(i);
+    let h = chat.held.remove(i);
     for item in &mut chat.items {
         if let Item::Approval { id: x, answer, .. } = item
             && *x == id
@@ -2079,12 +2106,7 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
         }
     }
     if allow {
-        match crate::execution_guard::admit(app, &mut h.req) {
-            Ok(()) => app.control_held.push_back(h.req),
-            Err(error) => {
-                let _ = h.req.reply.send(crate::execution_guard::refusal_json(&error));
-            }
-        }
+        hand_over(app, h.req);
     } else {
         let mut reply = json!({"ok": false, "error": format!("not run: {why}")});
         // The held request owns its trusted revocation flag. Metadata only selects the carrier;
@@ -2097,6 +2119,35 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
             reply["errorDetails"]["message"] = reply["error"].clone();
         }
         let _ = h.req.reply.send(reply);
+    }
+}
+
+/// Run an admitted request of the agent's: on the turn's copy of the design while its changes are
+/// previewed ([`review`]), otherwise in the window's queue, as the control channel runs requests.
+fn hand_over(app: &mut SolveApp, mut req: ControlRequest) {
+    if let Some(preview) = app.agent_chat.preview.as_mut().filter(|p| p.phase == review::Phase::Running) {
+        match review::route(&req.method, &req.params) {
+            Some(true) => {
+                if req.refuse_cancelled_chat() {
+                    return;
+                }
+                let units = summary::Units { units: &app.session.doc.units, decimals: app.preferences.length_decimals };
+                let reply = review::answer(&mut preview.copy, &req, units);
+                let _ = req.reply.send(reply);
+                return;
+            }
+            None => {
+                let _ = req.reply.send(review::refusal());
+                return;
+            }
+            Some(false) => {}
+        }
+    }
+    match crate::execution_guard::admit(app, &mut req) {
+        Ok(()) => app.control_held.push_back(req),
+        Err(error) => {
+            let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
+        }
     }
 }
 
@@ -2150,6 +2201,7 @@ fn finish_turn(chat: &mut AgentChat, session: &mut solidcraft_engine::Session) {
         let doc = session.doc.clone();
         chat.push(Item::Changes { steps, doc, undone: false });
     }
+    review::end(chat, session);
 }
 
 /// Merge the undo steps made since `start_doc` (at depth `start_undo`) into one, labelled `label`;
@@ -2204,6 +2256,7 @@ fn pump_tools(app: &mut SolveApp) {
             continue;
         }
         let undo_len = app.session.undo.len();
+        let previewing = review::running(&app.agent_chat);
         let Some(turn) = app.agent_chat.turn.as_mut() else {
             refuse(req, "the agent chat has no message in progress".into());
             continue;
@@ -2225,7 +2278,13 @@ fn pump_tools(app: &mut SolveApp) {
         let mode = agents::mode_for(&app.preferences, &app.agent_chat.running_id);
         let tool = gate::tool_key(&req.method, &req.params);
         let always = agents::always_allowed(&app.preferences, &app.agent_chat.running_id, &tool);
-        let verdict = match gate::request(&req.method, &req.params, undo_left) {
+        let raw = gate::request(&req.method, &req.params, undo_left);
+        // On a copy, files and new designs would act on the open design or on nothing: refused.
+        if matches!(raw, gate::Verdict::Ask(_)) && previewing {
+            let _ = req.reply.send(review::refusal());
+            continue;
+        }
+        let verdict = match raw {
             gate::Verdict::Ask(_) if mode == agents::Mode::All || always => gate::Verdict::Run { change: true },
             gate::Verdict::Run { change: true } if mode == agents::Mode::Ask && !always => {
                 gate::Verdict::Ask(gate::describe(&req.method, &req.params))
@@ -2246,12 +2305,7 @@ fn pump_tools(app: &mut SolveApp) {
                     }
                     turn.changes += 1;
                 }
-                match crate::execution_guard::admit(app, &mut req) {
-                    Ok(()) => app.control_held.push_back(req),
-                    Err(error) => {
-                        let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
-                    }
-                }
+                hand_over(app, req);
             }
             gate::Verdict::Ask(title) => {
                 let chat = &mut app.agent_chat;
@@ -2728,6 +2782,9 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     if let Some(b) = p.get("open_at_start").and_then(Value::as_bool) {
         app.preferences.agent_chat_open_at_start = b;
     }
+    if let Some(b) = p.get("preview_changes").and_then(Value::as_bool) {
+        app.preferences.agent_chat_preview = b;
+    }
     if let Some(text) = p.get("instructions") {
         let Some(text) = text.as_str() else { return Err("instructions must be text".into()) };
         app.preferences.agent_instructions = text.chars().take(acp::INSTRUCTIONS_LIMIT).collect();
@@ -2900,6 +2957,16 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     if let Some(n) = p.get("remove_pending").and_then(Value::as_u64) {
         remove_pending(app, n as usize);
     }
+    if let Some(a) = p.get("review") {
+        let Some(id) = app.agent_chat.preview.as_ref().filter(|p| p.phase == review::Phase::Review).map(|p| p.id) else {
+            return Err("no previewed changes are waiting".into());
+        };
+        match a.as_str() {
+            Some("accept") => review::accept(app, id)?,
+            Some("reject") => review::reject(app, id),
+            _ => return Err("review must be \"accept\" or \"reject\"".into()),
+        }
+    }
     if p.get("undo").and_then(Value::as_bool) == Some(true) {
         let Some(n) = app.agent_chat.items.iter().rposition(|i| matches!(i, Item::Changes { .. })) else { return Err("no changes to undo".into()) };
         undo_changes(app, n);
@@ -2929,6 +2996,11 @@ pub fn status(app: &SolveApp) -> Value {
             Item::Approval { title, answer, .. } => json!({"approval": title, "answer": answer}),
             Item::Changes { steps, undone, .. } => json!({"changes": steps, "undone": undone}),
             Item::Notice { text, error } => json!({"notice": text, "error": error}),
+            Item::Review(card) => json!({"review": card.id, "steps": card.words, "more": card.more,
+                "made": card.made.iter().map(|b| json!({"name": b.name, "volume": b.after})).collect::<Vec<_>>(),
+                "changed": card.changed.iter().map(|b| json!({"name": b.name, "before": b.before, "after": b.after})).collect::<Vec<_>>(),
+                "removed": card.removed.iter().map(|b| json!({"name": b.name, "volume": b.before})).collect::<Vec<_>>(),
+                "outcome": format!("{:?}", card.outcome)}),
         })
         .collect();
     #[cfg(not(target_arch = "wasm32"))]
@@ -2990,6 +3062,11 @@ pub fn status(app: &SolveApp) -> Value {
         state.insert("modelsNote".into(), json!(c.models_note));
         state.insert("customModels".into(), json!(custom_models_accepted(app)));
         state.insert("instructions".into(), json!(app.preferences.agent_instructions));
+        state.insert("previewChanges".into(), json!(app.preferences.agent_chat_preview));
+        state.insert(
+            "preview".into(),
+            json!(c.preview.as_ref().map(|p| json!({"id": p.id, "phase": format!("{:?}", p.phase), "steps": p.copy.steps().len(), "busy_ms": p.copy.busy_ms}))),
+        );
     }
     state
 }

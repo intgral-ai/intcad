@@ -88,6 +88,16 @@ fn tool_summary(tool: &str, a: Option<&Map<String, Value>>, result: Option<&Valu
     }
 }
 
+/// One command a previewed turn ran, in words, for its review card ([`super::review`]).
+pub(crate) fn step(id: &str, params: &Value, result: Option<&Value>, u: Units) -> Option<String> {
+    command(id, params.as_object(), result, u).map(|text| clip(&text, MAX_SUMMARY))
+}
+
+/// A volume (mm³) as a review card shows it, in the design's units.
+pub(crate) fn volume_text(mm3: f64, u: Units) -> Option<String> {
+    volume(mm3, u)
+}
+
 /// An engine command: its label, what it works on, its sizes, and the bodies it made.
 fn command(id: &str, p: Option<&Map<String, Value>>, result: Option<&Value>, u: Units) -> Option<String> {
     let mut text = label(id)?.to_string();
