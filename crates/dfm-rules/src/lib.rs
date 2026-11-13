@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub mod bend_rules;
 pub mod flange_rules;
 pub mod intdfm_report;
+pub mod recheck;
 pub mod second_gate;
 pub mod sink_rules;
 
