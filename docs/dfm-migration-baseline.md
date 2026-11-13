@@ -153,9 +153,9 @@ cargo xtask layers
 | Check | Result |
 |---|---|
 | INTdfm `replay verify tests/fixtures/dfm-replay/v1` | 13 cases, exit 0 (10 required + 3 extra coverage) |
-| INTdfm `pytest tests/unit/test_replay.py` | 17 passed |
+| INTdfm `pytest tests/unit/test_replay.py tests/unit/test_replay_catalog.py` | 18 passed |
 | INTdfm `pytest -m e2e tests/e2e/test_replay_record.py` | 1 passed (real OCP read) |
-| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 171 passed (8 cross-language + 13 App entry + 49 second-gate + 23 report parity + 22 recheck + 56 rule-family) |
+| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 177 passed (8 cross-language + 13 App entry + 49 second-gate + 23 report parity + 22 recheck + 62 rule-family/catalog) |
 | Rust `cargo test -p solidcraft-doc sheet_dfm --profile ci` | 7 passed |
 | Rust `cargo test -p solidcraft-engine dfm::tests --profile ci` | 17 passed (edge, bend, ownership, transform and injected-error cases) |
 | Rust `cargo test -p solidcraft-engine a_dfm_sheet_check --profile ci` | 1 passed |
