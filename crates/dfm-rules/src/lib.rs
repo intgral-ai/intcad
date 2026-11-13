@@ -1109,6 +1109,29 @@ fn unread_findings(rule: &str, facts: &Facts) -> Vec<Finding> {
     found
 }
 
+fn many(count: usize, noun: &str) -> String {
+    if count == 1 { format!("1 {noun}") } else { format!("{count} {noun}s") }
+}
+
+fn whose(chosen: &Chosen) -> &'static str {
+    if chosen.decides { "this shop's number" } else { "a public value" }
+}
+
+fn which_edge(hole: &HoleFact) -> String {
+    let Some(at) = &hole.edge_at_mm else { return String::new() };
+    if at.len() != 3 {
+        return String::new();
+    }
+    let what = if let Some(number) = hole.edge_hole {
+        format!("hole {number}'s wall")
+    } else if hole.edge_kind == Some(EdgeKind::Outline) {
+        "on this flat's outline".to_string()
+    } else {
+        "on another opening in this flat".to_string()
+    };
+    format!(" That edge is {what}, nearest at x {}, y {}, z {}.", pyfmt::g(at[0]), pyfmt::g(at[1]), pyfmt::g(at[2]))
+}
+
 fn min_diameter(input: &CheckInput, gate: &Finding, usable: &[(usize, &HoleFact)]) -> Vec<Finding> {
     let rule = HOLE_MIN_DIAMETER;
     let chosen = match choose(rule, None, false, input) {
@@ -1135,13 +1158,18 @@ fn min_diameter(input: &CheckInput, gate: &Finding, usable: &[(usize, &HoleFact)
             met.push(hole.diameter_mm);
         }
     }
+    let met_count = met.len();
     if let Some(tightest) = met.into_iter().reduce(f64::min) {
         let status = if chosen.decides { RuleStatus::Pass } else { RuleStatus::NotVerified };
         let code = if chosen.decides { None } else { Some("ABOVE_PUBLIC_VALUE") };
         let message = if chosen.decides {
-            format!("The holes met the number, the tightest at {tightest} mm.")
+            format!(
+                "{} met this shop's number, the tightest at {} mm. This says nothing about anything but this rule.",
+                many(met_count, "round hole"),
+                pyfmt::g(tightest)
+            )
         } else {
-            "These holes are clear of the public value, so nothing is known about them: only a factory's own number can say a hole is fine.".into()
+            "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.".into()
         };
         results.push(hole_finding(
             rule,
@@ -1184,7 +1212,13 @@ fn hole_to_edge(input: &CheckInput, gate: &Finding, usable: &[(usize, &HoleFact)
                 Some(hole),
                 Some(value),
                 Some(chosen.requirement.clone()),
-                format!("Hole {number}: its wall is {value} mm from the nearest cut edge, below {:.6} mm.", chosen.limit_mm),
+                format!(
+                    "Hole {number}: its distance to a cut edge is {} mm, below {} of {} mm.{} A person decides.",
+                    pyfmt::g(value),
+                    whose(&chosen),
+                    pyfmt::g(chosen.limit_mm),
+                    which_edge(hole)
+                ),
                 vec!["A person to look at this hole.".into()],
             )),
             Some(value) => met.push(value),
@@ -1197,6 +1231,7 @@ fn hole_to_edge(input: &CheckInput, gate: &Finding, usable: &[(usize, &HoleFact)
             Unsupported { code: "HOLE_EDGE_UNCLEAR", message: format!("The nearest cut edge can't be told for {} round hole(s).", unclear.len()) },
         ));
     }
+    let met_count = met.len();
     if let Some(tightest) = met.into_iter().reduce(f64::min) {
         let status = if chosen.decides { RuleStatus::Pass } else { RuleStatus::NotVerified };
         let code = if chosen.decides { None } else { Some("ABOVE_PUBLIC_VALUE") };
@@ -1210,10 +1245,13 @@ fn hole_to_edge(input: &CheckInput, gate: &Finding, usable: &[(usize, &HoleFact)
             Some(tightest),
             Some(chosen.requirement),
             if chosen.decides {
-                format!("The holes met the number, the tightest at {tightest} mm.")
+                format!(
+                    "{} met this shop's number, the tightest at {} mm. This says nothing about anything but this rule.",
+                    many(met_count, "round hole"),
+                    pyfmt::g(tightest)
+                )
             } else {
-                "These holes are clear of the public value, so nothing is known about them: only a factory's own number can say a hole is fine."
-                    .into()
+                "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.".into()
             },
             if chosen.decides { Vec::new() } else { vec!["The shop's own number for this rule.".into()] },
         ));
@@ -1268,7 +1306,7 @@ fn hole_to_bend(input: &CheckInput, gate: &Finding, usable: &[(usize, &HoleFact)
                 Some(hole),
                 Some(value),
                 Some(chosen.requirement.clone()),
-                format!("Hole {number}: its wall is {value} mm from bend {bend}, below {:.6} mm.", chosen.limit_mm),
+                format!("Hole {number}: its distance to bend {bend} is {} mm, below {} of {} mm. This is a trial rule, and the file can't say whether the hole is cut after bending. A person decides.", pyfmt::g(value), whose(&chosen), pyfmt::g(chosen.limit_mm)),
                 vec!["A person to look at this hole.".into()],
             ));
         } else {
@@ -1284,6 +1322,7 @@ fn hole_to_bend(input: &CheckInput, gate: &Finding, usable: &[(usize, &HoleFact)
             },
         ));
     }
+    let met_count = met.len();
     if let Some((_, value, chosen)) = met.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)) {
         let status = if chosen.decides { RuleStatus::Pass } else { RuleStatus::NotVerified };
         let code = if chosen.decides { None } else { Some("ABOVE_PUBLIC_VALUE") };
@@ -1297,10 +1336,13 @@ fn hole_to_bend(input: &CheckInput, gate: &Finding, usable: &[(usize, &HoleFact)
             Some(value),
             Some(chosen.requirement),
             if chosen.decides {
-                format!("The holes met the number, the tightest at {value} mm.")
+                format!(
+                    "{} met this shop's number, the tightest at {} mm. This says nothing about anything but this rule.",
+                    many(met_count, "round hole"),
+                    pyfmt::g(value)
+                )
             } else {
-                "These holes are clear of the public value, so nothing is known about them: only a factory's own number can say a hole is fine."
-                    .into()
+                "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.".into()
             },
             Vec::new(),
         ));
