@@ -127,7 +127,7 @@ export interface AssistantState {
 export type StringKey =
   | 'placeholder' | 'placeholderBusy' | 'send' | 'stop' | 'working' | 'ready' | 'off' | 'starting' | 'auth'
   | 'failed' | 'exited' | 'undone' | 'undo' | 'allowOnce' | 'alwaysAllow' | 'deny' | 'allowed' | 'denied'
-  | 'approval' | 'title' | 'intro' | 'privacy' | 'add' | 'addFile' | 'pastePicture' | 'attachView'
+  | 'approval' | 'title' | 'add' | 'addFile' | 'pastePicture' | 'attachView'
   | 'attachSelection' | 'pickContext' | 'modeAsk' | 'modeEdits' | 'modeAll' | 'queued' | 'viewAttached' | 'waiting'
   | 'connect' | 'disconnect' | 'retry' | 'newChat' | 'newChatConfirm' | 'cancel' | 'close' | 'minimize'
   | 'dockLeft' | 'dockRight' | 'addAgent' | 'settings' | 'switchAgent' | 'detecting' | 'noneFound' | 'notInstalled'

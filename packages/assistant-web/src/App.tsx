@@ -20,7 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import type { AssistantState, ContextChip, ContextGroups, Item, PermissionOption, PictureRef, QueuedMessage, Strings } from './host';
 import { pictureUrl, post } from './host';
 import { Activity, ActivityContent, ActivityHeadline, ActivityTrigger } from '@/ds/components/ai/activity';
@@ -994,7 +994,7 @@ function SignIn({ state }: { state: AssistantState }) {
   );
 }
 
-/** Nothing said yet: what the Assistant is, or how to get an agent when there is none. */
+/** Nothing said yet: the Assistant's name, or how to get an agent when there is none. */
 function Welcome({ state }: { state: AssistantState }) {
   const { strings } = state;
   if (state.agents.length === 0 && !state.detecting) {
@@ -1027,21 +1027,18 @@ function Welcome({ state }: { state: AssistantState }) {
       </div>
     );
   }
-  return (
-    <EmptyState
-      iconSlot={<MessageSquare />}
-      titleSlot={strings.title}
-      descriptionSlot={
-        <>
-          {strings.intro}
-          <br />
-          <br />
-          {strings.privacy}
-        </>
-      }
-    />
-  );
+  return <EmptyState iconSlot={<MessageSquare />} titleSlot={strings.title} />;
 }
+
+/**
+ * The room Mastra's chat frame leaves round the conversation and the message box is for a page as
+ * wide as a browser window. In a panel beside a model it is a wide band on each side of the box and
+ * under it, so the frame's own measures are set smaller here: the room at each side (`--chat-edge`,
+ * and the column's own in `COLUMN`), under the box (`--chat-gutter`) and the band the conversation
+ * fades out in above it (`--chat-fade`).
+ */
+const ROOM = { '--chat-edge': '0rem', '--chat-gutter': '0.5rem', '--chat-fade': '1.25rem' } as CSSProperties;
+const COLUMN = 'px-1 md:px-1';
 
 export function App({ state }: { state: AssistantState | null }) {
   const turns = useMemo(() => turnsOf(state?.items ?? []), [state?.items]);
@@ -1057,12 +1054,12 @@ export function App({ state }: { state: AssistantState | null }) {
   }));
   return (
     <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
-      <ChatShell className="h-full" scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}>
+      <ChatShell className="h-full" style={ROOM} scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}>
         <AssistantBar state={state} />
         <ChatShell.Stage>
           <ChatShell.Viewport>
             <ChatShell.Content>
-              <ChatShell.Column className="gap-8 py-6">
+              <ChatShell.Column className={`gap-8 py-6 ${COLUMN}`}>
                 {state.notes.length > 0 && (
                   <div className="flex min-w-0 flex-col gap-1">
                     {state.notes.map((note, index) => (
@@ -1117,7 +1114,7 @@ export function App({ state }: { state: AssistantState | null }) {
             </ChatShell.Content>
             <ChatShell.Dock>
               <ChatShell.ScrollButton aria-label={strings.latest} />
-              <ChatShell.Column className="gap-2">
+              <ChatShell.Column className={`gap-2 ${COLUMN}`}>
                 {state.dragging && (
                   <Notice variant="info" className="bg-card">
                     <Notice.Message>{strings.dropHint}</Notice.Message>

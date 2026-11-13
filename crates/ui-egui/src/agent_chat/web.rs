@@ -358,8 +358,6 @@ pub fn state(app: &mut SolveApp) -> String {
         ("denied", "ui.agent_chat_denied"),
         ("approval", "ui.agent_chat_approval"),
         ("title", "ui.assistant"),
-        ("intro", "ui.agent_chat_intro"),
-        ("privacy", "ui.agent_chat_privacy"),
         ("add", "ui.agent_chat_add_tip"),
         ("addFile", "ui.agent_chat_add_file"),
         ("pastePicture", "ui.agent_chat_paste_picture"),
