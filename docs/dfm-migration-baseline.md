@@ -9,7 +9,7 @@ made. No DFM code from this stage was pushed.
 | Repository | Baseline commit | Where this stage works |
 |---|---|---|
 | INTdfm (`intgral-ai/INTdfm`) | `2f24830fcd84c8e3047eb6643139b94c27b8c1b6` (main, 2026-11-12) | local branch `migration/pil-295-replay-contract`, commits `bfb1289` and `34bcd18` |
-| open-skyfall (`intgral-ai/open-skyfall-desktop`) | `1a45733ef96b53990fec8bd7794563eebc6facdb` (develop, 2026-11-10) | local worktree `/tmp/opencode/dfm-m1`, branch `dfm/m1-native-hole-min-diameter` |
+| open-skyfall (`intgral-ai/open-skyfall-desktop`) | `1a45733ef96b53990fec8bd7794563eebc6facdb` (develop, 2026-11-10) | local worktree `/tmp/opencode/dfm-m1`, branch `dfm/m1-native-hole-min-diameter`, commit `f8f0e5a` |
 
 The PRD's `7bf03f6d9` is an older develop commit; current develop is `1a45733e`. The PRD and the
 technical design are proposals except for the sections they mark as confirmed. This stage did
