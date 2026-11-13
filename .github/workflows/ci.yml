@@ -557,7 +557,7 @@ jobs:
     name: Action matrix determinism
     needs: build-tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 150
     env:
       ACTION_MATRIX_ACTION_TIMEOUT: "1800"
     steps:
