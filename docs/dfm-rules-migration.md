@@ -18,12 +18,12 @@ Status words:
 
 | Python module | Job | Rust status | Notes |
 |---|---|---|---|
-| `profile.py` | read/validate profile JSON, applicability, effective rows, requirements digest, gauges | **partial** | `Profile`/`Requirement`/`Applies`/`Die`/`Limit` types, unknown-key rejection, finite values, thickness gate selection and applicability are migrated; the exact `requirements_sha256` canonical digest, gauge tables and all profile-format error texts are not |
-| `gate.py` | input gate, thickness gate, coverage gate, reader log, shared tolerance helpers | **partial** | thickness gate and `same_sheet` are migrated; input gate, coverage gate, reader log, gauge messages and scan/reader facts are not |
-| `rules.py` | flat test, bend gate, 15 rules, header, part facts, threshold selection | **partial** | `sm.hole_min_diameter`, `sm.hole_to_edge`, `sm.hole_to_bend` are migrated and replay-tested; the other bend, tolerance and countersink rules, bend gate, header and part facts are not yet migrated |
+| `profile.py` | read/validate profile JSON, applicability, effective rows, requirements digest, gauges | **partial** | types, unknown-key rejection, finite values, selection/applicability, die/bends validation are migrated; `requirements_sha256`, gauge tables and file loading are not |
+| `gate.py` | input gate, thickness gate, coverage gate, reader log, shared tolerance helpers | **partial** | thickness gate, `same_sheet` and a coverage gate are migrated; input-gate refusal policy, reader log, gauges and the both-measure 2V/A thickness check remain at the App boundary/not migrated |
+| `rules.py` | flat test, bend gate, 15 rules, header, part facts, threshold selection | **migrated** | all 15 non-gate rules, the flat test and bend gate are migrated with recording-backed tests; header is in the report parity layer; part facts are in the parity report |
 | `report.py` | report types, merge, rounding, ids, sort, counts, clean, canonical JSON | **migrated (parity layer)** | `crates/dfm-rules/src/intdfm_report.rs` reproduces the INTdfm-shaped report from pre-merge findings and metadata; 23 parity tests over the recordings. The App-facing `Report` remains separate. |
-| `recheck.py` | pair two reports, marks and guard flags | **not migrated** | needs the full report and part facts first |
-| `core.py` | order the gates and rules into one report | **partial** | the App entry orders the thickness gate and three hole rules; the full gate/rule sequence is not migrated |
+| `recheck.py` | pair two reports, marks and guard flags | **migrated** | `recheck.rs`: pairing, marks, guards, not-compared; 11 fixture pairs, byte-exact `Recheck` JSON |
+| `core.py` | order the gates and rules into one report | **migrated (rule layer)** | `catalog_findings`/`check_catalog` order all gates/rules; the App entry still calls the first-slice `check` |
 | `engine.py` fact types | the data contract between geometry and rules | **partial** | holes, bends, webs and recognition fields exist in the Rust data model; countersink, run/unrelieved facts and several solid facts are not yet used |
 | `project.py`, `snapshot.py` | project text and STEP scan | **out of scope** | file/subprocess/STEP work; the App supplies the equivalent inputs |
 
@@ -33,23 +33,23 @@ Status words:
 |---|---|---|---|
 | `sm.gate_input_solid` | not migrated (App gives the equivalent input-gate result) | yes, native sheet body / converted gate | App boundary tests |
 | `sm.gate_sheet_thickness` | migrated | yes (`SheetBody.t` and declared thickness) | missing/conflict/equal tests |
-| `sm.gate_profile_coverage` | not migrated | data only | — |
-| `sm.gate_bends_found` | not migrated | recognition facts partially | — |
+| `sm.gate_profile_coverage` | **migrated (coverage gate)** | data only | — |
+| `sm.gate_bends_found` | **migrated** | recognition facts partially | — |
 | `sm.hole_min_diameter` | migrated | yes | 10 INTdfm recordings + second gate |
 | `sm.hole_to_edge` | migrated | yes (cut edge, nearest point, kind, ownership) | recordings + second gate (base, flange, multi-hole, opening, transformed) |
 | `sm.hole_to_bend` | migrated | yes (bend pairing, tangent gap, radius, panel association) | recordings + second gate (L-bracket, U-channel flange holes, mapped bend numbers) |
-| `sm.hole_spacing` | not migrated | no (hole-to-hole wall is separate from edge) | — |
-| `sm.inside_radius` | not migrated | bend radius exists | — |
-| `sm.min_flange` | not migrated | not yet (runs at 20 places, both flats) | — |
-| `sm.max_bend_length` | not migrated | bend length exists | — |
-| `sm.bend_relief_present` | not migrated | no (relief-end definition still open) | — |
-| `sm.min_web_parallel_bends` | not migrated | webs partially | — |
-| `sm.u_channel_ratio` | not migrated | webs/flange lengths partially | — |
-| `sm.bend_radius_consistent` | not migrated | bend radii exist | — |
-| `sm.tolerance_across_bends` | not migrated | critical dimensions exist; bend-path logic missing | — |
-| `sm.countersink_depth` | not migrated | no countersink facts in the App | — |
-| `sm.countersink_to_edge` | not migrated | no countersink facts | — |
-| `sm.countersink_to_bend` | not migrated | no countersink facts | — |
+| `sm.hole_spacing` | **migrated** | no (hole-to-hole wall is separate from edge) | — |
+| `sm.inside_radius` | **migrated** | bend radius exists | — |
+| `sm.min_flange` | **migrated** | not yet (runs at 20 places, both flats) | — |
+| `sm.max_bend_length` | **migrated** | bend length exists | — |
+| `sm.bend_relief_present` | **migrated** | no (relief-end definition still open) | — |
+| `sm.min_web_parallel_bends` | **migrated** | webs partially | — |
+| `sm.u_channel_ratio` | **migrated** | webs/flange lengths partially | — |
+| `sm.bend_radius_consistent` | **migrated** | bend radii exist | — |
+| `sm.tolerance_across_bends` | **migrated** | critical dimensions exist; bend-path logic missing | — |
+| `sm.countersink_depth` | **migrated** | no countersink facts in the App | — |
+| `sm.countersink_to_edge` | **migrated** | no countersink facts | — |
+| `sm.countersink_to_bend` | **migrated** | no countersink facts | — |
 
 ## 3. Data, gates and report pieces
 
@@ -68,7 +68,7 @@ Status words:
 | `header` (public-value summary) | not migrated | needs all rules |
 | `part`/`bends` facts in the report | partial | webs, other openings, bend flange runs |
 | `not_checked` line | migrated | exact INTdfm text restored |
-| Recheck marks/guards | not migrated | all of `recheck.py` |
+| Recheck marks/guards | migrated | `recheck.rs`; 11 pairs, byte-exact `Recheck` JSON |
 
 ## 4. Recordings
 
