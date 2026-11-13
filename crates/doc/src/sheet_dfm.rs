@@ -28,8 +28,8 @@
 //!   answer). The nearest other round hole on the same panel is reported separately as
 //!   [`HoleFact::nearest_hole_wall_mm`], so the second gate can check an `edge_hole` ownership
 //!   without changing `edge_mm`'s meaning. Distances to lines and arcs are exact; other segment
-//!   kinds (free-form cut edges) have no exact form here. They are never approximated for a
-//!   decision: the edge distance becomes unavailable, and the rule layer says it was not checked.
+//!   kinds (free-form cut edges) have no exact form here. They are never approximated for an edge
+//!   distance: it becomes unavailable, and the rule layer says it was not checked.
 //! - **Bend gaps** use each flange's two tangents, the near one at `f.p` (against the parent
 //!   panel) and the far one at `f.p + f.n * allowance(f)` (against the flange's own panel). A
 //!   hole on panel P gets one gap per tangent that bounds P. The gap is the perpendicular
@@ -480,8 +480,9 @@ fn seg_distance_lower_bound(seg: &Seg2, p: Vec2) -> Option<f64> {
             let degree = usize::from(n).min(MAX_BEZIER_CTRL - 1);
             points[..=degree].to_vec()
         }
-        // Lines and arcs are exact, so this is only a defensive fallback.
-        _ => return seg_closest(seg, p).map(|(distance, _)| distance),
+        // Lines and arcs are exact, so this is only a defensive fallback. An invalid one has no
+        // usable bound either.
+        _ => return seg_closest(seg, p).map(|(distance, _)| distance).filter(|distance| distance.is_finite()),
     };
     if control.iter().any(|q| !q.x.is_finite() || !q.y.is_finite()) {
         return None;
@@ -693,8 +694,10 @@ fn nearest_edge(sheet: &SheetBody, panels: &[(Option<usize>, Region2)], cand: &C
     }
     let hit = best?;
     // A free-form edge that might lie inside the best edge's band makes the answer unknown: the
-    // outline must never stand in for an edge that could be nearer.
-    if let Some(lower) = unknown_lower
+    // outline must never stand in for an edge that could be nearer. A zero gap is already the
+    // smallest possible clearance, so no unknown edge can beat it.
+    if hit.gap > LINEAR_TOL
+        && let Some(lower) = unknown_lower
         && (lower - cand.radius).max(0.0) <= hit.gap + LINEAR_TOL
     {
         return None;
@@ -1080,6 +1083,21 @@ mod tests {
         let hole = &measured.holes[0];
         close(hole.edge_mm.unwrap(), 3.5);
         assert_eq!(hole.edge_kind, Some(EdgeKind::Outline));
+    }
+
+    /// A hole already touching an edge has the smallest possible clearance; a free-form cut near
+    /// it cannot make the zero unknown.
+    #[test]
+    fn a_touching_hole_keeps_its_zero_clearance_beside_a_free_form_cut() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        cut_round(&mut sheet, 1.5, 12.5, 1.5);
+        sheet.holes.push(free_form_loop(Vec2::new(6.0, 12.5), Vec2::new(2.0, 11.0), Vec2::new(2.0, 14.0), Vec2::new(6.0, 12.5)));
+
+        let measured = facts(&sheet).unwrap();
+        let hole = &measured.holes[0];
+        close(hole.edge_mm.unwrap(), 0.0);
+        assert_eq!(hole.edge_kind, Some(EdgeKind::Outline));
+        close(hole.edge_at_mm.unwrap()[0], 0.0);
     }
 
     fn tangent(origin: Vec2, from: f64, to: f64) -> Tangent {

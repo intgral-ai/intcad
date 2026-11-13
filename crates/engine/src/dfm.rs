@@ -90,8 +90,6 @@ pub fn validate_parameters(value: &Value) -> Result<SheetCheckParameters, DfmErr
     Ok(parameters)
 }
 
-/// Convert the App's measured facts to the rule crate's data contract.
-///
 /// The rule layer has no "base" sentinel: its `None` means an unknown flat, and a hole on it is
 /// left out of `sm.hole_spacing`. The App's `None` means the base panel, so the adapter gives the
 /// base an explicit id and shifts flange ids past it.
