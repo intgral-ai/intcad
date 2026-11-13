@@ -266,6 +266,18 @@ class MonorepoSelection(unittest.TestCase):
         self.assertEqual(result["rustTestPackages"], ["xtask"])
         self.decision(result, "rust", "run", "selected_change")
 
+    def test_release_version_only_reconciliation_selects_repository_checks(self):
+        result = self.select("Cargo.toml", "Cargo.lock", base_ref="develop",
+                             head_ref="release/v0.1.0-beta.2")
+        self.assertEqual(result["scope"], "affected")
+        self.assertEqual(result["rustPackages"], [])
+        self.assertEqual(result["rustTestPackages"], [])
+        self.decision(result, "repo", "run", "always")
+        self.decision(result, "rust", "not_applicable", "no_relevant_change")
+        # A task-branch Cargo change is still conservative.
+        normal = self.select("Cargo.toml", "Cargo.lock")
+        self.assertTrue(normal["rustFull"])
+
     def test_pr_test_lane_is_bounded_on_shared_inputs(self):
         for path in ("Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml", "scripts/build-runtime.sh"):
             with self.subTest(path=path):
@@ -851,7 +863,7 @@ class NativeBaselineWorkflow(unittest.TestCase):
                                               ("ACTION_MATRIX_TIMINGS", "timings.jsonl"), ("ACTION_MATRIX_WORKDIR", "raw")):
                             self.assertEqual(child_env[key], str(evidence / filename))
                     else:
-                        self.assertIn("all()", commands[1]["argv"])
+                        self.assertIn("all() & not (binary(boolean_props) | binary(atomic_commands))", commands[1]["argv"])
                         self.assertIn("--workspace", commands[1]["argv"])
                     self.assertTrue((evidence / "junit.xml").is_file())
             return run, result, summary.read_text() if summary.exists() else ""

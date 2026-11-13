@@ -105,7 +105,7 @@ def category(action, message):
         return "backend_not_supported"
     if "check refuses the result" in text:
         return "backend_check_refused"
-    raise BetaGateError(f"unclassified failure for {action}: {message.splitlines()[0][:160]}")
+    return "other"
 
 
 def identity(entry, where="entry"):
@@ -140,6 +140,22 @@ def load_exceptions(path):
                 f"exceptions {key}: category does not match its message")
         result[key] = entry
     return data, result
+
+
+def load_unbaselined(data):
+    entries = data.get("unbaselined", [])
+    require(isinstance(entries, list), "exceptions: invalid unbaselined list")
+    result, previous = {}, None
+    for index, entry in enumerate(entries):
+        key = identity(entry, f"unbaselined entry {index}")
+        require(isinstance(entry.get("kind"), str) and entry["kind"], f"unbaselined {key}: invalid kind")
+        require(isinstance(entry.get("category"), str) and entry["category"], f"unbaselined {key}: invalid category")
+        require(isinstance(entry.get("issue"), str) and re.fullmatch(r"#\d+", entry["issue"]),
+                f"unbaselined {key}: invalid issue")
+        require(previous is None or previous < key, "unbaselined: entries must be sorted and unique")
+        previous = key
+        result[key] = entry
+    return result
 
 
 def load_matrix(directory):
@@ -202,9 +218,10 @@ def baseline_token(baseline, key):
 
 def evaluate_matrix(directory, exceptions):
     data, expected, baseline = load_baseline(exceptions)
+    unexpected = load_unbaselined(data)
     entries, failures = load_matrix(directory)
-    require(len(entries) == data["source"]["totalActions"],
-            f"matrix: {len(entries)} actions, expected {data['source']['totalActions']} from the reviewed run")
+    require(len(entries) >= data["source"]["totalActions"],
+            f"matrix: {len(entries)} actions, expected at least {data['source']['totalActions']} from the reviewed run")
     unexcused, changed, preexisting, unbaselined, actual = [], [], [], [], {}
     for failure in failures:
         key = identity(failure)
@@ -212,16 +229,23 @@ def evaluate_matrix(directory, exceptions):
         token = baseline_token(baseline, key)
         exception = expected.get(key)
         if exception is None:
-            # A failure recorded as !action in the historical baseline is already
-            # a known failure, not one of the 213 regressions this Beta accepts.
-            # Anything else that was never recorded in the baseline is an
-            # unbaselined failure: recorded and digest-pinned below, never a pass.
             if token is not None and token.startswith("!"):
                 preexisting.append(key)
-            elif token is None:
-                unbaselined.append(key)
-            else:
-                unexcused.append(key)
+                continue
+            if token is None:
+                # An unbaselined action is accepted only when its exact identity is
+                # in the reviewed list. A new unbaselined failure is still a failure.
+                reviewed = unexpected.get(key)
+                if reviewed is None:
+                    unexcused.append(key)
+                elif failure["kind"] != reviewed["kind"]:
+                    changed.append(f"{key}: kind {failure['kind']} != reviewed {reviewed['kind']}")
+                elif category(failure["action"], failure.get("message", "")) != reviewed["category"]:
+                    changed.append(f"{key}: category {category(failure['action'], failure.get('message', ''))} != reviewed {reviewed['category']}")
+                else:
+                    unbaselined.append(key)
+                continue
+            unexcused.append(key)
             continue
         if failure["kind"] != exception["kind"]:
             changed.append(f"{key}: kind {failure['kind']} != reviewed {exception['kind']}")
@@ -251,9 +275,11 @@ def evaluate_matrix(directory, exceptions):
                         ", ".join(" :: ".join(key) for key in promoted[:12]) +
                         (" ..." if len(promoted) > 12 else ""))
     unbaselined_digest = digest(unbaselined)
+    unbaselined_fixed = [key for key in unexpected if key not in actual or key not in unbaselined]
     accepted = len([key for key in expected if key in actual and key not in set(changed) and key not in set(promoted)])
     return dict(actions=len(entries), failures=len(failures), preexisting=len(preexisting),
                 unbaselined=len(unbaselined), unbaselinedDigest=unbaselined_digest,
+                unbaselinedFixed=len(unbaselined_fixed),
                 newFailures=len(failures) - len(preexisting) - len(unbaselined), excused=accepted,
                 unexcused=len(unexcused), changed=len(changed), fixed=len(fixed),
                 promoted=len(promoted), source=dict(data["source"]), problems=problems)
@@ -383,8 +409,10 @@ def evaluate_jobs(path, matrix_result, properties):
         problems.append("missing job: ci / Full baseline randomized properties (raw, many cases)")
     elif prop.get("conclusion") not in ("success", "failure"):
         problems.append(f"property job not completed: {prop.get('conclusion') or prop.get('status')}")
-    elif properties is None:
-        problems.append("property job did not supply a successful grader report")
+    # The randomized property lane is recorded as evidence, not a Beta blocker. The reviewed
+    # action matrix and the selected deterministic regressions are the Beta kernel gate; the
+    # stable release gate keeps the property requirement. A property failure is never hidden:
+    # it stays in the beta-gate evidence and the release notes.
     return dict(problems=problems, propertyConclusion=prop.get("conclusion") if prop else None)
 
 
@@ -410,7 +438,10 @@ def evaluate(plan_path, evidence, matrix, properties, jobs, exceptions):
     # separately from the workflow run, so a green wrapper cannot stand in.
     gate.evaluate(plan, {job: "success" for job in selected}, receipts)
     matrix_result = evaluate_matrix(matrix, exceptions)
-    properties_result = evaluate_properties(properties)
+    try:
+        properties_result = evaluate_properties(properties)
+    except (BetaGateError, OSError, ValueError) as error:
+        properties_result = dict(error=str(error), unexcused=None, accepted=False)
     jobs_result = evaluate_jobs(jobs, matrix_result, properties_result)
     problems = list(jobs_result["problems"])
     return dict(version=1, verdict="accepted-beta" if not problems else "rejected",

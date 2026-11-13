@@ -290,10 +290,13 @@ pub(crate) fn refresh(app: &mut SolveApp, now: f64) {
 /// test says no to do the same ([`without_threads`]).
 fn threads() -> bool {
     #[cfg(test)]
-    if NO_THREADS.with(std::cell::Cell::get) {
-        return false;
+    {
+        !NO_THREADS.with(std::cell::Cell::get)
     }
-    true
+    #[cfg(not(test))]
+    {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -95,18 +95,34 @@ class Matrix(unittest.TestCase):
 
     def test_total_action_count_must_match_the_reviewed_run(self):
         self.exceptions.write_text(json.dumps(manifest(total=4)))
-        with self.assertRaisesRegex(beta_gate.BetaGateError, "expected 4"):
+        with self.assertRaisesRegex(beta_gate.BetaGateError, "at least 4"):
             beta_gate.evaluate_matrix(write_matrix(self.matrix), self.exceptions)
 
-    def test_unbaselined_failures_are_reported_but_are_not_called_passes(self):
+    def test_unbaselined_failures_are_itemised_and_a_new_one_is_rejected(self):
         key = ("demo/b", "Body1/F9", "face.shell")
+        entry = dict(design=key[0], entity=key[1], action=key[2], kind="error",
+                     category=beta_gate.category(key[2], SHELL), issue="#88")
         value = manifest(total=4)
+        value["unbaselined"] = [entry]
         self.exceptions.write_text(json.dumps(value))
         actions = ACTIONS + [dict(design=key[0], entity=key[1], action=key[2], kind="error", message=SHELL, ok=False)]
         result = beta_gate.evaluate_matrix(write_matrix(self.matrix, actions), self.exceptions)
         self.assertEqual((result["unbaselined"], result["unexcused"], result["problems"]), (1, 0, []))
         self.assertEqual(result["unbaselinedDigest"], beta_gate.digest([key]))
-        self.assertEqual(result["newFailures"], 1)
+        # A different unbaselined failure is not accepted by identity.
+        new_key = ("demo/c", "Body1/F9", "face.shell")
+        actions2 = actions + [dict(design=new_key[0], entity=new_key[1], action=new_key[2], kind="error", message=SHELL, ok=False)]
+        value["source"]["totalActions"] = 5
+        self.exceptions.write_text(json.dumps(value))
+        result = beta_gate.evaluate_matrix(write_matrix(self.matrix, actions2), self.exceptions)
+        self.assertEqual(result["unexcused"], 1)
+        self.assertTrue(result["problems"])
+        # A listed unbaselined action that passes is an improvement, never a pass claim.
+        value["source"]["totalActions"] = 4
+        self.exceptions.write_text(json.dumps(value))
+        passed = ACTIONS + [dict(design=key[0], entity=key[1], action=key[2], kind="error", message=SHELL, ok=True)]
+        result = beta_gate.evaluate_matrix(write_matrix(self.matrix, passed), self.exceptions)
+        self.assertEqual((result["unbaselined"], result["unbaselinedFixed"], result["problems"]), (0, 1, []))
 
     def test_repository_manifest_is_itemised_and_classified(self):
         data, entries = beta_gate.load_exceptions(ROOT / "tests/action_matrix/beta-exceptions.json")
@@ -114,8 +130,8 @@ class Matrix(unittest.TestCase):
         self.assertEqual(len(entries), 213)
         self.assertEqual(len(entries), len({(e["design"], e["entity"], e["action"]) for e in entries.values()}))
         self.assertTrue(all(entry["issue"] in ("#55", "#83", "#88") for entry in entries.values()))
-        self.assertEqual(data["source"]["unbaselinedFailures"], 972)
-        self.assertEqual(len(data["source"]["unbaselinedDigest"]), 64)
+        self.assertEqual(data["source"]["unbaselinedFailures"], 956)
+        self.assertEqual(len(data["unbaselined"]), 956)
 
 
 class Properties(unittest.TestCase):

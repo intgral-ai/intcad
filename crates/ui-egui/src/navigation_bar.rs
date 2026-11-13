@@ -95,10 +95,7 @@ impl Slot {
         if !caps.orbit {
             return !matches!(self.id, "orbit" | "spin" | "look_at" | "projection" | "visual_style");
         }
-        if !caps.pick && matches!(self.id, "look_at" | "visual_style") {
-            return false;
-        }
-        true
+        caps.pick || !matches!(self.id, "look_at" | "visual_style")
     }
 }
 

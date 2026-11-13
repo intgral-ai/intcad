@@ -174,3 +174,31 @@ fn hidden_bodies_are_out_of_scope() {
     run(&mut s, "browser.visibility", json!({"items": ["Other"], "visible": false}));
     assert_eq!(crate::shown_scope(&s), Some(Vec::new()), "nothing shown");
 }
+
+/// The reviewed Cylinder/Sphere case is refused safely: the preview fails, the document is not
+/// changed, and modeling, undo and saving still work afterwards.
+#[test]
+fn a_refused_cyl_sphere_join_leaves_the_document_unchanged() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"base": [22.5, 12.5, 2.5], "axis": [1, 0, 0], "radius": 11.25, "height": 5, "body_name": "Base"}));
+    let before = s.model.state();
+    let before_names: Vec<String> = before.bodies.iter().map(|b| b.name.clone()).collect();
+    let before_threads = before.threads.len();
+    let before_body_counter = before.body_counter;
+    let before_sketches = before.sketches.len();
+    let sphere = vec![("solid.sphere".to_string(), json!({"center": [10, 2.5, 0], "radius": 12.5, "operation": "join", "targets": ["Base"]}))];
+    assert_eq!(addition(&s, &sphere, false), None, "the reviewed Cylinder/Sphere Join is refused");
+    let after = s.model.state();
+    assert_eq!(after.bodies.iter().map(|b| b.name.clone()).collect::<Vec<_>>(), before_names);
+    assert_eq!(after.threads.len(), before_threads);
+    assert_eq!(after.body_counter, before_body_counter);
+    assert_eq!(after.sketches.len(), before_sketches);
+    assert_eq!(&after.reserved_body_names, &before.reserved_body_names);
+    // Continue modeling, undo and save after the refusal.
+    run(&mut s, "solid.box", json!({"length": 2, "width": 2, "height": 2, "corner": [20, 10, 1], "operation": "join", "targets": ["Base"]}));
+    run(&mut s, "edit.undo", json!({}));
+    let path = std::env::temp_dir().join(format!("sc-cyl-sphere-{}.solidcraft", std::process::id()));
+    run(&mut s, "file.save", json!({"path": path.to_string_lossy()}));
+    assert!(path.is_file(), "the document saves after the refusal");
+    let _ = std::fs::remove_file(path);
+}

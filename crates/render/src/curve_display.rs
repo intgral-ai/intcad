@@ -85,9 +85,9 @@ impl Hull {
         let n = self.len;
         let mut work = self.p;
         let (mut l, mut r) = (Hull { len: n, p: [[0.0; 4]; MAX_CONTROLS] }, Hull { len: n, p: [[0.0; 4]; MAX_CONTROLS] });
-        for level in 0..n {
+        for (level, out) in l.p.iter_mut().enumerate().take(n) {
             let last = n - 1 - level;
-            l.p[level] = work[0];
+            *out = work[0];
             r.p[last] = work[last];
             for i in 0..last {
                 work[i] = mix(work[i], work[i + 1], 0.5);

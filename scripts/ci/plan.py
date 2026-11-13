@@ -178,6 +178,18 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
     # sole owner of Rust reverse dependencies. Map interface inputs to their host.
     rust_paths = [path for path in paths if not runtime_path(path)
                   and not path.startswith("schema/mastra-runtime/") and path != "docs/mastra-runtime.md"]
+    # A release branch reconciled back into develop carries only the release
+    # version label. It is not a shared code change; the always-running
+    # repository checks validate the files, and the candidate build already
+    # exercised the same tree. Any other path, base or head keeps the normal
+    # conservative selector.
+    release_version_only = (
+        base_ref == "develop" and head_ref.startswith("release/v")
+        and bool(rust_paths) and set(rust_paths) <= {"Cargo.toml", "Cargo.lock"}
+    )
+    if release_version_only:
+        rust_paths = []
+        shared = False
     rust_full, rust_packages = affected.select(meta, rust_paths)
     available = {p["name"] for p in meta["packages"]}
     # xtask owns the repository/runtime artifact checks. A packaging/mastra
