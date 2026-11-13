@@ -21,8 +21,8 @@
 //! cause per wording), the thickness-gate block, the bend-gate "same cause" path, `d` in a limit,
 //! and the loosest table row across bends.
 //!
-//! Not byte-faithful: the messages are the INTdfm wording with `{}` instead of `:g`, so a report
-//! comparison must still normalise text. `needs` follows INTdfm's per-code wording.
+//! Messages follow INTdfm's wording and number spelling ([`crate::pyfmt`]); the message-parity
+//! tests compare them byte for byte. `needs` follows INTdfm's per-code wording.
 //!
 //! Project overrides are **not** applied here: INTdfm's `_choices` has none, and FD-7's
 //! confirmation semantics are still a proposal. `crate::choose` applies them for the three hole
@@ -34,7 +34,7 @@
 
 use crate::{
     AppState, CheckInput, Chosen, CountersinkFact, Facts, Feature, Finding, HoleFact, Layer, Limit, Location, Point3, Requirement, RequirementRef,
-    RuleStatus, SAME_SHEET_MM, below, round6, state_of,
+    RuleStatus, SAME_SHEET_MM, below, pyfmt, round6, state_of,
 };
 
 /// `sm.hole_spacing`.
@@ -58,7 +58,7 @@ const UPPER_LIMITS: &[&str] = &["sm.max_bend_length", "sm.u_channel_ratio", COUN
 const MATCH_MM: f64 = 1.0;
 
 const SHOP_NUMBER: &str = "The shop's own number for this rule.";
-const COUNT_BY_HAND: &str = "A person to count this part's bends, because this version can't.";
+const COUNT_BY_HAND: &str = "A person to count this part's bends, because this version can't be sure.";
 const LOOK_AT_HOLE: &str = "A person to look at this hole.";
 const LOOK_AT_SINK: &str = "A person to look at this countersink.";
 const CHOOSE_A_FIX: &str = "A person to choose: move a hole, have them cut after bending, or loosen the tolerance.";
@@ -169,7 +169,12 @@ fn spacing_review(first: usize, hole: &HoleFact, value: f64, chosen: &Chosen, se
         RuleStatus::NeedsReview,
         Some("HOLE_SPACING_BELOW_LIMIT"),
         None,
-        format!("Hole {first}: its wall to hole {second} is {value} mm, below {} of {} mm. A person decides.", whose(chosen), chosen.limit_mm),
+        format!(
+            "Hole {first}: its wall to hole {second} is {} mm, below {} of {} mm. A person decides.",
+            pyfmt::g(value),
+            whose(chosen),
+            pyfmt::g(chosen.limit_mm)
+        ),
         (hole.x_mm, hole.y_mm, hole.z_mm),
         Some(value),
         Some(chosen),
@@ -178,8 +183,17 @@ fn spacing_review(first: usize, hole: &HoleFact, value: f64, chosen: &Chosen, se
 }
 
 fn flat_unknown(holes: &[(usize, &HoleFact)]) -> Finding {
-    let places: Vec<String> =
-        holes.iter().map(|(number, hole)| format!("hole {number}, at x {}, y {}, z {}", hole.x_mm, hole.y_mm, hole.z_mm)).collect();
+    let places: Vec<String> = holes
+        .iter()
+        .map(|(number, hole)| {
+            format!(
+                "hole {number}, at x {}, y {}, z {}",
+                pyfmt::g(pyfmt::round(hole.x_mm, 3)),
+                pyfmt::g(pyfmt::round(hole.y_mm, 3)),
+                pyfmt::g(pyfmt::round(hole.z_mm, 3))
+            )
+        })
+        .collect();
     let names: Vec<String> = holes.iter().map(|(number, _)| format!("hole {number}")).collect();
     unsupported_with(
         &[HOLE_SPACING],
@@ -249,9 +263,13 @@ fn one_dimension(
         return unsupported_with(
             rules,
             "CRITICAL_FEATURE_NOT_FOUND",
-            &format!("{name}: no round hole this version can measure is within {MATCH_MM} mm of {which}, beyond half the sheet's thickness."),
+            &format!(
+                "{name}: no round hole this version can measure is within {} mm of {which}, beyond half the sheet's thickness.",
+                pyfmt::g(MATCH_MM)
+            ),
             vec![format!(
-                "For {name}, points within {MATCH_MM} mm of two round holes' centres. A report's part.holes lists them; only holes square to the skins and through the sheet count."
+                "For {name}, points within {} mm of two round holes' centres. A report's part.holes lists them; only holes square to the skins and through the sheet count.",
+                pyfmt::g(MATCH_MM)
             )],
         );
     };
@@ -289,9 +307,9 @@ fn one_dimension(
     let crosses = many(crossed, "bend");
     if below(wanted, row.chosen.limit_mm, row.upper) {
         let fixes = if crossed > 0 {
-            format!("Put both holes on one flat, have them cut after bending, or allow plus or minus {}.", row.chosen.limit_mm)
+            format!("Put both holes on one flat, have them cut after bending, or allow plus or minus {} mm.", pyfmt::g(row.chosen.limit_mm))
         } else {
-            format!("Ask the shop for a tighter process, or allow plus or minus {}.", row.chosen.limit_mm)
+            format!("Ask the shop for a tighter process, or allow plus or minus {} mm.", pyfmt::g(row.chosen.limit_mm))
         };
         let needs = if row.chosen.decides {
             vec![if crossed > 0 { CHOOSE_A_FIX } else { CHOOSE_ON_ONE_FLAT }.to_string()]
@@ -304,9 +322,10 @@ fn one_dimension(
             Some("TOLERANCE_TIGHTER_THAN_SHOP"),
             None,
             format!(
-                "{name}: {both} crosses {crosses}. {} plus or minus {} mm there, and this needs plus or minus {wanted} mm. {fixes}",
+                "{name}: {both} crosses {crosses}. {} plus or minus {} mm there, and this needs plus or minus {} mm. {fixes}",
                 if row.chosen.decides { "This shop's table gives" } else { "The public value is" },
-                row.chosen.limit_mm
+                pyfmt::g(row.chosen.limit_mm),
+                pyfmt::g(wanted)
             ),
             feature,
             location,
@@ -323,8 +342,9 @@ fn one_dimension(
             None,
             Some("ABOVE_PUBLIC_VALUE"),
             format!(
-                "{name}: {both} crosses {crosses}. Plus or minus {wanted} mm is no tighter than the public value of {} mm, so nothing is known: only a shop's own table can say it holds.",
-                row.chosen.limit_mm
+                "{name}: {both} crosses {crosses}. Plus or minus {} mm is no tighter than the public value of {} mm, so nothing is known: only a shop's own table can say it holds.",
+                pyfmt::g(wanted),
+                pyfmt::g(row.chosen.limit_mm)
             ),
             feature,
             location,
@@ -340,8 +360,9 @@ fn one_dimension(
         None,
         None,
         format!(
-            "{name}: {both} crosses {crosses}. This shop's table gives plus or minus {} mm there, within the plus or minus {wanted} mm needed. This says nothing about anything but this dimension.",
-            row.chosen.limit_mm
+            "{name}: {both} crosses {crosses}. This shop's table gives plus or minus {} mm there, within the plus or minus {} mm needed. This says nothing about anything but this dimension.",
+            pyfmt::g(row.chosen.limit_mm),
+            pyfmt::g(wanted)
         ),
         feature,
         location,
@@ -625,10 +646,11 @@ fn sink_review(rule: &str, error_code: &str, sink: &Sink<'_>, what: &str, value:
         Some(error_code),
         None,
         format!(
-            "The countersink of hole {}: its {what} is {value} mm, {side} {} of {} mm. A person decides.",
+            "The countersink of hole {}: its {what} is {} mm, {side} {} of {} mm. A person decides.",
             sink.hole,
+            pyfmt::g(value),
             whose(chosen),
-            chosen.limit_mm
+            pyfmt::g(chosen.limit_mm)
         ),
         sink_feature(sink),
         Some(sink_location(sink)),
@@ -668,8 +690,9 @@ fn sinks_met(rule: &str, met: &[(f64, Chosen)], tightest: &str) -> Finding {
         None,
         None,
         format!(
-            "{} met this shop's number, {tightest} at {value} mm. This says nothing about anything but this rule.",
-            many(met.len(), "countersink")
+            "{} met this shop's number, {tightest} at {} mm. This says nothing about anything but this rule.",
+            many(met.len(), "countersink"),
+            pyfmt::g(value)
         ),
         sink_feature_group(&format!("{} that met the number", many(met.len(), "countersink"))),
         None,
@@ -692,7 +715,7 @@ fn sink_feature(sink: &Sink<'_>) -> Feature {
     Feature {
         kind: "countersink".to_string(),
         number: Some(sink.hole),
-        description: format!("countersink, {} mm across", sink.facts.major_diameter_mm),
+        description: format!("countersink, {} mm across", pyfmt::g(sink.facts.major_diameter_mm)),
     }
 }
 

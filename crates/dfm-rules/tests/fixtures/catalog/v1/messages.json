@@ -1,0 +1,1982 @@
+{
+  "cases": {
+    "catalog.countersink": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 2833.9813613106794
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 2.9999999999999982
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 11.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "bends",
+          "value": 1.0
+        },
+        "message": "1 bend found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 8.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_flange"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no parallel bends with a flat between them, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no parallel bends turning the same way with a flat between them, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 0.5
+        },
+        "message": "These countersinks are clear of the public value, so nothing is known about them: only a shop's own number can say a countersink is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.countersink_depth"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 10.5
+        },
+        "message": "These countersinks are clear of the public value, so nothing is known about them: only a shop's own number can say a countersink is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.countersink_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 7.499999999999999
+        },
+        "message": "These countersinks are clear of the public value, so nothing is known about them: only a shop's own number can say a countersink is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_verified"
+      }
+    ],
+    "catalog.radii": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 2948.976742401472
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "Every face has a label, and no opening is closed within the skins.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_min_diameter",
+          "sm.hole_to_edge"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "bends",
+          "value": 2.0
+        },
+        "message": "2 bends found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "Every face has a label, and no opening is closed within the skins.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_flange"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "BEND_RADII_MIXED",
+        "feature": "part",
+        "measured": {
+          "unit": "radii",
+          "value": 2.0
+        },
+        "message": "This part's bends have 2 inside radii: 1 mm at bend 2; 3 mm at bend 1. Each radius can mean another tool. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "catalog.relief": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 2576.7145867644335
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "Every face has a label, and no opening is closed within the skins.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_min_diameter",
+          "sm.hole_to_edge"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "bends",
+          "value": 1.0
+        },
+        "message": "1 bend found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "Every face has a label, and no opening is closed within the skins.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_flange"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "RELIEF_NO_MARGIN",
+        "feature": "bend",
+        "measured": null,
+        "message": "Bend 1: past this end of the bend a flat starts right on the bend's line, with no notch past it. No sheet lies beside the bend itself. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no parallel bends with a flat between them, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no parallel bends turning the same way with a flat between them, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "catalog.spacing": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 1478.7942495882694
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 3.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 11.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "HOLE_SPACING_BELOW_LIMIT",
+        "feature": "hole",
+        "measured": {
+          "unit": "mm",
+          "value": 2.0
+        },
+        "message": "Hole 1: its wall to hole 2 is 2 mm, below a public value of 3 mm. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "All the skins are parallel and every other face runs straight between them, so this part is flat and has no bends.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found",
+          "sm.inside_radius",
+          "sm.min_flange",
+          "sm.max_bend_length",
+          "sm.hole_to_bend",
+          "sm.bend_relief_present",
+          "sm.min_web_parallel_bends",
+          "sm.u_channel_ratio",
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "catalog.tolerance": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 2824.687483043814
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 3.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 11.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "bends",
+          "value": 1.0
+        },
+        "message": "1 bend found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": "HOLE_BEND_BELOW_LIMIT",
+        "feature": "hole",
+        "measured": {
+          "unit": "mm",
+          "value": 2.5
+        },
+        "message": "Hole 2: its distance to bend 1 is 2.5 mm, below a public value of 6.75 mm. This is a trial rule, and the file can't say whether the hole is cut after bending. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 14.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_flange"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no parallel bends with a flat between them, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no parallel bends turning the same way with a flat between them, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "catalog.u_tabs": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 3201.7864669111477
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "Every face has a label, and no opening is closed within the skins.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_min_diameter",
+          "sm.hole_to_edge"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "bends",
+          "value": 2.0
+        },
+        "message": "2 bends found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "Every face has a label, and no opening is closed within the skins.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_flange"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "hole_min_diameter.below": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 1499.705475688726
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "HOLE_DIAMETER_BELOW_LIMIT",
+        "feature": "hole",
+        "measured": {
+          "unit": "mm",
+          "value": 0.5
+        },
+        "message": "Hole 1: its diameter is 0.5 mm, below a public value of 0.75 mm. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 12.25
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "All the skins are parallel and every other face runs straight between them, so this part is flat and has no bends.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found",
+          "sm.inside_radius",
+          "sm.min_flange",
+          "sm.max_bend_length",
+          "sm.hole_to_bend",
+          "sm.bend_relief_present",
+          "sm.min_web_parallel_bends",
+          "sm.u_channel_ratio",
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "hole_to_bend.below": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 2835.290358249673
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 3.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 11.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "bends",
+          "value": 1.0
+        },
+        "message": "1 bend found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": "HOLE_BEND_BELOW_LIMIT",
+        "feature": "hole",
+        "measured": {
+          "unit": "mm",
+          "value": 2.5
+        },
+        "message": "Hole 1: its distance to bend 1 is 2.5 mm, below a public value of 6.75 mm. This is a trial rule, and the file can't say whether the hole is cut after bending. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_flange"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no parallel bends with a flat between them, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no parallel bends turning the same way with a flat between them, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "hole_to_bend.u_holes": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 3045.5807164993903
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 3.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 8.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "bends",
+          "value": 2.0
+        },
+        "message": "2 bends found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": "HOLE_BEND_BELOW_LIMIT",
+        "feature": "hole",
+        "measured": {
+          "unit": "mm",
+          "value": 6.5
+        },
+        "message": "Hole 2: its distance to bend 1 is 6.5 mm, below a public value of 6.75 mm. This is a trial rule, and the file can't say whether the hole is cut after bending. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 9.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_flange"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "reason_code": "NO_SHOP_NUMBER",
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "hole_to_edge.plate_holes": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 1470.2530445613204
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "HOLE_DIAMETER_BELOW_LIMIT",
+        "feature": "hole",
+        "measured": {
+          "unit": "mm",
+          "value": 0.5
+        },
+        "message": "Hole 2: its diameter is 0.5 mm, below a public value of 0.75 mm. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 3.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "HOLE_EDGE_BELOW_LIMIT",
+        "feature": "hole",
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "Hole 1: its distance to a cut edge is 1.5 mm, below a public value of 2.25 mm. That edge is on this flat's outline, nearest at x 0, y 12.5, z 1.5. A person decides.",
+        "reason_code": null,
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 6.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm",
+          "value": 9.75
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "All the skins are parallel and every other face runs straight between them, so this part is flat and has no bends.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found",
+          "sm.inside_radius",
+          "sm.min_flange",
+          "sm.max_bend_length",
+          "sm.hole_to_bend",
+          "sm.bend_relief_present",
+          "sm.min_web_parallel_bends",
+          "sm.u_channel_ratio",
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "reason_code": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "missing_thickness": [
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": {
+          "unit": "mm3",
+          "value": 1489.397124794134
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No thickness was declared, so there is nothing to compare the model with.",
+        "reason_code": "THICKNESS_NOT_DECLARED",
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No shop was declared.",
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No thickness was declared, so there is nothing to compare the model with.",
+        "reason_code": "THICKNESS_NOT_DECLARED",
+        "rules": [
+          "sm.hole_min_diameter",
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No thickness was declared, so there is nothing to compare the model with.",
+        "reason_code": "THICKNESS_NOT_DECLARED",
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "All the skins are parallel and every other face runs straight between them, so this part is flat and has no bends.",
+        "reason_code": null,
+        "rules": [
+          "sm.gate_bends_found",
+          "sm.inside_radius",
+          "sm.min_flange",
+          "sm.max_bend_length",
+          "sm.hole_to_bend",
+          "sm.bend_relief_present",
+          "sm.min_web_parallel_bends",
+          "sm.u_channel_ratio",
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": "part",
+        "measured": null,
+        "message": "No thickness was declared, so there is nothing to compare the model with.",
+        "reason_code": "THICKNESS_NOT_DECLARED",
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_verified"
+      }
+    ]
+  },
+  "note": "Pre-merge findings from replay.assemble, captured with a spy on report.build_report. Generated, never edited by hand. Messages are the oracle; the Rust test compares them for the rules owned by bend_rules, flange_rules and sink_rules.",
+  "source": {
+    "core_source_sha256": "2e75e5cf7b82aa32b905a14f3cb38fe7cccb080f8c441ce8f82c33a9adddae2d",
+    "intdfm_commit": "2f24830fcd84c8e3047eb6643139b94c27b8c1b6"
+  }
+}

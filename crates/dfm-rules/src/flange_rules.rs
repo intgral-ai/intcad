@@ -17,7 +17,7 @@
 //! of the two flats; `FLANGE_NO_DIE` before `FLANGE_CROSSES_CUT`; the `BEND_NOT_90` skip; the
 //! `not_applicable` answers for a part with no web or U; and the two relief codes.
 //!
-//! Not byte-faithful yet: messages are INTdfm's wording with `fmt_g` in place of `:g`. A
+//! Messages follow INTdfm's wording and number spelling ([`crate::pyfmt`]). A
 //! requirement INTdfm writes with `value: null` (`FLANGE_NO_DIE`, the relief line) carries the
 //! selected row's limit here, because [`RequirementRef`] has no optional value; the text says what
 //! the number is for. Tests compare the limit only where INTdfm records one.
@@ -44,7 +44,7 @@ pub use crate::bend_rules::{BEND_RELIEF, MIN_FLANGE, MIN_WEB, U_CHANNEL};
 use crate::bend_rules::{flat_finding, is_flat};
 use crate::{
     AppState, Applies, BendFact, CheckInput, Chosen, Confirmation, Facts, Feature, Finding, Layer, Limit, Location, Recognition, Requirement,
-    RequirementRef, RuleStatus, Unsupported, WebFact, below, limit_mm, round6, state_of,
+    RequirementRef, RuleStatus, Unsupported, WebFact, below, limit_mm, pyfmt, round6, state_of,
 };
 
 /// A place, from a bend, a web or a relief end, once three finite coordinates are present.
@@ -217,14 +217,14 @@ fn reach_index(share: f64, places: usize) -> usize {
 
 /// `rules._flange_review`: a bend whose flange or floor is short, quoting the die when there is one.
 fn flange_review(number: usize, bend: &BendFact, value: f64, row: &Row) -> Finding {
-    let on_die = row.die.as_ref().map(|die| format!(" on the {} mm die", fmt_g(die.v_mm))).unwrap_or_default();
+    let on_die = row.die.as_ref().map(|die| format!(" on the {} mm die", pyfmt::g(die.v_mm))).unwrap_or_default();
     let rest = if row.die.is_some() { " No die on this list does better." } else { "" };
     let message = format!(
         "Bend {number}: its shorter flange reaches {} mm over {:.0}% of its length, below {} of {} mm{on_die}.{rest}",
-        fmt_g(value),
+        pyfmt::g(value),
         share(row) * 100.0,
         whose(row),
-        fmt_g(row.limit())
+        pyfmt::g(row.limit())
     );
     review(MIN_FLANGE, "bend", "FLANGE_BELOW_LIMIT", &format!("bend {number}"), Some(bend_location(bend)), value, row, message, None)
 }
@@ -234,8 +234,8 @@ fn flange_review(number: usize, bend: &BendFact, value: f64, row: &Row) -> Findi
 fn no_die(number: usize, bend: &BendFact, row: &Row) -> Finding {
     let radius = bend.inside_radius_mm;
     let requirement =
-        RequirementRef { text: format!("A die that forms {} mm. {}", fmt_g(radius), row.measuring_line), ..row.chosen.requirement.clone() };
-    let message = format!("Bend {number}: no die on this list forms its inside radius of {} mm.", fmt_g(radius));
+        RequirementRef { text: format!("A die that forms {} mm. {}", pyfmt::g(radius), row.measuring_line), ..row.chosen.requirement.clone() };
+    let message = format!("Bend {number}: no die on this list forms its inside radius of {} mm.", pyfmt::g(radius));
     review(MIN_FLANGE, "bend", "FLANGE_NO_DIE", &format!("bend {number}"), Some(bend_location(bend)), radius, row, message, Some(requirement))
 }
 
@@ -783,7 +783,7 @@ fn bends_clear(rule: &str, kind: &str, met: &[(f64, Chosen)], gate: &Finding) ->
         message: format!(
             "{} met this shop's number, the tightest at {} mm. This says nothing about anything but this rule.",
             many(met.len(), kind),
-            fmt_g(*value)
+            pyfmt::g(*value)
         ),
         feature: Feature { kind: kind.into(), number: None, description: format!("{} that met the number", many(met.len(), kind)) },
         location: None,
@@ -824,7 +824,7 @@ fn review(
 
 /// The default review sentence, before `A person decides.` is appended.
 fn plain_body(name: &str, what: &str, value: f64, row: &Row, upper: bool) -> String {
-    format!("{}: its {} is {} mm, {} {} of {} mm.", capitalise(name), what, fmt_g(value), side_of(upper), whose(row), fmt_g(row.limit()))
+    format!("{}: its {} is {} mm, {} {} of {} mm.", capitalise(name), what, pyfmt::g(value), side_of(upper), whose(row), pyfmt::g(row.limit()))
 }
 
 impl Row {
@@ -868,15 +868,43 @@ fn same_as_gate(bends_gate: &Finding, rule: &str) -> Finding {
 /// `rules._blocked`: the thickness gate's answer, keeping its measured value unless it was a
 /// mismatch.
 fn blocked_for(rule: &str, thickness_gate: &Finding) -> Finding {
-    let mut finding = crate::blocked(rule, thickness_gate);
-    if thickness_gate.status != RuleStatus::Violation {
-        finding.measured_mm = thickness_gate.measured_mm;
+    let violation = thickness_gate.status == RuleStatus::Violation;
+    let code = if violation {
+        "THICKNESS_MISMATCH".to_string()
+    } else {
+        thickness_gate.reason_code.clone().unwrap_or_else(|| "THICKNESS_NOT_DECLARED".to_string())
+    };
+    Finding {
+        id: format!("{rule}/{code}"),
+        rules: vec![rule.to_string()],
+        status: RuleStatus::NotVerified,
+        state: AppState::Unsupported,
+        error_code: None,
+        reason_code: Some(code),
+        message: if violation {
+            "The thickness gate found a mismatch, so the rules that depend on thickness did not run.".to_string()
+        } else {
+            thickness_gate.message.clone()
+        },
+        feature: Feature { kind: "part".into(), number: None, description: "whole part".into() },
+        location: None,
+        measured_mm: if violation { None } else { thickness_gate.measured_mm },
+        requirement: None,
+        needs: thickness_gate.needs.clone(),
     }
-    finding
 }
 
 /// The finding `_choices` gives instead of a number.
 fn chosen_error(rule: &str, unsupported: Unsupported, upper: bool) -> Finding {
+    // `_no_number` says the same thing for every rule; the selector's message is about the row.
+    let unsupported = if unsupported.code == "NO_SHOP_NUMBER" {
+        Unsupported {
+            code: "NO_SHOP_NUMBER",
+            message: "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.".into(),
+        }
+    } else {
+        unsupported
+    };
     let needs = match unsupported.code {
         "NO_SHOP_NUMBER" => vec![SHOPS_NUMBER.into()],
         "REQUIREMENT_INPUT_UNKNOWN" => {
@@ -941,7 +969,7 @@ fn off_90(bends: &[BendFact], shut: &BTreeSet<usize>, webs: &[WebFact]) -> Optio
         .iter()
         .enumerate()
         .filter(|(index, _)| shut.contains(&(index + 1)))
-        .map(|(index, bend)| format!("bend {} at {} degrees", index + 1, fmt_g(bend.angle_deg)))
+        .map(|(index, bend)| format!("bend {} at {} degrees", index + 1, pyfmt::g4(bend.angle_deg)))
         .collect();
     let bounds_shut_web = webs.iter().any(|web| web.bends.iter().any(|bend| shut.contains(bend)));
     let also = if bounds_shut_web { ", or a web or U it bounds," } else { "" };
@@ -986,21 +1014,74 @@ fn capitalise(text: &str) -> String {
     }
 }
 
-fn fmt_g(value: f64) -> String {
-    if !value.is_finite() {
-        return value.to_string();
-    }
-    if value != 0.0 && (value.abs() >= 1e6 || value.abs() < 1e-4) {
-        return format!("{value:e}");
-    }
-    let mut text = format!("{value}");
-    if text.contains('.') {
-        while text.ends_with('0') {
-            text.pop();
+/// The corpus has no shop table for the flange, web or relief rules, so these messages are pinned
+/// to `rules.py` itself rather than to a recording. Labels say so.
+#[cfg(test)]
+mod message_parity {
+    use super::*;
+
+    fn chosen(limit: f64, decides: bool) -> Chosen {
+        Chosen {
+            requirement: RequirementRef {
+                value_mm: limit,
+                layer: if decides { crate::Layer::Factory } else { crate::Layer::Generic },
+                confirmation: None,
+                source: "TEST-ONLY".into(),
+                text: String::new(),
+                overridden: false,
+            },
+            limit_mm: limit,
+            decides,
         }
-        if text.ends_with('.') {
-            text.pop();
-        }
     }
-    if text == "-0" { "0".into() } else { text }
+
+    fn bend(radius: f64) -> BendFact {
+        BendFact { inside_radius_mm: radius, angle_deg: 90.0, length_mm: 20.0, x_mm: 1.0, y_mm: 2.0, z_mm: 3.0, ..BendFact::default() }
+    }
+
+    fn row(limit: f64, decides: bool, die: Option<crate::Die>) -> Row {
+        Row { chosen: chosen(limit, decides), die, measuring_line: "TEST-ONLY.".into() }
+    }
+
+    #[test]
+    fn flange_review_is_the_python_sentence() {
+        let die = Some(crate::Die { v_mm: 16.0, forms_radius_mm: vec![2.0, 4.0], required_share: 0.5 });
+        let finding = flange_review(1, &bend(3.0), 12.5, &row(15.0, true, die));
+        assert_eq!(
+            finding.message,
+            "Bend 1: its shorter flange reaches 12.5 mm over 50% of its length, below this shop's number of 15 mm on the 16 mm die. No die on this list does better. A person decides."
+        );
+    }
+
+    #[test]
+    fn no_die_is_the_python_sentence() {
+        let finding = no_die(1, &bend(3.0), &row(15.0, true, None));
+        assert_eq!(finding.message, "Bend 1: no die on this list forms its inside radius of 3 mm. A person decides.");
+    }
+
+    #[test]
+    fn web_body_is_the_python_sentence() {
+        let body = plain_body("the web between bends 1 and 2", "width", 5.0, &row(10.0, false, None), false);
+        assert_eq!(body, "The web between bends 1 and 2: its width is 5 mm, below a public value of 10 mm.");
+        let upper = plain_body("the U between bends 1 and 2", "taller flange", 40.0, &row(30.0, true, None), true);
+        assert_eq!(upper, "The U between bends 1 and 2: its taller flange is 40 mm, above this shop's number of 30 mm.");
+    }
+
+    #[test]
+    fn relief_pass_is_the_python_sentence() {
+        let finding = relief_pass(2, line_only(&row(0.0, true, None)));
+        assert_eq!(
+            finding.message,
+            "No end of the 2 bends has the sheet carrying on with no notch. This says nothing about a notch's size, or anything but this rule."
+        );
+    }
+
+    #[test]
+    fn crossed_flange_messages_name_every_bend() {
+        let finding = crossed_finding(&[1, 2]);
+        assert_eq!(
+            finding.message,
+            "Bend 1, bend 2: on the way to the far edge, a flange crosses a hole, an opening or a side cut, so how far the sheet really reaches wasn't measured."
+        );
+    }
 }

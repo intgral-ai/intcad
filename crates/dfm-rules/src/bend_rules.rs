@@ -16,11 +16,11 @@
 //! behaviour of `sm.bend_radius_consistent` (including the 0.05 mm grouping), and the "no shop
 //! number" path that leaves a rule unverified rather than failing it.
 //!
-//! Not byte-faithful yet: the messages are the INTdfm wording with formatting shortened where
-//! Rust has no `:g`, so a report comparison must still normalise text. `needs` follows INTdfm's
-//! per-code wording. `sm.bend_radius_consistent` writes a requirement value of `0` where INTdfm
-//! writes `null`, because [`RequirementRef`] has no optional value; the status and the layer still
-//! decide the App state.
+//! Messages follow INTdfm's wording and number spelling ([`crate::pyfmt`]); the message-parity
+//! tests compare them byte for byte. `needs` follows INTdfm's per-code wording.
+//! `sm.bend_radius_consistent` writes a requirement value of `0` where INTdfm writes `null`,
+//! because [`RequirementRef`] has no optional value; the status and the layer still decide the App
+//! state.
 //!
 //! `crate::hole_finding` is deliberately not used: its feature kind is `hole` and its description
 //! is a hole diameter. Bend findings use [`bend_review`] and the other local builders, with the
@@ -34,7 +34,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     AppState, Applies, BendFact, CheckInput, Chosen, Confirmation, Facts, Feature, Finding, HOLE_TO_BEND, Layer, Limit, Location, Recognition,
-    Requirement, RequirementRef, RuleStatus, SAME_SHEET_MM, Unsupported, WebFact, below, blocked, choose, limit_mm, round6, state_of,
+    Requirement, RequirementRef, RuleStatus, SAME_SHEET_MM, Unsupported, WebFact, below, choose, limit_mm, pyfmt, round6, state_of,
 };
 
 /// `sm.gate_bends_found`.
@@ -286,14 +286,14 @@ fn off_90(bends: &[BendFact], shut: &BTreeSet<usize>, webs: &[WebFact]) -> Optio
         .iter()
         .enumerate()
         .filter(|(index, _)| shut.contains(&(index + 1)))
-        .map(|(index, bend)| format!("bend {} at {} degrees", index + 1, fmt_g(bend.angle_deg)))
+        .map(|(index, bend)| format!("bend {} at {} degrees", index + 1, pyfmt::g4(bend.angle_deg)))
         .collect();
     let bounds_shut_web = webs.iter().any(|web| web.bends.iter().any(|bend| shut.contains(bend)));
     let also = if bounds_shut_web { ", or a web or U it bounds," } else { "" };
     let text = format!(
         "{}: more than {} degrees off 90, a placeholder. The limits here are written for 90 degrees, so no such bend{also} was measured.",
         names.join(", "),
-        fmt_g(NEAR_90_DEG)
+        pyfmt::g(NEAR_90_DEG)
     );
     Some(capitalise(&text))
 }
@@ -344,7 +344,7 @@ fn bends_clear(rule: &str, met: &[(f64, Chosen)], bends_gate: &Finding) -> Optio
         message: format!(
             "{} met this shop's number, the tightest at {} mm. This says nothing about anything but this rule.",
             many(met.len(), "bend"),
-            fmt_g(*value)
+            pyfmt::g(*value)
         ),
         feature: Feature { kind: "bend".into(), number: None, description: format!("{} that met the number", many(met.len(), "bend")) },
         location: None,
@@ -366,9 +366,9 @@ fn bend_review(rule: &str, error_code: &str, number: usize, bend: &BendFact, val
         reason_code: None,
         message: format!(
             "Bend {number}: its {what} is {} mm, {side} {} of {} mm. A person decides.",
-            fmt_g(value),
+            pyfmt::g(value),
             whose(chosen),
-            fmt_g(chosen.limit_mm)
+            pyfmt::g(chosen.limit_mm)
         ),
         feature: bend_feature(number),
         location: Some(Location { x_mm: crate::round3(bend.x_mm), y_mm: crate::round3(bend.y_mm), z_mm: crate::round3(bend.z_mm) }),
@@ -435,7 +435,8 @@ fn radius_groups(bends: &[BendFact]) -> Vec<(f64, Vec<usize>)> {
 
 /// `rules._radii`'s review: each radius named with its bends.
 fn radii_review(groups: &[(f64, Vec<usize>)], shops: Option<&Chosen>) -> Finding {
-    let each: Vec<String> = groups.iter().map(|(radius, bends)| format!("{} mm at {}", fmt_g(crate::round3(*radius)), bends_named(bends))).collect();
+    let each: Vec<String> =
+        groups.iter().map(|(radius, bends)| format!("{} mm at {}", pyfmt::g(pyfmt::round(*radius, 3)), bends_named(bends))).collect();
     Finding {
         id: format!("{BEND_RADII}/BEND_RADII_MIXED"),
         rules: vec![BEND_RADII.to_string()],
@@ -470,7 +471,7 @@ fn radii_pass(chosen: &Chosen, bends: usize, radius: f64) -> Finding {
         state: AppState::Passed,
         error_code: None,
         reason_code: None,
-        message: format!("{who} one inside radius, {} mm. This says nothing about anything but this rule.", fmt_g(radius)),
+        message: format!("{who} one inside radius, {} mm. This says nothing about anything but this rule.", pyfmt::g(pyfmt::round(radius, 3))),
         feature: Feature { kind: "bend".into(), number: None, description: many(bends, "bend") },
         location: None,
         measured_mm: Some(1.0),
@@ -481,8 +482,9 @@ fn radii_pass(chosen: &Chosen, bends: usize, radius: f64) -> Finding {
 
 /// `rules._bends_named`: "bend 1", or "bends 1, 2 and 3".
 fn bends_named(numbers: &[usize]) -> String {
+    let mut numbers = numbers.to_vec();
+    numbers.sort_unstable();
     let mut names: Vec<String> = numbers.iter().map(|number| number.to_string()).collect();
-    names.sort();
     let Some(last) = names.pop() else {
         return String::new();
     };
@@ -629,6 +631,15 @@ fn choose_upper(rule: &str, radius: Option<f64>, input: &CheckInput) -> Result<C
 
 /// The finding `_choices` gives instead of a number.
 fn chosen_error(rule: &str, unsupported: Unsupported, upper: bool) -> Finding {
+    // `_no_number` says the same thing for every rule; the selector's message is about the row.
+    let unsupported = if unsupported.code == "NO_SHOP_NUMBER" {
+        Unsupported {
+            code: "NO_SHOP_NUMBER",
+            message: "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.".into(),
+        }
+    } else {
+        unsupported
+    };
     let needs = match unsupported.code {
         "NO_SHOP_NUMBER" => vec![SHOPS_NUMBER.into()],
         "REQUIREMENT_INPUT_UNKNOWN" => {
@@ -663,12 +674,30 @@ fn same_as_gate(bends_gate: &Finding, rule: &str) -> Finding {
 /// `rules._blocked`: the thickness gate's answer, or `THICKNESS_MISMATCH`, for every rule that
 /// depends on thickness.
 fn blocked_for(rule: &str, thickness_gate: &Finding) -> Finding {
-    let mut finding = blocked(rule, thickness_gate);
-    if thickness_gate.status != RuleStatus::Violation {
-        // INTdfm keeps the gate's measured value on a block that is not a mismatch.
-        finding.measured_mm = thickness_gate.measured_mm;
+    let violation = thickness_gate.status == RuleStatus::Violation;
+    let code = if violation {
+        "THICKNESS_MISMATCH".to_string()
+    } else {
+        thickness_gate.reason_code.clone().unwrap_or_else(|| "THICKNESS_NOT_DECLARED".to_string())
+    };
+    Finding {
+        id: format!("{rule}/{code}"),
+        rules: vec![rule.to_string()],
+        status: RuleStatus::NotVerified,
+        state: AppState::Unsupported,
+        error_code: None,
+        reason_code: Some(code),
+        message: if violation {
+            "The thickness gate found a mismatch, so the rules that depend on thickness did not run.".to_string()
+        } else {
+            thickness_gate.message.clone()
+        },
+        feature: Feature { kind: "part".into(), number: None, description: "whole part".into() },
+        location: None,
+        measured_mm: if violation { None } else { thickness_gate.measured_mm },
+        requirement: None,
+        needs: thickness_gate.needs.clone(),
     }
-    finding
 }
 
 fn gate_finding(
@@ -741,27 +770,6 @@ fn capitalise(text: &str) -> String {
     }
 }
 
-/// Python's `:g` for the numbers a message carries. Rust has no such format, so a plain decimal is
-/// trimmed; an exponent form is left as Rust writes it.
-fn fmt_g(value: f64) -> String {
-    if !value.is_finite() {
-        return value.to_string();
-    }
-    if value != 0.0 && (value.abs() >= 1e6 || value.abs() < 1e-4) {
-        return format!("{value:e}");
-    }
-    let mut text = format!("{value}");
-    if text.contains('.') {
-        while text.ends_with('0') {
-            text.pop();
-        }
-        if text.ends_with('.') {
-            text.pop();
-        }
-    }
-    if text == "-0" { "0".into() } else { text }
-}
-
 #[cfg(test)]
 mod unit {
     use super::*;
@@ -774,10 +782,11 @@ mod unit {
     }
 
     #[test]
-    fn fmt_g_trims_a_trailing_decimal() {
-        assert_eq!(fmt_g(90.0), "90");
-        assert_eq!(fmt_g(3.5), "3.5");
-        assert_eq!(fmt_g(-0.0), "0");
+    fn numbers_in_messages_use_python_spelling() {
+        assert_eq!(pyfmt::g(90.0), "90");
+        assert_eq!(pyfmt::g(3.5), "3.5");
+        assert_eq!(pyfmt::g(-0.0), "-0");
+        assert_eq!(pyfmt::g(1_234_567.0), "1.23457e+06");
     }
 
     #[test]
@@ -793,6 +802,72 @@ mod unit {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0], (3.0, vec![2, 3]));
         assert_eq!(groups[1], (3.08, vec![1]));
+    }
+
+    fn chosen(limit: f64, decides: bool) -> Chosen {
+        Chosen {
+            requirement: RequirementRef {
+                value_mm: limit,
+                layer: if decides { Layer::Factory } else { Layer::Generic },
+                confirmation: None,
+                source: "TEST-ONLY".into(),
+                text: String::new(),
+                overridden: false,
+            },
+            limit_mm: limit,
+            decides,
+        }
+    }
+
+    fn bend(radius: f64, angle: f64, length: f64) -> BendFact {
+        BendFact { inside_radius_mm: radius, angle_deg: angle, length_mm: length, x_mm: 1.0, y_mm: 2.0, z_mm: 3.0, ..BendFact::default() }
+    }
+
+    // The corpus has no shop table for the bend rules, so these messages are pinned to `rules.py`
+    // itself rather than to a recording. Labels say so.
+
+    #[test]
+    fn inside_radius_review_is_the_python_sentence() {
+        let finding = bend_review(INSIDE_RADIUS, "RADIUS_BELOW_LIMIT", 2, &bend(2.5, 90.0, 20.0), 2.5, &chosen(3.0, false), "inside radius", false);
+        assert_eq!(finding.message, "Bend 2: its inside radius is 2.5 mm, below a public value of 3 mm. A person decides.");
+    }
+
+    #[test]
+    fn bend_length_review_is_the_python_sentence() {
+        let finding = bend_review(MAX_BEND_LENGTH, "BEND_LENGTH_ABOVE_LIMIT", 1, &bend(2.0, 90.0, 40.0), 40.0, &chosen(30.0, true), "length", true);
+        assert_eq!(finding.message, "Bend 1: its length is 40 mm, above this shop's number of 30 mm. A person decides.");
+    }
+
+    #[test]
+    fn bends_clear_is_the_python_sentence() {
+        let gate = gate_finding(RuleStatus::Pass, None, None, "2 bends found.".into(), Some(2.0), Vec::new());
+        let met = [(2.5, chosen(3.0, true))];
+        let finding = bends_clear(INSIDE_RADIUS, &met, &gate).expect("a clear line");
+        assert_eq!(finding.message, "1 bend met this shop's number, the tightest at 2.5 mm. This says nothing about anything but this rule.");
+    }
+
+    #[test]
+    fn off_90_uses_four_significant_digits_for_the_angle() {
+        let bends = [bend(3.0, 92.12345, 20.0), bend(3.0, 95.0, 20.0)];
+        let shut = BTreeSet::from([1, 2]);
+        let text = off_90(&bends, &shut, &[]).expect("both bends are off 90");
+        assert_eq!(
+            text,
+            "Bend 1 at 92.12 degrees, bend 2 at 95 degrees: more than 5 degrees off 90, a placeholder. The limits here are written for 90 degrees, so no such bend was measured."
+        );
+    }
+
+    #[test]
+    fn radii_messages_are_the_python_sentences() {
+        let review = radii_review(&[(3.0, vec![1]), (1.0, vec![2])], None);
+        assert_eq!(
+            review.message,
+            "This part's bends have 2 inside radii: 3 mm at bend 1; 1 mm at bend 2. Each radius can mean another tool. A person decides."
+        );
+        let one = radii_pass(&chosen(3.0, true), 1, 3.0);
+        assert_eq!(one.message, "The one bend has one inside radius, 3 mm. This says nothing about anything but this rule.");
+        let two = radii_pass(&chosen(3.0, true), 2, 3.0);
+        assert_eq!(two.message, "All 2 bends have one inside radius, 3 mm. This says nothing about anything but this rule.");
     }
 
     #[test]
@@ -816,5 +891,264 @@ mod unit {
         let bend = BendFact { angle_deg: 75.0, inside_radius_mm: 3.0, ..BendFact::default() };
         assert_eq!(shut_bends(&[bend]), BTreeSet::from([1]));
         assert!(off_90(&[BendFact { angle_deg: 90.0, ..BendFact::default() }], &BTreeSet::new(), &[]).is_none());
+    }
+}
+
+/// Message parity with INTdfm. The oracle is the pre-merge finding list `rules.py` produced, so a
+/// merged `not_verified` cause still has its own rule's message to compare. Findings whose message
+/// INTdfm delegates to the thickness gate are the one exception: that gate's text lives in
+/// `lib.rs`, outside this batch, so the test checks the delegation and marks them not compared.
+#[cfg(test)]
+mod message_parity {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use serde::Deserialize;
+
+    use super::*;
+    use crate::sink_rules;
+    use crate::{CheckInput, Finding, RuleStatus, catalog_findings};
+
+    const IN_SCOPE: &[&str] = &[
+        BEND_GATE,
+        INSIDE_RADIUS,
+        MIN_FLANGE,
+        MAX_BEND_LENGTH,
+        BEND_RELIEF,
+        MIN_WEB,
+        U_CHANNEL,
+        BEND_RADII,
+        sink_rules::HOLE_SPACING,
+        sink_rules::TOLERANCE_ACROSS_BENDS,
+        sink_rules::COUNTERSINK_DEPTH,
+        sink_rules::COUNTERSINK_TO_EDGE,
+        sink_rules::COUNTERSINK_TO_BEND,
+    ];
+
+    #[derive(Deserialize)]
+    struct PyQuantity {
+        value: f64,
+    }
+
+    #[derive(Deserialize)]
+    struct PyFinding {
+        rules: Vec<String>,
+        status: RuleStatus,
+        error_code: Option<String>,
+        reason_code: Option<String>,
+        #[serde(default)]
+        measured: Option<PyQuantity>,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        needs: Vec<String>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        feature: Option<serde_json::Value>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        location: Option<serde_json::Value>,
+    }
+
+    #[derive(Deserialize)]
+    struct CatalogFixture {
+        input: CheckInput,
+        #[serde(rename = "inputGate")]
+        input_gate: PyFinding,
+    }
+
+    #[derive(Deserialize)]
+    struct Oracle {
+        cases: BTreeMap<String, Vec<PyFinding>>,
+    }
+
+    #[derive(Deserialize)]
+    struct SinkFixture {
+        case: SinkCase,
+        input: SinkInput,
+        expected: SinkExpected,
+    }
+
+    #[derive(Deserialize)]
+    struct SinkCase {
+        id: String,
+        group: String,
+        flat: bool,
+    }
+
+    #[derive(Deserialize)]
+    struct SinkInput {
+        declared: crate::Declared,
+        generic: crate::Profile,
+        shop: Option<crate::Profile>,
+        facts: Facts,
+        #[serde(default)]
+        critical: Vec<crate::Critical>,
+        thickness_gate: PyFinding,
+        bends_gate: PyFinding,
+    }
+
+    #[derive(Deserialize)]
+    struct SinkExpected {
+        findings: Vec<PyFinding>,
+    }
+
+    fn fixtures(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(relative)
+    }
+
+    fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> T {
+        let text = fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        serde_json::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
+    }
+
+    fn gate(finding: &PyFinding) -> Finding {
+        Finding {
+            id: String::new(),
+            rules: finding.rules.clone(),
+            status: finding.status,
+            state: AppState::Unsupported,
+            error_code: finding.error_code.clone(),
+            reason_code: finding.reason_code.clone(),
+            message: finding.message.clone(),
+            feature: Feature { kind: "part".into(), number: None, description: "whole part".into() },
+            location: None,
+            measured_mm: finding.measured.as_ref().map(|quantity| quantity.value),
+            requirement: None,
+            needs: finding.needs.clone(),
+        }
+    }
+
+    fn in_scope(finding: &PyFinding) -> bool {
+        finding.rules.iter().any(|rule| IN_SCOPE.contains(&rule.as_str()))
+    }
+
+    fn gate_delegated(finding: &PyFinding) -> bool {
+        matches!(finding.reason_code.as_deref(), Some("THICKNESS_NOT_DECLARED" | "THICKNESS_NOT_MEASURED" | "THICKNESS_MISMATCH"))
+    }
+
+    fn same_measured(left: Option<f64>, right: Option<&PyQuantity>) -> bool {
+        match (left, right) {
+            (None, None) => true,
+            (Some(left), Some(right)) => (left - right.value).abs() <= 1e-9,
+            _ => false,
+        }
+    }
+
+    /// Compare every in-scope Python finding with the Rust finding it names. Returns
+    /// `(compared, exact, skipped, differences)`.
+    fn compare(case: &str, python: &[PyFinding], rust: &[Finding], delegated_message: Option<&str>) -> (usize, usize, usize, Vec<String>) {
+        let mut used = vec![false; rust.len()];
+        let mut compared = 0;
+        let mut exact = 0;
+        let mut skipped = 0;
+        let mut differences = Vec::new();
+        for want in python.iter().filter(|finding| in_scope(finding)) {
+            let position = rust.iter().enumerate().position(|(index, got)| {
+                !used[index]
+                    && got.rules == want.rules
+                    && got.status == want.status
+                    && got.error_code == want.error_code
+                    && got.reason_code == want.reason_code
+                    // A blocked finding's measured value is the thickness gate's, which is outside
+                    // this batch; the rule contributes only the wording and the reason code.
+                    && (gate_delegated(want) || same_measured(got.measured_mm, want.measured.as_ref()))
+            });
+            let Some(index) = position else {
+                differences.push(format!("{case}: no Rust finding matches {:?} {:?}/{:?}", want.rules, want.error_code, want.reason_code));
+                continue;
+            };
+            used[index] = true;
+            let got = &rust[index];
+            if gate_delegated(want) {
+                skipped += 1;
+                if let Some(message) = delegated_message
+                    && got.message != message
+                {
+                    differences.push(format!("{case}: {:?} does not echo the thickness gate's message", want.rules));
+                }
+                continue;
+            }
+            compared += 1;
+            if got.message == want.message {
+                exact += 1;
+            } else {
+                differences.push(format!("{case}: {:?}\n  python: {}\n  rust:   {}", want.rules, want.message, got.message));
+            }
+        }
+        (compared, exact, skipped, differences)
+    }
+
+    #[test]
+    fn catalog_messages_match_python() {
+        let dir = fixtures("catalog/v1");
+        let oracle: Oracle = read(&dir.join("messages.json"));
+        let mut cases = 0;
+        let mut total_compared = 0;
+        let mut total_exact = 0;
+        let mut total_skipped = 0;
+        let mut differences = Vec::new();
+        for (case, python) in &oracle.cases {
+            let fixture: CatalogFixture = read(&dir.join(format!("{case}.json")));
+            let rust = catalog_findings(&fixture.input, &gate(&fixture.input_gate)).expect(case);
+            let gate_message =
+                rust.iter().find(|finding| finding.rules == [crate::THICKNESS_GATE.to_string()]).map(|finding| finding.message.clone());
+            let (compared, exact, skipped, mut diffs) = compare(case, python, &rust, gate_message.as_deref());
+            cases += 1;
+            total_compared += compared;
+            total_exact += exact;
+            total_skipped += skipped;
+            differences.append(&mut diffs);
+        }
+        eprintln!("catalog message parity: {cases} cases, {total_exact}/{total_compared} byte-exact, {total_skipped} gate-delegated (not compared)");
+        assert_eq!(cases, 11, "the catalog corpus has 11 cases");
+        assert!(total_compared > 0, "nothing was compared");
+        assert!(differences.is_empty(), "{}", differences.join("\n"));
+        assert_eq!(total_exact, total_compared);
+    }
+
+    #[test]
+    fn sink_fixture_messages_match_python() {
+        let dir = fixtures("sink");
+        let mut total_compared = 0;
+        let mut total_exact = 0;
+        let mut total_skipped = 0;
+        let mut cases = 0;
+        let mut differences = Vec::new();
+        for entry in fs::read_dir(&dir).expect("sink fixtures") {
+            let path = entry.expect("a directory entry").path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let fixture: SinkFixture = read(&path);
+            let input = CheckInput {
+                declared: fixture.input.declared,
+                generic: fixture.input.generic,
+                shop: fixture.input.shop,
+                overrides: Vec::new(),
+                facts: fixture.input.facts,
+                model: Default::default(),
+                critical: fixture.input.critical,
+            };
+            let thickness = gate(&fixture.input.thickness_gate);
+            let bends = gate(&fixture.input.bends_gate);
+            let rust = match fixture.case.group.as_str() {
+                "spacing" => sink_rules::hole_spacing(&input, &thickness),
+                "tolerance" => sink_rules::tolerance_across_bends(&input, &thickness, &bends, fixture.case.flat),
+                "countersinks" => sink_rules::countersink_findings(&input, &thickness, &bends, fixture.case.flat),
+                other => panic!("{}: unknown group {other}", fixture.case.id),
+            };
+            let (compared, exact, skipped, mut diffs) = compare(&fixture.case.id, &fixture.expected.findings, &rust, Some(&thickness.message));
+            cases += 1;
+            total_compared += compared;
+            total_exact += exact;
+            total_skipped += skipped;
+            differences.append(&mut diffs);
+        }
+        eprintln!("sink message parity: {cases} cases, {total_exact}/{total_compared} byte-exact, {total_skipped} gate-delegated (not compared)");
+        assert_eq!(cases, 18, "the sink corpus has 18 cases");
+        assert!(differences.is_empty(), "{}", differences.join("\n"));
+        assert_eq!(total_exact, total_compared);
     }
 }

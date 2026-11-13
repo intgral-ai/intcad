@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use solidcraft_dfm_rules::{
-    BendFact as RuleBend, BendGap as RuleGap, CheckInput, Declared, EdgeKind as RuleEdgeKind, Facts as RuleFacts, HoleFact as RuleHole, ModelRef,
-    Override, Profile, Recognition as RuleRecognition, Report,
+    BendFact as RuleBend, BendGap as RuleGap, CheckInput, Declared, EdgeKind as RuleEdgeKind, FactFamily, Facts as RuleFacts, HoleFact as RuleHole,
+    ModelRef, Override, Profile, Recognition as RuleRecognition, Report,
 };
 use solidcraft_doc::sheet::SheetBody;
 use solidcraft_doc::sheet_dfm;
@@ -126,6 +126,7 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
         holes: Some(holes.collect()),
         other_openings: measured.other_openings.saturating_add(measured.bores),
         unknown_faces: 0,
+        missing: vec![FactFamily::BendRuns, FactFamily::ReliefEnds, FactFamily::Webs, FactFamily::Countersinks],
         recognition: Some(RuleRecognition {
             bends: measured
                 .bends
@@ -150,6 +151,15 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
     }
 }
 
+/// Compare two INTdfm-shaped reports with the migrated recheck layer. This is the production
+/// entry for a later automatic-recheck caller; it does not need OCP or a file.
+pub fn recheck_reports(
+    earlier: &solidcraft_dfm_rules::intdfm_report::Report,
+    later: &solidcraft_dfm_rules::intdfm_report::Report,
+) -> Result<solidcraft_dfm_rules::intdfm_report::Recheck, DfmError> {
+    solidcraft_dfm_rules::recheck::compare(earlier, later).map_err(|error| DfmError::Rules(error.to_string()))
+}
+
 /// Measure one native sheet body and run the rule layer on it.
 pub fn check_sheet(sheet: &SheetBody, parameters: SheetCheckParameters) -> Result<DfmOutcome, DfmError> {
     let facts = sheet_dfm::facts(sheet).map_err(|error| DfmError::Facts(error.to_string()))?;
@@ -162,7 +172,7 @@ pub fn check_sheet(sheet: &SheetBody, parameters: SheetCheckParameters) -> Resul
         return Err(DfmError::Parameters(format!("sheet {} is `{}`, not `{}`", parameters.sheet, sheet.body, parameters.body)));
     }
     let rules = rule_facts(&facts);
-    let report = solidcraft_dfm_rules::check(&parameters.into_input(rules)).map_err(|error| DfmError::Rules(error.to_string()))?;
+    let report = solidcraft_dfm_rules::check_catalog(&parameters.into_input(rules)).map_err(|error| DfmError::Rules(error.to_string()))?;
     Ok(DfmOutcome { facts, report })
 }
 
@@ -474,6 +484,15 @@ mod tests {
         assert_eq!(finding.measured_mm, Some(0.5));
         assert_eq!(outcome.report.model.model_version, "doc-7");
         assert_eq!(outcome.facts.holes.len(), 1);
+        assert!(outcome.report.rules.len() >= 15);
+        let sink = outcome
+            .report
+            .findings
+            .iter()
+            .find(|finding| finding.rules.iter().any(|rule| rule == "sm.countersink_depth"))
+            .expect("a countersink result");
+        assert_eq!(sink.state, solidcraft_dfm_rules::AppState::Unsupported);
+        assert_eq!(sink.reason_code.as_deref(), Some("RULE_NOT_IMPLEMENTED"));
     }
 
     #[test]
@@ -683,6 +702,16 @@ mod tests {
         measured.facts.holes.as_mut().expect("holes")[leg].bend_gaps[0].bend = 1;
         let mismatch = compare(&recorded, &measured, tolerance).expect_err("bend association");
         assert!(matches!(mismatch, GeometryMismatch::BendGapMissing { .. } | GeometryMismatch::BendGapExtra { .. }), "{mismatch}");
+    }
+
+    #[test]
+    fn the_recheck_entry_point_matches_the_recorded_pair() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../dfm-rules/tests/fixtures/recheck/v1/synthetic.two_holes_hole_moved.json")).expect("fixture");
+        let earlier: solidcraft_dfm_rules::intdfm_report::Report = serde_json::from_value(fixture["earlier"].clone()).expect("earlier");
+        let later: solidcraft_dfm_rules::intdfm_report::Report = serde_json::from_value(fixture["later"].clone()).expect("later");
+        let expected: solidcraft_dfm_rules::intdfm_report::Recheck = serde_json::from_value(fixture["expected"].clone()).expect("expected");
+        assert_eq!(recheck_reports(&earlier, &later).expect("recheck"), expected);
     }
 
     #[test]

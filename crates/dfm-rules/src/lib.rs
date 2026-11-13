@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod bend_rules;
 pub mod flange_rules;
+pub mod input_gate;
 pub mod intdfm_report;
+pub mod profile_data;
+pub mod pyfmt;
 pub mod recheck;
 pub mod second_gate;
 pub mod sink_rules;
@@ -76,6 +79,16 @@ fn invalid(message: impl Into<String>) -> DfmError {
 // ---------------------------------------------------------------------------
 // Facts: what the App measured on the sheet body.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactFamily {
+    BendRuns,
+    ReliefEnds,
+    Webs,
+    Countersinks,
+    HolePanels,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Facts {
@@ -111,6 +124,10 @@ pub struct Facts {
     pub faces: usize,
     #[serde(default)]
     pub triangle_faces: usize,
+    /// Fact families the App did not measure. A rule that needs one is unsupported, never
+    /// treated as an empty/not-applicable result.
+    #[serde(default)]
+    pub missing: Vec<FactFamily>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -506,6 +523,8 @@ pub struct ProfileIdentity {
 pub struct DataIdentity {
     pub generic: ProfileIdentity,
     pub shop: Option<ProfileIdentity>,
+    /// SHA-256 of the effective requirements, in the INTdfm canonical form.
+    pub requirements_sha256: String,
     pub overrides_applied: usize,
     pub confirmed_rows: usize,
 }
@@ -893,7 +912,7 @@ fn thickness_gate(input: &CheckInput) -> Finding {
             AppState::Unsupported,
             None,
             Some("THICKNESS_NOT_MEASURED"),
-            "The model's sheet thickness was not measured, so the thickness gate did not run.".into(),
+            "The rays from the part's faces gave no distance, so its sheet thickness can't be measured.".into(),
             None,
         );
     };
@@ -903,7 +922,7 @@ fn thickness_gate(input: &CheckInput) -> Finding {
             AppState::Unsupported,
             None,
             Some("THICKNESS_NOT_DECLARED"),
-            "No thickness was declared, so there is nothing to compare the model with. Rules that depend on thickness did not run.".into(),
+            "No thickness was declared, so there is nothing to compare the model with.".into(),
             Some(model),
         );
     };
@@ -913,7 +932,9 @@ fn thickness_gate(input: &CheckInput) -> Finding {
             AppState::Checked,
             None,
             None,
-            format!("The model's {model} mm sheet matches the declared {declared} mm within {THICKNESS_TOLERANCE_MM} mm."),
+            format!(
+                "The model's sheet matches the declared {declared} mm within {THICKNESS_TOLERANCE_MM} mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge."
+            ),
             Some(model),
         )
     } else {
@@ -922,7 +943,9 @@ fn thickness_gate(input: &CheckInput) -> Finding {
             AppState::Failed,
             Some("THICKNESS_MISMATCH"),
             None,
-            format!("The model's sheet is {model} mm, not the declared {declared} mm. Rules that depend on thickness did not run."),
+            format!(
+                "Two measures agree the model's sheet is not the declared {declared} mm. Rules that depend on thickness can't be trusted until this is settled."
+            ),
             Some(model),
         )
     }
@@ -1380,6 +1403,7 @@ pub fn check(input: &CheckInput) -> Result<Report, DfmError> {
         data: DataIdentity {
             generic: ProfileIdentity { name: input.generic.name.clone(), version: input.generic.version.clone(), layer: input.generic.layer },
             shop: input.shop.as_ref().map(|shop| ProfileIdentity { name: shop.name.clone(), version: shop.version.clone(), layer: shop.layer }),
+            requirements_sha256: profile_data::requirements_sha256(&profile_data::effective(&input.generic, input.shop.as_ref())).unwrap_or_default(),
             overrides_applied: input.overrides.len(),
             confirmed_rows,
         },
@@ -1494,6 +1518,21 @@ fn coverage_gate(input: &CheckInput) -> Finding {
     }
 }
 
+fn requires_fact(rule: &str) -> Option<FactFamily> {
+    match rule {
+        "sm.min_flange" => Some(FactFamily::BendRuns),
+        "sm.bend_relief_present" => Some(FactFamily::ReliefEnds),
+        "sm.min_web_parallel_bends" | "sm.u_channel_ratio" => Some(FactFamily::Webs),
+        "sm.countersink_depth" | "sm.countersink_to_edge" | "sm.countersink_to_bend" => Some(FactFamily::Countersinks),
+        "sm.hole_spacing" => Some(FactFamily::HolePanels),
+        _ => None,
+    }
+}
+
+fn missing_fact(input: &CheckInput, rule: &str) -> bool {
+    requires_fact(rule).is_some_and(|family| input.facts.missing.contains(&family))
+}
+
 /// A pass finding for the App's native entry, where the sheet body has already been accepted.
 pub fn pass_input_gate() -> Finding {
     gate_finding(RuleStatus::Pass, AppState::Checked, None, None, "The sheet body is one closed solid and was read by the App.".into(), None)
@@ -1545,17 +1584,66 @@ pub fn catalog_findings(input: &CheckInput, input_gate: &Finding) -> Result<Vec<
         findings.push(bend_rules::flat_finding());
     } else {
         findings.push(bends.clone());
-        findings.extend(bend_rules::inside_radius(input, &thickness, &bends, &input.facts));
-        findings.extend(flange_rules::min_flange(input, &thickness, &bends, &input.facts));
+        for (rule, call) in [(bend_rules::INSIDE_RADIUS, &mut || bend_rules::inside_radius(input, &thickness, &bends, &input.facts))] {
+            if missing_fact(input, rule) {
+                findings.push(unsupported_finding(
+                    rule,
+                    Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
+                ));
+            } else {
+                findings.extend(call());
+            }
+        }
+        if missing_fact(input, bend_rules::MIN_FLANGE) {
+            findings.push(unsupported_finding(
+                bend_rules::MIN_FLANGE,
+                Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
+            ));
+        } else {
+            findings.extend(flange_rules::min_flange(input, &thickness, &bends, &input.facts));
+        }
         findings.extend(bend_rules::max_bend_length(input, &thickness, &bends, &input.facts));
-        findings.extend(flange_rules::bend_relief_present(input, &thickness, &bends, &input.facts));
-        findings.extend(flange_rules::min_web_parallel_bends(input, &thickness, &bends, &input.facts));
-        findings.extend(flange_rules::u_channel_ratio(input, &thickness, &bends, &input.facts));
+        if missing_fact(input, bend_rules::BEND_RELIEF) {
+            findings.push(unsupported_finding(
+                bend_rules::BEND_RELIEF,
+                Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
+            ));
+        } else {
+            findings.extend(flange_rules::bend_relief_present(input, &thickness, &bends, &input.facts));
+        }
+        for rule in [bend_rules::MIN_WEB, bend_rules::U_CHANNEL] {
+            if missing_fact(input, rule) {
+                findings.push(unsupported_finding(
+                    rule,
+                    Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
+                ));
+            } else if rule == bend_rules::MIN_WEB {
+                findings.extend(flange_rules::min_web_parallel_bends(input, &thickness, &bends, &input.facts));
+            } else {
+                findings.extend(flange_rules::u_channel_ratio(input, &thickness, &bends, &input.facts));
+            }
+        }
         findings.extend(bend_rules::bend_radius_consistent(input, &thickness, &bends, &input.facts));
     }
-    findings.extend(sink_rules::hole_spacing(input, &thickness));
+    if missing_fact(input, "sm.hole_spacing") {
+        findings.push(unsupported_finding(
+            "sm.hole_spacing",
+            Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
+        ));
+    } else {
+        findings.extend(sink_rules::hole_spacing(input, &thickness));
+    }
     findings.extend(sink_rules::tolerance_across_bends(input, &thickness, &bends, flat));
-    findings.extend(sink_rules::countersink_findings(input, &thickness, &bends, flat));
+    if input.facts.missing.contains(&FactFamily::Countersinks) {
+        for rule in ["sm.countersink_depth", "sm.countersink_to_edge", "sm.countersink_to_bend"] {
+            findings.push(unsupported_finding(
+                rule,
+                Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
+            ));
+        }
+    } else {
+        findings.extend(sink_rules::countersink_findings(input, &thickness, &bends, flat));
+    }
     findings.sort_by(|a, b| {
         rule_order(&a.rule())
             .cmp(&rule_order(&b.rule()))
@@ -1632,6 +1720,7 @@ pub fn check_catalog(input: &CheckInput) -> Result<Report, DfmError> {
         data: DataIdentity {
             generic: ProfileIdentity { name: input.generic.name.clone(), version: input.generic.version.clone(), layer: input.generic.layer },
             shop: input.shop.as_ref().map(|shop| ProfileIdentity { name: shop.name.clone(), version: shop.version.clone(), layer: shop.layer }),
+            requirements_sha256: profile_data::requirements_sha256(&profile_data::effective(&input.generic, input.shop.as_ref())).unwrap_or_default(),
             overrides_applied: input.overrides.len(),
             confirmed_rows,
         },
