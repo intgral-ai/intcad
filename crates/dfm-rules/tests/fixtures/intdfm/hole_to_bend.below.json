@@ -9,12 +9,13 @@
     }
   },
   "comparison": {
+    "comparison_quantum_mm": 1e-06,
     "measurement_abs_tolerance_mm": 0.001,
-    "notes": "Pair usable round through holes by nearest folded centre, one to one, greedy by increasing distance. A second candidate within ambiguous_within_mm of the chosen one for the same hole is refused, not guessed. After pairing, compare each diameter, depth, position and the model thickness with measurement_abs_tolerance_mm. rule_threshold_rounding_mm is the separate rounding rules._below uses at the limit.",
+    "notes": "Pair usable round through holes by a complete one-to-one matching. A complete matching uses pairs whose folded-centre distance, diameter difference and depth difference are each within measurement_abs_tolerance_mm; pairing.max_centre_distance_mm only bounds the fallback search used to diagnose a mismatch. More than one complete matching is ambiguous and is refused, not guessed. Compare differences after rounding to comparison_quantum_mm, so a nominal boundary does not depend on coordinate magnitude. rule_threshold_rounding_mm is the separate rounding rules._below uses at the limit.",
     "pairing": {
-      "ambiguous_within_mm": 0.001,
+      "ambiguity": "more_than_one_complete_matching",
       "max_centre_distance_mm": 0.05,
-      "method": "nearest_centre_one_to_one"
+      "method": "exact_complete_matching"
     },
     "rule_threshold_rounding_mm": 1e-06
   },

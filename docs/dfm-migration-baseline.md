@@ -72,6 +72,8 @@ The rule crate has no workspace dependencies. `xtask/src/layers.rs` registers it
 crate. It is in the local open-skyfall workspace now; per the PRD it moves to INTdfm when the
 fork's visibility is settled.
 
+Full PIL-296 module/rule status: `docs/dfm-rules-migration.md`.
+
 Cross-language tests: `crates/dfm-rules/tests/intdfm_baseline.rs` loads compact projections of
 the INTdfm recordings and compares status, error/reason code, measured value and limit for every
 case. `crates/dfm-rules/tests/app_entry.rs` covers the App boundary cases.
@@ -112,17 +114,22 @@ downloaded into `/tmp` only (licence notes unclear; never committed), measured w
 imported into SolidCraft and converted where possible. Native export -> re-import was measured
 separately.
 
-Summary:
+Summary (small sample, not a product success rate):
 - 8/8 read as one closed, valid solid by INTdfm.
-- 1 import failed in SolidCraft (`knot multiplicity` on a pcurve).
-- 3 conversions blocked (curved/spline faces; a >90° arch).
-- 1 conversion produced only a partial shell and was rejected as a conversion of the part.
-- 3 converted exactly or near-exactly (one +0.0034 % volume); holes and bends were exact there.
-- 5/5 native export -> import round trips were exact.
+- 7/8 imported into SolidCraft as one body; 1 failed (`MotorBracketBent`, knot multiplicity).
+- 4 conversions accepted, 2 refused (curved/B-spline and >90° arch), 1 partial and rejected.
+- 4/4 accepted conversions had their bends and holes measured: 3 exact, `longer_side` +0.003438 %
+  volume with every bend and hole exact.
+- 5/5 native export -> re-import round trips were exact.
+- 5/5 converted exports are still assemblies; `intdfm check` refused all with `INPUT_ASSEMBLY`.
+  Fidelity is reader-level only; no converted part reached a full DFM report.
 
 For the first three hole rules: on accepted conversions, hole diameters and positions were
 preserved to 0.0000 mm, so `sm.hole_min_diameter` and `sm.hole_to_edge` are unaffected. A lost
 bend is the dangerous case: `sm.hole_to_bend` becomes not applicable, which can look like a pass.
+The `polpo` partial conversion accepted 1 of 6 picks with rc 0 and no warning, losing 5 bends and
+2 holes; its surviving holes' nearest-bend gaps inflated to 103.64/36.72/19.82 mm. This is a
+false-clear risk and needs a conversion-side guard, not a wider tolerance.
 
 ## 4. Reproduce
 
@@ -164,10 +171,11 @@ cargo xtask layers
    the Python baseline, and the App's measured facts match the recorded INTdfm facts for the same
    hole. `sm.hole_to_edge` and `sm.hole_to_bend` still need their edge and bend-gap facts added to
    the second-gate comparison; their rule results already match the recordings.
-2. **Second gate tolerance:** now pinned in every recording: pair by nearest folded centre, at
-   most 0.05 mm; refuse a second candidate within 0.001 mm; compare diameter, depth, position and
-   thickness at 0.001 mm. The rule threshold's 1e-6 rounding is separate. Extend the same block
-   to bends when the bend facts are compared.
+2. **Second gate tolerance:** contract schema 2 pairs by an exact complete matching. A pair must
+   have position, diameter and depth within 0.001 mm; the 0.05 mm centre distance is only the
+   fallback bound used to diagnose a mismatch. More than one complete matching is refused;
+   a unique matching determined by diameter/depth is accepted. Differences are rounded to
+   1e-6 mm before comparison. The rule threshold's 1e-6 rounding is separate.
 3. **More cases:** hole-by-slot, hole spanning a bend, blind/tilted hole, countersink, perforation
    array, multiple sheet bodies with different thicknesses.
 4. **App report storage:** add `findings.json`/evidence export and the `.intgral` run identity

@@ -25,9 +25,11 @@
 //!   edge shared with an adjacent bend zone is not a cut edge and is left out. Another round
 //!   hole's wall is deliberately **not** a cut edge here: INTdfm's `sm.hole_to_edge` does not
 //!   count one, and its `sm.hole_spacing` rule owns hole-to-hole walls (so one wall gets one
-//!   answer). `sm.hole_spacing` will supply those facts later. Distances to lines and arcs are
-//!   exact; other segment kinds (free-form cut edges) follow their `polyline(1e-3)`
-//!   approximation, which is the flat pattern's own chord tolerance.
+//!   answer). The nearest other round hole on the same panel is reported separately as
+//!   [`HoleFact::nearest_hole_wall_mm`], so the second gate can check an `edge_hole` ownership
+//!   without changing `edge_mm`'s meaning. Distances to lines and arcs are exact; other segment
+//!   kinds (free-form cut edges) follow their `polyline(1e-3)` approximation, which is the flat
+//!   pattern's own chord tolerance.
 //! - **Bend gaps** use each flange's two tangents, the near one at `f.p` (against the parent
 //!   panel) and the far one at `f.p + f.n * allowance(f)` (against the flange's own panel). A
 //!   hole on panel P gets one gap per tangent that bounds P. The gap is the perpendicular
@@ -115,6 +117,14 @@ pub struct HoleFact {
     /// `sm.hole_to_edge` does not count another hole's wall; `sm.hole_spacing` will supply that
     /// later. Kept in the evidence shape so the rule layer can fill it then.
     pub edge_hole: Option<usize>,
+    /// Wall-to-wall material between this hole and the nearest other round hole on the same
+    /// assigned panel, clamped at zero. Separate from [`HoleFact::edge_mm`] on purpose:
+    /// `sm.hole_to_edge` owns cut edges and `sm.hole_spacing` owns hole walls.
+    pub nearest_hole_wall_mm: Option<f64>,
+    /// The nearest point of that other hole's wall, folded to world coordinates at mid-depth.
+    pub nearest_hole_wall_at_mm: Option<[f64; 3]>,
+    /// The other hole's number, in [`SheetFacts::holes`].
+    pub nearest_hole_wall_number: Option<usize>,
     /// Distance to each adjacent bend's tangent line (see [`BendGapFact`]).
     pub bend_gaps: Vec<BendGapFact>,
     /// `Some(i)` for flange `i`'s panel, `None` for the base panel. Only meaningful when
@@ -229,11 +239,15 @@ pub fn facts(sheet: &SheetBody) -> Result<SheetFacts, DocError> {
             // `sm.hole_to_edge` does not count another hole's wall as a cut edge; the later
             // `sm.hole_spacing` rule owns hole-to-hole walls.
             edge_hole: None,
+            nearest_hole_wall_mm: None,
+            nearest_hole_wall_at_mm: None,
+            nearest_hole_wall_number: None,
             bend_gaps,
             flat: panel_index,
             flat_assigned: assigned,
         });
     }
+    nearest_hole_walls(&mut holes);
 
     Ok(SheetFacts {
         thickness_mm: sheet.t,
@@ -244,6 +258,46 @@ pub fn facts(sheet: &SheetBody) -> Result<SheetFacts, DocError> {
         flat: sheet.flanges.is_empty(),
         altered_by: sheet.altered_by.clone(),
     })
+}
+
+/// Fill each hole's nearest other round-hole wall. Only holes on the same assigned panel are
+/// considered, so the wall is measured in that panel's plane. This never changes `edge_mm`.
+fn nearest_hole_walls(holes: &mut [HoleFact]) {
+    for i in 0..holes.len() {
+        if !holes[i].flat_assigned {
+            continue;
+        }
+        let mut best: Option<(f64, usize, [f64; 3])> = None;
+        for j in 0..holes.len() {
+            if i == j || !holes[j].flat_assigned || holes[j].flat != holes[i].flat {
+                continue;
+            }
+            let delta = Vec3::new(holes[j].x_mm - holes[i].x_mm, holes[j].y_mm - holes[i].y_mm, holes[j].z_mm - holes[i].z_mm);
+            let apart = delta.len();
+            if !apart.is_finite() {
+                continue;
+            }
+            let gap = (apart - holes[i].diameter_mm / 2.0 - holes[j].diameter_mm / 2.0).max(0.0);
+            let at = if apart > LINEAR_TOL {
+                let to_wall = apart - holes[j].diameter_mm / 2.0;
+                [holes[i].x_mm + delta.x / apart * to_wall, holes[i].y_mm + delta.y / apart * to_wall, holes[i].z_mm + delta.z / apart * to_wall]
+            } else {
+                [holes[i].x_mm, holes[i].y_mm, holes[i].z_mm]
+            };
+            if !gap.is_finite() || !at.iter().all(|value| value.is_finite()) {
+                continue;
+            }
+            // `<` keeps the lower-numbered hole on a tie, so the fact is deterministic.
+            if best.is_none_or(|(current, _, _)| gap < current) {
+                best = Some((gap, j, at));
+            }
+        }
+        if let Some((gap, other, at)) = best {
+            holes[i].nearest_hole_wall_mm = Some(gap);
+            holes[i].nearest_hole_wall_at_mm = Some(at);
+            holes[i].nearest_hole_wall_number = Some(holes[other].number);
+        }
+    }
 }
 
 /// A hole candidate before numbering and per-panel measurement.
@@ -790,6 +844,38 @@ mod tests {
         close(left.edge_at_mm.unwrap()[1], 0.0);
         close(right.edge_at_mm.unwrap()[1], 0.0);
         close(right.edge_at_mm.unwrap()[0], 16.0);
+    }
+
+    /// Two Ø3 holes 4 mm apart: the wall between them is reported separately, while `edge_mm`
+    /// keeps the outline distance that `sm.hole_to_edge` must use.
+    #[test]
+    fn nearest_other_hole_wall_is_separate_from_the_cut_edge() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        // Centres 4 mm apart, both Ø3, vertical 1 mm of material between the walls.
+        cut_round(&mut sheet, 10.0, 10.0, 1.5);
+        cut_round(&mut sheet, 14.0, 10.0, 1.5);
+
+        let measured = facts(&sheet).unwrap();
+        assert_eq!(measured.holes.len(), 2);
+        let left = &measured.holes[0];
+        let right = &measured.holes[1];
+        // y = 0 is 10 - 1.5 = 8.5 away for both; the other wall is not the cut edge.
+        close(left.edge_mm.unwrap(), 8.5);
+        close(right.edge_mm.unwrap(), 8.5);
+        assert_eq!(left.edge_kind, Some(EdgeKind::Outline));
+        assert_eq!(right.edge_kind, Some(EdgeKind::Outline));
+        assert_eq!(left.edge_hole, None);
+        assert_eq!(right.edge_hole, None);
+
+        close(left.nearest_hole_wall_mm.unwrap(), 1.0);
+        close(right.nearest_hole_wall_mm.unwrap(), 1.0);
+        assert_eq!(left.nearest_hole_wall_number, Some(2));
+        assert_eq!(right.nearest_hole_wall_number, Some(1));
+        // The nearest point is on the other hole's wall, at mid-depth.
+        let at = left.nearest_hole_wall_at_mm.unwrap();
+        close(at[0], 12.5);
+        close(at[1], 10.0);
+        close(at[2], 0.75);
     }
 
     /// A 90° flange on the y = 25 edge: one hole on the base, one on the flange panel. The bend

@@ -166,10 +166,14 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use solidcore_record::{Loop2, Plane, Region2, Vec2, Vec3};
-    use solidcraft_dfm_rules::{Confirmation, Layer, Limit, Requirement};
+    use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
+    use solidcraft_dfm_rules::second_gate::{
+        compare, GeometryMismatch, GeometryTolerance, HoleWallFact, MeasuredHole, MeasuredSheet, COMPARISON_QUANTUM_MM,
+    };
+    use solidcraft_dfm_rules::{Confirmation, EdgeKind as RuleEdgeKind, Facts as RuleFacts, Layer, Limit, Requirement};
     use solidcraft_doc::sheet::{AngleDisplay, ReliefShape, SheetBody, SheetFlange};
     use solidcraft_geom::PlaneGeom;
+    use std::f64::consts::{FRAC_PI_2, PI};
 
     fn plate_with_hole(diameter: f64) -> SheetBody {
         SheetBody {
@@ -197,6 +201,240 @@ mod tests {
             base_curves: Vec::new(),
             altered_by: None,
         }
+    }
+
+    fn empty_sheet(base: Region2) -> SheetBody {
+        SheetBody {
+            body: "Plate".into(),
+            rule: "Steel (mm)".into(),
+            t: 1.5,
+            k: 0.44,
+            frame: Plane::new(Vec3::ZERO, Vec3::X, Vec3::Y).expect("XY plane"),
+            base,
+            flanges: Vec::<SheetFlange>::new(),
+            holes: Vec::new(),
+            pockets: Vec::new(),
+            bores: Vec::new(),
+            perforations: Vec::new(),
+            labels: Vec::new(),
+            flat: false,
+            gap: 0.0,
+            relief: ReliefShape::Notch,
+            relief_size: 0.0,
+            bend_relief: (0.0, 0.0),
+            angle_display: AngleDisplay::Bend,
+            base_curves: Vec::new(),
+            altered_by: None,
+        }
+    }
+
+    fn circle(x: f64, y: f64, radius: f64) -> Region2 {
+        Region2 { outer: Loop2::circle(Vec2::new(x, y), radius), holes: Vec::new() }
+    }
+
+    fn plate_with_holes(width: f64, height: f64, holes: &[(f64, f64, f64)]) -> SheetBody {
+        let mut sheet = empty_sheet(Region2 {
+            outer: Loop2::polygon(&[
+                Vec2::new(0.0, 0.0),
+                Vec2::new(width, 0.0),
+                Vec2::new(width, height),
+                Vec2::new(0.0, height),
+            ]),
+            holes: Vec::new(),
+        });
+        sheet.holes = holes.iter().map(|(x, y, radius)| circle(*x, *y, *radius)).collect();
+        sheet
+    }
+
+    fn flange(parent: Option<usize>, p: Vec2, d: Vec2, n: Vec2, len: f64, radius: f64, leg: f64) -> SheetFlange {
+        SheetFlange {
+            parent,
+            p,
+            d,
+            len,
+            n,
+            angle: FRAC_PI_2,
+            radius,
+            leg,
+            ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
+            tear: (false, false),
+            shape: None,
+            exact: None,
+            zone_shape: None,
+            tag: String::new(),
+        }
+    }
+
+    /// The recorded `hole_to_bend.below` part: an L whose long leg is the base, with the bend at
+    /// x = 4.5 and the hole 2.5 mm from its tangent. The base polygon starts at the far top edge
+    /// so the tie between y = 0 and y = 25 resolves to the recorded y = 25 edge.
+    fn l_bracket_sheet() -> SheetBody {
+        let mut sheet = empty_sheet(Region2 {
+            outer: Loop2::polygon(&[
+                Vec2::new(44.5, 25.0),
+                Vec2::new(4.5, 25.0),
+                Vec2::new(4.5, 0.0),
+                Vec2::new(44.5, 0.0),
+            ]),
+            holes: Vec::new(),
+        });
+        sheet.flanges.push(flange(None, Vec2::new(4.5, 0.0), Vec2::Y, Vec2::new(-1.0, 0.0), 25.0, 3.0, 30.0));
+        sheet.holes.push(circle(8.5, 12.5, 1.5));
+        sheet
+    }
+
+    /// The recorded `hole_to_bend.u_holes` part: base 30 x 25, one leg hole and one base hole.
+    /// `reversed` lists the right flange first so the measured bend numbering differs from the
+    /// recording and the gate must map by position.
+    fn u_holes_sheet(reversed: bool) -> SheetBody {
+        let mut sheet = empty_sheet(Region2 {
+            outer: Loop2::polygon(&[
+                Vec2::new(30.0, 25.0),
+                Vec2::new(0.0, 25.0),
+                Vec2::new(0.0, 0.0),
+                Vec2::new(30.0, 0.0),
+            ]),
+            holes: Vec::new(),
+        });
+        let left = flange(None, Vec2::new(0.0, 0.0), Vec2::Y, Vec2::new(-1.0, 0.0), 25.0, 3.0, 20.0);
+        let right = flange(None, Vec2::new(30.0, 0.0), Vec2::Y, Vec2::X, 25.0, 3.0, 20.0);
+        let left_index = if reversed {
+            sheet.flanges.push(right);
+            sheet.flanges.push(left);
+            1
+        } else {
+            sheet.flanges.push(left);
+            sheet.flanges.push(right);
+            0
+        };
+        // The recorded leg hole is 10.5 mm up from the near tangent; the flat panel starts at the
+        // bend allowance.
+        let allowance = sheet.allowance(&sheet.flanges[left_index]);
+        sheet.holes.push(circle(-allowance - 10.5, 12.5, 1.5));
+        sheet.holes.push(circle(8.0, 12.5, 1.5));
+        sheet
+    }
+
+    /// The recorded `hole_to_edge.opening` part: a round hole 2 mm from a slot's end cap.
+    fn slot_sheet() -> SheetBody {
+        let mut sheet = plate_with_holes(40.0, 25.0, &[(28.5, 12.5, 1.5)]);
+        let slot = Loop2 {
+            segs: vec![
+                Seg2::Line { a: Vec2::new(17.0, 10.5), b: Vec2::new(23.0, 10.5) },
+                Seg2::Arc { center: Vec2::new(23.0, 12.5), radius: 2.0, start: -FRAC_PI_2, sweep: PI },
+                Seg2::Line { a: Vec2::new(23.0, 14.5), b: Vec2::new(17.0, 14.5) },
+                Seg2::Arc { center: Vec2::new(17.0, 12.5), radius: 2.0, start: FRAC_PI_2, sweep: PI },
+            ],
+        };
+        sheet.holes.push(Region2 { outer: slot, holes: Vec::new() });
+        sheet
+    }
+
+    fn panel_normal(sheet: &SheetBody, panel: Option<usize>) -> [f64; 3] {
+        // `Mat` is column-major: column 2 is the image of the sheet's normal.
+        let world = sheet.world(panel);
+        [world[2][0], world[2][1], world[2][2]]
+    }
+
+    fn measured_sheet(sheet: &SheetBody, facts: &sheet_dfm::SheetFacts) -> MeasuredSheet {
+        let rules = rule_facts(facts);
+        let holes = facts
+            .holes
+            .iter()
+            .map(|hole| MeasuredHole {
+                wall: hole.nearest_hole_wall_number.map(|number| HoleWallFact {
+                    number,
+                    gap_mm: hole.nearest_hole_wall_mm.unwrap_or(0.0),
+                    at_mm: hole.nearest_hole_wall_at_mm.unwrap_or([0.0, 0.0, 0.0]),
+                }),
+                normal: hole.flat_assigned.then(|| panel_normal(sheet, hole.flat)),
+            })
+            .collect();
+        MeasuredSheet { facts: rules, holes }
+    }
+
+    fn recording(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).expect("recorded case")
+    }
+
+    fn tolerance(recording: &serde_json::Value) -> GeometryTolerance {
+        let contract = &recording["comparison"];
+        assert_eq!(contract["pairing"]["method"], "exact_complete_matching");
+        assert_eq!(contract["pairing"]["ambiguity"], "more_than_one_complete_matching");
+        assert_eq!(contract["comparison_quantum_mm"].as_f64(), Some(COMPARISON_QUANTUM_MM));
+        assert_eq!(contract["pairing"]["max_centre_distance_mm"].as_f64(), Some(0.05));
+        assert_eq!(contract["measurement_abs_tolerance_mm"].as_f64(), Some(0.001));
+        GeometryTolerance {
+            pairing_mm: contract["pairing"]["max_centre_distance_mm"].as_f64().expect("pairing"),
+            measurement_mm: contract["measurement_abs_tolerance_mm"].as_f64().expect("measurement"),
+        }
+    }
+
+    fn recorded_facts(recording: &serde_json::Value) -> RuleFacts {
+        serde_json::from_value(recording["facts"].clone()).expect("recorded facts")
+    }
+
+    fn rotate(angle: f64, point: Vec3) -> Vec3 {
+        let (sin, cos) = angle.sin_cos();
+        Vec3::new(cos * point.x - sin * point.y, sin * point.x + cos * point.y, point.z)
+    }
+
+    /// Transform the whole native sheet body by a rotation about Z and a translation.
+    fn transform_sheet(mut sheet: SheetBody, angle: f64, translation: Vec3) -> SheetBody {
+        let origin = rotate(angle, sheet.frame.origin) + translation;
+        let x = rotate(angle, sheet.frame.x);
+        let y = rotate(angle, sheet.frame.y);
+        sheet.frame = Plane::new(origin, x, y).expect("rotated plane");
+        sheet
+    }
+
+    fn inverse_point(point: [f64; 3], angle: f64, translation: Vec3) -> [f64; 3] {
+        let moved = rotate(-angle, Vec3::new(point[0] - translation.x, point[1] - translation.y, point[2] - translation.z));
+        [moved.x, moved.y, moved.z]
+    }
+
+    fn inverse_vector(vector: [f64; 3], angle: f64) -> [f64; 3] {
+        let moved = rotate(-angle, Vec3::new(vector[0], vector[1], vector[2]));
+        [moved.x, moved.y, moved.z]
+    }
+
+    /// Return measured facts to the recorded folded frame (the inverse of `transform_sheet`).
+    fn inverse_transform(measured: &mut MeasuredSheet, angle: f64, translation: Vec3) {
+        for hole in measured.facts.holes.iter_mut().flatten() {
+            let point = inverse_point([hole.x_mm, hole.y_mm, hole.z_mm], angle, translation);
+            hole.x_mm = point[0];
+            hole.y_mm = point[1];
+            hole.z_mm = point[2];
+            if let Some(at) = &mut hole.edge_at_mm {
+                let moved = inverse_point([at[0], at[1], at[2]], angle, translation);
+                at.copy_from_slice(&moved);
+            }
+        }
+        for bend in measured.facts.recognition.iter_mut().flat_map(|recognition| recognition.bends.iter_mut()) {
+            let point = inverse_point([bend.x_mm, bend.y_mm, bend.z_mm], angle, translation);
+            bend.x_mm = point[0];
+            bend.y_mm = point[1];
+            bend.z_mm = point[2];
+        }
+        for hole in &mut measured.holes {
+            if let Some(wall) = &mut hole.wall {
+                wall.at_mm = inverse_point(wall.at_mm, angle, translation);
+            }
+            if let Some(normal) = &mut hole.normal {
+                *normal = inverse_vector(*normal, angle);
+            }
+        }
+    }
+
+    fn u_holes_case() -> (RuleFacts, MeasuredSheet, GeometryTolerance) {
+        let recording = recording(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_to_bend.u_holes.json"));
+        let recorded = recorded_facts(&recording);
+        let tolerance = tolerance(&recording);
+        let sheet = u_holes_sheet(true);
+        let facts = sheet_dfm::facts(&sheet).expect("measured facts");
+        let measured = measured_sheet(&sheet, &facts);
+        (recorded, measured, tolerance)
     }
 
     fn requirement(rule: &str, value: f64, confirmation: Option<Confirmation>) -> Requirement {
@@ -289,43 +527,178 @@ mod tests {
 
     #[test]
     fn the_second_gate_compares_app_facts_with_the_recorded_facts() {
-        let recording: serde_json::Value =
-            serde_json::from_str(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_min_diameter.below.json")).expect("recorded case");
-        let recorded: solidcraft_dfm_rules::Facts = serde_json::from_value(recording["facts"].clone()).expect("recorded facts");
+        let recording = recording(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_min_diameter.below.json"));
+        let recorded = recorded_facts(&recording);
+        let tolerance = tolerance(&recording);
         let sheet = plate_with_hole(0.5);
-        let measured = rule_facts(&sheet_dfm::facts(&sheet).expect("measured facts"));
-        // The tolerance is the one the recording's contract pins, not a test-local default.
-        let contract = &recording["comparison"];
-        let tolerance = solidcraft_dfm_rules::second_gate::GeometryTolerance {
-            pairing_mm: contract["pairing"]["max_centre_distance_mm"].as_f64().expect("pairing"),
-            ambiguous_mm: contract["pairing"]["ambiguous_within_mm"].as_f64().expect("ambiguous"),
-            measurement_mm: contract["measurement_abs_tolerance_mm"].as_f64().expect("measurement"),
-        };
-        assert_eq!(tolerance.pairing_mm, 0.05);
-        assert_eq!(tolerance.ambiguous_mm, 0.001);
-        assert_eq!(tolerance.measurement_mm, 0.001);
-        let report = solidcraft_dfm_rules::second_gate::compare(&recorded, &measured, tolerance).expect("the same hole");
+        let facts = sheet_dfm::facts(&sheet).expect("measured facts");
+        let measured = measured_sheet(&sheet, &facts);
+        let report = compare(&recorded, &measured, tolerance).expect("the same hole");
         assert_eq!(report.pairs, 1);
+        assert_eq!(report.edge_distances_compared, 1);
+        assert_eq!(report.edge_points_compared, 1);
+        assert!(report.bend_not_applicable);
         assert!(report.max_diameter_delta_mm <= tolerance.measurement_mm);
 
         let mut changed = measured.clone();
-        if let Some(holes) = &mut changed.holes {
+        if let Some(holes) = &mut changed.facts.holes {
             holes[0].diameter_mm += 0.01;
         }
-        let mismatch = solidcraft_dfm_rules::second_gate::compare(&recorded, &changed, tolerance).expect_err("a diameter difference must fail");
-        assert!(matches!(mismatch, solidcraft_dfm_rules::second_gate::GeometryMismatch::Diameter { .. }), "{mismatch}");
+        let mismatch = compare(&recorded, &changed, tolerance).expect_err("a diameter difference must fail");
+        assert!(matches!(mismatch, GeometryMismatch::Diameter { .. }), "{mismatch}");
 
         let mut moved = measured.clone();
-        if let Some(holes) = &mut moved.holes {
+        if let Some(holes) = &mut moved.facts.holes {
             holes[0].x_mm += 0.02;
         }
-        let mismatch = solidcraft_dfm_rules::second_gate::compare(&recorded, &moved, tolerance).expect_err("a moved hole must fail");
-        assert!(matches!(mismatch, solidcraft_dfm_rules::second_gate::GeometryMismatch::Position { .. }), "{mismatch}");
+        let mismatch = compare(&recorded, &moved, tolerance).expect_err("a moved hole must fail");
+        assert!(matches!(mismatch, GeometryMismatch::Position { .. }), "{mismatch}");
 
         let mut missing = measured;
-        missing.holes = Some(Vec::new());
-        let mismatch = solidcraft_dfm_rules::second_gate::compare(&recorded, &missing, tolerance).expect_err("a lost hole must fail");
-        assert!(matches!(mismatch, solidcraft_dfm_rules::second_gate::GeometryMismatch::HoleCount { .. }), "{mismatch}");
+        missing.facts.holes = Some(Vec::new());
+        let mismatch = compare(&recorded, &missing, tolerance).expect_err("a lost hole must fail");
+        assert!(matches!(mismatch, GeometryMismatch::HoleCount { .. }), "{mismatch}");
+    }
+
+    #[test]
+    fn the_second_gate_compares_a_multi_hole_plate() {
+        let recording = recording(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_to_edge.plate_holes.json"));
+        let recorded = recorded_facts(&recording);
+        let tolerance = tolerance(&recording);
+        let sheet = plate_with_holes(40.0, 25.0, &[(3.0, 12.5, 1.5), (20.0, 12.5, 0.25), (32.0, 12.5, 2.0)]);
+        let facts = sheet_dfm::facts(&sheet).expect("measured facts");
+        let measured = measured_sheet(&sheet, &facts);
+        let report = compare(&recorded, &measured, tolerance).expect("three holes");
+        assert_eq!(report.pairs, 3);
+        assert_eq!(report.edge_distances_compared, 3);
+        assert_eq!(report.edge_points_compared, 3);
+        assert!(report.max_position_delta_mm <= tolerance.measurement_mm);
+    }
+
+    #[test]
+    fn the_second_gate_compares_the_l_bracket_hole_bend_and_edge() {
+        let recording = recording(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_to_bend.below.json"));
+        let recorded = recorded_facts(&recording);
+        let tolerance = tolerance(&recording);
+        let sheet = l_bracket_sheet();
+        let facts = sheet_dfm::facts(&sheet).expect("measured facts");
+        let measured = measured_sheet(&sheet, &facts);
+        let report = compare(&recorded, &measured, tolerance).expect("the L bracket");
+        assert_eq!(report.pairs, 1);
+        assert_eq!(report.bend_pairs, vec![(1, 1)]);
+        assert_eq!(report.bend_gaps_compared, 1);
+        assert_eq!(report.edge_distances_compared, 1);
+        assert_eq!(report.edge_points_compared, 1);
+        assert!(!report.bend_not_applicable);
+    }
+
+    #[test]
+    fn the_second_gate_compares_flange_holes_and_maps_bend_numbers() {
+        let (recorded, measured, tolerance) = u_holes_case();
+        let report = compare(&recorded, &measured, tolerance).expect("the U channel");
+        assert_eq!(report.pairs, 2);
+        assert_eq!(report.bend_pairs, vec![(1, 1), (2, 2)]);
+        assert_eq!(report.bend_gaps_compared, 3);
+        assert_eq!(report.edge_distances_compared, 2);
+        assert_eq!(report.edge_points_compared, 2);
+        assert!(report.max_bend_gap_delta_mm <= tolerance.measurement_mm);
+    }
+
+    #[test]
+    fn the_second_gate_compares_an_opening_edge_kind() {
+        let recording = recording(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_to_edge.opening.json"));
+        let recorded = recorded_facts(&recording);
+        let tolerance = tolerance(&recording);
+        let sheet = slot_sheet();
+        let facts = sheet_dfm::facts(&sheet).expect("measured facts");
+        assert_eq!(facts.holes[0].edge_kind, Some(sheet_dfm::EdgeKind::Opening));
+        let measured = measured_sheet(&sheet, &facts);
+        let report = compare(&recorded, &measured, tolerance).expect("the opening");
+        assert_eq!(report.pairs, 1);
+        assert_eq!(report.edge_distances_compared, 1);
+        assert_eq!(report.edge_points_compared, 1);
+    }
+
+    #[test]
+    fn the_second_gate_compares_in_the_recorded_frame_after_a_whole_model_transform() {
+        let (recorded, measured, tolerance) = u_holes_case();
+        let before = compare(&recorded, &measured, tolerance).expect("untransformed");
+        let angle = 0.523_598_775_598_298_8;
+        let translation = Vec3::new(5.0, -3.0, 2.0);
+        let moved = transform_sheet(u_holes_sheet(true), angle, translation);
+        let moved_facts = sheet_dfm::facts(&moved).expect("transformed facts");
+        let mut moved_measured = measured_sheet(&moved, &moved_facts);
+        // Compare in the recorded folded frame: inverse-transform the measured facts, including
+        // the edge points and panel normals, then run the same gate.
+        inverse_transform(&mut moved_measured, angle, translation);
+        let after = compare(&recorded, &moved_measured, tolerance).expect("transformed");
+        assert_eq!(after.pairs, before.pairs);
+        assert_eq!(after.bend_pairs, before.bend_pairs);
+        assert!((after.max_position_delta_mm - before.max_position_delta_mm).abs() < 1e-9);
+        assert!((after.max_edge_point_delta_mm - before.max_edge_point_delta_mm).abs() < 1e-9);
+        assert!((after.max_bend_gap_delta_mm - before.max_bend_gap_delta_mm).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_second_gate_catches_a_wrong_edge_distance() {
+        let (mut recorded, measured, tolerance) = u_holes_case();
+        let leg = recorded.holes.as_ref().expect("holes").iter().position(|hole| hole.x_mm < 0.0).expect("leg hole");
+        recorded.holes.as_mut().expect("holes")[leg].edge_mm = Some(8.01);
+        let mismatch = compare(&recorded, &measured, tolerance).expect_err("edge distance");
+        assert!(matches!(mismatch, GeometryMismatch::EdgeDistance { .. }), "{mismatch}");
+    }
+
+    #[test]
+    fn the_second_gate_catches_a_wrong_edge_kind() {
+        let (mut recorded, measured, tolerance) = u_holes_case();
+        let leg = recorded.holes.as_ref().expect("holes").iter().position(|hole| hole.x_mm < 0.0).expect("leg hole");
+        recorded.holes.as_mut().expect("holes")[leg].edge_kind = Some(RuleEdgeKind::Opening);
+        let mismatch = compare(&recorded, &measured, tolerance).expect_err("edge kind");
+        assert!(matches!(mismatch, GeometryMismatch::EdgeKindMismatch { .. }), "{mismatch}");
+    }
+
+    #[test]
+    fn the_second_gate_catches_a_wrong_edge_owner() {
+        let (mut recorded, measured, tolerance) = u_holes_case();
+        let leg = recorded.holes.as_ref().expect("holes").iter().position(|hole| hole.x_mm < 0.0).expect("leg hole");
+        // The base hole is recorded hole 2; the App's leg hole has no wall to it, so this is an
+        // ownership failure, not a pass.
+        recorded.holes.as_mut().expect("holes")[leg].edge_hole = Some(2);
+        let mismatch = compare(&recorded, &measured, tolerance).expect_err("edge owner");
+        assert!(
+            matches!(mismatch, GeometryMismatch::EdgeOwnership { .. } | GeometryMismatch::MeasuredEdgeWallUnavailable { .. }),
+            "{mismatch}"
+        );
+    }
+
+    #[test]
+    fn the_second_gate_catches_a_wrong_bend_gap() {
+        let (recorded, mut measured, tolerance) = u_holes_case();
+        let base = measured.facts.holes.as_ref().expect("holes").iter().position(|hole| hole.x_mm > 0.0).expect("base hole");
+        measured.facts.holes.as_mut().expect("holes")[base].bend_gaps[0].gap_mm += 0.01;
+        let mismatch = compare(&recorded, &measured, tolerance).expect_err("bend gap");
+        assert!(matches!(mismatch, GeometryMismatch::BendGap { .. }), "{mismatch}");
+    }
+
+    #[test]
+    fn the_second_gate_catches_a_wrong_bend_radius() {
+        let (mut recorded, measured, tolerance) = u_holes_case();
+        recorded.recognition.as_mut().expect("recognition").bends[0].inside_radius_mm += 0.01;
+        let mismatch = compare(&recorded, &measured, tolerance).expect_err("bend radius");
+        assert!(matches!(mismatch, GeometryMismatch::BendRadius { .. }), "{mismatch}");
+    }
+
+    #[test]
+    fn the_second_gate_catches_a_wrong_bend_association() {
+        let (recorded, mut measured, tolerance) = u_holes_case();
+        let leg = measured.facts.holes.as_ref().expect("holes").iter().position(|hole| hole.x_mm < 0.0).expect("leg hole");
+        // The recorded leg hole's gap is on the left bend; point the measured gap at the right one.
+        measured.facts.holes.as_mut().expect("holes")[leg].bend_gaps[0].bend = 1;
+        let mismatch = compare(&recorded, &measured, tolerance).expect_err("bend association");
+        assert!(
+            matches!(mismatch, GeometryMismatch::BendGapMissing { .. } | GeometryMismatch::BendGapExtra { .. }),
+            "{mismatch}"
+        );
     }
 
     #[test]

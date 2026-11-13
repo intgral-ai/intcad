@@ -19,7 +19,9 @@ for name in ["hole_min_diameter.above", "hole_min_diameter.below",
              "hole_min_diameter.boundary", "hole_min_diameter.factory.below",
              "hole_to_edge.below", "hole_to_bend.below",
              "hole_to_bend.not_applicable", "missing_thickness",
-             "holes_step_failed", "shop_not_applicable"]:
+             "holes_step_failed", "shop_not_applicable",
+             "hole_to_edge.plate_holes", "hole_to_edge.opening",
+             "hole_to_bend.u_holes"]:
     data = json.loads((src / f"{name}.json").read_text())
     declared = data["input"]["declared"]
     findings = [
@@ -38,6 +40,7 @@ for name in ["hole_min_diameter.above", "hole_min_diameter.below",
         "case": {
             "id": name,
             "kind": data["case"]["kind"],
+            "rule": data["case"]["rule"],
             "description": data["case"]["description"],
             "part": data["case"]["part"],
         },
