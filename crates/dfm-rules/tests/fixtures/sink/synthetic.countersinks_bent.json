@@ -1,0 +1,683 @@
+{
+  "case": {
+    "description": "TEST-ONLY: a countersink near a bend, and one with no flat to measure.",
+    "flat": false,
+    "group": "countersinks",
+    "id": "synthetic.countersinks_bent",
+    "report_checked": null,
+    "test_only": true
+  },
+  "expected": {
+    "findings": [
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 1.0
+        },
+        "message": "These countersinks are clear of the public value, so nothing is known about them: only a shop's own number can say a countersink is fine.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for a countersink's depth."
+        ],
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "requirement": {
+          "layer": "generic",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At most 1.05 mm. TEST-ONLY: the quantity this rule measures.",
+          "value": {
+            "unit": "mm",
+            "value": 1.0499999999999998
+          }
+        },
+        "rules": [
+          "sm.countersink_depth"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "COUNTERSINK_EDGE_BELOW_LIMIT",
+        "feature": {
+          "description": "countersink, 4 mm across",
+          "kind": "countersink"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": {
+            "x": 8.5,
+            "y": 12.5,
+            "z": 0.75
+          },
+          "text": "the countersink of hole 1, at x 8.5, y 12.5, z 0.75"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 3.0
+        },
+        "message": "The countersink of hole 1: its rim's distance to a cut edge, on this flat's outline, is 3 mm, below a public value of 4 mm. A person decides.",
+        "mode": "warn",
+        "needs": [
+          "The shop's own number for a countersink's distance to a cut edge."
+        ],
+        "reason_code": null,
+        "requirement": {
+          "layer": "generic",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 4 mm. TEST-ONLY: the quantity this rule measures.",
+          "value": {
+            "unit": "mm",
+            "value": 4.0
+          }
+        },
+        "rules": [
+          "sm.countersink_to_edge"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 10.0
+        },
+        "message": "These countersinks are clear of the public value, so nothing is known about them: only a shop's own number can say a countersink is fine.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for a countersink's distance to a cut edge."
+        ],
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "requirement": {
+          "layer": "generic",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 5 mm. TEST-ONLY: the quantity this rule measures.",
+          "value": {
+            "unit": "mm",
+            "value": 5.0
+          }
+        },
+        "rules": [
+          "sm.countersink_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "COUNTERSINK_LAND_BELOW_LIMIT",
+        "feature": {
+          "description": "countersink, 4 mm across",
+          "kind": "countersink"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": {
+            "x": 8.5,
+            "y": 12.5,
+            "z": 0.75
+          },
+          "text": "the countersink of hole 1, at x 8.5, y 12.5, z 0.75"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 0.2
+        },
+        "message": "The countersink of hole 1: its land is 0.2 mm, below a public value of 0.5 mm. A person decides.",
+        "mode": "warn",
+        "needs": [
+          "The shop's own number for a countersink's land."
+        ],
+        "reason_code": null,
+        "requirement": {
+          "layer": "generic",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 0.5 mm. TEST-ONLY: the quantity this rule measures.",
+          "value": {
+            "unit": "mm",
+            "value": 0.5
+          }
+        },
+        "rules": [
+          "sm.countersink_land"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": "COUNTERSINK_LAND_BELOW_LIMIT",
+        "feature": {
+          "description": "countersink, 2 mm across",
+          "kind": "countersink"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": {
+            "x": 30.0,
+            "y": 12.5,
+            "z": 0.75
+          },
+          "text": "the countersink of hole 2, at x 30, y 12.5, z 0.75"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 0.2
+        },
+        "message": "The countersink of hole 2: its land is 0.2 mm, below a public value of 0.5 mm. A person decides.",
+        "mode": "warn",
+        "needs": [
+          "The shop's own number for a countersink's land."
+        ],
+        "reason_code": null,
+        "requirement": {
+          "layer": "generic",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 0.5 mm. TEST-ONLY: the quantity this rule measures.",
+          "value": {
+            "unit": "mm",
+            "value": 0.5
+          }
+        },
+        "rules": [
+          "sm.countersink_land"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": {
+          "unit": "deg",
+          "value": 90.0
+        },
+        "message": "These countersinks are clear of the public value, so nothing is known about them: only a shop's own number can say a countersink is fine.",
+        "mode": null,
+        "needs": [
+          "The countersink angles the shop holds."
+        ],
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "requirement": {
+          "layer": "generic",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "Within 1 degree of an angle held: 82, 90, 100 or 120 degrees. TEST-ONLY: the quantity this rule measures.",
+          "value": {
+            "unit": "deg",
+            "value": 1
+          }
+        },
+        "rules": [
+          "sm.countersink_angle"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": "COUNTERSINK_BEND_BELOW_LIMIT",
+        "feature": {
+          "description": "countersink, 4 mm across",
+          "kind": "countersink"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": {
+            "x": 8.5,
+            "y": 12.5,
+            "z": 0.75
+          },
+          "text": "the countersink of hole 1, at x 8.5, y 12.5, z 0.75"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 2.0
+        },
+        "message": "The countersink of hole 1: its rim's distance to bend 1 is 2 mm, below a public value of 2.5 mm. A person decides.",
+        "mode": "warn",
+        "needs": [
+          "The shop's own number for a countersink's distance to a bend."
+        ],
+        "reason_code": null,
+        "requirement": {
+          "layer": "generic",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 2.5 mm. TEST-ONLY: the quantity this rule measures.",
+          "value": {
+            "unit": "mm",
+            "value": 2.5
+          }
+        },
+        "rules": [
+          "sm.countersink_to_bend"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "A hole here isn't on a flat that ends at a bend, so its distance to a bend wasn't measured.",
+        "mode": null,
+        "needs": [
+          "A person to look at those faces, because this version can't check them."
+        ],
+        "reason_code": "HOLES_UNRECOGNISED",
+        "requirement": null,
+        "rules": [
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_verified"
+      }
+    ]
+  },
+  "input": {
+    "bends_gate": {
+      "error_code": null,
+      "measured": {
+        "unit": "bends",
+        "value": 1.0
+      },
+      "message": "1 bend found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+      "needs": [],
+      "reason_code": null,
+      "rules": [
+        "sm.gate_bends_found"
+      ],
+      "status": "pass"
+    },
+    "critical": [],
+    "declared": {
+      "material": "5052-H32",
+      "process": "press brake",
+      "thicknessFrom": null,
+      "thicknessMm": 1.5
+    },
+    "facts": {
+      "analyzer_valid": true,
+      "area_mm2": 4097.195769950506,
+      "bop_valid": true,
+      "faces": 11,
+      "holes": [
+        {
+          "bend_gaps": [
+            {
+              "bend": 1,
+              "gap_mm": 2.5,
+              "inside_radius_mm": 3.0
+            }
+          ],
+          "countersink": {
+            "angle_deg": 90.0,
+            "bend_gaps": [
+              {
+                "bend": 1,
+                "gap_mm": 2.0,
+                "inside_radius_mm": 3.0
+              }
+            ],
+            "depth_mm": 1.0,
+            "edge_at_mm": [
+              5.5,
+              12.5,
+              0.75
+            ],
+            "edge_hole": null,
+            "edge_kind": "outline",
+            "edge_mm": 3.0,
+            "edge_rim": false,
+            "land_mm": 0.2,
+            "major_diameter_mm": 4.0,
+            "x_mm": 8.5,
+            "y_mm": 12.5,
+            "z_mm": 0.75
+          },
+          "depth_mm": 1.5,
+          "diameter_mm": 3.0,
+          "edge_at_mm": [
+            8.5,
+            25.0,
+            1.5
+          ],
+          "edge_hole": null,
+          "edge_kind": "outline",
+          "edge_mm": 11.0,
+          "flat": 1,
+          "square": true,
+          "x_mm": 8.5,
+          "y_mm": 12.5,
+          "z_mm": 0.75
+        },
+        {
+          "bend_gaps": [],
+          "countersink": {
+            "angle_deg": 90.0,
+            "bend_gaps": [],
+            "depth_mm": 1.0,
+            "edge_at_mm": null,
+            "edge_hole": null,
+            "edge_kind": "outline",
+            "edge_mm": 10.0,
+            "edge_rim": false,
+            "land_mm": 0.2,
+            "major_diameter_mm": 2.0,
+            "x_mm": 30.0,
+            "y_mm": 12.5,
+            "z_mm": 0.75
+          },
+          "depth_mm": 1.5,
+          "diameter_mm": 3.0,
+          "edge_at_mm": null,
+          "edge_hole": null,
+          "edge_kind": "outline",
+          "edge_mm": 10.0,
+          "flat": 1,
+          "square": true,
+          "x_mm": 30.0,
+          "y_mm": 12.5,
+          "z_mm": 0.75
+        }
+      ],
+      "other_openings": 0,
+      "paired_mm": 1.5,
+      "paired_rays": 223,
+      "plate_gap_mm": null,
+      "rays_failed": false,
+      "recognition": {
+        "bends": [
+          {
+            "angle_deg": 90.0,
+            "flats": [
+              1,
+              7
+            ],
+            "inside_radius_mm": 3.0,
+            "length_mm": 25.0,
+            "reliefs": [],
+            "x_mm": 1.3180194846605358,
+            "y_mm": 12.5,
+            "z_mm": 1.3180194846605358
+          }
+        ],
+        "cone_faces": 0,
+        "cones": 0,
+        "countersinks": 0,
+        "form_faces": 0,
+        "forms": 0,
+        "hems": 0,
+        "joined": true,
+        "sharp_joins": 0,
+        "unknown_faces": 0
+      },
+      "shells_closed": true,
+      "size_mm": [
+        44.5,
+        25.0,
+        34.5
+      ],
+      "triangle_faces": 0,
+      "unknown_faces": 0,
+      "volume_mm3": 2835.290358249673
+    },
+    "generic": {
+      "format": 1,
+      "layer": "generic",
+      "name": "generic",
+      "requirements": [
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.hole_min_diameter",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "t": 0.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.hole_to_edge",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "t": 1.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "r": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.hole_to_bend",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "r": 1.0,
+            "t": 2.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "max",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_depth",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "t": 0.7
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "d": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_to_edge",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "d": -0.5,
+            "t": 4
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "d": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_to_bend",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "d": -0.5,
+            "t": 3
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.hole_spacing",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "t": 2
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {},
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_land",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "mm": 0.5
+          }
+        },
+        {
+          "angles_deg": [
+            82,
+            90,
+            100,
+            120
+          ],
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "deg": "deg"
+          },
+          "limit": "max",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_angle",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "deg": 1
+          }
+        }
+      ],
+      "version": "2026-11-13"
+    },
+    "shop": null,
+    "thickness_gate": {
+      "error_code": null,
+      "measured": {
+        "unit": "mm",
+        "value": 1.5
+      },
+      "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+      "needs": [],
+      "reason_code": null,
+      "rules": [
+        "sm.gate_sheet_thickness"
+      ],
+      "status": "pass"
+    }
+  },
+  "source": {
+    "base_recording": "hole_to_bend.below",
+    "core_source_sha256": "9c56620dca68e0649724232218db9c4ddccfb91714e8f3a04b5dc8c1a3139a06",
+    "intdfm_commit": "7ecb3ff39b25816fc1d787c91ac07752fb7bf00f"
+  }
+}

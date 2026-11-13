@@ -40,6 +40,8 @@ solidcraft-geom = { workspace = true }
 solidcraft-sketch = { workspace = true }
 solidcraft-kernel = { workspace = true }
 solidcraft-doc = { workspace = true }
+# pure DFM rules: facts and data in, report out; no OCP and no files
+solidcraft-dfm-rules = { workspace = true }
 solidcraft-io = { workspace = true }
 solidcraft-render = { workspace = true }
 solidcraft-profile = { workspace = true }

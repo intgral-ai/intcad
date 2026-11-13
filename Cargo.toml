@@ -25,6 +25,8 @@ solidcraft-render = { path = "crates/render" }
 solidcraft-dynamics = { path = "crates/dynamics" }
 solidcraft-gpu = { path = "crates/gpu" }
 solidcraft-doc = { path = "crates/doc" }
+# pure DFM rule layer translated from intdfm (App side; local until the fork is private)
+solidcraft-dfm-rules = { path = "crates/dfm-rules" }
 solidcraft-io = { path = "crates/io" }
 solidcraft-engine = { path = "crates/engine" }
 solidcraft-agent-task = { path = "crates/agent-task" }
