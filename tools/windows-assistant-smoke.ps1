@@ -345,6 +345,10 @@ try {
                 # The 3D view, in the part of the window the panel leaves free.
                 $free = if (($v.Left - $w.Left) -ge ($w.Right - $v.Right)) { [int](($w.Left + $v.Left) / 2) } else { [int](($v.Right + $w.Right) / 2) }
                 Click $free ([int](($w.Top + $w.Bottom) / 2))
+                # The app moves the keyboard on the click's own message; give that message a
+                # moment to arrive before asking which window has it (a runner read the page's
+                # window on the next line, 2026-11-13).
+                Start-Sleep -Milliseconds 500
                 $focus = [AssistantWin]::Focus()
                 if ($focus -eq [IntPtr]::Zero) {
                     Write-Host 'unknown: which window has the keyboard after a click on the rest of the window (Windows named none)'
