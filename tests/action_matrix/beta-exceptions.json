@@ -4186,11 +4186,11 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_too_large",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l12@F13.1|F8:top@F13.1#[F11:side:l11@F13.1,F11:side:l12@F13.1,F11:side:l13@F13.1,F11:side:l14@F13.1,F11:side:l15@F13.1,F11:side:l16@F13.1,F6:inner:F4:side:l3@F5.1]",
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error"
     },
     {
       "action": "edge.fillet",
@@ -4210,11 +4210,11 @@
     },
     {
       "action": "edge.fillet",
-      "category": "other",
+      "category": "blend_too_large",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l12|F8:top#[F11:side:l11,F11:side:l12,F11:side:l13,F11:side:l14,F11:side:l15,F11:side:l16,F6:inner:F2:start@F5.1]",
       "issue": "#88",
-      "kind": "timeout"
+      "kind": "error"
     },
     {
       "action": "edge.fillet",
@@ -9605,5 +9605,5 @@
       "kind": "bad_params"
     }
   ],
-  "unbaselinedNote": "itemised reviewed identities from run 43012493350; 9 timeout entries were reclassified from their real errors and 2 new blend_check_refused identities were reviewed in run 43114464720; run 43241626115 reclassified 3 more timeout entries to their real errors and removed 16 loft_join fillets that passed; a new unbaselined failure is rejected, a listed one that passes is reported fixed"
+  "unbaselinedNote": "itemised reviewed identities from run 43012493350; 9 timeout entries were reclassified from their real errors and 2 new blend_check_refused identities were reviewed in run 43114464720; run 43241626115 reclassified 3 more timeout entries and removed 16 loft_join fillets that passed; run 43381698526 (tested merge 13417bb37) reclassified 2 more timeout entries to error/blend_too_large (battery_case_pleats F11:side:l12 variants, 902,971 ms and 1,067,213 ms); a new unbaselined failure is rejected, a listed one that passes is reported fixed"
 }

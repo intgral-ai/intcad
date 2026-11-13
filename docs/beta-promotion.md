@@ -54,16 +54,33 @@ failed Linux/macOS/Windows package.
 The reviewed run also has 1,085 failures already recorded as failing in the
 historical baseline and 956 failures on actions the historical baseline never
 recorded. Neither group is counted as a pass. The 956 reviewed unbaselined identities are itemised by design/entity/action,
-kind and failure class in the same exception file. Twelve reviewed timeout entries
+kind and failure class in the same exception file. Fourteen reviewed timeout entries
 were reclassified to their real errors after the 1800-second action limit let
-them finish (nine in the earlier review, three in run 43241626115), and two new
-`edge.fillet+edit` identities were reviewed from the same run. In run 43241626115,
-16 listed loft-join fillets passed and were removed from the list. A **new**
+them finish (nine in the earlier review, three in run 43241626115, two in run
+43381698526: the two `battery_case_pleats` `F11:side:l12` variants at 902,971 ms
+and 1,067,213 ms, both `error/blend_too_large`), and two new
+`edge.fillet+edit` identities were reviewed from run 43241626115. In run
+43241626115, 16 listed loft-join fillets passed and were removed from the list. A **new**
 unbaselined failure fails the gate; a listed one that starts passing is reported
 as fixed and must be removed in the change. The action count can grow by up to four
 `edge.fillet+edit` actions when more base fillets complete; the gate requires at
 least the stable 54,029 actions and judges the itemised identities. A baseline pass that starts failing is the
 213-item gate condition above.
+
+The property lane keeps its exact #56 exception and one narrow Cylinder/Sphere case.
+The cylinder `at [22.5, 12.5, 2.5], axis X, r 11.25, h 5` and the sphere
+`at [10, 2.5, 0], r 12.5` touch at exactly one point: the sphere's rightmost point
+`(22.5, 2.5, 0)` is inside the cylinder's start cap. A union of solids that meet at a
+single point is not a manifold solid, so SMLib's refusal is correct. It refuses the
+union at 1x, 0.05x and offsets 0 and 1e3 with `SmVertex::Test #1 Bad Vertex Gap`
+(offset 12.5 at 1x, tolerance 2e-05) and `SmFace::Test #12 Face->Vertex`; at 40x and
+offset 1e5 it builds the union, whose volume is the sum of the operands, and intersect
+is empty and cut is the cylinder at every transform. The test accepts only that exact
+relative geometry, operand order, uniform scale and translation; a different sphere,
+cylinder, error, transform or built volume still fails. The deterministic
+`cyl_sphere_refusal_is_the_exact_reviewed_upstream_case` asserts the refusal, the
+transform outcomes, `A+B` volume, and that the inputs are unchanged; if the kernel
+starts behaving differently, that test fails and the exception must be removed.
 
 The Beta gate fails when any of these changes:
 
@@ -97,12 +114,16 @@ continues to require the full `release-gate` without the Beta exceptions.
 ## Beta.3 correction evidence
 
 The Beta.3 gate adds the itemised 956 unbaselined identities and the configurable
-1800-second action timeout. Run `43241626115` at tested merge `196b44b15` produced
+1800-second action timeout. Run `43381698526` at tested merge `13417bb37` produced
 54,033 actions, 2,254 failures, 213 strict exceptions, 956 unbaselined failures,
-and 0 unexcused/changed/fixed actions; three timeout entries were reclassified to
-their real errors and 16 loft-join fillets that passed were removed. The Beta.3
-Windows MSI was verified on a clean `windows-latest` runner (verification run
-`43260751949`): MSI sha `95bb005a…`; administrative extract and isolated
-`INSTALLFOLDER` both `solidcraft-cli 0.1.0-beta.3`; installed app
-`solidcraft 0.1.0-beta.3`. The earlier beta.2/`0.40.0-rc.2` reads were runner
-contamination, not the MSI payload.
+and 0 unexcused/changed/fixed actions after the fourteen reviewed timeout
+reclassifications and the 16 removed loft-join fillets. The final candidate is
+`c1d466d84`; native, archive, determinism, and the six package descriptors all bind
+that tested merge. Verification run `43390930849` passed Linux x86_64, Windows x64
+and macOS universal install/start: Linux tar `03026529…`, Windows MSI `647d45d2…`,
+macOS DMG `1a9aa1a9…`; installed CLI/app report `0.1.0-beta.3`; macOS is universal
+`x86_64 arm64`. The property lane keeps the exact #56 case and the exact
+Cylinder/Sphere case above. The determinism job has 150-minute headroom; the
+load-sensitive process tests use deterministic timing and an ACP fixture with an
+open stdout. The earlier beta.2/`0.40.0-rc.2` reads were runner contamination, not
+the MSI payload.

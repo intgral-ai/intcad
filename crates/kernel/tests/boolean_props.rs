@@ -122,12 +122,50 @@ fn point_tangency(a: &Prim, b: &Prim, error: &str) -> bool {
     (distance - r).abs() <= 1e-9 * r.max(1.0)
 }
 
+/// The one reviewed Cylinder/Sphere arrangement: a cylinder along X whose start cap is touched
+/// at exactly one interior point by a sphere. Returns the uniform scale `k` (the cylinder radius
+/// over 11.25) when the arrangement matches: order independent, translation and scale invariant.
+fn cyl_sphere_case(a: &Prim, b: &Prim) -> Option<f64> {
+    let (cyl_at, cyl_r, cyl_h, sph_at, sph_r) = match (a, b) {
+        (Prim::Cyl { at, axis: 0, r, h }, Prim::Sph { at: c, r: sr }) => (at, *r, *h, c, *sr),
+        (Prim::Sph { at: c, r: sr }, Prim::Cyl { at, axis: 0, r, h }) => (at, *r, *h, c, *sr),
+        _ => return None,
+    };
+    let k = cyl_r / 11.25;
+    if !(k > 0.0 && k.is_finite()) {
+        return None;
+    }
+    let rel = [sph_at[0] - cyl_at[0], sph_at[1] - cyl_at[1], sph_at[2] - cyl_at[2]];
+    let close = |x: f64, y: f64| (x - y).abs() <= 1e-9 * k.max(1.0);
+    (close(rel[0], -12.5 * k) && close(rel[1], -10.0 * k) && close(rel[2], -2.5 * k) && close(cyl_h, 5.0 * k) && close(sph_r, 12.5 * k)).then_some(k)
+}
+
+/// Whether `error` is SMLib's exact refusal for the reviewed Cylinder/Sphere tangency: the
+/// `SmFace` companion and `SmVertex::Test #1 Bad Vertex Gap`, with the reviewed offset (which
+/// scales with the solid) and tolerance. A different case, offset, tolerance or error fails.
+fn cyl_sphere_refusal(a: &Prim, b: &Prim, error: &str) -> bool {
+    let Some(k) = cyl_sphere_case(a, b) else { return false };
+    if !error.contains("SMLib boolean: SMLib's check refuses the result")
+        || !error.contains("SmFace::Test #12 Face->Vertex")
+        || !error.contains("SmVertex::Test #1 Bad Vertex Gap")
+        || !error.contains("tolerance= 2e-05")
+    {
+        return false;
+    }
+    let Some((_, rest)) = error.split_once("offset=") else { return false };
+    let number = rest.split(',').next().unwrap_or(rest);
+    let Ok(offset) = number.trim().parse::<f64>() else { return false };
+    (offset - 12.5 * k).abs() <= 1e-9 * (12.5 * k).max(1.0)
+}
+
 enum Union {
     Volume(f64),
     PointTangency,
+    KnownCylSphereRefusal,
 }
 
-/// The union's volume, or the accepted exact point tangency. Any other refusal fails the case.
+/// The union's volume, or the accepted exact point tangency or the reviewed Cylinder/Sphere
+/// upstream refusal. Any other refusal fails the case.
 fn union(a: &Body, b: &Body, pa: &Prim, pb: &Prim) -> Result<Union, TestCaseError> {
     match boolean(a, b, BoolOp::Union) {
         Ok(None) => Ok(Union::Volume(0.0)),
@@ -137,6 +175,7 @@ fn union(a: &Body, b: &Body, pa: &Prim, pb: &Prim) -> Result<Union, TestCaseErro
             Ok(Union::Volume(measure(&body).map_err(|e| TestCaseError::fail(format!("measure: {e}")))?.volume))
         }
         Err(e) if point_tangency(pa, pb, &e.to_string()) => Ok(Union::PointTangency),
+        Err(e) if cyl_sphere_refusal(pa, pb, &e.to_string()) => Ok(Union::KnownCylSphereRefusal),
         Err(e) => Err(TestCaseError::fail(format!("Union returned an error: {e}"))),
     }
 }
@@ -145,7 +184,10 @@ fn union(a: &Body, b: &Body, pa: &Prim, pb: &Prim) -> Result<Union, TestCaseErro
 fn identity(a: &Prim, b: &Prim) -> Result<(), TestCaseError> {
     let (ba, bb) = (a.body(), b.body());
     let (va, vb) = (vol(&ba), vol(&bb));
-    let (u, vi, vc) = (union(&ba, &bb, a, b)?, run(&ba, &bb, BoolOp::Intersect)?, run(&ba, &bb, BoolOp::Cut)?);
+    let u = union(&ba, &bb, a, b)?;
+    // The reviewed tangency refuses Union only. Intersect and Cut still run, so the exception
+    // covers one operation, not the case.
+    let (vi, vc) = (run(&ba, &bb, BoolOp::Intersect)?, run(&ba, &bb, BoolOp::Cut)?);
     match u {
         Union::Volume(vu) => prop_assert!(
             close(vu + vi, va + vb, va + vb),
@@ -154,6 +196,9 @@ fn identity(a: &Prim, b: &Prim) -> Result<(), TestCaseError> {
             va + vb
         ),
         Union::PointTangency => prop_assert!(close(vi, 0.0, va + vb), "a point tangency must have no intersection volume (got {vi:.6})"),
+        Union::KnownCylSphereRefusal => {
+            prop_assert!(close(vi, 0.0, va + vb), "the reviewed Cylinder/Sphere case touches at a point, but intersect gave {vi:.6}")
+        }
     }
     prop_assert!(close(vc, va - vi, va + vb), "cut {vc:.3} != A-I {:.3}", va - vi);
     Ok(())
@@ -171,19 +216,59 @@ fn scale(a: &Prim, b: &Prim, k: f64) -> Result<(), TestCaseError> {
     let (sa, sb) = (grid_scale(a, k), grid_scale(b, k));
     let (ba, bb, ka, kb) = (a.body(), b.body(), sa.body(), sb.body());
     let s = vol(&ba) + vol(&bb);
-    for op in [BoolOp::Union, BoolOp::Intersect, BoolOp::Cut] {
-        if op == BoolOp::Union {
-            match (union(&ba, &bb, a, b)?, union(&ka, &kb, &sa, &sb)?) {
-                (Union::Volume(one), Union::Volume(big)) => {
-                    prop_assert!(close(one, big / (k * k * k), s), "Union at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
-                }
-                (Union::PointTangency, Union::PointTangency) => {}
-                _ => prop_assert!(false, "Union was refused as a point tangency at one scale only"),
-            }
-        } else {
-            let (one, big) = (run(&ba, &bb, op)?, run(&ka, &kb, op)? / (k * k * k));
-            prop_assert!(close(one, big, s), "{op:?} at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
+    let k3 = k * k * k;
+    match (union(&ba, &bb, a, b)?, union(&ka, &kb, &sa, &sb)?) {
+        (Union::Volume(one), Union::Volume(big)) => {
+            prop_assert!(close(one, big / k3, s), "Union at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
         }
+        (Union::PointTangency, Union::PointTangency) => {}
+        (Union::KnownCylSphereRefusal, Union::KnownCylSphereRefusal) => {}
+        // SMLib builds the reviewed tangency at 40x but refuses it at 1x and 0.05x. Its
+        // intersection is a point, so the accepted union volume is the sum of the operands.
+        (Union::KnownCylSphereRefusal, Union::Volume(big)) => {
+            prop_assert!(close(big / k3, s, s), "the reviewed Cylinder/Sphere union built at scale {k}: {:.4} != A+B {s:.4}", big / k3)
+        }
+        (Union::Volume(one), Union::KnownCylSphereRefusal) => {
+            prop_assert!(close(one, s, s), "the reviewed Cylinder/Sphere union built at scale 1: {one:.4} != A+B {s:.4}")
+        }
+        _ => prop_assert!(false, "Union was refused as a point tangency at one scale only"),
+    }
+    for op in [BoolOp::Intersect, BoolOp::Cut] {
+        let (one, big) = (run(&ba, &bb, op)?, run(&ka, &kb, op)? / k3);
+        prop_assert!(close(one, big, s), "{op:?} at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
+    }
+    Ok(())
+}
+
+/// Moving both operands by `off` must not change their boolean results.
+fn translation(a: &Prim, b: &Prim, off: f64) -> Result<(), TestCaseError> {
+    let (ba, bb) = (a.body(), b.body());
+    let t = Vec3::new(off, -off * 0.7, off * 0.3);
+    let mv = |x: &Body| transform(x, t, Vec3::ZERO, Vec3::Z, 0.0).expect("translate");
+    let (ta, tb) = (mv(&ba), mv(&bb));
+    let moved = |p: &Prim| match p.clone() {
+        Prim::Box { at, size } => Prim::Box { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], size },
+        Prim::Cyl { at, axis, r, h } => Prim::Cyl { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], axis, r, h },
+        Prim::Sph { at, r } => Prim::Sph { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], r },
+    };
+    let (pa, pb) = (moved(a), moved(b));
+    let s = vol(&ba) + vol(&bb);
+    match (union(&ba, &bb, a, b)?, union(&ta, &tb, &pa, &pb)?) {
+        (Union::Volume(here), Union::Volume(there)) => {
+            prop_assert!(close(here, there, s), "Union at origin {here:.4}, moved by {off} gives {there:.4}");
+        }
+        (Union::PointTangency, Union::PointTangency) => {}
+        (Union::KnownCylSphereRefusal, Union::KnownCylSphereRefusal) => {}
+        // SMLib builds the reviewed tangency at a 1e5 offset but refuses it at 0 and 1e3.
+        // Its intersection is a point, so the accepted union volume is the sum.
+        (Union::KnownCylSphereRefusal, Union::Volume(there)) | (Union::Volume(there), Union::KnownCylSphereRefusal) => {
+            prop_assert!(close(there, s, s), "the reviewed Cylinder/Sphere union built at offset {off}: {there:.4} != A+B {s:.4}");
+        }
+        _ => prop_assert!(false, "Union was refused as a point tangency at the origin or moved, not both"),
+    }
+    for op in [BoolOp::Intersect, BoolOp::Cut] {
+        let (here, there) = (run(&ba, &bb, op)?, run(&ta, &tb, op)?);
+        prop_assert!(close(here, there, s), "{op:?} at origin {here:.4}, moved by {off} gives {there:.4}");
     }
     Ok(())
 }
@@ -223,51 +308,23 @@ proptest! {
     fn commutative(a in grid_prim(), b in grid_prim()) {
         let (ba, bb) = (a.body(), b.body());
         let s = vol(&ba) + vol(&bb);
-        for op in [BoolOp::Union, BoolOp::Intersect] {
-            if op == BoolOp::Union {
-                match (union(&ba, &bb, &a, &b)?, union(&bb, &ba, &b, &a)?) {
-                    (Union::Volume(ab), Union::Volume(ba_)) => {
-                        prop_assert!(close(ab, ba_, s), "Union: A,B gives {ab:.4} but B,A gives {ba_:.4}");
-                    }
-                    (Union::PointTangency, Union::PointTangency) => {}
-                    _ => prop_assert!(false, "Union was refused as a point tangency in one order only"),
-                }
-            } else {
-                let (ab, ba_) = (run(&ba, &bb, op)?, run(&bb, &ba, op)?);
-                prop_assert!(close(ab, ba_, s), "{op:?}: A,B gives {ab:.4} but B,A gives {ba_:.4}");
+        match (union(&ba, &bb, &a, &b)?, union(&bb, &ba, &b, &a)?) {
+            (Union::Volume(ab), Union::Volume(ba_)) => {
+                prop_assert!(close(ab, ba_, s), "Union: A,B gives {ab:.4} but B,A gives {ba_:.4}");
             }
+            (Union::PointTangency, Union::PointTangency) => {}
+            (Union::KnownCylSphereRefusal, Union::KnownCylSphereRefusal) => {}
+            _ => prop_assert!(false, "Union was refused as a point tangency in one order only"),
         }
+        let (ab, ba_) = (run(&ba, &bb, BoolOp::Intersect)?, run(&bb, &ba, BoolOp::Intersect)?);
+        prop_assert!(close(ab, ba_, s), "Intersect: A,B gives {ab:.4} but B,A gives {ba_:.4}");
     }
 
     /// Moving both operands together does not change the answer. A large offset exposes
     /// absolute tolerances (1e-6, 1e-9 literals) that should scale with the model.
     #[test]
     fn translation_invariant(a in grid_prim(), b in grid_prim(), off in prop::sample::select(vec![0.0, 1.0e3, 1.0e5])) {
-        let (ba, bb) = (a.body(), b.body());
-        let t = Vec3::new(off, -off * 0.7, off * 0.3);
-        let mv = |x: &Body| transform(x, t, Vec3::ZERO, Vec3::Z, 0.0).expect("translate");
-        let (ta, tb) = (mv(&ba), mv(&bb));
-        let moved = |p: &Prim| match p.clone() {
-            Prim::Box { at, size } => Prim::Box { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], size },
-            Prim::Cyl { at, axis, r, h } => Prim::Cyl { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], axis, r, h },
-            Prim::Sph { at, r } => Prim::Sph { at: [at[0] + t.x, at[1] + t.y, at[2] + t.z], r },
-        };
-        let (pa, pb) = (moved(&a), moved(&b));
-        let s = vol(&ba) + vol(&bb);
-        for op in [BoolOp::Union, BoolOp::Intersect, BoolOp::Cut] {
-            if op == BoolOp::Union {
-                match (union(&ba, &bb, &a, &b)?, union(&ta, &tb, &pa, &pb)?) {
-                    (Union::Volume(here), Union::Volume(there)) => {
-                        prop_assert!(close(here, there, s), "Union at origin {here:.4}, moved by {off} gives {there:.4}");
-                    }
-                    (Union::PointTangency, Union::PointTangency) => {}
-                    _ => prop_assert!(false, "Union was refused as a point tangency at the origin or moved, not both"),
-                }
-            } else {
-                let (here, there) = (run(&ba, &bb, op)?, run(&ta, &tb, op)?);
-                prop_assert!(close(here, there, s), "{op:?} at origin {here:.4}, moved by {off} gives {there:.4}");
-            }
-        }
+        translation(&a, &b, off)?;
     }
 
     /// Scaling the whole problem scales volume by k³. Small parts (0.05x) and large parts
@@ -455,4 +512,52 @@ fn point_tangency_accepts_only_the_exact_refusal() {
     let miss = Prim::Sph { at: [10.0, 30.0, 5.0], r: 7.5 };
     assert!(!point_tangency(&a, &miss, error), "a sphere that misses the box is not a tangency");
     assert!(!point_tangency(&a, &b, "SMLib boolean: SmBSplineSurface::Test #5 Bad NonMonotonic CPts"), "another refusal is not accepted");
+}
+
+/// The exact Cylinder/Sphere case behind the reviewed upstream refusal. The sphere touches the
+/// cylinder's start cap at one interior point, so the union is non-manifold: SMLib refuses it at
+/// 1x, 0.05x, offset 0 and offset 1e3, and builds it at 40x and offset 1e5. Intersect is empty and
+/// Cut is the cylinder at every transform. If SMLib starts refusing or building a different
+/// transform, or the accepted volume is not `A+B`, this fails: review and remove the exception.
+#[test]
+fn cyl_sphere_refusal_is_the_exact_reviewed_upstream_case() {
+    let a = Prim::Cyl { at: [22.5, 12.5, 2.5], axis: 0, r: 11.25, h: 5.0 };
+    let b = Prim::Sph { at: [10.0, 2.5, 0.0], r: 12.5 };
+    let (ba, bb) = (a.body(), b.body());
+    let (va, vb) = (vol(&ba), vol(&bb));
+    let error = boolean(&ba, &bb, BoolOp::Union).unwrap_err().to_string();
+    assert!(cyl_sphere_refusal(&a, &b, &error), "{error}");
+    assert!(cyl_sphere_refusal(&b, &a, &error), "the refusal does not depend on operand order");
+    assert_eq!((vol(&ba), vol(&bb)), (va, vb), "a refused union must not change its inputs");
+    assert!(ba.validity().is_empty() && bb.validity().is_empty());
+    assert!(boolean(&ba, &bb, BoolOp::Intersect).unwrap().is_none(), "a point intersection has no body");
+    let cut = boolean(&ba, &bb, BoolOp::Cut).unwrap().unwrap();
+    assert!(cut.validity().is_empty());
+    assert!(close(measure(&cut).unwrap().volume, va, va), "cut must be the cylinder");
+    let (sa, sb) = (grid_scale(&a, 0.05), grid_scale(&b, 0.05));
+    let scaled = boolean(&sa.body(), &sb.body(), BoolOp::Union).unwrap_err().to_string();
+    assert!(cyl_sphere_refusal(&sa, &sb, &scaled), "{scaled}");
+    let (la, lb) = (grid_scale(&a, 40.0), grid_scale(&b, 40.0));
+    let wide = boolean(&la.body(), &lb.body(), BoolOp::Union).unwrap().unwrap();
+    assert!(wide.validity().is_empty());
+    assert!(close(measure(&wide).unwrap().volume / 40.0f64.powi(3), va + vb, va + vb), "a built union is A+B");
+    let t = Vec3::new(1.0e5, -7.0e4, 3.0e4);
+    let mv = |x: &Body| transform(x, t, Vec3::ZERO, Vec3::Z, 0.0).expect("translate");
+    let far = boolean(&mv(&ba), &mv(&bb), BoolOp::Union).unwrap().unwrap();
+    assert!(far.validity().is_empty());
+    assert!(close(measure(&far).unwrap().volume, va + vb, va + vb), "a built union is A+B");
+    let nearby = Prim::Sph { at: [10.0, 2.5, 0.1], r: 12.5 };
+    assert!(!cyl_sphere_refusal(&a, &nearby, &error), "a different sphere is not the reviewed case");
+    assert!(
+        !cyl_sphere_refusal(&a, &b, "SMLib boolean: SMLib's check refuses the result: 1 failed tests: SmLoop::Test #2 Bad Loop Orient"),
+        "a different refusal is not the reviewed case"
+    );
+    assert!(!cyl_sphere_refusal(&a, &b, &error.replace("offset=  12.5", "offset=  12.4")), "a different offset is not the reviewed case");
+    // Exercise the property bodies' exact-case paths: one operation refused, the rest right.
+    check(identity(&a, &b));
+    check(scale(&a, &b, 0.05));
+    check(scale(&a, &b, 40.0));
+    check(translation(&a, &b, 0.0));
+    check(translation(&a, &b, 1.0e3));
+    check(translation(&a, &b, 1.0e5));
 }
