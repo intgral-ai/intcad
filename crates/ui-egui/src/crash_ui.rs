@@ -214,7 +214,7 @@ mod tests {
         h.frames(6);
         assert!(h.app.crashes.open, "unclean exits still alert the user");
         let status = &h.app.status.as_ref().unwrap().0;
-        assert!(status.contains("earlier open-skyfall session"), "{status}");
+        assert!(status.contains("earlier Intcad session"), "{status}");
         assert!(status.contains("detected at startup"), "{status}");
         assert!(h.widget("Detected 2026-10-12 16:23:41 UTC  Closed unexpectedly  ×2").is_some());
         assert!(h.widget(report["message"].as_str().unwrap()).is_some(), "keep the original session start visible");

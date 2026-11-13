@@ -43,7 +43,7 @@ public static class Win {
         EnumWindows((h, l) => {
             uint p; GetWindowThreadProcessId(h, out p);
             var title = Text(h);
-            if (p == pid && IsWindowVisible(h) && (title.StartsWith("open-skyfall") || title.StartsWith("SolidCraft"))) { found = h; return false; }
+            if (p == pid && IsWindowVisible(h) && (title.StartsWith("Intcad") || title.StartsWith("SolidCraft"))) { found = h; return false; }
             return true;
         }, IntPtr.Zero);
         return found;

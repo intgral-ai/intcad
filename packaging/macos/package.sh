@@ -260,7 +260,7 @@ plutil -lint "$MNT/SolidCraft.app/Contents/Info.plist"
 # Check the names Finder/LaunchServices actually use, and the bundle identity. The executable and
 # icon file keep the upstream names so existing bundles and update scripts stay compatible.
 for key in CFBundleName CFBundleDisplayName; do
-  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = open-skyfall
+  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = Intcad
 done
 for key in CFBundleExecutable CFBundleIconFile CFBundleIconName; do
   test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = SolidCraft

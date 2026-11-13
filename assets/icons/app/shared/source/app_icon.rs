@@ -1,4 +1,4 @@
-//! open-skyfall application mark: Intgral's V22 compact-integrated I on a light card.
+//! Intcad application mark: Intgral's V22 compact-integrated I on a light card.
 //! Shared by desktop, packaging and CLI. The source art is
 //! `assets/branding/logo/open-skyfall-mark.svg`; these are its seven filled faces.
 type P = (f32, f32);

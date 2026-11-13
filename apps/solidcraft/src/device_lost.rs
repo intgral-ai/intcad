@@ -55,7 +55,7 @@ pub fn reason(reason: Option<&str>) -> Option<String> {
 /// renderer, with what the driver reported ([`REASON_ENV`]).
 pub fn note(software: bool, reason: Option<&str>) -> String {
     let mut note = String::from(
-        "The graphics device was reset (the graphics driver stopped responding), so open-skyfall closed and started again. Unsaved changes were kept for recovery.",
+        "The graphics device was reset (the graphics driver stopped responding), so Intcad closed and started again. Unsaved changes were kept for recovery.",
     );
     if software {
         note.push_str(" This start uses software rendering, which doesn't depend on the graphics driver.");

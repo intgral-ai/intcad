@@ -1,4 +1,4 @@
-//! open-skyfall headless command line.
+//! Intcad headless command line.
 //!
 //! ```text
 //! solidcraft-cli run <script.json|design.sc|part.step|mesh.3mf> [--in design|part.step|mesh.3mf] [--out FILE]... [--save FILE] [--quiet] [--results] [--timings] [--profile] [--json-out FILE] [--allow-errors]
@@ -21,11 +21,11 @@
 //!                    [--param-check off|warn|strict]
 //!                                                             MCP server on stdio (docs/mcp.md)
 //! solidcraft-cli mcp setup [--dry-run] [--client NAME] [--live] (alias: mcp install) add it to OpenCode, Claude Desktop, Claude Code, Cursor
-//! solidcraft-cli licences                                     open-skyfall's licence and the third-party licences
+//! solidcraft-cli licences                                     Intcad's licence and the third-party licences
 //! solidcraft-cli validate submit|skill|status|report|cancel ... immutable candidate validation (docs/validation.md)
 //! solidcraft-cli icon --out F.png|F.ico [--size N]             the app icon (packaging; drawn, not a file)
 //!
-//! --debug (with any command)                                  open-skyfall's debug log on stderr (or RUST_LOG=LEVEL)
+//! --debug (with any command)                                  Intcad's debug log on stderr (or RUST_LOG=LEVEL)
 //! --max-file-size SIZE (with any command)                     read STEP and design files up to SIZE (2GB, 1500MB; at most 16GB)
 //! ```
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -111,7 +111,7 @@ const USAGE_SAVE_STRESS: &str = "  solidcraft-cli save-stress <path> <rounds>\n"
 /// `validate`'s lines in the usage.
 const USAGE_VALIDATE: &str = validation::USAGE;
 /// The flags every command takes, at the end of the top-level usage.
-const USAGE_DEBUG: &str = "  --debug, with any command: what open-skyfall logs (why a body has no display plan, why a save left its\n      model cache out), on stderr; RUST_LOG=error|warn|info|debug|trace sets one level for every crate\n  --max-file-size SIZE, with any command: read STEP and import files and design files up to SIZE for this run\n      (for example 2GB or 1500MB; at most 16GB; the defaults are 512 MB and 256 MB, and a smaller SIZE keeps them)\n";
+const USAGE_DEBUG: &str = "  --debug, with any command: what Intcad logs (why a body has no display plan, why a save left its\n      model cache out), on stderr; RUST_LOG=error|warn|info|debug|trace sets one level for every crate\n  --max-file-size SIZE, with any command: read STEP and import files and design files up to SIZE for this run\n      (for example 2GB or 1500MB; at most 16GB; the defaults are 512 MB and 256 MB, and a smaller SIZE keeps them)\n";
 
 /// The commands the CLI takes, in the order the top-level usage lists them.
 const COMMANDS: &[Command] = &[
@@ -722,7 +722,7 @@ fn cmd_snapshot(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The app icon: the open-skyfall logo, drawn in code on a transparent background
+/// The app icon: the Intcad logo, drawn in code on a transparent background
 /// (so packages need no committed image). `.ico` holds the Windows sizes as PNGs.
 fn cmd_icon(args: &[String]) -> Result<(), String> {
     let out = flag(args, "--out").ok_or("icon needs --out FILE.png or FILE.ico")?;
@@ -825,7 +825,7 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             let mut remote = solidcraft_mcp::Remote::new(addr, flag(args, "--token")).with_param_check(param_check);
             if let Err(e) = remote.try_connect() {
                 solidcraft_engine::note!(
-                    "solidcraft mcp: no open-skyfall app at {addr} yet ({e}); start it with `solidcraft --control {port}` \
+                    "solidcraft mcp: no Intcad app at {addr} yet ({e}); start it with `solidcraft --control {port}` \
                      (or SOLIDCRAFT_CONTROL_PORT={port}), tool calls connect once it runs"
                 );
             }

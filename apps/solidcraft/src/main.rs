@@ -563,9 +563,9 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
             let dialog = save_folder.start(parent.clone()).set_file_name(name);
             let dialog = if exts == [io::DESIGN_EXT, "json"] {
                 if name.ends_with(".json") {
-                    dialog.add_filter("Plain JSON design", &["json"]).add_filter("open-skyfall container", &[io::DESIGN_EXT])
+                    dialog.add_filter("Plain JSON design", &["json"]).add_filter("Intcad container", &[io::DESIGN_EXT])
                 } else {
-                    dialog.add_filter("open-skyfall container", &[io::DESIGN_EXT]).add_filter("Plain JSON design", &["json"])
+                    dialog.add_filter("Intcad container", &[io::DESIGN_EXT]).add_filter("Plain JSON design", &["json"])
                 }
             } else {
                 dialog.add_filter("File", exts)
@@ -939,7 +939,7 @@ fn app_viewport(custom_titlebar: bool) -> Result<egui::ViewportBuilder, eframe::
     let icon =
         egui::IconData { rgba: app_icon::rgba(64).map_err(|e| eframe::Error::AppCreation(std::io::Error::other(e).into()))?, width: 64, height: 64 };
     Ok(egui::ViewportBuilder::default()
-        .with_title("open-skyfall")
+        .with_title("Intcad")
         .with_icon(icon)
         .with_inner_size([1600.0, 1000.0])
         .with_min_inner_size([960.0, 600.0])
@@ -968,7 +968,7 @@ impl Drop for DriverClient {
 
 fn main() -> eframe::Result {
     #[cfg(target_os = "macos")]
-    objc2_foundation::NSProcessInfo::processInfo().setProcessName(objc2_foundation::ns_string!("open-skyfall"));
+    objc2_foundation::NSProcessInfo::processInfo().setProcessName(objc2_foundation::ns_string!("Intcad"));
     mark("main");
     // On OCLP-patched Macs, wgpu picks a Metal Shading Language standard that the system's
     // compiler refuses (`invalid value 'metal3.2'`), because the patched OS reports a newer
@@ -1447,13 +1447,13 @@ fn no_window(error: eframe::Error, tried_cpu: bool, failed: eframe::wgpu::Backen
         }
     }
     let message = if explicit {
-        format!("SolidCraft could not open its window with WGPU_BACKEND.\n\n{error}\n\nChange or remove WGPU_BACKEND to try another graphics API.")
+        format!("Intcad could not open its window with WGPU_BACKEND.\n\n{error}\n\nChange or remove WGPU_BACKEND to try another graphics API.")
     } else {
         startup::no_window_message(&error.to_string(), settings)
     };
     let _ = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
-        .set_title("SolidCraft could not start")
+        .set_title("Intcad could not start")
         .set_description(message)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();

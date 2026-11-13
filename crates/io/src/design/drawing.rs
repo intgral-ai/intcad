@@ -78,7 +78,7 @@ pub fn read_drawing(bytes: &[u8]) -> Result<Drawing> {
         return read_container(Cursor::new(bytes));
     }
     if file_kind(bytes)? == FileKind::Design {
-        return Err(IoError::Invalid("this file is a SolidCraft design, not a drawing: open it as a design".into()));
+        return Err(IoError::Invalid("this file is an Intcad design, not a drawing: open it as a design".into()));
     }
     let text = std::str::from_utf8(bytes).map_err(|_| IoError::Invalid("drawing file is not UTF-8 JSON".into()))?;
     Ok(Drawing::from_json(text)?)
@@ -98,7 +98,7 @@ pub fn read_drawing_file(path: &str) -> Result<Drawing> {
 fn read_container<R: Read + Seek>(source: R) -> Result<Drawing> {
     let mut reader = PackageReader::new(source)?;
     if container_kind(&mut reader)? == FileKind::Design {
-        return Err(IoError::Invalid("this file is a SolidCraft design, not a drawing: open it as a design".into()));
+        return Err(IoError::Invalid("this file is an Intcad design, not a drawing: open it as a design".into()));
     }
     if reader.has_part("document.json") {
         return Err(invalid("a drawing container also holds a design's document.json"));

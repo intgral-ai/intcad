@@ -288,7 +288,7 @@ pub fn copy_design(app: &mut SolveApp) -> bool {
     };
     replace_clipboard(app);
     app.linked_design_clipboard = Some(path);
-    leave_text(app, format!("open-skyfall linked design: {}", app.session.doc.name));
+    leave_text(app, format!("Intcad linked design: {}", app.session.doc.name));
     app.set_status("Copied design: switch to the assembly and paste to insert a linked component", false);
     true
 }
@@ -309,7 +309,7 @@ pub fn copy(app: &mut SolveApp) -> bool {
         app.foreign_sketch_clip = app.session.sketch_clipboard.clone();
         let n = out.get("curves").and_then(Value::as_u64).unwrap_or(0) + out.get("points").and_then(Value::as_u64).unwrap_or(0);
         let k = out.get("constraints").and_then(Value::as_u64).unwrap_or(0);
-        let text = format!("open-skyfall sketch geometry: {n} entities, {k} constraints and dimensions");
+        let text = format!("Intcad sketch geometry: {n} entities, {k} constraints and dimensions");
         app.set_status(format!("Copied {n} sketch entities with {k} constraints and dimensions"), false);
         leave_text(app, text);
         return true;
@@ -324,7 +324,7 @@ pub fn copy(app: &mut SolveApp) -> bool {
         replace_clipboard(app);
         let names: Vec<String> = placements.iter().filter_map(|p| app.session.occurrence_placement(p).ok()).map(|p| p.name).collect();
         app.set_status(format!("Copied {} (Ctrl+V pastes an instance, Ctrl+Shift+V a new copy)", names.join(", ")), false);
-        leave_text(app, format!("open-skyfall components: {}", names.join(", ")));
+        leave_text(app, format!("Intcad components: {}", names.join(", ")));
         app.foreign_copy = solidcraft_engine::ForeignCopy::of(&app.session, Vec::new(), placements.clone()).ok().map(std::sync::Arc::new);
         app.copied_placements = placements;
         return true;
@@ -334,7 +334,7 @@ pub fn copy(app: &mut SolveApp) -> bool {
         app.session.clipboard.clear();
         replace_clipboard(app);
         app.set_status(format!("Copied {}", bodies.join(", ")), false);
-        leave_text(app, format!("open-skyfall bodies: {}", bodies.join(", ")));
+        leave_text(app, format!("Intcad bodies: {}", bodies.join(", ")));
         app.foreign_copy = solidcraft_engine::ForeignCopy::of(&app.session, bodies.clone(), Vec::new()).ok().map(std::sync::Arc::new);
         app.copied_bodies = bodies;
         return true;
@@ -347,7 +347,7 @@ pub fn copy(app: &mut SolveApp) -> bool {
     app.foreign_copy = app.session.foreign_copy.clone();
     let names: Vec<&str> = out.get("copied").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     app.set_status(format!("Copied {}", names.join(", ")), false);
-    leave_text(app, format!("open-skyfall features: {}", names.join(", ")));
+    leave_text(app, format!("Intcad features: {}", names.join(", ")));
     true
 }
 
@@ -459,7 +459,7 @@ pub fn cut(app: &mut SolveApp) -> bool {
         clear_clipboard(app);
         let names = cut_names(app, &set);
         app.set_status(cut_summary(&set), false);
-        leave_text(app, format!("open-skyfall cut: {}", names.join(", ")));
+        leave_text(app, format!("Intcad cut: {}", names.join(", ")));
         // Another design pastes copies of the bodies and components cut, but features never leave their
         // design: a cut that holds any feature leaves another design nothing to paste.
         if set.features.is_empty() {
@@ -480,7 +480,7 @@ pub fn cut(app: &mut SolveApp) -> bool {
     app.foreign_sketch_clip = app.session.sketch_clipboard.clone();
     let n = out.get("curves").and_then(Value::as_u64).unwrap_or(0) + out.get("points").and_then(Value::as_u64).unwrap_or(0);
     app.set_status(format!("Cut {n} sketch entities"), false);
-    leave_text(app, format!("open-skyfall sketch geometry: {n} entities"));
+    leave_text(app, format!("Intcad sketch geometry: {n} entities"));
     true
 }
 

@@ -25,7 +25,7 @@ pub struct NativeMenu {
 impl NativeMenu {
     pub fn new(app: &SolveApp, ctx: &egui::Context) -> muda::Result<Self> {
         let menu = Menu::new();
-        let application = Submenu::new("SolidCraft", true);
+        let application = Submenu::new("Intcad", true);
         let file = Submenu::new(app.tr("ui.file"), true);
         let edit = Submenu::new(app.tr_label("Edit"), true);
         let recent = Submenu::new(app.tr("ui.open_recent"), true);
@@ -40,8 +40,8 @@ impl NativeMenu {
             Ok(())
         };
         application.append(&PredefinedMenuItem::about(
-            Some("About open-skyfall"),
-            Some(AboutMetadata { name: Some("SolidCraft".into()), version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() }),
+            Some("About Intcad"),
+            Some(AboutMetadata { name: Some("Intcad".into()), version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() }),
         ))?;
         application.append(&PredefinedMenuItem::separator())?;
         add(
@@ -55,12 +55,12 @@ impl NativeMenu {
         application.append(&PredefinedMenuItem::services(None))?;
         application.append(&PredefinedMenuItem::separator())?;
         application.append_items(&[
-            &PredefinedMenuItem::hide(Some("Hide SolidCraft")),
+            &PredefinedMenuItem::hide(Some("Hide Intcad")),
             &PredefinedMenuItem::hide_others(None),
             &PredefinedMenuItem::show_all(None),
             &PredefinedMenuItem::separator(),
         ])?;
-        add(&application, &format!("{} SolidCraft", app.tr("ui.quit")), FileAction::Quit, Some(Accelerator::new(Modifiers::META, Code::KeyQ)))?;
+        add(&application, &format!("{} Intcad", app.tr("ui.quit")), FileAction::Quit, Some(Accelerator::new(Modifiers::META, Code::KeyQ)))?;
         add(&file, app.tr("ui.new_design"), FileAction::New, Some(Accelerator::new(Modifiers::META, Code::KeyN)))?;
         add(&file, &format!("{}\u{2026}", app.tr("ui.open")), FileAction::Open, Some(Accelerator::new(Modifiers::META, Code::KeyO)))?;
         file.append(&recent)?;

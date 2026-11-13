@@ -420,7 +420,7 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         let mut brand_right = left + 36.0;
         if !compact_actions {
-            let galley = ui.painter().layout_no_wrap("open-skyfall".to_owned(), crate::fonts::semibold(t.font_heading), t.app_bar_text);
+            let galley = ui.painter().layout_no_wrap("Intcad".to_owned(), crate::fonts::semibold(t.font_heading), t.app_bar_text);
             brand_right = left + 36.0 + galley.size().x;
             ui.painter().galley(pos2(left + 36.0, r.center().y - galley.size().y / 2.0), galley, t.app_bar_text);
         }
@@ -4355,7 +4355,7 @@ mod header_report_tests {
         h.step(&json!({"click":{"handle":"appbar:help"}})).unwrap();
         assert!(h.app.help.menu);
         let version = crate::i18n::format("help.version", &[("version", crate::update::current_version())]);
-        assert!(h.widget("About open-skyfall").is_some());
+        assert!(h.widget("About Intcad").is_some());
         assert!(h.widget(&version).is_none(), "the Help menu has no version row");
     }
 
@@ -4394,7 +4394,7 @@ mod header_report_tests {
         h.step(&json!({"click":{"handle":"appbar:help"}})).unwrap();
         assert!(h.app.help.menu);
         let version = crate::i18n::format("help.version", &[("version", crate::update::current_version())]);
-        let [_, about] = h.widget("About open-skyfall").unwrap();
+        let [_, about] = h.widget("About Intcad").unwrap();
         let [_, row] = h.widget(&version).expect("the Help menu lists the version");
         let [_, shortcuts] = h.widget("Keyboard Shortcuts").unwrap();
         assert!(about < row && row < shortcuts, "between About and Keyboard Shortcuts");

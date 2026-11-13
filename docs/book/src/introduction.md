@@ -1,11 +1,11 @@
-# open-skyfall
+# Intcad
 
-open-skyfall is an open-source parametric 3D CAD application written in pure Rust.
+Intcad is an open-source parametric 3D CAD application written in pure Rust.
 Sketch on a plane, constrain and dimension the sketch, turn profiles
 into solids with features on a timeline, and change a parameter to watch the whole timeline
 rebuild.
 
-![The sample plate in open-skyfall](generated/sample-plate.png)
+![The sample plate in Intcad](generated/sample-plate.png)
 
 It runs as:
 
@@ -18,7 +18,7 @@ Everything the user can do is a *command* with JSON parameters. The toolbar, the
 the CLI, the control channel and MCP all run the same commands, so anything you can click you can
 also script, test or hand to an agent.
 
-open-skyfall is early. Sketching, solid modelling, parameters, components with joints, sheet metal
+Intcad is early. Sketching, solid modelling, parameters, components with joints, sheet metal
 and a plastic-enclosure subset work; surfaces, drawings, CAM and simulation are deferred. The
 [roadmap](https://github.com/intgral-ai/open-skyfall-desktop/blob/main/ROADMAP.md) has the details, and
 the [feature list](dev/features.md) lists every command by area, and the
@@ -26,7 +26,7 @@ the [feature list](dev/features.md) lists every command by area, and the
 
 New designs are saved as `.sc`. Existing `.solidcraft` designs still open, and Save keeps their name; `solidcraft-cli` commands keep their names and behavior.
 
-This book has two halves: the **user guide** for people modelling with open-skyfall, and the
+This book has two halves: the **user guide** for people modelling with Intcad, and the
 **developer guide** for people working on it. The [command reference](reference/commands.md) is
 generated from the code on every build.
 

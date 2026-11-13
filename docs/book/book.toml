@@ -1,5 +1,5 @@
 [book]
-title = "open-skyfall"
+title = "Intcad"
 description = "An open-source parametric 3D CAD application in pure Rust: user guide and developer guide."
 authors = ["Intgral"]
 language = "en"

@@ -176,7 +176,7 @@ const BROWSER_NOTE: &str = "the web app can't open larger files: a browser tab c
 /// How to raise a limit, for the messages that refuse a file.
 pub fn how_to_raise() -> &'static str {
     if ADJUSTABLE {
-        "Raise the limit in Preferences > General > Largest file to open, or start SolidCraft with --max-file-size (for example --max-file-size 2GB)."
+        "Raise the limit in Preferences > General > Largest file to open, or start Intcad with --max-file-size (for example --max-file-size 2GB)."
     } else {
         "The web app can't open larger files; the desktop app can raise the limit."
     }

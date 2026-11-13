@@ -1,6 +1,6 @@
-# open-skyfall: instructions for agents
+# Intcad: instructions for agents
 
-open-skyfall: independent Rust/wasm CAD; desktop-only Mastra distribution exception below. Humans: CONTRIBUTING.md.
+Intcad: independent Rust/wasm CAD; desktop-only Mastra distribution exception below. Humans: CONTRIBUTING.md.
 
 ## Start here
 Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelled `help wanted`, `good first issue`, `needs-triage`; architecture in `docs/architecture.md`. Act when code, docs and rules settle it; ask only when user-visible.
@@ -16,7 +16,7 @@ Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelle
 - Layering (geom, sketch/kernel/render, doc, io, engine, ui-egui, apps); only `crates/kernel` uses truck: `cargo xtask layers`.
 - One outer UI container, one camera path (`navigation::handle`), colours from theme tokens: `cargo xtask ui-containers`.
 - App/host/core stay Rust/wasm. Only opt-in desktop packages/mastra-runtime/ permits TS; no web Node/runtime. `cargo xtask wasm`, `cargo xtask web-offline-test`; packaging skill below.
-- Name: **open-skyfall**; `solidcraft` internals stay (`docs/compatibility.md`).
+- Name: **Intcad**; `solidcraft` internals stay (`docs/compatibility.md`).
 - Sorted lists (message catalogs, `mod` lines, languages) stay sorted: `cargo xtask lists`. Never edit generated files (`docs/features.md`, `THIRD-PARTY-LICENSES.txt`) in a PR.
 - A design-format change is ONE new file in `crates/doc/src/format/pending/`: `scripts/test-format-pending.sh`.
 - A command has schemas (will become required; `crates/engine/src/schema/unconverted.txt` only shrinks): `skills/solidcraft-commands/SKILL.md`.

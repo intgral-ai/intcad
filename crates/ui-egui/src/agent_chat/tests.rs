@@ -12008,7 +12008,7 @@ fn an_attached_selection_goes_as_text_for_the_agent_and_as_chips_in_the_conversa
     app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "round this".into());
     let prompt = script.calls().pop().expect("a prompt");
-    assert!(prompt.starts_with("prompt: round this\n\n[Selected in open-skyfall"), "{prompt}");
+    assert!(prompt.starts_with("prompt: round this\n\n[Selected in Intcad"), "{prompt}");
     for want in ["Elements:", "- Flat face ", "planar", "area ", "- Edge ", "length ", "name ", "Features:", "feature id", "Bodies:", "- Body1"] {
         assert!(prompt.contains(want), "{want:?} missing from {prompt}");
     }
@@ -12542,7 +12542,7 @@ fn the_picks_go_with_the_next_message_once() {
     app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "look at these".into());
     let prompt = script.calls().pop().expect("a prompt");
-    assert!(prompt.starts_with("prompt: look at these\n\n[Selected in open-skyfall"), "{prompt}");
+    assert!(prompt.starts_with("prompt: look at these\n\n[Selected in Intcad"), "{prompt}");
     assert!(prompt.contains("3 item(s)"), "two picked and one more selected: {prompt}");
     assert_eq!(prompt.matches("- Body1").count(), 1, "{prompt}");
     let Some(Item::User { context, .. }) = app.agent_chat.items.last() else { panic!("a sent message") };

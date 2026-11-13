@@ -487,7 +487,7 @@ impl AcpTaskExecutor {
                             });
                         }
                         Incoming::Unsupported { rpc, .. } => {
-                            live.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "SolidCraft task sessions serve no host tools"));
+                            live.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "Intcad task sessions serve no host tools"));
                         }
                         Incoming::AuthStatus(_) | Incoming::Ignored => {}
                         Incoming::ModeChanged(_) | Incoming::ModelChanged(_) | Incoming::ConfigOptions { .. } => {}
@@ -634,7 +634,7 @@ fn reply(live: &LiveProcess, id: u64, deadline: Instant, control: &TaskControl) 
                         live.proc.send(&acp::permission_reply(rpc, None));
                     }
                     Incoming::Unsupported { rpc, .. } => {
-                        live.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "SolidCraft task sessions serve no host tools"));
+                        live.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "Intcad task sessions serve no host tools"));
                     }
                     _ => {}
                 }

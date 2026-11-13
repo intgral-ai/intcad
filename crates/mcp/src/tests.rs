@@ -3941,7 +3941,7 @@ fn batch_falls_back_while_the_agent_cursor_is_shown() {
 #[test]
 fn batch_does_not_resend_after_a_transport_error() {
     let (b, body, is_error) =
-        recorded_batch(Err("open-skyfall at 127.0.0.1:1: timed out".into()), json!({"commands": [{"command": "a.one"}, {"command": "a.two"}]}));
+        recorded_batch(Err("Intcad at 127.0.0.1:1: timed out".into()), json!({"commands": [{"command": "a.one"}, {"command": "a.two"}]}));
     assert_eq!(methods(&b), ["engine.batch"]);
     assert!(is_error);
     assert!(body.as_str().is_some_and(|t| t.contains("may have run") && t.contains("timed out")), "{body}");
@@ -4999,8 +4999,8 @@ fn a_bridge_made_before_the_app_runs_connects_once_it_does() {
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let addr = format!("127.0.0.1:{port}");
     let mut remote = crate::Remote::new(&addr, Some("0123456789abcdef0123456789abcdef"));
-    // Still "connected to the open-skyfall app", which the skills read as bridged.
-    assert!(remote.describe().starts_with("connected to the open-skyfall app") && remote.describe().contains("not running"), "{}", remote.describe());
+    // Still "connected to the Intcad app", which the skills read as bridged.
+    assert!(remote.describe().starts_with("connected to the Intcad app") && remote.describe().contains("not running"), "{}", remote.describe());
     let e = remote.call("engine.execute", json!({"command": "inspect.measure"})).unwrap_err();
     assert!(e.starts_with(crate::backend::NOT_RUNNING) && e.contains(&format!("solidcraft --control {port}")), "{e}");
     let batch = crate::call_tool(&mut remote, "batch", &json!({"commands": [{"command": "solid.box"}]}));
@@ -5604,7 +5604,7 @@ fn auto_session_bridges_to_a_late_app_only_while_empty() {
     let text = |r: &Value| r["result"]["content"].as_array().unwrap().iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
 
     let r = raw_tool(&mut s, "list_commands", json!({}));
-    assert!(text(&r).contains("headless session because the open-skyfall app was not found"), "{r}");
+    assert!(text(&r).contains("headless session because the Intcad app was not found"), "{r}");
     let init = call(&mut s, 1, "initialize", json!({}));
     assert!(init["result"]["instructions"].as_str().unwrap().contains("was not running when this server started"));
 
@@ -5613,7 +5613,7 @@ fn auto_session_bridges_to_a_late_app_only_while_empty() {
     let r = raw_tool(&mut s, "inspect_design", json!({}));
     assert!(!text(&r).contains("headless session because"), "{r}");
     assert!(s.backend().has_ui());
-    assert!(s.backend().describe().contains("connected to the open-skyfall app"));
+    assert!(s.backend().describe().contains("connected to the Intcad app"));
     // The headless session's `--param-check` level goes on checking the bridged calls.
     let mut headless = Headless::default();
     headless.session.param_check = solidcraft_engine::schema::ParamCheck::Strict;
@@ -5636,7 +5636,7 @@ fn auto_session_bridges_to_a_late_app_only_while_empty() {
     assert_ne!(r["result"]["isError"], json!(true), "{r}");
     port.set(Some(1));
     let r = raw_tool(&mut s, "inspect_design", json!({}));
-    assert!(text(&r).contains("headless session because the open-skyfall app was not found"), "{r}");
+    assert!(text(&r).contains("headless session because the Intcad app was not found"), "{r}");
     assert!(!s.backend().has_ui());
 }
 

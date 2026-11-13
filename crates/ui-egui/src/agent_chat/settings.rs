@@ -1921,7 +1921,7 @@ mod card_tests {
     fn model_warning_only_for_explicitly_missing_tools() {
         assert_eq!(
             capability_warning("local:4b", Some(false)).as_deref(),
-            Some("local:4b can't use open-skyfall's tools, so it can only chat. Pick a model with tool support.")
+            Some("local:4b can't use Intcad's tools, so it can only chat. Pick a model with tool support.")
         );
         assert_eq!(capability_warning("local:4b", Some(true)), None);
         assert_eq!(capability_warning("local:4b", None), None);

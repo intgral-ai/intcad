@@ -39,7 +39,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("frame.profile.list", "Profile Library", list).icon("library")
         .noundo()
         .doc_only()
-        .params("Returns kinds: [{kind, label, required, optional, example}]: the built-in profiles, each SolidCraft's own parametric definition"),
+        .params("Returns kinds: [{kind, label, required, optional, example}]: the built-in profiles, each Intcad's own parametric definition"),
     CommandSpec::new("frame.profile.properties", "Profile Properties", properties).icon("measure").noundo().doc_only().params(concat!(
         profile_doc!(),
         "; density?: kg/m³ (adds mass_per_m, kg/m). Returns profile (every default filled in), area (mm²), centroid [x,y] (mm, from the bounding box centre), ixx, iyy, ixy (mm⁴ about the centroid), width, height"

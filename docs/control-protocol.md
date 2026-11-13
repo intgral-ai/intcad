@@ -318,7 +318,7 @@ its start time).
 An app that is force-quit can't remove its files, so a later client may send that launch's token.
 When the app refuses it, `solidcraft-cli mcp` names the token file it read and when it was
 written, and says the file is stale when the process in `<port>.pid` has exited. Delete the file
-or restart SolidCraft. On Windows, an app or client started from inside an MSIX-packaged app (and
+or restart Intcad. On Windows, an app or client started from inside an MSIX-packaged app (and
 the tools it launches) has its AppData redirected: it writes and reads
 `%LOCALAPPDATA%\Packages\<package>\LocalCache\Local\SolidCraft\control\` before the folder above.
 

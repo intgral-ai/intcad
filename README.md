@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/branding/logo/open-skyfall-mark-1024.png" width="96" height="96" alt="open-skyfall" />
+  <img src="assets/branding/logo/open-skyfall-mark-1024.png" width="96" height="96" alt="Intcad" />
 </p>
 
-<h1 align="center">open-skyfall</h1>
+<h1 align="center">Intcad</h1>
 
 <p align="center">
   <strong>An open-source parametric 3D CAD application built in pure Rust.</strong><br />
@@ -74,11 +74,11 @@ the clean-room and licence rules, and where help is wanted most. Open work is in
 
 ## Upstream, compatibility and licence
 
-`open-skyfall` is maintained by Intgral. It is a fork of
+`Intcad` is maintained by Intgral. It is a fork of
 [SolidCraft](https://github.com/tangency-labs/solidcraft), and the upstream project keeps its
 own name, logo, website and releases.
 
-The product name in the interface is `open-skyfall`. Internal identifiers still use
+The product name in the interface is `Intcad`. Internal identifiers still use
 `solidcraft` so existing designs, scripts, packages and settings keep working: crate and binary
 names (`solidcraft`, `solidcraft-cli`), the `.sc` design format and its `solidcraft/N` tag,
 `SOLIDCRAFT_*` environment variables, settings folders, app IDs and the MCP server name.
@@ -93,7 +93,7 @@ and [LICENSE-APACHE](LICENSE-APACHE).
 The files in this repository are provided as is, without warranty, liability or indemnity:
 read [DISCLAIMER.md](DISCLAIMER.md).
 
-SolidCraft and open-skyfall are independent of CAD vendors. Behaviour is designed from public
+SolidCraft and Intcad are independent of CAD vendors. Behaviour is designed from public
 documentation, general CAD conventions and user feedback. Reference tests use analytic values
 and open-source tools. Neither project is affiliated with, sponsored by or endorsed by Autodesk,
 Dassault Systèmes, PTC, Siemens or any other CAD vendor. Fusion, AutoCAD, Inventor, SolidWorks,

@@ -7,9 +7,9 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>open-skyfall</string>
+  <string>Intcad</string>
   <key>CFBundleName</key>
-  <string>open-skyfall</string>
+  <string>Intcad</string>
   <key>CFBundleExecutable</key>
   <string>SolidCraft</string>
   <key>CFBundleIdentifier</key>
@@ -43,7 +43,7 @@
   <array>
     <dict>
       <key>CFBundleTypeName</key>
-      <string>open-skyfall design</string>
+      <string>Intcad design</string>
       <key>CFBundleTypeExtensions</key>
       <!-- solidcraft: designs saved before .sc; solvecraft: before the rename (compatibility
            shims, docs/compatibility.md). -->
@@ -73,7 +73,7 @@
       <key>UTTypeIdentifier</key>
       <string>io.tangencylabs.solidcraft.design</string>
       <key>UTTypeDescription</key>
-      <string>open-skyfall design</string>
+      <string>Intcad design</string>
       <key>UTTypeConformsTo</key>
       <array><string>public.data</string><string>public.content</string></array>
       <key>UTTypeTagSpecification</key>
