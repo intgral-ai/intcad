@@ -187,6 +187,20 @@ the most complete description of the house style.
 
 ## Tests
 
+The authoritative rule for how much to run, and when a previous result may be
+reused, is [docs/validation-policy.md](docs/validation-policy.md). During
+iteration run the checks for the changed area; before a PR run the selected
+repository checks and record the exact commands and results. `cargo xtask ci`
+is the full local gate when the environment can run it. It does not replace the
+affected CI lane, the nightly heavy suite or the fixed-SHA release gate.
+
+A new or changed test states the behaviour or historical failure it protects and
+why the existing tests are insufficient; reuse an existing test when it already
+covers the change. Use the cheapest layer that proves the behaviour, and explain
+any full-app, child-process or whole-corpus fixture. Do not change an assertion,
+snapshot, golden or baseline only to make CI green without explaining the
+contract or evidence change.
+
 | What | Where | Run |
 |---|---|---|
 | Unit and engine tests | next to the code, or `*_tests.rs` files | `cargo xtask test` (or `cargo test --workspace --profile ci`) |
@@ -393,8 +407,11 @@ and a fresh CI run:
      comment on it first, then open your own claim.
    - Mark the PR ready for review when it is done.
 2. Branch from `develop` in this fork and keep the PR to one topic.
-3. Run `cargo xtask ci` before pushing. It runs fmt, the asset, licence and layer checks,
-   clippy (`-D warnings`), then the tests with the wasm build check alongside. A PR has to pass it.
+3. Run the checks in [docs/validation-policy.md](docs/validation-policy.md) before pushing.
+   `cargo xtask ci` is the full local gate on a capable environment (fmt, assets,
+   licences, layers, clippy `-D warnings`, tests and the wasm check). If the
+   environment cannot run it, run the targeted checks and say exactly what could
+   not run; the PR's selected CI lane is authoritative for the bounded selection.
    **Fork override:** every PR runs its selected checks immediately — there is no
    `approved-for-ci` gate and no merge queue. The upstream text for maintainers is
    unchanged: upstream still uses that label, groups merges by area and runs the

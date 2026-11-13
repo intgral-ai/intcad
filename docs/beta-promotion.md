@@ -21,8 +21,12 @@ The `main` ruleset requires the `release-gate` context (not the direct affected
 runs the full `ci` for stable promotions and runs the Beta evaluation for a
 Beta promotion; no repository setting is bypassed for an individual merge.
 
-The direct `ci` check on the same pull request still runs the affected lane. A
-Beta pull request is never a stable release candidate.
+The direct `ci` check on the same pull request runs the affected lane during
+preparation. It is not duplicated on `ready_for_review`: that transition starts
+the full `release-gate`, which validates the fixed candidate. A Beta pull request
+is never a stable release candidate. A commit pushed after the gate starts has no
+release-gate result; mark the PR draft and ready again to verify the new SHA. See
+[validation policy](validation-policy.md).
 
 The historical baseline was recorded on the C++ SMLib backend at
 `ea772a043`; it was never re-blessed after the Rust `solidcore` switch. It is
@@ -82,6 +86,24 @@ fails.
 The historical `tests/action_matrix/baseline.json` remains report-only. The Beta
 list is not a baseline refresh and never replaces the full matrix result; the
 Beta evidence always states "Beta accepted exceptions", not "full matrix green".
+
+## Re-judging an existing Beta run
+
+A change to the exception list or baseline may be checked against the raw results
+of an existing Beta run without rebuilding or re-running geometry. The command is
+`python3 -I scripts/ci/rejudge.py evaluate` with the downloaded plan, evidence,
+matrix, properties and job list; see [validation policy](validation-policy.md).
+It refuses a changed source SHA, tree, plan, raw result, job list, receipt or
+`beta_gate.py`, and it prints `formalGate: false`. A changed exception or baseline
+changes the rules digest and is the supported re-judgment case; a changed
+`beta_gate.py` is rejected, so this round cannot change decision code over old
+results. The digests prove file/manifest consistency, not a signature or who
+produced the execution. It is an auditable diagnostic: the required `release-gate`
+still needs the exact candidate's full run. The Beta job records `execution.json`
+(run id/attempt, source and tree, runner identity, input and rules digests) next to
+`beta-gate.json`; if recording fails, there is no re-judgment evidence for that run
+and the formal Beta decision is unchanged. Timeouts, cancellations, missing shards
+and incomplete results remain failures.
 
 ## Candidate identity
 

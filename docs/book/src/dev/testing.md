@@ -1,8 +1,10 @@
 # Test harnesses
 
-`cargo xtask ci` runs everything a pull request must pass: fmt, `xtask assets`,
-`xtask licences --check`, `xtask layers`, clippy with `-D warnings`, the tests with the `ci`
-profile and the wasm build check.
+`cargo xtask ci` is the full local gate: fmt, `xtask assets`, `xtask licences --check`,
+`xtask layers`, clippy with `-D warnings`, the tests with the `ci` profile and the wasm
+build check. It does not run the action matrix, the kernel rig, the packaging matrix or
+the full native suite. The authoritative rule for what to run at each stage, and when a
+previous result may be reused, is [the validation policy](../../../validation-policy.md).
 
 | Harness | Where | What it catches |
 |---|---|---|
@@ -104,8 +106,10 @@ admission.
 ignored-heavy baseline. Preserve raw exits, named failures and counts separately
 from the reviewed known-failing regression grader. An accepted known failure is
 still raw red; unknown failures block. Do not broaden exclusions or a failure list
-to label the whole suite green. A `cargo xtask ci` run and its actual exit must be
-recorded before a commit; focused checks are feedback, not a replacement.
+to label the whole suite green. Record the exact command and exit you ran before a
+commit; focused checks are valid for their inputs, and a result may be reused only
+while the worktree state and inputs are unchanged. Do not report an unrun check as
+passed. See [the validation policy](../../../validation-policy.md).
 
 ## Dependency advisories
 

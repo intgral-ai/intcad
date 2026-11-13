@@ -656,7 +656,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
         self.assertRegex(text, r"(?m)^  workflow_call:")
         self.assertRegex(text, r"(?m)^  workflow_dispatch:")
         gate = text.split("\n  release-gate:\n", 1)[1]
-        self.assertIn("name: release-gate", gate)
+        self.assertIn("name: ${{ needs.candidate.outputs.context }}", gate)
         self.assertIn("if: always()", gate)
         self.assertIn("${{ toJSON(needs) }}", gate)
         self.assertIn("validation_mode: full", text)

@@ -228,7 +228,7 @@ def repository_commands(*, full=True):
     commands += [["bash", "scripts/test-format-pending.sh"]]
     commands += [["python3", "-I", "scripts/ci/" + name + ".py"] for name in
                  ("test_affected", "test_beta_gate", "test_gate", "test_main_merge", "test_kernel_rig_plan",
-                  "test_package_contents", "test_release_content")]
+                  "test_package_contents", "test_release_content", "test_release_candidate", "test_rejudge")]
     if full:
         commands += [["cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"]]
         commands += [["cargo", "test", "-p", "xtask", name, "--locked"]

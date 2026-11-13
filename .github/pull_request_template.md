@@ -13,6 +13,12 @@ Docs-only and bot PRs are exempt. -->
 ## Validation
 
 What did you run, and what were the results? Include expected and measured values for geometry changes.
+Say which checks were reused from the same worktree state and inputs, and which could not run.
+
+Test value: what behaviour or historical failure does each new or changed test protect, and why are
+the existing tests insufficient (or which existing test did you reuse)? Use the cheapest layer that
+proves it; explain any full-app, child-process or whole-corpus fixture. Do not change an assertion,
+snapshot, golden or baseline only to make CI green without explaining the contract change.
 
 ## Screenshots of the behavior (when observable)
 

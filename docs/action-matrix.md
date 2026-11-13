@@ -44,6 +44,60 @@ times out is listed but not judged (and stays passing when blessed): the slowest
 its first action, may take up to 300 s (the largest take several times longer on a loaded CI
 runner than here). None did in this run.
 
+### Measured cost outlier: `regressions/battery_case_pleats`
+
+Current `develop` (2026-11-12, after #113) already has this design in
+`tests/action_matrix/costs.json` at 4,795.7 s with a 26.4 s load, and the
+baseline contains it. It is planned as eight slices of about 600 s, each
+reloading the design (seven extra loads, about 185 s in total). The 90 s
+per-action limit is the one in `develop`.
+
+The much longer 11,839.956 s measurement is historical Beta.3 evidence:
+run 43241626115, shard 15, `timings-15.jsonl`. That branch's workflow set
+`ACTION_MATRIX_ACTION_TIMEOUT=1800`, so it must not be mixed with a `develop`
+cost. Its time decomposition is:
+
+| Outcome | Count | Time |
+|---|---:|---:|
+| passed actions | 1,645 | 2,921.659 s |
+| failed actions with a real result | 224 | 5,204.101 s |
+| failed actions recorded as timeout | 2 | 3,600 s (2 × 1,800; no `ms` field) |
+| load | 1 | 19.194 s |
+| residual: child start, restart/reload, polling, serialization, contention | — | 95.002 s |
+| **unit total** | 1,871 | **11,839.956 s** |
+
+This also explains the apparent 6,635.855 s leftover when only the 224 failed
+`ms` values are subtracted: it is 2,921.659 s of passes + 3,600 s of timeouts +
+19.194 s load + 95.002 s residual. The truly unattributed difference from the
+sum of all action `ms` (8,125.76 s) is 3,714.196 s, almost entirely the two
+1,800 s timeouts; the rest is about 114 s of load and child/restart overhead.
+
+Timing boundaries matter. An action's `ms` starts before `s.scratch()` and ends
+after `perform`, so it includes scratch/model preparation but not the result
+JSON/command serialization or file flush. The unit `secs` in `timings-*.jsonl`
+is measured around `run_design`, so it includes child startup, load, all
+actions, timeout waits, restarts and the 100 ms polling loop. `load` is measured
+inside the child and repeated by every slice. `ACTION_MATRIX_JOBS=2` means a unit's
+wall time can include CPU contention with another design; the action `ms` and the
+unit `secs` are in the same concurrency domain, so they are not nested double
+counts. Parent-synthesized timeout entries have no `ms`, which is why there are
+226 failures but only 224 in the failure-time sum.
+
+The two 1,636.6 s and 1,620.5 s `edge.fillet` SMLib status-1001 results are real
+result waits, not the timeout path. Under `develop` they are bounded at 90 s and
+recorded as timeouts; under the Beta branch they were allowed to finish at
+1,800 s. The 90 s value is a hang/resource bound in the test harness, not an
+interaction-performance requirement and not a correctness assertion. The 1,800 s
+change was a deliberate Beta workaround to let reviewed fillets finish under load
+(commits a8a0140ee/ecdf2105d and b2e798356). This round does not unify the values:
+a bounded timeout is needed, and any increase should be scoped to reviewed slow
+actions with its own cost measurement.
+
+The existing hash-slice mechanism can split the design because each action runs on
+`s.scratch()`. It does not remove an individual 27-minute action, and every slice
+repeats the load. No wall-clock saving is claimed without a measured shard.
+
+
 Pieces that share a name (`#2`, `~3`) are numbered by where they lie, and the numbers of pieces
 lying almost level can swap between runs (#569). The ratchet therefore counts passes per family of
 pieces (the name without its numbers) and samples whole families, so a swap is not a regression.
