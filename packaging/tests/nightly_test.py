@@ -159,6 +159,26 @@ class ForkWorkflowSafety(unittest.TestCase):
         manifest = (ROOT / "packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml").read_text()
         self.assertNotRegex(manifest, r"(?m)^\s+- --share=network\s*$")
         self.assertIn("packaging/linux/flatpak-bundle.sh", text)
+        # The installed checks start the desktop app: each takes the network away from it.
+        check = (ROOT / "packaging/assistant-check.py").read_text()
+        self.assertIn('env["SOLIDCRAFT_UPDATE_CHECK"] = "0"', check)
+        linux = (ROOT / "packaging/linux/installed-check.sh").read_text()
+        # Two containers: one installs (with the network), one starts the app (without it).
+        self.assertEqual(re.findall(r"(?ms)^docker run .*?installed-check-inside\.sh (\w+)", linux), ["install", "run"])
+        self.assertEqual(len(re.findall(r"(?m)^docker run ", linux)), 2)
+        self.assertIn("installed-check-inside.sh run", linux[linux.index("docker run --rm --network none"):])
+        self.assertIn("this system reaches the network", (ROOT / "packaging/linux/installed-check-inside.sh").read_text())
+        launches = re.findall(r"(?m)^.*packaging/assistant-check\.py.*$", text)
+        self.assertTrue(launches)
+        for launch in launches:
+            if not launch.lstrip().startswith("#"):
+                self.assertIn('--run-with "${OFFLINE[*]}', launch)
+        self.assertIn('OFFLINE=(sandbox-exec -f "$PWD/packaging/macos/no-network.sb")', text)
+        self.assertIn("(deny network*)", (ROOT / "packaging/macos/no-network.sb").read_text())
+        windows = (ROOT / "packaging/windows/installed-check.ps1").read_text()
+        self.assertLess(windows.index("New-NetFirewallRule"), windows.index("windows-assistant-smoke.ps1') -Exe"))
+        self.assertIn("$env:SOLIDCRAFT_UPDATE_CHECK = '0'", windows)
+        self.assertNotRegex(text, r"windows-assistant-smoke\.ps1")
 
     def test_build_only_tokens_and_fork_integration_lints_are_read_only(self):
         for name in ("packaging-lint", "lists"):

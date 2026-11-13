@@ -39,6 +39,8 @@ public static class AssistantWin {
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
+    [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
@@ -82,6 +84,14 @@ public static class AssistantWin {
     public static IntPtr At(int x, int y) { POINT p; p.X = x; p.Y = y; return WindowFromPoint(p); }
 }
 '@
+
+# pwsh is not DPI-aware. At a display scale other than 100 % Windows would give this script a
+# smaller, scaled picture of the screen than the one the app's window lives on: its points
+# would miss and its screenshots would hold a corner of the window (found on a person's machine
+# at 125 %, 2026-11-11). Per-monitor awareness (context -4) for this thread, on which every
+# call below is made.
+$dpiBefore = [AssistantWin]::SetThreadDpiAwarenessContext([IntPtr](-4))
+Write-Host ("DPI awareness: per monitor" + $(if ($dpiBefore -eq [IntPtr]::Zero) { ' was NOT taken (an older Windows): positions are right at 100 % only' } else { '' }))
 
 $drawing = $true
 try { Add-Type -AssemblyName System.Drawing } catch { $drawing = $false; Write-Host "no System.Drawing here: $($_.Exception.Message)" }
@@ -130,17 +140,26 @@ function Shot($h, [string]$name) {
     }
 }
 
-# The visible windows inside the app's window, and the largest of them: the web view's.
-function Views($h, [string]$when) {
+# The visible windows inside the app's window, and the web view's among them: the one wry makes
+# for it, of class WRY_WEBVIEW. (Not the largest: with a real graphics card the largest is
+# Chromium's "Intermediate D3D Window", which runs from the panel's corner to the monitor's size
+# and is clipped by its parent; a check of a person's machine found that, 2026-11-11.) With -Any,
+# the largest visible one whatever its class, for the run in which none may be there.
+function Views($h, [string]$when, [switch]$Any) {
     $largest = $null
+    $view = $null
     foreach ($child in [AssistantWin]::Descendants($h)) {
         $r = Rect $child
         $visible = [AssistantWin]::IsWindowVisible($child)
         Write-Host ("$when : child 0x{0:x} class '{1}' at {2},{3} - {4},{5} visible {6} process {7}" -f $child.ToInt64(), [AssistantWin]::Class($child), $r.Left, $r.Top, $r.Right, $r.Bottom, $visible, [AssistantWin]::Owner($child))
         $area = ($r.Right - $r.Left) * ($r.Bottom - $r.Top)
-        if ($visible -and $area -gt 0 -and (-not $largest -or $area -gt $largest.Area)) { $largest = @{ Window = $child; Rect = $r; Area = $area } }
+        if ($visible -and $area -gt 0) {
+            $found = @{ Window = $child; Rect = $r; Area = $area }
+            if (-not $largest -or $area -gt $largest.Area) { $largest = $found }
+            if ([AssistantWin]::Class($child) -eq 'WRY_WEBVIEW' -and (-not $view -or $area -gt $view.Area)) { $view = $found }
+        }
     }
-    $largest
+    if ($Any) { $largest } else { $view }
 }
 
 # A real press and release of the left button at a point of the screen.
@@ -257,9 +276,20 @@ function Quit {
 }
 
 # The app's error output of a run, printed and kept; the run is ended if it has not ended.
+# Nothing here waits without a limit: an app that started and never showed a window (the 32-bit
+# build on a CI runner, 2026-11-11) kept this script waiting for the end of its error output for
+# as long as the job ran. The app is ended with every process it started, and the output is
+# taken as far as it has come if it does not end.
 function Finish([string]$name) {
-    if ($script:p -and -not $script:p.HasExited) { $script:p.Kill(); $script:p.WaitForExit() }
-    $err = if ($script:stderr) { $script:stderr.Result } else { '' }
+    if ($script:p -and -not $script:p.HasExited) {
+        Write-Host 'the app is still running: ending it and every process it started'
+        try { $script:p.Kill($true) } catch { Write-Host "could not end it: $($_.Exception.Message)" }
+        [void]$script:p.WaitForExit(15000)
+    }
+    $err = ''
+    if ($script:stderr) {
+        if ($script:stderr.Wait(15000)) { $err = $script:stderr.Result } else { $err = "(the app's error output did not end within 15 s: a process it started still holds it open)" }
+    }
     Set-Content -Path (Join-Path $Evidence "$name-app-error-output.txt") -Value $err
     Write-Host $err
     $err
@@ -289,7 +319,11 @@ try {
             # The keyboard: to the page on a click in it, back to the window on a click elsewhere.
             # The message box: the text is above the row of buttons at the foot of the page (a
             # click lower down, at 85 px from the foot, opened the menu of one of those buttons).
-            $x = $v.Left + 90; $y = $v.Bottom - 150
+            # (Measured at 100 %; the page is drawn larger at a larger display scale.)
+            $scale = [AssistantWin]::GetDpiForWindow($h) / 96.0
+            if ($scale -le 0) { $scale = 1.0 }
+            Write-Host "display scale of the app's window: $([int]($scale * 100)) %"
+            $x = $v.Left + [int](90 * $scale); $y = $v.Bottom - [int](150 * $scale)
             [void][AssistantWin]::SetCursorPos($x, $y)
             $pt = New-Object AssistantWin+POINT; [void][AssistantWin]::GetCursorPos([ref]$pt)
             if ($pt.X -ne $x -or $pt.Y -ne $y) {
@@ -311,6 +345,10 @@ try {
                 # The 3D view, in the part of the window the panel leaves free.
                 $free = if (($v.Left - $w.Left) -ge ($w.Right - $v.Right)) { [int](($w.Left + $v.Left) / 2) } else { [int](($v.Right + $w.Right) / 2) }
                 Click $free ([int](($w.Top + $w.Bottom) / 2))
+                # The app moves the keyboard on the click's own message; give that message a
+                # moment to arrive before asking which window has it (a runner read the page's
+                # window on the next line, 2026-11-13).
+                Start-Sleep -Milliseconds 500
                 $focus = [AssistantWin]::Focus()
                 if ($focus -eq [IntPtr]::Zero) {
                     Write-Host 'unknown: which window has the keyboard after a click on the rest of the window (Windows named none)'
@@ -358,6 +396,7 @@ try {
     }
     Quit
 } catch {
+    Write-Host "FAIL: $($_.Exception.Message)"
     $failures.Add($_.Exception.Message)
 } finally {
     [void](Finish 'first-run')
@@ -375,7 +414,7 @@ if ($made) {
         $state = OpenAssistant 60
         Shot $h '05-runtime-hidden'
         [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '05-app-frame-runtime-hidden.png') })
-        $left = Views $h 'runtime hidden'
+        $left = Views $h 'runtime hidden' -Any
         if ($state.webView -and -not $state.webView.host) {
             $fellBack = $true
             Check $true 'with the runtime hidden, the app gives the view up and draws the built-in conversation'
@@ -390,6 +429,7 @@ if ($made) {
         }
         Quit
     } catch {
+        Write-Host "FAIL: with the runtime hidden: $($_.Exception.Message)"
         $failures.Add("with the runtime hidden: " + $_.Exception.Message)
     } finally {
         $said = Finish 'runtime-hidden'

@@ -3,9 +3,14 @@
 @import '../../../../../open-source/mastra/packages/playground/src/fonts.css';
 @import '../../../../../open-source/mastra/packages/playground-ui/src/index.css';
 
-/* Tailwind scans the Mastra components we render, and this page's own glue. */
+/* Tailwind scans the Mastra components we render, and this page's own glue. It must not scan
+   Mastra's ee/ folders (a separate enterprise licence: no rule of this stylesheet may come from
+   a file there) nor a build left in dist/ (the stylesheet would depend on the build before).
+   tools/build.mjs requires both lines. */
 @source '../../../../../open-source/mastra/packages/playground-ui/src';
 @source './';
+@source not '../../../../../open-source/mastra/packages/playground-ui/src/ee';
+@source not '../dist';
 
 html,
 body,
