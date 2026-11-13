@@ -1,0 +1,346 @@
+{
+  "case": {
+    "id": "missing_thickness",
+    "kind": "missing_input"
+  },
+  "expected": [
+    {
+      "error_code": null,
+      "measured": {
+        "unit": "mm3",
+        "value": 1489.3971
+      },
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.gate_input_solid"
+      ],
+      "status": "pass"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": "THICKNESS_NOT_DECLARED",
+      "requirement": null,
+      "rules": [
+        "sm.gate_sheet_thickness",
+        "sm.hole_min_diameter",
+        "sm.hole_to_edge",
+        "sm.countersink_depth",
+        "sm.countersink_to_edge",
+        "sm.countersink_to_bend",
+        "sm.hole_spacing"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.gate_bends_found",
+        "sm.inside_radius",
+        "sm.min_flange",
+        "sm.max_bend_length",
+        "sm.hole_to_bend",
+        "sm.bend_relief_present",
+        "sm.min_web_parallel_bends",
+        "sm.u_channel_ratio",
+        "sm.bend_radius_consistent"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": "PROFILE_NOT_GIVEN",
+      "requirement": null,
+      "rules": [
+        "sm.gate_profile_coverage"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": "CRITICAL_NOT_DECLARED",
+      "requirement": null,
+      "rules": [
+        "sm.tolerance_across_bends"
+      ],
+      "status": "not_verified"
+    }
+  ],
+  "header": "no factory: 0 of 15 rules ran on public values. None can pass.",
+  "input": {
+    "critical": [],
+    "declared": {
+      "material": "5052-H32",
+      "process": "press brake",
+      "thicknessMm": null
+    },
+    "facts": {
+      "analyzer_valid": true,
+      "area_mm2": 2195.0000000000005,
+      "bop_valid": true,
+      "faces": 7,
+      "holes": [
+        {
+          "bend_gaps": [],
+          "countersink": null,
+          "depth_mm": 1.5,
+          "diameter_mm": 3.0,
+          "edge_at_mm": [
+            20.0,
+            0.0,
+            1.5
+          ],
+          "edge_hole": null,
+          "edge_kind": "outline",
+          "edge_mm": 11.0,
+          "flat": 3,
+          "square": true,
+          "x_mm": 20.0,
+          "y_mm": 12.5,
+          "z_mm": 0.75
+        }
+      ],
+      "other_openings": 0,
+      "paired_mm": 1.5,
+      "paired_rays": 173,
+      "plate_gap_mm": 1.5,
+      "rays_failed": false,
+      "recognition": {
+        "bends": [],
+        "cone_faces": 0,
+        "cones": 0,
+        "countersinks": 0,
+        "form_faces": 0,
+        "forms": 0,
+        "hems": 0,
+        "joined": true,
+        "sharp_joins": 0,
+        "unknown_faces": 0,
+        "webs": []
+      },
+      "shells_closed": true,
+      "size_mm": [
+        40.0,
+        25.0,
+        1.5
+      ],
+      "triangle_faces": 0,
+      "unknown_faces": 0,
+      "volume_mm3": 1489.397124794134
+    },
+    "generic": {
+      "format": 1,
+      "layer": "generic",
+      "name": "generic",
+      "requirements": [
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [
+            "A punching figure used as a floor for every process, so it can only warn."
+          ],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "The hole's diameter.",
+          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
+          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "rule": "sm.hole_min_diameter",
+          "source": "Mate Precision Technologies, punching: 0.5t, its lowest figure, for fully guided tooling in aluminium. Used for every process and material, so it assumes nothing about this part: https://www.mate.com/technical-resources/punch-press-resources/tips-techniques/punching/techniques/holes/",
+          "validation_samples": [],
+          "value": {
+            "t": 0.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [
+            "Published values differ by more than six times, and the source doesn't say which process it means."
+          ],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "The hole's edge to the nearest cut edge on the same flat.",
+          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
+          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "rule": "sm.hole_to_edge",
+          "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
+          "validation_samples": [],
+          "value": {
+            "t": 1.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [
+            "Worded as a risk: the file can't say whether a hole is cut after bending."
+          ],
+          "inputs": {
+            "r": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "2.5t + r, a labelled trial value: the hole's edge to the nearest bend tangent on the same flat.",
+          "method": "A labelled trial value. Below it a person looks; above it nothing is known.",
+          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "rule": "sm.hole_to_bend",
+          "source": "PTC Creo design rules default, also in Five Flute and Fictiv, which probably share one origin: https://support.ptc.com/help/creo/creo_pma/r7.0/usascii/sheetmetal/sheetmetaldesign/Set_Up/About_Design_Rules.html",
+          "validation_samples": [],
+          "value": {
+            "r": 1.0,
+            "t": 2.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [
+            "Geomiq's depth figure, 0.6 mm below the material thickness, was read again on 2026-11-10 and is still unclear in what it measures, so it isn't used."
+          ],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "max",
+          "measuring_line": "The countersink's depth, from the skin to where the cone meets the hole's wall.",
+          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
+          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "rule": "sm.countersink_depth",
+          "source": "PCBWay, countersink and counterbore design guidelines: at most 0.70t. Fictiv's 60 to 70% agrees at its top end: https://www.pcbway.com/blog/Sheet_Metal/Countersink_Counterbore_Holes_Design_Guidelines_f328f60a.html",
+          "validation_samples": [],
+          "value": {
+            "t": 0.7
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [
+            "PCBWay's centre to edge of twice the major diameter is stricter whenever d is more than 2t."
+          ],
+          "inputs": {
+            "d": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "The countersink's rim to the nearest cut edge on the same flat. Another countersink's rim counts as a cut edge.",
+          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
+          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "rule": "sm.countersink_to_edge",
+          "source": "Geomiq, sheet metal design guide: 4t from an edge to the countersink's centre, moved to the rim by taking off half the major diameter d. Xometry also gives 4t: https://geomiq.com/sheet-metal-design-guide/",
+          "validation_samples": [],
+          "value": {
+            "d": -0.5,
+            "t": 4
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [
+            "If Geomiq's bend line is the bend's centreline, the published value is lower than this by half the bend allowance, which r and t can't write exactly."
+          ],
+          "inputs": {
+            "d": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "The countersink's rim to the nearest bend tangent on the same flat.",
+          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
+          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "rule": "sm.countersink_to_bend",
+          "source": "Geomiq, sheet metal design guide: 3t from the bend line to the countersink's centre, moved to the rim. Its bend line is read as the bend's tangent, an assumption. Xometry also gives 3t: https://geomiq.com/sheet-metal-design-guide/",
+          "validation_samples": [],
+          "value": {
+            "d": -0.5,
+            "t": 3
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [
+            "Mate also gives 2t. A lower laser figure from one shop's own specification is left out."
+          ],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "The wall between two round holes on the same flat, edge to edge.",
+          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
+          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "rule": "sm.hole_spacing",
+          "source": "Five Flute, sheet metal DFM design guidelines, the publisher of the hole-to-edge row: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
+          "validation_samples": [],
+          "value": {
+            "t": 2
+          }
+        }
+      ],
+      "version": "2026-11-10"
+    },
+    "model": {
+      "body": "TEST-ONLY",
+      "modelVersion": "intdfm:2f24830fcd84c8e3047eb6643139b94c27b8c1b6",
+      "source": "intdfm"
+    },
+    "overrides": [],
+    "shop": null
+  },
+  "inputGate": {
+    "error_code": null,
+    "feature": {
+      "description": "whole part",
+      "kind": "part"
+    },
+    "finding_id": "",
+    "label": "",
+    "location": {
+      "mm": null,
+      "text": "whole part"
+    },
+    "measured": {
+      "unit": "mm3",
+      "value": 1489.397124794134
+    },
+    "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+    "mode": "gate",
+    "needs": [],
+    "reason_code": null,
+    "requirement": null,
+    "rules": [
+      "sm.gate_input_solid"
+    ],
+    "status": "pass"
+  }
+}

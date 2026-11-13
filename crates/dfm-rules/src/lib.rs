@@ -14,8 +14,10 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 pub mod bend_rules;
+pub mod flange_rules;
 pub mod intdfm_report;
 pub mod second_gate;
+pub mod sink_rules;
 
 /// The rules-crate version. It is part of every report.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1402,4 +1404,240 @@ pub fn canonical_json(report: &Report) -> Result<String, DfmError> {
 /// The rules this crate implements today. Used by the App to say what is not covered.
 pub fn implemented_rules() -> BTreeSet<&'static str> {
     [THICKNESS_GATE, HOLE_MIN_DIAMETER, HOLE_TO_EDGE, HOLE_TO_BEND].into_iter().collect()
+}
+
+fn coverage_gate(input: &CheckInput) -> Finding {
+    if input.shop.is_none() {
+        return Finding {
+            id: "sm.gate_profile_coverage/PROFILE_NOT_GIVEN".into(),
+            rules: vec!["sm.gate_profile_coverage".into()],
+            status: RuleStatus::NotVerified,
+            state: AppState::Unsupported,
+            error_code: None,
+            reason_code: Some("PROFILE_NOT_GIVEN".into()),
+            message: "No shop was declared.".into(),
+            feature: Feature { kind: "sheet".into(), number: None, description: "the sheet".into() },
+            location: None,
+            measured_mm: None,
+            requirement: None,
+            needs: vec!["The shop's profile.".into()],
+        };
+    }
+    let shop = input.shop.as_ref().expect("checked");
+    if input.declared.process.is_none() || input.declared.material.is_none() || input.declared.thickness_mm.is_none() {
+        return Finding {
+            id: "sm.gate_profile_coverage/COVERAGE_NOT_DECLARED".into(),
+            rules: vec!["sm.gate_profile_coverage".into()],
+            status: RuleStatus::NotVerified,
+            state: AppState::Unsupported,
+            error_code: None,
+            reason_code: Some("COVERAGE_NOT_DECLARED".into()),
+            message: "The profile can't be looked up without the process, the material with its temper and the thickness.".into(),
+            feature: Feature { kind: "sheet".into(), number: None, description: "the sheet".into() },
+            location: None,
+            measured_mm: None,
+            requirement: None,
+            needs: vec!["The declared process, material with temper and thickness.".into()],
+        };
+    }
+    let thickness = input.declared.thickness_mm.expect("checked");
+    let process = input.declared.process.as_deref().expect("checked");
+    let material = input.declared.material.as_deref().expect("checked");
+    let mut missing = Vec::new();
+    for rule in RULE_ORDER.iter().filter(|rule| !rule.contains("gate_")) {
+        let rows: Vec<&Requirement> = shop.requirements.iter().filter(|row| row.rule == *rule).collect();
+        let applies = rows.iter().any(|row| {
+            let process_ok = row.applies.process.is_empty() || row.applies.process.iter().any(|name| name.eq_ignore_ascii_case(process));
+            let material_ok = row.applies.material.is_empty()
+                || row.applies.material.iter().any(|name| {
+                    let name = name.to_lowercase();
+                    let value = material.to_lowercase();
+                    value == name || (!name.contains('-') && value.starts_with(&format!("{name}-")))
+                });
+            let thickness_ok = row.applies.thickness_mm.is_none_or(|[low, high]| low <= thickness && thickness <= high);
+            process_ok && material_ok && thickness_ok
+        });
+        if !applies {
+            missing.push(*rule);
+        }
+    }
+    if !missing.is_empty() {
+        return Finding {
+            id: "sm.gate_profile_coverage/COVERAGE_NO_REQUIREMENT".into(),
+            rules: vec!["sm.gate_profile_coverage".into()],
+            status: RuleStatus::NotVerified,
+            state: AppState::Unsupported,
+            error_code: None,
+            reason_code: Some("COVERAGE_NO_REQUIREMENT".into()),
+            message: format!("{} has no requirement for {} at these values.", shop.name, missing.len()),
+            feature: Feature { kind: "sheet".into(), number: None, description: "the sheet".into() },
+            location: None,
+            measured_mm: None,
+            requirement: None,
+            needs: vec![format!("The shop's requirements for {}.", missing.join(", "))],
+        };
+    }
+    Finding {
+        id: "sm.gate_profile_coverage/pass".into(),
+        rules: vec!["sm.gate_profile_coverage".into()],
+        status: RuleStatus::Pass,
+        state: AppState::Checked,
+        error_code: None,
+        reason_code: None,
+        message: format!("{} has a requirement for each rule at these values. This only says they are covered.", shop.name),
+        feature: Feature { kind: "sheet".into(), number: None, description: "the sheet".into() },
+        location: None,
+        measured_mm: None,
+        requirement: None,
+        needs: Vec::new(),
+    }
+}
+
+/// A pass finding for the App's native entry, where the sheet body has already been accepted.
+pub fn pass_input_gate() -> Finding {
+    gate_finding(RuleStatus::Pass, AppState::Checked, None, None, "The sheet body is one closed solid and was read by the App.".into(), None)
+}
+
+/// Run every migrated rule over one rule-layer input, in catalog order. This is the full-catalog
+/// entry used by the migration tests; the App entry still uses [`check`] for its first slice.
+pub fn catalog_findings(input: &CheckInput, input_gate: &Finding) -> Result<Vec<Finding>, DfmError> {
+    validate(input)?;
+    let thickness = thickness_gate(input);
+    let mut findings = vec![input_gate.clone(), thickness.clone(), coverage_gate(input)];
+    let usable = usable_holes(&input.facts);
+    let flat = bend_rules::is_flat(&input.facts);
+    for rule in FIRST_HOLE_RULES {
+        if *rule == HOLE_TO_BEND && flat {
+            continue;
+        }
+        if thickness.status != RuleStatus::Pass {
+            findings.push(blocked(rule, &thickness));
+            continue;
+        }
+        let unread = input.facts.other_openings > 0
+            || input.facts.unknown_faces > 0
+            || input
+                .facts
+                .recognition
+                .as_ref()
+                .is_some_and(|recognition| recognition.unknown_faces + recognition.cone_faces + recognition.form_faces > 0);
+        if input.facts.holes.as_ref().is_some_and(Vec::is_empty) && !unread {
+            findings.push(not_applicable(rule, "No opening is closed within the skins."));
+            continue;
+        }
+        match &usable {
+            Err(unsupported) => {
+                findings.push(unsupported_finding(rule, Unsupported { code: unsupported.code, message: unsupported.message.clone() }))
+            }
+            Ok(usable) => {
+                let mut found = match *rule {
+                    HOLE_MIN_DIAMETER => min_diameter(input, &thickness, usable),
+                    HOLE_TO_EDGE => hole_to_edge(input, &thickness, usable),
+                    _ => hole_to_bend(input, &thickness, usable),
+                };
+                findings.append(&mut found);
+            }
+        }
+    }
+    let bends = bend_rules::bends_gate(input_gate, &input.facts);
+    if flat {
+        findings.push(bend_rules::flat_finding());
+    } else {
+        findings.push(bends.clone());
+        findings.extend(bend_rules::inside_radius(input, &thickness, &bends, &input.facts));
+        findings.extend(flange_rules::min_flange(input, &thickness, &bends, &input.facts));
+        findings.extend(bend_rules::max_bend_length(input, &thickness, &bends, &input.facts));
+        findings.extend(flange_rules::bend_relief_present(input, &thickness, &bends, &input.facts));
+        findings.extend(flange_rules::min_web_parallel_bends(input, &thickness, &bends, &input.facts));
+        findings.extend(flange_rules::u_channel_ratio(input, &thickness, &bends, &input.facts));
+        findings.extend(bend_rules::bend_radius_consistent(input, &thickness, &bends, &input.facts));
+    }
+    findings.extend(sink_rules::hole_spacing(input, &thickness));
+    findings.extend(sink_rules::tolerance_across_bends(input, &thickness, &bends, flat));
+    findings.extend(sink_rules::countersink_findings(input, &thickness, &bends, flat));
+    findings.sort_by(|a, b| {
+        rule_order(&a.rule())
+            .cmp(&rule_order(&b.rule()))
+            .then_with(|| {
+                let key =
+                    |finding: &Finding| finding.location.as_ref().map_or((0.0, 0.0, 0.0), |location| (location.x_mm, location.y_mm, location.z_mm));
+                key(a).0.total_cmp(&key(b).0).then(key(a).1.total_cmp(&key(b).1)).then(key(a).2.total_cmp(&key(b).2))
+            })
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(findings)
+}
+
+/// Every rule this crate now implements, for the migration matrix and the App's coverage line.
+pub fn implemented_catalog() -> BTreeSet<&'static str> {
+    [
+        THICKNESS_GATE,
+        HOLE_MIN_DIAMETER,
+        HOLE_TO_EDGE,
+        HOLE_TO_BEND,
+        bend_rules::BEND_GATE,
+        bend_rules::INSIDE_RADIUS,
+        bend_rules::MIN_FLANGE,
+        bend_rules::MAX_BEND_LENGTH,
+        bend_rules::BEND_RELIEF,
+        bend_rules::MIN_WEB,
+        bend_rules::U_CHANNEL,
+        bend_rules::BEND_RADII,
+        "sm.hole_spacing",
+        "sm.tolerance_across_bends",
+        "sm.countersink_depth",
+        "sm.countersink_to_edge",
+        "sm.countersink_to_bend",
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// The full-catalog App report. It runs every migrated rule; rules whose facts the App has not
+/// measured return `not_verified`, never a silent pass.
+pub fn check_catalog(input: &CheckInput) -> Result<Report, DfmError> {
+    let findings = catalog_findings(input, &pass_input_gate())?;
+    let mut counts = Counts::default();
+    for finding in &findings {
+        match finding.state {
+            AppState::Passed => counts.passed += 1,
+            AppState::Failed => counts.failed += 1,
+            AppState::Advisory => counts.advisory += 1,
+            AppState::Checked => counts.checked += 1,
+            AppState::Unsupported => counts.unsupported += 1,
+            AppState::NotRun => counts.not_run += 1,
+        }
+    }
+    let clean = counts.failed == 0 && counts.advisory == 0 && counts.unsupported == 0 && counts.passed > 0;
+    let mut rules = Vec::new();
+    for rule in RULE_ORDER.iter().filter(|rule| !rule.contains("gate_")) {
+        let own: Vec<&Finding> = findings.iter().filter(|finding| finding.rules.iter().any(|name| name == rule)).collect();
+        let state = own.first().map_or(AppState::NotRun, |finding| finding.state);
+        rules.push(RuleResult { rule_id: (*rule).to_string(), state, count: own.len() });
+    }
+    let overridden: BTreeSet<&str> = input.overrides.iter().map(|over| over.rule.as_str()).collect();
+    let confirmed_rows = input
+        .generic
+        .requirements
+        .iter()
+        .chain(input.shop.iter().flat_map(|shop| shop.requirements.iter()))
+        .filter(|row| !overridden.contains(row.rule.as_str()) && row.confirmation.is_some_and(Confirmation::decides))
+        .count();
+    Ok(Report {
+        schema_version: SCHEMA_VERSION,
+        rules_version: VERSION.into(),
+        model: input.model.clone(),
+        declared: input.declared.clone(),
+        data: DataIdentity {
+            generic: ProfileIdentity { name: input.generic.name.clone(), version: input.generic.version.clone(), layer: input.generic.layer },
+            shop: input.shop.as_ref().map(|shop| ProfileIdentity { name: shop.name.clone(), version: shop.version.clone(), layer: shop.layer }),
+            overrides_applied: input.overrides.len(),
+            confirmed_rows,
+        },
+        clean,
+        counts,
+        not_checked: NOT_CHECKED.into(),
+        findings,
+        rules,
+    })
 }
