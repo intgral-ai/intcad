@@ -396,31 +396,31 @@ Then run the GUI and the BYOK flow on a clean physical machine. Record the exact
 candidate SHA, asset hash, provider, model, prompt, report/snapshot ids and
 screenshots. A run on another SHA is not evidence for this candidate.
 
-## 6. Beta.3 candidate evidence (run 43366222452)
+## 6. Beta.3 candidate evidence (run 43381698526)
 
-Candidate head `03be2878422a7f7630b52f37f722b047ba09b19e`; PR #106 tested
-merge `d1e17621d961cd47cc87f1bd3acee21643543ba7` (tree
-`87a052600eb2153f50b21c2098748d4b0c58d233`). All six descriptors bind that
+Candidate head `c1d466d848cd49a17f23c5adc7a1c5309c56d4ee`; PR #106 tested
+merge `13417bb37f746b7c86dee67bce48b47ca8f597cd` (tree
+`6376a19bb3f21fe749d762dac412aa95bc73c099`). All six descriptors bind that
 `sourceRevision`.
 
 This promotion includes #113's reviewed `boolean_props` point-tangency fix, but
 not #113's baseline re-bless, costs or property-lane CI change. It keeps the
 authorized old-baseline 213 strict and 956 unbaselined exceptions. The
-determinism job has 150-minute headroom, and the two load-sensitive process
-tests use deterministic live-submit/steer timing.
+determinism job has 150-minute headroom; the load-sensitive process tests use
+deterministic timing and an ACP fixture that keeps its stdout open.
 
 | Platform | Evidence | Result |
 |---|---|---|
-| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `ee03a40ecd90dd0ae24b81571a54310f178b8e67f30aae8a469e9d56afab5729` | Verification run `43374936376`: `solidcraft-cli 0.1.0-beta.3`, `solidcraft 0.1.0-beta.3`. |
-| Linux aarch64 | tar sha `f342de59e30651fe3624b87cea69164e9bf3391f147857dc0bef1f60e0cec084` | Content scan `markers=[]`, `unchecked=[]`; not launched (no aarch64 host). |
-| Windows x64 | MSI sha `97c1a27cb1564f6854c2852f6b0f85a83c7634247db75994dd7bfe5e8cf405b0` | Verification run `43374936376` on a clean `windows-latest`: no existing install; admin extract and isolated `INSTALLFOLDER` both `solidcraft-cli 0.1.0-beta.3` (sha `799E1B3B…`); installed app sha `4BACAF59…` printed `solidcraft 0.1.0-beta.3`. |
-| Windows x86 | MSI sha `992223c50a1334e1388890a14ee91dc093e0db7f052250f524ac5fa5ac07c0ed` | Content scan clean; not launched (no x86 host). |
-| Windows arm64 | MSI sha `2080e0ff08d30e67acb90d15500379f164c7463ff4ae49182d4b7b6a6c117382` | Content scan clean; not launched (no arm64 host). |
-| macOS universal | DMG sha `5cb0f6689db87993ebc8761eaf6b6fb648b2996b027a358ca020c803fb9de393` | Verification run `43374936376`: fat binary `x86_64 arm64`, `codesign` valid and satisfies its Designated Requirement, app `solidcraft 0.1.0-beta.3`, ejected cleanly. |
+| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `0302652993dadfbb7052b1987340cfdf857d5b2f5d110ac22367213521cd042e` | Verification run `43390930849`: `solidcraft-cli 0.1.0-beta.3`, `solidcraft 0.1.0-beta.3`. |
+| Linux aarch64 | tar sha `0698efc78bfbea25538048e31979e3a26a987d1333bfd4bacd9ba8bbf6379530` | Content scan `markers=[]`, `unchecked=[]`; not launched (no aarch64 host). |
+| Windows x64 | MSI sha `647d45d230505492170f3e95330fda18866766bffee3eeb442bfa537326b0911` | Verification run `43390930849` on a clean `windows-latest`: no existing install; admin extract and isolated `INSTALLFOLDER` both `solidcraft-cli 0.1.0-beta.3` (sha `16651797…`); installed app sha `6A1505FF…` printed `solidcraft 0.1.0-beta.3`. |
+| Windows x86 | MSI sha `18b89bc6009e51023e9fba4fa9e72e6b644ed6e7be6d9d19a06b7d8f57425747` | Content scan clean; not launched (no x86 host). |
+| Windows arm64 | MSI sha `741d4082220dac27a54f669fe9fc6afd130efb31e267f9474aeefec9c41fd0ea` | Content scan clean; not launched (no arm64 host). |
+| macOS universal | DMG sha `1a9aa1a9907bd6e82464db725d6456d0a2d3471e7cd2bc7bb08cc5b7dc02bdd6` | Verification run `43390930849`: fat binary `x86_64 arm64`, `codesign` valid and satisfies its Designated Requirement, app `solidcraft 0.1.0-beta.3`, ejected cleanly. |
 
-The six descriptors all bind `sourceRevision=d1e17621d...`; their `contents.json`
+The six descriptors all bind `sourceRevision=13417bb37...`; their `contents.json`
 reports `markers=[]` and `unchecked=[]`, and the checked files match `build.json`.
-Verification run `43374936376` passed all three platforms for this tested merge.
+Verification run `43390930849` passed all three platforms for this tested merge.
 This is package/install evidence, not a promotion-gate pass; the gate decision is
 recorded in PR #106.
 
