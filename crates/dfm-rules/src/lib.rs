@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+pub mod bend_rules;
 pub mod intdfm_report;
 pub mod second_gate;
 
@@ -665,15 +666,15 @@ pub fn validate(input: &CheckInput) -> Result<(), DfmError> {
 // Number selection.
 
 #[derive(Debug, Clone)]
-struct Chosen {
-    requirement: RequirementRef,
-    limit_mm: f64,
-    decides: bool,
+pub(crate) struct Chosen {
+    pub(crate) requirement: RequirementRef,
+    pub(crate) limit_mm: f64,
+    pub(crate) decides: bool,
 }
 
-struct Unsupported {
-    code: &'static str,
-    message: String,
+pub(crate) struct Unsupported {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
 }
 
 fn matches_name(names: &[String], value: Option<&str>) -> bool {
@@ -703,7 +704,7 @@ fn applies(requirement: &Requirement, declared: &Declared) -> bool {
     }
 }
 
-fn limit_mm(requirement: &Requirement, thickness: f64, model_thickness: Option<f64>, radius: Option<f64>, upper: bool) -> Option<f64> {
+pub(crate) fn limit_mm(requirement: &Requirement, thickness: f64, model_thickness: Option<f64>, radius: Option<f64>, upper: bool) -> Option<f64> {
     let model = model_thickness.unwrap_or(thickness);
     let at = |t: f64| {
         let mut known = BTreeMap::from([("t", t), ("mm", 1.0)]);
@@ -722,7 +723,7 @@ fn limit_mm(requirement: &Requirement, thickness: f64, model_thickness: Option<f
     Some(if upper { declared.min(measured) } else { declared.max(measured) })
 }
 
-fn choose(rule: &str, radius: Option<f64>, upper: bool, input: &CheckInput) -> Result<Chosen, Unsupported> {
+pub(crate) fn choose(rule: &str, radius: Option<f64>, upper: bool, input: &CheckInput) -> Result<Chosen, Unsupported> {
     if let Some(over) = input.overrides.iter().find(|over| over.rule == rule) {
         if over.limit != Limit::Min {
             return Err(Unsupported {
@@ -845,7 +846,7 @@ fn choose(rule: &str, radius: Option<f64>, upper: bool, input: &CheckInput) -> R
 // ---------------------------------------------------------------------------
 // Gates and findings.
 
-fn state_of(status: RuleStatus, decides: bool) -> AppState {
+pub(crate) fn state_of(status: RuleStatus, decides: bool) -> AppState {
     match status {
         RuleStatus::Pass if decides => AppState::Passed,
         RuleStatus::Pass => AppState::Checked,
@@ -946,7 +947,7 @@ fn blocked(rule: &str, gate: &Finding) -> Finding {
     }
 }
 
-fn hole_finding(
+pub(crate) fn hole_finding(
     rule: &str,
     status: RuleStatus,
     error_code: Option<&str>,
@@ -1002,7 +1003,7 @@ fn round6(value: f64) -> f64 {
     (value * 1_000_000.0).round() / 1_000_000.0
 }
 
-fn below(value: f64, limit: f64, upper: bool) -> bool {
+pub(crate) fn below(value: f64, limit: f64, upper: bool) -> bool {
     let past = round6(value - limit);
     if upper { past > 0.0 } else { past < 0.0 }
 }
@@ -1030,7 +1031,7 @@ fn usable_holes(facts: &Facts) -> Result<Vec<(usize, &HoleFact)>, Unsupported> {
     Ok(usable)
 }
 
-fn unsupported_finding(rule: &str, unsupported: Unsupported) -> Finding {
+pub(crate) fn unsupported_finding(rule: &str, unsupported: Unsupported) -> Finding {
     Finding {
         id: format!("{rule}/{}", unsupported.code),
         rules: vec![rule.to_string()],
@@ -1047,7 +1048,7 @@ fn unsupported_finding(rule: &str, unsupported: Unsupported) -> Finding {
     }
 }
 
-fn not_applicable(rule: &str, message: &str) -> Finding {
+pub(crate) fn not_applicable(rule: &str, message: &str) -> Finding {
     Finding {
         id: format!("{rule}/not-applicable"),
         rules: vec![rule.to_string()],
