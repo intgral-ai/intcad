@@ -67,7 +67,7 @@
         "description": "whole part",
         "kind": "part"
       },
-      "finding_id": "f_c4ab80243f487ef7",
+      "finding_id": "f_3ae4397a26e96c9d",
       "label": "F3",
       "location": {
         "mm": null,
@@ -88,7 +88,9 @@
         "sm.bend_relief_present",
         "sm.min_web_parallel_bends",
         "sm.u_channel_ratio",
-        "sm.bend_radius_consistent"
+        "sm.bend_radius_consistent",
+        "sm.bend_relief_width",
+        "sm.bend_relief_depth"
       ],
       "status": "not_applicable"
     },
@@ -142,8 +144,8 @@
       "reason_code": "ABOVE_PUBLIC_VALUE",
       "requirement": {
         "layer": "generic",
-        "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
-        "text": "At least 2.25 mm. The hole's edge to the nearest cut edge on the same flat.",
+        "source": "TEST-ONLY: invented for the migration baseline.",
+        "text": "At least 2.25 mm. TEST-ONLY: the quantity this rule measures.",
         "value": {
           "unit": "mm",
           "value": 2.25
@@ -185,7 +187,7 @@
         "description": "whole part",
         "kind": "part"
       },
-      "finding_id": "f_b0644688e31e75b3",
+      "finding_id": "f_573b9e5660a048ad",
       "label": "F7",
       "location": {
         "mm": null,
@@ -200,7 +202,9 @@
       "rules": [
         "sm.countersink_depth",
         "sm.countersink_to_edge",
-        "sm.countersink_to_bend"
+        "sm.countersink_to_bend",
+        "sm.countersink_land",
+        "sm.countersink_angle"
       ],
       "status": "not_applicable"
     },
@@ -228,7 +232,7 @@
       "status": "not_applicable"
     }
   ],
-  "header": "1 of 15 rules ran on public values: sm.hole_to_edge. Those can't pass.",
+  "header": "1 of 19 rules ran on public values: sm.hole_to_edge. Those can't pass.",
   "not_checked": "Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked.",
   "part": {
     "holes": [
@@ -256,7 +260,7 @@
   "report_version": "1.8",
   "rule_results": {
     "needs_review": 0,
-    "not_applicable": 13,
+    "not_applicable": 17,
     "not_verified": 4,
     "pass": 2,
     "violation": 0
@@ -272,7 +276,7 @@
       "shop": "TEST-ONLY-6061.json",
       "thickness_mm": 1.5
     },
-    "file_sha256": "649bbe5e477f534af04ea4d9c4bb409c39cb9ae5d610a645b01f97357f56c65b",
+    "file_sha256": "48a3beb5a17a0b7b39eb57a4c9ada094b5fed87066ff8b77a4097f564bd7feab",
     "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
     "ocp_version": "8.0.1.1",
     "profile": {

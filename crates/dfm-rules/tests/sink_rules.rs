@@ -154,7 +154,7 @@ fn compare(fixture: &Fixture, actual: &[Finding]) {
         assert_eq!(got.status, wanted.status, "{id}: status");
         assert_eq!(got.error_code, wanted.error_code, "{id}: error code");
         assert_eq!(got.reason_code, wanted.reason_code, "{id}: reason code");
-        assert!(!got.message.is_empty(), "{id}: every finding says something");
+        assert_eq!(got.message, wanted.message, "{id}: message");
         match (&wanted.measured, got.measured_mm) {
             (Some(wanted), Some(got)) => close(got, wanted.value, "measured", &id),
             (None, None) => {}
@@ -214,6 +214,10 @@ fixture_cases! {
     synthetic_countersinks_flat => "synthetic.countersinks_flat",
     synthetic_countersinks_review => "synthetic.countersinks_review",
     synthetic_countersinks_bent => "synthetic.countersinks_bent",
+    synthetic_countersinks_land => "synthetic.countersinks_land",
+    synthetic_countersinks_angle_shop => "synthetic.countersinks_angle_shop",
+    synthetic_countersinks_angle_public => "synthetic.countersinks_angle_public",
+    synthetic_countersinks_angle_missing => "synthetic.countersinks_angle_missing",
 }
 
 /// A fixture without a test, or a test without its fixture, fails here.
@@ -328,5 +332,81 @@ fn a_countersink_with_no_land_is_reviewed_on_its_own() {
     assert_eq!(no_land.len(), 1);
     assert_eq!(no_land[0].measured_mm, Some(0.0));
     assert!(no_land[0].requirement.is_none(), "no land means no depth to compare");
-    assert_eq!(no_land[0].rules, vec!["sm.countersink_depth".to_string()]);
+    assert_eq!(no_land[0].rules, vec!["sm.countersink_depth".to_string(), "sm.countersink_land".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// Land and angle: the boundary cases the fixtures pin.
+
+#[test]
+fn an_angle_at_the_allowed_tolerance_is_met_and_one_degree_beyond_is_a_review() {
+    let fixture = fixture("synthetic.countersinks_angle_shop");
+    let findings = run(&fixture);
+    let angle_rule = ["sm.countersink_angle".to_string()];
+    let angles: Vec<&Finding> = findings.iter().filter(|finding| finding.rules == angle_rule).collect();
+    // 91 degrees is one degree off 90, exactly the allowed tolerance, so it is met.
+    assert!(
+        angles.iter().any(|finding| finding.status == RuleStatus::Pass && finding.measured_mm == Some(91.0)),
+        "a cone at the allowed tolerance must be met: {angles:?}"
+    );
+    // 92 is one degree beyond it.
+    let beyond = angles
+        .iter()
+        .find(|finding| finding.error_code.as_deref() == Some("COUNTERSINK_ANGLE_NOT_HELD") && finding.measured_mm == Some(92.0))
+        .expect("92 degrees is beyond the allowed one");
+    assert!(beyond.message.contains("2 degrees from 90 degrees"), "{}", beyond.message);
+    // 86 is four degrees from both 82 and 90; the tie goes to the smaller angle.
+    let tie = angles
+        .iter()
+        .find(|finding| finding.error_code.as_deref() == Some("COUNTERSINK_ANGLE_NOT_HELD") && finding.measured_mm == Some(86.0))
+        .expect("86 degrees misses");
+    assert!(tie.message.contains("4 degrees from 82 degrees"), "{}", tie.message);
+}
+
+#[test]
+fn a_land_below_the_shop_wall_is_a_review_and_one_above_is_met() {
+    let fixture = fixture("synthetic.countersinks_land");
+    let findings = run(&fixture);
+    let review = findings.iter().find(|finding| finding.error_code.as_deref() == Some("COUNTERSINK_LAND_BELOW_LIMIT")).expect("a land review");
+    assert_eq!(review.measured_mm, Some(0.2));
+    assert_eq!(review.requirement.as_ref().expect("a requirement").value_mm, 0.3);
+    assert!(
+        findings.iter().any(|finding| finding.status == RuleStatus::Pass
+            && finding.measured_mm == Some(0.4)
+            && finding.rules == ["sm.countersink_land".to_string()]),
+        "a 0.4 mm land against 0.3 mm is met"
+    );
+}
+
+#[test]
+fn a_generic_angle_table_only_clears_the_public_value() {
+    let fixture = fixture("synthetic.countersinks_angle_public");
+    let findings = run(&fixture);
+    let angle_rule = ["sm.countersink_angle".to_string()];
+    let above = findings
+        .iter()
+        .find(|finding| finding.reason_code.as_deref() == Some("ABOVE_PUBLIC_VALUE") && finding.rules == angle_rule)
+        .expect("a public angle table never passes");
+    assert_eq!(above.measured_mm, Some(92.0), "the met cone nearest the allowed slack");
+    assert!(
+        findings.iter().any(|finding| finding.error_code.as_deref() == Some("COUNTERSINK_ANGLE_NOT_HELD") && finding.measured_mm == Some(93.0)),
+        "93 degrees is beyond the public two degrees"
+    );
+}
+
+#[test]
+fn an_angle_with_no_row_has_no_number() {
+    let fixture = fixture("synthetic.countersinks_angle_missing");
+    let findings = run(&fixture);
+    let angle = findings.iter().find(|finding| finding.rules == ["sm.countersink_angle".to_string()]).expect("the angle rule always answers");
+    assert_eq!(angle.reason_code.as_deref(), Some("NO_SHOP_NUMBER"));
+}
+
+#[test]
+fn a_part_with_no_countersink_names_all_five_rules() {
+    let findings = run(&fixture("real.countersinks_none"));
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rules.len(), 5);
+    assert!(findings[0].rules.iter().any(|rule| rule == "sm.countersink_land"));
+    assert!(findings[0].rules.iter().any(|rule| rule == "sm.countersink_angle"));
 }

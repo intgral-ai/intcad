@@ -55,7 +55,19 @@ pub const U_CHANNEL: &str = "sm.u_channel_ratio";
 pub const BEND_RADII: &str = "sm.bend_radius_consistent";
 
 /// Every rule a flat part answers with one finding, in INTdfm's `BEND_RULES` order.
-pub const BEND_RULES: &[&str] = &[BEND_GATE, INSIDE_RADIUS, MIN_FLANGE, MAX_BEND_LENGTH, HOLE_TO_BEND, BEND_RELIEF, MIN_WEB, U_CHANNEL, BEND_RADII];
+pub const BEND_RULES: &[&str] = &[
+    BEND_GATE,
+    INSIDE_RADIUS,
+    MIN_FLANGE,
+    MAX_BEND_LENGTH,
+    HOLE_TO_BEND,
+    BEND_RELIEF,
+    MIN_WEB,
+    U_CHANNEL,
+    BEND_RADII,
+    crate::flange_rules::BEND_RELIEF_WIDTH,
+    crate::flange_rules::BEND_RELIEF_DEPTH,
+];
 
 /// `rules._NEAR_90_DEG`: how far off 90 degrees a bend may turn and still be held to a limit.
 const NEAR_90_DEG: f64 = 5.0;
@@ -545,6 +557,7 @@ fn choose_upper(rule: &str, radius: Option<f64>, input: &CheckInput) -> Result<C
             validation_samples: Vec::new(),
             die: None,
             bends: None,
+            angles_deg: None,
             confirmation: Some(Confirmation::TeamSelfReported),
         };
         let thickness = input.declared.thickness_mm.ok_or_else(|| Unsupported {
@@ -1147,7 +1160,7 @@ mod message_parity {
             differences.append(&mut diffs);
         }
         eprintln!("sink message parity: {cases} cases, {total_exact}/{total_compared} byte-exact, {total_skipped} gate-delegated (not compared)");
-        assert_eq!(cases, 18, "the sink corpus has 18 cases");
+        assert!(cases >= 18, "the sink corpus has at least 18 cases; got {cases}");
         assert!(differences.is_empty(), "{}", differences.join("\n"));
         assert_eq!(total_exact, total_compared);
     }

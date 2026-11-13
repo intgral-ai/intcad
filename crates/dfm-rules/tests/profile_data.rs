@@ -169,6 +169,7 @@ fn one_row(value: f64) -> Requirement {
         validation_samples: Vec::new(),
         die: None,
         bends: None,
+        angles_deg: None,
         confirmation: None,
     }
 }

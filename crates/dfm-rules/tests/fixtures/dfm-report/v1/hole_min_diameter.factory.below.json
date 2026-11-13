@@ -5,12 +5,12 @@
     "kind": "below",
     "part": {
       "name": "TEST-ONLY_plate_hole_d05.step",
-      "sha256": "224695976fa5452d40f4b99cceeb04688108b86a1f6cd66874487093ecfa699e"
+      "sha256": "e4af33325ad0a2df6f84a158acae0f1587673473836e249f22642f757eb958ba"
     },
     "rule": "sm.hole_min_diameter"
   },
   "expected": {
-    "header": "1 of 15 rules ran on public values: sm.hole_to_edge. Those can't pass.",
+    "header": "1 of 19 rules ran on public values: sm.hole_to_edge. Those can't pass.",
     "report_version": "1.8"
   },
   "input": {
@@ -24,7 +24,7 @@
       "shop": "TEST-ONLY-factory.json",
       "thickness_mm": 1.5
     },
-    "file_sha256": "224695976fa5452d40f4b99cceeb04688108b86a1f6cd66874487093ecfa699e",
+    "file_sha256": "e4af33325ad0a2df6f84a158acae0f1587673473836e249f22642f757eb958ba",
     "findings": [
       {
         "error_code": null,
@@ -91,10 +91,10 @@
           "text": "whole part"
         },
         "measured": null,
-        "message": "TEST-ONLY-factory has no requirement for 14 rules at these values.",
+        "message": "TEST-ONLY-factory has no requirement for 18 rules at these values.",
         "mode": null,
         "needs": [
-          "The shop's requirements for sm.inside_radius, sm.min_flange, sm.max_bend_length, sm.hole_to_bend, sm.bend_relief_present, sm.hole_to_edge, sm.min_web_parallel_bends, sm.u_channel_ratio, sm.tolerance_across_bends, sm.countersink_depth, sm.countersink_to_edge, sm.countersink_to_bend, sm.hole_spacing, sm.bend_radius_consistent."
+          "The shop's requirements for sm.inside_radius, sm.min_flange, sm.max_bend_length, sm.hole_to_bend, sm.bend_relief_present, sm.hole_to_edge, sm.min_web_parallel_bends, sm.u_channel_ratio, sm.tolerance_across_bends, sm.countersink_depth, sm.countersink_to_edge, sm.countersink_to_bend, sm.hole_spacing, sm.bend_radius_consistent, sm.bend_relief_width, sm.bend_relief_depth, sm.countersink_land, sm.countersink_angle."
         ],
         "reason_code": "COVERAGE_NO_REQUIREMENT",
         "requirement": null,
@@ -167,8 +167,8 @@
         "reason_code": "ABOVE_PUBLIC_VALUE",
         "requirement": {
           "layer": "generic",
-          "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
-          "text": "At least 2.25 mm. The hole's edge to the nearest cut edge on the same flat.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 2.25 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 2.25
@@ -229,7 +229,9 @@
           "sm.bend_relief_present",
           "sm.min_web_parallel_bends",
           "sm.u_channel_ratio",
-          "sm.bend_radius_consistent"
+          "sm.bend_radius_consistent",
+          "sm.bend_relief_width",
+          "sm.bend_relief_depth"
         ],
         "status": "not_applicable"
       },
@@ -279,12 +281,14 @@
         "rules": [
           "sm.countersink_depth",
           "sm.countersink_to_edge",
-          "sm.countersink_to_bend"
+          "sm.countersink_to_bend",
+          "sm.countersink_land",
+          "sm.countersink_angle"
         ],
         "status": "not_applicable"
       }
     ],
-    "header": "1 of 15 rules ran on public values: sm.hole_to_edge. Those can't pass.",
+    "header": "1 of 19 rules ran on public values: sm.hole_to_edge. Those can't pass.",
     "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
     "ocp_version": "8.0.1.1",
     "part": {
@@ -330,8 +334,8 @@
     "snapshot_id": "snap1-c4e2bfe56368329251e3015ece4fea1225709988aa99eb55ca92935111eea1ae"
   },
   "source": {
-    "core_source_sha256": "2e75e5cf7b82aa32b905a14f3cb38fe7cccb080f8c441ce8f82c33a9adddae2d",
-    "intdfm_commit": "2f24830fcd84c8e3047eb6643139b94c27b8c1b6",
+    "core_source_sha256": "9c56620dca68e0649724232218db9c4ddccfb91714e8f3a04b5dc8c1a3139a06",
+    "intdfm_commit": "7ecb3ff39b25816fc1d787c91ac07752fb7bf00f",
     "report_version": "1.8"
   }
 }

@@ -21,6 +21,7 @@ fn row(rule: &str, value: f64, confirmation: Option<Confirmation>) -> Requiremen
         validation_samples: Vec::new(),
         die: None,
         bends: None,
+        angles_deg: None,
         confirmation,
     }
 }

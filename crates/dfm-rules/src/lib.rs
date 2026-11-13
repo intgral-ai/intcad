@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 //! The pure DFM rule layer: facts and declared data in, one deterministic report out.
 //!
 //! This is the Rust side of the INTdfm handover. It does not load OCP, read a file, call a
@@ -58,6 +60,10 @@ pub const RULE_ORDER: &[&str] = &[
     "sm.countersink_to_bend",
     "sm.hole_spacing",
     "sm.bend_radius_consistent",
+    "sm.bend_relief_width",
+    "sm.bend_relief_depth",
+    "sm.countersink_land",
+    "sm.countersink_angle",
 ];
 
 const FIRST_HOLE_RULES: &[&str] = &[HOLE_MIN_DIAMETER, HOLE_TO_EDGE, HOLE_TO_BEND];
@@ -84,6 +90,7 @@ fn invalid(message: impl Into<String>) -> DfmError {
 pub enum FactFamily {
     BendRuns,
     ReliefEnds,
+    ReliefSizes,
     Webs,
     Countersinks,
     HolePanels,
@@ -250,6 +257,17 @@ pub struct WebFact {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct ReliefFact {
+    #[serde(default)]
+    pub at_mm: Vec<f64>,
+    #[serde(default)]
+    pub width_mm: f64,
+    #[serde(default)]
+    pub depth_mm: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct BendFact {
     pub inside_radius_mm: f64,
     pub angle_deg: f64,
@@ -269,6 +287,8 @@ pub struct BendFact {
     pub no_margin: Vec<Vec<f64>>,
     #[serde(default)]
     pub crossed: bool,
+    #[serde(default)]
+    pub reliefs: Vec<ReliefFact>,
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +367,9 @@ pub struct Requirement {
     pub die: Option<Die>,
     #[serde(default)]
     pub bends: Option<Vec<Option<i64>>>,
+    /// sm.countersink_angle only: the included angles the shop holds, in degrees.
+    #[serde(default)]
+    pub angles_deg: Option<Vec<f64>>,
     /// None means the file is older than FD-7; such a number never decides.
     #[serde(default)]
     pub confirmation: Option<Confirmation>,
@@ -573,16 +596,27 @@ fn validate_requirement(requirement: &Requirement) -> Result<(), DfmError> {
     if requirement.value.is_empty() {
         return Err(invalid(format!("{} has no number", requirement.rule)));
     }
+    let angle_rule = requirement.rule == "sm.countersink_angle";
     for (name, number) in &requirement.value {
-        if !matches!(name.as_str(), "mm" | "t" | "r" | "d" | "b") {
+        let allowed = if angle_rule { matches!(name.as_str(), "deg") } else { matches!(name.as_str(), "mm" | "t" | "r" | "d" | "b") };
+        if !allowed {
             return Err(invalid(format!("{} uses the unknown input {name}", requirement.rule)));
         }
         finite(*number, &format!("{}'s {name}", requirement.rule))?;
     }
     for (name, unit) in &requirement.inputs {
-        if unit != "mm" {
-            return Err(invalid(format!("{}'s input {name} must be in mm", requirement.rule)));
+        let allowed = if angle_rule { unit == "deg" } else { unit == "mm" };
+        if !allowed {
+            return Err(invalid(format!("{}'s input {name} has the wrong unit", requirement.rule)));
         }
+    }
+    if let Some(angles) = &requirement.angles_deg
+        && (!angle_rule || angles.is_empty() || angles.iter().any(|angle| !angle.is_finite()))
+    {
+        return Err(invalid("angles_deg is only valid, and required, on sm.countersink_angle"));
+    }
+    if angle_rule && (requirement.limit != Limit::Max || requirement.angles_deg.is_none()) {
+        return Err(invalid("sm.countersink_angle takes limit max, angles_deg and a value in deg"));
     }
     valid_text(&requirement.measuring_line, "measuring_line")?;
     valid_text(&requirement.source, "source")?;
@@ -767,6 +801,7 @@ pub(crate) fn choose(rule: &str, radius: Option<f64>, upper: bool, input: &Check
             validation_samples: Vec::new(),
             die: None,
             bends: None,
+            angles_deg: None,
             // A project override replaces a number somebody else confirmed; it does not inherit
             // that identity. Until a person confirms this row, it is team-reported.
             confirmation: Some(Confirmation::TeamSelfReported),
@@ -1490,7 +1525,22 @@ fn coverage_gate(input: &CheckInput) -> Finding {
             needs: vec!["The shop's profile.".into()],
         };
     }
-    let shop = input.shop.as_ref().expect("checked");
+    let Some(shop) = input.shop.as_ref() else {
+        return Finding {
+            id: "sm.gate_profile_coverage/PROFILE_NOT_GIVEN".into(),
+            rules: vec!["sm.gate_profile_coverage".into()],
+            status: RuleStatus::NotVerified,
+            state: AppState::Unsupported,
+            error_code: None,
+            reason_code: Some("PROFILE_NOT_GIVEN".into()),
+            message: "No shop was declared.".into(),
+            feature: Feature { kind: "sheet".into(), number: None, description: "the sheet".into() },
+            location: None,
+            measured_mm: None,
+            requirement: None,
+            needs: vec!["The shop's profile.".into()],
+        };
+    };
     if input.declared.process.is_none() || input.declared.material.is_none() || input.declared.thickness_mm.is_none() {
         return Finding {
             id: "sm.gate_profile_coverage/COVERAGE_NOT_DECLARED".into(),
@@ -1507,9 +1557,24 @@ fn coverage_gate(input: &CheckInput) -> Finding {
             needs: vec!["The declared process, material with temper and thickness.".into()],
         };
     }
-    let thickness = input.declared.thickness_mm.expect("checked");
-    let process = input.declared.process.as_deref().expect("checked");
-    let material = input.declared.material.as_deref().expect("checked");
+    let (Some(thickness), Some(process), Some(material)) =
+        (input.declared.thickness_mm, input.declared.process.as_deref(), input.declared.material.as_deref())
+    else {
+        return Finding {
+            id: "sm.gate_profile_coverage/COVERAGE_NOT_DECLARED".into(),
+            rules: vec!["sm.gate_profile_coverage".into()],
+            status: RuleStatus::NotVerified,
+            state: AppState::Unsupported,
+            error_code: None,
+            reason_code: Some("COVERAGE_NOT_DECLARED".into()),
+            message: "The profile can't be looked up without the process, the material with its temper and the thickness.".into(),
+            feature: Feature { kind: "sheet".into(), number: None, description: "the sheet".into() },
+            location: None,
+            measured_mm: None,
+            requirement: None,
+            needs: vec!["The declared process, material with temper and thickness.".into()],
+        };
+    };
     let mut missing = Vec::new();
     for rule in RULE_ORDER.iter().filter(|rule| !rule.contains("gate_")) {
         let rows: Vec<&Requirement> = shop.requirements.iter().filter(|row| row.rule == *rule).collect();
@@ -1564,8 +1629,11 @@ fn requires_fact(rule: &str) -> Option<FactFamily> {
     match rule {
         "sm.min_flange" => Some(FactFamily::BendRuns),
         "sm.bend_relief_present" => Some(FactFamily::ReliefEnds),
+        "sm.bend_relief_width" | "sm.bend_relief_depth" => Some(FactFamily::ReliefSizes),
         "sm.min_web_parallel_bends" | "sm.u_channel_ratio" => Some(FactFamily::Webs),
-        "sm.countersink_depth" | "sm.countersink_to_edge" | "sm.countersink_to_bend" => Some(FactFamily::Countersinks),
+        "sm.countersink_depth" | "sm.countersink_to_edge" | "sm.countersink_to_bend" | "sm.countersink_land" | "sm.countersink_angle" => {
+            Some(FactFamily::Countersinks)
+        }
         "sm.hole_spacing" => Some(FactFamily::HolePanels),
         _ => None,
     }
@@ -1666,6 +1734,18 @@ pub fn catalog_findings(input: &CheckInput, input_gate: &Finding) -> Result<Vec<
             }
         }
         findings.extend(bend_rules::bend_radius_consistent(input, &thickness, &bends, &input.facts));
+        for rule in [flange_rules::BEND_RELIEF_WIDTH, flange_rules::BEND_RELIEF_DEPTH] {
+            if missing_fact(input, rule) {
+                findings.push(unsupported_finding(
+                    rule,
+                    Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
+                ));
+            } else if rule == flange_rules::BEND_RELIEF_WIDTH {
+                findings.extend(flange_rules::bend_relief_width(input, &thickness, &bends, &input.facts));
+            } else {
+                findings.extend(flange_rules::bend_relief_depth(input, &thickness, &bends, &input.facts));
+            }
+        }
     }
     if missing_fact(input, "sm.hole_spacing") {
         findings.push(unsupported_finding(
@@ -1677,7 +1757,7 @@ pub fn catalog_findings(input: &CheckInput, input_gate: &Finding) -> Result<Vec<
     }
     findings.extend(sink_rules::tolerance_across_bends(input, &thickness, &bends, flat));
     if input.facts.missing.contains(&FactFamily::Countersinks) {
-        for rule in ["sm.countersink_depth", "sm.countersink_to_edge", "sm.countersink_to_bend"] {
+        for rule in ["sm.countersink_depth", "sm.countersink_to_edge", "sm.countersink_to_bend", "sm.countersink_land", "sm.countersink_angle"] {
             findings.push(unsupported_finding(
                 rule,
                 Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
@@ -1696,7 +1776,24 @@ pub fn catalog_findings(input: &CheckInput, input_gate: &Finding) -> Result<Vec<
             })
             .then_with(|| a.id.cmp(&b.id))
     });
+    apply_confirmation(&mut findings);
     Ok(findings)
+}
+
+/// FD-7 is an App mapping rule: a factory/project number only fails or passes the product when a
+/// factory confirmed it or a real part verified it. The rule layer keeps INTdfm's layer result.
+fn apply_confirmation(findings: &mut [Finding]) {
+    for finding in findings {
+        let Some(requirement) = &finding.requirement else { continue };
+        let confirmed = requirement.confirmation.is_some_and(Confirmation::decides);
+        if !confirmed && matches!(requirement.layer, Layer::Factory | Layer::Project) {
+            finding.state = match finding.state {
+                AppState::Failed => AppState::Advisory,
+                AppState::Passed => AppState::Checked,
+                other => other,
+            };
+        }
+    }
 }
 
 /// Every rule this crate now implements, for the migration matrix and the App's coverage line.
@@ -1719,6 +1816,10 @@ pub fn implemented_catalog() -> BTreeSet<&'static str> {
         "sm.countersink_depth",
         "sm.countersink_to_edge",
         "sm.countersink_to_bend",
+        "sm.bend_relief_width",
+        "sm.bend_relief_depth",
+        "sm.countersink_land",
+        "sm.countersink_angle",
     ]
     .into_iter()
     .collect()

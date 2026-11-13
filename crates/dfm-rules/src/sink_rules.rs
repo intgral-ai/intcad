@@ -10,9 +10,10 @@
 //! * `sm.tolerance_across_bends` (`rules.py:574-741`): each declared hole-to-hole dimension, the
 //!   nearest hole within `MATCH_MM` plus half the sheet's depth, the fewest bends between the two
 //!   holes' flats, and the shop's own table row for that many bends;
-//! * `sm.countersink_depth`, `sm.countersink_to_edge` and `sm.countersink_to_bend`
-//!   (`rules.py:808-1074`): a countersink from its rim, with no land, no edge or no bend flat
-//!   reported rather than read as zero.
+//! * `sm.countersink_depth`, `sm.countersink_to_edge`, `sm.countersink_to_bend`,
+//!   `sm.countersink_land` and `sm.countersink_angle` (`rules.py:855-1206`): a countersink from
+//!   its rim, with no land, no edge or no bend flat reported rather than read as zero, and its
+//!   cone angle matched to the nearest angle the shop holds.
 //!
 //! # What is faithful, and what is not
 //!
@@ -47,9 +48,16 @@ pub const COUNTERSINK_DEPTH: &str = "sm.countersink_depth";
 pub const COUNTERSINK_TO_EDGE: &str = "sm.countersink_to_edge";
 /// `sm.countersink_to_bend`.
 pub const COUNTERSINK_TO_BEND: &str = "sm.countersink_to_bend";
+/// `sm.countersink_land`.
+pub const COUNTERSINK_LAND: &str = "sm.countersink_land";
+/// `sm.countersink_angle`.
+pub const COUNTERSINK_ANGLE: &str = "sm.countersink_angle";
 
-/// The three countersink rules, in INTdfm's `COUNTERSINK_RULES` order.
-pub const COUNTERSINK_RULES: &[&str] = &[COUNTERSINK_DEPTH, COUNTERSINK_TO_EDGE, COUNTERSINK_TO_BEND];
+/// The five countersink rules, in INTdfm's `COUNTERSINK_RULES` order.
+pub const COUNTERSINK_RULES: &[&str] = &[COUNTERSINK_DEPTH, COUNTERSINK_TO_EDGE, COUNTERSINK_TO_BEND, COUNTERSINK_LAND, COUNTERSINK_ANGLE];
+
+/// `rules._ON_ITS_SKIN`: the countersink rules measured on its own skin, so not on a bend.
+const ON_ITS_SKIN: &[&str] = &[COUNTERSINK_DEPTH, COUNTERSINK_TO_EDGE, COUNTERSINK_LAND, COUNTERSINK_ANGLE];
 
 /// `rules._UPPER_LIMITS`: a measure that must stay at or under its limit.
 const UPPER_LIMITS: &[&str] = &["sm.max_bend_length", "sm.u_channel_ratio", COUNTERSINK_DEPTH];
@@ -433,7 +441,7 @@ impl Sink<'_> {
     }
 }
 
-/// The three countersink rules, each from the rim. A countersink with no land is reviewed on its
+/// The five countersink rules, each from the rim. A countersink with no land is reviewed on its
 /// own; a flat part's countersink-to-bend says there is no bend to measure.
 pub fn countersink_findings(input: &CheckInput, thickness_gate: &Finding, bends_gate: &Finding, flat: bool) -> Vec<Finding> {
     if thickness_gate.status != RuleStatus::Pass {
@@ -466,16 +474,18 @@ pub fn countersink_findings(input: &CheckInput, thickness_gate: &Finding, bends_
     // Beside what was measured, what might hide another countersink.
     let mut results = Vec::new();
     if found.cones > 0 {
-        results.push(cones_left(&COUNTERSINK_RULES[..2]));
+        results.push(cones_left(ON_ITS_SKIN));
     }
     if found.unknown_faces > 0 {
-        results.push(same_as_gate(bends_gate, &COUNTERSINK_RULES[..2]));
+        results.push(same_as_gate(bends_gate, ON_ITS_SKIN));
     }
     if off_a_hole {
-        results.push(unrecognised(if flat { &COUNTERSINK_RULES[..2] } else { COUNTERSINK_RULES }, SINK_OFF_A_HOLE));
+        results.push(unrecognised(if flat { ON_ITS_SKIN } else { COUNTERSINK_RULES }, SINK_OFF_A_HOLE));
     }
     results.extend(sink_depths(input, sheet, &sinks));
     results.extend(sink_edges(input, sheet, &sinks));
+    results.extend(sink_lands(input, sheet, &sinks));
+    results.extend(sink_angles(&sinks, input));
     if flat {
         results.push(not_applicable_with(&[COUNTERSINK_TO_BEND], FLAT_PART));
     } else {
@@ -502,14 +512,15 @@ fn cones_left(rules: &[&str]) -> Finding {
     )
 }
 
-/// With no land left, one review that says so, and no depth: the depth is the sheet's.
+/// With no land left, one review that says so on depth and land, and neither measured: the depth
+/// is the sheet's, and there is no land to measure.
 fn sink_depths(input: &CheckInput, sheet: f64, sinks: &[Sink<'_>]) -> Vec<Finding> {
     let mut results: Vec<Finding> = sinks
         .iter()
         .filter(|sink| round4(sink.facts.land_mm) <= 0.0)
         .map(|sink| {
             make(
-                &[COUNTERSINK_DEPTH],
+                &[COUNTERSINK_DEPTH, COUNTERSINK_LAND],
                 RuleStatus::NeedsReview,
                 Some("COUNTERSINK_NO_LAND"),
                 None,
@@ -526,28 +537,40 @@ fn sink_depths(input: &CheckInput, sheet: f64, sinks: &[Sink<'_>]) -> Vec<Findin
             )
         })
         .collect();
+    results.extend(landed_only(input, sheet, COUNTERSINK_DEPTH, "depth", "the deepest", sinks));
+    results
+}
+
+/// `rules._sink_lands`: the straight wall under the cone. With none left, [`sink_depths`] has
+/// already reviewed it.
+fn sink_lands(input: &CheckInput, sheet: f64, sinks: &[Sink<'_>]) -> Vec<Finding> {
+    landed_only(input, sheet, COUNTERSINK_LAND, "land", "the thinnest", sinks)
+}
+
+/// `rules._landed_only`: one review per countersink whose value misses the number, one line for the
+/// rest. The depth is an upper limit and the land a lower one, so only their direction differs.
+fn landed_only(input: &CheckInput, sheet: f64, rule: &str, what: &str, tightest: &str, sinks: &[Sink<'_>]) -> Vec<Finding> {
     let landed: Vec<&Sink<'_>> = sinks.iter().filter(|sink| round4(sink.facts.land_mm) > 0.0).collect();
     if landed.is_empty() {
-        return results;
+        return Vec::new();
     }
-    let chosen = match ask(input, COUNTERSINK_DEPTH, sheet, None) {
+    let chosen = match ask(input, rule, sheet, None) {
         Ok(chosen) => chosen,
-        Err(finding) => {
-            results.push(finding);
-            return results;
-        }
+        Err(finding) => return vec![finding],
     };
+    let upper = rule == COUNTERSINK_DEPTH;
+    let mut results = Vec::new();
     let mut met: Vec<(f64, Chosen)> = Vec::new();
     for sink in landed {
-        let value = sink.facts.depth_mm;
-        if below(value, chosen.limit_mm, true) {
-            results.push(sink_review(COUNTERSINK_DEPTH, "COUNTERSINK_DEPTH_ABOVE_LIMIT", sink, "depth", value, &chosen));
+        let value = if rule == COUNTERSINK_DEPTH { sink.facts.depth_mm } else { sink.facts.land_mm };
+        if below(value, chosen.limit_mm, upper) {
+            results.push(sink_review(rule, sink, what, value, &chosen));
         } else {
             met.push((value, chosen.clone()));
         }
     }
     if !met.is_empty() {
-        results.push(sinks_met(COUNTERSINK_DEPTH, &met, "the deepest"));
+        results.push(sinks_met(rule, &met, tightest));
     }
     results
 }
@@ -565,7 +588,7 @@ fn sink_edges(input: &CheckInput, sheet: f64, sinks: &[Sink<'_>]) -> Vec<Finding
             Some(value) if value.is_finite() => {
                 if below(value, chosen.limit_mm, false) {
                     let what = format!("rim's distance to a cut edge, {},", rim_edge(sink.facts));
-                    results.push(sink_review(COUNTERSINK_TO_EDGE, "COUNTERSINK_EDGE_BELOW_LIMIT", sink, &what, value, &chosen));
+                    results.push(sink_review(COUNTERSINK_TO_EDGE, sink, &what, value, &chosen));
                 } else {
                     met.push((value, chosen));
                 }
@@ -611,7 +634,7 @@ fn sinks_to_bend(input: &CheckInput, sheet: f64, sinks: &[Sink<'_>], bends_gate:
         let value = nearest.gap_mm;
         if below(value, chosen.limit_mm, false) {
             let what = format!("rim's distance to bend {}", nearest.bend);
-            results.push(sink_review(COUNTERSINK_TO_BEND, "COUNTERSINK_BEND_BELOW_LIMIT", sink, &what, value, &chosen));
+            results.push(sink_review(COUNTERSINK_TO_BEND, sink, &what, value, &chosen));
         } else {
             met.push((value, chosen));
         }
@@ -626,6 +649,155 @@ fn sinks_to_bend(input: &CheckInput, sheet: f64, sinks: &[Sink<'_>], bends_gate:
     results
 }
 
+/// `sm.countersink_angle`: the cone's angle against the nearest angle the shop holds, every
+/// countersink, land or not. A row gives the angles and how far off one a cone may be, in degrees,
+/// so it does not go through the millimetre selector.
+fn sink_angles(sinks: &[Sink<'_>], input: &CheckInput) -> Vec<Finding> {
+    let (source, found) = match angle_rows(input) {
+        Ok(pair) => pair,
+        Err(finding) => return vec![finding],
+    };
+    let mut usable: Vec<(&Requirement, Vec<f64>, f64)> = Vec::new();
+    for row in &found {
+        if let Some((angles, allowed)) = held(row) {
+            usable.push((row, angles, allowed));
+        }
+    }
+    if usable.len() < found.len() {
+        return vec![unsupported_with(
+            &[COUNTERSINK_ANGLE],
+            "REQUIREMENT_INPUT_UNKNOWN",
+            &format!("{} states this rule in terms this version can't work out.", source.name),
+            vec![
+                "The angles the shop holds, as angles_deg, with how far off one a cone may be as an upper limit in degrees, {\"deg\": N}."
+                    .to_string(),
+            ],
+        )];
+    }
+    // When rows overlap, the one allowing least wins, as `_strictest` does.
+    let Some((item, angles, allowed)) = usable.into_iter().reduce(|best, item| if item.2 < best.2 { item } else { best }) else {
+        return vec![no_number(COUNTERSINK_ANGLE)];
+    };
+    let listed = if angles.len() == 1 {
+        pyfmt::g(angles[0])
+    } else {
+        let head: Vec<String> = angles[..angles.len() - 1].iter().map(|angle| pyfmt::g(*angle)).collect();
+        format!("{} or {}", head.join(", "), pyfmt::g(angles[angles.len() - 1]))
+    };
+    let chosen = Chosen {
+        requirement: RequirementRef {
+            value_mm: allowed,
+            layer: source.layer,
+            confirmation: item.confirmation,
+            source: item.source.clone(),
+            text: format!(
+                "Within {} degree{} of an angle held: {listed} degrees. {}",
+                pyfmt::g(allowed),
+                if allowed == 1.0 { "" } else { "s" },
+                item.measuring_line
+            ),
+            overridden: false,
+        },
+        limit_mm: allowed,
+        decides: !never_decides(source.layer),
+    };
+    let mut results = Vec::new();
+    let mut met: Vec<(f64, Chosen)> = Vec::new();
+    for sink in sinks {
+        let angle = sink.facts.angle_deg;
+        let (apart, nearest) = off(angle, &angles);
+        if below(apart, chosen.limit_mm, true) {
+            let needs = if chosen.decides { vec![LOOK_AT_SINK.to_string()] } else { vec![sink_need(COUNTERSINK_ANGLE).to_string()] };
+            results.push(make(
+                &[COUNTERSINK_ANGLE],
+                RuleStatus::NeedsReview,
+                Some("COUNTERSINK_ANGLE_NOT_HELD"),
+                None,
+                format!(
+                    "The countersink of hole {}: its cone is {} degrees, {} degrees from {} degrees, the nearest angle in {}, which allows {}. A person decides.",
+                    sink.hole,
+                    pyfmt::g(angle),
+                    pyfmt::g(pyfmt::round(apart, 4)),
+                    pyfmt::g(nearest),
+                    whose(&chosen),
+                    pyfmt::g(allowed)
+                ),
+                sink_feature(sink),
+                Some(sink_location(sink)),
+                Some(angle),
+                Some(chosen.clone()),
+                needs,
+                chosen.decides,
+            ));
+        } else {
+            met.push((angle, chosen.clone()));
+        }
+    }
+    if !met.is_empty() {
+        results.push(sinks_met_with(COUNTERSINK_ANGLE, &met, "the furthest from an angle held", "degrees", &|angle, chosen| {
+            chosen.limit_mm - off(angle, &angles).0
+        }));
+    }
+    results
+}
+
+/// `rules._rows` for the angle rule: the rows that apply and whose they are, or why there are none.
+#[allow(clippy::result_large_err)]
+fn angle_rows(input: &CheckInput) -> Result<(&crate::Profile, Vec<&Requirement>), Finding> {
+    let rule = COUNTERSINK_ANGLE;
+    let shop_has = input.shop.as_ref().is_some_and(|shop| shop.requirements.iter().any(|row| row.rule == rule));
+    let (source, rows) = match (&input.shop, shop_has) {
+        (Some(shop), true) => (shop, &shop.requirements),
+        _ => (&input.generic, &input.generic.requirements),
+    };
+    if shop_has && (input.declared.process.is_none() || input.declared.material.is_none()) {
+        return Err(unsupported_with(
+            &[rule],
+            "COVERAGE_NOT_DECLARED",
+            "The selected data can't be looked up without the declared process and material with temper.",
+            vec!["The declared process and material with temper.".to_string()],
+        ));
+    }
+    let own: Vec<&Requirement> = rows.iter().filter(|row| row.rule == rule).collect();
+    if own.is_empty() {
+        return Err(no_number(rule));
+    }
+    let applying: Vec<&Requirement> = own.into_iter().filter(|row| crate::applies(row, &input.declared)).collect();
+    if applying.is_empty() {
+        return Err(coverage_not_in_profile(rule));
+    }
+    Ok((source, applying))
+}
+
+/// `rules._held`: a row's angles and how far off one a cone may be, or `None` for anything else.
+fn held(row: &Requirement) -> Option<(Vec<f64>, f64)> {
+    if row.limit != Limit::Max || row.inputs.len() != 1 || row.inputs.get("deg").map(String::as_str) != Some("deg") {
+        return None;
+    }
+    if row.value.len() != 1 {
+        return None;
+    }
+    let allowed = *row.value.get("deg")?;
+    let mut angles = row.angles_deg.clone()?;
+    if angles.is_empty() {
+        return None;
+    }
+    angles.sort_by(f64::total_cmp);
+    Some((angles, allowed))
+}
+
+/// How far a cone is from the nearest held angle, and that angle. A tie goes to the smaller.
+fn off(angle: f64, angles: &[f64]) -> (f64, f64) {
+    let nearest = angles
+        .iter()
+        .copied()
+        .min_by(|left, right| {
+            pyfmt::round((angle - left).abs(), 6).total_cmp(&pyfmt::round((angle - right).abs(), 6)).then_with(|| left.total_cmp(right))
+        })
+        .unwrap_or(angle);
+    ((angle - nearest).abs(), nearest)
+}
+
 /// Which edge the rim's distance runs to, as far as the faces show it.
 fn rim_edge(facts: &CountersinkFact) -> String {
     if let Some(hole) = facts.edge_hole {
@@ -637,13 +809,13 @@ fn rim_edge(facts: &CountersinkFact) -> String {
     }
 }
 
-fn sink_review(rule: &str, error_code: &str, sink: &Sink<'_>, what: &str, value: f64, chosen: &Chosen) -> Finding {
+fn sink_review(rule: &str, sink: &Sink<'_>, what: &str, value: f64, chosen: &Chosen) -> Finding {
     let side = if UPPER_LIMITS.contains(&rule) { "above" } else { "below" };
     let needs = if chosen.decides { vec![LOOK_AT_SINK.to_string()] } else { vec![sink_need(rule).to_string()] };
     make(
         &[rule],
         RuleStatus::NeedsReview,
-        Some(error_code),
+        Some(sink_code(rule)),
         None,
         format!(
             "The countersink of hole {}: its {what} is {} mm, {side} {} of {} mm. A person decides.",
@@ -663,9 +835,12 @@ fn sink_review(rule: &str, error_code: &str, sink: &Sink<'_>, what: &str, value:
 
 /// One line for every countersink that met its number, at the one nearest to missing it.
 fn sinks_met(rule: &str, met: &[(f64, Chosen)], tightest: &str) -> Finding {
-    let Some((value, chosen)) =
-        met.iter().min_by(|left, right| (left.0 - left.1.limit_mm).abs().total_cmp(&(right.0 - right.1.limit_mm).abs())).cloned()
-    else {
+    sinks_met_with(rule, met, tightest, "mm", &|value, chosen| (value - chosen.limit_mm).abs())
+}
+
+/// [`sinks_met`] with the unit the message prints and the slack that decides "nearest to missing".
+fn sinks_met_with(rule: &str, met: &[(f64, Chosen)], tightest: &str, unit: &str, slack: &dyn Fn(f64, &Chosen) -> f64) -> Finding {
+    let Some((value, chosen)) = met.iter().min_by(|left, right| slack(left.0, &left.1).total_cmp(&slack(right.0, &right.1))).cloned() else {
         return no_number(rule);
     };
     if !chosen.decides {
@@ -690,7 +865,7 @@ fn sinks_met(rule: &str, met: &[(f64, Chosen)], tightest: &str) -> Finding {
         None,
         None,
         format!(
-            "{} met this shop's number, {tightest} at {} mm. This says nothing about anything but this rule.",
+            "{} met this shop's number, {tightest} at {} {unit}. This says nothing about anything but this rule.",
             many(met.len(), "countersink"),
             pyfmt::g(value)
         ),
@@ -707,7 +882,20 @@ fn sink_need(rule: &str) -> &'static str {
     match rule {
         COUNTERSINK_DEPTH => "The shop's own number for a countersink's depth.",
         COUNTERSINK_TO_EDGE => "The shop's own number for a countersink's distance to a cut edge.",
-        _ => "The shop's own number for a countersink's distance to a bend.",
+        COUNTERSINK_TO_BEND => "The shop's own number for a countersink's distance to a bend.",
+        COUNTERSINK_LAND => "The shop's own number for a countersink's land.",
+        _ => "The countersink angles the shop holds.",
+    }
+}
+
+/// `rules._SINK_CODES`.
+fn sink_code(rule: &str) -> &'static str {
+    match rule {
+        COUNTERSINK_DEPTH => "COUNTERSINK_DEPTH_ABOVE_LIMIT",
+        COUNTERSINK_TO_EDGE => "COUNTERSINK_EDGE_BELOW_LIMIT",
+        COUNTERSINK_TO_BEND => "COUNTERSINK_BEND_BELOW_LIMIT",
+        COUNTERSINK_LAND => "COUNTERSINK_LAND_BELOW_LIMIT",
+        _ => "COUNTERSINK_ANGLE_NOT_HELD",
     }
 }
 
@@ -1148,6 +1336,13 @@ mod tests {
         assert!(unbounded.covers(9));
         assert!(!unbounded.covers(1));
         assert!(!Choice { bends: None, ..unbounded }.covers(2));
+    }
+
+    #[test]
+    fn an_angle_tie_goes_to_the_smaller_held_angle() {
+        assert_eq!(off(86.0, &[82.0, 90.0]), (4.0, 82.0));
+        assert_eq!(off(91.0, &[82.0, 90.0, 100.0]), (1.0, 90.0));
+        assert_eq!(off(89.0, &[82.0, 90.0, 100.0]), (1.0, 90.0));
     }
 
     #[test]

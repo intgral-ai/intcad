@@ -221,7 +221,7 @@
         "reason_code": null,
         "requirement": {
           "layer": "generic",
-          "source": "PTC Creo design rules default, also in Five Flute and Fictiv, which probably share one origin: https://support.ptc.com/help/creo/creo_pma/r7.0/usascii/sheetmetal/sheetmetaldesign/Set_Up/About_Design_Rules.html",
+          "source": "TEST-ONLY: no third-party text or data.",
           "text": "At least 6.75 mm. 2.5t + r, a labelled trial value: the hole's edge to the nearest bend tangent on the same flat.",
           "value": {
             "unit": "mm",
@@ -739,7 +739,7 @@
         "reason_code": null,
         "requirement": {
           "layer": "generic",
-          "source": "PTC Creo design rules default, also in Five Flute and Fictiv, which probably share one origin: https://support.ptc.com/help/creo/creo_pma/r7.0/usascii/sheetmetal/sheetmetaldesign/Set_Up/About_Design_Rules.html",
+          "source": "TEST-ONLY: no third-party text or data.",
           "text": "At least 6.75 mm. 2.5t + r, a labelled trial value: the hole's edge to the nearest bend tangent on the same flat.",
           "value": {
             "unit": "mm",
@@ -779,7 +779,7 @@
         "reason_code": null,
         "requirement": {
           "layer": "generic",
-          "source": "PTC Creo design rules default, also in Five Flute and Fictiv, which probably share one origin: https://support.ptc.com/help/creo/creo_pma/r7.0/usascii/sheetmetal/sheetmetaldesign/Set_Up/About_Design_Rules.html",
+          "source": "TEST-ONLY: no third-party text or data.",
           "text": "At least 6.75 mm. 2.5t + r, a labelled trial value: the hole's edge to the nearest bend tangent on the same flat.",
           "value": {
             "unit": "mm",
@@ -915,7 +915,7 @@
         "reason_code": null,
         "requirement": {
           "layer": "generic",
-          "source": "Five Flute, sheet metal DFM design guidelines, the publisher of the hole-to-edge row: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
+          "source": "TEST-ONLY: no third-party text or data.",
           "text": "At least 3 mm. The wall between two round holes on the same flat, edge to edge.",
           "value": {
             "unit": "mm",

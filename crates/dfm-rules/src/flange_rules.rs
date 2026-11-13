@@ -1,5 +1,6 @@
-//! The flange, web and relief rules: `sm.min_flange`, `sm.min_web_parallel_bends`,
-//! `sm.u_channel_ratio` and `sm.bend_relief_present`.
+//! The flange, web, relief and relief-size rules: `sm.min_flange`,
+//! `sm.min_web_parallel_bends`, `sm.u_channel_ratio`, `sm.bend_relief_present`,
+//! `sm.bend_relief_width` and `sm.bend_relief_depth`.
 //!
 //! A port of INTdfm `rules.py`:
 //!
@@ -7,7 +8,10 @@
 //!   (`rules.py:1211-1335`), the die-row chart `sm.min_flange` reads;
 //! * `_webs_and_channels` (`rules.py:1100-1118`) with `_measured` (`1121-1147`) for
 //!   `sm.min_web_parallel_bends` and `sm.u_channel_ratio`;
-//! * `_reliefs` and `_line_only` (`rules.py:1345-1407`), which compare no number.
+//! * `_reliefs` and `_line_only` (`rules.py:1345-1407`), which compare no number;
+//! * `_per_relief` (`rules.py:1260-1275`) with `_measured` and `_WIDTH`/`_DEPTH`
+//!   (`rules.py:153-154`) for the two relief-size rules, which read each notch's width and
+//!   depth at the end it sits at.
 //!
 //! # Faithful, and not
 //!
@@ -42,6 +46,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use crate::bend_rules::{BEND_RELIEF, MIN_FLANGE, MIN_WEB, U_CHANNEL};
 use crate::bend_rules::{flat_finding, is_flat};
+
+/// `sm.bend_relief_width`: each notch's width at a bend end.
+pub const BEND_RELIEF_WIDTH: &str = "sm.bend_relief_width";
+/// `sm.bend_relief_depth`: each notch's depth at a bend end.
+pub const BEND_RELIEF_DEPTH: &str = "sm.bend_relief_depth";
 use crate::{
     AppState, Applies, BendFact, CheckInput, Chosen, Confirmation, Facts, Feature, Finding, Layer, Limit, Location, Recognition, Requirement,
     RequirementRef, RuleStatus, Unsupported, WebFact, below, limit_mm, pyfmt, round6, state_of,
@@ -122,7 +131,7 @@ pub fn min_flange(input: &CheckInput, thickness_gate: &Finding, bends_gate: &Fin
         };
         met.push(tightest);
     }
-    if let Some(finding) = bends_clear(MIN_FLANGE, "bend", &met, bends_gate) {
+    if let Some(finding) = bends_clear(MIN_FLANGE, "bend", "bend", &met, bends_gate) {
         results.push(finding);
     }
     if let Some(text) = off {
@@ -272,6 +281,7 @@ pub fn min_web_parallel_bends(input: &CheckInput, thickness_gate: &Finding, bend
     measured(
         MIN_WEB,
         "web",
+        "web",
         "width",
         false,
         webs,
@@ -304,6 +314,7 @@ pub fn u_channel_ratio(input: &CheckInput, thickness_gate: &Finding, bends_gate:
     measured(
         U_CHANNEL,
         "U",
+        "U",
         "taller flange",
         true,
         channels,
@@ -315,7 +326,7 @@ pub fn u_channel_ratio(input: &CheckInput, thickness_gate: &Finding, bends_gate:
     )
 }
 
-/// One web or U to measure, with the radius and base its limit may be written in terms of.
+/// One web, U or relief notch to measure, with the radius and base its limit may be written in terms of.
 struct Measure {
     name: String,
     at: Option<Location>,
@@ -376,6 +387,7 @@ fn widest_radius(found: &Recognition, first: usize, second: usize) -> f64 {
 fn measured(
     rule: &str,
     kind: &str,
+    noun: &str,
     what: &str,
     upper: bool,
     items: Vec<Measure>,
@@ -414,7 +426,7 @@ fn measured(
             met.push((item.value, row.chosen.clone()));
         }
     }
-    if let Some(finding) = bends_clear(rule, kind, &met, gate) {
+    if let Some(finding) = bends_clear(rule, kind, noun, &met, gate) {
         results.push(finding);
     }
     if let Some(text) = off
@@ -429,6 +441,8 @@ fn rule_error_code(rule: &str) -> &'static str {
     match rule {
         MIN_WEB => "WEB_BELOW_LIMIT",
         U_CHANNEL => "U_FLANGE_ABOVE_LIMIT",
+        BEND_RELIEF_WIDTH => "RELIEF_WIDTH_BELOW_LIMIT",
+        BEND_RELIEF_DEPTH => "RELIEF_DEPTH_BELOW_LIMIT",
         _ => "FLANGE_BELOW_LIMIT",
     }
 }
@@ -543,6 +557,74 @@ fn relief_pass(bends: usize, requirement: RequirementRef) -> Finding {
 }
 
 // ---------------------------------------------------------------------------
+// sm.bend_relief_width and sm.bend_relief_depth.
+
+const NO_RELIEF_TO_SIZE: &str = "No bend end on this part has a notch past it to size, so this rule has nothing to measure.";
+
+/// `sm.bend_relief_width`: each notch's width at the bend end it sits at.
+pub fn bend_relief_width(input: &CheckInput, thickness_gate: &Finding, bends_gate: &Finding, facts: &Facts) -> Vec<Finding> {
+    relief_size(BEND_RELIEF_WIDTH, "relief's width", |relief| relief.width_mm, input, thickness_gate, bends_gate, facts)
+}
+
+/// `sm.bend_relief_depth`: each notch's depth at the bend end it sits at.
+pub fn bend_relief_depth(input: &CheckInput, thickness_gate: &Finding, bends_gate: &Finding, facts: &Facts) -> Vec<Finding> {
+    relief_size(BEND_RELIEF_DEPTH, "relief's depth", |relief| relief.depth_mm, input, thickness_gate, bends_gate, facts)
+}
+
+/// The shared body of the two relief-size rules: one measure per notch, at its own end, with the
+/// bend's inside radius for a limit written in `r`.
+fn relief_size(
+    rule: &str,
+    what: &str,
+    value_of: impl Fn(&crate::ReliefFact) -> f64,
+    input: &CheckInput,
+    thickness_gate: &Finding,
+    bends_gate: &Finding,
+    facts: &Facts,
+) -> Vec<Finding> {
+    if is_flat(facts) {
+        return vec![flat_finding()];
+    }
+    if thickness_gate.status != RuleStatus::Pass {
+        return vec![blocked_for(rule, thickness_gate)];
+    }
+    let Some(found) = facts.recognition.as_ref() else {
+        return vec![same_as_gate(bends_gate, rule)];
+    };
+    if found.bends.is_empty() {
+        return vec![same_as_gate(bends_gate, rule)];
+    }
+    let shut = shut_bends(&found.bends);
+    let items = per_relief(&found.bends, value_of, &shut);
+    let off = off_90(&found.bends, &shut, &found.webs);
+    // `_WIDTH`/`_DEPTH` name the count a "relief" but describe the feature as a bend.
+    measured(rule, "bend", "relief", what, false, items, bends_gate, off.as_deref(), input, facts, NO_RELIEF_TO_SIZE)
+}
+
+/// `rules._per_relief`: each notch past a bend's end, at that end, with its bend's radius.
+fn per_relief(bends: &[BendFact], value_of: impl Fn(&crate::ReliefFact) -> f64, shut: &BTreeSet<usize>) -> Vec<Measure> {
+    let mut items = Vec::new();
+    for (index, bend) in bends.iter().enumerate() {
+        let number = index + 1;
+        for relief in &bend.reliefs {
+            let at = match (relief.at_mm.first(), relief.at_mm.get(1), relief.at_mm.get(2)) {
+                (Some(x), Some(y), Some(z)) => Some(location(*x, *y, *z)),
+                _ => None,
+            };
+            items.push(Measure {
+                name: format!("an end of bend {number}"),
+                at,
+                value: value_of(relief),
+                radius: Some(bend.inside_radius_mm),
+                base: None,
+                skip: shut.contains(&number),
+            });
+        }
+    }
+    items
+}
+
+// ---------------------------------------------------------------------------
 // Row selection.
 
 /// One applying row, with the die it names (if any) and its measuring line.
@@ -585,6 +667,7 @@ fn choices(rule: &str, radius: Option<f64>, base: Option<f64>, upper: bool, shee
             validation_samples: Vec::new(),
             die: None,
             bends: None,
+            angles_deg: None,
             confirmation: Some(Confirmation::TeamSelfReported),
         };
         let thickness = input.declared.thickness_mm.ok_or_else(|| Unsupported {
@@ -749,7 +832,7 @@ fn no_number() -> Unsupported {
 
 /// `rules._bends_clear`: one line for everything that met the number, at the one nearest to missing
 /// it, or the gate's reason when the gate could not say every bend was found.
-fn bends_clear(rule: &str, kind: &str, met: &[(f64, Chosen)], gate: &Finding) -> Option<Finding> {
+fn bends_clear(rule: &str, kind: &str, noun: &str, met: &[(f64, Chosen)], gate: &Finding) -> Option<Finding> {
     if met.is_empty() {
         return None;
     }
@@ -766,7 +849,7 @@ fn bends_clear(rule: &str, kind: &str, met: &[(f64, Chosen)], gate: &Finding) ->
             error_code: None,
             reason_code: Some("ABOVE_PUBLIC_VALUE".into()),
             message: "These are clear of the public value, so nothing is known about them: only a shop's own number can say a bend is fine.".into(),
-            feature: Feature { kind: kind.into(), number: None, description: format!("{} that met the number", many(met.len(), kind)) },
+            feature: Feature { kind: kind.into(), number: None, description: format!("{} that met the number", many(met.len(), noun)) },
             location: None,
             measured_mm: Some(*value),
             requirement: Some(chosen.requirement.clone()),
@@ -782,10 +865,10 @@ fn bends_clear(rule: &str, kind: &str, met: &[(f64, Chosen)], gate: &Finding) ->
         reason_code: None,
         message: format!(
             "{} met this shop's number, the tightest at {} mm. This says nothing about anything but this rule.",
-            many(met.len(), kind),
+            many(met.len(), noun),
             pyfmt::g(*value)
         ),
-        feature: Feature { kind: kind.into(), number: None, description: format!("{} that met the number", many(met.len(), kind)) },
+        feature: Feature { kind: kind.into(), number: None, description: format!("{} that met the number", many(met.len(), noun)) },
         location: None,
         measured_mm: Some(*value),
         requirement: Some(chosen.requirement.clone()),

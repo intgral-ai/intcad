@@ -20,10 +20,12 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use solidcraft_dfm_rules::bend_rules::{bends_gate, flat_finding, is_flat};
 use solidcraft_dfm_rules::flange_rules::{
-    BEND_RELIEF, MIN_FLANGE, MIN_WEB, U_CHANNEL, bend_relief_present, min_flange, min_web_parallel_bends, u_channel_ratio,
+    BEND_RELIEF, BEND_RELIEF_DEPTH, BEND_RELIEF_WIDTH, MIN_FLANGE, MIN_WEB, U_CHANNEL, bend_relief_depth, bend_relief_present, bend_relief_width,
+    min_flange, min_web_parallel_bends, u_channel_ratio,
 };
 use solidcraft_dfm_rules::{
-    AppState, Applies, CheckInput, Confirmation, Declared, Die, Facts, Feature, Finding, Layer, Limit, ModelRef, Profile, Requirement, RuleStatus,
+    AppState, Applies, CheckInput, Confirmation, Declared, Die, FactFamily, Facts, Feature, Finding, Layer, Limit, ModelRef, Profile, ReliefFact,
+    Requirement, RuleStatus, catalog_findings,
 };
 
 /// `hole_to_bend.below`, INTdfm `2f24830fcd84c8e3047eb6643139b94c27b8c1b6`. An L bracket.
@@ -197,6 +199,7 @@ fn requirement_with(rule: &str, limit: Limit, value: &[(&str, f64)], applies: Ap
         validation_samples: Vec::new(),
         die: None,
         bends: None,
+        angles_deg: None,
         confirmation: Some(Confirmation::FactoryConfirmed),
     }
 }
@@ -247,6 +250,16 @@ fn set_crossed(facts: &mut Facts, crossed: bool) {
         for bend in &mut recognition.bends {
             bend.crossed = crossed;
         }
+    }
+}
+
+fn relief(width_mm: f64, depth_mm: f64, at: [f64; 3]) -> ReliefFact {
+    ReliefFact { at_mm: at.to_vec(), width_mm, depth_mm }
+}
+
+fn set_reliefs(facts: &mut Facts, index: usize, reliefs: Vec<ReliefFact>) {
+    if let Some(bend) = facts.recognition.as_mut().and_then(|recognition| recognition.bends.get_mut(index)) {
+        bend.reliefs = reliefs;
     }
 }
 
@@ -306,7 +319,7 @@ fn a_flat_plate_is_answered_once_by_the_shared_flat_finding() {
     assert_eq!(expected.status, RuleStatus::NotApplicable);
     assert_matches(&record, &run_all(&check_input(&record), &record));
 
-    // Each rule returns the same nine-rule finding, so running one alone cannot lose the answer.
+    // Each rule returns the same shared flat finding, so running one alone cannot lose the answer.
     let gate = pass_gate();
     let bends = gate_finding(RuleStatus::NotVerified, None, Some("BEND_UNRECOGNISED"), Some(0.0));
     let input = check_input(&record);
@@ -315,6 +328,8 @@ fn a_flat_plate_is_answered_once_by_the_shared_flat_finding() {
         min_web_parallel_bends(&input, &gate, &bends, &record.facts),
         u_channel_ratio(&input, &gate, &bends, &record.facts),
         bend_relief_present(&input, &gate, &bends, &record.facts),
+        bend_relief_width(&input, &gate, &bends, &record.facts),
+        bend_relief_depth(&input, &gate, &bends, &record.facts),
     ] {
         assert_eq!(found, vec![expected.clone()]);
     }
@@ -586,5 +601,215 @@ fn a_part_with_no_bend_shares_the_bend_gates_reason() {
         assert_eq!(found[0].status, RuleStatus::NotVerified);
         assert_eq!(found[0].reason_code.as_deref(), Some("BEND_UNRECOGNISED"));
         assert_eq!(found[0].measured_mm, Some(0.0));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sm.bend_relief_width and sm.bend_relief_depth (TEST-ONLY facts).
+//
+// No committed recording carries `reliefs` yet: the recordings predate the two rules. The expected
+// values below are the current INTdfm `rules.bend_findings` output for the same facts and profile
+// (one bend, r 3 mm, a TEST-ONLY shop), not recorded output.
+
+#[test]
+fn relief_size_rules_say_there_is_no_notch_to_size() {
+    let record = fixture(U_CHANNEL_PART); // no relief notches on either bend
+    let gate = pass_gate();
+    let bends = bends_gate(&gate, &record.facts);
+    let input = check_input(&record);
+    for found in [bend_relief_width(&input, &gate, &bends, &record.facts), bend_relief_depth(&input, &gate, &bends, &record.facts)] {
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].status, RuleStatus::NotApplicable);
+        assert_eq!(found[0].message, "No bend end on this part has a notch past it to size, so this rule has nothing to measure.");
+        assert!(found[0].error_code.is_none() && found[0].reason_code.is_none());
+        assert!(found[0].measured_mm.is_none() && found[0].requirement.is_none());
+    }
+}
+
+#[test]
+fn relief_size_rules_need_a_shop_number() {
+    let record = fixture(U_CHANNEL_PART);
+    let mut facts = record.facts.clone();
+    set_reliefs(&mut facts, 0, vec![relief(1.2, 0.8, [10.0, 0.0, 0.0])]);
+    let gate = pass_gate();
+    let bends = bends_gate(&gate, &facts);
+    let input = check_input(&record);
+    for found in [bend_relief_width(&input, &gate, &bends, &facts), bend_relief_depth(&input, &gate, &bends, &facts)] {
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].status, RuleStatus::NotVerified);
+        assert_eq!(found[0].reason_code.as_deref(), Some("NO_SHOP_NUMBER"));
+        assert_eq!(found[0].measured_mm, None);
+    }
+}
+
+#[test]
+fn relief_width_and_depth_review_below_the_shop_number() {
+    let record = fixture(U_CHANNEL_PART);
+    let mut facts = record.facts.clone();
+    set_reliefs(&mut facts, 0, vec![relief(1.2, 0.8, [10.0, 0.0, 0.0])]);
+    let input = shop_input(
+        &record,
+        vec![requirement(BEND_RELIEF_WIDTH, Limit::Min, &[("mm", 2.0)]), requirement(BEND_RELIEF_DEPTH, Limit::Min, &[("mm", 1.0)])],
+    );
+    let gate = pass_gate();
+    let bends = bends_gate(&gate, &facts);
+
+    let width = bend_relief_width(&input, &gate, &bends, &facts);
+    assert_eq!(width.len(), 1);
+    assert_eq!(width[0].status, RuleStatus::NeedsReview);
+    assert_eq!(width[0].error_code.as_deref(), Some("RELIEF_WIDTH_BELOW_LIMIT"));
+    assert_eq!(width[0].measured_mm, Some(1.2));
+    assert_eq!(width[0].requirement.as_ref().map(|requirement| requirement.value_mm), Some(2.0));
+    assert_eq!(width[0].feature.kind, "bend");
+    assert_eq!(width[0].feature.description, "an end of bend 1");
+    assert_eq!(width[0].location.as_ref().map(|at| (at.x_mm, at.y_mm, at.z_mm)), Some((10.0, 0.0, 0.0)));
+    assert_eq!(width[0].message, "An end of bend 1: its relief's width is 1.2 mm, below this shop's number of 2 mm. A person decides.");
+
+    let depth = bend_relief_depth(&input, &gate, &bends, &facts);
+    assert_eq!(depth.len(), 1);
+    assert_eq!(depth[0].status, RuleStatus::NeedsReview);
+    assert_eq!(depth[0].error_code.as_deref(), Some("RELIEF_DEPTH_BELOW_LIMIT"));
+    assert_eq!(depth[0].measured_mm, Some(0.8));
+    assert_eq!(depth[0].requirement.as_ref().map(|requirement| requirement.value_mm), Some(1.0));
+    assert_eq!(depth[0].message, "An end of bend 1: its relief's depth is 0.8 mm, below this shop's number of 1 mm. A person decides.");
+}
+
+#[test]
+fn a_relief_size_limit_can_be_written_in_t_and_the_bend_radius() {
+    let record = fixture(U_CHANNEL_PART);
+    let mut facts = record.facts.clone();
+    set_reliefs(&mut facts, 0, vec![relief(2.0, 2.0, [10.0, 0.0, 0.0])]);
+    let input = shop_input(
+        &record,
+        vec![
+            requirement(BEND_RELIEF_WIDTH, Limit::Min, &[("t", 1.0), ("r", 0.5)]),
+            requirement(BEND_RELIEF_DEPTH, Limit::Min, &[("t", 1.0), ("r", 0.5)]),
+        ],
+    );
+    let gate = pass_gate();
+    let bends = bends_gate(&gate, &facts);
+    for found in [bend_relief_width(&input, &gate, &bends, &facts), bend_relief_depth(&input, &gate, &bends, &facts)] {
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].status, RuleStatus::NeedsReview);
+        assert_eq!(found[0].measured_mm, Some(2.0));
+        // 1t + 0.5r at t = 1.5, r = 3.
+        assert_eq!(found[0].requirement.as_ref().map(|requirement| requirement.value_mm), Some(3.0));
+    }
+}
+
+#[test]
+fn a_relief_size_pass_counts_reliefs_not_bends() {
+    let record = fixture(U_CHANNEL_PART);
+    let mut facts = record.facts.clone();
+    set_reliefs(&mut facts, 0, vec![relief(2.5, 1.5, [10.0, 0.0, 0.0]), relief(2.0, 1.2, [20.0, 0.0, 0.0])]);
+    let input = shop_input(
+        &record,
+        vec![requirement(BEND_RELIEF_WIDTH, Limit::Min, &[("mm", 2.0)]), requirement(BEND_RELIEF_DEPTH, Limit::Min, &[("mm", 1.0)])],
+    );
+    let gate = pass_gate();
+    let bends = bends_gate(&gate, &facts);
+
+    let width = bend_relief_width(&input, &gate, &bends, &facts);
+    assert_eq!(width.len(), 1);
+    assert_eq!(width[0].status, RuleStatus::Pass);
+    assert_eq!(width[0].measured_mm, Some(2.0), "the tightest width");
+    assert_eq!(width[0].feature.kind, "bend");
+    assert_eq!(width[0].feature.description, "2 reliefs that met the number");
+    assert_eq!(width[0].message, "2 reliefs met this shop's number, the tightest at 2 mm. This says nothing about anything but this rule.");
+
+    let depth = bend_relief_depth(&input, &gate, &bends, &facts);
+    assert_eq!(depth.len(), 1);
+    assert_eq!(depth[0].status, RuleStatus::Pass);
+    assert_eq!(depth[0].measured_mm, Some(1.2), "the tightest depth");
+    assert_eq!(depth[0].message, "2 reliefs met this shop's number, the tightest at 1.2 mm. This says nothing about anything but this rule.");
+}
+
+#[test]
+fn relief_size_skips_a_bend_off_ninety() {
+    let record = fixture(U_CHANNEL_PART);
+    let mut facts = record.facts.clone();
+    set_angle(&mut facts, 75.0);
+    set_reliefs(&mut facts, 0, vec![relief(1.2, 0.8, [10.0, 0.0, 0.0])]);
+    let input = shop_input(
+        &record,
+        vec![requirement(BEND_RELIEF_WIDTH, Limit::Min, &[("mm", 2.0)]), requirement(BEND_RELIEF_DEPTH, Limit::Min, &[("mm", 1.0)])],
+    );
+    let gate = pass_gate();
+    let bends = bends_gate(&gate, &facts);
+    for found in [bend_relief_width(&input, &gate, &bends, &facts), bend_relief_depth(&input, &gate, &bends, &facts)] {
+        assert_eq!(found.len(), 1, "the skipped notch gets no review and no pass");
+        assert_eq!(found[0].status, RuleStatus::NotVerified);
+        assert_eq!(found[0].reason_code.as_deref(), Some("BEND_NOT_90"));
+        assert_eq!(found[0].measured_mm, None);
+    }
+}
+
+#[test]
+fn relief_size_without_a_confirmed_gate_shares_the_gates_reason() {
+    let record = fixture(U_CHANNEL_PART); // no reliefs, so the empty branch reads the gate
+    let mut unread = record.facts.clone();
+    if let Some(recognition) = unread.recognition.as_mut() {
+        recognition.unknown_faces = 1;
+    }
+    let gate = pass_gate();
+    let bends = bends_gate(&gate, &unread);
+    assert_eq!(bends.reason_code.as_deref(), Some("BEND_UNRECOGNISED"));
+    let input = check_input(&record);
+    for found in [bend_relief_width(&input, &gate, &bends, &unread), bend_relief_depth(&input, &gate, &bends, &unread)] {
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].status, RuleStatus::NotVerified);
+        assert_eq!(found[0].reason_code.as_deref(), Some("BEND_UNRECOGNISED"));
+    }
+}
+
+#[test]
+fn relief_size_is_blocked_by_the_thickness_gate() {
+    let record = fixture(U_CHANNEL_PART);
+    let mut facts = record.facts.clone();
+    set_reliefs(&mut facts, 0, vec![relief(1.2, 0.8, [10.0, 0.0, 0.0])]);
+    let input = check_input(&record);
+    let gate = not_declared_gate();
+    let bends = bends_gate(&pass_gate(), &facts);
+    for found in [bend_relief_width(&input, &gate, &bends, &facts), bend_relief_depth(&input, &gate, &bends, &facts)] {
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].status, RuleStatus::NotVerified);
+        assert_eq!(found[0].reason_code.as_deref(), Some("THICKNESS_NOT_DECLARED"));
+        assert_eq!(found[0].measured_mm, Some(1.5));
+    }
+}
+
+#[test]
+fn relief_size_numbers_each_bend_end_separately() {
+    let record = fixture(U_CHANNEL_PART);
+    let mut facts = record.facts.clone();
+    set_reliefs(&mut facts, 0, vec![relief(1.0, 0.5, [1.0, 0.0, 0.0])]);
+    set_reliefs(&mut facts, 1, vec![relief(1.1, 0.6, [2.0, 0.0, 0.0])]);
+    let input = shop_input(&record, vec![requirement(BEND_RELIEF_WIDTH, Limit::Min, &[("mm", 2.0)])]);
+    let gate = pass_gate();
+    let bends = bends_gate(&gate, &facts);
+    let found = bend_relief_width(&input, &gate, &bends, &facts);
+    assert_eq!(found.len(), 2, "one review per notch");
+    assert_eq!(found[0].feature.description, "an end of bend 1");
+    assert_eq!(found[0].location.as_ref().map(|at| at.x_mm), Some(1.0));
+    assert_eq!(found[1].feature.description, "an end of bend 2");
+    assert_eq!(found[1].location.as_ref().map(|at| at.x_mm), Some(2.0));
+    for review in &found {
+        assert_eq!(review.error_code.as_deref(), Some("RELIEF_WIDTH_BELOW_LIMIT"));
+    }
+}
+
+#[test]
+fn missing_relief_sizes_are_rule_not_implemented_in_the_catalog() {
+    // The App does not measure `reliefs` yet: the two rules must say so rather than read the empty
+    // list as "no notch", which would be a silent pass on a part whose notches were not measured.
+    let record = fixture(U_CHANNEL_PART);
+    let mut input = check_input(&record);
+    input.facts.missing = vec![FactFamily::ReliefSizes];
+    let findings = catalog_findings(&input, &pass_gate()).expect("the catalog runs");
+    for rule in [BEND_RELIEF_WIDTH, BEND_RELIEF_DEPTH] {
+        let hits: Vec<&Finding> = findings.iter().filter(|finding| finding.rules == vec![rule.to_string()]).collect();
+        assert_eq!(hits.len(), 1, "{rule}: one finding");
+        assert_eq!(hits[0].status, RuleStatus::NotVerified);
+        assert_eq!(hits[0].reason_code.as_deref(), Some("RULE_NOT_IMPLEMENTED"));
     }
 }

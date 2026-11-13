@@ -136,7 +136,7 @@ pub fn requirements_sha256(requirements: &[Requirement]) -> Result<String, DfmEr
         ensure_finite(requirement)?;
         let mut value = serde_json::to_value(requirement).map_err(|error| DfmError::Invalid(format!("requirements JSON: {error}")))?;
         if let Value::Object(map) = &mut value {
-            for key in ["die", "bends", "confirmation"] {
+            for key in ["die", "bends", "angles_deg", "confirmation"] {
                 if map.get(key).is_some_and(Value::is_null) {
                     map.remove(key);
                 }

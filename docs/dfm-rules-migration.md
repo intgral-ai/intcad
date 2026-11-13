@@ -4,7 +4,7 @@ This is the working inventory of the INTdfm OCP-free rule layer and its Rust tra
 deliberately separate from the App's geometry extraction: "the Rust rule exists" and "the App
 can measure every fact that rule needs" are different statements.
 
-Baseline: INTdfm `2f24830fcd84c8e3047eb6643139b94c27b8c1b6` (contract schema 2 at `79c5682`).
+Baseline: INTdfm `67dc2f751a9b9675202d70541a25e366f94f3060` (current main; contract schema 2).
 Rust crate: `crates/dfm-rules` (published on the authorized migration branch).
 
 Status words:
@@ -20,7 +20,7 @@ Status words:
 |---|---|---|---|
 | `profile.py` | read/validate profile JSON, applicability, effective rows, requirements digest, gauges | **migrated (data API)** | types, validation, selection/applicability, die/bends validation, `effective`, `applying`, `requirements_sha256` and gauge tables are migrated; file loading stays at the App boundary |
 | `gate.py` | input gate, thickness gate, coverage gate, reader log, shared tolerance helpers | **partial** | input gate, coverage gate, thickness gate and `same_sheet` are migrated; the second thickness measure (2V/A) and reader log stay at the App boundary |
-| `rules.py` | flat test, bend gate, 15 rules, header, part facts, threshold selection | **migrated** | all 15 non-gate rules, the flat test and bend gate are migrated with recording-backed tests; header is in the report parity layer; part facts are in the parity report |
+| `rules.py` | flat test, bend gate, 19 rules, header, part facts, threshold selection | **migrated** | all 19 non-gate rules, the flat test and bend gate are migrated with recording-backed tests; header is in the report parity layer; part facts are in the parity report |
 | `report.py` | report types, merge, rounding, ids, sort, counts, clean, canonical JSON | **migrated (parity layer)** | `crates/dfm-rules/src/intdfm_report.rs` reproduces the INTdfm-shaped report from pre-merge findings and metadata; 23 parity tests over the recordings. The App-facing `Report` remains separate. |
 | `recheck.py` | pair two reports, marks and guard flags | **migrated** | `recheck.rs`: pairing, marks, guards, not-compared; 11 fixture pairs, byte-exact `Recheck` JSON; `engine::dfm::recheck_reports` is the production entry |
 | `core.py` | order the gates and rules into one report | **migrated (rule layer)** | `catalog_findings`/`check_catalog` order all gates/rules; `dfm.sheet` calls `check_catalog` with explicit missing-fact families |
@@ -31,7 +31,7 @@ Status words:
 
 | Rule | Rule layer | App can measure its facts? | Parity evidence |
 |---|---|---|---|
-| `sm.gate_input_solid` | not migrated (App gives the equivalent input-gate result) | yes, native sheet body / converted gate | App boundary tests |
+| `sm.gate_input_solid` | migrated (`input_gate.rs`) | yes, native sheet body / converted gate | input-gate tests |
 | `sm.gate_sheet_thickness` | migrated | yes (`SheetBody.t` and declared thickness) | missing/conflict/equal tests |
 | `sm.gate_profile_coverage` | **migrated (coverage gate)** | data only | — |
 | `sm.gate_bends_found` | **migrated** | recognition facts partially | — |
@@ -50,6 +50,10 @@ Status words:
 | `sm.countersink_depth` | **migrated** | no countersink facts in the App | rule tests; App reports unsupported |
 | `sm.countersink_to_edge` | **migrated** | no countersink facts | rule tests; App reports unsupported |
 | `sm.countersink_to_bend` | **migrated** | no countersink facts | rule tests; App reports unsupported |
+| `sm.bend_relief_width` | **migrated** | no (App does not measure relief notches) | rule tests; App reports unsupported |
+| `sm.bend_relief_depth` | **migrated** | no (App does not measure relief notches) | rule tests; App reports unsupported |
+| `sm.countersink_land` | **migrated** | no countersink facts | rule tests; App reports unsupported |
+| `sm.countersink_angle` | **migrated** | no countersink facts | rule tests; App reports unsupported |
 
 ## 3. Data, gates and report pieces
 
@@ -61,11 +65,11 @@ Status words:
 | Strictest-row selection | migrated for the three hole rules | `sm.min_flange` die rows |
 | Project override provenance | migrated | FD-7 field is still a proposal; overrides are team-reported |
 | Thickness gate | migrated | gauge message table and both-measure 2V/A check |
-| Coverage gate | not migrated | profile gap and missing-rule messages |
-| Input gate | not migrated | scan/reader facts; App entry supplies its own result |
-| Bend gate | not migrated | recognition facts and messages |
+| Coverage gate | migrated | profile gap and missing-rule messages |
+| Input gate | migrated | scan/reader facts; App entry supplies its own result |
+| Bend gate | migrated | recognition facts and messages |
 | Report merge/round/id/sort | migrated (parity layer) | `intdfm_report` covers merge, CPython rounding, ids, labels, sort, counts, header, bends/part and canonical JSON; App report shape stays separate |
-| `header` (public-value summary) | not migrated | needs all rules |
+| `header` (public-value summary) | migrated (parity layer) | needs all rules |
 | `part`/`bends` facts in the report | partial | webs, other openings, bend flange runs |
 | `not_checked` line | migrated | exact INTdfm text restored |
 | Recheck marks/guards | migrated | `recheck.rs`; 11 pairs, byte-exact `Recheck` JSON |

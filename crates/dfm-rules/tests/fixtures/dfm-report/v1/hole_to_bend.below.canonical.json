@@ -22,7 +22,7 @@
   "clean": false,
   "counts": {
     "needs_review": 1,
-    "not_applicable": 4,
+    "not_applicable": 6,
     "not_verified": 4,
     "pass": 3,
     "violation": 0
@@ -214,8 +214,8 @@
       "reason_code": null,
       "requirement": {
         "layer": "generic",
-        "source": "PTC Creo design rules default, also in Five Flute and Fictiv, which probably share one origin: https://support.ptc.com/help/creo/creo_pma/r7.0/usascii/sheetmetal/sheetmetaldesign/Set_Up/About_Design_Rules.html",
-        "text": "At least 6.75 mm. 2.5t + r, a labelled trial value: the hole's edge to the nearest bend tangent on the same flat.",
+        "source": "TEST-ONLY: invented for the migration baseline.",
+        "text": "At least 6.75 mm. TEST-ONLY: the quantity this rule measures.",
         "value": {
           "unit": "mm",
           "value": 6.75
@@ -303,7 +303,7 @@
         "description": "whole part",
         "kind": "part"
       },
-      "finding_id": "f_b0644688e31e75b3",
+      "finding_id": "f_573b9e5660a048ad",
       "label": "F11",
       "location": {
         "mm": null,
@@ -318,7 +318,9 @@
       "rules": [
         "sm.countersink_depth",
         "sm.countersink_to_edge",
-        "sm.countersink_to_bend"
+        "sm.countersink_to_bend",
+        "sm.countersink_land",
+        "sm.countersink_angle"
       ],
       "status": "not_applicable"
     },
@@ -344,9 +346,55 @@
         "sm.hole_spacing"
       ],
       "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_17c8e41de62ac6e4",
+      "label": "F13",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": null,
+      "message": "No bend end on this part has a notch past it to size, so this rule has nothing to measure.",
+      "mode": null,
+      "needs": [],
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.bend_relief_width"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_814242c5605ccf59",
+      "label": "F14",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": null,
+      "message": "No bend end on this part has a notch past it to size, so this rule has nothing to measure.",
+      "mode": null,
+      "needs": [],
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.bend_relief_depth"
+      ],
+      "status": "not_applicable"
     }
   ],
-  "header": "no factory: 3 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_bend, sm.hole_to_edge. None can pass.",
+  "header": "no factory: 3 of 19 rules ran on public values: sm.hole_min_diameter, sm.hole_to_bend, sm.hole_to_edge. None can pass.",
   "not_checked": "Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked.",
   "part": {
     "holes": [
@@ -374,7 +422,7 @@
   "report_version": "1.8",
   "rule_results": {
     "needs_review": 1,
-    "not_applicable": 6,
+    "not_applicable": 10,
     "not_verified": 9,
     "pass": 3,
     "violation": 0
@@ -390,7 +438,7 @@
       "shop": null,
       "thickness_mm": 1.5
     },
-    "file_sha256": "37f9bc25d7dfd5ebdd14a9087595e0dda7d4e18c6c30fc5d3bed884e0eab5df4",
+    "file_sha256": "68990076720a758273a28f6ef2f184661bb874426cc1fc7a9de003b340523b48",
     "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
     "ocp_version": "8.0.1.1",
     "profile": {

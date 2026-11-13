@@ -81,7 +81,8 @@ const PLATE: &str = r#"{
   { "error_code": null, "limit": null, "measured": null, "reason_code": null,
     "rules": ["sm.gate_bends_found", "sm.inside_radius", "sm.min_flange", "sm.max_bend_length",
               "sm.hole_to_bend", "sm.bend_relief_present", "sm.min_web_parallel_bends",
-              "sm.u_channel_ratio", "sm.bend_radius_consistent"],
+              "sm.u_channel_ratio", "sm.bend_radius_consistent", "sm.bend_relief_width",
+              "sm.bend_relief_depth"],
     "status": "not_applicable" }
  ],
  "facts": {
@@ -191,6 +192,7 @@ fn requirement(rule: &str, limit: Limit, value: &[(&str, f64)]) -> Requirement {
         validation_samples: Vec::new(),
         die: None,
         bends: None,
+        angles_deg: None,
         confirmation: Some(Confirmation::FactoryConfirmed),
     }
 }
@@ -272,7 +274,9 @@ fn flat_recording_is_flat_and_answers_with_one_finding() {
     let finding = flat_finding();
     assert_eq!(finding.status, RuleStatus::NotApplicable);
     assert_eq!(finding.rules, BEND_RULES.iter().map(|rule| (*rule).to_string()).collect::<Vec<_>>());
-    assert_eq!(finding.rules, recording.expected[0].rules, "the recording's own nine rules, in order");
+    // The recording predates `sm.bend_relief_width`/`sm.bend_relief_depth`, so its expected list is
+    // the older nine-rule catalog; every rule it names must still be in the flat answer.
+    assert!(recording.expected[0].rules.iter().all(|rule| finding.rules.contains(rule)));
     assert!(finding.error_code.is_none() && finding.reason_code.is_none());
     assert!(finding.measured_mm.is_none() && finding.requirement.is_none());
 

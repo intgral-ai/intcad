@@ -505,12 +505,15 @@ fn dfm_sheet_check(session: Option<&Session>, check: &super::profile::CheckRequi
                 "counts": outcome.report.counts,
                 "rules": outcome.report.rules,
             });
+            // A completed run is only "passed" when the rule layer says clean and has a real
+            // pass. A report full of advisories, checked public values or unsupported rules is
+            // not a pass.
             let check_state = if outcome.report.counts.failed > 0 {
                 CheckState::Failed
-            } else if outcome.report.counts.unsupported > 0 {
-                CheckState::Unsupported
-            } else {
+            } else if outcome.report.clean && outcome.report.counts.passed > 0 {
                 CheckState::Passed
+            } else {
+                CheckState::Unsupported
             };
             let facts = serde_json::to_value(&outcome.facts).unwrap_or(Value::Null);
             let report = serde_json::to_value(&outcome.report).unwrap_or(Value::Null);

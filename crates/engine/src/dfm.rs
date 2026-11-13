@@ -123,10 +123,11 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
         size_mm: None,
         area_mm2: None,
         paired_mm: Some(measured.thickness_mm),
+        plate_gap_mm: Some(measured.thickness_mm),
         holes: Some(holes.collect()),
         other_openings: measured.other_openings.saturating_add(measured.bores),
         unknown_faces: 0,
-        missing: vec![FactFamily::BendRuns, FactFamily::ReliefEnds, FactFamily::Webs, FactFamily::Countersinks],
+        missing: vec![FactFamily::BendRuns, FactFamily::ReliefEnds, FactFamily::ReliefSizes, FactFamily::Webs, FactFamily::Countersinks],
         recognition: Some(RuleRecognition {
             bends: measured
                 .bends
@@ -145,6 +146,7 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
             unknown_faces: 0,
             cone_faces: 0,
             form_faces: 0,
+            joined: true,
             ..Default::default()
         }),
         ..Default::default()
@@ -452,6 +454,7 @@ mod tests {
             validation_samples: Vec::new(),
             die: None,
             bends: None,
+            angles_deg: None,
             confirmation,
         }
     }

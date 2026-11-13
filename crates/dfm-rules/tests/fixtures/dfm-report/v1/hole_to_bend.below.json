@@ -5,12 +5,12 @@
     "kind": "below",
     "part": {
       "name": "TEST-ONLY_l_bracket_side.step",
-      "sha256": "37f9bc25d7dfd5ebdd14a9087595e0dda7d4e18c6c30fc5d3bed884e0eab5df4"
+      "sha256": "68990076720a758273a28f6ef2f184661bb874426cc1fc7a9de003b340523b48"
     },
     "rule": "sm.hole_to_bend"
   },
   "expected": {
-    "header": "no factory: 3 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_bend, sm.hole_to_edge. None can pass.",
+    "header": "no factory: 3 of 19 rules ran on public values: sm.hole_min_diameter, sm.hole_to_bend, sm.hole_to_edge. None can pass.",
     "report_version": "1.8"
   },
   "input": {
@@ -43,7 +43,7 @@
       "shop": null,
       "thickness_mm": 1.5
     },
-    "file_sha256": "37f9bc25d7dfd5ebdd14a9087595e0dda7d4e18c6c30fc5d3bed884e0eab5df4",
+    "file_sha256": "68990076720a758273a28f6ef2f184661bb874426cc1fc7a9de003b340523b48",
     "findings": [
       {
         "error_code": null,
@@ -146,8 +146,8 @@
         "reason_code": "ABOVE_PUBLIC_VALUE",
         "requirement": {
           "layer": "generic",
-          "source": "Mate Precision Technologies, punching: 0.5t, its lowest figure, for fully guided tooling in aluminium. Used for every process and material, so it assumes nothing about this part: https://www.mate.com/technical-resources/punch-press-resources/tips-techniques/punching/techniques/holes/",
-          "text": "At least 0.75 mm. The hole's diameter.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 0.75 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 0.75
@@ -182,8 +182,8 @@
         "reason_code": "ABOVE_PUBLIC_VALUE",
         "requirement": {
           "layer": "generic",
-          "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
-          "text": "At least 2.25 mm. The hole's edge to the nearest cut edge on the same flat.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 2.25 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 2.25
@@ -271,8 +271,8 @@
         "reason_code": null,
         "requirement": {
           "layer": "generic",
-          "source": "PTC Creo design rules default, also in Five Flute and Fictiv, which probably share one origin: https://support.ptc.com/help/creo/creo_pma/r7.0/usascii/sheetmetal/sheetmetaldesign/Set_Up/About_Design_Rules.html",
-          "text": "At least 6.75 mm. 2.5t + r, a labelled trial value: the hole's edge to the nearest bend tangent on the same flat.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 6.75 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 6.75
@@ -467,6 +467,52 @@
           "text": "whole part"
         },
         "measured": null,
+        "message": "No bend end on this part has a notch past it to size, so this rule has nothing to measure.",
+        "mode": null,
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.bend_relief_width"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "No bend end on this part has a notch past it to size, so this rule has nothing to measure.",
+        "mode": null,
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.bend_relief_depth"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
         "message": "No critical dimension was declared, so no tolerance was checked.",
         "mode": null,
         "needs": [
@@ -500,12 +546,14 @@
         "rules": [
           "sm.countersink_depth",
           "sm.countersink_to_edge",
-          "sm.countersink_to_bend"
+          "sm.countersink_to_bend",
+          "sm.countersink_land",
+          "sm.countersink_angle"
         ],
         "status": "not_applicable"
       }
     ],
-    "header": "no factory: 3 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_bend, sm.hole_to_edge. None can pass.",
+    "header": "no factory: 3 of 19 rules ran on public values: sm.hole_min_diameter, sm.hole_to_bend, sm.hole_to_edge. None can pass.",
     "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
     "ocp_version": "8.0.1.1",
     "part": {
@@ -551,8 +599,8 @@
     "snapshot_id": "snap1-7249c22aed355c1a4e80a817dee8a749a3453d3f283527c974a736b084bd582f"
   },
   "source": {
-    "core_source_sha256": "2e75e5cf7b82aa32b905a14f3cb38fe7cccb080f8c441ce8f82c33a9adddae2d",
-    "intdfm_commit": "2f24830fcd84c8e3047eb6643139b94c27b8c1b6",
+    "core_source_sha256": "9c56620dca68e0649724232218db9c4ddccfb91714e8f3a04b5dc8c1a3139a06",
+    "intdfm_commit": "7ecb3ff39b25816fc1d787c91ac07752fb7bf00f",
     "report_version": "1.8"
   }
 }

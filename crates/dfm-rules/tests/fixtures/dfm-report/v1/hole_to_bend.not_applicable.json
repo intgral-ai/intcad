@@ -5,12 +5,12 @@
     "kind": "missing_input",
     "part": {
       "name": "TEST-ONLY_plate_hole_d3.step",
-      "sha256": "649bbe5e477f534af04ea4d9c4bb409c39cb9ae5d610a645b01f97357f56c65b"
+      "sha256": "48a3beb5a17a0b7b39eb57a4c9ada094b5fed87066ff8b77a4097f564bd7feab"
     },
     "rule": "sm.hole_to_bend"
   },
   "expected": {
-    "header": "no factory: 2 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge. None can pass.",
+    "header": "no factory: 2 of 19 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge. None can pass.",
     "report_version": "1.8"
   },
   "input": {
@@ -24,7 +24,7 @@
       "shop": null,
       "thickness_mm": 1.5
     },
-    "file_sha256": "649bbe5e477f534af04ea4d9c4bb409c39cb9ae5d610a645b01f97357f56c65b",
+    "file_sha256": "48a3beb5a17a0b7b39eb57a4c9ada094b5fed87066ff8b77a4097f564bd7feab",
     "findings": [
       {
         "error_code": null,
@@ -127,8 +127,8 @@
         "reason_code": "ABOVE_PUBLIC_VALUE",
         "requirement": {
           "layer": "generic",
-          "source": "Mate Precision Technologies, punching: 0.5t, its lowest figure, for fully guided tooling in aluminium. Used for every process and material, so it assumes nothing about this part: https://www.mate.com/technical-resources/punch-press-resources/tips-techniques/punching/techniques/holes/",
-          "text": "At least 0.75 mm. The hole's diameter.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 0.75 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 0.75
@@ -163,8 +163,8 @@
         "reason_code": "ABOVE_PUBLIC_VALUE",
         "requirement": {
           "layer": "generic",
-          "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
-          "text": "At least 2.25 mm. The hole's edge to the nearest cut edge on the same flat.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 2.25 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 2.25
@@ -225,7 +225,9 @@
           "sm.bend_relief_present",
           "sm.min_web_parallel_bends",
           "sm.u_channel_ratio",
-          "sm.bend_radius_consistent"
+          "sm.bend_radius_consistent",
+          "sm.bend_relief_width",
+          "sm.bend_relief_depth"
         ],
         "status": "not_applicable"
       },
@@ -275,12 +277,14 @@
         "rules": [
           "sm.countersink_depth",
           "sm.countersink_to_edge",
-          "sm.countersink_to_bend"
+          "sm.countersink_to_bend",
+          "sm.countersink_land",
+          "sm.countersink_angle"
         ],
         "status": "not_applicable"
       }
     ],
-    "header": "no factory: 2 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge. None can pass.",
+    "header": "no factory: 2 of 19 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge. None can pass.",
     "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
     "ocp_version": "8.0.1.1",
     "part": {
@@ -326,8 +330,8 @@
     "snapshot_id": "snap1-06f1f9f172c05117c358585e3e5a9b251b7e50c220517b1b4f0a4f9b8ba67bec"
   },
   "source": {
-    "core_source_sha256": "2e75e5cf7b82aa32b905a14f3cb38fe7cccb080f8c441ce8f82c33a9adddae2d",
-    "intdfm_commit": "2f24830fcd84c8e3047eb6643139b94c27b8c1b6",
+    "core_source_sha256": "9c56620dca68e0649724232218db9c4ddccfb91714e8f3a04b5dc8c1a3139a06",
+    "intdfm_commit": "7ecb3ff39b25816fc1d787c91ac07752fb7bf00f",
     "report_version": "1.8"
   }
 }

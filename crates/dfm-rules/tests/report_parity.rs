@@ -198,7 +198,7 @@ fn report_parity_every_fixture_has_exactly_one_case() {
 
 #[test]
 fn report_parity_catalog_is_the_python_catalog_in_report_order() {
-    const PYTHON_CATALOG: [&str; 19] = [
+    const PYTHON_CATALOG: [&str; 23] = [
         "sm.gate_input_solid",
         "sm.gate_sheet_thickness",
         "sm.gate_bends_found",
@@ -218,10 +218,14 @@ fn report_parity_catalog_is_the_python_catalog_in_report_order() {
         "sm.countersink_to_bend",
         "sm.hole_spacing",
         "sm.bend_radius_consistent",
+        "sm.bend_relief_width",
+        "sm.bend_relief_depth",
+        "sm.countersink_land",
+        "sm.countersink_angle",
     ];
     assert_eq!(RULE_ORDER, PYTHON_CATALOG.as_slice());
-    assert_eq!(RULE_ORDER[RULE_ORDER.len() - 1], "sm.bend_radius_consistent");
-    assert_eq!(RULE_ORDER[RULE_ORDER.len() - 2], "sm.hole_spacing");
+    assert_eq!(RULE_ORDER[RULE_ORDER.len() - 1], "sm.countersink_angle");
+    assert_eq!(RULE_ORDER[RULE_ORDER.len() - 2], "sm.countersink_land");
 }
 
 #[test]

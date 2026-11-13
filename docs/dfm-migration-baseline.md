@@ -9,10 +9,10 @@ customer STEP files, private factory data or credentials; none are in this branc
 
 | Repository | Baseline commit | Where this stage works |
 |---|---|---|
-| INTdfm (`intgral-ai/INTdfm`) | `2f24830fcd84c8e3047eb6643139b94c27b8c1b6` (main, 2026-11-12) | branch `migration/pil-295-replay-contract`, head `f630dc4` at this writing |
-| open-skyfall (`intgral-ai/open-skyfall-desktop`) | `1a45733ef96b53990fec8bd7794563eebc6facdb` (develop, 2026-11-10) | branch `dfm/m1-native-hole-min-diameter`, head `15e84c8a4` at this writing |
+| INTdfm (`intgral-ai/INTdfm`) | `67dc2f751a9b9675202d70541a25e366f94f3060` (main, 2026-11-13) | branch `migration/pil-295-replay-contract`, head `7ecb3ff` at this writing |
+| open-skyfall (`intgral-ai/open-skyfall-desktop`) | `b58406d82f1b525e5b00aefb88e3c808c3b95db2` (develop, 2026-11-13) | branch `dfm/m1-native-hole-min-diameter` |
 
-The PRD's `7bf03f6d9` is an older develop commit; current develop is `1a45733e`. The PRD and the
+The PRD's `7bf03f6d9` is an older develop commit; current develop is `b58406d8`. The PRD and the
 technical design are proposals except for the sections they mark as confirmed. This stage did
 not change either document.
 
@@ -156,7 +156,7 @@ cargo xtask layers
 | INTdfm `replay verify tests/fixtures/dfm-replay/v1` | 13 cases, exit 0 (10 required + 3 extra coverage) |
 | INTdfm `pytest tests/unit/test_replay.py tests/unit/test_replay_catalog.py` | 18 passed |
 | INTdfm `pytest -m e2e tests/e2e/test_replay_record.py` | 1 passed (real OCP read) |
-| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 225 passed (cross-language, second gate, report, recheck, rule families, input gate, profile data and message parity) |
+| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 244 passed (cross-language, second gate, report, recheck, rule families, input gate, profile data and message parity) |
 | Rust `cargo test -p solidcraft-doc sheet_dfm --profile ci` | 7 passed |
 | Rust `cargo test -p solidcraft-engine dfm::tests --profile ci` | 18 passed (including the production recheck entry) |
 | Rust `cargo test -p solidcraft-engine a_dfm_sheet_check --profile ci` | 1 passed |

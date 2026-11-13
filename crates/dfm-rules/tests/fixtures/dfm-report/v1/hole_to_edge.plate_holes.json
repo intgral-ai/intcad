@@ -2,7 +2,7 @@
   "case": {
     "description": "TEST-ONLY: three round holes on one plate, for the second gate's multi-hole matching and edge facts.",
     "id": "hole_to_edge.plate_holes",
-    "kind": "normal",
+    "kind": "below",
     "part": {
       "name": "TEST-ONLY_plate_holes.step",
       "sha256": "2d2f489121944d08bf90fed25d72136451f24f01b5f2eeaae31a8f2e5b1f49ef"
@@ -10,7 +10,7 @@
     "rule": "sm.hole_to_edge"
   },
   "expected": {
-    "header": "no factory: 3 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge, sm.hole_spacing. None can pass.",
+    "header": "no factory: 3 of 19 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge, sm.hole_spacing. None can pass.",
     "report_version": "1.8"
   },
   "input": {
@@ -131,8 +131,8 @@
         "reason_code": null,
         "requirement": {
           "layer": "generic",
-          "source": "Mate Precision Technologies, punching: 0.5t, its lowest figure, for fully guided tooling in aluminium. Used for every process and material, so it assumes nothing about this part: https://www.mate.com/technical-resources/punch-press-resources/tips-techniques/punching/techniques/holes/",
-          "text": "At least 0.75 mm. The hole's diameter.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 0.75 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 0.75
@@ -167,8 +167,8 @@
         "reason_code": "ABOVE_PUBLIC_VALUE",
         "requirement": {
           "layer": "generic",
-          "source": "Mate Precision Technologies, punching: 0.5t, its lowest figure, for fully guided tooling in aluminium. Used for every process and material, so it assumes nothing about this part: https://www.mate.com/technical-resources/punch-press-resources/tips-techniques/punching/techniques/holes/",
-          "text": "At least 0.75 mm. The hole's diameter.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 0.75 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 0.75
@@ -207,8 +207,8 @@
         "reason_code": null,
         "requirement": {
           "layer": "generic",
-          "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
-          "text": "At least 2.25 mm. The hole's edge to the nearest cut edge on the same flat.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 2.25 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 2.25
@@ -243,8 +243,8 @@
         "reason_code": "ABOVE_PUBLIC_VALUE",
         "requirement": {
           "layer": "generic",
-          "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
-          "text": "At least 2.25 mm. The hole's edge to the nearest cut edge on the same flat.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 2.25 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 2.25
@@ -279,8 +279,8 @@
         "reason_code": "ABOVE_PUBLIC_VALUE",
         "requirement": {
           "layer": "generic",
-          "source": "Five Flute, sheet metal DFM design guidelines, the publisher of the hole-to-edge row: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
-          "text": "At least 3 mm. The wall between two round holes on the same flat, edge to edge.",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "text": "At least 3 mm. TEST-ONLY: the quantity this rule measures.",
           "value": {
             "unit": "mm",
             "value": 3.0
@@ -318,7 +318,9 @@
           "sm.bend_relief_present",
           "sm.min_web_parallel_bends",
           "sm.u_channel_ratio",
-          "sm.bend_radius_consistent"
+          "sm.bend_radius_consistent",
+          "sm.bend_relief_width",
+          "sm.bend_relief_depth"
         ],
         "status": "not_applicable"
       },
@@ -368,12 +370,14 @@
         "rules": [
           "sm.countersink_depth",
           "sm.countersink_to_edge",
-          "sm.countersink_to_bend"
+          "sm.countersink_to_bend",
+          "sm.countersink_land",
+          "sm.countersink_angle"
         ],
         "status": "not_applicable"
       }
     ],
-    "header": "no factory: 3 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge, sm.hole_spacing. None can pass.",
+    "header": "no factory: 3 of 19 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge, sm.hole_spacing. None can pass.",
     "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
     "ocp_version": "8.0.1.1",
     "part": {
@@ -439,8 +443,8 @@
     "snapshot_id": "snap1-50b11596039e87f74955cf23136a881cc2b2dbcf5d0179a01e79ff0f8d4dd454"
   },
   "source": {
-    "core_source_sha256": "2e75e5cf7b82aa32b905a14f3cb38fe7cccb080f8c441ce8f82c33a9adddae2d",
-    "intdfm_commit": "79c568200d1394e276865a0c34c23e2774ad4669",
+    "core_source_sha256": "9c56620dca68e0649724232218db9c4ddccfb91714e8f3a04b5dc8c1a3139a06",
+    "intdfm_commit": "7ecb3ff39b25816fc1d787c91ac07752fb7bf00f",
     "report_version": "1.8"
   }
 }

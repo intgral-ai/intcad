@@ -122,18 +122,16 @@
             "process": [],
             "thickness_mm": null
           },
-          "exceptions": [
-            "A punching figure used as a floor for every process, so it can only warn."
-          ],
+          "exceptions": [],
           "inputs": {
             "t": "mm"
           },
           "limit": "min",
-          "measuring_line": "The hole's diameter.",
-          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
-          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
           "rule": "sm.hole_min_diameter",
-          "source": "Mate Precision Technologies, punching: 0.5t, its lowest figure, for fully guided tooling in aluminium. Used for every process and material, so it assumes nothing about this part: https://www.mate.com/technical-resources/punch-press-resources/tips-techniques/punching/techniques/holes/",
+          "source": "TEST-ONLY: invented for the migration baseline.",
           "validation_samples": [],
           "value": {
             "t": 0.5
@@ -145,18 +143,16 @@
             "process": [],
             "thickness_mm": null
           },
-          "exceptions": [
-            "Published values differ by more than six times, and the source doesn't say which process it means."
-          ],
+          "exceptions": [],
           "inputs": {
             "t": "mm"
           },
           "limit": "min",
-          "measuring_line": "The hole's edge to the nearest cut edge on the same flat.",
-          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
-          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
           "rule": "sm.hole_to_edge",
-          "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
+          "source": "TEST-ONLY: invented for the migration baseline.",
           "validation_samples": [],
           "value": {
             "t": 1.5
@@ -168,19 +164,17 @@
             "process": [],
             "thickness_mm": null
           },
-          "exceptions": [
-            "Worded as a risk: the file can't say whether a hole is cut after bending."
-          ],
+          "exceptions": [],
           "inputs": {
             "r": "mm",
             "t": "mm"
           },
           "limit": "min",
-          "measuring_line": "2.5t + r, a labelled trial value: the hole's edge to the nearest bend tangent on the same flat.",
-          "method": "A labelled trial value. Below it a person looks; above it nothing is known.",
-          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
           "rule": "sm.hole_to_bend",
-          "source": "PTC Creo design rules default, also in Five Flute and Fictiv, which probably share one origin: https://support.ptc.com/help/creo/creo_pma/r7.0/usascii/sheetmetal/sheetmetaldesign/Set_Up/About_Design_Rules.html",
+          "source": "TEST-ONLY: invented for the migration baseline.",
           "validation_samples": [],
           "value": {
             "r": 1.0,
@@ -193,18 +187,16 @@
             "process": [],
             "thickness_mm": null
           },
-          "exceptions": [
-            "Geomiq's depth figure, 0.6 mm below the material thickness, was read again on 2026-11-10 and is still unclear in what it measures, so it isn't used."
-          ],
+          "exceptions": [],
           "inputs": {
             "t": "mm"
           },
           "limit": "max",
-          "measuring_line": "The countersink's depth, from the skin to where the cone meets the hole's wall.",
-          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
-          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
           "rule": "sm.countersink_depth",
-          "source": "PCBWay, countersink and counterbore design guidelines: at most 0.70t. Fictiv's 60 to 70% agrees at its top end: https://www.pcbway.com/blog/Sheet_Metal/Countersink_Counterbore_Holes_Design_Guidelines_f328f60a.html",
+          "source": "TEST-ONLY: invented for the migration baseline.",
           "validation_samples": [],
           "value": {
             "t": 0.7
@@ -216,19 +208,17 @@
             "process": [],
             "thickness_mm": null
           },
-          "exceptions": [
-            "PCBWay's centre to edge of twice the major diameter is stricter whenever d is more than 2t."
-          ],
+          "exceptions": [],
           "inputs": {
             "d": "mm",
             "t": "mm"
           },
           "limit": "min",
-          "measuring_line": "The countersink's rim to the nearest cut edge on the same flat. Another countersink's rim counts as a cut edge.",
-          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
-          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
           "rule": "sm.countersink_to_edge",
-          "source": "Geomiq, sheet metal design guide: 4t from an edge to the countersink's centre, moved to the rim by taking off half the major diameter d. Xometry also gives 4t: https://geomiq.com/sheet-metal-design-guide/",
+          "source": "TEST-ONLY: invented for the migration baseline.",
           "validation_samples": [],
           "value": {
             "d": -0.5,
@@ -241,19 +231,17 @@
             "process": [],
             "thickness_mm": null
           },
-          "exceptions": [
-            "If Geomiq's bend line is the bend's centreline, the published value is lower than this by half the bend allowance, which r and t can't write exactly."
-          ],
+          "exceptions": [],
           "inputs": {
             "d": "mm",
             "t": "mm"
           },
           "limit": "min",
-          "measuring_line": "The countersink's rim to the nearest bend tangent on the same flat.",
-          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
-          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
           "rule": "sm.countersink_to_bend",
-          "source": "Geomiq, sheet metal design guide: 3t from the bend line to the countersink's centre, moved to the rim. Its bend line is read as the bend's tangent, an assumption. Xometry also gives 3t: https://geomiq.com/sheet-metal-design-guide/",
+          "source": "TEST-ONLY: invented for the migration baseline.",
           "validation_samples": [],
           "value": {
             "d": -0.5,
@@ -266,25 +254,69 @@
             "process": [],
             "thickness_mm": null
           },
-          "exceptions": [
-            "Mate also gives 2t. A lower laser figure from one shop's own specification is left out."
-          ],
+          "exceptions": [],
           "inputs": {
             "t": "mm"
           },
           "limit": "min",
-          "measuring_line": "The wall between two round holes on the same flat, edge to edge.",
-          "method": "The most lenient published value we may use. Below it a person looks; above it nothing is known.",
-          "rights": "Unclear. One published figure, restated with its source and not copied text. The publisher's terms have not been checked.",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
           "rule": "sm.hole_spacing",
-          "source": "Five Flute, sheet metal DFM design guidelines, the publisher of the hole-to-edge row: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
+          "source": "TEST-ONLY: invented for the migration baseline.",
           "validation_samples": [],
           "value": {
             "t": 2
           }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {},
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_land",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "mm": 0.5
+          }
+        },
+        {
+          "angles_deg": [
+            82,
+            90,
+            100,
+            120
+          ],
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "deg": "deg"
+          },
+          "limit": "max",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_angle",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "deg": 1
+          }
         }
       ],
-      "version": "2026-11-10"
+      "version": "2026-11-13"
     },
     "shop": null,
     "thickness_gate": {
@@ -304,7 +336,7 @@
   },
   "source": {
     "base_recording": "hole_min_diameter.below",
-    "core_source_sha256": "2e75e5cf7b82aa32b905a14f3cb38fe7cccb080f8c441ce8f82c33a9adddae2d",
-    "intdfm_commit": "2f24830fcd84c8e3047eb6643139b94c27b8c1b6"
+    "core_source_sha256": "9c56620dca68e0649724232218db9c4ddccfb91714e8f3a04b5dc8c1a3139a06",
+    "intdfm_commit": "7ecb3ff39b25816fc1d787c91ac07752fb7bf00f"
   }
 }

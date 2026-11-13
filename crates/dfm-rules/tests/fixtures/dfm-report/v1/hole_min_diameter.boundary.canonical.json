@@ -67,7 +67,7 @@
         "description": "whole part",
         "kind": "part"
       },
-      "finding_id": "f_c4ab80243f487ef7",
+      "finding_id": "f_3ae4397a26e96c9d",
       "label": "F3",
       "location": {
         "mm": null,
@@ -88,7 +88,9 @@
         "sm.bend_relief_present",
         "sm.min_web_parallel_bends",
         "sm.u_channel_ratio",
-        "sm.bend_radius_consistent"
+        "sm.bend_radius_consistent",
+        "sm.bend_relief_width",
+        "sm.bend_relief_depth"
       ],
       "status": "not_applicable"
     },
@@ -174,7 +176,7 @@
         "description": "whole part",
         "kind": "part"
       },
-      "finding_id": "f_b0644688e31e75b3",
+      "finding_id": "f_573b9e5660a048ad",
       "label": "F7",
       "location": {
         "mm": null,
@@ -189,7 +191,9 @@
       "rules": [
         "sm.countersink_depth",
         "sm.countersink_to_edge",
-        "sm.countersink_to_bend"
+        "sm.countersink_to_bend",
+        "sm.countersink_land",
+        "sm.countersink_angle"
       ],
       "status": "not_applicable"
     },
@@ -217,7 +221,7 @@
       "status": "not_applicable"
     }
   ],
-  "header": "no factory: 2 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge. None can pass.",
+  "header": "no factory: 2 of 19 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge. None can pass.",
   "not_checked": "Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked.",
   "part": {
     "holes": [
@@ -245,7 +249,7 @@
   "report_version": "1.8",
   "rule_results": {
     "needs_review": 0,
-    "not_applicable": 13,
+    "not_applicable": 17,
     "not_verified": 4,
     "pass": 2,
     "violation": 0
@@ -261,7 +265,7 @@
       "shop": null,
       "thickness_mm": 1.5
     },
-    "file_sha256": "92e3bc5ae215d8eacdeeecb9fb4a12e652e55115c21f5a4178b878b7dcfdd1c1",
+    "file_sha256": "d95949e44c7b4f88484c7fcea0691d6ee2a4de7c18520cdd6adadb0e2dcf7a1c",
     "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
     "ocp_version": "8.0.1.1",
     "profile": {
