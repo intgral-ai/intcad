@@ -903,6 +903,24 @@ pub(crate) fn choose(rule: &str, radius: Option<f64>, upper: bool, input: &Check
 // ---------------------------------------------------------------------------
 // Gates and findings.
 
+/// One state for a rule from all of its findings. The worst state wins, so a local pass can never
+/// hide a failure, an unchecked result, or a fact the App could not measure. Findings are sorted
+/// by rule then location, not by severity, so the first one says nothing about the rule.
+fn summarize_state(findings: &[&Finding]) -> AppState {
+    findings.iter().map(|finding| finding.state).max_by_key(|state| state_rank(*state)).unwrap_or(AppState::NotRun)
+}
+
+fn state_rank(state: AppState) -> u8 {
+    match state {
+        AppState::Failed => 5,
+        AppState::Unsupported => 4,
+        AppState::Advisory => 3,
+        AppState::Checked => 2,
+        AppState::Passed => 1,
+        AppState::NotRun => 0,
+    }
+}
+
 pub(crate) fn state_of(status: RuleStatus, decides: bool) -> AppState {
     match status {
         RuleStatus::Pass if decides => AppState::Passed,
@@ -1461,7 +1479,7 @@ pub fn check(input: &CheckInput) -> Result<Report, DfmError> {
     let mut rules = Vec::new();
     for rule in FIRST_HOLE_RULES {
         let own: Vec<&Finding> = findings.iter().filter(|finding| finding.rules.iter().any(|name| name == rule)).collect();
-        let state = own.first().map_or(AppState::NotRun, |finding| finding.state);
+        let state = summarize_state(&own);
         rules.push(RuleResult { rule_id: (*rule).to_string(), state, count: own.len() });
     }
     let overridden: BTreeSet<&str> = input.overrides.iter().map(|over| over.rule.as_str()).collect();
@@ -1843,7 +1861,7 @@ pub fn check_catalog(input: &CheckInput) -> Result<Report, DfmError> {
     let mut rules = Vec::new();
     for rule in RULE_ORDER.iter().filter(|rule| !rule.contains("gate_")) {
         let own: Vec<&Finding> = findings.iter().filter(|finding| finding.rules.iter().any(|name| name == rule)).collect();
-        let state = own.first().map_or(AppState::NotRun, |finding| finding.state);
+        let state = summarize_state(&own);
         rules.push(RuleResult { rule_id: (*rule).to_string(), state, count: own.len() });
     }
     let overridden: BTreeSet<&str> = input.overrides.iter().map(|over| over.rule.as_str()).collect();

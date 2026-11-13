@@ -28,8 +28,8 @@
 //!   answer). The nearest other round hole on the same panel is reported separately as
 //!   [`HoleFact::nearest_hole_wall_mm`], so the second gate can check an `edge_hole` ownership
 //!   without changing `edge_mm`'s meaning. Distances to lines and arcs are exact; other segment
-//!   kinds (free-form cut edges) follow their `polyline(1e-3)` approximation, which is the flat
-//!   pattern's own chord tolerance.
+//!   kinds (free-form cut edges) have no exact form here. They are never approximated for a
+//!   decision: the edge distance becomes unavailable, and the rule layer says it was not checked.
 //! - **Bend gaps** use each flange's two tangents, the near one at `f.p` (against the parent
 //!   panel) and the far one at `f.p + f.n * allowance(f)` (against the flange's own panel). A
 //!   hole on panel P gets one gap per tangent that bounds P. The gap is the perpendicular
@@ -51,7 +51,7 @@
 use std::f64::consts::TAU;
 
 use serde::{Deserialize, Serialize};
-use solidcore_record::{Loop2, Region2, Seg2, Vec2, Vec3};
+use solidcore_record::{Loop2, MAX_BEZIER_CTRL, Region2, Seg2, Vec2, Vec3};
 use solidcraft_geom::LINEAR_TOL;
 use solidcraft_geom::prelude::*;
 
@@ -108,7 +108,8 @@ pub struct HoleFact {
     /// True for a through round cut, which is what a hole rule may check.
     pub square: bool,
     /// Least material between the hole wall and a cut edge on the same panel, when it can be
-    /// decided; `None` if the hole has no assigned panel or the panel has no cut edge.
+    /// decided; `None` if the hole has no assigned panel, the panel has no cut edge, or a
+    /// free-form cut edge could be nearer than the measurable edges.
     pub edge_mm: Option<f64>,
     /// The nearest point of that cut edge, folded to world coordinates.
     pub edge_at_mm: Option<[f64; 3]>,
@@ -410,8 +411,8 @@ fn loop_distance(lp: &Loop2, p: Vec2) -> Option<f64> {
     best
 }
 
-/// The nearest point on a segment, exact for lines and arcs. Other kinds are followed by their
-/// `polyline(1e-3)` (the flat pattern's chord tolerance); only free-form cut edges reach that.
+/// The nearest point on a segment, exact for lines and arcs. Free-form kinds have no exact form
+/// and return `None`; the caller must not build a decision on a chord approximation.
 fn seg_closest(seg: &Seg2, p: Vec2) -> Option<(f64, Vec2)> {
     match *seg {
         Seg2::Line { a, b } => Some(line_closest(a, b, p)),
@@ -465,6 +466,51 @@ fn arc_closest(center: Vec2, radius: f64, start: f64, sweep: f64, p: Vec2) -> Op
     Some(best)
 }
 
+/// A lower bound on a segment's distance from a point, used only when [`seg_closest`] has no
+/// exact answer. Free-form curves lie inside their control points' bounding box, so the box's
+/// distance is a sound bound: when it is farther than the best measured edge, the unknown edge
+/// cannot be nearer. `None` means even that bound is unavailable and the edge must stay unknown.
+fn seg_distance_lower_bound(seg: &Seg2, p: Vec2) -> Option<f64> {
+    let control: Vec<Vec2> = match *seg {
+        Seg2::Cubic { p0, p1, p2, p3 } => vec![p0, p1, p2, p3],
+        // A rational quadratic with a positive weight stays inside its three control points.
+        Seg2::Conic { a, apex, b, w } if w.is_finite() && w > 0.0 => vec![a, apex, b],
+        Seg2::Conic { .. } => return None,
+        Seg2::Bezier { n, p: points } => {
+            let degree = usize::from(n).min(MAX_BEZIER_CTRL - 1);
+            points[..=degree].to_vec()
+        }
+        // Lines and arcs are exact, so this is only a defensive fallback.
+        _ => return seg_closest(seg, p).map(|(distance, _)| distance),
+    };
+    if control.iter().any(|q| !q.x.is_finite() || !q.y.is_finite()) {
+        return None;
+    }
+    let mut min = control.first().copied()?;
+    let mut max = min;
+    for q in control {
+        min.x = min.x.min(q.x);
+        min.y = min.y.min(q.y);
+        max.x = max.x.max(q.x);
+        max.y = max.y.max(q.y);
+    }
+    let dx = if p.x < min.x {
+        min.x - p.x
+    } else if p.x > max.x {
+        p.x - max.x
+    } else {
+        0.0
+    };
+    let dy = if p.y < min.y {
+        min.y - p.y
+    } else if p.y > max.y {
+        p.y - max.y
+    } else {
+        0.0
+    };
+    Some((dx * dx + dy * dy).sqrt())
+}
+
 /// One bend tangent line, and the part of it over the bend (as distance along `dir` from
 /// `origin`) that is the shared edge with the panel rather than a cut edge.
 struct Tangent {
@@ -508,8 +554,9 @@ fn push_cut_segment(seg: Seg2, tangents: &[Tangent], out: &mut Vec<Seg2>) {
         return;
     }
     // Only the part of a line on the tangent line and over the bend's span is the shared edge;
-    // the panel's edge beyond the end of the bend is a free cut edge.
-    let mut excluded: Option<(f64, f64)> = None;
+    // the panel's edge beyond the end of the bend is a free cut edge. Keep every span separately:
+    // two bends may share one line and leave a real cut edge between them.
+    let mut excluded: Vec<(f64, f64)> = Vec::new();
     for tangent in tangents {
         let off_a = (a - tangent.origin).cross(tangent.dir).abs();
         let off_b = (b - tangent.origin).cross(tangent.dir).abs();
@@ -530,19 +577,34 @@ fn push_cut_segment(seg: Seg2, tangents: &[Tangent], out: &mut Vec<Seg2>) {
         // Segment parameters, so a shared edge that spans only part of the line is cut exactly.
         let t0 = ((from - ua) / span).clamp(0.0, 1.0);
         let t1 = ((to - ua) / span).clamp(0.0, 1.0);
-        let (t0, t1) = (t0.min(t1), t0.max(t1));
-        excluded = Some(excluded.map_or((t0, t1), |(x, y)| (x.min(t0), y.max(t1))));
+        excluded.push((t0.min(t1), t0.max(t1)));
     }
-    let Some((t0, t1)) = excluded else {
+    if excluded.is_empty() {
         out.push(seg);
         return;
-    };
-    let tol = LINEAR_TOL / length;
-    if t0 > tol {
-        out.push(Seg2::Line { a, b: a.lerp(b, t0) });
     }
-    if t1 < 1.0 - tol {
-        out.push(Seg2::Line { a: a.lerp(b, t1), b });
+    let tol = LINEAR_TOL / length;
+    excluded.sort_by(|left, right| left.0.total_cmp(&right.0).then_with(|| left.1.total_cmp(&right.1)));
+    // Merge only spans that overlap or touch, so the cut edge between separate bends survives.
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(excluded.len());
+    for (t0, t1) in excluded {
+        if let Some(last) = merged.last_mut()
+            && t0 <= last.1 + tol
+        {
+            last.1 = last.1.max(t1);
+            continue;
+        }
+        merged.push((t0, t1));
+    }
+    let mut start = 0.0;
+    for (t0, t1) in merged {
+        if t0 > start + tol {
+            out.push(Seg2::Line { a: a.lerp(b, start), b: a.lerp(b, t0) });
+        }
+        start = start.max(t1);
+    }
+    if start < 1.0 - tol {
+        out.push(Seg2::Line { a: a.lerp(b, start), b });
     }
 }
 
@@ -618,15 +680,34 @@ struct EdgeHit {
 fn nearest_edge(sheet: &SheetBody, panels: &[(Option<usize>, Region2)], cand: &Candidate) -> Option<EdgeHit> {
     let (key, region) = panel_region(panels, cand.panel)?;
     let mut best: Option<FlatHit> = None;
+    let mut unknown_lower: Option<f64> = None;
     for seg in outline_segments(sheet, region, cand.panel) {
-        consider_segment(&mut best, &seg, cand.centre, cand.radius, EdgeKind::Outline);
+        if !consider_segment(&mut best, &seg, cand.centre, cand.radius, EdgeKind::Outline) {
+            note_unmeasured(&seg, cand.centre, &mut unknown_lower);
+        }
     }
     for seg in opening_segments(sheet, region) {
-        consider_segment(&mut best, &seg, cand.centre, cand.radius, EdgeKind::Opening);
+        if !consider_segment(&mut best, &seg, cand.centre, cand.radius, EdgeKind::Opening) {
+            note_unmeasured(&seg, cand.centre, &mut unknown_lower);
+        }
     }
     let hit = best?;
+    // A free-form edge that might lie inside the best edge's band makes the answer unknown: the
+    // outline must never stand in for an edge that could be nearer.
+    if let Some(lower) = unknown_lower
+        && (lower - cand.radius).max(0.0) <= hit.gap + LINEAR_TOL
+    {
+        return None;
+    }
     let at = apply_point(&sheet.world(key), Vec3::new(hit.at.x, hit.at.y, sheet.t / 2.0));
     (hit.gap.is_finite() && at.is_finite()).then_some(EdgeHit { gap: hit.gap, at, kind: hit.kind })
+}
+
+/// Keep the smallest lower bound of every segment with no exact distance. `None` from the bound
+/// itself (unknown controls) is the weakest possible bound, so it forces the edge unknown.
+fn note_unmeasured(seg: &Seg2, centre: Vec2, unknown_lower: &mut Option<f64>) {
+    let bound = seg_distance_lower_bound(seg, centre).unwrap_or(0.0);
+    *unknown_lower = Some(unknown_lower.map_or(bound, |known: f64| known.min(bound)));
 }
 
 fn panel_region(panels: &[(Option<usize>, Region2)], panel: Panel) -> Option<(Option<usize>, &Region2)> {
@@ -638,14 +719,17 @@ fn panel_region(panels: &[(Option<usize>, Region2)], panel: Panel) -> Option<(Op
     panels.iter().find(|(p, _)| *p == key).map(|(p, region)| (*p, region))
 }
 
-fn consider_segment(best: &mut Option<FlatHit>, seg: &Seg2, centre: Vec2, radius: f64, kind: EdgeKind) {
+/// Measure one segment. Returns false when it has no exact answer, so the caller can keep the
+/// segment's lower bound and decide whether it could still be the nearest edge.
+fn consider_segment(best: &mut Option<FlatHit>, seg: &Seg2, centre: Vec2, radius: f64, kind: EdgeKind) -> bool {
     let Some((distance, at)) = seg_closest(seg, centre) else {
-        return;
+        return false;
     };
     if !distance.is_finite() || !at.is_finite() {
-        return;
+        return false;
     }
     consider(best, FlatHit { gap: (distance - radius).max(0.0), at, kind });
+    true
 }
 
 /// Keep the smallest gap; ties keep the first (outline, then openings).
@@ -960,6 +1044,129 @@ mod tests {
         let measured = facts(&sheet).unwrap();
         assert!(measured.holes.is_empty());
         assert_eq!(measured.other_openings, 1);
+    }
+
+    fn free_form_loop(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2) -> Region2 {
+        Region2 { outer: Loop2 { segs: vec![Seg2::Cubic { p0, p1, p2, p3 }] }, holes: Vec::new() }
+    }
+
+    /// A free-form cut edge is not approximated, so a hole cannot be given the far outline's
+    /// distance when the unknown edge may be nearer.
+    #[test]
+    fn a_free_form_edge_that_may_be_nearer_leaves_the_hole_edge_unknown() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        cut_round(&mut sheet, 20.0, 12.5, 1.5);
+        // A teardrop cut whose cubic reaches x = 22.5, about 1 mm from the hole wall. Its only
+        // segment is free-form, so no exact distance to it exists.
+        sheet.holes.push(free_form_loop(Vec2::new(30.0, 12.5), Vec2::new(20.0, 11.0), Vec2::new(20.0, 14.0), Vec2::new(30.0, 12.5)));
+
+        let measured = facts(&sheet).unwrap();
+        assert_eq!(measured.holes.len(), 1);
+        let hole = &measured.holes[0];
+        assert_eq!(hole.edge_mm, None, "the outline must not stand in for an unmeasured nearer edge");
+        assert_eq!(hole.edge_at_mm, None);
+        assert_eq!(hole.edge_kind, None);
+    }
+
+    /// A free-form edge far outside the outline's distance cannot be nearer, so the exact
+    /// outline answer stands.
+    #[test]
+    fn a_far_free_form_edge_does_not_hide_the_outline_distance() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        cut_round(&mut sheet, 5.0, 12.5, 1.5);
+        sheet.holes.push(free_form_loop(Vec2::new(36.0, 12.5), Vec2::new(32.0, 11.0), Vec2::new(32.0, 14.0), Vec2::new(36.0, 12.5)));
+
+        let measured = facts(&sheet).unwrap();
+        let hole = &measured.holes[0];
+        close(hole.edge_mm.unwrap(), 3.5);
+        assert_eq!(hole.edge_kind, Some(EdgeKind::Outline));
+    }
+
+    fn tangent(origin: Vec2, from: f64, to: f64) -> Tangent {
+        Tangent { origin, dir: Vec2::X, from, to }
+    }
+
+    fn cut_lines(seg: Seg2, tangents: &[Tangent]) -> Vec<(Vec2, Vec2)> {
+        let mut out = Vec::new();
+        push_cut_segment(seg, tangents, &mut out);
+        out.into_iter()
+            .map(|seg| match seg {
+                Seg2::Line { a, b } => (a, b),
+                other => panic!("a cut of a line must be lines, got {other:?}"),
+            })
+            .collect()
+    }
+
+    fn assert_line(line: (Vec2, Vec2), a: Vec2, b: Vec2) {
+        close(line.0.x, a.x);
+        close(line.0.y, a.y);
+        close(line.1.x, b.x);
+        close(line.1.y, b.y);
+    }
+
+    /// Two separate bend spans on one line must leave the real cut edge between them.
+    #[test]
+    fn separated_bend_spans_keep_the_cut_edge_between_them() {
+        let tangents = [tangent(Vec2::ZERO, 0.0, 10.0), tangent(Vec2::new(30.0, 0.0), 0.0, 10.0)];
+        let lines = cut_lines(Seg2::Line { a: Vec2::ZERO, b: Vec2::new(40.0, 0.0) }, &tangents);
+        assert_eq!(lines.len(), 1);
+        assert_line(lines[0], Vec2::new(10.0, 0.0), Vec2::new(30.0, 0.0));
+    }
+
+    /// Overlapping and touching spans merge, the tangent order does not matter, and a reversed
+    /// segment gives the same cut in its own direction.
+    #[test]
+    fn overlapping_adjacent_and_reordered_bend_spans_agree() {
+        let overlapping = [tangent(Vec2::ZERO, 0.0, 20.0), tangent(Vec2::new(10.0, 0.0), 0.0, 20.0)];
+        let lines = cut_lines(Seg2::Line { a: Vec2::ZERO, b: Vec2::new(40.0, 0.0) }, &overlapping);
+        assert_eq!(lines.len(), 1);
+        assert_line(lines[0], Vec2::new(30.0, 0.0), Vec2::new(40.0, 0.0));
+
+        let adjacent = [tangent(Vec2::ZERO, 0.0, 10.0), tangent(Vec2::new(10.0, 0.0), 0.0, 10.0)];
+        let lines = cut_lines(Seg2::Line { a: Vec2::ZERO, b: Vec2::new(40.0, 0.0) }, &adjacent);
+        assert_eq!(lines.len(), 1);
+        assert_line(lines[0], Vec2::new(20.0, 0.0), Vec2::new(40.0, 0.0));
+
+        let separated = [tangent(Vec2::new(30.0, 0.0), 0.0, 10.0), tangent(Vec2::ZERO, 0.0, 10.0)];
+        let lines = cut_lines(Seg2::Line { a: Vec2::new(40.0, 0.0), b: Vec2::ZERO }, &separated);
+        assert_eq!(lines.len(), 1);
+        assert_line(lines[0], Vec2::new(30.0, 0.0), Vec2::new(10.0, 0.0));
+    }
+
+    /// The same separated spans through the measured facts: the hole keeps the cut edge at
+    /// y = 25 between two bends instead of falling back to the far outline.
+    #[test]
+    fn separated_bend_spans_leave_the_edge_in_measured_facts() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        let make = |p: Vec2| SheetFlange {
+            parent: None,
+            p,
+            d: Vec2::X,
+            len: 10.0,
+            n: Vec2::Y,
+            angle: FRAC_PI_2,
+            radius: 1.5,
+            leg: 10.0,
+            ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
+            tear: (false, false),
+            shape: None,
+            exact: None,
+            zone_shape: None,
+            tag: String::new(),
+        };
+        sheet.flanges.push(make(Vec2::new(0.0, 25.0)));
+        sheet.flanges.push(make(Vec2::new(30.0, 25.0)));
+        cut_round(&mut sheet, 20.0, 20.0, 1.5);
+
+        let measured = facts(&sheet).unwrap();
+        let hole = &measured.holes[0];
+        assert!(hole.flat_assigned);
+        close(hole.edge_mm.unwrap(), 3.5);
+        assert_eq!(hole.edge_kind, Some(EdgeKind::Outline));
+        let at = hole.edge_at_mm.unwrap();
+        close(at[0], 20.0);
+        close(at[1], 25.0);
     }
 
     /// A body a later feature altered still reports facts; the caller decides they are unusable.

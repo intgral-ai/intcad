@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use solidcraft_dfm_rules::{
     AppState, CheckInput, Confirmation, Declared, Facts, HoleFact, Layer, Limit, ModelRef, Override, Profile, Requirement, RuleStatus, check,
+    check_catalog,
 };
 
 fn row(rule: &str, value: f64, confirmation: Option<Confirmation>) -> Requirement {
@@ -48,6 +49,35 @@ fn hole(diameter: f64, edge: Option<f64>) -> Facts {
             flat: None,
             countersink: None,
         }]),
+        recognition: Some(Default::default()),
+        ..Facts::default()
+    }
+}
+
+/// Round holes by centre and diameter, each with the given edge distance.
+fn holes_at(points: &[(f64, f64, f64, Option<f64>)]) -> Facts {
+    Facts {
+        paired_mm: Some(1.5),
+        holes: Some(
+            points
+                .iter()
+                .map(|(x, y, diameter, edge)| HoleFact {
+                    diameter_mm: *diameter,
+                    x_mm: *x,
+                    y_mm: *y,
+                    z_mm: 0.75,
+                    depth_mm: 1.5,
+                    square: true,
+                    edge_mm: *edge,
+                    edge_at_mm: None,
+                    edge_kind: None,
+                    edge_hole: None,
+                    bend_gaps: Vec::new(),
+                    flat: Some(1),
+                    countersink: None,
+                })
+                .collect(),
+        ),
         recognition: Some(Default::default()),
         ..Facts::default()
     }
@@ -249,6 +279,64 @@ impl BendValue for Requirement {
         self.value = BTreeMap::from([("t".to_string(), 2.5), ("r".to_string(), 1.0)]);
         self.inputs = BTreeMap::from([("t".to_string(), "mm".to_string()), ("r".to_string(), "mm".to_string())]);
         self
+    }
+}
+
+fn catalog_rule_state(report: &solidcraft_dfm_rules::Report, rule: &str) -> AppState {
+    report.rules.iter().find(|result| result.rule_id == rule).unwrap_or_else(|| panic!("{rule} is in the catalog")).state
+}
+
+/// A pass summary carries no location and sorts first; it must never hide a failure at a real
+/// location in the same rule.
+#[test]
+fn a_pass_and_a_failure_in_one_rule_summarize_as_failed() {
+    let shop = profile("shop", Layer::Factory, vec![row("sm.hole_min_diameter", 1.0, Some(Confirmation::FactoryConfirmed))]);
+    let generic = profile("generic", Layer::Generic, vec![]);
+    // The first hole meets the shop's 1 mm, the second does not.
+    let facts = holes_at(&[(5.0, 12.5, 3.0, Some(10.0)), (20.0, 12.5, 0.5, Some(10.0))]);
+    let report = check_catalog(&input(generic, Some(shop), declared(Some(1.5)), facts)).expect("catalog");
+    assert_eq!(catalog_rule_state(&report, "sm.hole_min_diameter"), AppState::Failed);
+    assert!(report.counts.failed > 0);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| { finding.rules.iter().any(|rule| rule == "sm.hole_min_diameter") && finding.state == AppState::Passed })
+    );
+}
+
+/// The same summary through the first-hole entry, so both report paths share one aggregation.
+#[test]
+fn the_first_hole_entry_also_summarizes_a_mixed_rule_as_failed() {
+    let shop = profile("shop", Layer::Factory, vec![row("sm.hole_min_diameter", 1.0, Some(Confirmation::FactoryConfirmed))]);
+    let generic = profile("generic", Layer::Generic, vec![]);
+    let facts = holes_at(&[(5.0, 12.5, 3.0, Some(10.0)), (20.0, 12.5, 0.5, Some(10.0))]);
+    let report = check(&input(generic, Some(shop), declared(Some(1.5)), facts)).expect("check");
+    assert_eq!(catalog_rule_state(&report, "sm.hole_min_diameter"), AppState::Failed);
+}
+
+/// A passed hole and an unchecked hole must not read as a passed rule.
+#[test]
+fn a_pass_and_an_unchecked_edge_summarize_as_unsupported() {
+    let shop = profile("shop", Layer::Factory, vec![row("sm.hole_to_edge", 2.0, Some(Confirmation::FactoryConfirmed))]);
+    let generic = profile("generic", Layer::Generic, vec![]);
+    let facts = holes_at(&[(10.0, 12.5, 3.0, Some(10.0)), (20.0, 12.5, 3.0, None)]);
+    let report = check_catalog(&input(generic, Some(shop), declared(Some(1.5)), facts)).expect("catalog");
+    assert_eq!(catalog_rule_state(&report, "sm.hole_to_edge"), AppState::Unsupported);
+    assert!(report.counts.unsupported > 0);
+}
+
+/// Neither the input order nor a whole-model translation may change the rule summary.
+#[test]
+fn a_mixed_rule_keeps_its_state_when_holes_are_reordered_or_moved() {
+    let shop = profile("shop", Layer::Factory, vec![row("sm.hole_min_diameter", 1.0, Some(Confirmation::FactoryConfirmed))]);
+    let generic = profile("generic", Layer::Generic, vec![]);
+    let points = [(5.0, 12.5, 3.0, Some(10.0)), (20.0, 12.5, 0.5, Some(10.0))];
+    let reordered = [(20.0, 12.5, 0.5, Some(10.0)), (5.0, 12.5, 3.0, Some(10.0))];
+    let moved = [(105.0, 112.5, 3.0, Some(10.0)), (120.0, 112.5, 0.5, Some(10.0))];
+    for holes in [points, reordered, moved] {
+        let report = check_catalog(&input(generic.clone(), Some(shop.clone()), declared(Some(1.5)), holes_at(&holes))).expect("catalog");
+        assert_eq!(catalog_rule_state(&report, "sm.hole_min_diameter"), AppState::Failed, "{holes:?}");
     }
 }
 

@@ -38,7 +38,7 @@ Status words:
 | `sm.hole_min_diameter` | migrated | yes | 10 INTdfm recordings + second gate |
 | `sm.hole_to_edge` | migrated | yes (cut edge, nearest point, kind, ownership) | recordings + second gate (base, flange, multi-hole, opening, transformed) |
 | `sm.hole_to_bend` | migrated | yes (bend pairing, tangent gap, radius, panel association) | recordings + second gate (L-bracket, U-channel flange holes, mapped bend numbers) |
-| `sm.hole_spacing` | **migrated** | App carries panel assignment, but the rule crate uses recorded flat ids | rule tests |
+| `sm.hole_spacing` | **migrated** | yes: the App gives the base an explicit rule-side id and shifts flange ids, so base and flange holes pair correctly; an unassigned hole stays unknown | App mapping tests: base pair, flange pair, holes on different flats, unassigned hole |
 | `sm.inside_radius` | **migrated** | bend radius exists | — |
 | `sm.min_flange` | **migrated** | no (App does not measure runs) | rule tests; App reports unsupported |
 | `sm.max_bend_length` | **migrated** | bend length exists | — |

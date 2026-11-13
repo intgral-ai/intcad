@@ -63,7 +63,7 @@ renamed to another rule's id, an inconsistent gate, a non-finite fact or a chang
 
 | Layer | File | What it does |
 |---|---|---|
-| Facts | `crates/doc/src/sheet_dfm.rs` | measures round through holes, folded positions, edge distance and bend gaps from `SheetBody`; exact lines and arcs only. `edge_mm` counts outline, non-circular openings and pockets, never another round hole's wall (that belongs to `sm.hole_spacing`) |
+| Facts | `crates/doc/src/sheet_dfm.rs` | measures round through holes, folded positions, edge distance and bend gaps from `SheetBody`; exact lines and arcs only. A free-form cut edge is never approximated: when it could be nearer than the measured edge, `edge_mm` is left unmeasured. `edge_mm` counts outline, non-circular openings and pockets, never another round hole's wall (that belongs to `sm.hole_spacing`) |
 | Rules | `crates/dfm-rules/` | pure Rust: validates data, chooses the number, runs the thickness gate and the three hole rules, maps to App states, writes one report; `second_gate` compares recorded and measured facts |
 | App entry | `crates/engine/src/dfm.rs` | converts facts to the rule contract and calls the rules crate; no OCP, no files |
 | Runner | `crates/engine/src/validation/runner.rs` | new `dfm.sheet` check kind; evidence = facts + report; `required = false` |
@@ -156,9 +156,9 @@ cargo xtask layers
 | INTdfm `replay verify tests/fixtures/dfm-replay/v1` | 13 cases, exit 0 (10 required + 3 extra coverage) |
 | INTdfm `pytest tests/unit/test_replay.py tests/unit/test_replay_catalog.py` | 18 passed |
 | INTdfm `pytest -m e2e tests/e2e/test_replay_record.py` | 1 passed (real OCP read) |
-| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 244 passed (cross-language, second gate, report, recheck, rule families, input gate, profile data and message parity) |
-| Rust `cargo test -p solidcraft-doc sheet_dfm --profile ci` | 7 passed |
-| Rust `cargo test -p solidcraft-engine dfm::tests --profile ci` | 18 passed (including the production recheck entry) |
+| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 248 passed (cross-language, second gate, report, recheck, rule families, input gate, profile data and message parity) |
+| Rust `cargo test -p solidcraft-doc sheet_dfm --profile ci` | 12 passed |
+| Rust `cargo test -p solidcraft-engine dfm::tests --profile ci` | 22 passed (including the production recheck entry and the flat-id mapping) |
 | Rust `cargo test -p solidcraft-engine a_dfm_sheet_check --profile ci` | 1 passed |
 | Rust `cargo xtask layers` | 25 crates, no violations |
 | Rust `cargo xtask wasm` | 17 library/web crates build; `solidcraft-dfm-rules` also checked explicitly for wasm32 |

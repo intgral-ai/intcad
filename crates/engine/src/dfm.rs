@@ -92,6 +92,20 @@ pub fn validate_parameters(value: &Value) -> Result<SheetCheckParameters, DfmErr
 
 /// Convert the App's measured facts to the rule crate's data contract.
 ///
+/// The rule layer has no "base" sentinel: its `None` means an unknown flat, and a hole on it is
+/// left out of `sm.hole_spacing`. The App's `None` means the base panel, so the adapter gives the
+/// base an explicit id and shifts flange ids past it.
+fn rule_flat(flat: Option<usize>, assigned: bool) -> Option<usize> {
+    assigned.then(|| rule_side_flat(flat))
+}
+
+/// A panel's rule-side flat id: the base is 1, flange `i` is `i + 2`. Bends use the same ids.
+fn rule_side_flat(flat: Option<usize>) -> usize {
+    flat.map_or(1, |index| index.saturating_add(2))
+}
+
+/// Convert the App's measured facts to the rule crate's data contract.
+///
 /// A hole with no assigned flat is marked unusable: its edge and bend facts cannot be trusted.
 /// A bore is not a through hole; its count is added to the openings the rule layer says were not
 /// checked, so it can never read as zero risk.
@@ -115,7 +129,7 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
         } else {
             Vec::new()
         },
-        flat: hole.flat,
+        flat: rule_flat(hole.flat, hole.flat_assigned),
         countersink: None,
     });
     RuleFacts {
@@ -139,7 +153,7 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
                     x_mm: bend.x_mm,
                     y_mm: bend.y_mm,
                     z_mm: bend.z_mm,
-                    flats: bend.flats.to_vec(),
+                    flats: bend.flats.iter().map(|flat| Some(rule_side_flat(*flat))).collect(),
                     ..Default::default()
                 })
                 .collect(),
@@ -475,6 +489,84 @@ mod tests {
             model: ModelRef { model_version: "doc-7".into(), body: "Plate".into(), source: "native".into() },
             source: "native".into(),
         }
+    }
+
+    fn shop_parameters(rule: &str, value: f64) -> SheetCheckParameters {
+        let mut params = parameters(Vec::new());
+        params.shop = Some(Profile {
+            format: 1,
+            name: "shop".into(),
+            version: "TEST-ONLY".into(),
+            layer: Layer::Factory,
+            requirements: vec![requirement(rule, value, Some(Confirmation::FactoryConfirmed))],
+        });
+        params
+    }
+
+    fn spacing_finding(report: &Report) -> &solidcraft_dfm_rules::Finding {
+        report.findings.iter().find(|finding| finding.rules.iter().any(|rule| rule == "sm.hole_spacing")).expect("a spacing result")
+    }
+
+    /// The base panel is `flat = None` in the App. The rule layer's `None` means unknown, so the
+    /// adapter must give the base an explicit id and keep both holes on it.
+    #[test]
+    fn base_panel_holes_keep_their_flat_and_reach_hole_spacing() {
+        let sheet = plate_with_holes(40.0, 25.0, &[(10.0, 12.5, 1.5), (20.0, 12.5, 1.5)]);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let rules = rule_facts(&facts);
+        let holes = rules.holes.as_ref().expect("holes");
+        assert_eq!(holes.iter().map(|hole| hole.flat).collect::<Vec<_>>(), vec![Some(1), Some(1)], "the base is an explicit flat, not unknown");
+
+        let outcome = check_sheet(&sheet, shop_parameters("sm.hole_spacing", 8.0)).expect("check");
+        let spacing = spacing_finding(&outcome.report);
+        assert_eq!(spacing.state, solidcraft_dfm_rules::AppState::Failed);
+        assert_eq!(spacing.measured_mm, Some(7.0), "10 mm centres less two 1.5 mm radii");
+    }
+
+    /// A flange hole and its bend must use the same rule-side id, and a hole on the base must not
+    /// pair with a hole on a flange.
+    #[test]
+    fn flange_holes_share_the_bends_flat_and_do_not_pair_with_the_base() {
+        let sheet = u_holes_sheet(true);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let rules = rule_facts(&facts);
+        let holes = rules.holes.as_ref().expect("holes");
+        assert_eq!(holes.iter().map(|hole| hole.flat).collect::<Vec<_>>(), vec![Some(3), Some(1)]);
+        let bends = &rules.recognition.as_ref().expect("recognition").bends;
+        assert_eq!(bends[1].flats, vec![Some(1), Some(3)], "the left bend names the same flange flat as its hole");
+
+        let outcome = check_sheet(&sheet, shop_parameters("sm.hole_spacing", 4.0)).expect("check");
+        let spacing = spacing_finding(&outcome.report);
+        assert_eq!(spacing.state, solidcraft_dfm_rules::AppState::Checked, "one hole per flat has no pair");
+        assert!(spacing.reason_code.is_none());
+        assert!(!spacing.message.contains("flat can't be told"), "{}", spacing.message);
+    }
+
+    /// Two holes on one flange are measured against each other; the base hole stays out of it.
+    #[test]
+    fn same_flange_holes_reach_hole_spacing() {
+        let mut sheet = u_holes_sheet(true);
+        let allowance = sheet.allowance(&sheet.flanges[1]);
+        sheet.holes.push(circle(-allowance - 16.0, 12.5, 1.5));
+        let outcome = check_sheet(&sheet, shop_parameters("sm.hole_spacing", 4.0)).expect("check");
+        let spacing = spacing_finding(&outcome.report);
+        assert_eq!(spacing.state, solidcraft_dfm_rules::AppState::Failed);
+        assert_eq!(spacing.measured_mm, Some(2.5), "5.5 mm centres less two 1.5 mm radii");
+    }
+
+    /// An unassigned hole must stay unknown instead of being mistaken for a base hole.
+    #[test]
+    fn a_hole_with_an_unknown_flat_stays_unknown() {
+        let mut sheet = u_holes_sheet(true);
+        let allowance = sheet.allowance(&sheet.flanges[1]);
+        sheet.holes.push(circle(-allowance / 2.0, 12.5, 1.5));
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let unknown = facts.holes.iter().position(|hole| !hole.flat_assigned).expect("a hole in the bend zone");
+        let rules = rule_facts(&facts);
+        let holes = rules.holes.as_ref().expect("holes");
+        assert_eq!(holes[unknown].flat, None);
+        assert!(!holes[unknown].square, "an unassigned hole is not a usable through hole");
+        assert!(holes.iter().enumerate().any(|(index, hole)| index != unknown && hole.flat == Some(1)));
     }
 
     #[test]
