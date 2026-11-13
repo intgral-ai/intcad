@@ -404,7 +404,7 @@ mod tests {
 
     fn ready_backend() -> Result<AcpBackend, String> {
         let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
-        let mut backend = AcpBackend::start(&["sh".into(), "-c".into(), "cat >/dev/null".into()], ctx)?;
+        let mut backend = AcpBackend::start(&["sh".into(), "-c".into(), "while IFS= read -r line; do :; done".into()], ctx)?;
         let mut events = Vec::new();
         backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut events);
         backend.handle(Incoming::Reply { id: 2, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn config_updates_and_replies_are_isolated_to_the_active_session() {
         let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
-        let mut backend = AcpBackend::start(&["sh".into(), "-c".into(), "cat >/dev/null".into()], ctx).unwrap();
+        let mut backend = AcpBackend::start(&["sh".into(), "-c".into(), "while IFS= read -r line; do :; done".into()], ctx).unwrap();
         let mut events = Vec::new();
         backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut events);
         backend.handle(Incoming::Reply { id: 2, result: Ok(snapshot("s1", "fast")) }, &mut events);
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn a_refused_model_is_reported_as_such() {
         let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
-        let mut backend = AcpBackend::start(&["sh".into(), "-c".into(), "cat >/dev/null".into()], ctx).unwrap();
+        let mut backend = AcpBackend::start(&["sh".into(), "-c".into(), "while IFS= read -r line; do :; done".into()], ctx).unwrap();
         let mut events = Vec::new();
         backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut events);
         backend.handle(Incoming::Reply { id: 2, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
