@@ -12861,7 +12861,9 @@ fn tool_calls_read_as_what_they_did() {
     assert_eq!(said("execute: solid.extrude", extrude.clone(), None).as_deref(), Some("Extrude Sketch1 by 10 mm"));
     // As an ACP agent names the bridged tool, with the body the result made.
     let made = r#"{"feature": 4, "name": "Extrude1", "created_bodies": ["Body2"], "changed_bodies": []}"#;
-    assert_eq!(said("mcp__intcad-app__execute", extrude, Some(made)).as_deref(), Some("Extrude Sketch1 by 10 mm → Body2"));
+    assert_eq!(said("mcp__intcad-app__execute", extrude.clone(), Some(made)).as_deref(), Some("Extrude Sketch1 by 10 mm → Body2"));
+    // A conversation saved while the chat's server was `solidcraft-app` reads the same.
+    assert_eq!(said("mcp__solidcraft-app__execute", extrude, Some(made)).as_deref(), Some("Extrude Sketch1 by 10 mm → Body2"));
     let edges = json!([[20, 0, 20], [20, 30, 20], [0, 15, 20], [40, 15, 20]]);
     let batch = json!({"commands": [
         {"command": "solid.box", "params": {"length": 40, "width": 30, "height": 20}},
