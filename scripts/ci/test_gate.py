@@ -206,6 +206,47 @@ class ExecutionEvidence(unittest.TestCase):
                 self.needs["rust"] = status
                 self.rejected("job result")
 
+    def test_web_offline_is_a_command_job_with_counted_selected_state(self):
+        inventory = dict(contractPresent=True, runtimePresent=True, runtimePayloadRequested=False,
+                         artifactVerifierPresent=True, missingContractInputs=[], missingRuntimeInputs=[])
+        value = planner.make_plan(META, ["packaging/web/package.sh"], inventory, source_revision=SHA,
+                                  event_name="pull_request", base_ref="develop", head_ref="task",
+                                  full=False, release_required=False, diff_complete=True)
+        self.assertEqual(value["jobs"]["web-offline"]["decision"], "run")
+        receipt = self.gate.record_receipt(
+            plan_bytes(value), "web-offline",
+            [{"argv": ["cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"],
+              "exitCode": 0}], None, None, set())
+        self.assertIsNone(receipt["tests"])
+        needs = {job: "success" for job, entry in value["jobs"].items() if entry["decision"] == "run"}
+        receipts = {job: command_receipt(value, job) for job in needs}
+        receipts["web-offline"] = receipt
+        self.assertEqual(self.gate.evaluate(value, needs, receipts), [])
+        for status in (None, "failure", "cancelled", "timed_out", "skipped"):
+            with self.subTest(status=status):
+                changed = dict(needs)
+                if status is None:
+                    changed.pop("web-offline")
+                else:
+                    changed["web-offline"] = status
+                problems = self.gate.evaluate(value, changed, receipts)
+                self.assertTrue(any("web-offline" in problem for problem in problems), problems)
+        del receipts["web-offline"]
+        self.assertTrue(any("web-offline" in problem for problem in self.gate.evaluate(value, needs, receipts)))
+
+    def test_not_applicable_web_offline_is_neutral_not_an_executed_pass(self):
+        self.assertEqual(self.value["jobs"]["web-offline"]["decision"], "not_applicable")
+        self.assertNotIn("web-offline", self.receipts)
+        self.assertEqual(self.evaluate(), [])
+        import contextlib
+        import io
+        summary = io.StringIO()
+        with contextlib.redirect_stdout(summary):
+            self.gate.print_summary(self.value, self.receipts, [])
+        text = summary.getvalue()
+        self.assertIn("web-offline: not_applicable (no_relevant_change)", text)
+        self.assertNotIn("web-offline: command-only evidence satisfied", text)
+
     def test_wrong_source_revision_fails(self):
         self.receipts["rust"]["sourceRevision"] = "0" * 40
         self.rejected("sourceRevision")

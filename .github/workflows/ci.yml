@@ -92,7 +92,8 @@ jobs:
     needs: changes
     runs-on: ubuntu-24.04
     # Bounded pull-request policy/format checks; the complete repository evidence
-    # (owning xtask tests, web-offline build, packaging suites) runs in full mode.
+    # (owning xtask tests, packaging suites) runs in full mode. The web-offline
+    # harness has its own job and budget below.
     # The fast lane measured 14-20 minutes on the 2-vCPU runner; keep headroom.
     timeout-minutes: ${{ fromJSON(needs.changes.outputs.plan || '{}').scope == 'full' && 90 || 30 }}
     steps:
@@ -114,12 +115,49 @@ jobs:
       # Pull requests: fmt/assets/icons/licences/layers/ui-containers/lists/i18n/mesh/skills,
       # format-pending, test_affected.py/test_gate.py/test_main_merge.py,
       # test_kernel_rig_plan.py and every existing bot suite.
-      # Full mode adds the owning xtask binary tests, web-offline and packaging suites.
+      # Full mode adds the owning xtask binary tests and packaging suites.
       - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job repo --out evidence/repo
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: evidence-repo
+          path: evidence/
+          if-no-files-found: error
+
+  web-offline:
+    name: Web app offline use and updates
+    needs: changes
+    # Selected for full/release validation and for the web app, packaging/web,
+    # the Pages caller and the xtask harness modules. It is not folded into the
+    # repository checks: the Chrome harness bounds each launch at 240 s (with
+    # one retry) and needs its own budget. The previously measured job took
+    # under 3 minutes on the hosted runner; 30 minutes keeps ample headroom.
+    # Keep that budget: do not retry the whole job or raise it to hide a
+    # known harness timing bug.
+    if: fromJSON(needs.changes.outputs.plan || '{}').jobs.web-offline.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      # ubuntu-24.04 hosted images ship Google Chrome; the harness fails when
+      # it cannot find a browser instead of skipping the check.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: web-offline
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job web-offline --out evidence/web-offline
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-web-offline
           path: evidence/
           if-no-files-found: error
 
@@ -744,7 +782,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, repo, pr-policy, artifact-policy, clippy, contract-rust, runtime, contract-ts, integration, packages, rust, wasm, dependency-advisories, build-tests, property-tests, action-matrix, action-matrix-determinism, doc-tests, oracle, windows-fxc, windows-startup, riscv64-gates]
+    needs: [changes, repo, web-offline, pr-policy, artifact-policy, clippy, contract-rust, runtime, contract-ts, integration, packages, rust, wasm, dependency-advisories, build-tests, property-tests, action-matrix, action-matrix-determinism, doc-tests, oracle, windows-fxc, windows-startup, riscv64-gates]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

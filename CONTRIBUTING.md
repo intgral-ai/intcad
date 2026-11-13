@@ -265,7 +265,8 @@ override; this limit does not change test filters, timeouts or baselines.
 Tests run beside each other on a busy machine, so a test must not depend on wall-clock timing.
 
 **Ready pull requests test what they touch.** CI maps changed files to workspace packages and
-runs the format/repository policy, Clippy and the wasm check for every selected consumer. The
+runs the format/repository policy, Clippy and the wasm check for every selected consumer; the
+browser offline/update check has its own selected job. The
 [package selector](scripts/ci/plan.py) and [CI workflow](.github/workflows/ci.yml) define which
 changes require native checks; documentation, packaging, other-workflow and bot-script-only
 changes run the fast repository checks only. Pull requests also run the contract/runtime

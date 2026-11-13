@@ -55,9 +55,15 @@ select `xtask` as the bounded smoke owner; `xtask/**` and `packaging/mastra/**`
 changes always select the xtask tests. The excluded tests are **not** reported as
 passing: the nightly/manual `native-baseline.yml` workflow calls this workflow in
 full mode and runs the complete workspace suite and the complete repository
-checks (owning xtask binary tests, web-offline build and packaging suites). The
+checks (owning xtask binary tests and packaging suites). The
 `Format and repository checks` job keeps the fast format, asset, licence, layer,
-list, locale, mesh, skills, selector and bot checks on every PR. When #5's
+list, locale, mesh, skills, selector and bot checks on every PR. The browser
+offline/update harness runs in its own `Web app offline use and updates` job with
+a dedicated budget; it is selected for full/release validation and for the web
+app, `packaging/web`, the Pages workflow and the xtask harness modules
+(`xtask/src/web_offline.rs`, `xtask/src/web_offline_test.rs`, `xtask/src/main.rs`).
+An unrelated `xtask/` change does not start it. Ordinary Rust/wasm changes run the
+wasm build in the existing lane; they do not start the browser harness. When #5's
 contract bundle/consumers are present, the `Mastra contract (Rust)` job runs the
 owned `mastra_` value/codec/bundle/state/retirement conformance tests through
 nextest and emits a counted receipt; it is selected for contract or shared-input
