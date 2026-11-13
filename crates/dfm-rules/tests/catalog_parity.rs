@@ -164,3 +164,33 @@ fn the_full_catalog_report_contains_every_non_gate_rule() {
     }
     assert!(report.findings.iter().any(|finding| finding.rules.iter().any(|rule| rule == "sm.gate_profile_coverage")));
 }
+
+#[test]
+fn a_countersunk_part_matches_the_recorded_catalog() {
+    check_case("catalog.countersink");
+}
+
+#[test]
+fn a_spacing_pair_matches_the_recorded_catalog() {
+    check_case("catalog.spacing");
+}
+
+#[test]
+fn a_part_with_mixed_bend_radii_matches_the_recorded_catalog() {
+    check_case("catalog.radii");
+}
+
+#[test]
+fn a_part_without_bend_relief_matches_the_recorded_catalog() {
+    check_case("catalog.relief");
+}
+
+#[test]
+fn a_u_channel_with_tabs_matches_the_recorded_catalog() {
+    check_case("catalog.u_tabs");
+}
+
+#[test]
+fn a_critical_dimension_matches_the_recorded_catalog() {
+    check_case("catalog.tolerance");
+}
