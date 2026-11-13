@@ -18,12 +18,12 @@ Status words:
 
 | Python module | Job | Rust status | Notes |
 |---|---|---|---|
-| `profile.py` | read/validate profile JSON, applicability, effective rows, requirements digest, gauges | **partial** | types, unknown-key rejection, finite values, selection/applicability, die/bends validation are migrated; `requirements_sha256`, gauge tables and file loading are not |
-| `gate.py` | input gate, thickness gate, coverage gate, reader log, shared tolerance helpers | **partial** | thickness gate, `same_sheet` and a coverage gate are migrated; input-gate refusal policy, reader log, gauges and the both-measure 2V/A thickness check remain at the App boundary/not migrated |
+| `profile.py` | read/validate profile JSON, applicability, effective rows, requirements digest, gauges | **migrated (data API)** | types, validation, selection/applicability, die/bends validation, `effective`, `applying`, `requirements_sha256` and gauge tables are migrated; file loading stays at the App boundary |
+| `gate.py` | input gate, thickness gate, coverage gate, reader log, shared tolerance helpers | **partial** | input gate, coverage gate, thickness gate and `same_sheet` are migrated; the second thickness measure (2V/A) and reader log stay at the App boundary |
 | `rules.py` | flat test, bend gate, 15 rules, header, part facts, threshold selection | **migrated** | all 15 non-gate rules, the flat test and bend gate are migrated with recording-backed tests; header is in the report parity layer; part facts are in the parity report |
 | `report.py` | report types, merge, rounding, ids, sort, counts, clean, canonical JSON | **migrated (parity layer)** | `crates/dfm-rules/src/intdfm_report.rs` reproduces the INTdfm-shaped report from pre-merge findings and metadata; 23 parity tests over the recordings. The App-facing `Report` remains separate. |
-| `recheck.py` | pair two reports, marks and guard flags | **migrated** | `recheck.rs`: pairing, marks, guards, not-compared; 11 fixture pairs, byte-exact `Recheck` JSON |
-| `core.py` | order the gates and rules into one report | **migrated (rule layer)** | `catalog_findings`/`check_catalog` order all gates/rules; the App entry still calls the first-slice `check` |
+| `recheck.py` | pair two reports, marks and guard flags | **migrated** | `recheck.rs`: pairing, marks, guards, not-compared; 11 fixture pairs, byte-exact `Recheck` JSON; `engine::dfm::recheck_reports` is the production entry |
+| `core.py` | order the gates and rules into one report | **migrated (rule layer)** | `catalog_findings`/`check_catalog` order all gates/rules; `dfm.sheet` calls `check_catalog` with explicit missing-fact families |
 | `engine.py` fact types | the data contract between geometry and rules | **partial** | holes, bends, webs and recognition fields exist in the Rust data model; countersink, run/unrelieved facts and several solid facts are not yet used |
 | `project.py`, `snapshot.py` | project text and STEP scan | **out of scope** | file/subprocess/STEP work; the App supplies the equivalent inputs |
 
@@ -38,18 +38,18 @@ Status words:
 | `sm.hole_min_diameter` | migrated | yes | 10 INTdfm recordings + second gate |
 | `sm.hole_to_edge` | migrated | yes (cut edge, nearest point, kind, ownership) | recordings + second gate (base, flange, multi-hole, opening, transformed) |
 | `sm.hole_to_bend` | migrated | yes (bend pairing, tangent gap, radius, panel association) | recordings + second gate (L-bracket, U-channel flange holes, mapped bend numbers) |
-| `sm.hole_spacing` | **migrated** | no (hole-to-hole wall is separate from edge) | — |
+| `sm.hole_spacing` | **migrated** | App carries panel assignment, but the rule crate uses recorded flat ids | rule tests |
 | `sm.inside_radius` | **migrated** | bend radius exists | — |
-| `sm.min_flange` | **migrated** | not yet (runs at 20 places, both flats) | — |
+| `sm.min_flange` | **migrated** | no (App does not measure runs) | rule tests; App reports unsupported |
 | `sm.max_bend_length` | **migrated** | bend length exists | — |
-| `sm.bend_relief_present` | **migrated** | no (relief-end definition still open) | — |
-| `sm.min_web_parallel_bends` | **migrated** | webs partially | — |
-| `sm.u_channel_ratio` | **migrated** | webs/flange lengths partially | — |
+| `sm.bend_relief_present` | **migrated** | no (relief-end definition still open) | rule tests; App reports unsupported |
+| `sm.min_web_parallel_bends` | **migrated** | no (App does not measure webs) | rule tests; App reports unsupported |
+| `sm.u_channel_ratio` | **migrated** | no (App does not measure webs/flange lengths) | rule tests; App reports unsupported |
 | `sm.bend_radius_consistent` | **migrated** | bend radii exist | — |
-| `sm.tolerance_across_bends` | **migrated** | critical dimensions exist; bend-path logic missing | — |
-| `sm.countersink_depth` | **migrated** | no countersink facts in the App | — |
-| `sm.countersink_to_edge` | **migrated** | no countersink facts | — |
-| `sm.countersink_to_bend` | **migrated** | no countersink facts | — |
+| `sm.tolerance_across_bends` | **migrated** | critical dimensions are carried; App does not yet collect them | rule tests |
+| `sm.countersink_depth` | **migrated** | no countersink facts in the App | rule tests; App reports unsupported |
+| `sm.countersink_to_edge` | **migrated** | no countersink facts | rule tests; App reports unsupported |
+| `sm.countersink_to_bend` | **migrated** | no countersink facts | rule tests; App reports unsupported |
 
 ## 3. Data, gates and report pieces
 
