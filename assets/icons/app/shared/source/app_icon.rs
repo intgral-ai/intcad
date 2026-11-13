@@ -54,9 +54,24 @@ const PLACE: (f32, f32, f32) = (2.868_526, -1_202.378_5, -481.944_2);
 const SHEET: f32 = 1024.0;
 /// The light card behind the mark.
 const CARD: [u8; 3] = [252, 252, 252];
+/// The share of a macOS icon's square that its shape takes (824 of 1024 points, Apple's icon
+/// grid since macOS 11); the rest is the clear margin every Mac icon has.
+const MACOS_SHAPE: f32 = 824.0 / 1024.0;
 
-/// This block is the icon image data.
+/// This block is the icon image data: the card fills the square.
 pub fn rgba(size: usize) -> Result<Vec<u8>, String> {
+    draw(size, 1.0)
+}
+
+/// The icon for a macOS icon file: the same card and mark with the margin of Apple's icon grid.
+/// The Windows and Linux callers have no use for it.
+#[allow(dead_code)]
+pub fn rgba_macos(size: usize) -> Result<Vec<u8>, String> {
+    draw(size, MACOS_SHAPE)
+}
+
+/// The card, `share` of the square wide and centred in it, with the mark on it.
+fn draw(size: usize, share: f32) -> Result<Vec<u8>, String> {
     if !(1..=2048).contains(&size) {
         return Err("icon size must be 1..=2048".into());
     }
@@ -73,21 +88,26 @@ pub fn rgba(size: usize) -> Result<Vec<u8>, String> {
     let mut buf = vec![[0u8; 4]; n * n];
 
     // A rounded light card, so the dark mark stays visible on light and dark desktops.
-    let radius = n as f32 * 0.22;
+    let card = n as f32 * share;
+    let margin = (n as f32 - card) / 2.0;
+    let radius = card * 0.22;
     for y in 0..n {
         for x in 0..n {
-            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let (cx, cy) = (x as f32 + 0.5 - margin, y as f32 + 0.5 - margin);
+            if cx < 0.0 || cy < 0.0 || cx > card || cy > card {
+                continue;
+            }
             let dx = if cx < radius {
                 radius - cx
-            } else if cx > n as f32 - radius {
-                cx - (n as f32 - radius)
+            } else if cx > card - radius {
+                cx - (card - radius)
             } else {
                 0.0
             };
             let dy = if cy < radius {
                 radius - cy
-            } else if cy > n as f32 - radius {
-                cy - (n as f32 - radius)
+            } else if cy > card - radius {
+                cy - (card - radius)
             } else {
                 0.0
             };
@@ -98,8 +118,8 @@ pub fn rgba(size: usize) -> Result<Vec<u8>, String> {
     }
 
     // The mark where the file puts it on its square, the square being the card.
-    let s = n as f32 * PLACE.0 / SHEET;
-    let (ox, oy) = (n as f32 * PLACE.1 / SHEET, n as f32 * PLACE.2 / SHEET);
+    let s = card * PLACE.0 / SHEET;
+    let (ox, oy) = (margin + card * PLACE.1 / SHEET, margin + card * PLACE.2 / SHEET);
     let last = n as i32 - 1;
     // Sample rows or columns whose centres lie in `from..=to`.
     let span = |from: f32, to: f32| ((from - 0.5).ceil() as i32).max(0)..=((to - 0.5).floor() as i32).min(last);
@@ -208,6 +228,25 @@ mod tests {
         assert!(px(110, row)[0] < 80 && px(142, row)[0] < 80, "an ink outline on each side of the stem");
         assert!(px(100, row)[0] > 240 && px(156, row)[0] > 240, "the card shows on both sides of the mark");
         assert!(px(size / 2, 8)[0] > 240 || px(size / 2, 8)[3] == 0);
+    }
+
+    #[test]
+    fn macos_icon_keeps_the_grid_margin() {
+        let size = 1024;
+        let pixels = super::rgba_macos(size).expect("valid size");
+        let px = |x: usize, y: usize| pixels.as_chunks::<4>().0[y * size + x];
+        // 100 clear points on every side of the 824-point shape, and the card inside it.
+        for at in [0, 50, 99] {
+            assert_eq!(px(at, size / 2)[3], 0);
+            assert_eq!(px(size - 1 - at, size / 2)[3], 0);
+            assert_eq!(px(size / 2, at)[3], 0);
+            assert_eq!(px(size / 2, size - 1 - at)[3], 0);
+        }
+        assert_eq!(px(101, size / 2), [252, 252, 252, 255]);
+        assert_eq!(px(size - 102, size / 2), [252, 252, 252, 255]);
+        // The mark is the same drawing, smaller: white stem between two ink outlines.
+        assert!(px(size / 2 - 2, size / 2)[0] > 240);
+        assert!((0..size).any(|x| px(x, size / 2)[3] == 255 && px(x, size / 2)[0] < 80));
     }
 
     #[test]

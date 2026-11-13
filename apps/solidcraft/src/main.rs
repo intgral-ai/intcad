@@ -932,7 +932,7 @@ const MSAA: u16 = 4;
 
 /// `custom_titlebar`: no OS decorations, the application bar is the title bar.
 fn app_viewport(custom_titlebar: bool) -> Result<egui::ViewportBuilder, eframe::Error> {
-    // Let macOS use the bundle's layered icon; eframe's default bitmap would replace it.
+    // Let macOS use the bundle's icon; eframe's default bitmap would replace it.
     #[cfg(target_os = "macos")]
     let icon = egui::IconData::default();
     #[cfg(not(target_os = "macos"))]

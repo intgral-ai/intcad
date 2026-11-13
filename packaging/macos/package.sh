@@ -162,9 +162,9 @@ cp "$WORK/bin/solidcraft" "$APP/Contents/MacOS/SolidCraft"
 # solidcraft-cli next to the app, as every other package has it: the agent chat starts it as the
 # agent's MCP server (`solidcraft-cli mcp --connect`) and looks for it beside the running program.
 cp "$WORK/bin/solidcraft-cli" "$APP/Contents/MacOS/solidcraft-cli"
-# Apple-compiled layered icon and older-macOS fallback (regeneration: assets/README.md).
-# Keep compiled resources so packaging also works on runners with older Xcode versions.
-cp "$ROOT/assets/icons/app/macos/exports/Assets.car" "$APP/Contents/Resources/Assets.car"
+# The icon file with the product's mark (regeneration: assets/README.md). No layered icon is
+# installed: the Assets.car under assets/ still holds the upstream artwork, and compiling one
+# for the mark needs Xcode 26. macOS 26 would show a layered icon in place of the icon file.
 cp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$APP/Contents/Resources/SolidCraft.icns"
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
@@ -262,13 +262,18 @@ plutil -lint "$MNT/SolidCraft.app/Contents/Info.plist"
 for key in CFBundleName CFBundleDisplayName; do
   test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = Intcad
 done
-for key in CFBundleExecutable CFBundleIconFile CFBundleIconName; do
+for key in CFBundleExecutable CFBundleIconFile; do
   test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = SolidCraft
 done
+# Nothing names or carries a layered icon, which macOS 26 would show in place of the icon file.
+if /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$MNT/SolidCraft.app/Contents/Info.plist" >/dev/null 2>&1; then
+  echo "the bundle names a layered icon (CFBundleIconName)" >&2
+  exit 1
+fi
+test ! -e "$MNT/SolidCraft.app/Contents/Resources/Assets.car"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MNT/SolidCraft.app/Contents/Info.plist")" = "$MACOS_BUNDLE_ID"
 test -s "$MNT/SolidCraft.app/Contents/Resources/SolidCraft.icns"
 cmp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$MNT/SolidCraft.app/Contents/Resources/SolidCraft.icns"
-cmp "$ROOT/assets/icons/app/macos/exports/Assets.car" "$MNT/SolidCraft.app/Contents/Resources/Assets.car"
 cmp "$ROOT/assets/platforms/macos/README.txt" "$MNT/README.txt"
 case "$ARCH" in universal) WANT=(arm64 x86_64) ;; aarch64) WANT=(arm64) ;; *) WANT=(x86_64) ;; esac
 for arch in "${WANT[@]}"; do
