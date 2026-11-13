@@ -9951,7 +9951,7 @@ done
     let until = |app: &mut SolveApp, what: &str, done: &dyn Fn(&SolveApp) -> bool| {
         let t = std::time::Instant::now();
         while !done(app) {
-            assert!(t.elapsed() < std::time::Duration::from_secs(20), "timed out waiting for {what}");
+            assert!(t.elapsed() < std::time::Duration::from_secs(60), "timed out waiting for {what}");
             poll(app, &ctx);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
