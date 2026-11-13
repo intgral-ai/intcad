@@ -1694,15 +1694,14 @@ pub fn catalog_findings(input: &CheckInput, input_gate: &Finding) -> Result<Vec<
         findings.push(bend_rules::flat_finding());
     } else {
         findings.push(bends.clone());
-        for (rule, call) in [(bend_rules::INSIDE_RADIUS, &mut || bend_rules::inside_radius(input, &thickness, &bends, &input.facts))] {
-            if missing_fact(input, rule) {
-                findings.push(unsupported_finding(
-                    rule,
-                    Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
-                ));
-            } else {
-                findings.extend(call());
-            }
+        let rule = bend_rules::INSIDE_RADIUS;
+        if missing_fact(input, rule) {
+            findings.push(unsupported_finding(
+                rule,
+                Unsupported { code: "RULE_NOT_IMPLEMENTED", message: "The App does not measure the facts this rule needs.".into() },
+            ));
+        } else {
+            findings.extend(bend_rules::inside_radius(input, &thickness, &bends, &input.facts));
         }
         if missing_fact(input, bend_rules::MIN_FLANGE) {
             findings.push(unsupported_finding(
