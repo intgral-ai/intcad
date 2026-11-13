@@ -117,13 +117,10 @@ The Beta.3 gate adds the itemised 956 unbaselined identities and the configurabl
 1800-second action timeout. Run `43381698526` at tested merge `13417bb37` produced
 54,033 actions, 2,254 failures, 213 strict exceptions, 956 unbaselined failures,
 and 0 unexcused/changed/fixed actions after the fourteen reviewed timeout
-reclassifications and the 16 removed loft-join fillets. The final candidate is
-`c1d466d84`; native, archive, determinism, and the six package descriptors all bind
-that tested merge. Verification run `43390930849` passed Linux x86_64, Windows x64
-and macOS universal install/start: Linux tar `03026529…`, Windows MSI `647d45d2…`,
-macOS DMG `1a9aa1a9…`; installed CLI/app report `0.1.0-beta.3`; macOS is universal
-`x86_64 arm64`. The property lane keeps the exact #56 case and the exact
-Cylinder/Sphere case above. The determinism job has 150-minute headroom; the
-load-sensitive process tests use deterministic timing and an ACP fixture with an
-open stdout. The earlier beta.2/`0.40.0-rc.2` reads were runner contamination, not
-the MSI payload.
+reclassifications and the 16 removed loft-join fillets. The property lane keeps the
+exact #56 case and the exact Cylinder/Sphere case above. The determinism job has
+150-minute headroom; the load-sensitive process tests use deterministic timing and
+an ACP fixture with an open stdout. The candidate SHA, its gate run and the
+package/install verification for this correction are recorded in the promotion PR
+and the release notes. The earlier beta.2/`0.40.0-rc.2` reads were runner
+contamination, not the MSI payload.
