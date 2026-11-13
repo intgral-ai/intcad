@@ -399,9 +399,15 @@ fn loop_clear(lp: &Loop2, centre: Vec2, radius: f64) -> bool {
     loop_distance(lp, centre).is_some_and(|d| d + LINEAR_TOL >= radius)
 }
 
-/// Exact distance from a point to a loop, or `None` if a segment has no usable form.
+/// Exact distance from a point to a loop, or `None` if any segment has no exact form. A free-form
+/// segment is never approximated for a model decision; the caller then treats the edge as unknown.
 fn loop_distance(lp: &Loop2, p: Vec2) -> Option<f64> {
-    lp.segs.iter().filter_map(|s| seg_closest(s, p)).map(|(d, _)| d).reduce(f64::min)
+    let mut best: Option<f64> = None;
+    for segment in &lp.segs {
+        let (distance, _) = seg_closest(segment, p)?;
+        best = Some(best.map_or(distance, |value: f64| value.min(distance)));
+    }
+    best
 }
 
 /// The nearest point on a segment, exact for lines and arcs. Other kinds are followed by their
@@ -410,20 +416,8 @@ fn seg_closest(seg: &Seg2, p: Vec2) -> Option<(f64, Vec2)> {
     match *seg {
         Seg2::Line { a, b } => Some(line_closest(a, b, p)),
         Seg2::Arc { center, radius, start, sweep } => arc_closest(center, radius, start, sweep, p),
-        _ => {
-            let points = seg.polyline(1e-3);
-            let mut best: Option<(f64, Vec2)> = None;
-            for pair in points.windows(2) {
-                let (Some(&a), Some(&b)) = (pair.first(), pair.get(1)) else {
-                    continue;
-                };
-                let hit = line_closest(a, b, p);
-                if best.as_ref().is_none_or(|(d, _)| hit.0 < *d) {
-                    best = Some(hit);
-                }
-            }
-            best
-        }
+        // Free-form edges are not approximated for a model decision.
+        _ => None,
     }
 }
 
