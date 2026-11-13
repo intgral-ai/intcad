@@ -15,6 +15,11 @@ pub struct NativeMenu {
     events: Receiver<MenuEvent>,
     recent: Submenu,
     recent_paths: Vec<String>,
+    edit: Submenu,
+    /// The text editing items, in the Edit menu only while a native text view has the keyboard.
+    text_editing: Vec<PredefinedMenuItem>,
+    /// Undo (false) and Redo (true) chosen while that view had the keyboard: they are its text's.
+    text_edits: Vec<bool>,
 }
 
 impl NativeMenu {
@@ -120,7 +125,8 @@ impl NativeMenu {
             ctx.request_repaint();
         }));
         menu.init_for_nsapp();
-        let mut native = Self { menu, actions, help_actions, events, recent, recent_paths: Vec::new() };
+        let mut native =
+            Self { menu, actions, help_actions, events, recent, recent_paths: Vec::new(), edit, text_editing: Vec::new(), text_edits: Vec::new() };
         native.update_recent(app)?;
         Ok(native)
     }
@@ -131,7 +137,11 @@ impl NativeMenu {
                 solidcraft_ui_egui::help::run(app, ctx, action);
             }
             if let Some((_, action)) = self.actions.iter().find(|(item, _)| item.id() == &event.id) {
-                if matches!(action, FileAction::Undo | FileAction::Redo) && ctx.egui_wants_keyboard_input() {
+                if matches!(action, FileAction::Undo | FileAction::Redo) && !self.text_editing.is_empty() {
+                    // The Assistant's page has the keyboard: Undo and Redo are for the text being
+                    // typed there, never for the design.
+                    self.text_edits.push(matches!(action, FileAction::Redo));
+                } else if matches!(action, FileAction::Undo | FileAction::Redo) && ctx.egui_wants_keyboard_input() {
                     raw.events.push(egui::Event::Key {
                         key: egui::Key::Z,
                         physical_key: None,
@@ -144,6 +154,42 @@ impl NativeMenu {
                 }
             }
         }
+    }
+
+    /// Cut, Copy, Paste and Select All for a native text view that has the keyboard (the
+    /// Assistant's web view): macOS sends those keys through menu items. They are in the Edit
+    /// menu only meanwhile, so that otherwise the same keys reach the window as they always have.
+    pub fn set_text_editing(&mut self, app: &SolveApp, on: bool) {
+        if on == !self.text_editing.is_empty() {
+            return;
+        }
+        if on {
+            let items = [
+                PredefinedMenuItem::separator(),
+                PredefinedMenuItem::cut(Some(app.tr("ui.cut"))),
+                PredefinedMenuItem::copy(Some(app.tr("ui.copy"))),
+                PredefinedMenuItem::paste(Some(app.tr("ui.paste"))),
+                PredefinedMenuItem::select_all(Some(app.tr("ui.select_all"))),
+            ];
+            for item in items {
+                match self.edit.append(&item) {
+                    Ok(()) => self.text_editing.push(item),
+                    Err(error) => log::warn!("Edit menu: {error}"),
+                }
+            }
+        } else {
+            for item in self.text_editing.drain(..) {
+                if let Err(error) = self.edit.remove(&item) {
+                    log::warn!("Edit menu: {error}");
+                }
+            }
+        }
+    }
+
+    /// Undo (false) and Redo (true) chosen since the last call while the native text view had
+    /// the keyboard, for that view to carry out.
+    pub fn take_text_edits(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.text_edits)
     }
 
     fn action_enabled(action: &FileAction, app: &SolveApp, ctx: &egui::Context) -> bool {

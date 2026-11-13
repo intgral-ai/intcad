@@ -108,6 +108,12 @@ pub(crate) fn owns_keyboard_input(app: &mut SolveApp, ctx: &egui::Context) -> bo
 pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     poll(app, &ctx);
+    // With the host's web view the Assistant is a panel of the app's window, never a window of
+    // its own: that choice, saved by the built-in panel or asked for some other way, is put back.
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.agent_chat.web_host {
+        app.preferences.agent_chat_popped = false;
+    }
     // Set again below if the chat is drawn this frame.
     app.agent_chat.drop_rect = None;
     // Retain the previous card for shortcut hover routing below; clear it when hidden.
@@ -253,6 +259,12 @@ fn floating(app: &mut SolveApp, ui: &mut egui::Ui) {
     let height = bounds.height();
     let anchor = if left { bounds.left_top() } else { bounds.right_top() };
     let frame = ui_kit::Panel::feature_frame(&ctx, app.ui.layout, side);
+    // Around the host's page the frame is rounder and takes the page's own surface, and the
+    // strip the panel is dragged wider by is one a pointer finds beside a native view.
+    #[cfg(not(target_arch = "wasm32"))]
+    let (frame, grip) = if web::active(app, &ctx) { (web::frame(app, frame), web::rail()) } else { (frame, t.space_4) };
+    #[cfg(target_arch = "wasm32")]
+    let grip = t.space_4;
     let inner = (vec2(width, height) - frame.total_margin().sum()).max(egui::Vec2::ZERO);
     let panel = ui_kit::Panel::new(tr("ui.assistant"), Id::new("sc_agent_chat_floating"), anchor, available, side, frame).width(width);
     if let Some(card) = panel.fixed_window(&ctx, inner).show(&ctx, |ui| {
@@ -263,9 +275,9 @@ fn floating(app: &mut SolveApp, ui: &mut egui::Ui) {
         if !minimized {
             let rect = ui.max_rect();
             let rail = if left {
-                Rect::from_x_y_ranges(rect.right() - t.space_4..=rect.right(), rect.y_range())
+                Rect::from_x_y_ranges(rect.right() - grip..=rect.right(), rect.y_range())
             } else {
-                Rect::from_x_y_ranges(rect.left()..=rect.left() + t.space_4, rect.y_range())
+                Rect::from_x_y_ranges(rect.left()..=rect.left() + grip, rect.y_range())
             };
             let response = ui.interact(rail, Id::new("sc_agent_chat_resize"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
             crate::scenario::publish_handle("agent_chat:resize", rail.center());
@@ -287,7 +299,7 @@ fn floating(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 
 /// The most chips one group shows before "+N more".
-const MAX_CHIPS: usize = 6;
+pub(super) const MAX_CHIPS: usize = 6;
 /// A chip's longest label (characters), and what its frame adds to the text's width.
 const CHIP_CHARS: usize = 26;
 const CHIP_PAD: f32 = 13.0;
@@ -532,7 +544,7 @@ pub const NEW_CHAT_SHORTCUT: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::L);
 
 /// Clear the chat, asking first when something would be lost.
-fn request_new_chat(app: &mut SolveApp) {
+pub(super) fn request_new_chat(app: &mut SolveApp) {
     if new_chat_needs_confirm(app) {
         app.agent_chat.confirm_new = true;
     } else {
@@ -824,6 +836,32 @@ fn dock_drag(app: &mut SolveApp, ui: &egui::Ui, drag: &egui::Response, left: boo
 }
 
 fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
+    // Where the host has a web view, all of the panel is the page's: it draws the bar, the
+    // conversation and the message box.
+    #[cfg(not(target_arch = "wasm32"))]
+    if web::active(app, ui.ctx()) {
+        if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
+            refresh(app, ui.ctx());
+        }
+        let mut rect = ui.available_rect_before_wrap();
+        ui.allocate_rect(rect, Sense::hover());
+        // Floating, the strip at the panel's inner edge stays the app's: it is what one drags to
+        // make the panel wider, and a native view over it would take the drag.
+        if Container::for_layout(app.ui.layout, Surface::Panel).floating() {
+            if left {
+                rect.max.x -= web::rail();
+            } else {
+                rect.min.x += web::rail();
+            }
+        } else {
+            // Docked, the panel reaches the window's edges and the view may stop short of them
+            // (`web::placement`): what shows there is the page's own surface, not another colour.
+            ui.painter().rect_filled(rect, 0.0, web::backing(app, ui.ctx()));
+        }
+        web::place(app, ui, rect);
+        crate::scenario::publish_rect("agent_chat:web", rect);
+        return;
+    }
     header(app, ui, left);
     #[cfg(not(target_arch = "wasm32"))]
     ui_kit::assistant_controls(ui, |ui| switcher(app, ui));
@@ -1032,7 +1070,7 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
                         } else {
                             tr("ui.agent_chat_attach_selection").to_string()
                         };
-                        let pick = ui_kit::checkbox(ui, &label, &mut app.agent_chat.attach_selection)
+                        let pick = ui_kit::checkbox(ui, &label, &mut app.preferences.agent_chat_attach_selection)
                             .backing_on_hover_text(tr("ui.agent_chat_attach_selection_tip"));
                         crate::scenario::publish_handle("agent_chat:attach_selection", pick.rect.center());
                         // Choose faces, edges, features and bodies on purpose, then OK.

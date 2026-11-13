@@ -1,0 +1,61 @@
+/* Mastra's own fonts and design-system stylesheet, as its Storybook loads them. The paths assume
+   the workspace layout in README.md (the Mastra checkout beside the platform folder). */
+@import '../../../../../open-source/mastra/packages/playground/src/fonts.css';
+@import '../../../../../open-source/mastra/packages/playground-ui/src/index.css';
+
+/* Tailwind scans the Mastra components we render, and this page's own glue. */
+@source '../../../../../open-source/mastra/packages/playground-ui/src';
+@source './';
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* Outside its own rounded surface the page is see-through: the app's panel frame, with its
+   border and shadow, is behind it. */
+html,
+body,
+#root {
+  background: transparent;
+}
+
+/* Mastra's sizes are for a browser page at arm's length from a wide column; in a narrow panel
+   beside a model they read small. Every size is in rem, so this is the one place they scale. */
+html {
+  font-size: 125%;
+}
+
+/* The page is a panel of the app, not a document: no rubber-band scroll of the whole view. */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* A name in an answer that selects that thing in the design: a link in looks, a button in kind. */
+@layer components {
+  .mastra-markdown button.assistant-object-name {
+    display: inline;
+    padding: 0;
+    font: inherit;
+    color: var(--foreground);
+    text-align: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--border-strong);
+    text-underline-offset: 0.15em;
+    cursor: pointer;
+  }
+
+  .mastra-markdown button.assistant-object-name:hover {
+    text-decoration-color: currentcolor;
+  }
+
+  .mastra-markdown button.assistant-object-name:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+}

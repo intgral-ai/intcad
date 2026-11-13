@@ -1552,6 +1552,10 @@ preference_settings! {
     agent_chat_side: String = "right".into(), PAGE_ASSISTANT;
     agent_chat_width: f32 = 380.0, PAGE_ASSISTANT;
     agent_chat_minimized: bool = false, PAGE_ASSISTANT;
+    /// Whether what is selected in the design is written into each message (Attach selection),
+    /// so the agent knows what "this" means without asking the app. Off: the agent is sent the
+    /// selection only when it reads it through the app's tools, as before this was a setting.
+    agent_chat_attach_selection: bool = true, PAGE_ASSISTANT;
     /// Whether the chat is in its own window instead of the side panel, and that window's place
     /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
     /// negative or past the main screen when the window sits on another one).
