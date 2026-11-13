@@ -390,6 +390,26 @@ ratchet:
 - No upstream issue/comment was posted. This is recorded for later tracking; a kernel fix is out
   of this Beta's scope.
 
+## Cylinder/Sphere seam refusal (Beta.3 property lane)
+
+A second exact case is a boolean seam limitation, not a point tangency:
+
+- Class: an axis-X cylinder and a sphere. The generator hit e.g. cylinder
+  `at [0, 17.5, 17.5], axis X, r 7.5, h 12.5` with sphere `at [0, 25, 27.5], r 11.25`, and
+  cylinder `at [17.5, 10, 0], axis X, r 10, h 5` with sphere `at [7.5, 20, 0], r 11.25`;
+  operations intersect and cut; uniform scales 0.05/1 and translations `off 0/1e3/1e5`.
+- Union builds a sound body. Intersect and cut are refused at 1x and 0.05x with
+  `SMLib boolean: SMLib's check refuses the result: ... SmFace::Test #29 Face crosses Seam:
+  Face boundary illegally crosses a surface seam. [owner SmFace]`.
+- At offset 1e5 all three operations can hit the reviewed #56 `SmBSplineSurface::Test #5 Bad
+  NonMonotonic CPts` (`[owner SmSphere]`) refusal. The operation fails safely; no body is
+  returned and no input body changes.
+- The predicate binds that primitive pair, the two operations and the exact checker error, in
+  either operand order; a different primitive pair, operation or error fails. The deterministic
+  `cyl_sphere_seam_refusal_is_the_exact_reviewed_upstream_case` asserts the refusals and the
+  union/scale/translation paths. This is upstream-common at the pin; a kernel/checker fix is out
+  of this Beta's scope.
+
 ## Evidence index
 
 

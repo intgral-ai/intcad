@@ -1072,8 +1072,16 @@ impl ValidationPort {
 
     fn commit_report(&self, run_id: &str, report: ValidationReport, state: ValidationState) -> Result<()> {
         let current = self.load_state(run_id)?;
-        if current.state.is_terminal() && current.state != state {
-            return Err(ValidationError::report_mismatch("a terminal state cannot be paired with a report for another state"));
+        if current.state.is_terminal() {
+            if current.state != state {
+                return Err(ValidationError::report_mismatch("a terminal state cannot be paired with a report for another state"));
+            }
+            // A concurrent writer already committed this terminal state. Keep its report: a
+            // cancelled run's report is stable, and a second cancel must not fail with
+            // REPORT_MISMATCH (#88). A missing report still needs to be written.
+            if self.store.report_exists(run_id) {
+                return Ok(());
+            }
         }
         let mut bytes = self.serialize_report(&report)?;
         let path = self.store.report_path(run_id);
@@ -1083,6 +1091,12 @@ impl ValidationPort {
             Err(error) => {
                 let existing = self.store.read_bounded(&path, self.limits.report_bytes).map_err(|_| error)?;
                 if existing != bytes {
+                    // The other writer may have committed the same terminal state between our
+                    // state read and the report write. Its report is authoritative.
+                    let current = self.load_state(run_id)?;
+                    if current.state.is_terminal() && current.state == state {
+                        return Ok(());
+                    }
                     return Err(ValidationError::report_mismatch("a different terminal report already exists for this run"));
                 }
             }

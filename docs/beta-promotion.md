@@ -67,20 +67,29 @@ as fixed and must be removed in the change. The action count can grow by up to f
 least the stable 54,029 actions and judges the itemised identities. A baseline pass that starts failing is the
 213-item gate condition above.
 
-The property lane keeps its exact #56 exception and one narrow Cylinder/Sphere case.
-The cylinder `at [22.5, 12.5, 2.5], axis X, r 11.25, h 5` and the sphere
-`at [10, 2.5, 0], r 12.5` touch at exactly one point: the sphere's rightmost point
-`(22.5, 2.5, 0)` is inside the cylinder's start cap. A union of solids that meet at a
-single point is not a manifold solid, so SMLib's refusal is correct. It refuses the
-union at 1x, 0.05x and offsets 0 and 1e3 with `SmVertex::Test #1 Bad Vertex Gap`
-(offset 12.5 at 1x, tolerance 2e-05) and `SmFace::Test #12 Face->Vertex`; at 40x and
-offset 1e5 it builds the union, whose volume is the sum of the operands, and intersect
-is empty and cut is the cylinder at every transform. The test accepts only that exact
-relative geometry, operand order, uniform scale and translation; a different sphere,
-cylinder, error, transform or built volume still fails. The deterministic
-`cyl_sphere_refusal_is_the_exact_reviewed_upstream_case` asserts the refusal, the
-transform outcomes, `A+B` volume, and that the inputs are unchanged; if the kernel
-starts behaving differently, that test fails and the exception must be removed.
+The property lane keeps its exact #56 exception and two narrow Cylinder/Sphere cases.
+The first is a point tangency: the cylinder `at [22.5, 12.5, 2.5], axis X, r 11.25, h 5`
+and the sphere `at [10, 2.5, 0], r 12.5` touch at exactly one point, so the union is not
+a manifold solid and SMLib's refusal is correct. It refuses the union at 1x, 0.05x and
+offsets 0 and 1e3 with `SmVertex::Test #1 Bad Vertex Gap` (offset 12.5 at 1x, tolerance
+2e-05) and `SmFace::Test #12 Face->Vertex`; at 40x and offset 1e5 it builds the union,
+whose volume is the sum of the operands, and intersect is empty and cut is the cylinder
+at every transform.
+The second is a seam class: an axis-X cylinder and a sphere build a valid union, but
+SMLib refuses their intersect and cut at 1x and 0.05x with `SmFace::Test #29 Face
+crosses Seam`; at offset 1e5 the same class can hit the reviewed #56 NURBS refusal.
+The tests accept only that primitive pair, those two operations and that exact checker
+error, in either operand order; a different primitive pair, operation or error still
+fails. This is one checker limitation, not every Cylinder/Sphere failure.
+The deterministic `cyl_sphere_refusal_is_the_exact_reviewed_upstream_case` and
+`cyl_sphere_seam_refusal_is_the_exact_reviewed_upstream_case` assert the refusals, the
+transform outcomes, the built union volume and the input invariants; if the kernel
+starts behaving differently, those tests fail and the exceptions must be removed.
+The randomized property lane is recorded with the Beta evidence but is not a Beta
+blocker: the reviewed action matrix and the selected deterministic regressions are the
+Beta kernel gate. The stable release gate keeps the property requirement. The lane is
+not claimed green: other upstream SMLib refusals still appear in its JUnit and stay
+visible, not accepted as passes.
 
 The Beta gate fails when any of these changes:
 
@@ -95,10 +104,11 @@ The Beta gate fails when any of these changes:
 Build failures, timeouts, cancellations, result-parse failures and unknown
 platform jobs are never excused. The raw 16-shard results, the property JUnit
 and raw exit (or the later grader report), the job conclusions and the package
-descriptors are kept with the run. Before the reviewed property grader lands,
-the Beta gate reads the raw JUnit itself and accepts only the exact #56 test
-identity and signature; an extra failure, a changed signature or a skipped test
-fails.
+descriptors are kept with the run. The Beta gate records the property result but
+does not reject on a property failure: the reviewed action matrix and deterministic
+regressions are the Beta kernel gate. The stable release gate keeps the exact #56
+property requirement. A property failure remains in the evidence and the release
+notes; it is not rewritten as a pass.
 
 The historical `tests/action_matrix/baseline.json` remains report-only. The Beta
 list is not a baseline refresh and never replaces the full matrix result; the

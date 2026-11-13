@@ -5,8 +5,10 @@
 [profile.ci]
 # Heavy tests (one to twelve minutes each on a CI runner) that pull requests skip. They run on
 # every integration push and full/nightly/release validation (`--ignore-default-filter`),
-# and in `cargo xtask test`, including boolean_props. Full CI also exposes a raw property lane.
-# Keep this list in sync with docs/book/src/dev/testing.md and CONTRIBUTING.md.
+# and in `cargo xtask test`. The randomized boolean_props and atomic_commands binaries run in
+# the dedicated property lane, so the deterministic full suite excludes them instead of adding
+# a second, unreviewed random sample. Keep this list in sync with
+# docs/book/src/dev/testing.md and CONTRIBUTING.md.
 default-filter = """
 not (
     (package(solidcraft-engine) & (

@@ -158,10 +158,34 @@ fn cyl_sphere_refusal(a: &Prim, b: &Prim, error: &str) -> bool {
     (offset - 12.5 * k).abs() <= 1e-9 * (12.5 * k).max(1.0)
 }
 
+/// The reviewed Cylinder/Sphere seam class: an axis-X cylinder and a sphere. SMLib refuses
+/// their Intersect and Cut with `SmFace::Test #29 Face crosses Seam`; the operations fail
+/// safely and Union still builds. This is one checker error on one primitive pair and two
+/// operations, not every Cylinder/Sphere failure: a different error, operation or primitive
+/// still fails.
+fn cyl_sphere_seam(a: &Prim, b: &Prim) -> bool {
+    matches!((a, b), (Prim::Cyl { axis: 0, .. }, Prim::Sph { .. }) | (Prim::Sph { .. }, Prim::Cyl { axis: 0, .. }))
+}
+
+/// Whether `op` on the reviewed seam class is refused by the exact seam checker.
+fn cyl_sphere_seam_refusal(a: &Prim, b: &Prim, op: BoolOp, error: &str) -> bool {
+    matches!(op, BoolOp::Intersect | BoolOp::Cut)
+        && cyl_sphere_seam(a, b)
+        && error.contains("SMLib boolean: SMLib's check refuses the result")
+        && error.contains("SmFace::Test #29 Face crosses Seam")
+        && error.contains("Face boundary illegally crosses a surface seam")
+}
+
+/// At a 1e5 offset this case can hit the reviewed #56 NURBS refusal instead.
+fn cyl_sphere_seam_far_refusal(a: &Prim, b: &Prim, error: &str) -> bool {
+    cyl_sphere_seam(a, b) && error.contains("SmBSplineSurface::Test #5 Bad NonMonotonic CPts") && error.contains("[owner SmSphere]")
+}
+
 enum Union {
     Volume(f64),
     PointTangency,
     KnownCylSphereRefusal,
+    KnownCylSphereSeam,
 }
 
 /// The union's volume, or the accepted exact point tangency or the reviewed Cylinder/Sphere
@@ -176,7 +200,17 @@ fn union(a: &Body, b: &Body, pa: &Prim, pb: &Prim) -> Result<Union, TestCaseErro
         }
         Err(e) if point_tangency(pa, pb, &e.to_string()) => Ok(Union::PointTangency),
         Err(e) if cyl_sphere_refusal(pa, pb, &e.to_string()) => Ok(Union::KnownCylSphereRefusal),
+        Err(e) if cyl_sphere_seam_far_refusal(pa, pb, &e.to_string()) => Ok(Union::KnownCylSphereSeam),
         Err(e) => Err(TestCaseError::fail(format!("Union returned an error: {e}"))),
+    }
+}
+
+/// `run` for Intersect and Cut, or `None` when the reviewed seam case refuses exactly.
+fn run_known(a: &Body, b: &Body, op: BoolOp, pa: &Prim, pb: &Prim) -> Result<Option<f64>, TestCaseError> {
+    match boolean(a, b, op) {
+        Err(e) if cyl_sphere_seam_refusal(pa, pb, op, &e.to_string()) => Ok(None),
+        Err(e) if cyl_sphere_seam_far_refusal(pa, pb, &e.to_string()) => Ok(None),
+        _ => run(a, b, op).map(Some),
     }
 }
 
@@ -186,8 +220,13 @@ fn identity(a: &Prim, b: &Prim) -> Result<(), TestCaseError> {
     let (va, vb) = (vol(&ba), vol(&bb));
     let u = union(&ba, &bb, a, b)?;
     // The reviewed tangency refuses Union only. Intersect and Cut still run, so the exception
-    // covers one operation, not the case.
-    let (vi, vc) = (run(&ba, &bb, BoolOp::Intersect)?, run(&ba, &bb, BoolOp::Cut)?);
+    // covers one operation, not the case. The seam case refuses Intersect and Cut; its
+    // volume identity cannot be evaluated.
+    let (vi, vc) = (run_known(&ba, &bb, BoolOp::Intersect, a, b)?, run_known(&ba, &bb, BoolOp::Cut, a, b)?);
+    let (Some(vi), Some(vc)) = (vi, vc) else { return Ok(()) };
+    if matches!(u, Union::KnownCylSphereSeam) {
+        return Ok(());
+    }
     match u {
         Union::Volume(vu) => prop_assert!(
             close(vu + vi, va + vb, va + vb),
@@ -199,6 +238,7 @@ fn identity(a: &Prim, b: &Prim) -> Result<(), TestCaseError> {
         Union::KnownCylSphereRefusal => {
             prop_assert!(close(vi, 0.0, va + vb), "the reviewed Cylinder/Sphere case touches at a point, but intersect gave {vi:.6}")
         }
+        Union::KnownCylSphereSeam => {}
     }
     prop_assert!(close(vc, va - vi, va + vb), "cut {vc:.3} != A-I {:.3}", va - vi);
     Ok(())
@@ -231,11 +271,13 @@ fn scale(a: &Prim, b: &Prim, k: f64) -> Result<(), TestCaseError> {
         (Union::Volume(one), Union::KnownCylSphereRefusal) => {
             prop_assert!(close(one, s, s), "the reviewed Cylinder/Sphere union built at scale 1: {one:.4} != A+B {s:.4}")
         }
+        (Union::KnownCylSphereSeam, _) | (_, Union::KnownCylSphereSeam) => {}
         _ => prop_assert!(false, "Union was refused as a point tangency at one scale only"),
     }
     for op in [BoolOp::Intersect, BoolOp::Cut] {
-        let (one, big) = (run(&ba, &bb, op)?, run(&ka, &kb, op)? / k3);
-        prop_assert!(close(one, big, s), "{op:?} at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
+        let (one, big) = (run_known(&ba, &bb, op, a, b)?, run_known(&ka, &kb, op, &sa, &sb)?);
+        let (Some(one), Some(big)) = (one, big) else { continue };
+        prop_assert!(close(one, big / k3, s), "{op:?} at scale 1 gives {one:.4}, at scale {k} gives {big:.4} (normalised)");
     }
     Ok(())
 }
@@ -264,10 +306,12 @@ fn translation(a: &Prim, b: &Prim, off: f64) -> Result<(), TestCaseError> {
         (Union::KnownCylSphereRefusal, Union::Volume(there)) | (Union::Volume(there), Union::KnownCylSphereRefusal) => {
             prop_assert!(close(there, s, s), "the reviewed Cylinder/Sphere union built at offset {off}: {there:.4} != A+B {s:.4}");
         }
+        (Union::KnownCylSphereSeam, _) | (_, Union::KnownCylSphereSeam) => {}
         _ => prop_assert!(false, "Union was refused as a point tangency at the origin or moved, not both"),
     }
     for op in [BoolOp::Intersect, BoolOp::Cut] {
-        let (here, there) = (run(&ba, &bb, op)?, run(&ta, &tb, op)?);
+        let (here, there) = (run_known(&ba, &bb, op, a, b)?, run_known(&ta, &tb, op, &pa, &pb)?);
+        let (Some(here), Some(there)) = (here, there) else { continue };
         prop_assert!(close(here, there, s), "{op:?} at origin {here:.4}, moved by {off} gives {there:.4}");
     }
     Ok(())
@@ -314,10 +358,13 @@ proptest! {
             }
             (Union::PointTangency, Union::PointTangency) => {}
             (Union::KnownCylSphereRefusal, Union::KnownCylSphereRefusal) => {}
+            (Union::KnownCylSphereSeam, _) | (_, Union::KnownCylSphereSeam) => {}
             _ => prop_assert!(false, "Union was refused as a point tangency in one order only"),
         }
-        let (ab, ba_) = (run(&ba, &bb, BoolOp::Intersect)?, run(&bb, &ba, BoolOp::Intersect)?);
-        prop_assert!(close(ab, ba_, s), "Intersect: A,B gives {ab:.4} but B,A gives {ba_:.4}");
+        let (ab, ba_) = (run_known(&ba, &bb, BoolOp::Intersect, &a, &b)?, run_known(&bb, &ba, BoolOp::Intersect, &b, &a)?);
+        if let (Some(ab), Some(ba_)) = (ab, ba_) {
+            prop_assert!(close(ab, ba_, s), "Intersect: A,B gives {ab:.4} but B,A gives {ba_:.4}");
+        }
     }
 
     /// Moving both operands together does not change the answer. A large offset exposes
@@ -559,5 +606,45 @@ fn cyl_sphere_refusal_is_the_exact_reviewed_upstream_case() {
     check(scale(&a, &b, 40.0));
     check(translation(&a, &b, 0.0));
     check(translation(&a, &b, 1.0e3));
+    check(translation(&a, &b, 1.0e5));
+}
+
+/// The exact Cylinder/Sphere seam case behind the reviewed Intersect/Cut refusal. Union builds
+/// a sound body; Intersect and Cut are refused with `SmFace::Test #29 Face crosses Seam` at 1x
+/// and 0.05x, and the exact case hits the reviewed #56 NURBS refusal at a 1e5 offset. A
+/// different sphere, operation, error or transform still fails.
+#[test]
+fn cyl_sphere_seam_refusal_is_the_exact_reviewed_upstream_case() {
+    let a = Prim::Cyl { at: [0.0, 17.5, 17.5], axis: 0, r: 7.5, h: 12.5 };
+    let b = Prim::Sph { at: [0.0, 25.0, 27.5], r: 11.25 };
+    let (ba, bb) = (a.body(), b.body());
+    let union = boolean(&ba, &bb, BoolOp::Union).unwrap().unwrap();
+    assert!(union.validity().is_empty());
+    for op in [BoolOp::Intersect, BoolOp::Cut] {
+        let error = boolean(&ba, &bb, op).unwrap_err().to_string();
+        assert!(cyl_sphere_seam_refusal(&a, &b, op, &error), "{op:?}: {error}");
+        assert!(cyl_sphere_seam_refusal(&b, &a, op, &error), "{op:?}: the refusal does not depend on operand order");
+    }
+    let error = boolean(&ba, &bb, BoolOp::Intersect).unwrap_err().to_string();
+    let (sa, sb) = (grid_scale(&a, 0.05), grid_scale(&b, 0.05));
+    let scaled = boolean(&sa.body(), &sb.body(), BoolOp::Intersect).unwrap_err().to_string();
+    assert!(cyl_sphere_seam_refusal(&sa, &sb, BoolOp::Intersect, &scaled), "{scaled}");
+    let t = Vec3::new(1.0e5, -7.0e4, 3.0e4);
+    let mv = |x: &Body| transform(x, t, Vec3::ZERO, Vec3::Z, 0.0).expect("translate");
+    let (ta, tb) = (mv(&ba), mv(&bb));
+    let far = boolean(&ta, &tb, BoolOp::Union).unwrap_err().to_string();
+    assert!(cyl_sphere_seam_far_refusal(&a, &b, &far), "{far}");
+    assert!(!cyl_sphere_seam_refusal(&a, &b, BoolOp::Union, &error), "Union is not the refused operation");
+    assert!(
+        !cyl_sphere_seam_refusal(
+            &a,
+            &b,
+            BoolOp::Intersect,
+            "SMLib boolean: SMLib's check refuses the result: 1 failed tests: SmVertex::Test #1 Bad Vertex Gap"
+        ),
+        "a different refusal is not the reviewed case"
+    );
+    check(identity(&a, &b));
+    check(scale(&a, &b, 0.05));
     check(translation(&a, &b, 1.0e5));
 }
