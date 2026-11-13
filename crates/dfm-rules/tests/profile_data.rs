@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
-use solidcraft_dfm_rules::profile_data::{ApplyGap, applying, effective, gauge_systems, gauges_within, nearest_gauge, requirements_sha256};
+use solidcraft_dfm_rules::profile_data::{ApplyGap, applying, effective, gauge_systems_from_json, gauges_within, nearest_gauge, requirements_sha256};
 use solidcraft_dfm_rules::{Applies, Limit, Profile, Requirement};
 
 #[derive(Deserialize)]
@@ -112,52 +112,46 @@ fn applying_narrows_process_then_thickness() {
     assert_eq!(ApplyGap::Thickness.as_str(), "thickness");
 }
 
+const TEST_GAUGES: &str = r#"{
+  "systems": [
+    { "system": "TEST-ONLY-a", "standard": "TEST-ONLY", "source": "TEST-ONLY", "rights": "TEST-ONLY",
+      "gauges": [ {"gauge": 10, "mm": 1.5}, {"gauge": 11, "mm": 1.0}, {"gauge": 12, "mm": 0.75} ] },
+    { "system": "TEST-ONLY-b", "standard": "TEST-ONLY", "source": "TEST-ONLY", "rights": "TEST-ONLY",
+      "gauges": [ {"gauge": 10, "mm": 1.6}, {"gauge": 11, "mm": 1.1} ] }
+  ]
+}"#;
+
 #[test]
-fn four_gauge_systems_in_the_files_order() {
-    let systems = gauge_systems().expect("the bundled gauges parse");
-    let names: Vec<&str> = systems.iter().map(|system| system.name.as_str()).collect();
-    assert_eq!(names, ["steel", "galvanised", "stainless", "aluminium"]);
-    assert_eq!(systems[0].standard, "Manufacturers' Standard Gauge");
-    for system in systems {
-        assert!(!system.source.is_empty());
-        assert!(!system.rights.is_empty());
-        assert!(system.gauges().iter().all(|row| row.mm > 0.0));
-    }
-    assert!(systems[0].rights.starts_with("Unclear"));
-    assert!(!systems[3].rights.to_lowercase().contains("unclear"));
+fn gauge_systems_keep_the_files_order() {
+    let systems = gauge_systems_from_json(TEST_GAUGES).expect("TEST-ONLY gauges parse");
+    assert_eq!(systems.iter().map(|system| system.name.as_str()).collect::<Vec<_>>(), ["TEST-ONLY-a", "TEST-ONLY-b"]);
+    assert_eq!(systems[0].gauges()[0].mm, 1.5);
 }
 
 #[test]
 fn nearest_gauge_finds_the_closest_and_keeps_the_first_tie() {
-    let systems = gauge_systems().expect("the bundled gauges parse");
-    let steel = &systems[0];
-    let nearest = nearest_gauge(steel, 1.5).expect("steel has rows");
-    assert_eq!((nearest.number, nearest.mm), (16, 1.519));
-
-    // 0.912 (20 ga) and 0.759 (22 ga) are both 0.0765 from 0.8355; the file lists 20 first.
-    let tie = nearest_gauge(steel, 0.8355).expect("steel has rows");
-    assert_eq!(tie.number, 20);
+    let systems = gauge_systems_from_json(TEST_GAUGES).expect("TEST-ONLY gauges parse");
+    let nearest = nearest_gauge(&systems[0], 1.4).expect("rows");
+    assert_eq!((nearest.number, nearest.mm), (10, 1.5));
+    let tie = nearest_gauge(&systems[0], 0.875).expect("rows");
+    assert_eq!(tie.number, 11);
 }
 
 #[test]
-fn gauges_within_is_closest_first() {
-    let found = gauges_within(1.6, 0.2).expect("the bundled gauges parse");
-    let found: Vec<(&str, u32)> = found.iter().map(|gauge| (gauge.system.as_str(), gauge.number)).collect();
-    assert_eq!(found, vec![("stainless", 16), ("galvanised", 16), ("aluminium", 14), ("steel", 16)]);
+fn gauges_within_is_closest_first_and_keeps_the_files_order_on_a_tie() {
+    let systems = gauge_systems_from_json(TEST_GAUGES).expect("TEST-ONLY gauges parse");
+    let found = gauges_within(&systems, 1.55, 0.051).expect("rows");
+    assert_eq!(found.iter().map(|gauge| gauge.number).collect::<Vec<_>>(), [10, 10]);
+    assert_eq!(found[0].system, "TEST-ONLY-a");
+    assert_eq!(found[1].system, "TEST-ONLY-b");
 }
 
 #[test]
-fn gauges_within_a_gate_tolerance_names_one_gauge() {
-    let found = gauges_within(1.5, 0.02).expect("the bundled gauges parse");
+fn a_gate_tolerance_names_the_closest_gauge() {
+    let systems = gauge_systems_from_json(TEST_GAUGES).expect("TEST-ONLY gauges parse");
+    let found = gauges_within(&systems, 1.5, 0.02).expect("rows");
     assert_eq!(found.len(), 1);
-    assert_eq!((found[0].system.as_str(), found[0].number, found[0].mm), ("steel", 16, 1.519));
-}
-
-#[test]
-fn gauges_within_keeps_the_files_order_on_a_tie() {
-    let found = gauges_within(0.8355, 0.077).expect("the bundled gauges parse");
-    let steel: Vec<u32> = found.iter().filter(|gauge| gauge.system == "steel").map(|gauge| gauge.number).collect();
-    assert_eq!(steel, vec![20, 22]);
+    assert_eq!((found[0].system.as_str(), found[0].number, found[0].mm), ("TEST-ONLY-a", 10, 1.5));
 }
 
 fn one_row(value: f64) -> Requirement {

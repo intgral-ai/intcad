@@ -5,7 +5,7 @@ deliberately separate from the App's geometry extraction: "the Rust rule exists"
 can measure every fact that rule needs" are different statements.
 
 Baseline: INTdfm `2f24830fcd84c8e3047eb6643139b94c27b8c1b6` (contract schema 2 at `79c5682`).
-Rust crate: `crates/dfm-rules` (local branch only; not pushed to the public fork).
+Rust crate: `crates/dfm-rules` (published on the authorized migration branch).
 
 Status words:
 - **Migrated**: Rust code exists and has a parity or hand-calculated test.

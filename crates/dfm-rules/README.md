@@ -30,6 +30,7 @@ rules.
 
 ## Placement
 
-Until the public fork's visibility is settled, this crate is a local branch only. It must not be
-pushed to `intgral-ai/open-skyfall-desktop`. When it moves, the intended home is the INTdfm
-repository; the App will pin a version rather than depend on an adjacent checkout.
+The owner authorized publishing this branch to `intgral-ai/open-skyfall-desktop` on 2026-11-13.
+The intended long-term home is still the INTdfm repository, with the App pinning a version; this
+branch is the reviewable migration copy. The authorization covers the implementation, contract,
+TEST-ONLY fixtures and docs, not customer STEP files, private factory data or credentials.

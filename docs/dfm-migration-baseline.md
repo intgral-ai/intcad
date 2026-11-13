@@ -1,15 +1,16 @@
 # DFM native migration: stage 1 baseline
 
-Status: local implementation and verification, 2026-11-12. This file is part of the local
-migration branch; it is not for the public fork until the repository's visibility decision is
-made. No DFM code from this stage was pushed.
+Status: implementation and verification, 2026-11-13. The owner explicitly authorized publishing
+this DFM implementation, its TEST-ONLY fixtures, contract and docs to the existing public
+open-skyfall repository, and the migration branch to INTdfm. This authorization does not cover
+customer STEP files, private factory data or credentials; none are in this branch.
 
 ## 1. Verified baseline
 
 | Repository | Baseline commit | Where this stage works |
 |---|---|---|
-| INTdfm (`intgral-ai/INTdfm`) | `2f24830fcd84c8e3047eb6643139b94c27b8c1b6` (main, 2026-11-12) | local branch `migration/pil-295-replay-contract`, commits `bfb1289` and `34bcd18` |
-| open-skyfall (`intgral-ai/open-skyfall-desktop`) | `1a45733ef96b53990fec8bd7794563eebc6facdb` (develop, 2026-11-10) | local worktree `/tmp/opencode/dfm-m1`, branch `dfm/m1-native-hole-min-diameter`, commit `f8f0e5a` |
+| INTdfm (`intgral-ai/INTdfm`) | `2f24830fcd84c8e3047eb6643139b94c27b8c1b6` (main, 2026-11-12) | branch `migration/pil-295-replay-contract`, head `f630dc4` at this writing |
+| open-skyfall (`intgral-ai/open-skyfall-desktop`) | `1a45733ef96b53990fec8bd7794563eebc6facdb` (develop, 2026-11-10) | branch `dfm/m1-native-hole-min-diameter`, head `15e84c8a4` at this writing |
 
 The PRD's `7bf03f6d9` is an older develop commit; current develop is `1a45733e`. The PRD and the
 technical design are proposals except for the sections they mark as confirmed. This stage did
@@ -140,7 +141,7 @@ python -m pytest -q tests/unit/test_replay.py
 python -m pytest -q -m e2e tests/e2e/test_replay_record.py     # needs OCP
 ```
 
-open-skyfall (local worktree):
+open-skyfall (in the branch):
 ```sh
 cargo test -p solidcraft-dfm-rules --profile ci
 cargo test -p solidcraft-engine dfm --profile ci
@@ -167,10 +168,10 @@ cargo xtask layers
 
 ## 6. Remaining differences and next tasks
 
-1. **Full three-rule parity:** `sm.hole_min_diameter` now has both gates: the rule result matches
-   the Python baseline, and the App's measured facts match the recorded INTdfm facts for the same
-   hole. `sm.hole_to_edge` and `sm.hole_to_bend` still need their edge and bend-gap facts added to
-   the second-gate comparison; their rule results already match the recordings.
+1. **Three hole rules pass both gates:** each rule result matches the Python recordings, and the
+   App's measured facts match the recorded facts for the same part (base, flange, multi-hole,
+   opening edge and transformed models). The other catalogue rules are migrated in the rule layer
+   but the App does not yet measure all their facts.
 2. **Second gate tolerance:** contract schema 2 pairs by an exact complete matching. A pair must
    have position, diameter and depth within 0.001 mm; the 0.05 mm centre distance is only the
    fallback bound used to diagnose a mismatch. More than one complete matching is refused;
@@ -184,8 +185,9 @@ cargo xtask layers
    chat item yet. That is the next slice, after the UI decision.
 6. **Conversion radius:** implement per-bend radius and the closed-solid gate before checking
    imported parts. This stage only measured the gap.
-7. **Visibility:** do not push this branch to the public fork. The rules crate and App-side DFM
-   code need a private home, or the fork must become private first.
+7. **Visibility:** the owner authorized the public push on 2026-11-13. The old "do not push"
+   constraint is superseded for this branch only; it does not authorize a merge, release or the
+   publication of customer STEP files, private factory data or credentials.
 
 ## 7. Open decisions for the owner
 

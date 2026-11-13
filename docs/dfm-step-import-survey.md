@@ -5,7 +5,7 @@ SolidCraft, convert them to native sheet metal where possible, export and re-mea
 native export -> import round trip checks the exporter/importer without conversion.
 
 **The downloaded files are not in this repository.** Every manifest entry says the licence is
-unclear (`see repo`). They live only in `/tmp/opencode/step-survey2/parts` and must not be
+unclear (`see repo`). They live only in a local evidence directory outside the repositories and must not be
 committed or shipped.
 
 Baseline: SolidCraft develop `1a45733ef96b53990fec8bd7794563eebc6facdb`; INTdfm
@@ -29,10 +29,10 @@ separately.
 | `jaimeuyd__ServoBracketBent.step` | `a48e75d5a6524468d52f9748f406c70efa9fd11e490d32e07d86360b42c516ae` | B-spline bracket |
 | `jaimeuyd__MotorBracketBent.step` | `4c811664812f8a02eedc9630037d43bcd27ba0dd5078faece1ea3750b522004e` | B-spline bracket, import refused |
 
-Reproduction: `/tmp/opencode/step-survey2/run_all.sh` and `COMMANDS.md` hold the re-run driver,
-per-part configs and logs. It uses the prebuilt `solidcraft-cli` at develop `1a45733` and
-INTdfm `22c3f3a`. The scripts download only the public files above, verify their hashes, and keep
-all output outside both repositories.
+Reproduction: the local evidence directory (not committed) holds the re-run driver, per-part
+configs and logs. It uses the prebuilt `solidcraft-cli` at develop `1a45733` and INTdfm `22c3f3a`.
+The scripts download only the public files above, verify their hashes, and keep all output outside
+both repositories.
 
 ## Method
 
@@ -70,8 +70,7 @@ and hole exact), **2 refused** (`Fan_Shroud`, `Servo`), **1 partial and rejected
 
 Every accepted conversion was checked bend-by-bend and hole-by-hole: each bend radius/angle/
 length/position and each hole diameter/folded position matched within 0.05 mm pairing and the
-measurement tolerance. The detailed per-hole and per-bend tables are in the run report
-`/tmp/opencode/subagent-b-step-survey2.md`.
+measurement tolerance. The detailed per-hole and per-bend tables are kept in the local evidence directory.
 
 **All five converted exports are still assemblies.** `intdfm check` refused 5/5 with
 `INPUT_ASSEMBLY` (2 products, 1 assembly link, 1 solid definition), even though INTdfm's reader

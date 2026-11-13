@@ -1,9 +1,9 @@
 //! Profile data: the effective requirements, INTdfm's applying test, the requirements digest and
-//! the bundled gauge tables.
+//! the gauge-table parser.
 //!
 //! This is pure data. It reads no profile file and decides no rule result. The App loads profiles
 //! and passes them in; this module only merges them, answers which rows apply, hashes a row list
-//! the way INTdfm does, and exposes the gauge tables the thickness gate's message names.
+//! the way INTdfm does, and parses the gauge table the App supplies for the thickness message.
 //!
 //! # The requirements digest
 //!
@@ -20,17 +20,15 @@
 //! normalized `2.0`, which CPython writes `2.0`. A profile that mixes integer and float spellings
 //! cannot be reproduced from the typed row without the original JSON bytes.
 //!
-//! # The gauge file
+//! # Gauge tables
 //!
-//! `assets/gauges.json` is copied from INTdfm. Its three publisher-derived tables say their rights
-//! are unclear, so it is kept **internal** (the top-level `"internal": true` marks it) and is not
-//! a redistributable asset until the repository's attribution process clears it. The aluminium
-//! table is computed from the Brown & Sharpe formula and needs no rights.
+//! No third-party gauge table is compiled into this crate. The App supplies the data file; this
+//! module parses it and preserves its order and tie behaviour. The INTdfm publisher-derived
+//! tables have unclear rights, so only the parser and tests with invented values are published.
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -38,9 +36,6 @@ use sha2::{Digest, Sha256};
 
 use crate::intdfm_report::{python_float_text, python_round};
 use crate::{DfmError, Profile, Requirement};
-
-/// The bundled gauge tables, compiled in so the crate still reads no file at run time.
-const GAUGES_JSON: &str = include_str!("../assets/gauges.json");
 
 /// The first value that left no applying row, in INTdfm's narrowing order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,29 +290,20 @@ pub struct Gauge {
     pub mm: f64,
 }
 
-/// The four gauge tables, in the file's order. For the thickness gate's message only.
-///
-/// The file is compiled in, so this reads no path at run time. It is parsed once; a malformed
-/// bundled file is a `DfmError`, never a panic.
-pub fn gauge_systems() -> Result<&'static [GaugeSystem], DfmError> {
-    static TABLES: OnceLock<Result<Vec<GaugeSystem>, String>> = OnceLock::new();
-    let parsed = TABLES.get_or_init(|| {
-        #[derive(Deserialize)]
-        struct GaugeFile {
-            systems: Vec<GaugeSystem>,
-        }
-        serde_json::from_str::<GaugeFile>(GAUGES_JSON).map(|file| file.systems).map_err(|error| error.to_string())
-    });
-    match parsed {
-        Ok(systems) => Ok(systems),
-        Err(error) => Err(DfmError::Invalid(format!("bundled gauges.json: {error}"))),
+/// Parse a caller-supplied gauge table. The App supplies the data file, so no third-party
+/// table is compiled into the binary.
+pub fn gauge_systems_from_json(json: &str) -> Result<Vec<GaugeSystem>, DfmError> {
+    #[derive(Deserialize)]
+    struct GaugeFile {
+        systems: Vec<GaugeSystem>,
     }
+    serde_json::from_str::<GaugeFile>(json).map(|file| file.systems).map_err(|error| DfmError::Invalid(format!("gauge data: {error}")))
 }
 
 /// Every gauge within this distance of `mm`, closest first, then in the file's order.
-pub fn gauges_within(mm: f64, within_mm: f64) -> Result<Vec<Gauge>, DfmError> {
+pub fn gauges_within(systems: &[GaugeSystem], mm: f64, within_mm: f64) -> Result<Vec<Gauge>, DfmError> {
     let mut found: Vec<(f64, Gauge)> = Vec::new();
-    for system in gauge_systems()? {
+    for system in systems {
         for row in &system.gauges {
             let distance = rounded_distance(row.mm, mm);
             if distance <= within_mm {
