@@ -489,9 +489,7 @@ fn greedy_fallback(costs: &[Vec<Option<f64>>], row_keys: &[Vec<f64>], col_keys: 
         }
     }
     candidates.sort_by(|a, b| {
-        a.0.total_cmp(&b.0)
-            .then_with(|| key_cmp(&row_keys[a.1], &row_keys[b.1]))
-            .then_with(|| key_cmp(&col_keys[a.2], &col_keys[b.2]))
+        a.0.total_cmp(&b.0).then_with(|| key_cmp(&row_keys[a.1], &row_keys[b.1])).then_with(|| key_cmp(&col_keys[a.2], &col_keys[b.2]))
     });
     let mut used_rows = vec![false; n];
     let mut used_cols = vec![false; n];
@@ -507,25 +505,12 @@ fn greedy_fallback(costs: &[Vec<Option<f64>>], row_keys: &[Vec<f64>], col_keys: 
     (!matching.contains(&usize::MAX)).then_some(matching)
 }
 
-fn fallback_matching(
-    costs: &[Vec<Option<f64>>],
-    row_keys: &[Vec<f64>],
-    col_keys: &[Vec<f64>],
-) -> Option<Vec<usize>> {
-    if costs.len() <= EXACT_FALLBACK_LIMIT {
-        exact_fallback(costs, row_keys, col_keys)
-    } else {
-        greedy_fallback(costs, row_keys, col_keys)
-    }
+fn fallback_matching(costs: &[Vec<Option<f64>>], row_keys: &[Vec<f64>], col_keys: &[Vec<f64>]) -> Option<Vec<usize>> {
+    if costs.len() <= EXACT_FALLBACK_LIMIT { exact_fallback(costs, row_keys, col_keys) } else { greedy_fallback(costs, row_keys, col_keys) }
 }
 
 fn sorted_pairs(recorded_keys: &[Vec<f64>], measured_keys: &[Vec<f64>], matching: &[usize]) -> Vec<(usize, usize)> {
-    let mut pairs: Vec<(usize, usize)> = matching
-        .iter()
-        .enumerate()
-        .filter(|(_, col)| **col != usize::MAX)
-        .map(|(row, &col)| (row, col))
-        .collect();
+    let mut pairs: Vec<(usize, usize)> = matching.iter().enumerate().filter(|(_, col)| **col != usize::MAX).map(|(row, &col)| (row, col)).collect();
     pairs.sort_by(|a, b| key_cmp(&recorded_keys[a.0], &recorded_keys[b.0]).then_with(|| key_cmp(&measured_keys[a.1], &measured_keys[b.1])));
     pairs
 }
@@ -713,8 +698,7 @@ pub fn compare(recorded: &Facts, measured: &MeasuredSheet, tolerance: GeometryTo
     // Canonical hole number maps, for edge ownership and bend associations.
     let recorded_original_to_row: BTreeMap<usize, usize> = recorded_holes.iter().enumerate().map(|(row, (number, _))| (*number, row)).collect();
     let measured_original_to_row: BTreeMap<usize, usize> = measured_holes.iter().enumerate().map(|(row, (number, _))| (*number, row)).collect();
-    let hole_map: BTreeMap<usize, usize> =
-        pairs.iter().map(|&(row, col)| (recorded_canonical[row], measured_canonical[col])).collect();
+    let hole_map: BTreeMap<usize, usize> = pairs.iter().map(|&(row, col)| (recorded_canonical[row], measured_canonical[col])).collect();
 
     let extras = |number: usize| measured.holes.get(number.saturating_sub(1)).cloned().unwrap_or_default();
     for &(row, col) in &pairs {
@@ -747,12 +731,7 @@ pub fn compare(recorded: &Facts, measured: &MeasuredSheet, tolerance: GeometryTo
                 return Err(GeometryMismatch::MeasuredEdgeWallUnavailable { measured: measured_number, recorded_hole: wall_hole });
             };
             if actual != expected {
-                return Err(GeometryMismatch::EdgeWallNumber {
-                    recorded: recorded_number,
-                    measured: measured_number,
-                    expected,
-                    actual,
-                });
+                return Err(GeometryMismatch::EdgeWallNumber { recorded: recorded_number, measured: measured_number, expected, actual });
             }
             if recorded_hole.edge_kind != Some(EdgeKind::Opening) {
                 return Err(GeometryMismatch::EdgeKindMismatch {
@@ -775,7 +754,9 @@ pub fn compare(recorded: &Facts, measured: &MeasuredSheet, tolerance: GeometryTo
             match (&recorded_hole.edge_at_mm, &extra.normal) {
                 (Some(recorded_at), Some(normal)) => {
                     let at = wall.at_mm;
-                    let Some(point_delta) = edge_point_delta(recorded_at, &at, [measured_hole.x_mm, measured_hole.y_mm, measured_hole.z_mm], Some(*normal)) else {
+                    let Some(point_delta) =
+                        edge_point_delta(recorded_at, &at, [measured_hole.x_mm, measured_hole.y_mm, measured_hole.z_mm], Some(*normal))
+                    else {
                         report.edge_points_not_compared += 1;
                         continue;
                     };
@@ -925,10 +906,8 @@ pub fn compare(recorded: &Facts, measured: &MeasuredSheet, tolerance: GeometryTo
         }
         report.bend_pairs.sort_unstable();
 
-        let recorded_bend_original_to_row: BTreeMap<usize, usize> =
-            recorded_bends.iter().enumerate().map(|(row, _)| (row + 1, row)).collect();
-        let measured_bend_original_to_row: BTreeMap<usize, usize> =
-            measured_bends.iter().enumerate().map(|(row, _)| (row + 1, row)).collect();
+        let recorded_bend_original_to_row: BTreeMap<usize, usize> = recorded_bends.iter().enumerate().map(|(row, _)| (row + 1, row)).collect();
+        let measured_bend_original_to_row: BTreeMap<usize, usize> = measured_bends.iter().enumerate().map(|(row, _)| (row + 1, row)).collect();
 
         // A hole's flat association is which paired bends bound its panel, plus whether the
         // bend's own flat list names that panel. Numeric flat ids themselves never cross sides.
@@ -1366,9 +1345,8 @@ mod tests {
         for recorded_x in [0.0, 1.5, 4.0] {
             compare(&facts(vec![hole(recorded_x)]), &measured(vec![hole(recorded_x + 0.001)]), GeometryTolerance::default())
                 .expect("0.001 is inclusive");
-            let mismatch =
-                compare(&facts(vec![hole(recorded_x)]), &measured(vec![hole(recorded_x + 0.0011)]), GeometryTolerance::default())
-                    .expect_err("0.0011 is past");
+            let mismatch = compare(&facts(vec![hole(recorded_x)]), &measured(vec![hole(recorded_x + 0.0011)]), GeometryTolerance::default())
+                .expect_err("0.0011 is past");
             assert!(matches!(mismatch, GeometryMismatch::Position { .. }), "{recorded_x}: {mismatch}");
         }
         let mut measured_sheet = measured(vec![hole(20.0)]);

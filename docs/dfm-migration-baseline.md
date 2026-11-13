@@ -152,12 +152,12 @@ cargo xtask layers
 
 | Check | Result |
 |---|---|
-| INTdfm `replay verify tests/fixtures/dfm-replay/v1` | 10 cases, exit 0 |
-| INTdfm `pytest tests/unit/test_replay.py` | 16 passed |
+| INTdfm `replay verify tests/fixtures/dfm-replay/v1` | 13 cases, exit 0 (10 required + 3 extra coverage) |
+| INTdfm `pytest tests/unit/test_replay.py` | 17 passed |
 | INTdfm `pytest -m e2e tests/e2e/test_replay_record.py` | 1 passed (real OCP read) |
-| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 26 passed (8 cross-language + 12 App entry + 6 second-gate) |
-| Rust `cargo test -p solidcraft-doc sheet_dfm --profile ci` | 6 passed |
-| Rust `cargo test -p solidcraft-engine dfm::tests --profile ci` | 5 passed (including App facts vs recorded facts) |
+| Rust `cargo test -p solidcraft-dfm-rules --profile ci` | 80 passed (8 cross-language + 13 App entry + 36 second-gate + 23 report parity) |
+| Rust `cargo test -p solidcraft-doc sheet_dfm --profile ci` | 7 passed |
+| Rust `cargo test -p solidcraft-engine dfm::tests --profile ci` | 16 passed (edge, bend, ownership, transform and injected-error cases) |
 | Rust `cargo test -p solidcraft-engine a_dfm_sheet_check --profile ci` | 1 passed |
 | Rust `cargo xtask layers` | 25 crates, no violations |
 | Rust `cargo xtask wasm` | 17 library/web crates build; `solidcraft-dfm-rules` also checked explicitly for wasm32 |

@@ -1,0 +1,285 @@
+{
+  "bends": [],
+  "clean": false,
+  "counts": {
+    "needs_review": 0,
+    "not_applicable": 3,
+    "not_verified": 3,
+    "pass": 2,
+    "violation": 0
+  },
+  "findings": [
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_2ae8770161dcf764",
+      "label": "F1",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": {
+        "unit": "mm3",
+        "value": 1499.3373
+      },
+      "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+      "mode": "gate",
+      "needs": [],
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.gate_input_solid"
+      ],
+      "status": "pass"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_8281bf943ec9f418",
+      "label": "F2",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": {
+        "unit": "mm",
+        "value": 1.5
+      },
+      "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+      "mode": "gate",
+      "needs": [],
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.gate_sheet_thickness"
+      ],
+      "status": "pass"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_c4ab80243f487ef7",
+      "label": "F3",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": null,
+      "message": "All the skins are parallel and every other face runs straight between them, so this part is flat and has no bends.",
+      "mode": null,
+      "needs": [],
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.gate_bends_found",
+        "sm.inside_radius",
+        "sm.min_flange",
+        "sm.max_bend_length",
+        "sm.hole_to_bend",
+        "sm.bend_relief_present",
+        "sm.min_web_parallel_bends",
+        "sm.u_channel_ratio",
+        "sm.bend_radius_consistent"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_09f4bea7e2c9547b",
+      "label": "F4",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": null,
+      "message": "No shop was declared.",
+      "mode": null,
+      "needs": [
+        "The shop's profile."
+      ],
+      "reason_code": "PROFILE_NOT_GIVEN",
+      "requirement": null,
+      "rules": [
+        "sm.gate_profile_coverage"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_1fc69de3152388a7",
+      "label": "F5",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": null,
+      "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+      "mode": null,
+      "needs": [
+        "The shop's own number for this rule."
+      ],
+      "reason_code": "ABOVE_PUBLIC_VALUE",
+      "requirement": null,
+      "rules": [
+        "sm.hole_min_diameter",
+        "sm.hole_to_edge"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_54adf4927db8c3ae",
+      "label": "F6",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": null,
+      "message": "No critical dimension was declared, so no tolerance was checked.",
+      "mode": null,
+      "needs": [
+        "The hole-to-hole dimensions that matter, with their plus or minus, as [[critical]] in intdfm.toml or in the call."
+      ],
+      "reason_code": "CRITICAL_NOT_DECLARED",
+      "requirement": null,
+      "rules": [
+        "sm.tolerance_across_bends"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_b0644688e31e75b3",
+      "label": "F7",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": null,
+      "message": "This part has no countersink, so these rules have nothing to measure.",
+      "mode": null,
+      "needs": [],
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.countersink_depth",
+        "sm.countersink_to_edge",
+        "sm.countersink_to_bend"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "feature": {
+        "description": "whole part",
+        "kind": "part"
+      },
+      "finding_id": "f_df06d96a40ec0327",
+      "label": "F8",
+      "location": {
+        "mm": null,
+        "text": "whole part"
+      },
+      "measured": null,
+      "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+      "mode": null,
+      "needs": [],
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.hole_spacing"
+      ],
+      "status": "not_applicable"
+    }
+  ],
+  "header": "no factory: 2 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_edge. None can pass.",
+  "not_checked": "Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked.",
+  "part": {
+    "holes": [
+      {
+        "countersink": null,
+        "diameter_mm": 0.75,
+        "mm": {
+          "x": 20.0,
+          "y": 12.5,
+          "z": 0.75
+        },
+        "number": 1
+      }
+    ],
+    "other_openings": 0,
+    "size_mm": [
+      40.0,
+      25.0,
+      1.5
+    ],
+    "volume_mm3": 1499.3373,
+    "webs": []
+  },
+  "recheck": null,
+  "report_version": "1.8",
+  "rule_results": {
+    "needs_review": 0,
+    "not_applicable": 13,
+    "not_verified": 4,
+    "pass": 2,
+    "violation": 0
+  },
+  "snapshot_id": "snap1-f0368a399fdce6e9d9a3e885df245c91710efb209b5b81d8d89c1df8bd564d2f",
+  "traceability": {
+    "core_version": "0.4.0",
+    "critical": [],
+    "declared": {
+      "file": "TEST-ONLY_plate_hole_d075.step",
+      "material": "5052-H32",
+      "process": "press brake",
+      "shop": null,
+      "thickness_mm": 1.5
+    },
+    "file_sha256": "92e3bc5ae215d8eacdeeecb9fb4a12e652e55115c21f5a4178b878b7dcfdd1c1",
+    "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
+    "ocp_version": "8.0.1.1",
+    "profile": {
+      "hash": null,
+      "name": null,
+      "version": null
+    },
+    "project_file": null,
+    "reader_log": [
+      "scan: 1 product, 0 assembly links, 1 solid entity, 7 B-rep faces, 0 mesh entities",
+      "reader: STEPControl_Reader read the file, 1 of 1 roots transferred, 1 shape",
+      "reader found: 1 solid, 1 shell, 7 faces, 0 loose shells, 0 loose faces, 0 loose edges",
+      "length unit: millimetre",
+      "clean-up: none added by INTdfm, later rules see the shape as read",
+      "checks on the one solid: shells closed, BRepCheck_Analyzer valid, BRepAlgoAPI_Check valid",
+      "checks on the one solid: skins 1.500 mm over 173 rays, 2V over A 1.364 mm",
+      "checks on the one solid: 1 round hole, 0 other openings, 0 faces not a plane or a cylinder",
+      "checks on the one solid: 0 bends, 0 hems, 0 cones, 0 forms, 0 unknown faces, 0 sharp joins"
+    ]
+  }
+}

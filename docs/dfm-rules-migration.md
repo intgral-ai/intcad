@@ -21,7 +21,7 @@ Status words:
 | `profile.py` | read/validate profile JSON, applicability, effective rows, requirements digest, gauges | **partial** | `Profile`/`Requirement`/`Applies`/`Die`/`Limit` types, unknown-key rejection, finite values, thickness gate selection and applicability are migrated; the exact `requirements_sha256` canonical digest, gauge tables and all profile-format error texts are not |
 | `gate.py` | input gate, thickness gate, coverage gate, reader log, shared tolerance helpers | **partial** | thickness gate and `same_sheet` are migrated; input gate, coverage gate, reader log, gauge messages and scan/reader facts are not |
 | `rules.py` | flat test, bend gate, 15 rules, header, part facts, threshold selection | **partial** | `sm.hole_min_diameter`, `sm.hole_to_edge`, `sm.hole_to_bend` are migrated and replay-tested; the other bend, tolerance and countersink rules, bend gate, header and part facts are not yet migrated |
-| `report.py` | report types, merge, rounding, ids, sort, counts, clean, canonical JSON | **partial** | a Rust report exists for the App path; it does not yet reproduce INTdfm's merge, labels, finding ids, header, bends/part facts or canonical bytes |
+| `report.py` | report types, merge, rounding, ids, sort, counts, clean, canonical JSON | **migrated (parity layer)** | `crates/dfm-rules/src/intdfm_report.rs` reproduces the INTdfm-shaped report from pre-merge findings and metadata; 23 parity tests over the recordings. The App-facing `Report` remains separate. |
 | `recheck.py` | pair two reports, marks and guard flags | **not migrated** | needs the full report and part facts first |
 | `core.py` | order the gates and rules into one report | **partial** | the App entry orders the thickness gate and three hole rules; the full gate/rule sequence is not migrated |
 | `engine.py` fact types | the data contract between geometry and rules | **partial** | holes, bends, webs and recognition fields exist in the Rust data model; countersink, run/unrelieved facts and several solid facts are not yet used |
@@ -64,10 +64,10 @@ Status words:
 | Coverage gate | not migrated | profile gap and missing-rule messages |
 | Input gate | not migrated | scan/reader facts; App entry supplies its own result |
 | Bend gate | not migrated | recognition facts and messages |
-| Report merge/round/id/sort | in progress | a parity layer is being added; existing App report shape stays |
+| Report merge/round/id/sort | migrated (parity layer) | `intdfm_report` covers merge, CPython rounding, ids, labels, sort, counts, header, bends/part and canonical JSON; App report shape stays separate |
 | `header` (public-value summary) | not migrated | needs all rules |
 | `part`/`bends` facts in the report | partial | webs, other openings, bend flange runs |
-| `not_checked` line | migrated | text matches |
+| `not_checked` line | migrated | exact INTdfm text restored |
 | Recheck marks/guards | not migrated | all of `recheck.py` |
 
 ## 4. Recordings

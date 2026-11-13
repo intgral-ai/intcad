@@ -1,0 +1,558 @@
+{
+  "case": {
+    "description": "A 3 mm hole on an L's long leg: its wall is 2.5 mm from the bend tangent, below 2.5t + r = 6.75.",
+    "id": "hole_to_bend.below",
+    "kind": "below",
+    "part": {
+      "name": "TEST-ONLY_l_bracket_side.step",
+      "sha256": "37f9bc25d7dfd5ebdd14a9087595e0dda7d4e18c6c30fc5d3bed884e0eab5df4"
+    },
+    "rule": "sm.hole_to_bend"
+  },
+  "expected": {
+    "header": "no factory: 3 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_bend, sm.hole_to_edge. None can pass.",
+    "report_version": "1.8"
+  },
+  "input": {
+    "bends": [
+      {
+        "angle_deg": 90.0,
+        "flanges_mm": [
+          30.0,
+          40.0
+        ],
+        "inside_radius_mm": 3.0,
+        "length_mm": 25.0,
+        "location": {
+          "mm": {
+            "x": 1.3180194846605358,
+            "y": 12.5,
+            "z": 1.3180194846605358
+          },
+          "text": "bend 1, at x 1.318, y 12.5, z 1.318"
+        },
+        "number": 1
+      }
+    ],
+    "core_version": "0.4.0",
+    "critical": [],
+    "declared": {
+      "file": "TEST-ONLY_l_bracket_side.step",
+      "material": "5052-H32",
+      "process": "press brake",
+      "shop": null,
+      "thickness_mm": 1.5
+    },
+    "file_sha256": "37f9bc25d7dfd5ebdd14a9087595e0dda7d4e18c6c30fc5d3bed884e0eab5df4",
+    "findings": [
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": {
+          "unit": "mm3",
+          "value": 2835.290358249673
+        },
+        "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+        "mode": "gate",
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.gate_input_solid"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 1.5
+        },
+        "message": "The model's sheet matches the declared 1.5 mm within 0.02 mm, a placeholder. This only says it matches what was declared. It doesn't confirm that value is the real gauge.",
+        "mode": "gate",
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "No shop was declared.",
+        "mode": null,
+        "needs": [
+          "The shop's profile."
+        ],
+        "reason_code": "PROFILE_NOT_GIVEN",
+        "requirement": null,
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 3.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for this rule."
+        ],
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "requirement": {
+          "layer": "generic",
+          "source": "Mate Precision Technologies, punching: 0.5t, its lowest figure, for fully guided tooling in aluminium. Used for every process and material, so it assumes nothing about this part: https://www.mate.com/technical-resources/punch-press-resources/tips-techniques/punching/techniques/holes/",
+          "text": "At least 0.75 mm. The hole's diameter.",
+          "value": {
+            "unit": "mm",
+            "value": 0.75
+          }
+        },
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 11.0
+        },
+        "message": "These holes are clear of the public value, so nothing is known about them: only a shop's own number can say a hole is fine.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for this rule."
+        ],
+        "reason_code": "ABOVE_PUBLIC_VALUE",
+        "requirement": {
+          "layer": "generic",
+          "source": "Five Flute, sheet metal DFM design guidelines: https://www.fiveflute.com/guide/sheet-metal-dfm-design-guidelines-for-formed-and-punched-parts",
+          "text": "At least 2.25 mm. The hole's edge to the nearest cut edge on the same flat.",
+          "value": {
+            "unit": "mm",
+            "value": 2.25
+          }
+        },
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "No two round holes this version can measure are on the same flat, so this rule has nothing to measure.",
+        "mode": null,
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": {
+          "unit": "bends",
+          "value": 1.0
+        },
+        "message": "1 bend found. Every face has a label, and skins that aren't in one plane join only through bends. This only says the bends were found.",
+        "mode": "gate",
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "status": "pass"
+      },
+      {
+        "error_code": "HOLE_BEND_BELOW_LIMIT",
+        "feature": {
+          "description": "round hole, 3 mm diameter",
+          "kind": "hole"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": {
+            "x": 8.5,
+            "y": 12.5,
+            "z": 0.75
+          },
+          "text": "hole 1, at x 8.5, y 12.5, z 0.75"
+        },
+        "measured": {
+          "unit": "mm",
+          "value": 2.5
+        },
+        "message": "Hole 1: its distance to bend 1 is 2.5 mm, below a public value of 6.75 mm. This is a trial rule, and the file can't say whether the hole is cut after bending. A person decides.",
+        "mode": "warn",
+        "needs": [
+          "The shop's own number for this rule."
+        ],
+        "reason_code": null,
+        "requirement": {
+          "layer": "generic",
+          "source": "PTC Creo design rules default, also in Five Flute and Fictiv, which probably share one origin: https://support.ptc.com/help/creo/creo_pma/r7.0/usascii/sheetmetal/sheetmetaldesign/Set_Up/About_Design_Rules.html",
+          "text": "At least 6.75 mm. 2.5t + r, a labelled trial value: the hole's edge to the nearest bend tangent on the same flat.",
+          "value": {
+            "unit": "mm",
+            "value": 6.75
+          }
+        },
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "status": "needs_review"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for this rule."
+        ],
+        "reason_code": "NO_SHOP_NUMBER",
+        "requirement": null,
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for this rule."
+        ],
+        "reason_code": "NO_SHOP_NUMBER",
+        "requirement": null,
+        "rules": [
+          "sm.min_flange"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for this rule."
+        ],
+        "reason_code": "NO_SHOP_NUMBER",
+        "requirement": null,
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for this rule."
+        ],
+        "reason_code": "NO_SHOP_NUMBER",
+        "requirement": null,
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "This part has no parallel bends with a flat between them, so this rule has nothing to measure.",
+        "mode": null,
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "This part has no parallel bends turning the same way with a flat between them, so this rule has nothing to measure.",
+        "mode": null,
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "status": "not_applicable"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "These rules need a shop's own numbers, and there are none for them here, so nothing is known from them.",
+        "mode": null,
+        "needs": [
+          "The shop's own number for this rule."
+        ],
+        "reason_code": "NO_SHOP_NUMBER",
+        "requirement": null,
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "No critical dimension was declared, so no tolerance was checked.",
+        "mode": null,
+        "needs": [
+          "The hole-to-hole dimensions that matter, with their plus or minus, as [[critical]] in intdfm.toml or in the call."
+        ],
+        "reason_code": "CRITICAL_NOT_DECLARED",
+        "requirement": null,
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "status": "not_verified"
+      },
+      {
+        "error_code": null,
+        "feature": {
+          "description": "whole part",
+          "kind": "part"
+        },
+        "finding_id": "",
+        "label": "",
+        "location": {
+          "mm": null,
+          "text": "whole part"
+        },
+        "measured": null,
+        "message": "This part has no countersink, so these rules have nothing to measure.",
+        "mode": null,
+        "needs": [],
+        "reason_code": null,
+        "requirement": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend"
+        ],
+        "status": "not_applicable"
+      }
+    ],
+    "header": "no factory: 3 of 15 rules ran on public values: sm.hole_min_diameter, sm.hole_to_bend, sm.hole_to_edge. None can pass.",
+    "occt_package": "cadquery-ocp-novtk==8.0.1.1.0",
+    "ocp_version": "8.0.1.1",
+    "part": {
+      "holes": [
+        {
+          "countersink": null,
+          "diameter_mm": 3.0,
+          "mm": {
+            "x": 8.5,
+            "y": 12.5,
+            "z": 0.75
+          },
+          "number": 1
+        }
+      ],
+      "other_openings": 0,
+      "size_mm": [
+        44.5,
+        34.5,
+        25.0
+      ],
+      "volume_mm3": 2835.2904,
+      "webs": []
+    },
+    "profile": {
+      "hash": null,
+      "name": null,
+      "version": null
+    },
+    "project_file": null,
+    "reader_log": [
+      "scan: 1 product, 0 assembly links, 1 solid entity, 11 B-rep faces, 0 mesh entities",
+      "reader: STEPControl_Reader read the file, 1 of 1 roots transferred, 1 shape",
+      "reader found: 1 solid, 1 shell, 11 faces, 0 loose shells, 0 loose faces, 0 loose edges",
+      "length unit: millimetre",
+      "clean-up: none added by INTdfm, later rules see the shape as read",
+      "checks on the one solid: shells closed, BRepCheck_Analyzer valid, BRepAlgoAPI_Check valid",
+      "checks on the one solid: skins 1.500 mm over 223 rays, 2V over A 1.384 mm",
+      "checks on the one solid: 1 round hole, 0 other openings, 0 faces not a plane or a cylinder",
+      "checks on the one solid: 1 bend, 0 hems, 0 cones, 0 forms, 0 unknown faces, 0 sharp joins"
+    ],
+    "shop_layer": null,
+    "snapshot_id": "snap1-7249c22aed355c1a4e80a817dee8a749a3453d3f283527c974a736b084bd582f"
+  },
+  "source": {
+    "core_source_sha256": "2e75e5cf7b82aa32b905a14f3cb38fe7cccb080f8c441ce8f82c33a9adddae2d",
+    "intdfm_commit": "2f24830fcd84c8e3047eb6643139b94c27b8c1b6",
+    "report_version": "1.8"
+  }
+}
