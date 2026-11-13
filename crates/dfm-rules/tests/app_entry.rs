@@ -45,6 +45,7 @@ fn hole(diameter: f64, edge: Option<f64>) -> Facts {
             edge_hole: None,
             bend_gaps: Vec::new(),
             flat: None,
+            countersink: None,
         }]),
         recognition: Some(Default::default()),
         ..Facts::default()
@@ -59,6 +60,7 @@ fn input(generic: Profile, shop: Option<Profile>, declared: Declared, facts: Fac
         overrides: Vec::new(),
         facts,
         model: ModelRef { model_version: "test-model-1".into(), body: "Plate".into(), source: "native".into() },
+        critical: Vec::new(),
     }
 }
 
@@ -225,6 +227,7 @@ fn a_met_bend_gap_uses_the_bends_radius_and_is_only_checked() {
             y_mm: 0.0,
             z_mm: 0.0,
             flats: vec![None, Some(0)],
+            ..Default::default()
         }],
         ..Recognition::default()
     });

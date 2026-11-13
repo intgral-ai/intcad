@@ -68,6 +68,7 @@ impl SheetCheckParameters {
                 body: self.model.body,
                 source: if self.model.source.is_empty() { self.source } else { self.model.source },
             },
+            critical: Vec::new(),
         }
     }
 }
@@ -115,6 +116,7 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
             Vec::new()
         },
         flat: hole.flat,
+        countersink: None,
     });
     RuleFacts {
         volume_mm3: None,
@@ -136,12 +138,15 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
                     y_mm: bend.y_mm,
                     z_mm: bend.z_mm,
                     flats: bend.flats.to_vec(),
+                    ..Default::default()
                 })
                 .collect(),
             unknown_faces: 0,
             cone_faces: 0,
             form_faces: 0,
+            ..Default::default()
         }),
+        ..Default::default()
     }
 }
 
@@ -168,7 +173,7 @@ mod tests {
 
     use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
     use solidcraft_dfm_rules::second_gate::{
-        compare, GeometryMismatch, GeometryTolerance, HoleWallFact, MeasuredHole, MeasuredSheet, COMPARISON_QUANTUM_MM,
+        COMPARISON_QUANTUM_MM, GeometryMismatch, GeometryTolerance, HoleWallFact, MeasuredHole, MeasuredSheet, compare,
     };
     use solidcraft_dfm_rules::{Confirmation, EdgeKind as RuleEdgeKind, Facts as RuleFacts, Layer, Limit, Requirement};
     use solidcraft_doc::sheet::{AngleDisplay, ReliefShape, SheetBody, SheetFlange};
@@ -234,12 +239,7 @@ mod tests {
 
     fn plate_with_holes(width: f64, height: f64, holes: &[(f64, f64, f64)]) -> SheetBody {
         let mut sheet = empty_sheet(Region2 {
-            outer: Loop2::polygon(&[
-                Vec2::new(0.0, 0.0),
-                Vec2::new(width, 0.0),
-                Vec2::new(width, height),
-                Vec2::new(0.0, height),
-            ]),
+            outer: Loop2::polygon(&[Vec2::new(0.0, 0.0), Vec2::new(width, 0.0), Vec2::new(width, height), Vec2::new(0.0, height)]),
             holes: Vec::new(),
         });
         sheet.holes = holes.iter().map(|(x, y, radius)| circle(*x, *y, *radius)).collect();
@@ -271,12 +271,7 @@ mod tests {
     /// so the tie between y = 0 and y = 25 resolves to the recorded y = 25 edge.
     fn l_bracket_sheet() -> SheetBody {
         let mut sheet = empty_sheet(Region2 {
-            outer: Loop2::polygon(&[
-                Vec2::new(44.5, 25.0),
-                Vec2::new(4.5, 25.0),
-                Vec2::new(4.5, 0.0),
-                Vec2::new(44.5, 0.0),
-            ]),
+            outer: Loop2::polygon(&[Vec2::new(44.5, 25.0), Vec2::new(4.5, 25.0), Vec2::new(4.5, 0.0), Vec2::new(44.5, 0.0)]),
             holes: Vec::new(),
         });
         sheet.flanges.push(flange(None, Vec2::new(4.5, 0.0), Vec2::Y, Vec2::new(-1.0, 0.0), 25.0, 3.0, 30.0));
@@ -289,12 +284,7 @@ mod tests {
     /// recording and the gate must map by position.
     fn u_holes_sheet(reversed: bool) -> SheetBody {
         let mut sheet = empty_sheet(Region2 {
-            outer: Loop2::polygon(&[
-                Vec2::new(30.0, 25.0),
-                Vec2::new(0.0, 25.0),
-                Vec2::new(0.0, 0.0),
-                Vec2::new(30.0, 0.0),
-            ]),
+            outer: Loop2::polygon(&[Vec2::new(30.0, 25.0), Vec2::new(0.0, 25.0), Vec2::new(0.0, 0.0), Vec2::new(30.0, 0.0)]),
             holes: Vec::new(),
         });
         let left = flange(None, Vec2::new(0.0, 0.0), Vec2::Y, Vec2::new(-1.0, 0.0), 25.0, 3.0, 20.0);
@@ -665,10 +655,7 @@ mod tests {
         // ownership failure, not a pass.
         recorded.holes.as_mut().expect("holes")[leg].edge_hole = Some(2);
         let mismatch = compare(&recorded, &measured, tolerance).expect_err("edge owner");
-        assert!(
-            matches!(mismatch, GeometryMismatch::EdgeOwnership { .. } | GeometryMismatch::MeasuredEdgeWallUnavailable { .. }),
-            "{mismatch}"
-        );
+        assert!(matches!(mismatch, GeometryMismatch::EdgeOwnership { .. } | GeometryMismatch::MeasuredEdgeWallUnavailable { .. }), "{mismatch}");
     }
 
     #[test]
@@ -695,10 +682,7 @@ mod tests {
         // The recorded leg hole's gap is on the left bend; point the measured gap at the right one.
         measured.facts.holes.as_mut().expect("holes")[leg].bend_gaps[0].bend = 1;
         let mismatch = compare(&recorded, &measured, tolerance).expect_err("bend association");
-        assert!(
-            matches!(mismatch, GeometryMismatch::BendGapMissing { .. } | GeometryMismatch::BendGapExtra { .. }),
-            "{mismatch}"
-        );
+        assert!(matches!(mismatch, GeometryMismatch::BendGapMissing { .. } | GeometryMismatch::BendGapExtra { .. }), "{mismatch}");
     }
 
     #[test]

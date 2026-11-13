@@ -76,6 +76,7 @@ fn run(name: &str) -> (Fixture, Report) {
         overrides: Vec::new(),
         facts: fixture.facts.clone(),
         model: ModelRef { model_version: format!("intdfm:{}", fixture.source.intdfm_commit), body: "TEST-ONLY".into(), source: "native".into() },
+        critical: Vec::new(),
     };
     let report = check(&input).unwrap_or_else(|error| panic!("{}: {error}", fixture.case.id));
     (fixture, report)

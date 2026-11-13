@@ -91,9 +91,25 @@ pub struct Facts {
     pub unknown_faces: usize,
     #[serde(default)]
     pub recognition: Option<Recognition>,
+    #[serde(default)]
+    pub plate_gap_mm: Option<f64>,
+    #[serde(default)]
+    pub paired_rays: usize,
+    #[serde(default)]
+    pub rays_failed: bool,
+    #[serde(default)]
+    pub shells_closed: bool,
+    #[serde(default)]
+    pub analyzer_valid: bool,
+    #[serde(default)]
+    pub bop_valid: bool,
+    #[serde(default)]
+    pub faces: usize,
+    #[serde(default)]
+    pub triangle_faces: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct HoleFact {
     pub diameter_mm: f64,
@@ -115,6 +131,39 @@ pub struct HoleFact {
     pub bend_gaps: Vec<BendGap>,
     #[serde(default)]
     pub flat: Option<usize>,
+    #[serde(default)]
+    pub countersink: Option<CountersinkFact>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CountersinkFact {
+    #[serde(default)]
+    pub major_diameter_mm: f64,
+    #[serde(default)]
+    pub depth_mm: f64,
+    #[serde(default)]
+    pub angle_deg: f64,
+    #[serde(default)]
+    pub land_mm: f64,
+    #[serde(default)]
+    pub x_mm: f64,
+    #[serde(default)]
+    pub y_mm: f64,
+    #[serde(default)]
+    pub z_mm: f64,
+    #[serde(default)]
+    pub edge_mm: Option<f64>,
+    #[serde(default)]
+    pub edge_at_mm: Option<Vec<f64>>,
+    #[serde(default)]
+    pub edge_kind: Option<EdgeKind>,
+    #[serde(default)]
+    pub edge_hole: Option<usize>,
+    #[serde(default)]
+    pub edge_rim: bool,
+    #[serde(default)]
+    pub bend_gaps: Vec<BendGap>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,9 +192,42 @@ pub struct Recognition {
     pub cone_faces: usize,
     #[serde(default)]
     pub form_faces: usize,
+    #[serde(default)]
+    pub webs: Vec<WebFact>,
+    #[serde(default)]
+    pub hems: usize,
+    #[serde(default)]
+    pub cones: usize,
+    #[serde(default)]
+    pub countersinks: usize,
+    #[serde(default)]
+    pub forms: usize,
+    #[serde(default)]
+    pub sharp_joins: usize,
+    #[serde(default)]
+    pub joined: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct WebFact {
+    #[serde(default)]
+    pub bends: Vec<usize>,
+    #[serde(default)]
+    pub web_mm: f64,
+    #[serde(default)]
+    pub same_side: bool,
+    #[serde(default)]
+    pub flanges_mm: Vec<f64>,
+    #[serde(default)]
+    pub x_mm: f64,
+    #[serde(default)]
+    pub y_mm: f64,
+    #[serde(default)]
+    pub z_mm: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BendFact {
     pub inside_radius_mm: f64,
@@ -156,6 +238,16 @@ pub struct BendFact {
     pub z_mm: f64,
     #[serde(default)]
     pub flats: Vec<Option<usize>>,
+    #[serde(default)]
+    pub runs_mm: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub longest_mm: Vec<f64>,
+    #[serde(default)]
+    pub unrelieved: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub no_margin: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub crossed: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +378,23 @@ pub struct ModelRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Critical {
+    pub name: String,
+    pub from_mm: Point3,
+    pub to_mm: Point3,
+    pub tolerance_mm: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Point3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CheckInput {
     pub declared: Declared,
@@ -297,6 +406,8 @@ pub struct CheckInput {
     pub facts: Facts,
     #[serde(default)]
     pub model: ModelRef,
+    #[serde(default)]
+    pub critical: Vec<Critical>,
 }
 
 // ---------------------------------------------------------------------------

@@ -1011,6 +1011,7 @@ mod tests {
             edge_hole: None,
             bend_gaps: Vec::new(),
             flat: None,
+            countersink: None,
         }
     }
 
@@ -1033,7 +1034,16 @@ mod tests {
     }
 
     fn bend(x: f64) -> BendFact {
-        BendFact { inside_radius_mm: 3.0, angle_deg: 90.0, length_mm: 25.0, x_mm: x, y_mm: 12.5, z_mm: 0.0, flats: vec![Some(1), Some(2)] }
+        BendFact {
+            inside_radius_mm: 3.0,
+            angle_deg: 90.0,
+            length_mm: 25.0,
+            x_mm: x,
+            y_mm: 12.5,
+            z_mm: 0.0,
+            flats: vec![Some(1), Some(2)],
+            ..Default::default()
+        }
     }
 
     fn with_bends(mut facts: Facts, bends: Vec<BendFact>) -> Facts {
