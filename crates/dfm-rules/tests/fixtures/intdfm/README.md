@@ -49,6 +49,7 @@ for name in ["hole_min_diameter.above", "hole_min_diameter.below",
         "generic": data["input"]["generic"],
         "shop": data["input"]["shop"],
         "facts": data["input"]["solid"],
+        "comparison": data["comparison"],
         "expected": {"findings": findings},
     }
     (out / f"{name}.json").write_text(
