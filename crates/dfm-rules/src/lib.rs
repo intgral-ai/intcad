@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+pub mod intdfm_report;
 pub mod second_gate;
 
 /// The rules-crate version. It is part of every report.
@@ -44,17 +45,18 @@ pub const RULE_ORDER: &[&str] = &[
     HOLE_TO_EDGE,
     "sm.min_web_parallel_bends",
     "sm.u_channel_ratio",
-    "sm.bend_radius_consistent",
     "sm.tolerance_across_bends",
     "sm.countersink_depth",
     "sm.countersink_to_edge",
     "sm.countersink_to_bend",
     "sm.hole_spacing",
+    "sm.bend_radius_consistent",
 ];
 
 const FIRST_HOLE_RULES: &[&str] = &[HOLE_MIN_DIAMETER, HOLE_TO_EDGE, HOLE_TO_BEND];
 /// The fixed line a report and its summary card carry.
-pub const NOT_CHECKED: &str = "Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked. Only round through holes are measured.";
+pub const NOT_CHECKED: &str =
+    "Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked.";
 
 /// A bad input is refused; it never becomes a finding.
 #[derive(Debug, thiserror::Error)]
@@ -705,7 +707,9 @@ fn choose(rule: &str, radius: Option<f64>, upper: bool, input: &CheckInput) -> R
             });
         };
         let confirmation = row.confirmation;
-        let decides = layer != Layer::Generic && layer != Layer::Development && confirmation.is_some_and(Confirmation::decides);
+        // The rule layer follows INTdfm: a factory/standard row decides. FD-7 confirmation is
+        // applied when mapping to the App state, not when deciding the rule status.
+        let decides = layer != Layer::Generic && layer != Layer::Development;
         chosen.push(Chosen {
             requirement: RequirementRef {
                 value_mm: limit,
@@ -853,13 +857,16 @@ fn hole_finding(
         (Some(number), Some(hole)) => format!("{rule}/hole-{number}@{:.3},{:.3},{:.3}", hole.x_mm, hole.y_mm, hole.z_mm),
         _ => format!("{rule}/{}", reason_code.or(error_code).unwrap_or("result")),
     };
-    let decides = requirement.as_ref().is_some_and(|requirement| {
+    let app_decides = requirement.as_ref().is_some_and(|requirement| {
         requirement.confirmation.is_some_and(Confirmation::decides) && requirement.layer != Layer::Generic && requirement.layer != Layer::Development
     });
     // Reaching a public value is "checked", not "pass" and not "unsupported": the rule ran and
     // only a factory's own number could say the hole is fine.
-    let state =
-        if status == RuleStatus::NotVerified && reason_code == Some("ABOVE_PUBLIC_VALUE") { AppState::Checked } else { state_of(status, decides) };
+    let state = if status == RuleStatus::NotVerified && reason_code == Some("ABOVE_PUBLIC_VALUE") {
+        AppState::Checked
+    } else {
+        state_of(status, app_decides)
+    };
     Finding {
         id,
         rules: vec![rule.to_string()],

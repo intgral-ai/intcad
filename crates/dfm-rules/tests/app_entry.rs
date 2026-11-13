@@ -247,3 +247,16 @@ impl BendValue for Requirement {
         self
     }
 }
+
+#[test]
+fn a_factory_row_can_reach_the_rule_layers_pass_without_becoming_a_product_pass() {
+    let shop = profile("shop", Layer::Factory, vec![row("sm.hole_min_diameter", 1.0, None)]);
+    let generic = profile("generic", Layer::Generic, vec![]);
+    let report = check(&input(generic, Some(shop), declared(Some(1.5)), hole(3.0, Some(10.0)))).expect("check");
+    let finding = min_rule(&report);
+    // INTdfm's rule layer decides on the layer alone; FD-7 only changes the App state.
+    assert_eq!(finding.status, RuleStatus::Pass);
+    assert_eq!(finding.state, AppState::Checked);
+    assert_eq!(finding.requirement.as_ref().expect("requirement").layer, Layer::Factory);
+    assert_eq!(finding.requirement.as_ref().expect("requirement").confirmation, None);
+}

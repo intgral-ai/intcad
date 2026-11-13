@@ -36,8 +36,8 @@ Status words:
 | `sm.gate_profile_coverage` | not migrated | data only | — |
 | `sm.gate_bends_found` | not migrated | recognition facts partially | — |
 | `sm.hole_min_diameter` | migrated | yes | 10 INTdfm recordings + second gate |
-| `sm.hole_to_edge` | migrated | yes (cut edge, nearest point, kind, ownership) | recordings + second gate in progress |
-| `sm.hole_to_bend` | migrated | yes (bend pairing, tangent gap, radius, panel association) | recordings + second gate in progress |
+| `sm.hole_to_edge` | migrated | yes (cut edge, nearest point, kind, ownership) | recordings + second gate (base, flange, multi-hole, opening, transformed) |
+| `sm.hole_to_bend` | migrated | yes (bend pairing, tangent gap, radius, panel association) | recordings + second gate (L-bracket, U-channel flange holes, mapped bend numbers) |
 | `sm.hole_spacing` | not migrated | no (hole-to-hole wall is separate from edge) | — |
 | `sm.inside_radius` | not migrated | bend radius exists | — |
 | `sm.min_flange` | not migrated | not yet (runs at 20 places, both flats) | — |
@@ -64,7 +64,7 @@ Status words:
 | Coverage gate | not migrated | profile gap and missing-rule messages |
 | Input gate | not migrated | scan/reader facts; App entry supplies its own result |
 | Bend gate | not migrated | recognition facts and messages |
-| Report merge/round/id/sort | partial | INTdfm-compatible merge, labels and ids |
+| Report merge/round/id/sort | in progress | a parity layer is being added; existing App report shape stays |
 | `header` (public-value summary) | not migrated | needs all rules |
 | `part`/`bends` facts in the report | partial | webs, other openings, bend flange runs |
 | `not_checked` line | migrated | text matches |
