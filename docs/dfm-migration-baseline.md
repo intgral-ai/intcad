@@ -94,7 +94,9 @@ case. `crates/dfm-rules/tests/app_entry.rs` covers the App boundary cases.
 The product decisions this stage deliberately does not make:
 - **N-13, no declared thickness:** this stage does not adopt the model's thickness as the
   declaration. The App path with an explicit declared thickness is the tested one. The proposal
-  in the PRD remains a proposal.
+  in the PRD remains a proposal. For an imported part, the converted model's thickness is never
+  used as both the declaration and the check of the original file: the declaration is a separate
+  input.
 - **FD-7, who confirmed a number:** the rule crate has an optional `confirmation` field and only
   factory-confirmed or production-verified rows can fail. The INTdfm format does not have this
   field yet; recordings carry none, so all recorded factory rows stay advisory. The field name
