@@ -293,6 +293,8 @@ doesn't change the last known login state.
 | Google Antigravity | Google's ACP server, a separate download from Google's `agy` command (which has no ACP mode): take the zip for your system from the [ACP registry](https://agentclientprotocol.com/registry), unzip it and put `agy_acp_server.par` (`agy_acp_server.exe` on Windows) on your `PATH`. The zip also holds `localharness_external`: leave the two together. It signs in itself (browser). |
 | OpenCode | `npm install -g opencode-ai` (`opencode acp`) |
 | Mistral Vibe | `uv tool install mistral-vibe` (`vibe-acp`) |
+| Kimi Code | the installer script on [its page](https://moonshotai.github.io/kimi-code/) (`kimi acp`) |
+| Factory Droid | installer script, Homebrew or npm, see [Factory's quickstart](https://docs.factory.com/cli/getting-started/quickstart) (`droid exec --output-format acp-daemon`) |
 | XAI Grok | [Grok Build installer](https://docs.x.ai/build/overview), then `grok login` (`grok agent stdio` speaks ACP) |
 | GitHub Copilot CLI, Qwen Code, goose | listed with their install command when missing |
 

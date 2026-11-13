@@ -159,6 +159,35 @@ pub const KNOWN: &[Known] = &[
         retired: false,
         reports_version: true,
     },
+    // The two below were checked on 2026-11-13 with a real ACP `initialize` on macOS, with the
+    // command lines the ACP registry lists for them: Kimi Code 0.27.0 and Factory Droid 0.121.0,
+    // each as its maker's installer put it there, answered with protocol version 1. Older copies
+    // were not tried. Neither login file is looked at: each program says in ACP whether it needs
+    // a sign-in.
+    Known {
+        id: "kimi",
+        name: "Kimi Code",
+        programs: &["kimi"],
+        args: &["acp"],
+        install: "see moonshotai.github.io/kimi-code (installer script)",
+        credentials: None,
+        config_dir_var: None,
+        key_vars: &[],
+        retired: false,
+        reports_version: true,
+    },
+    Known {
+        id: "droid",
+        name: "Factory Droid",
+        programs: &["droid"],
+        args: &["exec", "--output-format", "acp-daemon"],
+        install: "see docs.factory.com/cli/getting-started/quickstart (installer script, Homebrew or npm)",
+        credentials: None,
+        config_dir_var: None,
+        key_vars: &["FACTORY_API_KEY"],
+        retired: false,
+        reports_version: true,
+    },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,9 +293,10 @@ fn home() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
-/// PATH, then the usual places npm, Homebrew, nvm, Volta, bun, pipx and Grok put commands, and on
-/// Windows Node's own install folders: a launcher can start SolidCraft with a PATH that lacks
-/// them, and an npm agent's `.cmd` shim then can't find `node` (#9297).
+/// PATH, then the usual places npm, Homebrew, nvm, Volta, bun, pipx and Grok put commands, the
+/// folders the installers of Kimi Code and OpenCode use, and on Windows Node's own install
+/// folders: a launcher can start SolidCraft with a PATH that lacks them, and an npm agent's
+/// `.cmd` shim then can't find `node` (#9297).
 pub fn search_dirs() -> Vec<PathBuf> {
     search_dirs_in(&|name| std::env::var_os(name), cfg!(windows))
 }
@@ -278,7 +308,18 @@ fn search_dirs_in(var: &dyn Fn(&str) -> Option<OsString>, windows: bool) -> Vec<
         dirs.push(if windows { prefix.clone() } else { prefix.join("bin") });
     }
     if let Some(h) = var(if windows { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).filter(|p| p.is_absolute()) {
-        for d in [".local/bin", ".npm-global/bin", ".npm-packages/bin", ".volta/bin", ".bun/bin", ".cargo/bin", ".grok/bin", "bin"] {
+        for d in [
+            ".local/bin",
+            ".npm-global/bin",
+            ".npm-packages/bin",
+            ".volta/bin",
+            ".bun/bin",
+            ".cargo/bin",
+            ".grok/bin",
+            ".kimi-code/bin",
+            ".opencode/bin",
+            "bin",
+        ] {
             dirs.push(h.join(d));
         }
         // nvm: every installed Node version's bin.
@@ -928,6 +969,70 @@ mod tests {
         assert_eq!(found.problem, None);
         assert!(!installed.missing.iter().any(|agent| agent.id == "vibe"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Kimi Code and Factory Droid are general command lines with an ACP mode of their own: each
+    /// is offered for install while missing, and once on the search path it is started with the
+    /// arguments that put it in ACP mode.
+    #[test]
+    fn kimi_code_and_factory_droid_are_offered_and_started_in_their_acp_modes() {
+        for (id, program, version, install, acp) in [
+            ("kimi", "kimi", "0.27.0", "see moonshotai.github.io/kimi-code (installer script)", &["acp"][..]),
+            (
+                "droid",
+                "droid",
+                "0.121.0",
+                "see docs.factory.com/cli/getting-started/quickstart (installer script, Homebrew or npm)",
+                &["exec", "--output-format", "acp-daemon"][..],
+            ),
+        ] {
+            let root = std::env::temp_dir().join(format!("sc-agent-{id}-{}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let detect = || detect_in(std::slice::from_ref(&root), None, PROBE_LIMIT);
+            let uninstalled = detect();
+            assert_eq!(uninstalled.missing.iter().find(|agent| agent.id == id).unwrap().install, install);
+
+            let path = if cfg!(windows) { root.join(format!("{program}.cmd")) } else { root.join(program) };
+            let script = if cfg!(windows) {
+                format!("@echo off\r\nif \"%1\"==\"--version\" echo {version}\r\n")
+            } else {
+                format!("#!/bin/sh\n[ \"$1\" = --version ] && echo {version}\n")
+            };
+            std::fs::write(&path, script).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let installed = detect();
+            let found = installed.found.iter().find(|agent| agent.id == id).unwrap();
+            let mut argv = vec![path.to_string_lossy().into_owned()];
+            argv.extend(acp.iter().map(|a| a.to_string()));
+            assert_eq!(found.argv, argv);
+            assert_eq!(found.version.as_deref(), Some(version));
+            assert_eq!(found.problem, None);
+            assert!(!installed.missing.iter().any(|agent| agent.id == id));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    /// Started from the Dock or a desktop launcher, the app gets a PATH without the folders that
+    /// the installers of Kimi Code and OpenCode add to a shell's PATH. They are searched anyway.
+    #[test]
+    fn the_install_folders_of_kimi_code_and_opencode_are_searched_without_them_on_the_path() {
+        let home = std::env::temp_dir().join(format!("sc-agent-home-{}", std::process::id()));
+        let env = |name: &str| -> Option<OsString> {
+            match name {
+                "PATH" => Some("/usr/bin:/bin".into()),
+                "HOME" => Some(home.clone().into()),
+                _ => None,
+            }
+        };
+        let dirs = search_dirs_in(&env, false);
+        for folder in [".kimi-code/bin", ".opencode/bin"] {
+            assert!(dirs.contains(&home.join(folder)), "{folder} in {dirs:?}");
+        }
+        assert_eq!(dirs.first(), Some(&PathBuf::from("/usr/bin")), "the PATH the app was given still comes first");
     }
 
     /// #9034: npm installed OpenCode without running its setup script, so the `opencode.exe` its
