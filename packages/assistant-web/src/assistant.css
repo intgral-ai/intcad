@@ -40,6 +40,17 @@ body {
   overscroll-behavior: none;
 }
 
+/* The scroll bars. Mastra styles them twice: with the standard properties (thin, its border
+   colours) and, for an engine without those, with WebKit's scroll bar parts. The system web view
+   on macOS takes the standard width, which switches the parts off, but not the standard colours,
+   and so draws the system's own light bar: a white strip down a dark panel. Taking the standard
+   properties back leaves every engine this page runs in (WebKit, WebView2, WebKitGTK) on the
+   parts, which all three draw as Mastra styled them. */
+* {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
 /* A name in an answer that selects that thing in the design: a link in looks, a button in kind. */
 @layer components {
   .mastra-markdown button.assistant-object-name {

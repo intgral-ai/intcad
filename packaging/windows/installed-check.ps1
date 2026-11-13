@@ -55,7 +55,7 @@ if (Test-Path $Dir) { throw "there is an install at $Dir already: this machine i
 
 New-Item -ItemType Directory -Force -Path $Evidence | Out-Null
 $Evidence = (Resolve-Path $Evidence).Path
-$RuleGroup = 'open-skyfall installed check'
+$RuleGroup = 'Intcad installed check'
 $firewallBefore = @()
 
 function Invoke-Msi([string] $Verb, [string] $Log) {

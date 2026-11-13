@@ -167,7 +167,7 @@ missing_libraries() {
   missing="$(ldd "$APPDIR/usr/bin/solidcraft" 2>/dev/null | awk '/not found/ { print $1 }' | sort -u | tr '\n' ' ')"
   missing="${missing% }"
   [ -n "$missing" ] || return 0
-  text="open-skyfall cannot start: this system lacks $missing.
+  text="Intcad cannot start: this system lacks $missing.
 It needs the system's WebKitGTK 4.1 (with GTK 3). Install it with:
   Debian, Ubuntu:  sudo apt install libwebkit2gtk-4.1-0
   Fedora:          sudo dnf install webkit2gtk4.1
@@ -176,11 +176,11 @@ It needs the system's WebKitGTK 4.1 (with GTK 3). Install it with:
   printf '%s\n' "$text" >&2
   [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
   if command -v zenity >/dev/null 2>&1; then
-    zenity --error --title=open-skyfall --text="$text" >/dev/null 2>&1 &
+    zenity --error --title=Intcad --text="$text" >/dev/null 2>&1 &
   elif command -v kdialog >/dev/null 2>&1; then
-    kdialog --title open-skyfall --error "$text" >/dev/null 2>&1 &
+    kdialog --title Intcad --error "$text" >/dev/null 2>&1 &
   elif command -v notify-send >/dev/null 2>&1; then
-    notify-send open-skyfall "$text" >/dev/null 2>&1 || true
+    notify-send Intcad "$text" >/dev/null 2>&1 || true
   fi
 }
 

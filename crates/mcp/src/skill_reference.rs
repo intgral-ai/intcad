@@ -1,4 +1,4 @@
-//! Read-only access to the skill documents shipped with open-skyfall.
+//! Read-only access to the skill documents shipped with Intcad.
 
 use serde_json::{Map, Value};
 

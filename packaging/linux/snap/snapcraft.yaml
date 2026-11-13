@@ -8,10 +8,10 @@
 # at runtime: the gnome extension supplies the desktop libraries and the GPU userspace (mesa,
 # through the gpu-2404 content interface) for the wgpu viewport.
 name: solidcraft
-title: open-skyfall
+title: Intcad
 summary: Open-source parametric 3D CAD
 description: |
-  open-skyfall is an open-source parametric 3D CAD application written in Rust. Sketch on a
+  Intcad is an open-source parametric 3D CAD application written in Rust. Sketch on a
   plane, constrain and dimension the sketch, turn profiles into solids on a feature timeline,
   and change a parameter to watch the timeline rebuild.
 

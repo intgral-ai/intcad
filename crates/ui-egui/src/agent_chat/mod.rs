@@ -564,6 +564,10 @@ impl AgentChat {
         {
             std::mem::swap(&mut self.detection, &mut other.detection);
             std::mem::swap(&mut self.detecting, &mut other.detecting);
+            // The web view is the window's, whichever design its conversation is about.
+            std::mem::swap(&mut self.web_host, &mut other.web_host);
+            std::mem::swap(&mut self.web_canvas, &mut other.web_canvas);
+            std::mem::swap(&mut self.web_drag, &mut other.web_drag);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;

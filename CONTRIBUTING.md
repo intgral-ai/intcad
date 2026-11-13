@@ -51,7 +51,7 @@ cargo xtask test                                   # unit, engine and UI-scenari
 cargo xtask ci                                     # everything a PR must pass (see below)
 ```
 
-The displayed product name is `open-skyfall`. The repository, Cargo packages and executables
+The displayed product name is `Intcad`. The repository, Cargo packages and executables
 keep the `solidcraft` name, and so do the `.sc`/`solidcraft/N` format, `SOLIDCRAFT_*`
 variables, settings folders, app IDs and the MCP server, so existing designs and scripts keep
 working. Build the desktop app with `cargo build --release -p solidcraft`, or the CLI with
@@ -551,4 +551,4 @@ about 250 KB and a clip under about 1 MB.
 ## Licence
 
 By contributing you agree that your contribution is licensed as MIT OR Apache-2.0, like the rest
-of open-skyfall. open-skyfall isn't affiliated with any CAD vendor; product names are trademarks of their owners (see NOTICE).
+of Intcad. Intcad isn't affiliated with any CAD vendor; product names are trademarks of their owners (see NOTICE).

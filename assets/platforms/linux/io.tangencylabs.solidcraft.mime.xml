@@ -3,7 +3,7 @@
      Installed to /usr/share/mime/packages/ (update-mime-database runs on install). -->
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-solidcraft">
-    <comment>open-skyfall design</comment>
+    <comment>Intcad design</comment>
     <icon name="io.tangencylabs.solidcraft"/>
     <sub-class-of type="application/json"/>
     <!-- shared-mime-info also gives *.sc to Scala scripts (text/x-scala, weight 50); with

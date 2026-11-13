@@ -53,7 +53,7 @@ placeholder() {
   local dir="$1" why="$2"
   mkdir -p "$dir"
   cat >"$dir/index.html" <<HTML
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>open-skyfall release candidate</title></head><body style="font-family:sans-serif;max-width:40em;margin:3em auto;padding:0 1em"><h1>No release candidate right now</h1><p>$why</p><p><a href="../app/">Open open-skyfall (the latest release)</a> or <a href="../app-edge/">the edge build</a>.</p></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Intcad release candidate</title></head><body style="font-family:sans-serif;max-width:40em;margin:3em auto;padding:0 1em"><h1>No release candidate right now</h1><p>$why</p><p><a href="../app/">Open Intcad (the latest release)</a> or <a href="../app-edge/">the edge build</a>.</p></body></html>
 HTML
 }
 

@@ -105,7 +105,7 @@ pub fn read_point_cloud(bytes: &[u8], file: &str, scale: f64, max_points: usize)
     }
     let mut out = keep.out;
     if out.points.is_empty() {
-        return Err(IoError::Invalid("the file has no points SolidCraft can read".into()));
+        return Err(IoError::Invalid("the file has no points Intcad can read".into()));
     }
     if keep.bad > 0 {
         out.warnings.push(format!("{} point(s) could not be read and were left out", keep.bad));

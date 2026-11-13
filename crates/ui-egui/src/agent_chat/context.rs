@@ -90,7 +90,7 @@ impl Context {
             return String::new();
         }
         let mut out = format!(
-            "[Selected in open-skyfall when this message was sent: {} item(s). The names, indices and points are the ones the tools take.]",
+            "[Selected in Intcad when this message was sent: {} item(s). The names, indices and points are the ones the tools take.]",
             self.total()
         );
         for kind in Kind::ALL {

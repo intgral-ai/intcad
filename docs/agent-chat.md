@@ -47,7 +47,8 @@ when you send a message or press **Connect** (or at launch, when you turned that
 **On macOS, Linux and Windows the Assistant is a web view inside its panel**, and the panel is always part
 of the app's window. The whole of it is drawn by a page
 built from Mastra's playground-ui components (`packages/assistant-web`): the bar with the agent
-(its mode and options under the same menu), the state, **Connect** / **Stop**, **New
+(its mode and options under the same menu, and, while it runs, the row that stops the agent and
+everything it started), the state, **Connect** while the agent is not running, **New
 chat**, the panel's menu (dock on the other side, fold to a strip) and **Close**;
 the conversation, with tool calls as rows that fold, a request for approval with **Allow once**,
 **Always allow** and **Deny** always in view, the plan as a task list above the message box, and
@@ -57,6 +58,11 @@ mode and the skill, and the agent's model beside **Send**: a list you search by 
 also offers what you typed as a model of your own when the agent takes one. What the page shows
 and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
 
+- While a message runs, the number of changes it has made so far shows in a line over the message
+  box, and the square beside **Send** stops that message. The line is gone when the message ends:
+  the conversation then says how many changes it made, with **Undo these changes**.
+- In a narrow panel the message box's controls take two lines, the model and **Send** under the
+  rest, and the bar drops the state rather than cut the agent's name short.
 - Messages that wait (queued behind the running one, or left by **Stop**) sit in a box over the
   message box, so they stay in view: each can be edited or removed, and **Send now** (or
   Ctrl/Cmd+Enter in the message box) stops the running step and sends them next.
@@ -440,7 +446,7 @@ wsl.exe -d Ubuntu -e bash -lc claude-agent-acp
 
 `bash -lc` runs your login shell's setup, so the agent is found where your `PATH` puts it (npm,
 nvm, Volta). When the command's program is `wsl` or `wsl.exe`, SolidCraft gives the agent its
-working folder and the `solidcraft-app` server's program as WSL shows them (`C:\Users\…` becomes
+working folder and the `intcad-app` server's program as WSL shows them (`C:\Users\…` becomes
 `/mnt/c/Users/…`). The server itself still runs on Windows and reaches the app at `127.0.0.1`, so
 this works with WSL's default networking. If you moved WSL's drive mounts away from `/mnt`
 (`automount.root` in `/etc/wsl.conf`), those paths won't match and the agent can't start the server.
@@ -504,7 +510,7 @@ current document. Ask Anatomy again to get links for the current revision.
 
 The agent reaches the open design only through SolidCraft's own tools (the
 [MCP server](mcp.md)), which SolidCraft hands it when the chat starts. That server is named
-`solidcraft-app`, so an MCP server you set up yourself under the name `solidcraft` (as in
+`intcad-app`, so an MCP server you set up yourself under the name `solidcraft` (as in
 [client configuration](mcp.md#client-configuration)) doesn't take its place:
 
 - **Read the design:** list commands, inspect features, sketches and parameters, measure,
@@ -573,7 +579,7 @@ per agent, with **Reset**.
 These settings cover SolidCraft's tools. A coding agent's own tools (its shell, its file edits)
 follow the agent's own mode, which you pick in the panel's header. When an agent asks before
 using one of the chat's own SolidCraft tools and names it exactly as the Claude adapter does
-(`mcp__solidcraft-app__batch`), SolidCraft answers for you, since its own gate checks the call,
+(`mcp__intcad-app__batch`), SolidCraft answers for you, since its own gate checks the call,
 and notes it in the chat as *Auto-allowed*. Any other question appears in the panel, including
 a SolidCraft tool an agent words differently and a SolidCraft MCP server you added to the agent
 yourself. With **Allow everything**, or after **Always allow**, those questions are answered the

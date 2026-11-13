@@ -282,9 +282,9 @@ fn theme_id(id: &str) -> Option<&str> {
 /// name are required; unknown keys, preferences this version can't read, and themes that fail
 /// their checks are dropped; lists and texts are capped.
 pub fn sanitize(v: &Value) -> Result<Value, String> {
-    let o = v.as_object().ok_or("not a SolidCraft settings profile")?;
+    let o = v.as_object().ok_or("not an Intcad settings profile")?;
     if o.get("format").and_then(Value::as_str) != Some(FORMAT) {
-        return Err(format!("not a SolidCraft settings profile: `format` must be \"{FORMAT}\""));
+        return Err(format!("not an Intcad settings profile: `format` must be \"{FORMAT}\""));
     }
     let name = o
         .get("name")

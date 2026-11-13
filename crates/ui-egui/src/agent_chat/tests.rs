@@ -8656,8 +8656,8 @@ fn the_agents_own_questions_are_answered_by_the_mode_or_asked() {
             PermissionOption { id: "no".into(), name: "Reject".into(), kind: "reject_once".into() },
         ]
     };
-    on_permission(&mut app, 1, "mcp__solidcraft-app__batch".into(), Some("other"), opts());
-    assert!(matches!(app.agent_chat.items.last(), Some(Item::Notice { text, .. }) if text.contains("mcp__solidcraft-app__batch")));
+    on_permission(&mut app, 1, "mcp__intcad-app__batch".into(), Some("other"), opts());
+    assert!(matches!(app.agent_chat.items.last(), Some(Item::Notice { text, .. }) if text.contains("mcp__intcad-app__batch")));
     on_permission(&mut app, 2, "Run ls".into(), None, opts());
     assert!(matches!(app.agent_chat.items.last(), Some(Item::Permission { answer: None, .. })));
     let n = app.agent_chat.items.len() - 1;
@@ -8679,7 +8679,7 @@ fn a_title_that_mentions_solidcraft_goes_through_the_users_mode() {
         ("run solidcraft-cli; ls", None),
         ("Edit ~/.local/share/solidcraft/agent-chat/work/notes.txt", Some("edit")),
         ("mcp__solidcraft__batch", Some("other")),
-        ("mcp__solidcraft-app__batch", Some("execute")),
+        ("mcp__intcad-app__batch", Some("execute")),
     ];
     for mode in [agents::Mode::Ask, agents::Mode::Edits] {
         app.preferences.agent_permissions.insert("codex".into(), mode);
@@ -8689,7 +8689,7 @@ fn a_title_that_mentions_solidcraft_goes_through_the_users_mode() {
             app.agent_chat.items.clear();
         }
         // The chat's own tool stays a single question, the gate's.
-        on_permission(&mut app, 2, "mcp__solidcraft-app__batch".into(), Some("other"), opts());
+        on_permission(&mut app, 2, "mcp__intcad-app__batch".into(), Some("other"), opts());
         assert!(matches!(app.agent_chat.items.last(), Some(Item::Notice { .. })), "{mode:?}");
         app.agent_chat.items.clear();
     }
@@ -9305,7 +9305,7 @@ fn a_late_sign_in_retry_or_permission_cannot_restart_a_departed_turn() {
     crate::documents::open_tab(&mut app, solidcraft_engine::Session::default()).unwrap();
     script.report(Event::Permission {
         key: 7,
-        title: "mcp__solidcraft-app__batch".into(),
+        title: "mcp__intcad-app__batch".into(),
         kind: None,
         options: vec![PermissionOption { id: "allow".into(), name: "Allow".into(), kind: "allow_once".into() }],
     });
@@ -12008,7 +12008,7 @@ fn an_attached_selection_goes_as_text_for_the_agent_and_as_chips_in_the_conversa
     app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "round this".into());
     let prompt = script.calls().pop().expect("a prompt");
-    assert!(prompt.starts_with("prompt: round this\n\n[Selected in open-skyfall"), "{prompt}");
+    assert!(prompt.starts_with("prompt: round this\n\n[Selected in Intcad"), "{prompt}");
     for want in ["Elements:", "- Flat face ", "planar", "area ", "- Edge ", "length ", "name ", "Features:", "feature id", "Bodies:", "- Body1"] {
         assert!(prompt.contains(want), "{want:?} missing from {prompt}");
     }
@@ -12542,7 +12542,7 @@ fn the_picks_go_with_the_next_message_once() {
     app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "look at these".into());
     let prompt = script.calls().pop().expect("a prompt");
-    assert!(prompt.starts_with("prompt: look at these\n\n[Selected in open-skyfall"), "{prompt}");
+    assert!(prompt.starts_with("prompt: look at these\n\n[Selected in Intcad"), "{prompt}");
     assert!(prompt.contains("3 item(s)"), "two picked and one more selected: {prompt}");
     assert_eq!(prompt.matches("- Body1").count(), 1, "{prompt}");
     let Some(Item::User { context, .. }) = app.agent_chat.items.last() else { panic!("a sent message") };
@@ -12861,6 +12861,8 @@ fn tool_calls_read_as_what_they_did() {
     assert_eq!(said("execute: solid.extrude", extrude.clone(), None).as_deref(), Some("Extrude Sketch1 by 10 mm"));
     // As an ACP agent names the bridged tool, with the body the result made.
     let made = r#"{"feature": 4, "name": "Extrude1", "created_bodies": ["Body2"], "changed_bodies": []}"#;
+    assert_eq!(said("mcp__intcad-app__execute", extrude.clone(), Some(made)).as_deref(), Some("Extrude Sketch1 by 10 mm → Body2"));
+    // A conversation saved while the chat's server was `solidcraft-app` reads the same.
     assert_eq!(said("mcp__solidcraft-app__execute", extrude, Some(made)).as_deref(), Some("Extrude Sketch1 by 10 mm → Body2"));
     let edges = json!([[20, 0, 20], [20, 30, 20], [0, 15, 20], [40, 15, 20]]);
     let batch = json!({"commands": [
@@ -12892,7 +12894,7 @@ fn tool_calls_read_as_what_they_did() {
 fn tool_cards_show_file_names_never_paths() {
     let shot = r"ui.screenshot: C:\Users\bherbruck\AppData\Local\Temp\solidcraft-mcp-8608-b4c7b64\shot-0.png";
     assert_eq!(said(shot, json!({}), None).as_deref(), Some("Screenshot"));
-    assert_eq!(said("mcp__solidcraft-app__ui.screenshot", json!({}), None).as_deref(), Some("Screenshot"));
+    assert_eq!(said("mcp__intcad-app__ui.screenshot", json!({}), None).as_deref(), Some("Screenshot"));
     // The fallback title (another agent's tools) is cut to file names; temp files drop out.
     assert_eq!(summary::plain_title(shot), "ui.screenshot");
     assert_eq!(summary::plain_title(r"Read C:\Users\Jane Doe\Documents\part.step"), "Read part.step");
@@ -16014,4 +16016,25 @@ fn files_dropped_on_the_web_view_join_the_next_message() {
     assert_eq!(state["attachments"], json!([{"name": "brief.md", "picture": null}]));
     assert!(matches!(h.app.agent_chat.items.as_slice(), [Item::Notice { error: true, .. }]), "the missing file is said, the empty path is nothing");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The web view is the window's, not one design's: a design opened in another tab, whose
+/// conversation starts afresh, is shown in it too, on the surface colour the page already said.
+#[test]
+fn a_new_tab_shows_its_conversation_in_the_hosts_web_view() {
+    let mut h = crate::scenario::Harness::new();
+    web::set_host(&mut h.app, true);
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    web::act(&mut h.app, &ctx, &json!({"type": "surface", "color": "#0e0e0e"}).to_string()).expect("a colour");
+
+    crate::documents::open_tab(&mut h.app, solidcraft_engine::Session::default()).unwrap();
+    h.frames(3);
+    assert!(h.app.agent_chat.web_host && h.app.agent_chat.web_canvas.is_some(), "the new tab's conversation is the web view's too");
+    assert!(crate::scenario::rect_of("agent_chat:web").is_some(), "the panel gives its room up in the new tab");
+
+    crate::documents::switch(&mut h.app, 0);
+    h.frames(3);
+    assert!(h.app.agent_chat.web_host && crate::scenario::rect_of("agent_chat:web").is_some(), "and back in the first");
 }

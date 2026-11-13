@@ -3,8 +3,8 @@
 //! reads messages; the process lives in `process.rs` and the state in `mod.rs`, so everything
 //! here is plain data and tested without an agent.
 //!
-//! What open-skyfall says it can do (`clientCapabilities`): no file system and no terminal (the agent
-//! reaches the design through open-skyfall's MCP server instead), and terminal login, so an agent
+//! What Intcad says it can do (`clientCapabilities`): no file system and no terminal (the agent
+//! reaches the design through Intcad's MCP server instead), and terminal login, so an agent
 //! that needs one describes a command for the user to run rather than asking for a key.
 
 use serde::Serialize;
@@ -151,19 +151,21 @@ pub fn initialize_params(version: &str) -> Value {
             "auth": {"terminal": true},
             "_meta": {"terminal-auth": true},
         },
-        "clientInfo": {"name": "solidcraft", "title": "open-skyfall", "version": version},
+        "clientInfo": {"name": "solidcraft", "title": "Intcad", "version": version},
     })
 }
 
 /// The name the chat gives its MCP server (#2592): not `solidcraft`, the name docs/mcp.md suggests
 /// for a user's own setup, so an agent that merges its own MCP servers with the session's (Codex
-/// keeps its own entry on a clash) can't shadow the bridge with a headless session.
-pub const BRIDGE_NAME: &str = "solidcraft-app";
+/// keeps its own entry on a clash) can't shadow the bridge with a headless session. It is what a
+/// person reads beside each tool call an agent makes, so it carries the product's name; it was
+/// `solidcraft-app` while the product showed that name.
+pub const BRIDGE_NAME: &str = "intcad-app";
 
 /// Whether a permission question is about a tool of the chat's own MCP server, whose calls
-/// open-skyfall's gate checks. The agent writes both values and ACP has nothing better to go on, so
+/// Intcad's gate checks. The agent writes both values and ACP has nothing better to go on, so
 /// the test is strict: the whole title is the tool's name as the Claude adapter forms it
-/// (`mcp__solidcraft-app__batch`), one word with no room for a command line, a path or other free
+/// (`mcp__intcad-app__batch`), one word with no room for a command line, a path or other free
 /// text, and the kind is `other` (the kind an MCP tool has) or not given. Any other title goes
 /// through the user's mode and remembered answers: agents that word their MCP tools differently,
 /// and a user's own MCP server, which the gate doesn't see.
@@ -233,13 +235,13 @@ pub fn wsl_path(path: &std::path::Path) -> std::path::PathBuf {
 
 /// What every session is told about where it is. An agent with no route for it in
 /// [`session_new_params`] doesn't get it.
-pub const SYSTEM_NOTE: &str = "You are running inside open-skyfall, a parametric 3D CAD application, as the user's assistant. \
-The open design is reachable through the `solidcraft-app` MCP server: use its tools (list_commands, batch, execute, inspect_design, \
+pub const SYSTEM_NOTE: &str = "You are running inside Intcad, a parametric 3D CAD application, as the user's assistant. \
+The open design is reachable through the `intcad-app` MCP server: use its tools (list_commands, batch, execute, inspect_design, \
 measure, screenshot, set_parameter, undo, skill_reference) to read and change the design the user is looking at, and verify with \
 measure or inspect_design. Before building anything beyond one primitive, read `skill_reference` for `solidcraft-modeling` (its \
 SKILL.md has the workflow, its reference.md the command shapes and this version's traps), work the numbers out first, and after \
 each stage compare `measure` with them. Prefer one `batch` over many small calls. Saving, opening or exporting files waits for the user's approval in \
-the chat, and each message allows a limited number of changes. Don't use shell or file tools: work through the open-skyfall tools. \
+the chat, and each message allows a limited number of changes. Don't use shell or file tools: work through the Intcad tools. \
 Keep answers short.";
 
 /// The most of the user's custom instructions (#8220) a session gets, in characters: the
@@ -248,7 +250,7 @@ pub const INSTRUCTIONS_LIMIT: usize = 4000;
 
 /// The ACP system note for workflow-owned tasks. A task session gets no CAD bridge and no host
 /// control token, so the only correct answer is a proposal for the host to validate.
-pub const PROPOSAL_NOTE: &str = "You are running as a workflow task inside SolidCraft, a parametric 3D CAD application. \
+pub const PROPOSAL_NOTE: &str = "You are running as a workflow task inside Intcad, a parametric 3D CAD application. \
 This session has no CAD tools, no shell and no file access. Do not try to change any design. \
 Answer with exactly one JSON object and no prose or code fence: \
 {\"source\":{\"documentId\":\"<id>\",\"revision\":\"<revision>\"},\"commands\":[{\"command\":\"<native command>\",\"params\":{}}]}. \
@@ -263,11 +265,11 @@ pub fn system_note(instructions: &str) -> String {
     if text.is_empty() {
         return SYSTEM_NOTE.to_string();
     }
-    format!("{SYSTEM_NOTE}\n\nThe user's custom instructions, set in open-skyfall's preferences:\n{text}")
+    format!("{SYSTEM_NOTE}\n\nThe user's custom instructions, set in Intcad's preferences:\n{text}")
 }
 
 /// The Claude Code adapter's own tools that reach the computer rather than the design: turned off
-/// for the session (`_meta.claudeCode.options.disallowedTools`), so it works through open-skyfall's.
+/// for the session (`_meta.claudeCode.options.disallowedTools`), so it works through Intcad's.
 pub const CLAUDE_DISALLOWED_TOOLS: &[&str] =
     &["Bash", "BashOutput", "KillShell", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep", "WebFetch", "WebSearch", "Task"];
 
@@ -281,7 +283,7 @@ pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, ini
         "systemPrompt": {"append": note},
         // Hosts may opt a session out of "bypass permissions" (the Claude adapter reads it):
         // every tool call the agent asks about reaches the panel.
-        // Its own shell and file tools are off: the agent works through open-skyfall's tools.
+        // Its own shell and file tools are off: the agent works through Intcad's tools.
         "claudeCode": {"options": {"allowDangerouslySkipPermissions": false, "disallowedTools": CLAUDE_DISALLOWED_TOOLS}},
     });
     if takes_antigravity_note(init)
@@ -436,7 +438,7 @@ pub fn auth_methods(init: &Value) -> Vec<AuthMethod> {
                                 .map(|v| v.iter().take(16).filter_map(|x| x.get("name").and_then(Value::as_str).map(str::to_string)).collect())
                                 .unwrap_or_default(),
                         },
-                        // A key the agent would take from the client: open-skyfall never handles
+                        // A key the agent would take from the client: Intcad never handles
                         // keys, so this becomes "set it in your environment" instead.
                         _ if m.get("_meta").and_then(|x| x.get("api-key")).is_some() => {
                             let provider = m
@@ -766,11 +768,14 @@ mod tests {
     #[test]
     fn the_bridge_has_a_name_of_its_own_and_the_note_uses_it() {
         assert_ne!(BRIDGE_NAME, "solidcraft");
+        // Nor `intcad` or `intgral`: a user may have a server of either name of their own.
+        assert_ne!(BRIDGE_NAME, "intcad");
+        assert_ne!(BRIDGE_NAME, "intgral");
         assert!(SYSTEM_NOTE.contains(&format!("`{BRIDGE_NAME}` MCP server")), "{SYSTEM_NOTE}");
         assert!(!SYSTEM_NOTE.contains("`solidcraft` MCP server"));
-        // The panel still recognises the bridge's tools as open-skyfall's (agents name them after
-        // their server, e.g. `mcp__solidcraft-app__batch`).
-        assert!(BRIDGE_NAME.contains("solidcraft"));
+        // The panel still recognises the bridge's tools as Intcad's (agents name them after
+        // their server, e.g. `mcp__intcad-app__batch`).
+        assert!(BRIDGE_NAME.contains("intcad"));
         assert!(is_bridge_tool(&format!("mcp__{BRIDGE_NAME}__batch"), Some("other")));
     }
 
@@ -778,40 +783,40 @@ mod tests {
     #[test]
     fn only_the_bridges_exact_tool_names_are_its_tools() {
         for tool in ["batch", "inspect_design", "set_parameter"] {
-            assert!(is_bridge_tool(&format!("mcp__solidcraft-app__{tool}"), None), "{tool}");
-            assert!(is_bridge_tool(&format!("mcp__solidcraft-app__{tool}"), Some("other")), "{tool}");
+            assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), None), "{tool}");
+            assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), Some("other")), "{tool}");
         }
         for title in [
             "",
             "solidcraft",
-            "open-skyfall",
+            "Intcad",
             "run solidcraft-cli; ls",
             "solidcraft-cli --version",
             "Edit ~/.local/share/solidcraft/agent-chat/work/notes.txt",
-            // A user's own MCP server (docs/mcp.md), which open-skyfall's gate doesn't see.
+            // A user's own MCP server (docs/mcp.md), which Intcad's gate doesn't see.
             "mcp__solidcraft__batch",
             "mcp__solidcraft-live__batch",
-            "mcp__other__solidcraft-app",
-            "mcp__solidcraft-app__",
-            "mcp__solidcraft-app",
-            "solidcraft-app__batch",
-            "solidcraft-app: batch",
-            "Tool: solidcraft-app/batch",
-            "mcp.solidcraft-app.batch",
-            " mcp__solidcraft-app__batch",
-            "mcp__solidcraft-app__batch ",
-            "mcp__solidcraft-app__batch; ls",
-            "mcp__solidcraft-app__batch && ls",
-            "mcp__solidcraft-app__batch\nls",
-            "mcp__solidcraft-app__../../tool",
-            "mcp__SOLIDCRAFT-APP__batch",
-            "MCP__solidcraft-app__batch",
-            "mcp__solidcraft-app__Batch",
+            "mcp__other__intcad-app",
+            "mcp__intcad-app__",
+            "mcp__intcad-app",
+            "intcad-app__batch",
+            "intcad-app: batch",
+            "Tool: intcad-app/batch",
+            "mcp.intcad-app.batch",
+            " mcp__intcad-app__batch",
+            "mcp__intcad-app__batch ",
+            "mcp__intcad-app__batch; ls",
+            "mcp__intcad-app__batch && ls",
+            "mcp__intcad-app__batch\nls",
+            "mcp__intcad-app__../../tool",
+            "mcp__INTCAD-APP__batch",
+            "MCP__intcad-app__batch",
+            "mcp__intcad-app__Batch",
         ] {
             assert!(!is_bridge_tool(title, None), "{title:?}");
         }
         for kind in ["execute", "edit", "delete", "move", "read", "search", "fetch", "think", ""] {
-            assert!(!is_bridge_tool("mcp__solidcraft-app__batch", Some(kind)), "{kind:?}");
+            assert!(!is_bridge_tool("mcp__intcad-app__batch", Some(kind)), "{kind:?}");
         }
     }
 

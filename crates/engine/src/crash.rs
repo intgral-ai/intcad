@@ -87,7 +87,7 @@ pub struct Summary {
     pub command: Option<String>,
     /// Times it happened.
     pub count: u64,
-    /// The version of open-skyfall it happened in.
+    /// The version of Intcad it happened in.
     pub version: String,
     /// The report's folder.
     pub path: String,
@@ -438,7 +438,7 @@ fn hook(info: &std::panic::PanicHookInfo<'_>) -> bool {
     if graphics_device_lost(&message, &location) {
         // What met the loss survives it (the window's painter, a command), and the app starts
         // again as for any lost device: not a crash to report.
-        eprintln!("open-skyfall graphics: the device was lost during GPU work ({location}); starting again");
+        eprintln!("Intcad graphics: the device was lost during GPU work ({location}); starting again");
         IN_HOOK.store(false, Ordering::SeqCst);
         return true;
     }
@@ -485,12 +485,12 @@ fn hook(info: &std::panic::PanicHookInfo<'_>) -> bool {
                 q.push(p);
             }
         });
-        solidcraft_geom::note!("open-skyfall: internal error caught in a command; a crash report will be written");
+        solidcraft_geom::note!("Intcad: internal error caught in a command; a crash report will be written");
     } else {
         // Outside any command: what the journal knows has to do.
         let kind = if recovered { "kernel_panic_recovered" } else { "panic" };
         if let Some(id) = write_from_journal(state, kind, Some(&p)) {
-            solidcraft_geom::note!("open-skyfall: internal error; crash report {}", state.dir.join(&id).display());
+            solidcraft_geom::note!("Intcad: internal error; crash report {}", state.dir.join(&id).display());
             if !recovered && let Ok(mut j) = state.journal.try_lock() {
                 j.record(&json!({ "reported": id }));
             }
@@ -502,7 +502,7 @@ fn hook(info: &std::panic::PanicHookInfo<'_>) -> bool {
 
 /// A panic inside wgpu that unwraps the driver's `Lost`: a graphics device reset (Windows' TDR)
 /// met first by a queue write or a present, which wgpu-core unwraps instead of losing the device
-/// (`PendingWrites::activate`, #10240). It is the device loss, not an open-skyfall bug.
+/// (`PendingWrites::activate`, #10240). It is the device loss, not an Intcad bug.
 fn graphics_device_lost(message: &str, location: &str) -> bool {
     location.contains("wgpu-core") && message.ends_with(": Lost")
 }
@@ -888,14 +888,14 @@ fn unclean_exit(dir: &Path, build: &Build, journal: &Path) {
                 frames.extend(walk.iter().filter_map(Value::as_str).take(MAX_FRAMES).map(|f| limited(f, 300)));
             }
             (
-                format!("open-skyfall {was} (started {when}) crashed with {name} ({code}) in {at} {during}"),
+                format!("Intcad {was} (started {when}) crashed with {name} ({code}) in {at} {during}"),
                 format!("native exception in {at}"),
                 format!("{code} {short} {}", starting.as_ref().map_or(doing.unwrap_or("idle"), |(p, _)| p.as_str())),
                 frames,
             )
         }
         None => (
-            format!("open-skyfall {was} (started {when}) ended without a clean exit {during}"),
+            format!("Intcad {was} (started {when}) ended without a clean exit {during}"),
             match (&starting, doing) {
                 (Some((p, _)), _) => format!("unclean exit during startup: {p}"),
                 (None, c) => format!("unclean exit in {}", c.unwrap_or("(between commands)")),

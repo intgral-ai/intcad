@@ -14,7 +14,7 @@ pub const BUILD_DATE: &str = env!("SOLIDCRAFT_BUILD_DATE");
 pub const DOCS_URL: &str = "https://docs.solidcraft.io/";
 const ATTRIBUTION: &str = include_str!("../../../ATTRIBUTION.md");
 use solidcraft_engine::licences::{LICENSE_APACHE, LICENSE_MIT, NOTICE, THIRD_PARTY};
-/// What the Assistant's page holds that is not open-skyfall's own (Mastra's components, the npm
+/// What the Assistant's page holds that is not Intcad's own (Mastra's components, the npm
 /// packages they import, the fonts), with the licence texts each part ships:
 /// packages/assistant-web/THIRD-PARTY-NOTICES.txt, written by that folder's build. Built in on the
 /// systems whose app carries the page (apps/solidcraft/src/assistant_web.rs), so a single
@@ -51,7 +51,7 @@ pub fn diagnostics(app: &SolveApp) -> String {
     let renderer = if app.viewport.gpu.is_some() { "GPU" } else { "CPU" };
     let count = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     format!(
-        "open-skyfall {VERSION} ({COMMIT}, built {BUILD_DATE})\nOS: {} {}\nRenderer: {renderer}{}\nWindow: {}\nDesign: {} ({}, {})",
+        "Intcad {VERSION} ({COMMIT}, built {BUILD_DATE})\nOS: {} {}\nRenderer: {renderer}{}\nWindow: {}\nDesign: {} ({}, {})",
         std::env::consts::OS,
         std::env::consts::ARCH,
         app.help.gpu.as_ref().map(|g| format!(", {g}")).unwrap_or_default(),
@@ -108,7 +108,7 @@ pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
 fn connect_assistants() -> Vec<String> {
     use solidcraft_engine::agent_setup as setup;
     let Some(cli) = crate::agent_chat::find_cli() else {
-        return vec!["solidcraft-cli was not found next to SolidCraft; run `solidcraft-cli mcp setup` from a terminal.".into()];
+        return vec!["solidcraft-cli was not found next to Intcad; run `solidcraft-cli mcp setup` from a terminal.".into()];
     };
     let cli = cli.canonicalize().unwrap_or(cli).to_string_lossy().trim_start_matches(r"\\?\").to_owned();
     match setup::setup(&[], &setup::Env::from_process(), &cli) {
@@ -133,7 +133,7 @@ fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         .show(ctx, true, |ui| {
             ui_kit::text(
                 ui,
-                crate::i18n::tr_label("Restart each assistant to load the open-skyfall server. Each file was backed up as .bak before it changed."),
+                crate::i18n::tr_label("Restart each assistant to load the Intcad server. Each file was backed up as .bak before it changed."),
                 ui_kit::Text::Note("connect_note"),
             );
             ui_kit::text(ui, &lines.join("\n"), ui_kit::Text::Report("connect", false));
@@ -156,7 +156,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context, anchor: egui::Pos2) {
                 crate::context_menu::menu_frame(ui, |ui| {
                     for (id, label, icon) in [
                         ("docs", "Documentation", "library"),
-                        ("about", "About open-skyfall", "help"),
+                        ("about", "About Intcad", "help"),
                         ("updates", crate::i18n::tr("update.check_for_updates"), "update"),
                         ("shortcuts", "Keyboard Shortcuts", "list"),
                         ("messages", "Messages…", "list"),

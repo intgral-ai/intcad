@@ -1,4 +1,4 @@
-//! open-skyfall headless command line.
+//! Intcad headless command line.
 //!
 //! ```text
 //! solidcraft-cli run <script.json|design.sc|part.step|mesh.3mf> [--in design|part.step|mesh.3mf] [--out FILE]... [--save FILE] [--quiet] [--results] [--timings] [--profile] [--json-out FILE] [--allow-errors]
@@ -21,11 +21,11 @@
 //!                    [--param-check off|warn|strict]
 //!                                                             MCP server on stdio (docs/mcp.md)
 //! solidcraft-cli mcp setup [--dry-run] [--client NAME] [--live] (alias: mcp install) add it to OpenCode, Claude Desktop, Claude Code, Cursor
-//! solidcraft-cli licences                                     open-skyfall's licence and the third-party licences
+//! solidcraft-cli licences                                     Intcad's licence and the third-party licences
 //! solidcraft-cli validate submit|skill|status|report|cancel ... immutable candidate validation (docs/validation.md)
 //! solidcraft-cli icon --out F.png|F.ico [--size N]             the app icon (packaging; drawn, not a file)
 //!
-//! --debug (with any command)                                  open-skyfall's debug log on stderr (or RUST_LOG=LEVEL)
+//! --debug (with any command)                                  Intcad's debug log on stderr (or RUST_LOG=LEVEL)
 //! --max-file-size SIZE (with any command)                     read STEP and design files up to SIZE (2GB, 1500MB; at most 16GB)
 //! ```
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -101,7 +101,7 @@ const USAGE_LICENCES: &str = "  solidcraft-cli licences\n";
 /// `gpu`'s lines in the usage.
 const USAGE_GPU: &str = "  solidcraft-cli gpu [--policy auto|hardware|software|cpu]\n      (the GPU adapters a headless render can open, best first, the one the policy picks and the tier it\n       lands on: gpu, gpu-software, or the CPU rasterizer (auto with no adapter, or cpu); the policy defaults\n       to SOLIDCRAFT_GPU, else auto; exits with an error when hardware or software finds no such adapter)\n";
 /// `icon`'s lines in the usage.
-const USAGE_ICON: &str = "  solidcraft-cli icon --out icon.png [--size 256] | --out icon.ico\n";
+const USAGE_ICON: &str = "  solidcraft-cli icon --out icon.png [--size 256] | --out icon.ico | --out icon.icns\n";
 /// `fuzz-one`'s lines in the usage: a seed and the flags of one fuzz run.
 const USAGE_FUZZ_ONE: &str = "  solidcraft-cli fuzz-one <seed> [--steps N] [--minimise]\n";
 /// `bench-edit`'s lines in the usage: the parameter a script changes.
@@ -111,7 +111,7 @@ const USAGE_SAVE_STRESS: &str = "  solidcraft-cli save-stress <path> <rounds>\n"
 /// `validate`'s lines in the usage.
 const USAGE_VALIDATE: &str = validation::USAGE;
 /// The flags every command takes, at the end of the top-level usage.
-const USAGE_DEBUG: &str = "  --debug, with any command: what open-skyfall logs (why a body has no display plan, why a save left its\n      model cache out), on stderr; RUST_LOG=error|warn|info|debug|trace sets one level for every crate\n  --max-file-size SIZE, with any command: read STEP and import files and design files up to SIZE for this run\n      (for example 2GB or 1500MB; at most 16GB; the defaults are 512 MB and 256 MB, and a smaller SIZE keeps them)\n";
+const USAGE_DEBUG: &str = "  --debug, with any command: what Intcad logs (why a body has no display plan, why a save left its\n      model cache out), on stderr; RUST_LOG=error|warn|info|debug|trace sets one level for every crate\n  --max-file-size SIZE, with any command: read STEP and import files and design files up to SIZE for this run\n      (for example 2GB or 1500MB; at most 16GB; the defaults are 512 MB and 256 MB, and a smaller SIZE keeps them)\n";
 
 /// The commands the CLI takes, in the order the top-level usage lists them.
 const COMMANDS: &[Command] = &[
@@ -722,15 +722,19 @@ fn cmd_snapshot(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The app icon: the open-skyfall logo, drawn in code on a transparent background
-/// (so packages need no committed image). `.ico` holds the Windows sizes as PNGs.
+/// The app icon: the Intcad logo, drawn in code on a transparent background
+/// (so packages need no committed image). `.ico` holds the Windows sizes as PNGs, `.icns` the
+/// macOS sizes with the margin of Apple's icon grid.
 fn cmd_icon(args: &[String]) -> Result<(), String> {
-    let out = flag(args, "--out").ok_or("icon needs --out FILE.png or FILE.ico")?;
+    let out = flag(args, "--out").ok_or("icon needs --out FILE.png, FILE.ico or FILE.icns")?;
     let size: usize = flag(args, "--size").and_then(|x| x.parse().ok()).unwrap_or(256).clamp(8, 2048);
-    let bytes = if out.to_ascii_lowercase().ends_with(".ico") {
+    let name = out.to_ascii_lowercase();
+    let bytes = if name.ends_with(".ico") {
         let pngs: Vec<(usize, Vec<u8>)> =
             [16, 20, 24, 32, 40, 48, 64, 128, 256].into_iter().map(|s| icon_png(s).map(|p| (s, p))).collect::<Result<_, _>>()?;
         ico(&pngs)?
+    } else if name.ends_with(".icns") {
+        icns()?
     } else {
         icon_png(size)?
     };
@@ -741,6 +745,58 @@ fn cmd_icon(args: &[String]) -> Result<(), String> {
 
 fn icon_png(size: usize) -> Result<Vec<u8>, String> {
     solidcraft_engine::render::png(size, size, app_icon::rgba(size)?).ok_or_else(|| "icon: PNG encoding failed".to_string())
+}
+
+/// A macOS icon file: the images of a whole icon set, 16 to 512 points at 1x and 2x, each with
+/// the margin of Apple's icon grid. As `iconutil` writes them, the 16 and 32 pixel images are
+/// plain colour planes and the others PNGs.
+fn icns() -> Result<Vec<u8>, String> {
+    // (type, pixels, planes): `ic11` to `ic14` are the 2x images of 16, 32, 128 and 256 points.
+    const IMAGES: [(&[u8; 4], usize, bool); 10] = [
+        (b"ic04", 16, true),
+        (b"ic05", 32, true),
+        (b"ic07", 128, false),
+        (b"ic08", 256, false),
+        (b"ic09", 512, false),
+        (b"ic10", 1024, false),
+        (b"ic11", 32, false),
+        (b"ic12", 64, false),
+        (b"ic13", 256, false),
+        (b"ic14", 512, false),
+    ];
+    let mut body = Vec::new();
+    for (kind, size, planes) in IMAGES {
+        let rgba = app_icon::rgba_macos(size)?;
+        let data = if planes {
+            icns_planes(&rgba)
+        } else {
+            solidcraft_engine::render::png(size, size, rgba).ok_or_else(|| "icon: PNG encoding failed".to_string())?
+        };
+        body.extend_from_slice(kind);
+        body.extend_from_slice(&u32::try_from(data.len() + 8).map_err(|_| "icon too large")?.to_be_bytes());
+        body.extend_from_slice(&data);
+    }
+    let mut out = b"icns".to_vec();
+    out.extend_from_slice(&u32::try_from(body.len() + 8).map_err(|_| "icon too large")?.to_be_bytes());
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+/// The `ARGB` form of a small image in an icon file: alpha, red, green and blue as four planes
+/// of run-length data, the colours multiplied by alpha (macOS reads them so). Every run here is
+/// a literal one (a count byte below 128, then count + 1 bytes), which any reader of the format
+/// accepts.
+fn icns_planes(rgba: &[u8]) -> Vec<u8> {
+    let mut out = b"ARGB".to_vec();
+    for channel in [3, 0, 1, 2] {
+        let value = |p: &[u8; 4]| if channel == 3 { p[3] } else { ((u16::from(p[channel]) * u16::from(p[3]) + 127) / 255) as u8 };
+        let plane: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(value).collect();
+        for run in plane.chunks(128) {
+            out.push((run.len() - 1) as u8);
+            out.extend_from_slice(run);
+        }
+    }
+    out
 }
 
 /// A Windows icon file holding PNG images (Vista and later read these).
@@ -825,7 +881,7 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             let mut remote = solidcraft_mcp::Remote::new(addr, flag(args, "--token")).with_param_check(param_check);
             if let Err(e) = remote.try_connect() {
                 solidcraft_engine::note!(
-                    "solidcraft mcp: no open-skyfall app at {addr} yet ({e}); start it with `solidcraft --control {port}` \
+                    "solidcraft mcp: no Intcad app at {addr} yet ({e}); start it with `solidcraft --control {port}` \
                      (or SOLIDCRAFT_CONTROL_PORT={port}), tool calls connect once it runs"
                 );
             }

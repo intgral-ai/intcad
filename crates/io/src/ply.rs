@@ -275,7 +275,7 @@ impl<'a> Rows<'a> {
     pub(crate) fn count(&mut self, t: Scalar) -> Result<usize> {
         let n = self.value(t)?;
         if !(n >= 0.0 && n <= MAX_FACE as f64 && n.fract() == 0.0) {
-            return Err(invalid("a list is longer than SolidCraft reads"));
+            return Err(invalid("a list is longer than Intcad reads"));
         }
         Ok(n as usize)
     }
