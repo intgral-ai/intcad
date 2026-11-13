@@ -446,7 +446,7 @@ wsl.exe -d Ubuntu -e bash -lc claude-agent-acp
 
 `bash -lc` runs your login shell's setup, so the agent is found where your `PATH` puts it (npm,
 nvm, Volta). When the command's program is `wsl` or `wsl.exe`, SolidCraft gives the agent its
-working folder and the `solidcraft-app` server's program as WSL shows them (`C:\Users\…` becomes
+working folder and the `intcad-app` server's program as WSL shows them (`C:\Users\…` becomes
 `/mnt/c/Users/…`). The server itself still runs on Windows and reaches the app at `127.0.0.1`, so
 this works with WSL's default networking. If you moved WSL's drive mounts away from `/mnt`
 (`automount.root` in `/etc/wsl.conf`), those paths won't match and the agent can't start the server.
@@ -510,7 +510,7 @@ current document. Ask Anatomy again to get links for the current revision.
 
 The agent reaches the open design only through SolidCraft's own tools (the
 [MCP server](mcp.md)), which SolidCraft hands it when the chat starts. That server is named
-`solidcraft-app`, so an MCP server you set up yourself under the name `solidcraft` (as in
+`intcad-app`, so an MCP server you set up yourself under the name `solidcraft` (as in
 [client configuration](mcp.md#client-configuration)) doesn't take its place:
 
 - **Read the design:** list commands, inspect features, sketches and parameters, measure,
@@ -579,7 +579,7 @@ per agent, with **Reset**.
 These settings cover SolidCraft's tools. A coding agent's own tools (its shell, its file edits)
 follow the agent's own mode, which you pick in the panel's header. When an agent asks before
 using one of the chat's own SolidCraft tools and names it exactly as the Claude adapter does
-(`mcp__solidcraft-app__batch`), SolidCraft answers for you, since its own gate checks the call,
+(`mcp__intcad-app__batch`), SolidCraft answers for you, since its own gate checks the call,
 and notes it in the chat as *Auto-allowed*. Any other question appears in the panel, including
 a SolidCraft tool an agent words differently and a SolidCraft MCP server you added to the agent
 yourself. With **Allow everything**, or after **Always allow**, those questions are answered the

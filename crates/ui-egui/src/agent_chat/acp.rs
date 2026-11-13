@@ -157,13 +157,15 @@ pub fn initialize_params(version: &str) -> Value {
 
 /// The name the chat gives its MCP server (#2592): not `solidcraft`, the name docs/mcp.md suggests
 /// for a user's own setup, so an agent that merges its own MCP servers with the session's (Codex
-/// keeps its own entry on a clash) can't shadow the bridge with a headless session.
-pub const BRIDGE_NAME: &str = "solidcraft-app";
+/// keeps its own entry on a clash) can't shadow the bridge with a headless session. It is what a
+/// person reads beside each tool call an agent makes, so it carries the product's name; it was
+/// `solidcraft-app` while the product showed that name.
+pub const BRIDGE_NAME: &str = "intcad-app";
 
 /// Whether a permission question is about a tool of the chat's own MCP server, whose calls
 /// Intcad's gate checks. The agent writes both values and ACP has nothing better to go on, so
 /// the test is strict: the whole title is the tool's name as the Claude adapter forms it
-/// (`mcp__solidcraft-app__batch`), one word with no room for a command line, a path or other free
+/// (`mcp__intcad-app__batch`), one word with no room for a command line, a path or other free
 /// text, and the kind is `other` (the kind an MCP tool has) or not given. Any other title goes
 /// through the user's mode and remembered answers: agents that word their MCP tools differently,
 /// and a user's own MCP server, which the gate doesn't see.
@@ -234,7 +236,7 @@ pub fn wsl_path(path: &std::path::Path) -> std::path::PathBuf {
 /// What every session is told about where it is. An agent with no route for it in
 /// [`session_new_params`] doesn't get it.
 pub const SYSTEM_NOTE: &str = "You are running inside Intcad, a parametric 3D CAD application, as the user's assistant. \
-The open design is reachable through the `solidcraft-app` MCP server: use its tools (list_commands, batch, execute, inspect_design, \
+The open design is reachable through the `intcad-app` MCP server: use its tools (list_commands, batch, execute, inspect_design, \
 measure, screenshot, set_parameter, undo, skill_reference) to read and change the design the user is looking at, and verify with \
 measure or inspect_design. Before building anything beyond one primitive, read `skill_reference` for `solidcraft-modeling` (its \
 SKILL.md has the workflow, its reference.md the command shapes and this version's traps), work the numbers out first, and after \
@@ -766,11 +768,14 @@ mod tests {
     #[test]
     fn the_bridge_has_a_name_of_its_own_and_the_note_uses_it() {
         assert_ne!(BRIDGE_NAME, "solidcraft");
+        // Nor `intcad` or `intgral`: a user may have a server of either name of their own.
+        assert_ne!(BRIDGE_NAME, "intcad");
+        assert_ne!(BRIDGE_NAME, "intgral");
         assert!(SYSTEM_NOTE.contains(&format!("`{BRIDGE_NAME}` MCP server")), "{SYSTEM_NOTE}");
         assert!(!SYSTEM_NOTE.contains("`solidcraft` MCP server"));
         // The panel still recognises the bridge's tools as Intcad's (agents name them after
-        // their server, e.g. `mcp__solidcraft-app__batch`).
-        assert!(BRIDGE_NAME.contains("solidcraft"));
+        // their server, e.g. `mcp__intcad-app__batch`).
+        assert!(BRIDGE_NAME.contains("intcad"));
         assert!(is_bridge_tool(&format!("mcp__{BRIDGE_NAME}__batch"), Some("other")));
     }
 
@@ -778,8 +783,8 @@ mod tests {
     #[test]
     fn only_the_bridges_exact_tool_names_are_its_tools() {
         for tool in ["batch", "inspect_design", "set_parameter"] {
-            assert!(is_bridge_tool(&format!("mcp__solidcraft-app__{tool}"), None), "{tool}");
-            assert!(is_bridge_tool(&format!("mcp__solidcraft-app__{tool}"), Some("other")), "{tool}");
+            assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), None), "{tool}");
+            assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), Some("other")), "{tool}");
         }
         for title in [
             "",
@@ -791,27 +796,27 @@ mod tests {
             // A user's own MCP server (docs/mcp.md), which Intcad's gate doesn't see.
             "mcp__solidcraft__batch",
             "mcp__solidcraft-live__batch",
-            "mcp__other__solidcraft-app",
-            "mcp__solidcraft-app__",
-            "mcp__solidcraft-app",
-            "solidcraft-app__batch",
-            "solidcraft-app: batch",
-            "Tool: solidcraft-app/batch",
-            "mcp.solidcraft-app.batch",
-            " mcp__solidcraft-app__batch",
-            "mcp__solidcraft-app__batch ",
-            "mcp__solidcraft-app__batch; ls",
-            "mcp__solidcraft-app__batch && ls",
-            "mcp__solidcraft-app__batch\nls",
-            "mcp__solidcraft-app__../../tool",
-            "mcp__SOLIDCRAFT-APP__batch",
-            "MCP__solidcraft-app__batch",
-            "mcp__solidcraft-app__Batch",
+            "mcp__other__intcad-app",
+            "mcp__intcad-app__",
+            "mcp__intcad-app",
+            "intcad-app__batch",
+            "intcad-app: batch",
+            "Tool: intcad-app/batch",
+            "mcp.intcad-app.batch",
+            " mcp__intcad-app__batch",
+            "mcp__intcad-app__batch ",
+            "mcp__intcad-app__batch; ls",
+            "mcp__intcad-app__batch && ls",
+            "mcp__intcad-app__batch\nls",
+            "mcp__intcad-app__../../tool",
+            "mcp__INTCAD-APP__batch",
+            "MCP__intcad-app__batch",
+            "mcp__intcad-app__Batch",
         ] {
             assert!(!is_bridge_tool(title, None), "{title:?}");
         }
         for kind in ["execute", "edit", "delete", "move", "read", "search", "fetch", "think", ""] {
-            assert!(!is_bridge_tool("mcp__solidcraft-app__batch", Some(kind)), "{kind:?}");
+            assert!(!is_bridge_tool("mcp__intcad-app__batch", Some(kind)), "{kind:?}");
         }
     }
 
