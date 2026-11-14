@@ -131,8 +131,7 @@ pub struct FlatSheetRef {
 
 /// Parse and check the flat self-overlap parameters before a run starts.
 pub fn validate_flat_parameters(value: &Value) -> Result<FlatOverlapParameters, DfmError> {
-    let parameters: FlatOverlapParameters =
-        serde_json::from_value(value.clone()).map_err(|error| DfmError::Parameters(error.to_string()))?;
+    let parameters: FlatOverlapParameters = serde_json::from_value(value.clone()).map_err(|error| DfmError::Parameters(error.to_string()))?;
     if parameters.model_version.trim().is_empty() {
         return Err(DfmError::Parameters("the model version must be recorded".into()));
     }

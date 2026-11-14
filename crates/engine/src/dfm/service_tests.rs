@@ -66,6 +66,16 @@ fn a_manual_check_without_ai_writes_a_report_that_inspect_reopens() {
     assert_eq!(findings["schemaVersion"], 2);
     assert_eq!(findings["runId"], run_id);
     assert!(findings["findings"].as_array().is_some_and(|rows| !rows.is_empty()), "the thickness gate is a finding");
+    assert!(
+        findings["rules"].as_array().is_some_and(|rows| rows.iter().any(|row| row["ruleId"] == "app.flat_no_overlap")),
+        "the App's flat self-overlap check runs in the same report"
+    );
+    assert!(
+        findings["findings"].as_array().is_some_and(|rows| rows
+            .iter()
+            .any(|row| row["rules"].as_array().is_some_and(|rules| rules.iter().any(|rule| rule == "app.flat_no_overlap")))),
+        "a flat-overlap result is part of the findings"
+    );
     assert!(report["summary"].as_str().is_some_and(|summary| summary.contains("Not checked")));
 
     // Reopening the project finds the same run and the same findings, with no AI connection.
