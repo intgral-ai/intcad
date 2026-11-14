@@ -52,8 +52,16 @@ const SLOW: [&str; 7] = [
 ];
 /// One in this many passes also gets the edit round.
 const EDIT_SAMPLE: u64 = 6;
-/// An action that takes longer than this is recorded as a timeout.
-const ACTION_TIMEOUT: Duration = Duration::from_secs(90);
+/// An action that takes longer than this is recorded as a timeout. The CI
+/// action-matrix job sets a higher value on loaded runners; a genuine hang still
+/// times out.
+fn action_timeout() -> Duration {
+    std::env::var("ACTION_MATRIX_ACTION_TIMEOUT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(90))
+}
 /// Building a design and listing its actions, before the first one runs: the biggest designs
 /// (oracle 41's tube with radial holes, about 25 s here) take several times that on a loaded CI
 /// runner, and a design that never loads loses all its actions, not one.
@@ -905,7 +913,7 @@ fn run_design(design: &str, out: &Path, sample: u64, slice: Option<(usize, usize
             if n != seen {
                 seen = n;
                 last_change = Instant::now();
-            } else if last_change.elapsed() > if seen == loaded_at { LOAD_TIMEOUT } else { ACTION_TIMEOUT } {
+            } else if last_change.elapsed() > if seen == loaded_at { LOAD_TIMEOUT } else { action_timeout() } {
                 let _ = child.kill();
                 let _ = child.wait();
                 break (None, true);
@@ -938,7 +946,7 @@ fn run_design(design: &str, out: &Path, sample: u64, slice: Option<(usize, usize
         // Which action was it? The child enumerates them; ask it by running from there with a
         // marker: simplest is to record the index and let the next run name it.
         extra.push(json!({"design": design, "index": i, "edit": in_edit, "kind": if timed_out { "timeout" } else { "crash" },
-                          "message": if timed_out { format!("no result after {} s", ACTION_TIMEOUT.as_secs()) } else { format!("the process ended: {status:?}") }}));
+                          "message": if timed_out { format!("no result after {} s", action_timeout().as_secs()) } else { format!("the process ended: {status:?}") }}));
         from = i as usize + 1;
     }
     // Name the actions that hung or crashed (their index in the design's list).
@@ -1082,7 +1090,7 @@ fn ratchet(results: &[Value], full: bool) {
         eprintln!(
             "{} actions that pass in the baseline ran past the {} s limit this time (not judged):\n{}",
             slow.len(),
-            ACTION_TIMEOUT.as_secs(),
+            action_timeout().as_secs(),
             slow.join("\n")
         );
     }

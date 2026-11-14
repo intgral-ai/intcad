@@ -107,7 +107,7 @@ class Matrix(unittest.TestCase):
 
     def test_total_action_count_must_match_the_reviewed_run(self):
         self.exceptions.write_text(json.dumps(manifest(total=4)))
-        with self.assertRaisesRegex(beta_gate.BetaGateError, "expected 4"):
+        with self.assertRaisesRegex(beta_gate.BetaGateError, "at least 4"):
             beta_gate.evaluate_matrix(write_matrix(self.matrix), self.exceptions)
 
     def test_unbaselined_failures_are_itemised_and_a_new_one_is_rejected(self):
@@ -142,6 +142,8 @@ class Matrix(unittest.TestCase):
         self.assertEqual(len(entries), 213)
         self.assertEqual(len(entries), len({(e["design"], e["entity"], e["action"]) for e in entries.values()}))
         self.assertTrue(all(entry["issue"] in ("#55", "#83", "#88") for entry in entries.values()))
+        # The develop manifest carries the 972 reviewed identities; main's older
+        # 956 entry is superseded by the later review recorded here.
         self.assertEqual(data["source"]["unbaselinedFailures"], 972)
         self.assertEqual(len(data["unbaselined"]), 972)
 

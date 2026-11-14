@@ -221,7 +221,9 @@ Pull requests skip a few heavy tests (each takes one to twelve minutes); they ru
   `cmd::plastic::tests::enclosure_snap_fit_follows_resized_front_wall`, the `atomic_commands` contract tests
 - `solidcraft-kernel`: `tests::boolean_identity_on_tangent_primitives`,
   `tspline::tests::hostile_tsplines_never_panic`, and the `boolean_props` property tests
-  (these run only in the nightly "Property tests" job: their inputs are random, so main skips them too)
+  (these run only in the nightly "Property tests" job: their inputs are random, so main skips them too;
+  the deterministic full suite excludes the randomized `boolean_props` and `atomic_commands` binaries
+  and leaves them to that job and its reviewed exception list)
 - `solidcraft-ui-egui` scenarios: `acceptance_sensor_enclosure`
 
 The **action matrix** (`apps/solidcraft-cli/tests/action_matrix.rs`) tries every ordinary action
