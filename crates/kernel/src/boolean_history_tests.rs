@@ -177,6 +177,12 @@ fn boxed(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> Body {
     box_solid(Vec3::new(x0, y0, z0), Vec3::new(x1, y1, z1)).unwrap()
 }
 
+/// A box whose six faces carry a construction role with `producer`, so planar sources can be
+/// followed through a boolean.
+fn certified_box(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64, producer: u64) -> Body {
+    boxed(x0, y0, z0, x1, y1, z1).with_box_certificate(producer).unwrap()
+}
+
 /// A short summary of a history for failure messages.
 fn show(h: &History) -> String {
     let faces: Vec<String> = h.faces.iter().enumerate().map(|(i, f)| format!("{i}: {:?} {:?}", f.change, f.origins)).collect();
@@ -329,6 +335,144 @@ fn a_cut_of_two_pieces_composes_the_pieces() {
     assert!(bites >= 2, "{}", show(h));
     let targets: BTreeSet<_> = h.faces.iter().flat_map(|f| &f.origins).filter(|o| matches!(o, FaceOrigin::Face { operand: 0, .. })).collect();
     assert_eq!(targets.len(), 12);
+}
+
+/// A body in three pieces, a tool meeting the first two: the meeting pieces union by lump and
+/// the third joins back. Every face and edge is over the body and the tool.
+#[test]
+fn a_union_meeting_two_pieces_of_three_keeps_the_third() {
+    let left = certified_box(0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 1);
+    let middle = certified_box(20.0, 0.0, 0.0, 30.0, 10.0, 10.0, 2);
+    let right = certified_box(40.0, 0.0, 0.0, 50.0, 10.0, 10.0, 3);
+    let a = crate::join_apart(&[left, middle, right]).unwrap().unwrap();
+    assert_eq!(a.shell_count(), 3);
+    let tool = certified_box(5.0, -1.0, 0.0, 25.0, 11.0, 10.0, 4);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert_eq!(r.shell_count(), 2);
+    let h = verified(&r, &[&a, &tool], 0.02);
+    let operands: BTreeSet<usize> = h
+        .faces
+        .iter()
+        .flat_map(|f| &f.origins)
+        .filter_map(|o| match *o {
+            FaceOrigin::Face { operand, .. } => Some(operand),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(operands, BTreeSet::from([0, 1]), "{}", show(h));
+    let sources = r.face_sources().expect("the by-lump union keeps face sources");
+    assert_eq!(sources.len(), r.face_count());
+    assert!(
+        sources.iter().flatten().any(|s| matches!(s, crate::FaceSource::Box { producer: Some(3), .. })),
+        "the third piece keeps its construction role"
+    );
+}
+
+/// A body in several pieces and a tool apart from all of them: every piece is kept, and the
+/// history is over the body and the tool.
+#[test]
+fn a_union_of_a_body_in_pieces_with_a_loose_tool_keeps_every_piece() {
+    let left = certified_box(0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 1);
+    let right = certified_box(20.0, 0.0, 0.0, 30.0, 10.0, 10.0, 2);
+    let a = crate::join_apart(&[left, right]).unwrap().unwrap();
+    let tool = certified_box(40.0, 0.0, 0.0, 50.0, 10.0, 10.0, 3);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert_eq!(r.shell_count(), 3);
+    let h = verified(&r, &[&a, &tool], 0.02);
+    let operands: BTreeSet<usize> = h
+        .faces
+        .iter()
+        .flat_map(|f| &f.origins)
+        .filter_map(|o| match *o {
+            FaceOrigin::Face { operand, .. } => Some(operand),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(operands, BTreeSet::from([0, 1]), "{}", show(h));
+    let sources = r.face_sources().expect("the all-apart union keeps face sources");
+    assert_eq!(sources.len(), r.face_count());
+    for producer in [2, 3] {
+        assert!(
+            sources.iter().flatten().any(|s| matches!(s, crate::FaceSource::Box { producer: Some(p), .. } if *p == producer)),
+            "piece {producer} keeps its construction role"
+        );
+    }
+}
+
+/// A tool whose box overlaps every lump but misses the inner lump in the cavity: the inner must
+/// be joined back, not nested or absorbed (the all-overlap trap).
+#[test]
+fn a_union_where_every_box_overlaps_but_the_tool_misses_the_inner_piece() {
+    let outer = boxed(0.0, 0.0, 0.0, 20.0, 20.0, 20.0);
+    let cavity = boxed(5.0, 5.0, 5.0, 15.0, 15.0, 15.0);
+    let hollow = boolean(&outer, &cavity, BoolOp::Cut).unwrap().unwrap();
+    assert_eq!(hollow.shell_count(), 2);
+    let inner = boxed(8.0, 8.0, 8.0, 12.0, 12.0, 12.0);
+    // The axis reaches (22, 10, 10) from (-1, 2, 2); at radius 0.5 it passes the wall but
+    // misses the inner box (no intersection volume).
+    let tool = crate::cylinder(Vec3::new(-1.0, 2.0, 2.0), Vec3::new(23.0, 8.0, 8.0), 0.5, 26.0).unwrap();
+    assert!(boolean(&inner, &tool, BoolOp::Intersect).unwrap().is_none());
+    let a = crate::join_apart(&[hollow, inner]).unwrap().unwrap();
+    assert_eq!(a.shell_count(), 3);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert!(r.validity().is_empty(), "{:?}", r.validity());
+    assert_eq!(r.shell_count(), 3);
+    let v = crate::measure(&r).unwrap().volume;
+    assert!((v - 7072.992405).abs() < 0.02, "{v}");
+    verified(&r, &[&a, &tool], 0.02);
+}
+
+/// The same boxes with a tool that does cut the inner: the exact union merges the shared sliver
+/// (0.042855 mm³) into one solid. A three-shell result here would join overlapping material.
+#[test]
+fn a_union_where_every_box_overlaps_and_the_tool_cuts_the_inner_piece() {
+    let outer = boxed(0.0, 0.0, 0.0, 20.0, 20.0, 20.0);
+    let cavity = boxed(5.0, 5.0, 5.0, 15.0, 15.0, 15.0);
+    let hollow = boolean(&outer, &cavity, BoolOp::Cut).unwrap().unwrap();
+    let inner = boxed(8.0, 8.0, 8.0, 12.0, 12.0, 12.0);
+    let tool = crate::cylinder(Vec3::new(-1.0, 2.0, 2.0), Vec3::new(22.0, 10.0, 10.0), 0.5, 26.0).unwrap();
+    let cut = boolean(&inner, &tool, BoolOp::Intersect).unwrap().unwrap();
+    assert!((crate::measure(&cut).unwrap().volume - 0.042854632).abs() < 1e-6);
+    let a = crate::join_apart(&[hollow, inner]).unwrap().unwrap();
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert!(r.validity().is_empty(), "{:?}", r.validity());
+    assert_eq!(r.shell_count(), 2);
+    let v = crate::measure(&r).unwrap().volume;
+    assert!((v - 7074.168083).abs() < 0.02, "{v}");
+    verified(&r, &[&a, &tool], 0.02);
+}
+
+/// A tool wholly inside one piece is absorbed by that piece's union, not joined as an
+/// overlapping separate solid (the reverse containment case).
+#[test]
+fn a_tool_inside_a_piece_of_a_multi_lump_body_is_absorbed() {
+    let big = certified_box(0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 1);
+    let small = certified_box(30.0, 0.0, 0.0, 40.0, 10.0, 10.0, 2);
+    let a = crate::join_apart(&[big, small]).unwrap().unwrap();
+    assert_eq!(a.shell_count(), 2);
+    let tool = certified_box(5.0, 5.0, 5.0, 6.0, 6.0, 6.0, 3);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert!(r.validity().is_empty(), "{:?}", r.validity());
+    assert_eq!(r.shell_count(), 2);
+    let v = crate::measure(&r).unwrap().volume;
+    assert!((v - 9000.0).abs() < 0.02, "{v}");
+    verified(&r, &[&a, &tool], 0.02);
+}
+
+/// A piece wholly inside the tool is absorbed by the tool's union (the forward containment
+/// case).
+#[test]
+fn a_piece_inside_the_tool_is_absorbed() {
+    let big = certified_box(0.0, 0.0, 0.0, 20.0, 20.0, 20.0, 1);
+    let small = certified_box(30.0, 0.0, 0.0, 40.0, 10.0, 10.0, 2);
+    let a = crate::join_apart(&[big, small]).unwrap().unwrap();
+    let tool = certified_box(25.0, -5.0, -5.0, 45.0, 15.0, 15.0, 3);
+    let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
+    assert!(r.validity().is_empty(), "{:?}", r.validity());
+    assert_eq!(r.shell_count(), 2);
+    let v = crate::measure(&r).unwrap().volume;
+    assert!((v - 16000.0).abs() < 0.02, "{v}");
+    verified(&r, &[&a, &tool], 0.02);
 }
 
 /// A boolean with a triangle mesh: the mesh's faces are its triangles (and it has no edges).

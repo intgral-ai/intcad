@@ -504,7 +504,7 @@ pub fn bind_at(app: &mut SolveApp, id: &str, slot: Option<usize>, key: &str, rep
     let canonical = if key.is_empty() { String::new() } else { canonical_key(key).ok_or("unknown shortcut key")? };
     let key = canonical.as_str();
     if RESERVED.contains(&key) {
-        return Err(format!("{key} is used by SolidCraft itself"));
+        return Err(format!("{key} is used by Intcad itself"));
     }
     let mut list = keys(app, id);
     if slot.is_some_and(|n| n >= list.len()) && list.len() >= MAX_KEYS {
@@ -789,7 +789,7 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
         Some((_, "done")) => stop_capture(app),
         Some((_, "export")) => {
             let text = crate::toolbar_custom::export(app).to_string();
-            app.pick_save("SolidCraft shortcuts.json", &["json"], move |app, path| {
+            app.pick_save("Intcad shortcuts.json", &["json"], move |app, path| {
                 if let Some(path) = path {
                     // Through `vfs`, like every other save: the web app hands it out as a download.
                     app.keymap.message = solidcraft_engine::io::vfs::write(&path, text.as_bytes()).err().map(|e| format!("export: {e}"));

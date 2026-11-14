@@ -188,7 +188,7 @@ fn read_drawing(p: &Value, cmd: &str, svg: bool) -> Result<(Vec<Geom2>, (Vec2, V
     let text = source_text(p, cmd, svg)?;
     let geom = if svg { solidcraft_io::read_svg(&text) } else { solidcraft_io::read_dxf(&text) }.map_err(|e| drawing_error(p, svg, e.to_string()))?;
     let Some(bounds) = bounds_of(&geom) else {
-        let why = if svg { solidcraft_io::svg_nothing_to_import(&text) } else { "the DXF has no entities SolidCraft reads".to_string() };
+        let why = if svg { solidcraft_io::svg_nothing_to_import(&text) } else { "the DXF has no entities Intcad reads".to_string() };
         return Err(drawing_error(p, svg, why));
     };
     Ok((geom, bounds))

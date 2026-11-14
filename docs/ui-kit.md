@@ -737,6 +737,20 @@ continues to own outer surface chrome and square dock contacts. Functional
 geometry (circles, model selection boxes, plot clipping, manipulator handles
 and the artwork inside icons) retains its own shape.
 
+### Theme scroll bars
+
+`solidcraft-theme/1` optionally accepts `scrollbar`: `width` and `opacity` for the handle
+while the pointer is over a scrolling area, `hover_width` and `hover_opacity` while the pointer
+is on the handle (widths finite, 1–16 logical UI points; opacities finite, 0–1; all four or
+none). `Tokens::scrollbar` carries the parsed settings and `theme::apply` turns them into
+egui's scroll style: a floating handle in the ink colour, no track, no room taken from the
+content. A theme without the object keeps egui's standard scroll bars, and applying such a
+theme after one with the object restores them. Overlays do not change scroll bars. Imports and
+direct preference updates refuse unknown settings and values out of range; a hand-edited saved
+table that cannot be read falls back to the standard scroll bars. Black is the built-in theme
+that sets it. Feature code keeps calling `egui::ScrollArea` and reads no scroll bar setting
+of its own.
+
 ## Theme border hierarchy
 
 Three structural levels distinguish outer chrome, major section rules and minor dividers.

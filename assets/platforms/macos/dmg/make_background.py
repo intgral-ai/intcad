@@ -114,7 +114,7 @@ def draw_sheet():
         d.line([(px(t), px(H - 15)), (px(t), px(H - 10))], fill=(*LINE, 255), width=px(0.8))
 
     # Title, top left. The left icon's centre line sits to its right and starts below it.
-    text(d, (30, 24), "open-skyfall", sans(20, 600), (*LINE, 255))
+    text(d, (30, 24), "Intcad", sans(20, 600), (*LINE, 255))
     text(d, (31, 49), "PARAMETRIC 3D CAD", mono(7), (*PALE, 255), tracking=0.9)
 
     # A circle round each icon, with centre lines that stop short of circles, plates and text.

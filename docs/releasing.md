@@ -21,17 +21,50 @@ versions with `cargo update --workspace --offline`, and folds pending formats wi
 This page does not authorize making those changes now.
 
 Record the **final tested checkout SHA**, not just a branch, tag or version. The
-release gate runs on the main-target PR merge SHA or main merge-group SHA, and can
-also be called manually or by a reusable workflow. An authorized later manual run
-must select the exact reviewed source. A run on another SHA cannot satisfy main's
-required check. No workflow here changes branch protection/settings.
+release gate runs on the main-target PR merge SHA or main merge-group SHA. A
+manual dispatch checks out the selected ref and creates the diagnostic
+`release-gate-diagnostic` context, not the required `release-gate`; it cannot
+satisfy main's required check. No workflow here changes branch protection/settings.
 
-If promotion, conflict resolution or a base update changes that SHA, **rebuild all
-packages and rerun all required validation at the new final SHA**. Do not relabel
-old inventories, receipts or artifacts, move a tag, or claim that equal trees make
-different source revisions interchangeable. Reconcile main back to develop with
-a checked merge commit after promotion; clean up the temporary release branch only
-after both histories are preserved.
+If promotion, conflict resolution or a **base-branch update** changes that merge
+SHA, **rebuild all packages and rerun all required validation at the new merge
+SHA**. The check run is attached to the PR head SHA, while the plan, receipts and
+package descriptors bind the merge SHA. When the base advances, strict up-to-date
+reports the PR as behind and blocks merge even if the old check still shows green;
+this was verified on a temporary docs-only probe (PR #116, `mergeStateStatus:
+BEHIND`). Update the candidate branch, which creates a new head; the old check no
+longer covers that head. Draft→ready alone does **not** merge the new base, so it
+does not clear the behind state. If the new base is already reachable from the
+head, there is no new base content to merge; the head-bound check still covers the
+same head tree. Do not relabel old inventories, receipts or artifacts, move a tag,
+or claim that equal trees make different source revisions interchangeable.
+Reconcile main back to develop with a checked merge commit after promotion; clean
+up the temporary release branch only after both histories are preserved.
+
+## Candidate preparation and explicit verification
+
+The release gate is started by an explicit candidate transition, not by every
+push. Keep the promotion PR draft while preparing. Its direct affected `ci` lane
+still runs on preparation commits; the full `release-gate` does not start.
+
+Mark the PR ready when the candidate is fixed. Opening an already-ready PR,
+reopening it while ready, or `ready_for_review` starts the full gate on that
+candidate. If a commit is added afterwards, the new SHA has no release-gate
+result; the old result is not reused. Convert the PR back to draft and ready again
+to verify the new SHA. A manual dispatch is diagnostic only: its
+`release-gate-diagnostic` context cannot satisfy the required check.
+
+A draft or intermediate run still reports the required `release-gate` name, but
+the job fails with "release gate not started". It never reports success, so it
+cannot satisfy the required context by accident. The later ready run for the same
+SHA is the latest check and is the one the merge evaluates. A superseded
+candidate's old check stays on its old SHA and cannot authorize the new one. Do
+not cancel another task's running CI.
+
+The full flow is: prepare with affected checks -> fix the candidate SHA -> start
+the gate -> read the recorded failure and repair the smallest affected input ->
+start the next full gate at the new SHA -> publish only after the required
+`release-gate` succeeds. See [validation policy](validation-policy.md).
 
 ## What runs without publishing
 
@@ -64,11 +97,80 @@ after both histories are preserved.
 Do not start a network-enabled desktop to smoke-test a release build. The existing
 CLI/version, archive, installer and icon checks remain. Flatpak keeps its actual
 desktop modelling smoke **inside its existing network-denying sandbox**, with no
-network override. Snap's desktop smoke is not invoked: it shares the host network
-and has no supported updater-off switch. The CLI/package checks remain; the
-missing safe installed desktop/runtime acceptance is explicitly blocking, not a
-skipped successful requirement. Other package desktop `--version` calls exit
-before UI/updater startup; do not replace them with a normal app launch.
+network override, and that smoke now also opens the Assistant and fails unless its
+page reported in. Snap's desktop smoke is still not invoked: a strict snap uses the
+host network, so the step cannot take the network away. The snap step instead checks
+that the connected gnome-46-2404 content snap contains GTK 3 and WebKitGTK 4.1; the
+Assistant's page there remains a hardware/manual check (`packaging/linux/snap-smoke.py`).
+The CLI/package checks remain; the missing safe installed desktop/runtime acceptance is
+explicitly blocking, not a skipped successful requirement. Other package desktop
+`--version` calls exit before UI/updater startup; do not replace them with a normal app
+launch.
+
+### Installed checks of the deb, rpm, AppImage, disk image and MSI
+
+The Assistant's interface is a web view, so the app needs the system's GTK 3 and
+WebKitGTK 4.1 on Linux and uses the WebView2 runtime on Windows. A build tree, or
+the machine that built a package, cannot show that a package brings what the app
+needs. These steps install each package as a user would and open the Assistant in
+the installed app, **with the network taken away from the app** in every case,
+and with its update check off as well (`SOLIDCRAFT_UPDATE_CHECK=0`):
+
+- **Linux** (`packaging/linux/installed-check.sh`): the deb on bare Ubuntu 22.04,
+  Ubuntu 24.04 and Debian 13 containers and the rpm on a bare Fedora container,
+  installed with nothing but what each declares, where the app's file must find
+  every library it names. The AppImage brings no system libraries: on a bare
+  system its launcher must name the missing ones, then they are installed. The
+  package and the test's tools are installed in one container; the app is started
+  only in a second one made from it with `--network none`, which first shows that
+  it reaches nothing. One run is in a Wayland session (sway, with XWayland).
+- **macOS**: the app is copied out of the disk image and started under
+  `packaging/macos/no-network.sb`, a sandbox profile that leaves only this
+  machine's own address; the step first shows that the profile stops `curl`. The
+  runner's download carries no quarantine mark, so **Gatekeeper is not exercised**:
+  an ad-hoc signature does not pass it on a user's Mac.
+- **Windows** (`packaging/windows/installed-check.ps1`): the MSI is installed for
+  the machine, the installed `solidcraft.exe` must be byte for byte the one the job
+  built, the firewall blocks it and the WebView2 runtime's processes from reaching
+  out (a copy of `curl.exe` under the same kind of rule shows the block holds),
+  `tools/windows-assistant-smoke.ps1` runs against the installed app, and the MSI
+  is removed again. The arm64 MSI is built but cannot run on the x64 runner. The
+  32-bit MSI is installed, compared and removed, and its app is **not started**: on
+  a runner the installed 32-bit app showed no window within three minutes, before
+  the Assistant was opened (run 43112420636). No 32-bit build had been started in
+  CI before, and the cause is not known; the step writes this into the job summary.
+
+The page those apps show is itself a build output that is checked in
+(`packages/assistant-web/dist`, so that the app builds without Node). The job
+`Assistant page` of `packaging-lint.yml` builds it again from a fresh clone of the
+pinned Mastra commit (`packages/assistant-web/tools/build.mjs --check`) and fails
+unless the page, the list of what went into it (`inventory.json`) and its third-party
+notices (`THIRD-PARTY-NOTICES.txt`) are what is checked in, byte for byte. The build
+refuses any file under one of Mastra's enterprise-licensed `ee/` directories and any
+npm package with an unreviewed licence. The deb, rpm, tarball, disk image, MSI and
+portable zip carry the notices as `ASSISTANT-THIRD-PARTY-NOTICES.txt`, and the app
+carries them built in (Help > About > Licences), which is what an AppImage or a
+single downloaded executable has. That list and those notices are what a build tool
+found and what the packages state about themselves, **not** a rights clearance.
+
+`packaging/assistant-check.py` is the check itself on Linux and macOS: the panel
+opens, the page loads and reports in, the app quits with exit code 0 and leaves no
+crash report. Logs and pictures are uploaded as `installed-check-*` artifacts and
+are **not** release evidence: #14's installed-runtime acceptance, signatures and
+notarization stay open.
+
+The deb and rpm declare the Assistant's GTK 3 and WebKitGTK 4.1 and their installed
+checks open the page without a network. The Flatpak step opens the same page check
+inside its sandbox (the GNOME 51 runtime supplies both libraries). The Snap stages
+neither, because its core24 gnome extension (gnome-46-2404) already supplies both;
+the release job verifies they are present in the mounted content snap, but does not
+start the desktop. The Arch package is built by an external action whose fixed
+`depends` list omits the two libraries, so the job adds `gtk3` and `webkit2gtk-4.1`
+to `.PKGINFO` and fails unless both are there; it does not start the app. Not covered
+by a run here: the tarball, Nix, an Assistant launch from Snap or Arch, a real GPU,
+and any machine with a person in front of it. The deb, rpm, AppImage, macOS and
+Flatpak steps above are the page runs in this workflow; Snap and Arch get
+package/library checks only.
 
 Docker keeps a local image build and HTTP smoke test (`push: false`). Pages keeps
 the book/web build and offline browser test as an ordinary Actions artifact, with

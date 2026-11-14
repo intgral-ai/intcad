@@ -593,7 +593,8 @@ fn anthropic_reply(body: &Value) -> Reply {
 
 // Both native callers use the same worker-owned current-key and physical-admission path.
 pub(in crate::agent_chat) use invocation::{
-    ProviderCall, ProviderReply, ProviderState, ProviderToolCall, capabilities, invoke_once, project_strict_reply, validate_options,
+    ProviderCall, ProviderReply, ProviderState, ProviderToolCall, capabilities, invoke_once, invoke_stream, project_strict_reply,
+    streaming_supported, validate_options,
 };
 
 mod invocation {
@@ -606,7 +607,7 @@ mod invocation {
     use super::super::types::{FinishReason, Usage};
     use super::super::{AiError, CallControl, ConnectionBinding, HostAiDependencies, ModelCallBudget};
     use super::*;
-    use crate::agent_chat::backend::HttpRequest;
+    use crate::agent_chat::backend::{HttpRequest, StreamCancellation};
 
     pub(crate) struct ProviderCall {
         pub wire: WireProtocol,
@@ -740,6 +741,269 @@ mod invocation {
             ResponseError::Resource(resource, limit) => AiError::exhausted(resource, limit),
             ResponseError::Model => AiError::model_failed(),
         }
+    }
+
+    /// Streaming is verified only for the wire/providers named by the design. Everything else
+    /// starts buffered; that is not a retry and consumes no second model call.
+    pub(in crate::agent_chat) fn streaming_supported(binding: &ConnectionBinding) -> bool {
+        if binding.protocol() == Protocol::OpenAi && go::is_opencode_go(&binding.configuration().base_url) {
+            return false;
+        }
+        match binding.protocol() {
+            Protocol::Anthropic => true,
+            Protocol::OpenAi => {
+                let url = binding.configuration().base_url.to_ascii_lowercase();
+                url.contains("api.openai.com") || url.contains("api.deepseek.com")
+            }
+        }
+    }
+
+    fn stream_assistant(wire: WireProtocol, text: &[(bool, String)], calls: &[ProviderToolCall]) -> Value {
+        match wire {
+            WireProtocol::Chat => {
+                let content: String = text.iter().filter(|(thought, _)| !*thought).map(|(_, text)| text.as_str()).collect();
+                let tool_calls: Vec<Value> = calls
+                    .iter()
+                    .map(|call| {
+                        let arguments =
+                            call.arguments.as_ref().map(|object| Value::Object(object.clone()).to_string()).unwrap_or_else(|_| "{}".into());
+                        json!({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": arguments}})
+                    })
+                    .collect();
+                let mut message = json!({"role": "assistant", "content": if content.is_empty() { Value::Null } else { json!(content) }});
+                if !tool_calls.is_empty() {
+                    message["tool_calls"] = Value::Array(tool_calls);
+                }
+                message
+            }
+            WireProtocol::Messages => {
+                let mut content = Vec::new();
+                let body: String = text.iter().filter(|(thought, _)| !*thought).map(|(_, text)| text.as_str()).collect();
+                if !body.is_empty() {
+                    content.push(json!({"type": "text", "text": body}));
+                }
+                for call in calls {
+                    let input = call.arguments.as_ref().map(|object| Value::Object(object.clone())).unwrap_or_else(|_| json!({}));
+                    content.push(json!({"type": "tool_use", "id": call.id, "name": call.name, "input": input}));
+                }
+                json!({"role": "assistant", "content": content})
+            }
+            WireProtocol::Responses | WireProtocol::Gemini => json!({"role": "assistant", "content": ""}),
+        }
+    }
+
+    fn stream_finish(reason: &str) -> FinishReason {
+        match reason {
+            "stop" | "end_turn" | "stop_sequence" => FinishReason::Stop,
+            "tool_calls" | "tool_use" => FinishReason::ToolCalls,
+            "length" | "max_tokens" => FinishReason::Length,
+            "refusal" => FinishReason::Refusal,
+            _ => FinishReason::Unknown,
+        }
+    }
+
+    /// Open one physical streaming call. `Ok(None)` means the response was not an SSE stream and
+    /// nothing has been emitted or executed, so the caller may make its one buffered attempt.
+    pub(in crate::agent_chat) fn invoke_stream(
+        deps: &HostAiDependencies,
+        binding: &ConnectionBinding,
+        call: ProviderCall,
+        control: &Arc<CallControl>,
+        deadline: Duration,
+        on_text: &mut dyn FnMut(bool, &str) -> Result<String, AiError>,
+        on_flush: &mut dyn FnMut(bool) -> Result<String, AiError>,
+    ) -> Result<Option<ProviderReply>, AiError> {
+        use super::super::stream::{Parsed, StreamLimits, StreamReader, join_managed};
+        use std::io::Read;
+        use std::thread;
+
+        let Some(stream) = deps.shared.stream() else { return Ok(None) };
+        control.check((deps.clock)(), deadline)?;
+        deps.shared.connections().resolve(binding)?;
+        if call.timeout_seconds == 0 {
+            return Err(AiError::invalid("timeout_seconds"));
+        }
+        if !matches!(call.wire, WireProtocol::Chat | WireProtocol::Messages) || !streaming_supported(binding) {
+            return Ok(None);
+        }
+        validate_call_options(call.wire, call.max_output_tokens, call.temperature, call.reasoning_effort.as_deref())?;
+        let permit = deps.shared.http.try_acquire(binding.connection_id(), call.http_per_connection as usize, call.http_per_host as usize)?;
+        let shared = Arc::clone(&deps.shared);
+        let binding = binding.clone();
+        let secrets = deps.secrets.clone();
+        let clock = Arc::clone(&deps.clock);
+        let worker_control = Arc::clone(control);
+
+        worker_control.check(clock(), deadline)?;
+        let connection = shared.connections().resolve(&binding)?;
+        let key = resolve_secret(&connection, secrets.as_deref())?;
+        worker_control.check(clock(), deadline)?;
+        let current = shared.connections().resolve(&binding)?;
+        let key = if current.configuration().key { key } else { None };
+        if current.configuration().key && key.is_none() {
+            return Err(AiError::auth_required());
+        }
+        let key_text = key.as_ref().map(|key| key.as_str());
+        let config = current.configuration();
+        let url = request_url(&config.base_url, binding.model_id(), call.wire, false);
+        if key_text.is_some() && !crate::agent_chat::agents::key_safe_for(&url) {
+            return Err(AiError::invalid("base_url"));
+        }
+        let mut body = request_body(RequestParts {
+            wire: call.wire,
+            model: binding.model_id(),
+            system: &call.system,
+            history: &call.history,
+            tools: &call.tools,
+            go: false,
+            signatures: &call.private.gemini_signatures,
+            max_output_tokens: call.max_output_tokens,
+            temperature: call.temperature,
+            reasoning_effort: call.reasoning_effort.as_deref(),
+        });
+        body["stream"] = json!(true);
+        if call.wire == WireProtocol::Chat {
+            body["stream_options"] = json!({"include_usage": true});
+        }
+        let mut headers = request_headers(false, call.wire, key_text, &call.private.routing_session_id);
+        headers.push(("Accept".into(), "text/event-stream".into()));
+        let mut req = HttpRequest { method: "POST", url, headers, body: Some(body.to_string().into_bytes()), timeout_s: call.timeout_seconds };
+        worker_control.while_active(clock(), deadline, || {
+            let latest = shared.connections().resolve(&binding)?;
+            if !latest.configuration().key {
+                // The key policy changed after resolution: never send the credential.
+                req.headers.retain(|(name, _)| name != "Authorization" && name != "x-api-key");
+            } else if key_text.is_none() {
+                return Err(AiError::auth_required());
+            }
+            if let Some(budget) = &call.model_budget {
+                budget.debit()?;
+            }
+            Ok(())
+        })?;
+        // The connect/headers phase is cancellable: the request runs on a managed thread and the
+        // worker polls the turn while it waits. The permit stays with the physical thread.
+        let cancellation = Arc::new(StreamCancellation::default());
+        // The physical permit stays with this invocation (including the reader lifetime), not
+        // with the short connect worker, so admission is not released while streaming continues.
+        let _physical_permit = permit;
+        let request_cancel = Arc::clone(&cancellation);
+        let (response_tx, response_rx) = mpsc::channel();
+        let request = thread::Builder::new()
+            .name("solidcraft-ai-stream-connect".into())
+            .spawn(move || {
+                let _ = response_tx.send(stream(&req, &request_cancel));
+            })
+            .map_err(|_| AiError::internal("stream_connect_spawn"))?;
+        let mut connected = None;
+        let connect = loop {
+            if let Err(error) = worker_control.check(clock(), deadline) {
+                break Err(error);
+            }
+            match response_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(result) => {
+                    connected = Some(result);
+                    break Ok(());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break Err(AiError::internal("stream_connect_worker")),
+            }
+        };
+        if connect.is_err() {
+            cancellation.cancel();
+        }
+        join_managed(request, "stream_connect_exit")?;
+        connect?;
+        let response = connected
+            .ok_or_else(|| AiError::internal("stream_connect_worker"))?
+            .map_err(|error| if error == "timeout: global" { AiError::timeout() } else { AiError::transport() })?;
+        if !(200..300).contains(&response.status) {
+            let mut reader = response.reader;
+            let mut bytes = Vec::new();
+            let _ = reader.by_ref().take(64 << 10).read_to_end(&mut bytes);
+            let error_body = parse_response(&bytes).unwrap_or(Value::Null);
+            if key_text.is_some_and(|key| contains_secret(&error_body, key)) {
+                return Err(AiError::malformed());
+            }
+            let detail = error_body.pointer("/error/message").or_else(|| error_body.get("error")).and_then(Value::as_str).unwrap_or("");
+            let lower = detail.to_ascii_lowercase();
+            let reasoning = response.status == 400 && detail.contains("reasoning_effort");
+            let next_go = lower.contains("does not support this protocol") || (response.status == 401 && lower.contains("credential"));
+            return Err(AiError::provider_status(binding.connection_id(), response.status, authentication_error(response.status, &error_body))
+                .with_compatibility(reasoning, next_go));
+        }
+        let sse = response.content_type.as_deref().is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
+        if !sse {
+            // A 2xx non-SSE answer made no output. The caller decides on the one allowed fallback.
+            drop(response.reader);
+            return Ok(None);
+        }
+        let mut reader = StreamReader::spawn(response.reader, call.wire, StreamLimits::default());
+        let mut text: Vec<(bool, String)> = Vec::new();
+        let mut finished = None;
+        let result = (|| {
+            loop {
+                worker_control.check(clock(), deadline)?;
+                match reader.recv_timeout(Duration::from_millis(50)) {
+                    Ok(Parsed::Text { thought, text: raw }) => {
+                        let redacted = on_text(thought, &raw)?;
+                        if !redacted.is_empty() {
+                            text.push((thought, redacted));
+                        }
+                    }
+                    Ok(Parsed::Finished(reply)) => {
+                        finished = Some(reply);
+                        return Ok(());
+                    }
+                    Ok(Parsed::Error(error)) => return Err(error),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if let Some(error) = reader.failure() {
+                            return Err(error);
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(reader.failure().unwrap_or_else(AiError::malformed));
+                    }
+                }
+            }
+        })();
+        cancellation.cancel();
+        reader.shutdown()?;
+        result?;
+        let finished = finished.ok_or_else(AiError::malformed)?;
+        if key_text
+            .is_some_and(|key| finished.calls.iter().any(|call| call.raw_arguments.contains(key) || call.id.contains(key) || call.name.contains(key)))
+        {
+            return Err(AiError::malformed());
+        }
+        let calls: Vec<ProviderToolCall> = finished
+            .calls
+            .into_iter()
+            .map(|call| ProviderToolCall {
+                id: call.id,
+                name: call.name,
+                arguments: call.arguments.and_then(|value| match value {
+                    Value::Object(object) => Ok(object),
+                    _ => Err(ToolArgumentError::NotObject),
+                }),
+            })
+            .collect();
+        // A possible key prefix stays withheld across tool rounds and history messages; only a
+        // final round (no tool calls) resolves and flushes it. A non-secret tail was already
+        // emitted by the rolling redactor.
+        if calls.is_empty() {
+            let thought = text.last().is_some_and(|(thought, _)| *thought);
+            let tail = on_flush(true)?;
+            if !tail.is_empty() {
+                text.push((thought, tail));
+            }
+        }
+        let assistant = stream_assistant(call.wire, &text, &calls);
+        if key_text.is_some_and(|key| contains_secret(&assistant, key) || text.iter().any(|(_, text)| text.contains(key))) {
+            return Err(AiError::malformed());
+        }
+        let usage = finished.usage.map(|[input_tokens, output_tokens, total_tokens]| Usage { input_tokens, output_tokens, total_tokens });
+        Ok(Some(ProviderReply { text, assistant, finish_reason: stream_finish(&finished.finish), usage, private: call.private, calls }))
     }
 
     fn bounded_calls(wire: WireProtocol, body: &Value, cut: bool) -> Result<Vec<Option<ToolArgumentError>>, AiError> {

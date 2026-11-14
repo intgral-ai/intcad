@@ -1,22 +1,22 @@
-# open-skyfall: instructions for agents
+# Intcad: instructions for agents
 
-open-skyfall: independent Rust/wasm CAD; desktop-only Mastra distribution exception below. Humans: CONTRIBUTING.md.
+Intcad: independent Rust/wasm CAD; desktop-only Mastra distribution exception below. Humans: CONTRIBUTING.md.
 
 ## Start here
-Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelled `help wanted`, `good first issue`, `needs-triage`; architecture in `docs/architecture.md`. Act when the code, docs and rules settle a question; ask only when it changes what users see. Local `plan/` notes are optional.
+Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelled `help wanted`, `good first issue`, `needs-triage`; architecture in `docs/architecture.md`. Act when code, docs and rules settle it; ask only when user-visible.
 
 ## Hard rules (what enforces each)
 - Independent: no other-product code/icons/text/templates or commercial CAD automation/data; scoped intgral-ai code only per `skills/solidcraft-ground-rules/SKILL.md`.
-- No GPL/LGPL/AGPL reading/copying/linking (OpenCASCADE, FreeCAD, SolveSpace, CadQuery, LibreCAD, QCAD). `cargo xtask licences --check`: Cargo inventory, not npm/Node or rights clearance.
+- No GPL/LGPL/AGPL reading/copying/linking (OpenCASCADE, FreeCAD, SolveSpace, CadQuery, LibreCAD, QCAD) except system GTK/WebKitGTK. `cargo xtask licences --check`: Cargo only, not npm/Node or rights clearance.
 - Every asset is original or openly licensed with a row in ATTRIBUTION.md; read `assets/AGENTS.md` before icon work: `cargo xtask assets`, `cargo xtask icons`.
 - Never crash: no unwrap/expect/panic/unsafe in non-test code (unsafe allowlist in crash-safety), errors are `Result`, input is hostile: clippy `-D warnings`, `hostile_params_never_panic`.
-- Model decisions (what an operation does, which bodies it touches, which face or edge a point or name means, depths, nearness) use exact geometry; a mesh is for display, export, previews and mesh bodies (`xtask/mesh-decisions.txt` only shrinks): `cargo xtask mesh-decisions`.
+- Model decisions (operation, bodies, face/edge naming, depths, nearness) use exact geometry; a mesh is for display, export, previews and mesh bodies (`xtask/mesh-decisions.txt` only shrinks): `cargo xtask mesh-decisions`.
 - New kernel cases go to solidcore: `cargo xtask lists`.
 - Everything is a command and programmatic calls never open dialogs: `skills/solidcraft-commands/SKILL.md`.
 - Layering (geom, sketch/kernel/render, doc, io, engine, ui-egui, apps); only `crates/kernel` uses truck: `cargo xtask layers`.
 - One outer UI container, one camera path (`navigation::handle`), colours from theme tokens: `cargo xtask ui-containers`.
 - App/host/core stay Rust/wasm. Only opt-in desktop packages/mastra-runtime/ permits TS; no web Node/runtime. `cargo xtask wasm`, `cargo xtask web-offline-test`; packaging skill below.
-- Name: **open-skyfall**; `solidcraft` internals stay (`docs/compatibility.md`).
+- Name: **Intcad**; `solidcraft` internals stay (`docs/compatibility.md`).
 - Sorted lists (message catalogs, `mod` lines, languages) stay sorted: `cargo xtask lists`. Never edit generated files (`docs/features.md`, `THIRD-PARTY-LICENSES.txt`) in a PR.
 - A design-format change is ONE new file in `crates/doc/src/format/pending/`: `scripts/test-format-pending.sh`.
 - A command has schemas (will become required; `crates/engine/src/schema/unconverted.txt` only shrinks): `skills/solidcraft-commands/SKILL.md`.
@@ -24,9 +24,9 @@ Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelle
 - A changed default keeps the old behaviour behind a preference and fills the PR's `Changes a default:` line, and no second PR for an issue a lower-numbered one closes: `pr-checks.yml`.
 - A regression test goes in the area's existing test file, never a per-bug file (#3226).
 - Look at open PRs first, claim with a draft PR (lowest number wins), one topic per PR, never force-push `main`, no pushes just to catch up with `main`: `skills/solidcraft-contributing/SKILL.md`.
-- A PR's title and first sentence make sense to someone who never saw your chat or the issue: `skills/solidcraft-contributing/SKILL.md`.
+- A PR title and first sentence make sense to someone new to the issue: `skills/solidcraft-contributing/SKILL.md`.
 - Show observable changes with real screenshots or a recording, captured yourself.
-- Run `cargo xtask ci` before every commit, without switching branches while it runs. `cargo xtask skills` keeps this file and `skills/` honest.
+- Validation: [docs/validation-policy.md](docs/validation-policy.md) — run area checks, reuse unchanged inputs, rerun after changes; never claim unrun checks pass. `cargo xtask skills` keeps this file and `skills/` honest.
 
 ## Working on X: read the skill first
 | Working on | Read |

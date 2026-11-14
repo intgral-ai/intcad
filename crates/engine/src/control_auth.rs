@@ -168,9 +168,9 @@ impl ClientToken {
         let path = src.path.display();
         match src.writer.filter(|(pid, start)| writer_exited(*pid, *start)) {
             Some((pid, _)) => format!(
-                "{error}; stale token file from an instance that exited (process {pid}): {path}, written {written}{age}; delete that file or restart SolidCraft"
+                "{error}; stale token file from an instance that exited (process {pid}): {path}, written {written}{age}; delete that file or restart Intcad"
             ),
-            None => format!("{error}; token from {path}, written {written}{age}; if SolidCraft was force-quit, restart it or delete that file"),
+            None => format!("{error}; token from {path}, written {written}{age}; if Intcad was force-quit, restart it or delete that file"),
         }
     }
 }

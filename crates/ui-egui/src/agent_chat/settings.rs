@@ -544,6 +544,7 @@ fn connecting_section(app: &mut SolveApp, ui: &mut egui::Ui) {
             ("ai.prefs.background_commands", "ui.agent_off_thread_note", "agent_off_thread", &mut app.preferences.agent_off_thread),
             ("ai.prefs.connect_at_start", "ai.prefs.connect_at_start_note", "agent_connect_at_start", &mut app.preferences.agent_connect_at_start),
             ("ai.prefs.open_at_start", "ai.prefs.open_at_start_note", "agent_chat_open_at_start", &mut app.preferences.agent_chat_open_at_start),
+            ("ai.prefs.direct_streaming", "ai.prefs.direct_streaming_note", "agent_direct_streaming", &mut app.preferences.agent_direct_streaming),
         ] {
             ui.horizontal(|ui| {
                 let response = ui_kit::checkbox(ui, tr(label), value).backing_on_hover_text(tr(help));
@@ -645,15 +646,21 @@ fn panel_section(app: &mut SolveApp, ui: &mut egui::Ui) {
             .fold(0.0, f32::max);
         ui_kit::settings_form(ui, label_width, |ui| {
             ui_kit::row(ui, tr("ui.agent_chat_side"), |ui| {
+                // The Assistant stays in the app's window: there is no window of its own to pick.
                 let p = &mut app.preferences;
-                let mut selected = if p.agent_chat_popped { 2 } else { usize::from(p.agent_chat_side != "left") };
-                let options = [tr("ui.agent_chat_left"), tr("ui.agent_chat_right"), tr("ui.agent_chat_own_window")];
+                let mut selected = usize::from(p.agent_chat_side != "left");
+                let options = [tr("ui.agent_chat_left"), tr("ui.agent_chat_right")];
                 if ui_kit::segmented(ui, &mut selected, &options, ui_kit::Segments { intrinsic: true, ..Default::default() }) {
-                    p.agent_chat_popped = selected == 2;
-                    if selected < 2 {
-                        p.agent_chat_side = if selected == 0 { "left" } else { "right" }.into();
-                    }
+                    p.agent_chat_side = if selected == 0 { "left" } else { "right" }.into();
                 }
+            });
+            // What is selected goes with each message unless this is off (the composer's own
+            // Attach selection is this same setting).
+            ui_kit::row(ui, "", |ui| {
+                let response = ui_kit::checkbox(ui, tr("ui.agent_chat_attach_selection"), &mut app.preferences.agent_chat_attach_selection)
+                    .backing_on_hover_text(tr("ui.agent_chat_attach_selection_tip"));
+                crate::scenario::publish_handle("prefs:agent_chat_attach_selection", response.rect.center());
+                ui_kit::help_icon(ui, tr("ui.agent_chat_attach_selection_tip"));
             });
             ui_kit::row(ui, tr("ui.agent_chat_turn_limit"), |ui| {
                 let p = &mut app.preferences;
@@ -1906,7 +1913,7 @@ mod card_tests {
     fn model_warning_only_for_explicitly_missing_tools() {
         assert_eq!(
             capability_warning("local:4b", Some(false)).as_deref(),
-            Some("local:4b can't use open-skyfall's tools, so it can only chat. Pick a model with tool support.")
+            Some("local:4b can't use Intcad's tools, so it can only chat. Pick a model with tool support.")
         );
         assert_eq!(capability_warning("local:4b", Some(true)), None);
         assert_eq!(capability_warning("local:4b", None), None);

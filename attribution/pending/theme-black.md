@@ -1,0 +1,1 @@
+| assets/styles/ui/themes/black.json | Intgral | original Intcad theme file adapting the dark colours, edge strengths and corner radii of a published palette (the design tokens of Mastra's playground-ui by Mastra AI, https://github.com/mastra-ai/mastra, Apache-2.0) | MIT OR Apache-2.0 |

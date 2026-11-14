@@ -51,7 +51,7 @@ cargo xtask test                                   # unit, engine and UI-scenari
 cargo xtask ci                                     # everything a PR must pass (see below)
 ```
 
-The displayed product name is `open-skyfall`. The repository, Cargo packages and executables
+The displayed product name is `Intcad`. The repository, Cargo packages and executables
 keep the `solidcraft` name, and so do the `.sc`/`solidcraft/N` format, `SOLIDCRAFT_*`
 variables, settings folders, app IDs and the MCP server, so existing designs and scripts keep
 working. Build the desktop app with `cargo build --release -p solidcraft`, or the CLI with
@@ -131,7 +131,12 @@ The [architecture page](docs/architecture.md) has the layer table. The short ver
    MIT OR Apache-2.0, and its solver and blends are written from the maths. (Running an
    open-source application to get reference values for a test is fine; reading its source is
    not.) Permissive
-   dependencies are fine. Note which one you're adding and why in the PR. THIRD-PARTY-LICENSES.txt
+   dependencies are fine. One narrow exception exists for the desktop web view only:
+   the app dynamically links the system's unmodified GTK 3 and WebKitGTK 4.1 (LGPL/BSD)
+   through the `wry`, `gtk` and `webkit2gtk` Rust crates, with notices and licence text
+   shipped (`docs/web-view-licences.md`). Never copy, vendor, statically link, modify or
+   patch them, and the exception never extends to a CAD kernel, solver, geometry or UI
+   library. Note which one you're adding and why in the PR. THIRD-PARTY-LICENSES.txt
    lists it once the change lands: in this fork the Generated files workflow runs on
    `develop` and opens a draft PR to `develop`.
    `cargo xtask licences --check` inventories Cargo crates (and bundled font notices),
@@ -186,6 +191,20 @@ idea adds its term there.
 the most complete description of the house style.
 
 ## Tests
+
+The authoritative rule for how much to run, and when a previous result may be
+reused, is [docs/validation-policy.md](docs/validation-policy.md). During
+iteration run the checks for the changed area; before a PR run the selected
+repository checks and record the exact commands and results. `cargo xtask ci`
+is the full local gate when the environment can run it. It does not replace the
+affected CI lane, the nightly heavy suite or the fixed-SHA release gate.
+
+A new or changed test states the behaviour or historical failure it protects and
+why the existing tests are insufficient; reuse an existing test when it already
+covers the change. Use the cheapest layer that proves the behaviour, and explain
+any full-app, child-process or whole-corpus fixture. Do not change an assertion,
+snapshot, golden or baseline only to make CI green without explaining the
+contract or evidence change.
 
 | What | Where | Run |
 |---|---|---|
@@ -251,7 +270,8 @@ override; this limit does not change test filters, timeouts or baselines.
 Tests run beside each other on a busy machine, so a test must not depend on wall-clock timing.
 
 **Ready pull requests test what they touch.** CI maps changed files to workspace packages and
-runs the format/repository policy, Clippy and the wasm check for every selected consumer. The
+runs the format/repository policy, Clippy and the wasm check for every selected consumer; the
+browser offline/update check has its own selected job. The
 [package selector](scripts/ci/plan.py) and [CI workflow](.github/workflows/ci.yml) define which
 changes require native checks; documentation, packaging, other-workflow and bot-script-only
 changes run the fast repository checks only. Pull requests also run the contract/runtime
@@ -393,8 +413,11 @@ and a fresh CI run:
      comment on it first, then open your own claim.
    - Mark the PR ready for review when it is done.
 2. Branch from `develop` in this fork and keep the PR to one topic.
-3. Run `cargo xtask ci` before pushing. It runs fmt, the asset, licence and layer checks,
-   clippy (`-D warnings`), then the tests with the wasm build check alongside. A PR has to pass it.
+3. Run the checks in [docs/validation-policy.md](docs/validation-policy.md) before pushing.
+   `cargo xtask ci` is the full local gate on a capable environment (fmt, assets,
+   licences, layers, clippy `-D warnings`, tests and the wasm check). If the
+   environment cannot run it, run the targeted checks and say exactly what could
+   not run; the PR's selected CI lane is authoritative for the bounded selection.
    **Fork override:** every PR runs its selected checks immediately — there is no
    `approved-for-ci` gate and no merge queue. The upstream text for maintainers is
    unchanged: upstream still uses that label, groups merges by area and runs the
@@ -534,4 +557,4 @@ about 250 KB and a clip under about 1 MB.
 ## Licence
 
 By contributing you agree that your contribution is licensed as MIT OR Apache-2.0, like the rest
-of open-skyfall. open-skyfall isn't affiliated with any CAD vendor; product names are trademarks of their owners (see NOTICE).
+of Intcad. Intcad isn't affiliated with any CAD vendor; product names are trademarks of their owners (see NOTICE).

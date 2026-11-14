@@ -4,6 +4,10 @@
 //! Parsing and laying out a long reply every frame would show in the frame time while it streams,
 //! so the parsed blocks are kept per conversation item and parsed again only when its text
 //! changes.
+//!
+//! The desktop Assistant's conversation is the page in the host's web view; this view stays for
+//! the browser build and the old panel's tests.
+#![cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 
 use crate::fonts::RichTextExt as _;
 use crate::ui_kit::BackingTooltipExt as _;

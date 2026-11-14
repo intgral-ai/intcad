@@ -182,8 +182,8 @@ does deleting that file.
 
 ## A design saved by 0.10 won't open in an older version
 
-Designs saved by a newer SolidCraft use a newer file format. Older versions refuse them with
-"this design was saved by a newer SolidCraft" and don't change the file. Open them with the
+Designs saved by a newer Intcad use a newer file format. Older versions refuse them with
+"this design was saved by a newer Intcad" and don't change the file. Open them with the
 current version.
 
 ## Save As says the file can't be found (Windows)

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Exercise desktop startup and modelling in the installed Flatpak, without images.
+"""Exercise desktop startup, modelling and the Assistant in the installed Flatpak.
 
 Uses the app's normal sandbox permissions. The control client runs inside that
 sandbox, so this does not grant host network access or save Flatpak overrides.
 Each headless backend has private runtime/configuration directories and a bus.
+The Assistant's page is served by the app itself, so opening it needs no network.
 """
 import argparse
 import base64
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -63,7 +65,35 @@ for request in '{"id":2,"method":"engine.execute","params":{"command":"solid.box
   IFS= read -r -t 30 reply <&3
   printf '%s\n' "$reply"
 done
-printf '{"id":4,"method":"ui.screenshot","params":{"path":"%s/frame.png"}}\n' "$work" >&3
+# The Assistant: open the panel and wait for the app's own page to report in. The page is
+# carried inside the app, so this needs no network. Hide the start page first, as it covers
+# the workspace (and the panel) when it happens to be showing.
+printf '{"id":4,"method":"ui.home","params":{"open":false}}\n' >&3
+IFS= read -r -t 30 reply <&3
+printf '%s\n' "$reply"
+printf '{"id":5,"method":"ui.agent_chat","params":{"open":true}}\n' >&3
+IFS= read -r -t 30 reply <&3
+printf '%s\n' "$reply"
+id=6
+deadline=$((SECONDS + 120))
+while :; do
+  printf '{"id":%d,"method":"ui.agent_chat","params":{}}\n' "$id" >&3
+  if ! IFS= read -r -t 30 reply <&3; then
+    echo "the Assistant state got no reply" >&2
+    exit 1
+  fi
+  printf '%s\n' "$reply"
+  if printf '%s' "$reply" | grep -Eq '"page"[[:space:]]*:[[:space:]]*true|"host"[[:space:]]*:[[:space:]]*false|"ok"[[:space:]]*:[[:space:]]*false'; then
+    break
+  fi
+  if ((SECONDS >= deadline)); then
+    echo "the Assistant page never loaded: $reply" >&2
+    exit 1
+  fi
+  sleep .25
+  id=$((id + 1))
+done
+printf '{"id":%d,"method":"ui.screenshot","params":{"path":"%s/frame.png"}}\n' "$((id + 1))" "$work" >&3
 IFS= read -r -t 30 reply <&3
 printf '%s\n' "$reply"
 base64 -w0 "$work/frame.png"
@@ -176,31 +206,81 @@ def frame_statistics(png):
     return {"width": width, "height": height, "nonblack": nonblack, "pixels": width * height}
 
 
-def probe(gl_saved_four=False):
+def validate_assistant(replies, backend):
+    """The Assistant panel is open under this backend, with the state that backend promises.
+
+    X11/XWayland must host the page. A native Wayland window has no X11 child window for
+    WebKitGTK, and the app says so (`webProblem: native-wayland`) instead of dropping the
+    conversation; that documented limitation is verified here, not counted as a page load.
+    """
+    if not replies:
+        raise ValueError("the Assistant returned no state")
+    for reply in replies:
+        if reply.get("ok") is not True:
+            raise ValueError(f"the Assistant failed: {reply}")
+    state = replies[-1].get("result") or {}
+    web = state.get("webView") or {}
+    if state.get("open") is not True:
+        raise ValueError(f"the Assistant panel did not open: {state}")
+    if backend in {"x11", "xwayland"}:
+        if web.get("host") is True and web.get("page") is True:
+            return "page loaded"
+        raise ValueError(f"the Assistant's page did not load: {web}, problem={state.get('webProblem')!r}")
+    if web.get("host") is False and state.get("webProblem") == "native-wayland":
+        return "native-Wayland diagnostic"
+    raise ValueError(f"native Wayland did not report its documented diagnostic: {web}, "
+                     f"problem={state.get('webProblem')!r}")
+
+
+def probe(gl_saved_four=False, backend="x11"):
     shell = SANDBOX_PROBE
     if gl_saved_four:
+        software_gl = ('export LIBGL_ALWAYS_SOFTWARE=1\nexport MESA_LOADER_DRIVER_OVERRIDE=llvmpipe\n'
+                       if os.environ.get("SOLIDCRAFT_SMOKE_SOFTWARE_GL") == "1" else '')
         shell = shell.replace('solidcraft --control',
                               'mkdir -p "$XDG_DATA_HOME/solidcraft"\n'
                               'printf \'{"msaa":4}\' >"$XDG_DATA_HOME/solidcraft/graphics.json"\n'
-                              'export WGPU_BACKEND=gl\nsolidcraft --control')
-    result = subprocess.run(["flatpak", "run", "--user", "--command=bash", APP_ID, "-c", shell],
-                            text=True, capture_output=True, timeout=125)
+                              'export WGPU_BACKEND=gl\n'
+                              + software_gl +
+                              'solidcraft --control')
+    # The headless Xvfb/Xwayland desktop occasionally loses WebKitGTK's UI process right after
+    # startup (the app exits 1 with no error of its own); the same probe passes on a rerun. Run
+    # the identical probe twice and report both attempts, without weakening any assertion.
+    for attempt in (1, 2):
+        result = subprocess.run(["flatpak", "run", "--user", "--command=bash", APP_ID, "-c", shell],
+                                text=True, capture_output=True, timeout=240)
+        if result.returncode == 0:
+            break
+        if attempt == 1:
+            print(f"Flatpak desktop exited {result.returncode} on attempt 1; retrying the same probe")
     if result.returncode:
-        raise RuntimeError(f"Flatpak desktop exited {result.returncode}\n{result.stderr[-8000:]}")
+        raise RuntimeError(f"Flatpak desktop exited {result.returncode} on both attempts\n"
+                           f"--- stderr ---\n{result.stderr[-8000:]}\n--- stdout ---\n{result.stdout[-4000:]}")
     lines = result.stdout.splitlines()
-    if len(lines) != 5 or len(lines[4]) > ((MAX_PNG_BYTES + 2) // 3) * 4:
+    if not lines or lines[-1].startswith("{"):
         raise ValueError("invalid presented-frame response")
-    renderer = validate_replies("\n".join(lines[:3]))
-    capture = json.loads(lines[3])
-    if capture.get("id") != 4 or capture.get("ok") is not True or renderer != "gpu":
+    json_lines = [line for line in lines if line.startswith("{")]
+    # ui.inspect, engine.execute, document.inspect; then the Assistant's replies; then the
+    # screenshot reply. The presented frame is the one line that is not JSON.
+    if len(json_lines) < 5 or len(lines[-1]) > ((MAX_PNG_BYTES + 2) // 3) * 4:
+        raise ValueError("invalid presented-frame response")
+    renderer = validate_replies("\n".join(json_lines[:3]))
+    assistant = [json.loads(line) for line in json_lines[3:-1]]
+    try:
+        assistant_mode = validate_assistant(assistant, backend)
+    except ValueError as error:
+        raise ValueError(f"{error}\n--- app log ---\n{result.stderr[-8000:]}") from error
+    capture = json.loads(json_lines[-1])
+    if capture.get("id") != len(json_lines) or capture.get("ok") is not True or renderer != "gpu":
         raise ValueError("GPU presented-frame capture failed")
-    statistics = frame_statistics(base64.b64decode(lines[4], validate=True))
+    statistics = frame_statistics(base64.b64decode(lines[-1], validate=True))
     if (capture["result"]["width"], capture["result"]["height"]) != (statistics["width"], statistics["height"]):
         raise ValueError("presented-frame dimensions disagree")
     if gl_saved_four and "SolidCraft graphics: Gl, MSAA 1x (requested 4x)" not in result.stderr:
         raise ValueError("forced GL did not apply the safe sample count")
     mode = "GL saved 4x" if gl_saved_four else "default backend"
-    print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, box=6000 mm³, frame={statistics}")
+    print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, box=6000 mm³, "
+          f"Assistant {assistant_mode}, frame={statistics}")
 
 
 def run_backend(backend):
@@ -225,19 +305,34 @@ def run_backend(backend):
                     command += ["xvfb-run", "-a", "-s", "-screen 0 1600x1000x24 -nolisten tcp"]
                 else:
                     env["WAYLAND_DISPLAY"] = "solidcraft-smoke"
-                    compositor = subprocess.Popen(["weston", "--backend=headless", "--renderer=pixman", "--no-config",
-                                                   "--socket=solidcraft-smoke", "--width=1600", "--height=1000"],
+                    # Weston 13 (Ubuntu) has no `-- program`; read the display it starts Xwayland on
+                    # from its log. Weston 16 accepts either.
+                    compositor = subprocess.Popen(["weston", "--backend=headless", "--renderer=pixman", "--xwayland",
+                                                   "--no-config", "--socket=solidcraft-smoke", "--width=1600",
+                                                   "--height=1000"],
                                                   env=env, stdout=log, stderr=subprocess.STDOUT)
                     deadline = time.monotonic() + 20
-                    while not (runtime / "solidcraft-smoke").exists():
+                    display = None
+                    log_path = Path(temporary) / "weston.log"
+                    while display is None or not (runtime / "solidcraft-smoke").exists():
                         if compositor.poll() is not None or time.monotonic() >= deadline:
-                            raise RuntimeError("headless Weston failed: " + (Path(temporary) / "weston.log").read_text())
+                            raise RuntimeError("headless Weston/Xwayland failed: " + log_path.read_text())
+                        match = re.search(r"xserver listening on display :(\d+)", log_path.read_text(errors="replace"))
+                        if match:
+                            display = ":" + match.group(1)
                         time.sleep(.1)
-                command += [sys.executable, str(Path(__file__).resolve()), "--probe"]
-                subprocess.run(command, env=env, check=True, timeout=150)
+                    env["DISPLAY"] = display
+                command += [sys.executable, str(Path(__file__).resolve()), "--probe",
+                            "--probe-backend", "xwayland" if backend == "wayland" else "x11"]
+                subprocess.run(command, env=env, check=True, timeout=300)
                 if backend == "wayland":
-                    subprocess.run(command + ["--gl-saved-four"], env=env, check=True, timeout=150)
-                print(f"{backend}: default sandbox desktop startup and modelling PASS")
+                    subprocess.run(command + ["--gl-saved-four"], env=env, check=True, timeout=300)
+                    native = dict(env)
+                    native.pop("DISPLAY", None)
+                    native_command = [sys.executable, str(Path(__file__).resolve()), "--probe",
+                                      "--probe-backend", "wayland"]
+                    subprocess.run(native_command, env=native, check=True, timeout=300)
+                print(f"{backend}: default sandbox desktop startup, modelling and Assistant PASS")
             finally:
                 if compositor:
                     compositor.terminate()
@@ -259,9 +354,10 @@ def main():
     parser.add_argument("--backend", choices=["x11", "wayland", "both"], default="both")
     parser.add_argument("--probe", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--gl-saved-four", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--probe-backend", choices=["x11", "xwayland", "wayland"], default="x11", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.probe:
-        probe(args.gl_saved_four)
+        probe(args.gl_saved_four, args.probe_backend)
     else:
         for backend in (["x11", "wayland"] if args.backend == "both" else [args.backend]):
             run_backend(backend)

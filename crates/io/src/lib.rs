@@ -873,13 +873,13 @@ pub fn read_design(bytes: &[u8]) -> Result<Document> {
     // Every DWG starts with its version (`AC1032`), whatever the file is called (#9328).
     if bytes.starts_with(b"AC1") {
         return Err(IoError::Invalid(
-            "this is a DWG file, which SolidCraft can't read: export the model as STEP and open that, or the drawing as DXF and use Insert DXF in a sketch".into(),
+            "this is a DWG file, which Intcad can't read: export the model as STEP and open that, or the drawing as DXF and use Insert DXF in a sketch".into(),
         ));
     }
     let s = std::str::from_utf8(bytes).map_err(|_| IoError::Invalid("design file is not UTF-8 JSON".into()))?;
     // Only a file that isn't a design pays for asking whether it is a drawing.
     Document::from_json(s).map_err(|e| match file_kind(bytes) {
-        Ok(FileKind::Drawing) => IoError::Invalid("this file is a SolidCraft drawing, not a design: open it as a drawing".into()),
+        Ok(FileKind::Drawing) => IoError::Invalid("this file is an Intcad drawing, not a design: open it as a drawing".into()),
         _ => e.into(),
     })
 }

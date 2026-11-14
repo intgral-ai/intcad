@@ -229,7 +229,7 @@ impl AcpBackend {
             }
             Incoming::ModeChanged(_) | Incoming::ModelChanged(_) | Incoming::ConfigOptions { .. } => {}
             Incoming::Unsupported { rpc, method } => {
-                self.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, &format!("open-skyfall does not serve `{method}`")));
+                self.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, &format!("Intcad does not serve `{method}`")));
             }
             Incoming::Ignored => {}
         }

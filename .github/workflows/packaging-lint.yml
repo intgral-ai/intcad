@@ -1,14 +1,16 @@
 # Quick static checks for the release pipeline (seconds, no Rust build): workflow syntax, the
 # packaging shell and PowerShell scripts, and the Linux desktop/AppStream/Flatpak metadata.
+# A second job builds the Assistant's page again from the pinned Mastra commit (a minute or two,
+# no Rust build either) and compares it with the build that is checked in.
 # Adapted from PhotoCraft's (storytold/photocraft, Apache-2.0; see ATTRIBUTION.md).
 name: Packaging lint
 
 on:
   push:
     branches: [main, develop]
-    paths: [".github/workflows/**", "packaging/**", "assets/**"]
+    paths: [".github/workflows/**", "packaging/**", "assets/**", "packages/assistant-web/**"]
   pull_request:
-    paths: [".github/workflows/**", "packaging/**", "assets/platforms/**"]
+    paths: [".github/workflows/**", "packaging/**", "assets/platforms/**", "packages/assistant-web/**"]
   workflow_dispatch:
 
 permissions:
@@ -76,3 +78,43 @@ jobs:
           python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml')); assert m['id'] == 'io.tangencylabs.solidcraft' and m['command'] == 'solidcraft'"
           python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/snap/snapcraft.yaml')); assert m['name'] == 'solidcraft' and m['confinement'] == 'strict' and m['apps']['solidcraft']['command'] == 'usr/bin/solidcraft'"
           python3 -m py_compile packaging/linux/snap-smoke.py
+
+  # The Assistant's page (packages/assistant-web/dist) is a build output that is checked in, so
+  # that the app builds without Node. This job builds it again from a fresh clone of the pinned
+  # Mastra commit and fails unless the result is what is checked in, byte for byte: the page,
+  # the list of what went into it and its third-party notices (packages/assistant-web/README.md).
+  # The build itself refuses Mastra's enterprise-licensed `ee/` files and unreviewed licences.
+  assistant-page:
+    name: Assistant page (rebuilt from the pinned Mastra commit)
+    runs-on: ubuntu-24.04
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22.23.4"
+      - name: Clone Mastra at the pinned commit and install its packages
+        run: |
+          pin() { python3 -c 'import json, sys; print(json.load(open("packages/assistant-web/mastra.json"))[sys.argv[1]])' "$1"; }
+          repository="$(pin repository)"
+          commit="$(pin commit)"
+          package="$(pin package)"
+          git init -q "$RUNNER_TEMP/mastra"
+          git -C "$RUNNER_TEMP/mastra" fetch -q --depth 1 "$repository" "$commit"
+          git -C "$RUNNER_TEMP/mastra" checkout -q FETCH_HEAD
+          cd "$RUNNER_TEMP/mastra"
+          # pnpm in the version Mastra's package.json names; Mastra's lockfile decides every version.
+          corepack enable
+          pnpm install --frozen-lockfile --filter "./$package..."
+      - name: Build the page again and compare with what is checked in
+        run: node packages/assistant-web/tools/build.mjs --mastra "$RUNNER_TEMP/mastra" --check --keep "$RUNNER_TEMP/assistant-web-build"
+      - name: Keep the fresh build when it differs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: assistant-web-build
+          path: ${{ runner.temp }}/assistant-web-build
+          if-no-files-found: ignore

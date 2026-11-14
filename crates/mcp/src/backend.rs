@@ -180,7 +180,7 @@ fn outcome(v: &Value) -> Result<Value, String> {
     }
 }
 
-/// A running open-skyfall app reached through its loopback control port
+/// A running Intcad app reached through its loopback control port
 /// (`solidcraft --control PORT`).
 pub struct Remote {
     addr: String,
@@ -212,7 +212,7 @@ pub struct Remote {
 
 /// How a tool error starts when no app listens at the bridged address. The agent reads it, and
 /// `batch` uses it to tell "never sent" from "sent, reply lost".
-pub(crate) const NOT_RUNNING: &str = "no open-skyfall app is listening at";
+pub(crate) const NOT_RUNNING: &str = "no Intcad app is listening at";
 
 impl Remote {
     /// Connect to the app at `addr`, with its control token found the usual way
@@ -323,7 +323,7 @@ impl Remote {
             )
         } else {
             format!(
-                "the open-skyfall app at {addr} did not answer ({e}): it may have quit or crashed during this call, after                  running it or not. Inspect the design before sending a change again; if the app quit, start it with                  `solidcraft --control {port}`"
+                "the Intcad app at {addr} did not answer ({e}): it may have quit or crashed during this call, after                  running it or not. Inspect the design before sending a change again; if the app quit, start it with                  `solidcraft --control {port}`"
             )
         }
     }
@@ -923,11 +923,11 @@ impl Backend for Remote {
     }
     fn describe(&self) -> String {
         if self.conn.is_some() {
-            format!("connected to the open-skyfall app at {} (the user watches the viewport)", self.addr)
+            format!("connected to the Intcad app at {} (the user watches the viewport)", self.addr)
         } else {
-            // Still "connected to the open-skyfall app": the skills tell bridged from headless by it.
+            // Still "connected to the Intcad app": the skills tell bridged from headless by it.
             format!(
-                "connected to the open-skyfall app at {} once it runs (the user watches the viewport). It was not running \
+                "connected to the Intcad app at {} once it runs (the user watches the viewport). It was not running \
                  when this server started; until it is (`solidcraft --control {}`), tool calls say so",
                 self.addr, self.port
             )
@@ -1164,7 +1164,7 @@ impl Backend for Headless {
         false
     }
     fn describe(&self) -> String {
-        "headless in-process open-skyfall session".into()
+        "headless in-process Intcad session".into()
     }
     fn design_path(&self) -> Option<String> {
         self.session.path.clone()
@@ -1203,7 +1203,7 @@ impl Auto {
             return;
         }
         if let Some(port) = (self.discover)() {
-            solidcraft_engine::note!("solidcraft mcp: the open-skyfall app is running now; bridged to 127.0.0.1:{port}");
+            solidcraft_engine::note!("solidcraft mcp: the Intcad app is running now; bridged to 127.0.0.1:{port}");
             let level = self.param_check();
             self.remote = Some(Remote::new(&format!("127.0.0.1:{port}"), self.token.as_deref()).with_param_check(level));
             self.headless = None;
@@ -1240,7 +1240,7 @@ impl Backend for Auto {
         match (&self.remote, &self.headless) {
             (Some(r), _) => r.describe(),
             (None, Some(h)) => format!(
-                "{}, because the open-skyfall app was not running when this server started; if it starts before any design work \
+                "{}, because the Intcad app was not running when this server started; if it starts before any design work \
                  is done here, the next call is bridged to it",
                 h.describe()
             ),
@@ -1262,8 +1262,8 @@ impl Backend for Auto {
     }
     fn notice(&self) -> Option<String> {
         self.headless.as_ref().map(|_| {
-            "Note: this is a headless session because the open-skyfall app was not found; the user cannot see this work. \
-             Ask them to start open-skyfall. While this session has no features, the next call connects to the app; once it \
+            "Note: this is a headless session because the Intcad app was not found; the user cannot see this work. \
+             Ask them to start Intcad. While this session has no features, the next call connects to the app; once it \
              has work, it stays here."
                 .to_owned()
         })

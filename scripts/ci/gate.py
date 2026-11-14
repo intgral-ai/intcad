@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 # Runtime/contract-ts consume Node's own reports; their evidence is the real
 # npm argv/exit codes, not a fabricated nextest listing.
 TEST_JOBS = frozenset(("rust", "contract-rust"))
-COMMAND_JOBS = frozenset(("repo", "pr-policy", "wasm", "artifact-policy", "runtime", "contract-ts", "integration", "packages"))
+COMMAND_JOBS = frozenset(("repo", "pr-policy", "wasm", "web-offline", "artifact-policy", "runtime", "contract-ts", "integration", "packages"))
 JOBS = TEST_JOBS | COMMAND_JOBS
 ROOT = Path(__file__).resolve().parents[2]
 KNOWN_FAILING = ROOT / "tests/KNOWN_FAILING_TESTS"

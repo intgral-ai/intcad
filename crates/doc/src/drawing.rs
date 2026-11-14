@@ -186,7 +186,7 @@ impl Drawing {
         if s.len() > MAX_DRAWING_BYTES {
             return Err(DocError::Invalid(format!("drawing too large (at most {} MiB)", MAX_DRAWING_BYTES >> 20)));
         }
-        let mut v: Value = serde_json::from_str(s).map_err(|e| DocError::Invalid(format!("not a SolidCraft drawing: {e}")))?;
+        let mut v: Value = serde_json::from_str(s).map_err(|e| DocError::Invalid(format!("not an Intcad drawing: {e}")))?;
         let (version, applied) = DRAWING.take_version(&mut v)?;
         DRAWING.check_numbers(&v, "properties")?;
         DRAWING.upgrade(&mut v, version, applied.as_deref())?;

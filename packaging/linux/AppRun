@@ -156,11 +156,40 @@ integrate() {
   done
 }
 
+# The app links the system's GTK 3 and WebKitGTK 4.1 (the Assistant's interface is a web view),
+# and an AppImage brings neither. Without them the dynamic loader stops the app with one terse
+# line about the first library it misses, which nobody sees when the AppImage was started from
+# a file manager. So say which libraries are missing and which package has them, on the terminal
+# and, where the desktop has a tool for it, in a dialog. The app is started all the same: the
+# loader's own message is not lost, and a wrong guess here costs nothing.
+missing_libraries() {
+  command -v ldd >/dev/null 2>&1 || return 0
+  missing="$(ldd "$APPDIR/usr/bin/solidcraft" 2>/dev/null | awk '/not found/ { print $1 }' | sort -u | tr '\n' ' ')"
+  missing="${missing% }"
+  [ -n "$missing" ] || return 0
+  text="Intcad cannot start: this system lacks $missing.
+It needs the system's WebKitGTK 4.1 (with GTK 3). Install it with:
+  Debian, Ubuntu:  sudo apt install libwebkit2gtk-4.1-0
+  Fedora:          sudo dnf install webkit2gtk4.1
+  Arch:            sudo pacman -S webkit2gtk-4.1
+  openSUSE:        sudo zypper install libwebkit2gtk-4_1-0"
+  printf '%s\n' "$text" >&2
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --error --title=Intcad --text="$text" >/dev/null 2>&1 &
+  elif command -v kdialog >/dev/null 2>&1; then
+    kdialog --title Intcad --error "$text" >/dev/null 2>&1 &
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send Intcad "$text" >/dev/null 2>&1 || true
+  fi
+}
+
 # Started through the wrapper `integrate` installs: the command-line tool, with no integration.
 if [ "${SOLIDCRAFT_APPIMAGE_CLI:-}" = 1 ]; then
   unset SOLIDCRAFT_APPIMAGE_CLI
   exec "$APPDIR/usr/bin/solidcraft-cli" "$@"
 fi
 
+missing_libraries
 integrate
 exec "$APPDIR/usr/bin/solidcraft" "$@"

@@ -117,8 +117,8 @@ impl ChatBackend {
                 Ok(value)
             }
             Err(_) => {
-                push_event(&self.events, bridge_result(&id, method, false, "the SolidCraft chat bridge did not answer"));
-                Err("the SolidCraft chat bridge did not answer".into())
+                push_event(&self.events, bridge_result(&id, method, false, "the Intcad chat bridge did not answer"));
+                Err("the Intcad chat bridge did not answer".into())
             }
         }
     }
@@ -149,7 +149,7 @@ impl Backend for ChatBackend {
     }
 
     fn describe(&self) -> String {
-        "the SolidCraft chat bridge (one turn at a time)".into()
+        "the Intcad chat bridge (one turn at a time)".into()
     }
 
     fn param_check(&self) -> ParamCheck {

@@ -51,8 +51,11 @@ not modelling a part through MCP.
   own claim (you may start from its branch). The bot's automatic cleanup deadlines in CONTRIBUTING.md
   are separate.
 - **One topic and one issue per PR.** Never commit `plan/`, build directories (`target*/`) or generated
-  reference data; check `git ls-files` before pushing. Run `cargo xtask ci` before every commit.
-  Commit after every feature arc that builds.
+  reference data; check `git ls-files` before pushing. Follow
+  [the validation policy](../../docs/validation-policy.md): checks for the changed area during
+  iteration, the selected repository checks before a PR, and a rerun after an input changes.
+  Reuse a result only for the same worktree state and inputs. Commit after every feature arc that
+  builds.
 - **Merge flow.** In this fork every PR runs its selected checks immediately; do not wait for
   `approved-for-ci` and do not use a merge queue (neither exists here). The upstream repository still
   starts heavy CI with that label and merges groups through its queue. Never force-push `main` or
@@ -83,7 +86,7 @@ not modelling a part through MCP.
 - **Update the roadmap** when a milestone task lands: `docs/roadmap-detail.md` tracks status, milestones and estimates; `ROADMAP.md` is the short user-facing roadmap.
 - **Start here.** What to work on: `ROADMAP.md`, "Where help is wanted most" in CONTRIBUTING.md and the open issues labelled `help wanted`, `good first issue`, `needs-triage`; check what is already open first. Architecture: `docs/architecture.md` and "How the code is laid out" in CONTRIBUTING.md; kernel work is paused ("Kernel work is paused" in CONTRIBUTING.md). Licence rules: `deny.toml` and `cargo xtask licences --check`; only `crates/kernel` may use `truck`. When the code, docs and rules settle a question, act; ask on the issue or PR only when the answer changes what users see or what the change covers.
 - **Do not open a second PR** for an issue a lower-numbered open PR already closes, and keep the `Changes a default:` line filled in: `pr-checks.yml` fails both.
-- **The gate reads the working tree.** Do not switch branches while `cargo xtask ci` runs: it compiles the other branch's code and fails on a change not in the PR. Run it in the background and wait for its log.
+- **The gate reads the working tree.** Do not switch branches while `cargo xtask ci` or a targeted test command runs: it compiles the other branch's code and fails on a change not in the PR. Run it in the background and wait for its log.
 
 ## 1. Check the environment
 
@@ -200,10 +203,16 @@ cargo fmt --all -- --check
 cargo xtask ci
 ```
 
-Run `cargo xtask ci` before each implementation commit on a capable environment.
-On small environments, use targeted tests and report exactly what passed and what
-could not run; leave the full suite to CI rather than claiming it passed. Follow
-[testing guidance](../../docs/book/src/dev/testing.md) for applicable checks.
+Run the checks for the changed area during implementation; before a PR run the
+selected repository checks and record the exact commands and results. `cargo xtask ci`
+is the full local gate when the environment can run it. On small environments, use
+targeted tests, report exactly what passed and what could not run, and leave the rest
+to CI rather than claiming it passed. Follow [the validation policy](../../docs/validation-policy.md)
+and [testing guidance](../../docs/book/src/dev/testing.md) for applicable checks.
+A new test states the behaviour or failure it protects and why the existing tests are
+insufficient; reuse an existing test where it already covers the change, and use the
+cheapest layer that proves the behaviour. Do not change an assertion, snapshot, golden
+or baseline only to make CI green without explaining the contract or evidence change.
 Review the diff, keep one topic, and commit the finished change. Before an approved
 push, follow "Rules for every PR" above; do not push solely to catch up
 with `main`. Explain progress and ask before publishing each update.

@@ -181,16 +181,27 @@ pub fn dpi_scaled_size(size: (i32, i32), old_dpi: u32, new_dpi: u32) -> Option<(
     Some((scale(size.0), scale(size.1)))
 }
 
+/// The window's rect and how wide the resize zones along its edges are, in points. `None` while
+/// the window is maximized or fullscreen, when it has none.
+fn resize_edge(ctx: &egui::Context) -> Option<(Rect, f32)> {
+    if maximized(ctx) || ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+        return None;
+    }
+    let ppp = ctx.pixels_per_point();
+    Some((ctx.content_rect(), resize_border_px(ctx.input(|i| i.viewport().native_pixels_per_point).unwrap_or(ppp)) / ppp))
+}
+
+/// The part of the window inside its resize zones: all a native view laid over the app may
+/// cover, since it takes every press on it and the zones under it would resize nothing.
+pub fn inside_resize_zones(ctx: &egui::Context) -> Rect {
+    resize_edge(ctx).map_or_else(|| ctx.content_rect(), |(w, edge)| w.shrink(edge))
+}
+
 /// Invisible resize zones along the window's edges, above everything else; a press in one
 /// starts an OS resize in that direction. None while the window is maximized or fullscreen.
 pub fn resize_zones(ui: &mut Ui) {
     let ctx = ui.ctx().clone();
-    if maximized(&ctx) || ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
-        return;
-    }
-    let w = ctx.content_rect();
-    let ppp = ctx.pixels_per_point();
-    let edge = resize_border_px(ctx.input(|i| i.viewport().native_pixels_per_point).unwrap_or(ppp)) / ppp;
+    let Some((w, edge)) = resize_edge(&ctx) else { return };
     let layer = LayerId::new(Order::Foreground, Id::new("titlebar-resize"));
     let zui = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(w));
     for (i, (r, dir, cursor)) in zones(w, edge).into_iter().enumerate() {

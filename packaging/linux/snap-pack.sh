@@ -9,9 +9,10 @@
 # built for the host architecture (x86_64 or aarch64), which must match the tarball's. Needs
 # snapcraft (`sudo snap install snapcraft --classic`) and, without --destructive-mode, LXD.
 # --destructive-mode builds on the host itself, which must be Ubuntu 24.04 (the core24 base),
-# as in CI. Install and smoke-test the result with:
+# as in CI. The gnome extension (gnome-46-2404 on core24) brings GTK 3 and WebKitGTK 4.1 at
+# runtime; snapcraft.yaml says why they are not staged here. Install and smoke-test the result:
 #   sudo snap install --dangerous dist/release/solidcraft-<version>-linux-<arch>.snap
-#   python3 packaging/linux/snap-smoke.py
+#   python3 packaging/linux/snap-smoke.py    # models a box and opens the Assistant's page
 # Manifest: packaging/linux/snap/snapcraft.yaml.
 set -euo pipefail
 # shellcheck source=../env.sh
@@ -23,7 +24,7 @@ TARBALL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --destructive-mode) MODE=(--destructive-mode); shift ;;
-    -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     -*) echo "unknown argument: $1" >&2; exit 2 ;;
     *) TARBALL="$1"; shift ;;
   esac

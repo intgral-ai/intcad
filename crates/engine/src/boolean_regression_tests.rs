@@ -35,6 +35,33 @@ fn check_partial_face_contact_pattern() {
     println!("#674 volume {volume:.6} / {expected_volume:.6} mm³; area {area:.6} / {expected_area:.6} mm²; {shells} shells");
 }
 
+/// #55: joining into one face of a body in several pieces sent the whole body to one SMLib
+/// union, which nested a disconnected piece inside the main solid as a void: 392.7 mm³ lost
+/// (52080.81 instead of 52473.505), and SMLib's check refused the result. The pieces that meet
+/// the tool union with it; the pieces apart from it join back untouched.
+#[test]
+fn join_into_one_piece_of_a_multi_lump_body_keeps_the_other_pieces() {
+    let expected = 25.0 * 47.5 * 37.5 + 3.5 * std::f64::consts::PI * 25.0 * 2.5 + 47.5 * 37.5 * 4.073;
+    for (command, params) in [
+        ("solid.press_pull", json!({"face": [25.0, 36.944444444444436, 6.25], "distance": 4.073})),
+        ("solid.extrude", json!({"face": [25.0, 36.944444444444436, 6.25], "distance": 4.073, "operation": "join"})),
+    ] {
+        let mut s = replay(include_str!("../../../examples/regressions/partial_face_contact_pattern.json"));
+        s.execute(command, &params).unwrap_or_else(|e| panic!("{command}: {e}"));
+        let state = s.model.state();
+        assert_eq!(state.bodies.len(), 1, "{command}: {:?}", state.bodies.iter().map(|b| b.name.as_str()).collect::<Vec<_>>());
+        let body = &state.bodies[0].body;
+        assert!(body.validity().is_empty(), "{command}: {:?}", body.validity());
+        assert_eq!(body.shell_count(), 3, "{command}");
+        let measured = solidcraft_kernel::measure(body).unwrap().volume;
+        assert!((measured - expected).abs() < 0.02, "{command}: {measured} mm³, expected {expected}");
+        // The join keeps its history over the two operands, so naming and undo follow it.
+        let history = body.history().unwrap_or_else(|| panic!("{command}: the join kept no history"));
+        assert_eq!(history.operands, 2, "{command}");
+        println!("{command}: {measured:.6} / {expected:.6} mm³, {} shells", body.shell_count());
+    }
+}
+
 /// A cylinder intersected with a disc carrying a tooth whose corners stand 0.27 mm out of it
 /// (radius 16.92 for 16.65): the general boolean can't intersect them, and the sampled answer
 /// (the disc is inside the cylinder) used to be kept with a warning, corners and all. The

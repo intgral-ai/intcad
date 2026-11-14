@@ -27,7 +27,7 @@
     "ui.mastra_validation_not_available": "Validation reports are not available in this release; the workflow's result is shown as it reported it.",
     "ui.mastra_workflow": "Mastra workflow",
     "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid.",
-    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall Intcad from a matching package, or start a package that includes the approved runtime.",
     "ui.mastra_codex_ready": "Codex ACP is installed and ready for tasks.",
     "ui.mastra_codex_missing": "Codex ACP is not installed. Install it with `{install}`, sign in with `codex login`, then reconnect.",
     "ui.mastra_codex_unusable": "Codex ACP is installed but cannot start: {problem}. Reinstall it and sign in again.",
@@ -61,7 +61,7 @@
     "ui.mastra_validation_not_available": "Prüfberichte gibt es in dieser Version noch nicht; das Workflow-Ergebnis wird so angezeigt, wie es gemeldet wurde.",
     "ui.mastra_workflow": "Mastra-Workflow",
     "ui.mastra_workflow_invalid": "Die Mastra-Workflow-Kennung ist ungültig.",
-    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall Intcad from a matching package, or start a package that includes the approved runtime."
   },
   "ja": {
     "ui.mastra_attachment_count": "ワークフローの 1 ターンに添付できるのは最大 4 件です。",
@@ -91,7 +91,7 @@
     "ui.mastra_validation_not_available": "この版には検証レポートがありません。ワークフローが報告した結果をそのまま表示します。",
     "ui.mastra_workflow": "Mastra ワークフロー",
     "ui.mastra_workflow_invalid": "Mastra ワークフロー ID が正しくありません。",
-    "ui.mastra_runtime_unusable": "インストールされている Mastra ランタイムは使用できません（{reason}）。一致するパッケージから SolidCraft を再インストールするか、承認済みランタイムを含むパッケージを起動してください。",
+    "ui.mastra_runtime_unusable": "インストールされている Mastra ランタイムは使用できません（{reason}）。一致するパッケージから Intcad を再インストールするか、承認済みランタイムを含むパッケージを起動してください。",
     "ui.mastra_codex_ready": "Codex ACP がインストールされ、タスクの準備ができています。",
     "ui.mastra_codex_missing": "Codex ACP がインストールされていません。`{install}` でインストールし、`codex login` でサインインしてから再接続してください。",
     "ui.mastra_codex_unusable": "Codex ACP はインストールされていますが、起動できません: {problem}。再インストールして、もう一度サインインしてください。",
@@ -125,7 +125,7 @@
     "ui.mastra_validation_not_available": "이 릴리스에는 검증 보고서가 없습니다. 워크플로가 보고한 결과를 그대로 표시합니다.",
     "ui.mastra_workflow": "Mastra 워크플로",
     "ui.mastra_workflow_invalid": "Mastra 워크플로 ID가 올바르지 않습니다.",
-    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime."
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall Intcad from a matching package, or start a package that includes the approved runtime."
   },
   "zh": {
     "ui.mastra_attachment_count": "一个工作流回合最多接受四个附件。",
@@ -155,7 +155,7 @@
     "ui.mastra_validation_not_available": "此版本还没有校验报告；工作流报告的结果将按原样显示。",
     "ui.mastra_workflow": "Mastra 工作流",
     "ui.mastra_workflow_invalid": "Mastra 工作流 ID 无效。",
-    "ui.mastra_runtime_unusable": "无法使用已安装的 Mastra 运行时（{reason}）。请从匹配的软件包重新安装 SolidCraft，或启动包含已批准运行时的软件包。",
+    "ui.mastra_runtime_unusable": "无法使用已安装的 Mastra 运行时（{reason}）。请从匹配的软件包重新安装 Intcad，或启动包含已批准运行时的软件包。",
     "ui.mastra_codex_ready": "Codex ACP 已安装，可以执行任务。",
     "ui.mastra_codex_missing": "未安装 Codex ACP。请使用 `{install}` 安装，运行 `codex login` 登录，然后重新连接。",
     "ui.mastra_codex_unusable": "Codex ACP 已安装但无法启动：{problem}。请重新安装并再次登录。",
@@ -189,7 +189,7 @@
     "ui.mastra_validation_not_available": "Validation reports are not available in this release; the workflow's result is shown as it reported it.",
     "ui.mastra_workflow": "Mastra workflow",
     "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid.",
-    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall Intcad from a matching package, or start a package that includes the approved runtime.",
     "ui.mastra_codex_ready": "تم تثبيت Codex ACP وهو جاهز للمهام.",
     "ui.mastra_codex_missing": "Codex ACP غير مثبت. ثبّته باستخدام `{install}`، ثم سجّل الدخول باستخدام `codex login`، ثم أعد الاتصال.",
     "ui.mastra_codex_unusable": "تم تثبيت Codex ACP لكنه لا يستطيع البدء: {problem}. أعد تثبيته وسجّل الدخول مرة أخرى.",
@@ -223,7 +223,7 @@
     "ui.mastra_validation_not_available": "Validation reports are not available in this release; the workflow's result is shown as it reported it.",
     "ui.mastra_workflow": "Mastra workflow",
     "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid.",
-    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall Intcad from a matching package, or start a package that includes the approved runtime.",
     "ui.mastra_codex_ready": "Codex ACP מותקן ומוכן למשימות.",
     "ui.mastra_codex_missing": "Codex ACP אינו מותקן. התקן אותו באמצעות `{install}`, התחבר באמצעות `codex login`, ואז התחבר מחדש.",
     "ui.mastra_codex_unusable": "Codex ACP מותקן אך אינו יכול להתחיל: {problem}. התקן אותו מחדש והתחבר שוב.",
@@ -257,7 +257,7 @@
     "ui.mastra_validation_not_available": "Validation reports are not available in this release; the workflow's result is shown as it reported it.",
     "ui.mastra_workflow": "Mastra workflow",
     "ui.mastra_workflow_invalid": "The Mastra workflow id is not valid.",
-    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall SolidCraft from a matching package, or start a package that includes the approved runtime.",
+    "ui.mastra_runtime_unusable": "The installed Mastra runtime cannot be used ({reason}). Reinstall Intcad from a matching package, or start a package that includes the approved runtime.",
     "ui.mastra_codex_ready": "Codex ACP đã được cài và sẵn sàng cho tác vụ.",
     "ui.mastra_codex_missing": "Codex ACP chưa được cài. Cài bằng `{install}`, đăng nhập bằng `codex login`, rồi kết nối lại.",
     "ui.mastra_codex_unusable": "Codex ACP đã được cài nhưng không khởi động được: {problem}. Cài lại và đăng nhập lại.",

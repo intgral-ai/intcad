@@ -202,6 +202,10 @@ fn validate_check_parameters(check: &CheckRequirement) -> Result<(), ValidationE
             }
             Ok(())
         }
+        "dfm.sheet" => {
+            crate::dfm::validate_parameters(&check.parameters).map_err(|error| invalid(format!("dfm.sheet: {error}")))?;
+            Ok(())
+        }
         "geometry.exact" => {
             let measurements: Measurements = serde_json::from_value(check.parameters.clone()).map_err(|e| invalid(format!("geometry.exact: {e}")))?;
             if measurements.measurements.is_empty() || measurements.measurements.len() > MAX_REQUIREMENTS {

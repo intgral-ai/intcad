@@ -40,14 +40,16 @@ pub fn summary(title: &str, input: Option<&Value>, output: Option<&str>, done: b
 }
 
 /// SolidCraft's tool a title names: `mcp__<server>__<tool>` (an agent names MCP tools after their
-/// server, which for SolidCraft's has `solidcraft` in it), or the in-app client's own `measure`,
+/// server: the chat's own, [`super::acp::BRIDGE_NAME`], or one a user set up, which has
+/// `solidcraft` in its name as the chat's own had), or the in-app client's own `measure`,
 /// `execute: solid.box`, `batch: …`.
 pub fn tool_name(title: &str) -> Option<&str> {
     let head = title.trim();
     let name = head.split(|c: char| c == ':' || c.is_whitespace()).next()?;
     let parts: Vec<&str> = name.split("__").take(4).collect();
+    let ours = |server: &str| server.eq_ignore_ascii_case(super::acp::BRIDGE_NAME) || server.to_ascii_lowercase().contains("solidcraft");
     match parts.as_slice() {
-        ["mcp", server, tool] if server.to_ascii_lowercase().contains("solidcraft") && !tool.is_empty() => Some(*tool),
+        ["mcp", server, tool] if ours(server) && !tool.is_empty() => Some(*tool),
         [bare] if !bare.is_empty() && head.strip_prefix(*bare).is_some_and(|rest| rest.is_empty() || rest.starts_with(':')) => Some(*bare),
         _ => None,
     }

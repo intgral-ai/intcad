@@ -250,7 +250,9 @@ Contrast, Graphite, Nosferatu, Catppuccin Mocha, Okibi and Akari (dark and light
 [Okibi design system](https://kaievns.github.io/okibi-akiri-design-system-spec/)), Clay and
 Clay Dark (warm ivory paper and warm charcoal, with a terracotta accent and rounded corners), and
 1-bit and 1-bit Dark (pure black and white with square corners: black on white, or white on
-black, with selections drawn inverted).
+black, with selections drawn inverted), and Black (near-black panels with white ink on a dark
+grey 3D view, after the dark design tokens of Mastra's playground-ui, so the application's own
+panels match its Assistant).
 
 A theme is a small JSON file that starts from the Dark or Light palette and changes any of its
 colours and corner radii by name:
@@ -296,6 +298,18 @@ square, circular controls remain circular, and control sizes and spacing stay th
 Platinum 9, 1-bit, 1-bit Dark, and the phosphor themes use square corners, SolidCraft 95 uses subtle 3-point
 corners, Blueprint uses the standard radii, Cupertino uses softer corners, and Clay and Clay Dark use rounded corners. Other built-in
 themes retain the defaults.
+
+`scrollbar` is optional too. A theme that gives it draws thin scroll bars of its own in place
+of the standard ones: a handle in the theme's text colour with no track, hidden until the
+pointer is over the scrolling area. It takes four numbers, all of them or none: `width` and
+`opacity` for the handle while the pointer is over the area, and `hover_width` and
+`hover_opacity` while the pointer is on the handle. Widths are logical UI points from 1 to 16;
+opacities run from 0 to 1. Black uses 4 and 0.19, then 6 and 0.4. The other built-in themes
+keep the standard scroll bars.
+
+```json
+"scrollbar": {"width": 4, "opacity": 0.19, "hover_width": 6, "hover_opacity": 0.4}
+```
 
 Tab accents also have separate fill, small-text ink and tint keys. Sketch uses
 `sketch_accent`, `sketch_ink`, `sketch_soft`; Surface, Mesh, Sheet Metal and Render

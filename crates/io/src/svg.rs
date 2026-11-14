@@ -62,7 +62,7 @@ fn geom_is_finite(g: &Geom2) -> bool {
     }
 }
 
-const OUT_OF_RANGE: &str = "SVG geometry is out of range: a transform or size scales a shape past the largest number SolidCraft can store";
+const OUT_OF_RANGE: &str = "SVG geometry is out of range: a transform or size scales a shape past the largest number Intcad can store";
 
 fn numbers(s: &str) -> Vec<f64> {
     // Numbers separated by commas/space, also "1-2" and "1.5.5" forms.
@@ -535,7 +535,7 @@ pub fn decode_svg(bytes: &[u8]) -> Result<String> {
     }
     if bytes.starts_with(&[0x1f, 0x8b]) {
         return Err(IoError::Invalid(
-            "this SVG is gzip-compressed (an .svgz file); SolidCraft reads plain SVG only: save it as plain (uncompressed) SVG in a vector editor first"
+            "this SVG is gzip-compressed (an .svgz file); Intcad reads plain SVG only: save it as plain (uncompressed) SVG in a vector editor first"
                 .into(),
         ));
     }
@@ -599,9 +599,9 @@ pub fn svg_nothing_to_import(text: &str) -> String {
         );
     }
     if external_uses > 0 {
-        return "the SVG's shapes are drawn with <use> from another file, which SolidCraft does not follow; save the drawing as a single self-contained SVG first".into();
+        return "the SVG's shapes are drawn with <use> from another file, which Intcad does not follow; save the drawing as a single self-contained SVG first".into();
     }
-    "the SVG has no shapes SolidCraft reads (path, line, rect, circle, ellipse, polyline, polygon or text)".into()
+    "the SVG has no shapes Intcad reads (path, line, rect, circle, ellipse, polyline, polygon or text)".into()
 }
 
 #[cfg(test)]

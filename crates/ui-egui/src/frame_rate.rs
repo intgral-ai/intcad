@@ -21,6 +21,33 @@ const IDLE_AFTER: f64 = 1.0;
 /// Frames the graph and the histogram keep: about four seconds at 60 frames per second.
 pub const HISTORY: usize = 240;
 
+/// The gaps between the last frames, recorded whether or not the frame-rate readout is on. The
+/// control channel uses them to separate a slow frame (the GPU or the UI) from a frame that was
+/// never asked for (event-loop scheduling): both read as a low rate, but only the first is work.
+#[derive(Clone, Debug, Default)]
+pub struct Clock {
+    gaps: VecDeque<f64>,
+}
+
+impl Clock {
+    /// Records the time since the previous frame (seconds). Zero, negative and non-finite gaps
+    /// are left out; a long idle gap is kept, because it is a gap like any other here.
+    pub fn record(&mut self, dt: f64) {
+        let ms = dt * 1000.0;
+        if ms.is_finite() && ms > 0.0 {
+            if self.gaps.len() >= HISTORY {
+                self.gaps.pop_front();
+            }
+            self.gaps.push_back(ms);
+        }
+    }
+
+    /// The last gaps between frames, oldest first (ms).
+    pub fn gaps(&self) -> impl ExactSizeIterator<Item = f64> + '_ {
+        self.gaps.iter().copied()
+    }
+}
+
 /// The histogram's buckets: frames up to each time (ms); the last takes everything slower.
 /// 17 and 34 ms hold the 60 and 30 FPS frames with a display's usual jitter.
 pub const BUCKETS: [f32; 9] = [4.0, 8.0, 12.0, 17.0, 25.0, 34.0, 50.0, 100.0, f32::INFINITY];
@@ -319,7 +346,31 @@ fn details(app: &SolveApp, painter: &egui::Painter, view: Rect, below: Rect, dra
 
 #[cfg(test)]
 mod tests {
-    use super::{BUCKETS, FrameRate, HISTORY, Sample, grouped};
+    use super::{BUCKETS, Clock, FrameRate, HISTORY, Sample, grouped};
+
+    /// The control channel's clock keeps the gaps the frame-rate readout is not recording: a
+    /// 100 ms gap is visible as 10 FPS even when each frame's own work took 2 ms.
+    #[test]
+    fn the_clock_keeps_every_gap_including_the_ones_the_readout_ignores() {
+        let mut clock = Clock::default();
+        for dt in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            clock.record(dt);
+        }
+        assert_eq!(clock.gaps().count(), 0);
+        clock.record(0.016);
+        clock.record(0.100);
+        clock.record(2.0);
+        let gaps: Vec<f64> = clock.gaps().collect();
+        assert_eq!(gaps.len(), 3);
+        assert!((gaps[0] - 16.0).abs() < 1e-6);
+        assert!((gaps[1] - 100.0).abs() < 1e-6, "an interaction gap is kept");
+        assert!((gaps[2] - 2000.0).abs() < 1e-6, "an idle gap is kept as a gap, not folded into a rate");
+        for i in 0..(HISTORY + 5) {
+            let n = u32::try_from(i.min(50) + 1).unwrap_or(1);
+            clock.record(f64::from(n) / 1000.0);
+        }
+        assert_eq!(clock.gaps().count(), HISTORY, "the clock is bounded like the readout's history");
+    }
 
     #[test]
     fn steady_frames_read_their_rate() {

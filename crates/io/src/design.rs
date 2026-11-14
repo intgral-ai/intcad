@@ -843,7 +843,7 @@ fn is_container_source(source: &mut FileSource) -> Result<bool> {
 
 fn read_document<R: Read + Seek>(reader: &mut PackageReader<R>) -> Result<Document> {
     if drawing::container_kind(reader)? == FileKind::Drawing {
-        return Err(IoError::Invalid("this file is a SolidCraft drawing, not a design: open it as a drawing".into()));
+        return Err(IoError::Invalid("this file is an Intcad drawing, not a design: open it as a drawing".into()));
     }
     let bytes = reader.document(max_design())?;
     check_hdr_manifest(&bytes)?;

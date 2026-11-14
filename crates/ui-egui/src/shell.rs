@@ -162,7 +162,7 @@ fn occluding_rects(app: &SolveApp, fitting: bool) -> Vec<Rect> {
     if crate::render_workspace::active(app) || Container::for_layout(app.ui.layout, Surface::Panel).floating() {
         rects.extend(app.shell.cards.iter().copied());
         rects.extend(app.shell.panels.iter().copied());
-        if crate::agent_chat::shown(app) && app.agent_chat.open && !app.preferences.agent_chat_popped {
+        if crate::agent_chat::shown(app) && app.agent_chat.open {
             rects.extend(app.agent_chat.panel_rect);
         }
     }

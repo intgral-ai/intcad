@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Read the design's properties: its `metadata` object as saved, and SolidCraft's own design
+/// Read the design's properties: its `metadata` object as saved, and Intcad's own design
 /// properties (project, part number, revision…) as text.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -15,7 +15,7 @@ pub struct MetadataParams {}
 pub struct MetadataResult {
     /// The design's metadata object as saved, other tools' keys included.
     pub metadata: Map<String, Value>,
-    /// Each of SolidCraft's design properties, by key: its text, or null when it is absent or
+    /// Each of Intcad's design properties, by key: its text, or null when it is absent or
     /// not text.
     pub properties: Map<String, Value>,
 }
@@ -25,13 +25,13 @@ pub struct MetadataResult {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct MetadataSetParams {
-    /// The property to set: one of SolidCraft's keys (the ones `document.metadata`'s
+    /// The property to set: one of Intcad's keys (the ones `document.metadata`'s
     /// `properties` lists), which take text, or another tool's reverse-DNS key such as
     /// `com.example.tool`, which takes an object. `bom_type` is a component's property and is
     /// refused here. Needs `value`; not with `values`.
     #[serde(default)]
     pub key: Option<String>,
-    /// The value for `key`: text for SolidCraft's keys, an object for another tool's. `""` or
+    /// The value for `key`: text for Intcad's keys, an object for another tool's. `""` or
     /// null removes the key. Required with `key`.
     #[serde(default)]
     #[schemars(with = "Value")]

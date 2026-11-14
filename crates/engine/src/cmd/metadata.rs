@@ -26,7 +26,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&READ_CONTRACT)
         .output(output_schema_for::<MetadataResult>)
         .params(
-            "→ metadata: the design's metadata object as saved (other tools' keys too); properties: each of SolidCraft's design \
+            "→ metadata: the design's metadata object as saved (other tools' keys too); properties: each of Intcad's design \
              properties (project, part number, revision…), its text or null (absent, or not text)",
         ),
     CommandSpec::new("document.metadata.set", "Change Design Properties", crate::checked!("document.metadata.set", set))
@@ -35,7 +35,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&SET_CONTRACT)
         .output(output_schema_for::<MetadataSetResult>)
         .params(
-            "key and value, or values: {key: value, …} (all or nothing, one undo step). SolidCraft's keys, the ones document.metadata's \
+            "key and value, or values: {key: value, …} (all or nothing, one undo step). Intcad's keys, the ones document.metadata's \
              properties lists, take text (\"\" or null removes); another tool's data goes under its reverse-DNS key such as \
              com.example.tool (an object; null removes) → metadata, changed: [keys]",
         ),
@@ -352,7 +352,7 @@ mod tests {
         }
         assert_eq!(properties.as_object().map(Map::len), Some(keys.len()), "{properties}");
         let refused = s.execute("document.metadata.set", &json!({"key": "colour", "value": "red"})).unwrap_err().to_string();
-        assert!(refused.contains("`colour` is not a design property: SolidCraft's are project, part_number,"), "{refused}");
+        assert!(refused.contains("`colour` is not a design property: Intcad's are project, part_number,"), "{refused}");
     }
 
     #[test]

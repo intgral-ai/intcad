@@ -737,6 +737,9 @@ pub struct SolveApp {
     pub frame_ms: f64,
     /// The viewport's frame-rate readout ([`frame_rate`]).
     pub frame_rate: frame_rate::FrameRate,
+    /// The gaps between recent frames, for the control channel's diagnostics (not only when the
+    /// frame-rate readout is on).
+    pub frame_clock: frame_rate::Clock,
     pub synthetic: Vec<egui::Event>,
     /// The modifiers of the synthetic press in progress (a Ctrl-drag keeps Ctrl while it moves).
     pub synthetic_mods: egui::Modifiers,
@@ -922,6 +925,7 @@ impl SolveApp {
             cpu_meshing: false,
             frame_ms: 0.0,
             frame_rate: frame_rate::FrameRate::default(),
+            frame_clock: frame_rate::Clock::default(),
             synthetic: Vec::new(),
             synthetic_mods: egui::Modifiers::default(),
             control_rx: None,
@@ -2917,6 +2921,7 @@ impl SolveApp {
         // Shortcuts run here, before `ui` installs the language scope: a tool started by its
         // key must build its translated hint in the user's language, not in English.
         let _language = crate::i18n::scope(&self.preferences.language);
+        self.frame_clock.record(ctx.input(|i| f64::from(i.unstable_dt)));
         panel_runtime::tick_app(self);
         // Sleep/wake often skips frames without a device-lost signal; refresh egui GPU textures
         // when the frame clock jumps so the chrome is not stuck blank (#8749).

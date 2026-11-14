@@ -91,11 +91,11 @@ fn file_kind_tells_designs_and_drawings_apart() {
 fn a_design_is_never_read_as_a_drawing_nor_a_drawing_as_a_design() {
     let d = drawing();
     for bytes in [write_drawing_container(&d).unwrap(), d.to_json().unwrap().into_bytes()] {
-        assert!(error(read_design(&bytes)).contains("is a SolidCraft drawing, not a design"));
+        assert!(error(read_design(&bytes)).contains("is an Intcad drawing, not a design"));
     }
     let doc = Document::new("Plate");
     for bytes in [write_design_container(&doc).unwrap(), write_design(&doc)] {
-        assert!(error(read_drawing(&bytes)).contains("is a SolidCraft design, not a drawing"));
+        assert!(error(read_drawing(&bytes)).contains("is an Intcad design, not a drawing"));
     }
 }
 

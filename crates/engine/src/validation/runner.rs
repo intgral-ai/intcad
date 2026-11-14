@@ -163,6 +163,7 @@ impl Runner for LocalRunner {
             let outcome = match requirement.kind.as_str() {
                 "parameters.required" => parameter_check(session.as_mut(), requirement),
                 "geometry.exact" => geometry_check(session.as_mut(), requirement),
+                "dfm.sheet" => dfm_sheet_check(session.as_ref(), requirement),
                 other => CheckOutcome {
                     check_id: requirement.check_id.clone(),
                     state: CheckState::Unsupported,
@@ -470,6 +471,69 @@ fn measure_one(session: &mut Session, measurement: &MeasurementRequirement) -> R
 
 fn passes(actual: f64, expected: f64, abs_tolerance: f64, rel_tolerance: f64) -> bool {
     (actual - expected).abs() <= f64::max(abs_tolerance, rel_tolerance * expected.abs())
+}
+
+/// One native sheet body through the pure DFM rule crate. The check's evidence is the measured
+/// facts and the whole rule report, so a later review can recompute the decision.
+fn dfm_sheet_check(session: Option<&Session>, check: &super::profile::CheckRequirement) -> CheckOutcome {
+    let parameters = match crate::dfm::validate_parameters(&check.parameters) {
+        Ok(parameters) => parameters,
+        Err(error) => return error_check(check, ValidationError::invalid_request(error.to_string())),
+    };
+    let Some(session) = session else {
+        return not_run(check, "native.rebuild did not produce a session");
+    };
+    let state = session.model.state();
+    let sheet = state.sheets.get(parameters.sheet).filter(|sheet| sheet.body == parameters.body);
+    let Some(sheet) = sheet else {
+        return error_check(
+            check,
+            ValidationError::invalid_request(format!("sheet {} is not `{}` in the evaluated model", parameters.sheet, parameters.body)),
+        );
+    };
+    let expected = json!({
+        "rulesVersion": solidcraft_dfm_rules::VERSION,
+        "generic": {"name": parameters.generic.name, "version": parameters.generic.version},
+        "shop": parameters.shop.as_ref().map(|shop| json!({"name": shop.name, "version": shop.version})),
+    });
+    match crate::dfm::check_sheet(sheet, parameters) {
+        Ok(outcome) => {
+            let actual = json!({
+                "rulesVersion": solidcraft_dfm_rules::VERSION,
+                "modelVersion": outcome.report.model.model_version,
+                "clean": outcome.report.clean,
+                "counts": outcome.report.counts,
+                "rules": outcome.report.rules,
+            });
+            // A completed run is only "passed" when the rule layer says clean and has a real
+            // pass. A report full of advisories, checked public values or unsupported rules is
+            // not a pass.
+            let check_state = if outcome.report.counts.failed > 0 {
+                CheckState::Failed
+            } else if outcome.report.clean && outcome.report.counts.passed > 0 {
+                CheckState::Passed
+            } else {
+                CheckState::Unsupported
+            };
+            let facts = serde_json::to_value(&outcome.facts).unwrap_or(Value::Null);
+            let report = serde_json::to_value(&outcome.report).unwrap_or(Value::Null);
+            CheckOutcome {
+                check_id: check.check_id.clone(),
+                state: check_state,
+                expected,
+                actual,
+                evidence: vec![evidence_json(&facts), evidence_json(&report)],
+            }
+        }
+        Err(crate::dfm::DfmError::Unsupported(reason)) => CheckOutcome {
+            check_id: check.check_id.clone(),
+            state: CheckState::Unsupported,
+            expected: expected.clone(),
+            actual: json!({"reason": reason}),
+            evidence: vec![evidence_json(&json!({"reason": reason}))],
+        },
+        Err(error) => error_check(check, ValidationError::invalid_request(error.to_string())),
+    }
 }
 
 fn error_check(check: &super::profile::CheckRequirement, error: ValidationError) -> CheckOutcome {

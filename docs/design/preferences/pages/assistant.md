@@ -35,7 +35,7 @@ One card per agent, with an "Add agent..." and a "Refresh" button at the end.
 
 | Label | Control | Edits | Default | Hover | Figure | Notes |
 |---|---|---|---|---|---|---|
-| Dock the chat: Left / Right / Own window | Segmented | `Prefs.agent_chat_side` (`"left"`, `"right"`) and `Prefs.agent_chat_popped` (Own window) | Right | none | none | Two fields behind one control. |
+| Dock the chat: Left / Right | Segmented | `Prefs.agent_chat_side` (`"left"`, `"right"`) | Right | none | none | The Assistant never opens a window of its own. |
 | Changes per message | Unlimited / Limited dropdown; number field when Limited | `Prefs.agent_chat_turn_limit` (aria "Limit") | `DEFAULT_TURN_LIMIT` = 0 (Unlimited) | none | none | Every value 1–200 remains reachable. Switching from Unlimited to Limited seeds 24; rendering never changes a value. The existing saved-value migration remains unchanged. |
 
 ## Connecting
@@ -58,6 +58,6 @@ One card per agent, with an "Add agent..." and a "Refresh" button at the end.
 
 ## Mismatches
 
-* `agent_chat_width`, `agent_chat_minimized`, `agent_chat_window`, `agent_last` and `agent_models`
+* `agent_chat_width`, `agent_chat_minimized`, `agent_last` and `agent_models`
   have no control on the board. Always allowed, Edit and reasoning effort are retained newer controls.
 * Agent names and states are sample content.

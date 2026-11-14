@@ -43,6 +43,13 @@ PR_TEST_PACKAGES = frozenset(("xtask", "solidcraft-derive", "solidcraft-doc", "s
                               "solidcraft-io", "solidcraft-profile", "solidcraft-sketch",
                               "solidcraft-step", "solidcraft-testkit"))
 NIGHTLY_WORKFLOW = ".github/workflows/native-baseline.yml"
+# The browser offline/update harness: the web app and its packaging, the Pages
+# workflow that runs it against a real build, and the xtask implementation that
+# drives Chrome. It is a separate job so its bounded Chrome launches do not share
+# the repository-checks budget. An unrelated xtask change must not start it.
+WEB_OFFLINE_PREFIXES = ("apps/solidcraft-web/", "packaging/web/")
+WEB_OFFLINE_FILES = (".github/workflows/pages.yml", "xtask/src/main.rs",
+                     "xtask/src/web_offline.rs", "xtask/src/web_offline_test.rs")
 # Only these reviewed metadata/owning utility inputs are payload-free. Unknown
 # packaging paths still require the real package consumers, never a prefix waiver.
 PACKAGING_FOUNDATION = frozenset(("packaging/mastra/policy.json", "packaging/mastra/source-records.json",
@@ -263,6 +270,13 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
                              reason="always" if pr else "no_relevant_change", missingInputs=[])
     decide("rust", bool(rust_packages) or rust_full)
     decide("wasm", bool(rust_packages) or rust_full)
+    # The offline/update check runs on full/release validation, and on the web app,
+    # its packaging, the harness implementation and its Pages caller. Shared CI
+    # inputs (rust_full) run it too, because its job definition can change there.
+    # An ordinary Rust/wasm change runs the wasm build, not the browser harness.
+    web_offline = (full or release_required or rust_full
+                   or any(path in WEB_OFFLINE_FILES or path.startswith(WEB_OFFLINE_PREFIXES) for path in paths))
+    decide("web-offline", web_offline)
     decide("contract-rust", release_required or contract_change or runtime_request
            or (inventory["contractPresent"] and selected) or required_contract_missing,
            contract_missing, "contract_not_implemented_host_foundation")

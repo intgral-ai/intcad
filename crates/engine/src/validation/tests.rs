@@ -191,6 +191,38 @@ fn a_task_profile_adds_checks_and_cannot_relax_the_native_ones() {
 }
 
 #[test]
+fn a_dfm_sheet_check_needs_its_sheet_declaration_and_data() {
+    let mut profile = native_basic_profile();
+    profile.profile_id = "dfm-sheet".into();
+    let parameters = json!({
+        "sheet": 0,
+        "body": "Plate",
+        "declared": {"thicknessMm": 1.5, "process": "press brake", "material": "5052-H32"},
+        "generic": {"format": 1, "name": "generic", "version": "TEST-ONLY", "layer": "generic", "requirements": []},
+        "overrides": [],
+        "model": {"modelVersion": "doc-1", "body": "Plate", "source": "native"},
+        "source": "native",
+    });
+    profile.checks.push(CheckRequirement { check_id: "dfm.sheet".into(), kind: "dfm.sheet".into(), required: false, parameters: parameters.clone() });
+    profile.checks.sort_by(|a, b| a.check_id.cmp(&b.check_id));
+    validate_profile(&profile).unwrap();
+
+    let mut bad = profile.clone();
+    if let Some(check) = bad.checks.iter_mut().find(|check| check.check_id == "dfm.sheet") {
+        check.parameters["body"] = json!("");
+    }
+    let error = validate_profile(&bad).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.message.contains("body"));
+
+    let mut bad_profile = profile;
+    if let Some(check) = bad_profile.checks.iter_mut().find(|check| check.check_id == "dfm.sheet") {
+        check.parameters["generic"]["format"] = json!(2);
+    }
+    assert_eq!(validate_profile(&bad_profile).unwrap_err().code, ErrorCode::InvalidRequest);
+}
+
+#[test]
 fn the_local_runner_passes_the_analytic_profile_and_reports_evidence() {
     let root = scratch("local-pass");
     let candidates = root.join("candidates");

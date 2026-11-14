@@ -206,6 +206,47 @@ class ExecutionEvidence(unittest.TestCase):
                 self.needs["rust"] = status
                 self.rejected("job result")
 
+    def test_web_offline_is_a_command_job_with_counted_selected_state(self):
+        inventory = dict(contractPresent=True, runtimePresent=True, runtimePayloadRequested=False,
+                         artifactVerifierPresent=True, missingContractInputs=[], missingRuntimeInputs=[])
+        value = planner.make_plan(META, ["packaging/web/package.sh"], inventory, source_revision=SHA,
+                                  event_name="pull_request", base_ref="develop", head_ref="task",
+                                  full=False, release_required=False, diff_complete=True)
+        self.assertEqual(value["jobs"]["web-offline"]["decision"], "run")
+        receipt = self.gate.record_receipt(
+            plan_bytes(value), "web-offline",
+            [{"argv": ["cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"],
+              "exitCode": 0}], None, None, set())
+        self.assertIsNone(receipt["tests"])
+        needs = {job: "success" for job, entry in value["jobs"].items() if entry["decision"] == "run"}
+        receipts = {job: command_receipt(value, job) for job in needs}
+        receipts["web-offline"] = receipt
+        self.assertEqual(self.gate.evaluate(value, needs, receipts), [])
+        for status in (None, "failure", "cancelled", "timed_out", "skipped"):
+            with self.subTest(status=status):
+                changed = dict(needs)
+                if status is None:
+                    changed.pop("web-offline")
+                else:
+                    changed["web-offline"] = status
+                problems = self.gate.evaluate(value, changed, receipts)
+                self.assertTrue(any("web-offline" in problem for problem in problems), problems)
+        del receipts["web-offline"]
+        self.assertTrue(any("web-offline" in problem for problem in self.gate.evaluate(value, needs, receipts)))
+
+    def test_not_applicable_web_offline_is_neutral_not_an_executed_pass(self):
+        self.assertEqual(self.value["jobs"]["web-offline"]["decision"], "not_applicable")
+        self.assertNotIn("web-offline", self.receipts)
+        self.assertEqual(self.evaluate(), [])
+        import contextlib
+        import io
+        summary = io.StringIO()
+        with contextlib.redirect_stdout(summary):
+            self.gate.print_summary(self.value, self.receipts, [])
+        text = summary.getvalue()
+        self.assertIn("web-offline: not_applicable (no_relevant_change)", text)
+        self.assertNotIn("web-offline: command-only evidence satisfied", text)
+
     def test_wrong_source_revision_fails(self):
         self.receipts["rust"]["sourceRevision"] = "0" * 40
         self.rejected("sourceRevision")
@@ -541,29 +582,29 @@ class ExecutionEvidence(unittest.TestCase):
 
     def test_cli_native_record_uses_current_allowlist_without_changing_raw_ids(self):
         # Use an existing reviewed identity as a format fixture, never execute it.
-        identity = "solidcraft-cli::action_matrix::action_matrix_sample"
+        identity = "solidcraft-kernel::boolean_props::translation_invariant"
         data = listing()
         suite = data["rust-suites"].pop("solidcraft-sketch")
-        binary = "solidcraft-cli::action_matrix"
-        suite.update(**{"binary-id": binary, "binary-name": "action_matrix", "package-name": "solidcraft-cli",
-                        "package-id": "path+file:///fixture/apps/solidcraft-cli#0.1.0",
-                        "binary-path": "/fixture/target/ci/deps/action_matrix-1234",
-                        "cwd": "/fixture/apps/solidcraft-cli", "kind": "test", "testcases": {
-                            "action_matrix_sample": {"ignored": False, "filter-match": {"status": "matches"}}}})
+        binary = "solidcraft-kernel::boolean_props"
+        suite.update(**{"binary-id": binary, "binary-name": "boolean_props", "package-name": "solidcraft-kernel",
+                        "package-id": "path+file:///fixture/crates/kernel#0.1.0",
+                        "binary-path": "/fixture/target/ci/deps/boolean_props-1234",
+                        "cwd": "/fixture/crates/kernel", "kind": "test", "testcases": {
+                            "translation_invariant": {"ignored": False, "filter-match": {"status": "matches"}}}})
         data["test-count"] = 1
         data["rust-suites"][binary] = suite
         self.write("selection.json", data)
-        self.junit.write_text("<testsuite name='solidcraft-cli::action_matrix'>"
-                              "<testcase name='action_matrix_sample'><failure/></testcase></testsuite>")
-        value = planner.make_plan({"workspace_root": "/fixture", "packages": [{"name": "solidcraft-cli",
-            "manifest_path": "/fixture/apps/solidcraft-cli/Cargo.toml", "dependencies": []}]},
-            ["apps/solidcraft-cli/src/main.rs"], ABSENT, source_revision=SHA, event_name="pull_request",
+        self.junit.write_text("<testsuite name='solidcraft-kernel::boolean_props'>"
+                              "<testcase name='translation_invariant'><failure/></testcase></testsuite>")
+        value = planner.make_plan({"workspace_root": "/fixture", "packages": [{"name": "solidcraft-kernel",
+            "manifest_path": "/fixture/crates/kernel/Cargo.toml", "dependencies": []}]},
+            ["crates/kernel/src/lib.rs"], ABSENT, source_revision=SHA, event_name="pull_request",
             base_ref="develop", head_ref="task", full=False, release_required=False, diff_complete=True)
         path = self.write("plan.json", plan_bytes(value).decode())
         cmds = commands(self.junit)
         for cmd in cmds[:2]:
-            cmd["argv"][cmd["argv"].index("-p") + 1] = "solidcraft-cli"
-            cmd["argv"][cmd["argv"].index("-E") + 1] = "binary(action_matrix)"
+            cmd["argv"][cmd["argv"].index("-p") + 1] = "solidcraft-kernel"
+            cmd["argv"][cmd["argv"].index("-E") + 1] = "binary(boolean_props)"
         args = ["record", "--plan", path, "--job-id", "rust", "--commands", self.write("commands.json", cmds),
                 "--selection", self.selection, "--junit", self.junit, "--out", self.directory / "native.json"]
         result = self.cli(*args)
@@ -656,7 +697,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
         self.assertRegex(text, r"(?m)^  workflow_call:")
         self.assertRegex(text, r"(?m)^  workflow_dispatch:")
         gate = text.split("\n  release-gate:\n", 1)[1]
-        self.assertIn("name: release-gate", gate)
+        self.assertIn("name: ${{ needs.candidate.outputs.context }}", gate)
         self.assertIn("if: always()", gate)
         self.assertIn("${{ toJSON(needs) }}", gate)
         self.assertIn("validation_mode: full", text)

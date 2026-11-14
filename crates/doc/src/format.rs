@@ -321,7 +321,7 @@ impl Family<'_> {
     /// here, so nothing a newer build saved is judged by this build's rules.
     pub fn take_version(&self, v: &mut Value) -> Result<(u32, Option<Vec<String>>)> {
         let noun = self.noun;
-        let not_ours = |what: String| DocError::Invalid(format!("not a SolidCraft {noun} ({what})"));
+        let not_ours = |what: String| DocError::Invalid(format!("not an Intcad {noun} ({what})"));
         let Some(obj) = v.as_object() else { return Err(not_ours("expected a JSON object".into())) };
         let version = match obj.get("format") {
             None => self.untagged.ok_or_else(|| not_ours("no format".into()))?,
@@ -401,10 +401,10 @@ impl Formats<'_> {
     /// that isn't made of changes means nothing (a tool or a test set an older number on a newer
     /// file).
     fn check(&self, noun: &str, version: u32, applied: Option<&[String]>) -> Result<()> {
-        let newer = |what: String| DocError::Invalid(format!("this {noun} was saved by a newer SolidCraft ({what}): update SolidCraft to open it"));
+        let newer = |what: String| DocError::Invalid(format!("this {noun} was saved by a newer Intcad ({what}): update Intcad to open it"));
         let current = self.current();
         if version == 0 {
-            return Err(DocError::Invalid(format!("not a SolidCraft {noun} (format 0)")));
+            return Err(DocError::Invalid(format!("not an Intcad {noun} (format 0)")));
         }
         if version > current {
             return Err(newer(format!("file format {version}; this version reads formats up to {current}")));
@@ -675,7 +675,7 @@ fn v2_to_v3(v: &mut Value) -> Result<()> {
 
 /// Read a design file's JSON, upgrading older formats.
 pub fn read(s: &str) -> Result<Document> {
-    let mut v: Value = serde_json::from_str(s).map_err(|e| DocError::Invalid(format!("not a SolidCraft design: {e}")))?;
+    let mut v: Value = serde_json::from_str(s).map_err(|e| DocError::Invalid(format!("not an Intcad design: {e}")))?;
     let (version, applied) = DESIGN.take_version(&mut v)?;
     check_design_numbers(&v)?;
     crate::config::validate_rules_json(&v)?;
@@ -1329,7 +1329,7 @@ mod tests {
         assert_eq!(trace_of(&v), Vec::<&str>::new());
         // A change this build doesn't know is a newer build's: refused, not guessed at.
         let err = formats.upgrade("design", &mut serde_json::json!({}), next, Some(&["c-later".into()])).unwrap_err();
-        assert!(err.to_string().contains("newer SolidCraft"), "{err}");
+        assert!(err.to_string().contains("newer Intcad"), "{err}");
         // A list on a format that isn't made of changes means nothing.
         let mut v = serde_json::json!({});
         formats.upgrade("design", &mut v, HAND_WRITTEN, Some(&["a-first".into()])).unwrap();
@@ -1456,7 +1456,7 @@ mod tests {
             let mut file = serde_json::json!({"trace": []});
             let original = file.clone();
             let err = formats.upgrade("design", &mut file, 2, Some(&["experimental-card".into()])).unwrap_err();
-            assert!(err.to_string().contains("experimental-card") && err.to_string().contains("update SolidCraft"), "{err}");
+            assert!(err.to_string().contains("experimental-card") && err.to_string().contains("update Intcad"), "{err}");
             assert_eq!(file, original, "refuse before applying even a known migration");
         }
     }
@@ -1493,7 +1493,7 @@ mod tests {
         assert_eq!(
             error,
             format!(
-                "this design was saved by a newer SolidCraft (file format {FORMAT} with `not-a-change-anyone-made`, which this version doesn't know): update SolidCraft to open it"
+                "this design was saved by a newer Intcad (file format {FORMAT} with `not-a-change-anyone-made`, which this version doesn't know): update Intcad to open it"
             )
         );
     }
@@ -1558,9 +1558,9 @@ mod tests {
         // The number reads as Rust reads a `u32`, a leading `+` included, as in a design's tag.
         assert_eq!(DRAWING.version_of("solidcraft-drawing/+1"), Some(1));
         let error = DRAWING.take_version(&mut serde_json::json!({"format": format_string(FORMAT)})).unwrap_err().to_string();
-        assert_eq!(error, format!("not a SolidCraft drawing (format `solidcraft/{FORMAT}`)"));
+        assert_eq!(error, format!("not an Intcad drawing (format `solidcraft/{FORMAT}`)"));
         let error = read(&serde_json::json!({"format": DRAWING.format_string(1)}).to_string()).unwrap_err().to_string();
-        assert_eq!(error, "not a SolidCraft design (format `solidcraft-drawing/1`)");
+        assert_eq!(error, "not an Intcad design (format `solidcraft-drawing/1`)");
     }
 
     /// Every refusal names its family: a design's read exactly as they did before drawings had one
@@ -1576,9 +1576,7 @@ mod tests {
             serde_json::json!({"format": family.format_string(n)})
         }
         fn newer(noun: &str, n: u32, current: u32) -> String {
-            format!(
-                "this {noun} was saved by a newer SolidCraft (file format {n}; this version reads formats up to {current}): update SolidCraft to open it"
-            )
+            format!("this {noun} was saved by a newer Intcad (file format {n}; this version reads formats up to {current}): update Intcad to open it")
         }
         assert_eq!(refusal(&DESIGN, tagged(&DESIGN, FORMAT + 1)), newer("design", FORMAT + 1, FORMAT));
         assert_eq!(read(&tagged(&DESIGN, FORMAT + 1).to_string()).unwrap_err().to_string(), newer("design", FORMAT + 1, FORMAT));
@@ -1588,10 +1586,10 @@ mod tests {
             assert_eq!(refusal(&DRAWING, tagged(&DRAWING, n)), newer("drawing", n, current));
         }
         for (family, noun) in [(&DESIGN, "design"), (&DRAWING, "drawing")] {
-            assert_eq!(refusal(family, tagged(family, 0)), format!("not a SolidCraft {noun} (format 0)"));
-            assert_eq!(refusal(family, json!([])), format!("not a SolidCraft {noun} (expected a JSON object)"));
-            assert_eq!(refusal(family, json!({"format": 1})), format!("not a SolidCraft {noun} (format is not a string)"));
-            assert_eq!(refusal(family, json!({"format": ""})), format!("not a SolidCraft {noun} (format ``)"));
+            assert_eq!(refusal(family, tagged(family, 0)), format!("not an Intcad {noun} (format 0)"));
+            assert_eq!(refusal(family, json!([])), format!("not an Intcad {noun} (expected a JSON object)"));
+            assert_eq!(refusal(family, json!({"format": 1})), format!("not an Intcad {noun} (format is not a string)"));
+            assert_eq!(refusal(family, json!({"format": ""})), format!("not an Intcad {noun} (format ``)"));
             // `format_pending`'s caps, on both sides of each.
             let mut file = tagged(family, 1);
             file["format_pending"] = vec!["x".repeat(128); 1000].into();
@@ -1610,11 +1608,11 @@ mod tests {
         assert_eq!(
             refusal(&design, file),
             format!(
-                "this design was saved by a newer SolidCraft (file format {next} with `c-later`, which this version doesn't know): update SolidCraft to open it"
+                "this design was saved by a newer Intcad (file format {next} with `c-later`, which this version doesn't know): update Intcad to open it"
             )
         );
         assert!(matches!(DESIGN.take_version(&mut json!({})), Ok((1, None))));
-        assert_eq!(refusal(&DRAWING, json!({})), "not a SolidCraft drawing (no format)");
+        assert_eq!(refusal(&DRAWING, json!({})), "not an Intcad drawing (no format)");
     }
 
     /// One drawing change pending, as a drawing's first change will be: the build writes format 2
@@ -1642,17 +1640,14 @@ mod tests {
         let error = open(json!({"format": "solidcraft-drawing/2", "format_pending": ["a-first", "c-later"]})).unwrap_err().to_string();
         assert_eq!(
             error,
-            "this drawing was saved by a newer SolidCraft (file format 2 with `c-later`, which this version doesn't know): update SolidCraft to open it"
+            "this drawing was saved by a newer Intcad (file format 2 with `c-later`, which this version doesn't know): update Intcad to open it"
         );
         let error = open(json!({"format": "solidcraft-drawing/3"})).unwrap_err().to_string();
-        assert_eq!(
-            error,
-            "this drawing was saved by a newer SolidCraft (file format 3; this version reads formats up to 2): update SolidCraft to open it"
-        );
+        assert_eq!(error, "this drawing was saved by a newer Intcad (file format 3; this version reads formats up to 2): update Intcad to open it");
         // An upgrade called without `take_version` refuses in the drawing's words too, format 0 included.
         let error = drawing.upgrade(&mut json!({}), 3, None).unwrap_err().to_string();
-        assert!(error.starts_with("this drawing was saved by a newer SolidCraft (file format 3;"), "{error}");
-        assert_eq!(drawing.upgrade(&mut json!({}), 0, None).unwrap_err().to_string(), "not a SolidCraft drawing (format 0)");
+        assert!(error.starts_with("this drawing was saved by a newer Intcad (file format 3;"), "{error}");
+        assert_eq!(drawing.upgrade(&mut json!({}), 0, None).unwrap_err().to_string(), "not an Intcad drawing (format 0)");
     }
 
     /// `format_pending` is read and checked: a damaged list is refused, a list of changes this
@@ -2139,7 +2134,7 @@ mod tests {
             let error = read(&value.to_string()).unwrap_err().to_string();
             assert!(error.contains("free-form offset metadata"), "{error}");
             value["format"] = Value::from(format_string(FORMAT + 1));
-            assert!(read(&value.to_string()).unwrap_err().to_string().contains("newer SolidCraft"));
+            assert!(read(&value.to_string()).unwrap_err().to_string().contains("newer Intcad"));
         }
     }
 
@@ -2164,7 +2159,7 @@ mod tests {
             assert!(error.contains("emboss face"), "{error}");
             value["format"] = Value::from(format_string(FORMAT + 1));
             let error = read(&value.to_string()).unwrap_err().to_string();
-            assert!(error.contains("newer SolidCraft"), "{error}");
+            assert!(error.contains("newer Intcad"), "{error}");
         }
     }
 
@@ -2228,7 +2223,7 @@ mod tests {
         value["configs"]["columns"] = serde_json::json!([{"unknown_future_column":"Body"}]);
         value["configs"]["rules"] = serde_json::json!({"unknown_future_rule": true});
         let error = read(&value.to_string()).unwrap_err().to_string();
-        assert!(error.contains("newer SolidCraft") && error.contains("update SolidCraft"), "{error}");
+        assert!(error.contains("newer Intcad") && error.contains("update Intcad"), "{error}");
         assert!(!error.contains("unknown variant"), "format refusal precedes decoding new variants");
     }
 
@@ -2285,7 +2280,7 @@ mod tests {
         saved["format"] = Value::from(format_string(FORMAT + 1));
         saved["features"][0]["sketch"]["constraints"][0]["type"] = Value::from("future_dimension");
         let error = read(&saved.to_string()).unwrap_err().to_string();
-        assert!(error.contains("newer SolidCraft") && !error.contains("unknown variant"), "{error}");
+        assert!(error.contains("newer Intcad") && !error.contains("unknown variant"), "{error}");
     }
 
     #[test]
@@ -2400,7 +2395,7 @@ mod tests {
         assert!(read(&v.to_string()).is_ok(), "a file without a format is format 1");
         v["format"] = Value::from(format_string(FORMAT + 1));
         let e = read(&v.to_string()).unwrap_err().to_string();
-        assert!(e.contains("newer SolidCraft"), "{e}");
+        assert!(e.contains("newer Intcad"), "{e}");
         for bad in ["solidcraft/0", "acad/3", "solidcraft/-1", "solidcraft/99999999999999999999"] {
             v["format"] = Value::from(bad);
             assert!(read(&v.to_string()).is_err(), "{bad}");

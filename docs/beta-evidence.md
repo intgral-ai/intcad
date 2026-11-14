@@ -395,3 +395,75 @@ Get-AuthenticodeSignature 'C:\Program Files\SolidCraft\solidcraft.exe' |
 Then run the GUI and the BYOK flow on a clean physical machine. Record the exact
 candidate SHA, asset hash, provider, model, prompt, report/snapshot ids and
 screenshots. A run on another SHA is not evidence for this candidate.
+
+## 6. Beta.3 candidate evidence (run 43381698526)
+
+Candidate head `c1d466d848cd49a17f23c5adc7a1c5309c56d4ee`; PR #106 tested
+merge `13417bb37f746b7c86dee67bce48b47ca8f597cd` (tree
+`6376a19bb3f21fe749d762dac412aa95bc73c099`). All six descriptors bind that
+`sourceRevision`.
+
+This promotion includes #113's reviewed `boolean_props` point-tangency fix, but
+not #113's baseline re-bless, costs or property-lane CI change. It keeps the
+authorized old-baseline 213 strict and 956 unbaselined exceptions. The
+determinism job has 150-minute headroom; the load-sensitive process tests use
+deterministic timing and an ACP fixture that keeps its stdout open.
+
+| Platform | Evidence | Result |
+|---|---|---|
+| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` sha `0302652993dadfbb7052b1987340cfdf857d5b2f5d110ac22367213521cd042e` | Verification run `43390930849`: `solidcraft-cli 0.1.0-beta.3`, `solidcraft 0.1.0-beta.3`. |
+| Linux aarch64 | tar sha `0698efc78bfbea25538048e31979e3a26a987d1333bfd4bacd9ba8bbf6379530` | Content scan `markers=[]`, `unchecked=[]`; not launched (no aarch64 host). |
+| Windows x64 | MSI sha `647d45d230505492170f3e95330fda18866766bffee3eeb442bfa537326b0911` | Verification run `43390930849` on a clean `windows-latest`: no existing install; admin extract and isolated `INSTALLFOLDER` both `solidcraft-cli 0.1.0-beta.3` (sha `16651797…`); installed app sha `6A1505FF…` printed `solidcraft 0.1.0-beta.3`. |
+| Windows x86 | MSI sha `18b89bc6009e51023e9fba4fa9e72e6b644ed6e7be6d9d19a06b7d8f57425747` | Content scan clean; not launched (no x86 host). |
+| Windows arm64 | MSI sha `741d4082220dac27a54f669fe9fc6afd130efb31e267f9474aeefec9c41fd0ea` | Content scan clean; not launched (no arm64 host). |
+| macOS universal | DMG sha `1a9aa1a9907bd6e82464db725d6456d0a2d3471e7cd2bc7bb08cc5b7dc02bdd6` | Verification run `43390930849`: fat binary `x86_64 arm64`, `codesign` valid and satisfies its Designated Requirement, app `solidcraft 0.1.0-beta.3`, ejected cleanly. |
+
+The six descriptors all bind `sourceRevision=13417bb37...`; their `contents.json`
+reports `markers=[]` and `unchecked=[]`, and the checked files match `build.json`.
+Verification run `43390930849` passed all three platforms for this tested merge.
+This is package/install evidence, not a promotion-gate pass; the gate decision is
+recorded in PR #106.
+
+Accepted gaps remain: unsigned/not notarized, no clean physical-machine GUI
+acceptance, and macOS/Windows real BYOK unverified. No tag or public release was
+created; `v0.1.0-beta.1` and its assets remain untouched.
+
+## 6. Beta.3 candidate (this round)
+
+| Item | Value |
+|---|---|
+| Promotion PR | [#106](https://github.com/intgral-ai/open-skyfall-desktop/pull/106) |
+| Candidate head | `91be129edaafb98a3025de05750c2c9101916c8e` |
+| Tested merge | `d10d35227beed019d0cec86998a0349b69e3892c` |
+| Release-gate run | [43484410173](https://github.com/intgral-ai/open-skyfall-desktop/actions/runs/43484410173) |
+| Main merge | `b0a7b7ace12c3ebd4ef787a00bf37f5303bac09f` (tree `84cae2dab17a9afda6105490d8b29debbb75b290`) |
+| Tested tree | `84cae2dab17a9afda6105490d8b29debbb75b290` (equal to the main merge tree) |
+| Install verification | [43507776395](https://github.com/intgral-ai/open-skyfall-desktop/actions/runs/43507776395) (Linux, macOS, Windows all success) |
+| Version | `0.1.0-beta.3` |
+| Published Beta tag | `v0.1.0-beta.1` (unchanged; no tag or public release this round) |
+
+This round promotes the Beta to `main`; it does **not** publish a new release. The
+distributable build is the CI artifact set from run `43484410173`:
+`release-linux-x86_64`, `release-macos` and `release-windows-x64`, with their
+`package-evidence-*` descriptors. The gate's `Beta promotion gate` and required
+`release-gate` job passed; the Beta evidence is `verdict: accepted-beta`,
+`problems: []`, action matrix `0 unexcused, 0 changed, 0 fixed`, 956 unbaselined.
+
+| Platform | Artifact | SHA-256 | Installed/start check |
+|---|---|---|---|
+| Linux x86_64 | `solidcraft-0.1.0-beta.3-linux-x86_64.tar.gz` | `bd22183863125eeb6ddbc59ea161883918bae95bc3964f987adbab4cc9d21224` | CLI and app report `0.1.0-beta.3` |
+| macOS universal | `solidcraft-0.1.0-beta.3-macos-universal.dmg` | `9686ad4e0a588367e9e8dba3614a7206ad5b5cf4850dd26470a57b42efbba6d1` | mounts; `x86_64 arm64`; app reports `0.1.0-beta.3`; structural codesign check passes (not notarized) |
+| Windows x64 | `solidcraft-0.1.0-beta.3-windows-x64.msi` | `71C8947F4EA874D6A23B0CBC8DEA290F50C13C9D0090C70B460E6A1F5D8A493D` | silent install; CLI and app report `0.1.0-beta.3` |
+
+The Beta gate records the randomized property lane but does not reject on it; the
+reviewed action matrix and deterministic regressions are the Beta kernel gate. The
+property lane is not green: upstream SMLib refusals remain in its JUnit and are not
+rewritten as passes. Two reviewed Cylinder/Sphere cases have deterministic
+regressions: the exact point tangency and the axis-X cylinder/sphere seam class for
+Intersect/Cut.
+
+The property lane's JUnit failure (`identity_on_grid`) is recorded as evidence, not
+accepted as a pass; the lane is not green. The non-required `ci` aggregate failed on
+the reviewed action-matrix shards and the recorded property lane; the `packages`
+aggregate failed because Beta skips the non-Beta formats. The required `release-gate`
+check passed. No BYOK or clean physical-machine GUI claim is made.

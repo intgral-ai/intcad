@@ -48,6 +48,17 @@
             libxext
             libxcb
           ])
+          # The Assistant is drawn by a WebKitGTK page in a GTK child window. These are linked
+          # directly, so they are both build inputs and runtime closure members: the packages
+          # and the wrapper must carry them, not leave them to the host distribution.
+          ++ (with pkgs; [
+            gtk3
+            webkitgtk_4_1
+          ])
+          # A fcitx5 GTK module built against this GTK/GLib. A module from another
+          # nixpkgs/system can fail GTK's GLib micro-version check; the wrapper puts a
+          # matching one first, without choosing an input method for the user.
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.fcitx5-gtk ]
         );
       # macOS needs none of the above: winit talks to AppKit, wgpu renders through Metal, and the
       # OS ships its GPU drivers, so the darwin package and shells skip the wrapper and paths.
@@ -55,7 +66,10 @@
       driverShareDir = pkgs: if pkgs.stdenv.isLinux then "/run/opengl-driver/share" else "";
       libraryPath =
         pkgs:
-        if pkgs.stdenv.isLinux then "${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}:${driverLibDir pkgs}" else "";
+        if pkgs.stdenv.isLinux then
+          "${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}:${driverLibDir pkgs}"
+        else
+          "";
 
       shellHook = pkgs: ''
         ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
@@ -78,6 +92,8 @@
         # `cargo build` produce binaries from somewhere else.
         default = pkgs.mkShellNoCC {
           name = "solidcraft";
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = runtimeLibs pkgs;
           LD_LIBRARY_PATH = libraryPath pkgs;
           shellHook = shellHook pkgs;
         };
@@ -91,7 +107,9 @@
             pkgs.rustc
             pkgs.rustfmt
             pkgs.clippy
+            pkgs.pkg-config
           ];
+          buildInputs = runtimeLibs pkgs;
           LD_LIBRARY_PATH = libraryPath pkgs;
           # Under target/, which .gitignore already covers.
           CARGO_TARGET_DIR = "target/nix";
@@ -104,80 +122,124 @@
 
       packages = forAllSystems (pkgs: rec {
         default = solidcraft;
-        solidcraft = assert pkgs.lib.assertMsg
-          (pkgs.lib.versionAtLeast pkgs.rustc.version (pkgs.lib.importTOML ./Cargo.toml).workspace.package.rust-version)
-          "SolidCraft requires the Rust version advertised in Cargo.toml; update the pinned nixpkgs input.";
+        solidcraft =
+          assert pkgs.lib.assertMsg
+            (pkgs.lib.versionAtLeast pkgs.rustc.version (pkgs.lib.importTOML ./Cargo.toml)
+            .workspace.package.rust-version)
+            "SolidCraft requires the Rust version advertised in Cargo.toml; update the pinned nixpkgs input.";
           pkgs.rustPlatform.buildRustPackage {
-          pname = "solidcraft";
-          version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
-          src = self;
+            pname = "solidcraft";
+            version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
+            src = self;
 
-          cargoLock.lockFile = ./Cargo.lock;
-          # The CLI draws the same packaging icons as the other Linux distributions.
-          cargoBuildFlags = [
-            "-p"
-            "solidcraft"
-            "-p"
-            "solidcraft-cli"
-          ];
-          cargoInstallFlags = [
-            "-p"
-            "solidcraft"
-            "-p"
-            "solidcraft-cli"
-          ];
-          # `cargo xtask ci` is the test gate (it wants a wasm target and a GPU); the sandbox has
-          # neither.
-          doCheck = false;
-
-          nativeBuildInputs = [ pkgs.makeWrapper ];
-          buildInputs = runtimeLibs pkgs;
-
-          postInstall = ''
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-              install -Dm644 assets/platforms/linux/io.tangencylabs.solidcraft.desktop \
-                $out/share/applications/io.tangencylabs.solidcraft.desktop
-              install -Dm644 assets/platforms/linux/io.tangencylabs.solidcraft.mime.xml \
-                $out/share/mime/packages/io.tangencylabs.solidcraft.xml
-              for size in 16 24 32 48 64 128 256 512; do
-                icon=$out/share/icons/hicolor/''${size}x''${size}/apps/io.tangencylabs.solidcraft.png
-                mkdir -p "$(dirname "$icon")"
-                cp assets/icons/app/linux/exports/hicolor/''${size}x''${size}/apps/io.tangencylabs.solidcraft.png "$icon" >/dev/null
-              done
-            ''}
-          '';
-
-          # Linux only: the app reaches the window through dlopen'd libraries, so the packaged
-          # binary needs the same LD_LIBRARY_PATH the shell exports. File dialogs go through the
-          # desktop portal and fall back to zenity without one (#2177), so zenity comes along,
-          # after the system's own on PATH. macOS needs no wrapper.
-          postFixup = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-            wrapProgram $out/bin/solidcraft \
-              --prefix LD_LIBRARY_PATH : "${libraryPath pkgs}" \
-              --suffix PATH : "${pkgs.lib.makeBinPath [ pkgs.zenity ]}" \
-              --set-default XDG_DATA_DIRS /usr/local/share:/usr/share \
-              --prefix XDG_DATA_DIRS : "$out/share:${driverShareDir pkgs}"
-          '';
-
-          meta = {
-            description = "Rust-native parametric 3D CAD app";
-            homepage = "https://github.com/bherbruck/solidcraft";
-            license = with pkgs.lib.licenses; [
-              mit
-              asl20
+            # The kernel's geometry record is a pinned Git dependency; importCargoLock needs the
+            # exact source hash to build without network. The revisions match Cargo.toml.
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "solidcore-1.0.1" = "sha256-SziXzxkQXY29PBOG7Ct3W8dex4RUWfAEczFUakB0k50=";
+                "solidcore-record-0.1.0" = "sha256-5LUUk4lmC3igIXyHnmJEXj17je0gEH9AoB0iTd5z0A0=";
+              };
+            };
+            # The CLI draws the same packaging icons as the other Linux distributions.
+            cargoBuildFlags = [
+              "-p"
+              "solidcraft"
+              "-p"
+              "solidcraft-cli"
             ];
-            mainProgram = "solidcraft";
+            cargoInstallFlags = [
+              "-p"
+              "solidcraft"
+              "-p"
+              "solidcraft-cli"
+            ];
+            # `cargo xtask ci` is the test gate (it wants a wasm target and a GPU); the sandbox has
+            # neither.
+            doCheck = false;
+
+            nativeBuildInputs = [
+              pkgs.makeWrapper
+              pkgs.pkg-config
+              pkgs.wrapGAppsHook3
+            ];
+            buildInputs = runtimeLibs pkgs;
+
+            postInstall = ''
+              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                install -Dm644 assets/platforms/linux/io.tangencylabs.solidcraft.desktop \
+                  $out/share/applications/io.tangencylabs.solidcraft.desktop
+                install -Dm644 assets/platforms/linux/io.tangencylabs.solidcraft.mime.xml \
+                  $out/share/mime/packages/io.tangencylabs.solidcraft.xml
+                install -Dm644 packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt \
+                  $out/share/doc/solidcraft/WEB-VIEW-PLATFORM-NOTICES.txt
+                for size in 16 24 32 48 64 128 256 512; do
+                  icon=$out/share/icons/hicolor/''${size}x''${size}/apps/io.tangencylabs.solidcraft.png
+                  mkdir -p "$(dirname "$icon")"
+                  cp assets/icons/app/linux/exports/hicolor/''${size}x''${size}/apps/io.tangencylabs.solidcraft.png "$icon" >/dev/null
+                done
+              ''}
+            '';
+
+            # Linux only: the app reaches the window through dlopen'd libraries, so the packaged
+            # binary needs the same LD_LIBRARY_PATH the shell exports. File dialogs go through the
+            # desktop portal and fall back to zenity without one (#2177), so zenity comes along,
+            # after the system's own on PATH. wrapGAppsHook3 adds the GDK pixbuf loaders, GIO
+            # modules and GSettings schemas GTK 3 and WebKitGTK need outside nix develop; without
+            # them the Assistant's web view cannot make a page. macOS needs no wrapper.
+            preFixup = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              # GTK finds input methods through its immodules cache. The system one on NixOS names
+              # the session's fcitx5-gtk, built against a different GTK/GLib than this package:
+              # GTK then refuses it ("GLib version too old (micro mismatch)") and no Chinese input
+              # reaches the page. Build a cache from this closure's GTK and fcitx5-gtk and point
+              # GTK_IM_MODULE_FILE at it, so the module matches the GTK that loads it.
+              mkdir -p $out/lib/gtk-3.0/3.0.0
+              GTK_PATH=${pkgs.gtk3}/lib/gtk-3.0:${pkgs.fcitx5-gtk}/lib/gtk-3.0 \
+                ${pkgs.gtk3.dev}/bin/gtk-query-immodules-3.0 > $out/lib/gtk-3.0/3.0.0/immodules.cache
+              gappsWrapperArgs+=(
+                --prefix LD_LIBRARY_PATH : "${libraryPath pkgs}"
+                --suffix PATH : "${pkgs.lib.makeBinPath [ pkgs.zenity ]}"
+                --set-default XDG_DATA_DIRS /usr/local/share:/usr/share
+                --prefix XDG_DATA_DIRS : "$out/share:${driverShareDir pkgs}"
+                --prefix GTK_PATH : "${pkgs.fcitx5-gtk}/lib/gtk-3.0"
+                --set GTK_IM_MODULE_FILE "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+              )
+            '';
+
+            meta = {
+              description = "Rust-native parametric 3D CAD app";
+              homepage = "https://github.com/intgral-ai/open-skyfall-desktop";
+              # The app is MIT/Apache-2.0. The closure also carries GTK 3 (LGPL-2.1-or-later) and
+              # WebKitGTK 4.1 (LGPL-2.1-or-later and BSD-2-Clause), dynamically linked; their
+              # notice text is installed under share/doc/solidcraft.
+              license = with pkgs.lib.licenses; [
+                mit
+                asl20
+                lgpl21Plus
+                bsd2
+              ];
+              mainProgram = "solidcraft";
+            };
           };
-        };
       });
 
-      apps = forAllSystems (pkgs: let
-        package = self.packages.${pkgs.stdenv.hostPlatform.system}.solidcraft;
-        desktop = { type = "app"; program = "${package}/bin/solidcraft"; };
-      in {
-        default = desktop;
-        solidcraft = desktop;
-        cli = { type = "app"; program = "${package}/bin/solidcraft-cli"; };
-      });
+      apps = forAllSystems (
+        pkgs:
+        let
+          package = self.packages.${pkgs.stdenv.hostPlatform.system}.solidcraft;
+          desktop = {
+            type = "app";
+            program = "${package}/bin/solidcraft";
+          };
+        in
+        {
+          default = desktop;
+          solidcraft = desktop;
+          cli = {
+            type = "app";
+            program = "${package}/bin/solidcraft-cli";
+          };
+        }
+      );
     };
 }

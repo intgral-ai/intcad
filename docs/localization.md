@@ -135,7 +135,11 @@ and an optional `CRAFT_FONTS_DIR` font pack, and skips files that cannot be pars
 chain after the general CJK font: many Japanese CJK fonts (Hiragino Gothic, Meiryo, Yu Gothic)
 match the CJK font search but lack simplified characters, so a second fallback found by the
 Chinese font-name list (`PingFang`, `Microsoft YaHei`, `Noto Sans CJK SC`, …) covers them per
-glyph. No fonts are redistributed in native desktop distribution packages; native builds rely
+glyph. On macOS 15 and later PingFang is no longer in `/System/Library/Fonts`: the host looks
+for it first among the system's font assets (`/System/Library/AssetsV2/com_apple_MobileAsset_Font*`)
+and takes the collection's regular simplified Chinese face (PingFang SC) alone, so a Chinese
+interface is drawn in the face the system and its web views use, not in Hiragino Sans GB W3.
+No fonts are redistributed in native desktop distribution packages; native builds rely
 entirely on existing operating system fonts or craft-fonts.
 
 In the browser, `solidcraft-web` ships self-hosted script fonts (SIL OFL 1.1) in the web distribution

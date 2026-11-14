@@ -1,4 +1,4 @@
-# open-skyfall brand kit
+# Intcad brand kit
 
 The product mark for this fork is `logo/open-skyfall-mark.svg` (master) and
 `logo/open-skyfall-mark-1024.png` (light-card render). It uses Intgral's V22

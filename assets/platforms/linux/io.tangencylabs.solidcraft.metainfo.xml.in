@@ -5,14 +5,14 @@
   <id>io.tangencylabs.solidcraft</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT OR Apache-2.0</project_license>
-  <name>open-skyfall</name>
+  <name>Intcad</name>
   <summary>Independent parametric 3D CAD</summary>
   <developer id="io.github.intgral-ai">
     <name>Intgral</name>
   </developer>
   <description>
     <p>
-      open-skyfall is an open-source parametric 3D CAD application written in Rust. Sketch on a
+      Intcad is an open-source parametric 3D CAD application written in Rust. Sketch on a
       plane, constrain and dimension the sketch, turn profiles into solids on a feature
       timeline, and change a parameter to watch the timeline rebuild.
     </p>

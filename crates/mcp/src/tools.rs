@@ -401,7 +401,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "crash_reports",
             "Crash reports",
-            "open-skyfall's crash reports on this computer (the app's when connected to it). Without `id`: the list, newest \
+            "Intcad's crash reports on this computer (the app's when connected to it). Without `id`: the list, newest \
              first (id, kind, time, message, command, count, version, path, replayable). With `id`: the whole report: \
              message, location, backtrace, app version and commit, system, the command that crashed and the recent ones, \
              and design_path / replay_path when it can be replayed: `solidcraft-cli crashes replay <id>`, or \
@@ -469,7 +469,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "Save the design",
             "Save the design to `path` or its current file (a design opened as .solidcraft keeps that name). New designs are .sc files. The default is a design container; a .json path selects plain JSON. Set format to container or json to override the path. \
              By default the path must lie in one of the agent's folders: the folder of a design opened or saved in this session (not its hidden files), \
-             open-skyfall's recovery folder, or a folder this server was started with `--allow-path DIR`. For a folder outside them, ask the user \
+             Intcad's recovery folder, or a folder this server was started with `--allow-path DIR`. For a folder outside them, ask the user \
              to add `--allow-path` and that folder to this server's arguments in their MCP client configuration.",
             obj(
                 json!({"path": string("Path to save to, e.g. part.sc (default: the current file)"), "format": {"type": "string", "enum": ["container", "json"], "description": "Design encoding (default: JSON for .json, container otherwise)"}}),
@@ -480,8 +480,8 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "skill_reference",
             "Skill reference",
-            "Read a document of open-skyfall's bundled agent skills (solidcraft-modeling, solidcraft-mechanisms, \
-             solidcraft-editing, solidcraft-checking) from the copy built into open-skyfall. `file` defaults to reference.md; \
+            "Read a document of Intcad's bundled agent skills (solidcraft-modeling, solidcraft-mechanisms, \
+             solidcraft-editing, solidcraft-checking) from the copy built into Intcad. `file` defaults to reference.md; \
              each skill also has SKILL.md. Unknown skills or files are refused with the available ones.",
             obj(
                 json!({

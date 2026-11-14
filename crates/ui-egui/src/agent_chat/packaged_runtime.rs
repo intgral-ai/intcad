@@ -68,7 +68,7 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::NotInstalled { searched } => write!(
                 f,
-                "the installed application has no mastra/runtime.json (looked in {}); reinstall SolidCraft from a package that includes the Mastra runtime",
+                "the installed application has no mastra/runtime.json (looked in {}); reinstall Intcad from a package that includes the Mastra runtime",
                 searched.display()
             ),
             Self::UnsupportedTarget { target } => write!(
@@ -76,22 +76,22 @@ impl fmt::Display for RuntimeError {
                 "the built-in Mastra workflow is not available for {target}; Windows x86/arm64, Linux arm64 and other targets do not ship it in 1.0"
             ),
             Self::InvalidManifest { detail } => write!(f, "mastra/runtime.json is invalid: {detail}"),
-            Self::MissingFile { path } => write!(f, "the installed Mastra runtime is incomplete: mastra/{path} is missing; reinstall SolidCraft"),
-            Self::DigestMismatch { path } => write!(f, "mastra/{path} does not match its recorded SHA-256 digest; reinstall SolidCraft"),
+            Self::MissingFile { path } => write!(f, "the installed Mastra runtime is incomplete: mastra/{path} is missing; reinstall Intcad"),
+            Self::DigestMismatch { path } => write!(f, "mastra/{path} does not match its recorded SHA-256 digest; reinstall Intcad"),
             Self::UnsafePath { path } => write!(f, "mastra/runtime.json names an unsafe path ({path}); the package is damaged"),
             Self::RevisionMismatch { expected, found } => write!(
                 f,
-                "the Mastra runtime was built from repository revision {found}, but this SolidCraft is {expected}; install the matching package"
+                "the Mastra runtime was built from repository revision {found}, but this Intcad is {expected}; install the matching package"
             ),
             Self::UnboundHostRevision => write!(
                 f,
-                "this SolidCraft build has no Git revision, so it cannot verify the installed Mastra runtime; use a release package or rebuild with SOLIDCRAFT_GIT_REVISION_OVERRIDE"
+                "this Intcad build has no Git revision, so it cannot verify the installed Mastra runtime; use a release package or rebuild with SOLIDCRAFT_GIT_REVISION_OVERRIDE"
             ),
             Self::ContractMismatch { expected, found } => {
-                write!(f, "the Mastra runtime carries contract digest {found}, but this SolidCraft requires {expected}; install the matching package")
+                write!(f, "the Mastra runtime carries contract digest {found}, but this Intcad requires {expected}; install the matching package")
             }
             Self::VersionMismatch { field, expected, found } => {
-                write!(f, "the Mastra runtime's {field} is {found}, but this SolidCraft requires {expected}")
+                write!(f, "the Mastra runtime's {field} is {found}, but this Intcad requires {expected}")
             }
             Self::UnapprovedArtifact { inventory } => write!(
                 f,

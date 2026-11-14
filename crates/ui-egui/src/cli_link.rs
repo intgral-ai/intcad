@@ -117,7 +117,7 @@ pub fn install_from_menu() -> (String, bool) {
         return (format!("solidcraft-cli is available as {}", l.display()), false);
     }
     let Some(script) = admin_script(&cli) else {
-        return ("The app's path has characters the installer cannot quote; move SolidCraft to /Applications.".into(), true);
+        return ("The app's path has characters the installer cannot quote; move Intcad to /Applications.".into(), true);
     };
     match std::process::Command::new("osascript").args(["-e", &script]).output() {
         Ok(o) if o.status.success() => ("solidcraft-cli is available as /usr/local/bin/solidcraft-cli".into(), false),

@@ -617,7 +617,7 @@ fn configure_file(t: &Target, exe: &str, live: bool, dry_run: bool, mode: Mode) 
             Change::Updated => format!("updated the path of {name}"),
             Change::Unchanged => format!("{name} already set up"),
             Change::Removed => format!("removed {name}"),
-            Change::Custom => format!("{name} left as you have it (it is not a plain SolidCraft entry)"),
+            Change::Custom => format!("{name} left as you have it (it is not a plain Intcad entry)"),
         })
         .collect();
     let said = said.join(", ");

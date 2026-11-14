@@ -526,8 +526,8 @@ pub fn crash_draft(report: &serde_json::Value) -> Draft {
     let what = match kind {
         Some("command_panic") => "An internal error stopped a command (the design was left unchanged)",
         Some("kernel_panic_recovered") => "The geometry kernel hit an internal error (caught; the operation failed)",
-        Some("unclean_exit") => "An earlier open-skyfall session ended without recording a clean exit",
-        _ => "open-skyfall hit an internal error",
+        Some("unclean_exit") => "An earlier Intcad session ended without recording a clean exit",
+        _ => "Intcad hit an internal error",
     };
     let detection = if kind == Some("unclean_exit") {
         "\n\nDetected on a later launch; the exact exit time was not recorded. A system shutdown or forced stop can also cause an unclean exit."
@@ -569,7 +569,7 @@ pub fn crash_draft(report: &serde_json::Value) -> Draft {
         },
         s("id"),
         block(&format!(
-            "open-skyfall {} ({}, built {})\nOS: {} {}\n{}",
+            "Intcad {} ({}, built {})\nOS: {} {}\n{}",
             field(app, "version"),
             field(app, "commit"),
             field(app, "built"),
@@ -1004,7 +1004,7 @@ mod tests {
         for label in [
             "Open GitHub issue form",
             "Copy report",
-            "open-skyfall cannot submit reports directly. Submit on GitHub; no token is needed in the app.",
+            "Intcad cannot submit reports directly. Submit on GitHub; no token is needed in the app.",
             "If you are offline or GitHub does not open, use Copy report and keep the text to submit later.",
         ] {
             assert!(h.widget(label).is_some(), "missing submission action or explanation: {label}");
@@ -1332,8 +1332,7 @@ mod tests {
 
     #[test]
     fn crash_draft_marks_later_detection_without_losing_native_evidence() {
-        let message =
-            "open-skyfall 0.3.2 (started 2026-10-01T10:00:00Z) crashed with ACCESS_VIOLATION (0xc0000005) in driver.dll+0x1234 between commands";
+        let message = "Intcad 0.3.2 (started 2026-10-01T10:00:00Z) crashed with ACCESS_VIOLATION (0xc0000005) in driver.dll+0x1234 between commands";
         let frame = "0xc0000005 ACCESS_VIOLATION at driver.dll+0x1234";
         let report = json!({
             "kind": "unclean_exit", "count": 2, "first_seen": "2026-10-12T16:23:41Z",

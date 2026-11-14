@@ -44,6 +44,73 @@ when you send a message or press **Connect** (or at launch, when you turned that
 
 ## The panel
 
+**On macOS, Linux and Windows the Assistant is a web view inside its panel**, and the panel is always part
+of the app's window. The whole of it is drawn by a page
+built from Mastra's playground-ui components (`packages/assistant-web`): the bar with the agent
+(its mode and options under the same menu, and, while it runs, the row that stops the agent and
+everything it started), the state, **Connect** while the agent is not running, **New
+chat**, the panel's menu (dock on the other side, fold to a strip) and **Close**;
+the conversation, with tool calls as rows that fold, a request for approval with **Allow once**,
+**Always allow** and **Deny** always in view, the plan as a task list above the message box, and
+**Undo these changes**; and the message box, whose **+** menu has **Choose a file…**, **Paste a
+picture**, **Attach view**, **Attach selection** and **Pick context**, next to the permission
+mode and the skill, and the agent's model beside **Send**: a list you search by typing, which
+also offers what you typed as a model of your own when the agent takes one. What the page shows
+and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
+
+- While a message runs, the number of changes it has made so far shows in a line over the message
+  box, and the square beside **Send** stops that message. The line is gone when the message ends:
+  the conversation then says how many changes it made, with **Undo these changes**.
+- In a narrow panel the message box's controls take two lines, the model and **Send** under the
+  rest, and the bar drops the state rather than cut the agent's name short.
+- Messages that wait (queued behind the running one, or left by **Stop**) sit in a box over the
+  message box, so they stay in view: each can be edited or removed, and **Send now** (or
+  Ctrl/Cmd+Enter in the message box) stops the running step and sends them next.
+- A message's pictures show as thumbnails; clicking one opens the app's picture viewer over the
+  window. What a message was sent with shows as chips grouped by kind, and the things picked for
+  the next message can be taken off one by one.
+- In an Anatomy answer, the names of bodies and features that the app listed are underlined:
+  clicking one selects it in the design. Nothing an answer writes itself becomes such a name.
+- Files dropped on the panel are attached to the next message.
+- What is selected in the design shows over the message box, by name and grouped by kind, so you
+  can see what the agent finds when it reads the selection through the app's tools. It is also
+  written into each message, unless **Attach selection** is off (the cross beside it, the **+**
+  menu, or Preferences → AI → Panel).
+- In the floating layout the panel is a rounded surface inside the panel's own border and shadow,
+  rounder than the app's other panels, and the strip at its inner edge is still what you drag to
+  make it wider or narrower. Its text follows the app's zoom.
+- The page loads only its own files, which are part of the app, and sends nothing anywhere: a
+  picture or a link in an agent's answer never loads from the network, and a web link opens in
+  your browser. A message's own pictures are served to the page by the app.
+- A web view lies above everything the app draws, so it steps aside while a menu, a tooltip, a
+  dialog or another floating panel is over its place, and while the picture viewer is open, and
+  comes back when that is gone.
+- While you type in the message box, the Edit menu has **Cut**, **Copy**, **Paste** and
+  **Select All**, and undo and redo stay with the text you are typing.
+- The conversation goes on while the window is behind another one.
+- The Assistant never opens in a window of its own: its menu has no **Own window**, and one
+  chosen by an older version opens in the side panel.
+- On Linux the web view is WebKitGTK and needs an X11 window, which the app opens by default,
+  in a Wayland session as well (through XWayland). The panel's corners are square there. A click
+  on the page gives it the keyboard at once, before the first key, so nothing typed at click
+  time is lost; a click anywhere else in the window gives the keyboard back to the app. GTK is
+  told the page has focus as well, so its input method can offer a composition and a candidate
+  list to the page. In a native Wayland window (on niri, or with
+  **Preferences › Graphics › Window system** set to Wayland) Wayland has no X11 child window for
+  WebKitGTK, so the panel says so and offers **Graphics settings**; it does not draw a second
+  conversation. Set **Window system** to X11 (or Automatic) and restart to use the Assistant
+  there. Its licences and the notices each package must ship are in
+  [web-view-licences.md](web-view-licences.md).
+- On Windows the web view is WebView2, which Windows 11 has and most Windows 10 machines have.
+  A machine without the runtime gets a panel that names it and offers **Retry** and **Assistant
+  settings**, not a second conversation; install the Evergreen runtime and retry. The panel's
+  corners are square there. While you type in the message box the keys are the page's: a click
+  anywhere else in the window gives them back to the app.
+- Where the app draws its own title bar (Windows and Linux), the web view stays off the window's
+  edges, so an edge beside a docked panel still resizes the window.
+- The browser still draws the built-in panel, which the rest of this page describes (**Own
+  window** included).
+
 In the floating layout, Assistant fills the viewport height in the shared rounded panel, with
 space around its edges. The compass and navigation bar move into the remaining space beside it. It overlays the model without changing the viewport projection;
 clicks and scrolling over the panel stay in the chat. The docked layout retains its side panel.
@@ -63,12 +130,8 @@ all of it.
   window and let go. The side it would land on lights up while you drag. You can also pick
   **Left** or **Right** under Preferences → AI → Panel. SolidCraft remembers the side.
 - **Width:** drag the panel's inner edge. SolidCraft remembers it.
-- **Its own window:** the pop-out button in the header (a window with an arrow) moves the chat
-  into a window of its own, named after the design, which you can move anywhere, including
-  another screen. The window's own close button closes the chat, which opens there again next
-  time; **Dock** (the same place in its header) puts it back in the side panel. You can also
-  pick **Own window** under Preferences → AI → Panel. SolidCraft remembers where the window
-  was and how big.
+- **No own window:** the Assistant is always a panel of the app's window. Its old pop-out button
+  and **Own window** preference are gone; a saved choice opens in the side panel.
 - **Minimise** (the line in the header) folds the panel into a small floating strip (a side strip in the docked layout) that keeps the chat
   icon, the agent's state, and a count of anything waiting for your answer. Click the icon to
   unfold it. **Close** (×) hides the panel. Neither stops the agent; **Stop** does.
@@ -386,7 +449,7 @@ wsl.exe -d Ubuntu -e bash -lc claude-agent-acp
 
 `bash -lc` runs your login shell's setup, so the agent is found where your `PATH` puts it (npm,
 nvm, Volta). When the command's program is `wsl` or `wsl.exe`, SolidCraft gives the agent its
-working folder and the `solidcraft-app` server's program as WSL shows them (`C:\Users\…` becomes
+working folder and the `intcad-app` server's program as WSL shows them (`C:\Users\…` becomes
 `/mnt/c/Users/…`). The server itself still runs on Windows and reaches the app at `127.0.0.1`, so
 this works with WSL's default networking. If you moved WSL's drive mounts away from `/mnt`
 (`automount.root` in `/etc/wsl.conf`), those paths won't match and the agent can't start the server.
@@ -450,7 +513,7 @@ current document. Ask Anatomy again to get links for the current revision.
 
 The agent reaches the open design only through SolidCraft's own tools (the
 [MCP server](mcp.md)), which SolidCraft hands it when the chat starts. That server is named
-`solidcraft-app`, so an MCP server you set up yourself under the name `solidcraft` (as in
+`intcad-app`, so an MCP server you set up yourself under the name `solidcraft` (as in
 [client configuration](mcp.md#client-configuration)) doesn't take its place:
 
 - **Read the design:** list commands, inspect features, sketches and parameters, measure,
@@ -470,7 +533,7 @@ The agent reaches the open design only through SolidCraft's own tools (the
   while you do; click it to open the viewer (the message's pictures one at a time, with **‹** and
   **›** or the arrow keys, closed with Esc or a click outside). A long message scrolls inside its
   box, so **Send** and the buttons beside it stay in view.
-- **Attach selection:** tick it to send what is selected in the model with your message, so the
+- **Attach selection:** on by default (Preferences → AI → Panel keeps your choice): what is selected in the model goes with your message, so the
   agent knows what "this edge" or "that feature" is. The box shows how many things are selected, counted as you clicked them (the two halves of a rim you clicked once are one).
   Faces and edges go with the names and numbers the agent's tools take and with their size and
   place (so they can be found again after an edit), features with their name and kind, bodies with
@@ -519,7 +582,7 @@ per agent, with **Reset**.
 These settings cover SolidCraft's tools. A coding agent's own tools (its shell, its file edits)
 follow the agent's own mode, which you pick in the panel's header. When an agent asks before
 using one of the chat's own SolidCraft tools and names it exactly as the Claude adapter does
-(`mcp__solidcraft-app__batch`), SolidCraft answers for you, since its own gate checks the call,
+(`mcp__intcad-app__batch`), SolidCraft answers for you, since its own gate checks the call,
 and notes it in the chat as *Auto-allowed*. Any other question appears in the panel, including
 a SolidCraft tool an agent words differently and a SolidCraft MCP server you added to the agent
 yourself. With **Allow everything**, or after **Always allow**, those questions are answered the

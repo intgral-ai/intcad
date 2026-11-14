@@ -360,6 +360,39 @@ pub enum BorderRole {
     Control,
 }
 
+/// A theme file's own scroll bars (`scrollbar`): a thin handle in the ink colour with no track,
+/// in place of egui's standard bar. Widths are logical points; opacities scale the ink.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scrollbar {
+    /// The handle while the pointer is over the scrolling area.
+    pub width: f32,
+    pub opacity: f32,
+    /// The handle while the pointer is on it or drags it.
+    pub hover_width: f32,
+    pub hover_opacity: f32,
+}
+
+impl Scrollbar {
+    /// These settings as egui's scroll style: the bar floats over the content, has no track and
+    /// stays hidden while the pointer is elsewhere.
+    pub fn style(self) -> egui::style::ScrollStyle {
+        egui::style::ScrollStyle {
+            floating: true,
+            bar_width: self.hover_width,
+            floating_width: self.width,
+            floating_allocated_width: 0.0,
+            foreground_color: true,
+            dormant_background_opacity: 0.0,
+            active_background_opacity: 0.0,
+            interact_background_opacity: 0.0,
+            dormant_handle_opacity: 0.0,
+            active_handle_opacity: self.opacity,
+            interact_handle_opacity: self.hover_opacity,
+            ..egui::style::ScrollStyle::floating()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Borders {
     pub primary: Option<Stroke>,
@@ -920,6 +953,8 @@ pub struct Tokens {
 
     /// Optional structural/control strokes. None retains each surface’s legacy styling.
     pub borders: Borders,
+    /// The active theme file's own scroll bars. None keeps egui's standard ones.
+    pub scrollbar: Option<Scrollbar>,
     /// File/start presentation, with explicit foreground/background pairs.
     pub file_dim: Color32,
     pub file_recovery_well: Color32,
@@ -1655,6 +1690,8 @@ pub fn apply(ctx: &egui::Context) {
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = egui::vec2(t.space_6, t.space_4);
         s.spacing.button_padding = egui::vec2(t.space_6, t.space_3);
+        // Set either way, so leaving a theme with its own scroll bars restores the standard ones.
+        s.spacing.scroll = t.scrollbar.map_or_else(egui::style::ScrollStyle::default, Scrollbar::style);
     });
     // The new visuals are painted on the next pass: without a repaint request the widgets
     // keep the previous theme's colours until some other event schedules a pass (#5802).
@@ -1664,6 +1701,24 @@ pub fn apply(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A theme with scroll bars of its own sets them when it is applied, and applying a theme
+    /// without them puts egui's standard ones back.
+    #[test]
+    fn a_themes_own_scroll_bars_are_applied_and_the_standard_ones_restored() {
+        let ctx = egui::Context::default();
+        let (dark, custom) = (is_dark(), CUSTOM.get());
+        let bar = Scrollbar { width: 4.0, opacity: 0.2, hover_width: 6.0, hover_opacity: 0.4 };
+        set_dark(true);
+        set_custom(Some(Custom { dark: true, tokens: Tokens { scrollbar: Some(bar), ..Tokens::dark() } }));
+        apply(&ctx);
+        assert_eq!(ctx.global_style().spacing.scroll, bar.style());
+        set_custom(None);
+        apply(&ctx);
+        assert_eq!(ctx.global_style().spacing.scroll, egui::style::ScrollStyle::default());
+        set_custom(custom);
+        set_dark(dark);
+    }
 
     fn tabs_state(base: &str, overrides: BTreeMap<String, crate::theme_files::OptionValue>) -> TabThemeState {
         let file = crate::theme_files::tab_fixture(base);

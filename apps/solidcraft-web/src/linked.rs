@@ -99,7 +99,7 @@ impl Download {
             app.session.doc_mut().name = name;
             app.session.mark_unsaved();
         } else if !ok && !cancelled {
-            app.set_status("Could not open design link: the downloaded file is not a valid open-skyfall design", true);
+            app.set_status("Could not open design link: the downloaded file is not a valid Intcad design", true);
         }
         let _ = vfs::remove(&path);
     }

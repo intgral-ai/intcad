@@ -29,7 +29,7 @@ const MAX_BATCH: usize = 1000;
 /// version-neutral (no workaround for a quirk of the current kernel or solver: those belong in
 /// `skills/solidcraft-modeling/reference.md`, which `skill_reference` serves per release), and
 /// `tests::instructions_name_only_real_tools` checks every tool and command id it names.
-const INSTRUCTIONS: &str = "open-skyfall is an independent parametric 3D CAD app, and these tools drive it: when its window is \
+const INSTRUCTIONS: &str = "Intcad is an independent parametric 3D CAD app, and these tools drive it: when its window is \
 open the user watches the model appear, otherwise a headless session builds it. When asked to design or build a part, do it \
 with these tools straight away. Units are millimetres and degrees in expressions, Z is up.\n\n\
 Start: for anything beyond one primitive, call `skill_reference {\"skill\":\"solidcraft-modeling\"}` first (command shapes, \
@@ -215,7 +215,7 @@ impl Server {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false}},
-                    "serverInfo": {"name": "solidcraft", "title": "open-skyfall", "version": env!("CARGO_PKG_VERSION")},
+                    "serverInfo": {"name": "solidcraft", "title": "Intcad", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": format!("{INSTRUCTIONS} Backend: {}.", self.backend.describe()),
                 }))
             }

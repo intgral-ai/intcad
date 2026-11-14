@@ -7,11 +7,18 @@
 # The binaries need glibc >= 2.35 (core24 has 2.39) and load X11, Wayland, xkbcommon and Vulkan
 # at runtime: the gnome extension supplies the desktop libraries and the GPU userspace (mesa,
 # through the gpu-2404 content interface) for the wgpu viewport.
+#
+# The gnome extension on core24 is the gnome-46-2404 content snap. Its own snapcraft.yaml
+# (github.com/ubuntu/gnome-sdk, branch gnome-46-2404, part `debs`) stage-packages
+# libwebkit2gtk-4.1-0, and its SDK part supplies GTK 3; the extension's command-chain puts both
+# on LD_LIBRARY_PATH. So GTK 3 and WebKitGTK 4.1 are not repeated here: staging a second copy
+# would make the snap larger and let an ABI from the base shadow the extension's matching
+# WebKitGTK helpers. The release job checks the mounted content snap for both libraries.
 name: solidcraft
-title: open-skyfall
+title: Intcad
 summary: Open-source parametric 3D CAD
 description: |
-  open-skyfall is an open-source parametric 3D CAD application written in Rust. Sketch on a
+  Intcad is an open-source parametric 3D CAD application written in Rust. Sketch on a
   plane, constrain and dimension the sketch, turn profiles into solids on a feature timeline,
   and change a parameter to watch the timeline rebuild.
 

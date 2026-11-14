@@ -18,6 +18,7 @@ impl Tokens {
             nav_field: Color32::from_rgb(255, 255, 255),
 
             borders: crate::theme::Borders::LEGACY,
+            scrollbar: None,
             icon_palette: None,
             file_dim: Color32::from_rgb(58, 70, 86),
             file_recovery_well: Color32::from_rgb(247, 226, 184),
