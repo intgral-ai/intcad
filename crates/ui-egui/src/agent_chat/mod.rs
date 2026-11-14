@@ -1406,6 +1406,18 @@ pub(crate) fn set_dfm_auto_enabled(app: &mut SolveApp, enabled: bool) {
     app.agent_chat.dfm.set_auto_enabled(enabled);
 }
 
+/// Re-read the open design's project switch. Call it when the document or the project settings
+/// change; the automatic-check path never reads the project itself.
+pub(crate) fn refresh_dfm_auto(app: &mut SolveApp) {
+    let enabled = app
+        .session
+        .path
+        .as_deref()
+        .and_then(|path| solidcraft_engine::project::Project::of(std::path::Path::new(path)).ok().flatten())
+        .is_some_and(|project| project.ci().enabled);
+    app.agent_chat.dfm.set_auto_enabled(enabled);
+}
+
 /// Submit a decided trigger through the engine's background DFM service. This is the one host
 /// entry: the Run DFM command and the automatic checks both come through here.
 fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
