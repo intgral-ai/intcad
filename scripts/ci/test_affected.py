@@ -133,7 +133,7 @@ class MonorepoSelection(unittest.TestCase):
         self.decision(result, "repo", "run", "always")
         self.decision(result, "pr-policy", "run", "always")
         self.assertEqual(result["rustPackages"], [])
-        for job in ("rust", "wasm", "contract-rust", "runtime", "contract-ts", "integration", "packages"):
+        for job in ("rust", "wasm", "web-offline", "contract-rust", "runtime", "contract-ts", "integration", "packages"):
             self.decision(result, job, "not_applicable", "no_relevant_change")
         self.assertEqual(result["platform"]["windows"],
                          {"decision": "not_applicable", "reason": "no_relevant_change", "paths": []})
@@ -170,6 +170,25 @@ class MonorepoSelection(unittest.TestCase):
         self.assertFalse(result["rustFull"])
         for job in ("rust", "wasm"):
             self.decision(result, job, "run", "selected_change")
+        self.decision(result, "web-offline", "not_applicable", "no_relevant_change")
+
+    def test_web_offline_follows_web_packaging_pages_and_harness_inputs(self):
+        # The synthetic workspace does not own apps/solidcraft-web, so that path
+        # falls back to full validation. Real workspace ownership is covered by
+        # RealWorkspace.test_web_offline_real_inputs_select_its_job.
+        self.decision(self.select("apps/solidcraft-web/index.html"), "web-offline", "run", "full_validation")
+        for path in ("packaging/web/package.sh", ".github/workflows/pages.yml",
+                     "xtask/src/web_offline.rs", "xtask/src/web_offline_test.rs", "xtask/src/main.rs"):
+            with self.subTest(path=path):
+                self.decision(self.select(path), "web-offline", "run", "selected_change")
+        # Unrelated Rust and xtask changes must not start the browser harness.
+        self.decision(self.select("crates/engine/src/lib.rs"), "web-offline", "not_applicable", "no_relevant_change")
+        self.decision(self.select("xtask/src/lists.rs"), "web-offline", "not_applicable", "no_relevant_change")
+        self.decision(self.select("docs/book/a.md"), "web-offline", "not_applicable", "no_relevant_change")
+        for options in ({"full": True}, {"event_name": "schedule"}):
+            with self.subTest(options=options):
+                self.decision(self.select("docs/a.md", **options), "web-offline", "run", "full_validation")
+        self.decision(self.select("docs/a.md", release_required=True), "web-offline", "run", "release_required")
 
     def test_embedded_document_keeps_rust_owner(self):
         self.assertIn("solidcraft-engine", self.select("NOTICE")["rustPackages"])
@@ -301,7 +320,7 @@ class MonorepoSelection(unittest.TestCase):
                                (["docs/a.md"], {"diff_complete": False}), ([], {"diff_complete": False})):
             result = self.select(*paths, **options)
             self.assertEqual(result["scope"], "full")
-            for job in ("rust", "wasm", "contract-rust", "runtime", "contract-ts", "integration", "artifact-policy"):
+            for job in ("rust", "wasm", "web-offline", "contract-rust", "runtime", "contract-ts", "integration", "artifact-policy"):
                 self.decision(result, job, "run", "full_validation")
 
     def test_schedule_selects_full_existing_consumers(self):
@@ -362,7 +381,7 @@ class MonorepoSelection(unittest.TestCase):
         self.inventory["missingRuntimeInputs"] = []
         result = self.select(full=True, release_required=True)
         self.assertTrue(result["releaseRequired"])
-        for job in ("rust", "wasm", "contract-rust", "runtime", "contract-ts", "integration", "artifact-policy", "packages"):
+        for job in ("rust", "wasm", "web-offline", "contract-rust", "runtime", "contract-ts", "integration", "artifact-policy", "packages"):
             self.decision(result, job, "run", "release_required")
         self.absent()
         for job in ("contract-rust", "runtime", "contract-ts", "integration", "artifact-policy", "packages"):
@@ -711,6 +730,17 @@ class ForkWorkflowContract(unittest.TestCase):
         self.assertIn("branches: [develop, main]", self.workflow)
         self.assertIn("merge_group:", self.workflow)
         self.assertIn("jobs.wasm.decision", self.job("wasm"))
+        self.assertIn("jobs.web-offline.decision", self.job("web-offline"))
+
+    def test_web_offline_has_a_dedicated_selected_job(self):
+        job = self.job("web-offline")
+        self.assertIn("plan || '{}'", job)
+        self.assertIn("jobs.web-offline.decision == 'run'", job)
+        self.assertIn("scripts/ci/main_merge.py execute", job)
+        self.assertIn("--job web-offline", job)
+        self.assertIn("timeout-minutes: 30", job)
+        self.assertIn("web-offline", self.job("ci"))
+        self.assertNotIn("web-offline-test", self.job("repo"))
 
     def test_ci_always_checks_real_needs_and_task_two_receipts(self):
         aggregate = self.job("ci")
@@ -738,7 +768,7 @@ class ForkWorkflowContract(unittest.TestCase):
         self.assertIn('SOLIDCRAFT_REQUIRE_GPU: "1"', self.job("rust"))
 
     def test_exact_plan_and_required_consumers_have_evidence_edges(self):
-        for job in ("repo", "pr-policy", "contract-rust", "runtime", "contract-ts", "rust", "wasm"):
+        for job in ("repo", "web-offline", "pr-policy", "contract-rust", "runtime", "contract-ts", "rust", "wasm"):
             self.assertIn("scripts/ci/main_merge.py execute", self.job(job))
             self.assertIn("selection-plan", self.job(job))
         for command in ("validation_mode:", "release_required:", "test_gate.py", "test_kernel_rig_plan.py"):
@@ -942,6 +972,24 @@ class RealWorkspace(unittest.TestCase):
 
     def test_cargo_lock_selects_full(self):
         self.assertEqual(affected.select(self.meta, ["Cargo.lock"]), (True, []))
+
+    def test_web_offline_real_inputs_select_its_job(self):
+        import plan
+        inventory = plan.detect_inventory(Path(__file__).resolve().parents[2], [])
+
+        def decide(path):
+            return plan.make_plan(self.meta, [path], inventory, source_revision="a" * 40,
+                                  event_name="pull_request", base_ref="develop", head_ref="task",
+                                  full=False, release_required=False, diff_complete=True)["jobs"]["web-offline"]
+
+        for path in ("apps/solidcraft-web/index.html", "apps/solidcraft-web/src/main.rs",
+                     "packaging/web/package.sh", ".github/workflows/pages.yml",
+                     "xtask/src/web_offline.rs", "xtask/src/web_offline_test.rs", "xtask/src/main.rs"):
+            with self.subTest(path=path):
+                self.assertEqual(decide(path)["decision"], "run")
+        for path in ("xtask/src/lists.rs", "crates/engine/src/lib.rs", "docs/book/src/dev/testing.md"):
+            with self.subTest(path=path):
+                self.assertEqual(decide(path)["decision"], "not_applicable")
 
     def test_docs_only_selects_nothing(self):
         self.assertEqual(affected.select(self.meta, ["docs/book/src/dev/testing.md", "CONTRIBUTING.md"]), (False, []))
