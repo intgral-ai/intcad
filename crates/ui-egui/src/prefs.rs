@@ -1562,6 +1562,9 @@ preference_settings! {
     /// Custom instructions (#8220): text the agent chat adds to its system note when a session
     /// starts (`agent_chat::acp::system_note`). No page reset discards this user-authored text.
     agent_instructions: String = String::new();
+    /// Direct API chat may stream verified providers. Off (the default): the previous buffered
+    /// behaviour, so no user-visible default changes without this preference.
+    agent_direct_streaming: bool = false;
     /// How chat turns execute: directly on the selected AI connection (the default, as before)
     /// or through a Mastra workflow runtime. Separate from the connection and model identity.
     chat_execution: crate::agent_chat::agents::Execution = crate::agent_chat::agents::Execution::Direct, PAGE_ASSISTANT;
@@ -8419,6 +8422,20 @@ mod tests {
         assert_eq!((app.preferences.validation, app.session.validation()), (Validation::Off, Validation::Off));
         super::defaults(&mut app, super::PAGE_DESIGN);
         assert_eq!(app.preferences.validation, Validation::EachFeature);
+    }
+
+    #[test]
+    fn direct_streaming_keeps_the_old_buffered_behaviour_by_default() {
+        assert!(!super::Prefs::default().agent_direct_streaming);
+    }
+
+    #[test]
+    fn direct_streaming_toggles_and_persists() {
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        assert!(!app.preferences.agent_direct_streaming);
+        let saved = super::set(&mut app, &json!({"agent_direct_streaming": true})).unwrap();
+        assert_eq!(saved["agent_direct_streaming"], true);
+        assert!(app.preferences.agent_direct_streaming);
     }
 
     #[test]

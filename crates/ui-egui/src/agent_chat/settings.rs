@@ -544,6 +544,7 @@ fn connecting_section(app: &mut SolveApp, ui: &mut egui::Ui) {
             ("ai.prefs.background_commands", "ui.agent_off_thread_note", "agent_off_thread", &mut app.preferences.agent_off_thread),
             ("ai.prefs.connect_at_start", "ai.prefs.connect_at_start_note", "agent_connect_at_start", &mut app.preferences.agent_connect_at_start),
             ("ai.prefs.open_at_start", "ai.prefs.open_at_start_note", "agent_chat_open_at_start", &mut app.preferences.agent_chat_open_at_start),
+            ("ai.prefs.direct_streaming", "ai.prefs.direct_streaming_note", "agent_direct_streaming", &mut app.preferences.agent_direct_streaming),
         ] {
             ui.horizontal(|ui| {
                 let response = ui_kit::checkbox(ui, tr(label), value).backing_on_hover_text(tr(help));

@@ -47,7 +47,7 @@ ron = "0.12"
 pollster = { workspace = true }
 getrandom = "0.3"
 # The update check (docs/updates.md): HTTPS with rustls, certificates from the operating system.
-ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # API keys of the agent chat's API agents (docs/agent-chat.md) live in the system keychain:
 # Keychain on macOS, Credential Manager on Windows, the Secret Service (pure-Rust D-Bus) elsewhere.

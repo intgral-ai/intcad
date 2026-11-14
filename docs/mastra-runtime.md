@@ -511,8 +511,14 @@ before use. Attachments are imported by the host before the turn starts.
 `AiCapabilities` has booleans `modelGenerate`, `agentRun`, `tools`, `images`,
 `documents`, `structuredOutput`, `modelSelection`, `usage`, plus
 `delivery: "buffered"|"streaming"`. Unsupported inputs fail before invocation.
-An unknown capability is false. Initial `HttpFn` calls use `buffered`; splitting
-a completed answer into pieces is not token streaming.
+An unknown capability is false. The normalized `model.generate` path remains
+`buffered`; splitting a completed answer into pieces is not token streaming. The
+desktop direct-chat backend (`ApiBackend`) can stream verified providers only
+(OpenAI Chat, Anthropic Messages, DeepSeek Chat over the OpenAI wire). The
+`agent_direct_streaming` preference is off by default, so the old buffered
+behaviour stays unless the user opts in; unknown providers start buffered either
+way. A stream that fails before any text or tool output may make one buffered
+attempt; after observable output it fails without replay.
 
 `ModelMessage` has `{role: "system"|"user"|"assistant"|"tool", content: ContentBlock[],
 toolCalls: ToolCall[], toolCallId: Id|null}`. Only assistant messages have nonempty

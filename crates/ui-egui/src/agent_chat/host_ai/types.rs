@@ -251,7 +251,7 @@ impl AiError {
         }
     }
 
-    pub(super) fn exhausted(resource: &'static str, limit: u32) -> Self {
+    pub(crate) fn exhausted(resource: &'static str, limit: u32) -> Self {
         Self {
             code: AiErrorCode::ResourceExhausted,
             message_id: "ui.host_ai_resource_limit",
@@ -295,7 +295,7 @@ impl AiError {
         }
     }
 
-    pub(super) fn cancelled() -> Self {
+    pub(crate) fn cancelled() -> Self {
         Self { code: AiErrorCode::Cancelled, message_id: "ui.host_ai_cancelled", details: AiErrorDetails::None, compatibility: [false; 2] }
     }
 
