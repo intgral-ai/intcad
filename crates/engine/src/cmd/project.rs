@@ -14,8 +14,7 @@ use crate::params::{bad, str_};
 use crate::project::{DataKind, DataRef, Override, OverrideLimit, Project};
 use crate::schema::TypedContract;
 use crate::schema::project::{
-    AttachParams, CiParams, CiSummary, CreateParams, CreateReply, DataParams, DataReply, InspectParams, InspectReply, ManifestSummary,
-    SettingsParams,
+    AttachParams, CiParams, CiSummary, CreateParams, CreateReply, DataParams, DataReply, InspectParams, InspectReply, ManifestSummary, SettingsParams,
 };
 use crate::{Result, Session};
 
