@@ -113,6 +113,7 @@ pub struct OverrideSummary {
     pub rule: String,
     /// `min` or `max`.
     pub limit: String,
+    pub old: BTreeMap<String, f64>,
     pub value: BTreeMap<String, f64>,
     pub reason: String,
     pub by: String,
@@ -182,7 +183,9 @@ pub struct OverrideParams {
     /// `min` or `max`; defaults to `min`.
     #[serde(default)]
     pub limit: Option<String>,
+    /// The number being replaced.
     #[serde(default)]
+    pub old: Option<BTreeMap<String, f64>>,
     pub value: Option<BTreeMap<String, f64>>,
     #[serde(default)]
     pub reason: Option<String>,

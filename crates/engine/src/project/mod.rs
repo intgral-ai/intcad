@@ -149,6 +149,9 @@ pub struct Checks {
 pub struct Override {
     pub rule: String,
     pub limit: OverrideLimit,
+    /// The number the project replaces, as the data it came from spelled it.
+    #[serde(default)]
+    pub old: BTreeMap<String, f64>,
     pub value: BTreeMap<String, f64>,
     pub reason: String,
     pub by: String,
@@ -513,6 +516,8 @@ fn ci_text(ci: &CiConfig) -> String {
                 OverrideLimit::Max => "max",
             })
         ));
+        let old = rule.old.iter().map(|(name, number)| format!("{name} = {number}")).collect::<Vec<_>>().join(", ");
+        text.push_str(&format!("old = {{ {old} }}\n"));
         let value = rule.value.iter().map(|(name, number)| format!("{name} = {number}")).collect::<Vec<_>>().join(", ");
         text.push_str(&format!("value = {{ {value} }}\n"));
         text.push_str(&format!("reason = {}\n", toml_string(&rule.reason)));
