@@ -27,11 +27,11 @@ fn a_created_project_reopens_with_the_same_identity_and_settings() {
     assert_eq!(root, dir.join("Bracket A"));
     assert_eq!(made.design, root.join("Bracket A.sc"));
     assert!(made.design.is_file());
-    assert!(root.join(".intgral/project.toml").is_file());
-    assert!(root.join(".intgral/ci.toml").is_file());
-    assert!(root.join(".intgral/specs/requirements.toml").is_file());
-    assert!(root.join(".intgral/checks/runs").is_dir());
-    assert!(root.join(".intgral/.gitignore").is_file());
+    assert!(root.join(".intcad/project.toml").is_file());
+    assert!(root.join(".intcad/ci.toml").is_file());
+    assert!(root.join(".intcad/specs/requirements.toml").is_file());
+    assert!(root.join(".intcad/checks/runs").is_dir());
+    assert!(root.join(".intcad/.gitignore").is_file());
     let id = made.project.manifest().id.clone();
 
     // Closing and reopening is a fresh read of the two files, not a template.
@@ -119,7 +119,7 @@ fn locate_finds_the_project_from_a_design_file_and_a_subfolder() {
     let root = made.project.root().to_path_buf();
     assert_eq!(Project::locate(&made.design), Some(root.clone()));
     assert_eq!(Project::locate(&root), Some(root.clone()));
-    assert_eq!(Project::locate(&root.join(".intgral")), Some(root.clone()));
+    assert_eq!(Project::locate(&root.join(".intcad")), Some(root.clone()));
     let elsewhere = dir.join("plain.step");
     fs::write(&elsewhere, b"not a step").expect("write");
     assert_eq!(Project::locate(&elsewhere), None);
@@ -181,7 +181,7 @@ fn overrides_need_a_reason_and_a_name() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A `.intgral/` folder can be added beside a saved design without moving it.
+/// A `.intcad/` folder can be added beside a saved design without moving it.
 #[test]
 fn attach_keeps_the_design_and_puts_the_project_beside_it() {
     let dir = scratch("attach");
@@ -193,7 +193,7 @@ fn attach_keeps_the_design_and_puts_the_project_beside_it() {
     assert_eq!(fs::read(&design).expect("read"), before, "the design is not rewritten");
     let root = dir.as_path();
     assert_eq!(made.project.root(), root);
-    assert!(root.join(".intgral/project.toml").is_file());
+    assert!(root.join(".intcad/project.toml").is_file());
     assert_eq!(made.project.manifest().designs, vec!["legacy part.sc".to_string()]);
     assert_eq!(made.project.manifest().name, "legacy part");
     assert_eq!(Project::locate(&design), Some(root.to_path_buf()));
@@ -209,7 +209,7 @@ fn attach_refuses_a_design_that_already_has_a_project() {
     let design = dir.join("Bracket.sc");
     fs::write(&design, b"design").expect("design");
     attach(&design).expect("first");
-    let manifest = dir.join(".intgral/project.toml");
+    let manifest = dir.join(".intcad/project.toml");
     let before = read(&manifest);
     let error = attach(&design).expect_err("second");
     assert!(matches!(error, ProjectError::AlreadyInProject { .. }), "{error}");
@@ -221,7 +221,7 @@ fn attach_refuses_a_design_that_already_has_a_project() {
     fs::write(&nested_design, b"design").expect("nested");
     let error = attach(&nested_design).expect_err("nested");
     assert!(matches!(error, ProjectError::AlreadyInProject { .. }), "{error}");
-    assert!(!nested.join(".intgral").exists());
+    assert!(!nested.join(".intcad").exists());
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -244,6 +244,6 @@ fn opening_a_plain_design_never_makes_a_project() {
     assert!(Project::of(&design).expect("lookup").is_none());
     assert_eq!(Project::locate(&design), None);
     assert_eq!(fs::read_dir(&dir).expect("list").count(), 1, "only the design");
-    assert!(!dir.join(".intgral").exists());
+    assert!(!dir.join(".intcad").exists());
     let _ = fs::remove_dir_all(&dir);
 }

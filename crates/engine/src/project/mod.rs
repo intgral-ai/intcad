@@ -1,6 +1,6 @@
-//! A project folder: the `.intgral/` folder that keeps a design's settings beside it.
+//! A project folder: the `.intcad/` folder that keeps a design's settings beside it.
 //!
-//! A project is a design file next to a `.intgral/` folder holding `project.toml` (identity and
+//! A project is a design file next to a `.intcad/` folder holding `project.toml` (identity and
 //! defaults) and `ci.toml` (checks and the data they use). This module reads, validates and
 //! creates those files. It never writes over an existing project: opening one reads it as it is.
 //!
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// The layout this build reads and writes.
 pub const SCHEMA_VERSION: u32 = 1;
 /// The folder that marks a project.
-pub const FOLDER: &str = ".intgral";
+pub const FOLDER: &str = ".intcad";
 /// The manifest inside it.
 pub const MANIFEST: &str = "project.toml";
 /// The check configuration inside it.
@@ -181,12 +181,12 @@ impl Project {
         &self.ci
     }
 
-    /// The `.intgral` folder.
+    /// The `.intcad` folder.
     pub fn folder(&self) -> PathBuf {
         self.root.join(FOLDER)
     }
 
-    /// Find the nearest folder at or above `start` that holds `.intgral/project.toml`.
+    /// Find the nearest folder at or above `start` that holds `.intcad/project.toml`.
     ///
     /// `start` may be a design file or a folder; a file is taken as its folder.
     pub fn locate(start: &Path) -> Option<PathBuf> {
@@ -232,7 +232,7 @@ pub struct CreatedProject {
     pub design: PathBuf,
 }
 
-/// Make a project folder at `parent/name`: the folder, `.intgral/`, its templates and an empty
+/// Make a project folder at `parent/name`: the folder, `.intcad/`, its templates and an empty
 /// design. The folder must not exist. On any failure nothing is left behind, so a retry starts
 /// from the same state and never looks like a project.
 pub fn create(parent: &Path, name: &str, design_name: &str) -> Result<CreatedProject, ProjectError> {
@@ -259,7 +259,7 @@ pub fn create(parent: &Path, name: &str, design_name: &str) -> Result<CreatedPro
     let design = root.join(design_file_name(if design_name.trim().is_empty() { name } else { design_name }));
     fs::create_dir(&root).map_err(|error| ProjectError::io(&root, &error))?;
     // Build the inside under a temporary name, then give it its real name: a half-written
-    // `.intgral` never exists.
+    // `.intcad` never exists.
     let building = root.join(format!("{FOLDER}.new"));
     let outcome = build_project(&root, &building, name, &design);
     match outcome {
@@ -286,7 +286,7 @@ pub fn create(parent: &Path, name: &str, design_name: &str) -> Result<CreatedPro
     Ok(CreatedProject { project, design })
 }
 
-/// Put a `.intgral/` folder beside an existing, saved design file. The design is never moved or
+/// Put a `.intcad/` folder beside an existing, saved design file. The design is never moved or
 /// rewritten; only the folder and its templates are made. Refused when a project already covers
 /// the design, so opening an old design never changes it by itself.
 pub fn attach(design: &Path) -> Result<CreatedProject, ProjectError> {

@@ -1,4 +1,4 @@
-//! `project.create` and `project.inspect`: the `.intgral/` folder beside a design.
+//! `project.create` and `project.inspect`: the `.intcad/` folder beside a design.
 //!
 //! Creating a project is one operation: the folder, its templates, and the open design saved
 //! inside it. A failure removes the folder it made, so a retry never finds a half project.
@@ -36,7 +36,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&ATTACH_CONTRACT)
         .output(crate::schema::output_schema_for::<CreateReply>)
         .params(
-            "path?: the saved design file (default: the open design) → project (the folder holding .intgral), \
+            "path?: the saved design file (default: the open design) → project (the folder holding .intcad), \
              design, id, name. The design is not moved or rewritten; a design already inside a project is refused",
         ),
     CommandSpec::new("project.inspect", "Project Settings", crate::checked!("project.inspect", inspect))
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(root, dir.join("Bracket A"));
         assert!(design.is_file());
         assert_eq!(s.path.as_deref(), Some(design.to_string_lossy().as_ref()), "the open design is the project's design");
-        assert!(root.join(".intgral/project.toml").is_file());
+        assert!(root.join(".intcad/project.toml").is_file());
         // The saved design is the one that was open, not an empty one.
         let bytes = fs::read(&design).expect("read");
         let doc = solidcraft_io::read_design(&bytes).expect("design");
@@ -192,7 +192,7 @@ mod tests {
         s.execute("project.create", &json!({"name": "Panel", "folder": dir.to_string_lossy()})).expect("first");
         let error = s.execute("project.create", &json!({"name": "Panel", "folder": dir.to_string_lossy()})).expect_err("second");
         assert!(error.to_string().contains("already exists"), "{error}");
-        assert!(dir.join("Panel/.intgral/project.toml").is_file());
+        assert!(dir.join("Panel/.intcad/project.toml").is_file());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -213,7 +213,7 @@ mod tests {
         let dir = scratch("damaged");
         let mut s = Session::default();
         s.execute("project.create", &json!({"name": "Bracket", "folder": dir.to_string_lossy()})).expect("create");
-        fs::write(dir.join("Bracket/.intgral/ci.toml"), "schema_version = 1\nenabled =\n").expect("damage");
+        fs::write(dir.join("Bracket/.intcad/ci.toml"), "schema_version = 1\nenabled =\n").expect("damage");
         let inspected = s.execute("project.inspect", &json!({})).expect("inspect");
         assert_eq!(inspected["hasProject"], true);
         assert_eq!(inspected["project"], Value::Null);
@@ -239,7 +239,7 @@ mod attach_tests {
         let reply = s.execute("project.attach", &json!({})).expect("attach");
         assert_eq!(reply["design"], design.to_string_lossy().as_ref());
         assert_eq!(reply["project"], dir.to_string_lossy().as_ref());
-        assert!(dir.join(".intgral/project.toml").is_file());
+        assert!(dir.join(".intcad/project.toml").is_file());
         let inspected = s.execute("project.inspect", &json!({})).expect("inspect");
         assert_eq!(inspected["hasProject"], true);
         assert_eq!(inspected["project"]["designs"][0], "plate.sc");

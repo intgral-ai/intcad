@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::{SolveApp, ui_kit};
 
-/// Whether the window makes a new folder or adds `.intgral/` beside an existing design.
+/// Whether the window makes a new folder or adds `.intcad/` beside an existing design.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
     New,

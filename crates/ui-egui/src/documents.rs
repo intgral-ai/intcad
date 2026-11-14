@@ -2167,7 +2167,7 @@ mod tests {
     }
 
     /// Cancelling the folder choice keeps the window open and writes nothing: no design, no
-    /// `.intgral` folder.
+    /// `.intcad` folder.
     #[test]
     fn a_cancelled_folder_choice_leaves_no_file_and_no_project() {
         let mut h = crate::scenario::Harness::new();
