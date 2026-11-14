@@ -13,10 +13,15 @@ pub mod export;
 pub mod findings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod run;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod service;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "dfm/run_tests.rs"]
 mod run_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "dfm/service_tests.rs"]
+mod service_tests;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

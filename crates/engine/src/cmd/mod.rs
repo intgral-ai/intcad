@@ -67,6 +67,7 @@ pub use component_link::resolve_design_links;
 mod config;
 mod design_link;
 mod dfm;
+mod dfm_check;
 mod file;
 mod frame;
 pub(crate) mod inspect;
@@ -359,6 +360,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(file::COMMANDS.iter());
     v.extend(project::COMMANDS.iter());
     v.extend(dfm::COMMANDS.iter());
+    v.extend(dfm_check::COMMANDS.iter());
     v.extend(print_face::COMMANDS.iter());
     v.extend(metadata::COMMANDS.iter());
     v.extend(snapshot::COMMANDS.iter());

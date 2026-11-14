@@ -53,6 +53,14 @@ pub fn timestamp(ms: u64) -> String {
     ids::timestamp(ms)
 }
 
+/// The host's wall clock in Unix milliseconds, for a run's start or end time.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
