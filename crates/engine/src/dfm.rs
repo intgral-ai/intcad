@@ -3,6 +3,21 @@
 //! No OCP, no network and no files. The live document is only read through [`SheetBody`]; the
 //! rule crate decides on the facts and data it is given.
 
+// The run record, profile compilation and export need the desktop validation port; the browser
+// has no background worker or project folder.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod compile;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod export;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod findings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod run;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "dfm/run_tests.rs"]
+mod run_tests;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
