@@ -35,9 +35,134 @@ pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
                 _ => None,
             });
         }
+        // A union whose first operand is in several pieces, only some of which meet the tool,
+        // would nest the others inside the result as voids (#55): union the pieces that meet
+        // and join the rest back untouched. Where that does not apply (one piece, every piece
+        // meeting, or the pieces cannot be told apart) the ordinary union keeps its fast path.
+        if op == BoolOp::Union {
+            match guard("union by lump", || union_by_lumps(a, b)) {
+                Ok(Some(by_lump)) => return Ok(Some(by_lump)),
+                Ok(None) => {}
+                Err(e) => {
+                    // Do not hide a by-lump refusal behind the ordinary path: under validation
+                    // that checks nothing it could return the nested body this path avoids.
+                    log::debug!(target: "smlib", "union by lump: {e}");
+                    return Err(e);
+                }
+            }
+        }
         let r = guard("SMLib boolean", || crate::smlib_boolean::smlib_boolean(a, b, op));
         with_operand_roles(a, b, op, r)
     })
+}
+
+/// `a` union `b` when `a` is in several pieces and `b` is one: each piece whose exact box meets
+/// `b`'s is unioned with the tool one at a time (the accumulator is always one piece, and a box
+/// overlap the geometry does not follow is kept whole and joined back), the pieces apart by exact
+/// box join back untouched. SMLib nests a disconnected piece of a multi-lump first operand inside
+/// the result as a void, losing material and failing its own check (#55). A box meeting is not
+/// contact, but that is sound here: a box-overlap piece that the tool misses is a union of
+/// disjoint pieces (a compound), and a piece the tool contains (or that contains the tool) is
+/// absorbed. Every piece is classified on its own rather than assuming all-overlap is all-meet.
+/// `None` where the ordinary union applies: `a` is in one piece or `b` is not one piece. A tool
+/// in several pieces is unsupported by this path: it keeps the ordinary union. An error reading
+/// the pieces is returned, never hidden behind the ordinary path.
+fn union_by_lumps(a: &Body, b: &Body) -> Result<Option<Body>> {
+    if a.is_mesh() || b.is_mesh() {
+        return Ok(None);
+    }
+    // Cheap guards before building `a`'s parts: both bodies' material regions are read from the
+    // record, and only a multi-lump `a` with a single-lump tool takes this path.
+    if a.record().material_regions().len() < 2 || b.record().material_regions().len() != 1 {
+        return Ok(None);
+    }
+    let lumps = a.lumps()?;
+    let mut meeting = Vec::new();
+    let mut apart_lumps = Vec::new();
+    for lump in lumps {
+        if apart(&lump, b)? {
+            apart_lumps.push(lump);
+        } else {
+            meeting.push(lump);
+        }
+    }
+    // Box overlap is not contact: a lump can have a box over the tool while sitting in a cavity
+    // the tool misses (see the probe in the history tests). Every lump is therefore classified
+    // on its own and the meeting ones union one at a time, even when no lump is box-apart.
+    if meeting.is_empty() {
+        // No piece meets the tool: the whole body and the tool are apart, side by side.
+        let Some(body) = join_apart(&[a.clone(), b.clone()])? else { return Ok(None) };
+        let body = body.inherit_split_lines(&[a, b]).with_preserved_union_planar_sources(&[a, b])?;
+        return Ok(Some(body));
+    }
+    // The tool starts the accumulator; each piece whose box meets it is unioned in. A box overlap
+    // the geometry does not follow leaves the union in more than one material region: that piece
+    // is not connected to the accumulator, so it is kept whole and joined back below. The
+    // accumulator therefore always stays one piece, and SMLib never sees a multi-lump operand.
+    let mut accumulator = b.clone();
+    let mut history = tool_history(b);
+    let mut other_pieces = apart_lumps;
+    for lump in meeting {
+        let Some(next) = boolean(&accumulator, &lump, BoolOp::Union)? else {
+            other_pieces.push(lump);
+            continue;
+        };
+        if next.record().material_regions().len() == 1 {
+            history = compose_next(history, next.history(), lump.history());
+            accumulator = next;
+        } else {
+            other_pieces.push(lump);
+        }
+    }
+    // The connected result and every piece it did not take come back as one body.
+    let pieces: Vec<Body> = std::iter::once(accumulator).chain(other_pieces.iter().cloned()).collect();
+    let counts: Vec<(usize, usize)> = pieces.iter().map(|p| (p.face_count(), p.edge_count())).collect();
+    let (body, part) = joined(&pieces)?;
+    // The compound's history over [`a`, `b`]: each piece's origins are `a`'s or `b`'s.
+    let parts = piece_histories(history, &other_pieces);
+    let history = parts.and_then(|parts| {
+        let refs: Vec<&History> = parts.iter().collect();
+        crate::history::of_part(&part, &counts).over(&refs).ok()
+    });
+    let body = body
+        .with_checked_history(history, &[(a.face_count(), a.edge_count()), (b.face_count(), b.edge_count())])
+        .inherit_split_lines(&[a, b])
+        .with_preserved_union_planar_sources(&[a, b])?;
+    Ok(Some(body))
+}
+
+/// The tool's history as the first accumulator over [`a`, `b`]: every face and edge is the
+/// tool's (operand 1), `a` unused.
+fn tool_history(tool: &Body) -> Option<History> {
+    let mut history = History::identity(tool);
+    history.renumber(&[Some(1)], 2).ok()?;
+    Some(history)
+}
+
+/// A later meeting piece's history over [`a`, `b`]: the union is over the accumulator and the
+/// piece, so both take their own places, the piece's (which is `a`'s) joining `a`'s again.
+fn compose_next(previous: Option<History>, step: Option<&History>, lump: Option<&History>) -> Option<History> {
+    let mut step = step?.clone();
+    let previous = previous?;
+    step.substitute(0, &previous).ok()?;
+    step.substitute(2, lump?).ok()?;
+    step.renumber(&[Some(0), Some(1), Some(0)], 2).ok()?;
+    Some(step)
+}
+
+/// History over [`a`, `b`] of each of the pieces [`joined`] combines: the union result first
+/// (`history`), then each untouched piece, whose own history is over `a` alone.
+fn piece_histories(history: Option<History>, apart_lumps: &[Body]) -> Option<Vec<History>> {
+    let mut parts = vec![history?];
+    for lump in apart_lumps {
+        let mut history = lump.history()?.clone();
+        if history.operands != 1 {
+            return None;
+        }
+        history.operands = 2;
+        parts.push(history);
+    }
+    Some(parts)
 }
 
 /// The union of `bodies` (at least one) in one SMLib call, each body taking part in about
