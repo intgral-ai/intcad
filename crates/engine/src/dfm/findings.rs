@@ -193,6 +193,52 @@ pub struct FindingsIdentity {
     pub source: SourceRef,
 }
 
+/// One App-owned finding (the flat self-overlap check) appended beside the rule layer's findings.
+impl RunFindings {
+    /// Add the App's own findings: they are not rule-layer results but share the run identity,
+    /// the rule rows and the "not checked" text. Deterministic: findings sort by sheet then id.
+    pub fn extend_with_app(&mut self, mut app: Vec<Finding>, not_checked: &[String]) {
+        if app.is_empty() && not_checked.is_empty() {
+            return;
+        }
+        for finding in &app {
+            for rule in &finding.rules {
+                match self.rules.iter_mut().find(|row| &row.rule == rule) {
+                    Some(row) => {
+                        row.state = worse(row.state, finding.state);
+                        row.count += 1;
+                    }
+                    None => self.rules.push(RuleRow { rule: rule.clone(), state: finding.state, count: 1 }),
+                }
+            }
+        }
+        self.findings.append(&mut app);
+        self.findings.sort_by(|a, b| a.sheet.cmp(&b.sheet).then_with(|| a.id.cmp(&b.id)));
+        self.rules.sort_by(|a, b| a.rule.cmp(&b.rule));
+        let mut text = self.not_checked.clone();
+        for line in not_checked {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(line);
+        }
+        self.not_checked = text;
+    }
+}
+
+fn worse(a: FindingState, b: FindingState) -> FindingState {
+    let rank = |state: FindingState| match state {
+        FindingState::Failed => 5,
+        FindingState::Unsupported => 4,
+        FindingState::Advisory => 3,
+        FindingState::Checked => 2,
+        FindingState::NotApplicable => 1,
+        FindingState::NotRun => 1,
+        FindingState::Passed => 0,
+    };
+    if rank(b) > rank(a) { b } else { a }
+}
+
 /// One sheet body's measured facts and rule report.
 #[derive(Clone, Debug)]
 pub struct SheetCheck {

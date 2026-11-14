@@ -110,6 +110,53 @@ pub fn validate_parameters(value: &Value) -> Result<SheetCheckParameters, DfmErr
     Ok(parameters)
 }
 
+/// The parameters of the App's own flat self-overlap check (PIL-306). One check covers every
+/// sheet body of the run, so the report has one place for the geometric conclusion.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlatOverlapParameters {
+    pub model_version: String,
+    pub sheets: Vec<FlatSheetRef>,
+    /// The area tolerance in mm²; it must be the one the geometry used.
+    pub tolerance_mm2: f64,
+}
+
+/// One sheet body the flat self-overlap check covers.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlatSheetRef {
+    pub sheet: usize,
+    pub body: String,
+}
+
+/// Parse and check the flat self-overlap parameters before a run starts.
+pub fn validate_flat_parameters(value: &Value) -> Result<FlatOverlapParameters, DfmError> {
+    let parameters: FlatOverlapParameters =
+        serde_json::from_value(value.clone()).map_err(|error| DfmError::Parameters(error.to_string()))?;
+    if parameters.model_version.trim().is_empty() {
+        return Err(DfmError::Parameters("the model version must be recorded".into()));
+    }
+    if parameters.sheets.is_empty() || parameters.sheets.len() > 1024 {
+        return Err(DfmError::Parameters("the flat check needs 1..=1024 sheet bodies".into()));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for sheet in &parameters.sheets {
+        if sheet.body.trim().is_empty() {
+            return Err(DfmError::Parameters(format!("sheet {} has no body name", sheet.sheet)));
+        }
+        if !seen.insert(sheet.sheet) {
+            return Err(DfmError::Parameters(format!("sheet {} is listed twice", sheet.sheet)));
+        }
+    }
+    if !parameters.tolerance_mm2.is_finite() || parameters.tolerance_mm2 <= 0.0 {
+        return Err(DfmError::Parameters("the overlap tolerance must be a finite number above 0".into()));
+    }
+    if (parameters.tolerance_mm2 - sheet_dfm::OVERLAP_AREA_TOLERANCE_MM2).abs() > f64::EPSILON {
+        return Err(DfmError::Parameters("the overlap tolerance must be the geometry's named tolerance".into()));
+    }
+    Ok(parameters)
+}
+
 /// The rule layer has no "base" sentinel: its `None` means an unknown flat, and a hole on it is
 /// left out of `sm.hole_spacing`. The App's `None` means the base panel, so the adapter gives the
 /// base an explicit id and shifts flange ids past it.
