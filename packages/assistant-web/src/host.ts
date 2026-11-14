@@ -58,6 +58,39 @@ export interface AuthMethod {
 
 export type ToolStatus = 'completed' | 'failed' | 'running' | 'pending';
 
+/** One finding of a DFM check. `requirement` is that finding's own number, never a data table. */
+export interface CheckFinding {
+  id: string;
+  sheet: number;
+  body: string;
+  from: string;
+  rules: string[];
+  state: string;
+  status: string;
+  code: string | null;
+  measured: { value: number; unit: string } | null;
+  requirement: { value: number; unit: string; layer: string; confirmed: string | null; source: string } | null;
+  feature: { kind: string; number: number | null } | null;
+  faces: string[];
+  reason: string | null;
+}
+
+export interface CheckCard {
+  runId: string;
+  candidateDigest: string;
+  configDigest: string;
+  modelVersion: string;
+  projectId: string;
+  source: string;
+  freshness: string;
+  findings: CheckFinding[];
+  rules: { ruleId: string; state: string; count: number }[];
+  notChecked: string;
+  status: 'running' | 'cancelled' | 'done' | 'error';
+  error: string | null;
+  counts: { passed: number; failed: number; advisory: number; checked: number; unsupported: number };
+}
+
 /** One entry of the app's transcript. */
 export type Item =
   | { kind: 'user'; index: number; text: string; image: boolean; pictures: PictureRef[]; files: string[]; context: ContextGroups }
@@ -69,7 +102,15 @@ export type Item =
   | { kind: 'permission'; index: number; heading: string; answered: string | null; options: PermissionOption[] }
   | { kind: 'approval'; id: number; title: string; answer: boolean | null }
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
-  | { kind: 'notice'; text: string; error: boolean };
+  | { kind: 'notice'; text: string; error: boolean }
+  | {
+      kind: 'check';
+      id: string;
+      status: 'running' | 'cancelled' | 'done' | 'error' | 'pending';
+      card: CheckCard | null;
+      display: 'all' | 'selected' | 'off';
+      selected: { runId: string; findingId: string } | null;
+    };
 
 export interface AssistantState {
   items: Item[];
@@ -120,6 +161,8 @@ export interface AssistantState {
   dark: boolean;
   /** The page's own words in the app's language. */
   strings: Strings;
+  /** Which findings the viewport marks, and the one selected. */
+  dfm: { display: 'all' | 'selected' | 'off'; selected: { runId: string; findingId: string } | null };
 }
 
 /** The names of the page's own words: the list `state` sends in crates/ui-egui/src/agent_chat/web.rs. */
@@ -135,7 +178,11 @@ export type StringKey =
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
   | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'revalidate' | 'dropHint' | 'removeChip'
   | 'openPicture' | 'selectedNow'
-  | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel';
+  | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel'
+  | 'dfmCheckTitle' | 'dfmRunning' | 'dfmDone' | 'dfmCancelled' | 'dfmError' | 'dfmNotChecked'
+  | 'dfmRefresh' | 'dfmStale' | 'dfmFindings' | 'dfmAdvisory' | 'dfmFailed' | 'dfmChecked'
+  | 'dfmNotCovered' | 'dfmMeasured' | 'dfmRequirement' | 'dfmSource' | 'dfmOverride'
+  | 'dfmAll' | 'dfmSelected' | 'dfmOff' | 'dfmSelect';
 
 export type Strings = Record<StringKey, string>;
 
