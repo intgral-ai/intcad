@@ -194,6 +194,7 @@ pub mod navigation_bar;
 mod navigation_bar_view;
 pub use navigation::WebWheelGestures;
 pub mod network_prompt;
+pub mod new_project;
 pub mod op_auto;
 pub mod open_elsewhere;
 pub(crate) mod open_meshing;
@@ -448,6 +449,8 @@ pub struct Services {
     /// only the types it names, so the agent chat's files need a dialog of their own. `None`: the
     /// Open dialog.
     pub pick_file: Option<Box<dyn Fn(&str, &[&str]) -> FilePickerFuture>>,
+    /// Ask for a folder (New Project's location); `None` when the host has no folder dialog.
+    pub pick_folder: Option<Box<dyn Fn() -> FilePickerFuture>>,
     /// Open a dialog asking for a program (a slicer); `None` when the host has no such dialog.
     pub pick_program: Option<Box<dyn Fn() -> FilePickerFuture>>,
     pub show_in_folder: Option<Box<dyn Fn(&str)>>,
@@ -774,6 +777,10 @@ pub struct SolveApp {
     pub flat_view: dialogs_sheet::FlatView,
     /// The start page.
     pub home: home::HomeState,
+    /// The New Project window, when open.
+    pub new_project: Option<new_project::NewProject>,
+    /// The folder the last project was made in, offered as the next one's location.
+    pub(crate) last_project_folder: Option<String>,
     /// The 3D mouse: which device, its reading, and the calibration window.
     pub space_mouse: space_mouse::Input,
     pub file_load: file_load::FileLoad,
@@ -948,6 +955,8 @@ impl SolveApp {
             embedded: false,
             embed_editor: false,
             home: home::HomeState::default(),
+            new_project: None,
+            last_project_folder: None,
             space_mouse: Default::default(),
             file_load: file_load::FileLoad::default(),
             open_meshing: None,
@@ -3294,6 +3303,7 @@ impl SolveApp {
         recovery_ui::show(self, ui.ctx());
         stand_up::show(self, ui.ctx());
         prefs_notice::show(self, ui.ctx());
+        new_project::show(self, ui.ctx());
         context_menu::show(self, ui.ctx());
         mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());
