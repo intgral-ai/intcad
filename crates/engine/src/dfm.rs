@@ -677,6 +677,23 @@ mod tests {
         assert!(report.max_position_delta_mm <= tolerance.measurement_mm);
     }
 
+    /// The second gate must compare the facts the real App entry measured, not a test-only copy.
+    #[test]
+    fn the_second_gate_compares_the_app_entry_facts_with_the_recorded_facts() {
+        let recording = recording(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_to_edge.plate_holes.json"));
+        let recorded = recorded_facts(&recording);
+        let tolerance = tolerance(&recording);
+        let sheet = plate_with_holes(40.0, 25.0, &[(3.0, 12.5, 1.5), (20.0, 12.5, 0.25), (32.0, 12.5, 2.0)]);
+        // `check_sheet` is the App measurement entry: it measures the body and runs the rules.
+        let outcome = check_sheet(&sheet, parameters(Vec::new())).expect("the App entry check");
+        let measured = measured_sheet(&sheet, &outcome.facts);
+        let report = compare(&recorded, &measured, tolerance).expect("the App entry measures the recorded part");
+        assert_eq!(report.pairs, 3);
+        assert_eq!(report.edge_distances_compared, 3);
+        assert_eq!(report.edge_points_compared, 3);
+        assert!(report.max_position_delta_mm <= tolerance.measurement_mm);
+    }
+
     #[test]
     fn the_second_gate_compares_the_l_bracket_hole_bend_and_edge() {
         let recording = recording(include_str!("../../dfm-rules/tests/fixtures/intdfm/hole_to_bend.below.json"));
