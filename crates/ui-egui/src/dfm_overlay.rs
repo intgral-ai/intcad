@@ -348,11 +348,12 @@ pub fn model_screen_rect(bounds: solidcraft_engine::geom::Aabb3, proj: &Proj) ->
     if any { Rect::from_min_max(min, max) } else { Rect::from_center_size(proj.rect.center(), vec2(1.0, 1.0)) }
 }
 
-/// The Assistant panel is an obstacle for labels only when its rectangle is meaningful to this
-/// window. A desktop web host draws its own native view there, so the panel's rect is not an
-/// egui obstacle and is treated as unavailable.
-pub fn assistant_obstacle(web_host: bool, panel: Option<Rect>) -> Option<Rect> {
-    if web_host { None } else { panel }
+/// The Assistant panel is a place labels must not go. Its rectangle is meaningful whenever the
+/// panel drew a positive, finite rectangle this frame: a desktop web host draws its native view
+/// inside that same panel, and the view covers everything the app draws, so labels stay out of
+/// it there too. A closed panel clears its rectangle, so a hidden panel is no obstacle.
+pub fn assistant_obstacle(panel: Option<Rect>) -> Option<Rect> {
+    panel.filter(|rect| rect.is_finite() && rect.is_positive())
 }
 
 /// Place each mark's label left or right of the model's screen box, in anchor-Y order, without
@@ -444,7 +445,7 @@ pub fn show(app: &mut SolveApp, ui: &egui::Ui, proj: &Proj, view: Rect) {
         return;
     }
     let model = model_screen_rect(crate::viewport::view_bounds(app), proj);
-    let obstacle = assistant_obstacle(assistant_web_host(app), app.agent_chat.panel_rect);
+    let obstacle = assistant_obstacle(app.agent_chat.panel_rect);
     let avoid: Vec<Rect> = obstacle.into_iter().collect();
     let labels = layout(&marks, proj, view, model, &avoid);
     let painter: &Painter = ui.painter();
@@ -479,16 +480,6 @@ pub fn show(app: &mut SolveApp, ui: &egui::Ui, proj: &Proj, view: Rect) {
         }
     }
     app.viewport.dfm_labels = labels;
-}
-
-#[cfg(target_arch = "wasm32")]
-fn assistant_web_host(_app: &SolveApp) -> bool {
-    false
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn assistant_web_host(app: &SolveApp) -> bool {
-    app.agent_chat.web_host
 }
 
 #[cfg(test)]
@@ -633,14 +624,29 @@ mod tests {
         }
     }
 
-    /// The Assistant panel's rectangle is not an egui obstacle when a desktop web host draws its
-    /// own view over the panel.
+    /// A label whose natural place is under the Assistant panel moves out of the panel; a panel
+    /// that is not shown is no obstacle.
     #[test]
-    fn the_web_host_makes_the_assistant_rect_unavailable() {
-        let panel = Rect::from_min_size(pos2(500.0, 100.0), vec2(280.0, 400.0));
-        assert_eq!(assistant_obstacle(false, Some(panel)), Some(panel));
-        assert_eq!(assistant_obstacle(true, Some(panel)), None);
-        assert_eq!(assistant_obstacle(false, None), None);
+    fn a_label_moves_out_of_the_assistant_panel() {
+        let (_, marks) = loaded();
+        let mark = marks.iter().find(|mark| mark.finding_id == "sheet-1/F2").expect("a mark");
+        let panel = Rect::from_min_max(pos2(500.0, 240.0), pos2(794.0, 300.0));
+        let limit = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)).shrink(MARGIN);
+        let anchor = pos2(510.0, 250.0);
+        let mut natural = Vec::new();
+        place_column(&[(mark, anchor)], false, model_box(), limit, &[], &mut natural);
+        assert_eq!(natural.len(), 1);
+        assert!(natural[0].rect.intersects(panel), "the natural label would sit under the panel");
+
+        let mut moved = Vec::new();
+        place_column(&[(mark, anchor)], false, model_box(), limit, &[panel], &mut moved);
+        assert_eq!(moved.len(), 1);
+        assert!(!moved[0].rect.intersects(panel), "the label moved out of the panel");
+        assert!(moved[0].rect.top() >= panel.bottom(), "it moved below the panel");
+
+        assert_eq!(assistant_obstacle(Some(panel)), Some(panel));
+        assert_eq!(assistant_obstacle(None), None, "a closed panel leaves no rectangle");
+        assert_eq!(assistant_obstacle(Some(Rect::from_min_size(pos2(500.0, 100.0), vec2(0.0, 200.0)))), None);
     }
 
     /// The viewport's drawable marks follow the host state: a stale run empties them, a current
