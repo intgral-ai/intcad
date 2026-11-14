@@ -654,6 +654,11 @@ pub(super) fn app_findings(check: Option<&crate::validation::CheckResult>) -> (V
                 .and_then(serde_json::Value::as_array)
                 .filter(|points| points.len() == 2)
                 .and_then(|points| Some([points[0].as_f64()?, points[1].as_f64()?]));
+            let anchor = observation
+                .get("anchor")
+                .and_then(serde_json::Value::as_array)
+                .filter(|points| points.len() == 3)
+                .and_then(|points| Some([points[0].as_f64()?, points[1].as_f64()?, points[2].as_f64()?]));
             let outline = observation
                 .get("outline")
                 .and_then(serde_json::Value::as_array)
@@ -688,7 +693,7 @@ pub(super) fn app_findings(check: Option<&crate::validation::CheckResult>) -> (V
                     source: crate::dfm::FLAT_NO_OVERLAP_RULE.to_string(),
                 }),
                 feature: Some(FeatureRef { kind: "region".into(), number: Some(index) }),
-                anchor: None,
+                anchor,
                 flat,
                 faces: Vec::new(),
                 outline,

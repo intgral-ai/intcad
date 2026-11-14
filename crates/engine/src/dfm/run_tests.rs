@@ -870,6 +870,7 @@ fn a_flat_overlap_result_becomes_an_app_finding() {
                     "toleranceMm2": 0.01,
                     "pieces": ["base", "panel 0"],
                     "flat": [1.0, 2.0],
+                    "anchor": [5.0, 6.0, 7.0],
                     "outline": [[1.0, 2.0, 0.0], [3.0, 2.0, 0.0]]
                 }]
             }]
@@ -882,6 +883,7 @@ fn a_flat_overlap_result_becomes_an_app_finding() {
     assert_eq!(app[0].rules, ["app.flat_no_overlap"]);
     assert_eq!(app[0].measured.as_ref().map(|m| m.value), Some(12.5));
     assert_eq!(app[0].flat, Some([1.0, 2.0]));
+    assert_eq!(app[0].anchor, Some([5.0, 6.0, 7.0]), "the viewport needs the folded anchor");
     assert_eq!(app[0].outline.len(), 2);
     assert!(not_checked.is_empty());
 
