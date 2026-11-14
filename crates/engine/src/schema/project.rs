@@ -14,6 +14,15 @@ pub struct CreateParams {
     pub folder: String,
 }
 
+/// Put a `.intgral/` folder beside an existing, saved design.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AttachParams {
+    /// The saved design file (default: the open design).
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
 /// What `project.create` made.
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

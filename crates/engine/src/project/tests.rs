@@ -180,3 +180,70 @@ fn overrides_need_a_reason_and_a_name() {
     assert_eq!(project.ci().overrides[0].by, "Zhang");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A `.intgral/` folder can be added beside a saved design without moving it.
+#[test]
+fn attach_keeps_the_design_and_puts_the_project_beside_it() {
+    let dir = scratch("attach");
+    let design = dir.join("legacy part.sc");
+    fs::write(&design, b"the design bytes").expect("design");
+    let before = fs::read(&design).expect("read");
+    let made = attach(&design).expect("attach");
+    assert_eq!(made.design, design);
+    assert_eq!(fs::read(&design).expect("read"), before, "the design is not rewritten");
+    let root = dir.as_path();
+    assert_eq!(made.project.root(), root);
+    assert!(root.join(".intgral/project.toml").is_file());
+    assert_eq!(made.project.manifest().designs, vec!["legacy part.sc".to_string()]);
+    assert_eq!(made.project.manifest().name, "legacy part");
+    assert_eq!(Project::locate(&design), Some(root.to_path_buf()));
+    let reopened = Project::open(root).expect("reopen");
+    assert_eq!(reopened.manifest().id, made.project.manifest().id);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A design already inside a project is refused, at the design's folder or above it.
+#[test]
+fn attach_refuses_a_design_that_already_has_a_project() {
+    let dir = scratch("attach-twice");
+    let design = dir.join("Bracket.sc");
+    fs::write(&design, b"design").expect("design");
+    attach(&design).expect("first");
+    let manifest = dir.join(".intgral/project.toml");
+    let before = read(&manifest);
+    let error = attach(&design).expect_err("second");
+    assert!(matches!(error, ProjectError::AlreadyInProject { .. }), "{error}");
+    assert_eq!(read(&manifest), before, "the existing project is untouched");
+    // A design in a subfolder of the project is inside it too.
+    let nested = dir.join("sub");
+    fs::create_dir_all(&nested).expect("sub");
+    let nested_design = nested.join("Part.sc");
+    fs::write(&nested_design, b"design").expect("nested");
+    let error = attach(&nested_design).expect_err("nested");
+    assert!(matches!(error, ProjectError::AlreadyInProject { .. }), "{error}");
+    assert!(!nested.join(".intgral").exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An unsaved design (no file) is refused and leaves no folder behind.
+#[test]
+fn attach_refuses_a_design_with_no_file() {
+    let dir = scratch("attach-missing");
+    let error = attach(&dir.join("never-saved.sc")).expect_err("missing");
+    assert!(error.to_string().contains("does not exist"), "{error}");
+    assert_eq!(fs::read_dir(&dir).expect("list").count(), 0);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Merely asking which project covers a plain file writes nothing.
+#[test]
+fn opening_a_plain_design_never_makes_a_project() {
+    let dir = scratch("attach-passive");
+    let design = dir.join("plain.sc");
+    fs::write(&design, b"design").expect("design");
+    assert!(Project::of(&design).expect("lookup").is_none());
+    assert_eq!(Project::locate(&design), None);
+    assert_eq!(fs::read_dir(&dir).expect("list").count(), 1, "only the design");
+    assert!(!dir.join(".intgral").exists());
+    let _ = fs::remove_dir_all(&dir);
+}
