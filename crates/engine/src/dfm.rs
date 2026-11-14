@@ -156,6 +156,17 @@ pub fn validate_flat_parameters(value: &Value) -> Result<FlatOverlapParameters, 
     Ok(parameters)
 }
 
+/// Map an overlap's flat point back into the folded model through the panel it belongs to.
+pub fn overlap_anchor(sheet: &solidcraft_doc::sheet::SheetBody, observation: &crate::dfm::FlatOverlapObservation) -> Option<solidcore_record::Vec3> {
+    let flat = observation.flat?;
+    let piece = observation.pieces.as_ref()?.first()?;
+    let panel = match piece.as_str() {
+        "base" => None,
+        other => other.rsplit(' ').next()?.parse::<usize>().ok().map(Some)?,
+    };
+    Some(solidcraft_doc::apply_point(&sheet.world(panel), solidcore_record::Vec3::new(flat[0], flat[1], sheet.t / 2.0)))
+}
+
 /// The rule layer has no "base" sentinel: its `None` means an unknown flat, and a hole on it is
 /// left out of `sm.hole_spacing`. The App's `None` means the base panel, so the adapter gives the
 /// base an explicit id and shifts flange ids past it.

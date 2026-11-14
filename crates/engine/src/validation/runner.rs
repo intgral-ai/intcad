@@ -569,7 +569,7 @@ fn dfm_flat_overlap_check(session: Option<&Session>, check: &super::profile::Che
             let mut value = serde_json::to_value(observation).unwrap_or(Value::Null);
             // The flat point is drawing evidence; the folded anchor is what the viewport marks.
             // A pair's first piece names the panel whose fold maps the flat point back to the model.
-            if let Some(anchor) = overlap_anchor(sheet, observation) {
+            if let Some(anchor) = crate::dfm::overlap_anchor(sheet, observation) {
                 value["anchor"] = json!([anchor.x, anchor.y, anchor.z]);
             }
             values.push(value);
@@ -601,17 +601,6 @@ fn dfm_flat_overlap_check(session: Option<&Session>, check: &super::profile::Che
         actual: actual.clone(),
         evidence: vec![evidence_json(&actual)],
     }
-}
-
-/// Map an overlap's flat point back into the folded model through the panel it belongs to.
-fn overlap_anchor(sheet: &solidcraft_doc::sheet::SheetBody, observation: &crate::dfm::FlatOverlapObservation) -> Option<solidcore_record::Vec3> {
-    let flat = observation.flat?;
-    let piece = observation.pieces.as_ref()?.first()?;
-    let panel = match piece.as_str() {
-        "base" => None,
-        other => other.rsplit(' ').next()?.parse::<usize>().ok().map(Some)?,
-    };
-    Some(solidcraft_doc::apply_point(&sheet.world(panel), solidcore_record::Vec3::new(flat[0], flat[1], sheet.t / 2.0)))
 }
 
 fn error_check(check: &super::profile::CheckRequirement, error: ValidationError) -> CheckOutcome {
