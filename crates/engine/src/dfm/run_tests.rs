@@ -528,23 +528,51 @@ fn the_state_mapping_distinguishes_checked_unsupported_and_not_applicable() {
         text: "TEST-ONLY".into(),
         overridden: false,
     };
+    let mut above_public = rule_finding(RuleStatus::NotVerified, AppState::Checked, Some(confirmed.clone()));
+    above_public.reason_code = Some("ABOVE_PUBLIC_VALUE".into());
     let sheets = [SheetCheck {
         sheet: 0,
         body: "Plate".into(),
         facts,
         report: synthetic_report(vec![
-            rule_finding(RuleStatus::NotVerified, AppState::Unsupported, Some(confirmed.clone())),
+            above_public,
             rule_finding(RuleStatus::NotVerified, AppState::Unsupported, None),
             rule_finding(RuleStatus::NotApplicable, AppState::Checked, Some(confirmed)),
         ]),
     }];
     let built = findings::build(&identity("run-1"), &sheets);
-    assert_eq!(built.findings[0].state, FindingState::Checked, "a measured number without a decision is checked");
+    assert_eq!(built.findings[0].state, FindingState::Checked, "reaching the generic public value is checked, not a pass");
+    assert!(!built.findings[0].state.is_pass());
     assert_eq!(built.findings[1].state, FindingState::Unsupported);
     assert_eq!(built.findings[1].code.as_deref(), Some("NOT_VERIFIED"), "unsupported always carries a reason");
     assert_eq!(built.findings[2].state, FindingState::NotApplicable);
     assert!(!built.findings[2].state.is_pass(), "not applicable is not a pass");
     assert!(findings::summary(&built).contains("not a pass"));
+}
+
+/// A not-verified result with another reason is "not covered" even when it measured a value; the
+/// value does not make it checked.
+#[test]
+fn another_not_verified_reason_is_unsupported_even_with_a_measurement() {
+    let sheet = plate(1.5);
+    let facts = sheet_dfm::facts(&sheet).unwrap();
+    let requirement = RequirementRef {
+        value_mm: 3.0,
+        layer: Layer::Generic,
+        confirmation: None,
+        source: "TEST-ONLY".into(),
+        text: "TEST-ONLY".into(),
+        overridden: false,
+    };
+    let mut finding = rule_finding(RuleStatus::NotVerified, AppState::Unsupported, Some(requirement));
+    finding.reason_code = Some("EDGE_UNMEASURED".into());
+    let sheets = [SheetCheck { sheet: 0, body: "Plate".into(), facts, report: synthetic_report(vec![finding]) }];
+    let built = findings::build(&identity("run-1"), &sheets);
+    assert_eq!(built.findings[0].state, FindingState::Unsupported);
+    assert_eq!(built.findings[0].code.as_deref(), Some("EDGE_UNMEASURED"), "the reason is preserved");
+    assert!(!built.findings[0].state.is_pass());
+    assert_ne!(built.findings[0].state, FindingState::Checked);
+    assert!(built.not_checked.contains("sm.hole_min_diameter"));
 }
 
 #[test]
@@ -587,7 +615,7 @@ fn a_missing_project_thickness_falls_back_to_a_native_bodys_model_thickness() {
     assert_eq!(compiled.sheets[0].declared.thickness_mm, Some(2.0));
     assert_eq!(compiled.sheets[0].declared.thickness_from.as_deref(), Some("model"));
 
-    let converted = [SheetRef { sheet: 0, body: "Imported".into(), thickness_mm: Some(2.0), converted: true, ..Default::default() }];
+    let converted = [SheetRef { sheet: 0, body: "Imported".into(), thickness_mm: Some(2.0), converted: true }];
     let compiled = compile::compile(&input, &converted, "sha256:model-a").unwrap();
     assert_eq!(compiled.sheets[0].declared.thickness_mm, None, "a converted body never borrows the model thickness");
     assert_eq!(compiled.sheets[0].declared.thickness_from, None);

@@ -371,9 +371,13 @@ fn map_state(finding: &solidcraft_dfm_rules::Finding) -> FindingState {
         RuleStatus::Pass => FindingState::Checked,
         RuleStatus::Violation | RuleStatus::NeedsReview if confirms(finding) => FindingState::Failed,
         RuleStatus::Violation | RuleStatus::NeedsReview => FindingState::Advisory,
-        // A number without a decision is still worth showing; without either a measurement or a
-        // requirement there was nothing to check.
-        RuleStatus::NotVerified if finding.measured_mm.is_some() && finding.requirement.is_some() => FindingState::Checked,
+        // A number that reaches the generic public value is a real check, not a pass. Every other
+        // not-verified result is "not covered" with its own reason, never a checked value.
+        RuleStatus::NotVerified
+            if finding.reason_code.as_deref() == Some("ABOVE_PUBLIC_VALUE") || finding.state == solidcraft_dfm_rules::AppState::Checked =>
+        {
+            FindingState::Checked
+        }
         RuleStatus::NotVerified => FindingState::Unsupported,
         RuleStatus::NotApplicable => FindingState::NotApplicable,
     }
