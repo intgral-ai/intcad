@@ -261,7 +261,7 @@ pub fn state(app: &mut SolveApp) -> String {
                     },
                     "card": card,
                     "display": app.dfm_chat.display.id(),
-                    "selected": app.dfm_chat.selected.as_ref().map(|(run, id)| json!({"runId": run, "findingId": id})),
+                    "selected": selected_finding(app).map(|(run, id)| json!({"runId": run, "findingId": id})),
                 })
             }
             Item::Tool { id, title, kind, status, input, output } => {
@@ -325,7 +325,7 @@ pub fn state(app: &mut SolveApp) -> String {
     });
     let dfm = json!({
         "display": app.dfm_chat.display.id(),
-        "selected": app.dfm_chat.selected.as_ref().map(|(run, id)| json!({"runId": run, "findingId": id})),
+        "selected": selected_finding(app).map(|(run, id)| json!({"runId": run, "findingId": id})),
     });
     let state = chat.state();
     let entries = agents::entries(app);
@@ -571,10 +571,18 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             let run = text("runId").ok_or("finding: no runId")?;
             let id = text("id").ok_or("finding: no id")?;
             crate::dfm_chat::select(app, run, id)?;
+            // The list and the model address the same run-scoped finding.
+            app.viewport.select_dfm_finding(Some(id));
         }
         "dfm_display" => {
             let mode = text("mode").ok_or("dfm_display: no mode")?;
-            app.dfm_chat.display = crate::dfm_chat::Display::from_id(mode).ok_or("dfm_display: mode must be all, selected or off")?;
+            let display = crate::dfm_chat::Display::from_id(mode).ok_or("dfm_display: mode must be all, selected or off")?;
+            app.dfm_chat.display = display;
+            app.viewport.set_dfm_display(match display {
+                crate::dfm_chat::Display::All => crate::dfm_overlay::DfmDisplay::All,
+                crate::dfm_chat::Display::Selected => crate::dfm_overlay::DfmDisplay::Selected,
+                crate::dfm_chat::Display::Off => crate::dfm_overlay::DfmDisplay::Off,
+            });
         }
         "send" => {
             let body = text("text").ok_or("send: no text")?;
@@ -878,6 +886,30 @@ fn poll_check(app: &mut SolveApp) {
     set_check_item(app, &id, card);
 }
 
+/// Give the viewport the same report the card shows, so a row and a mark address one finding.
+/// The selected finding, whichever side chose it: the page row or a viewport label. The viewport
+/// is the host's state, so a label click updates the list too.
+fn selected_finding(app: &SolveApp) -> Option<(String, String)> {
+    app.viewport.dfm.selected_key().map(|(run, id)| (run.to_string(), id.to_string())).or_else(|| app.dfm_chat.selected.clone())
+}
+
+fn sync_dfm_marks(app: &mut SolveApp, card: &crate::dfm_chat::Card) {
+    let value = json!({
+        "runId": card.run_id,
+        "candidateDigest": card.candidate_digest,
+        "findings": card.findings,
+    });
+    let Ok(run) = serde_json::from_value::<crate::dfm_overlay::RunFindings>(value) else { return };
+    let freshness = match card.freshness.as_str() {
+        "current" => crate::dfm_overlay::Freshness::Current,
+        "staleModel" => crate::dfm_overlay::Freshness::StaleModel,
+        "staleConfig" => crate::dfm_overlay::Freshness::StaleConfig,
+        "staleBoth" => crate::dfm_overlay::Freshness::StaleBoth,
+        _ => crate::dfm_overlay::Freshness::Unknown,
+    };
+    app.viewport.load_dfm_run(&run, freshness);
+}
+
 fn set_check_item(app: &mut SolveApp, id: &str, card: crate::dfm_chat::Card) {
     let status = match card.status.as_str() {
         "running" => backend::ToolStatus::InProgress,
@@ -885,6 +917,7 @@ fn set_check_item(app: &mut SolveApp, id: &str, card: crate::dfm_chat::Card) {
         _ => backend::ToolStatus::Completed,
     };
     let output = serde_json::to_string(&card).unwrap_or_default();
+    sync_dfm_marks(app, &card);
     app.dfm_chat.card = Some(card);
     for item in app.agent_chat.items.iter_mut().rev() {
         if let Item::Tool { id: shown, status: shown_status, output: shown_output, .. } = item
@@ -952,6 +985,24 @@ mod tests {
         assert!(model.contains("\"requirement\""), "each finding keeps its own number");
         assert!(!model.contains("\"requirements\""));
         assert!(!model.contains("confirmation"), "the stored row identity stays home");
+    }
+
+    /// A list row and a viewport label address the same run-scoped finding in both directions.
+    #[test]
+    fn a_report_row_and_a_viewport_label_choose_the_same_finding() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let mut reply = report();
+        reply["freshness"] = json!("current");
+        let card = crate::dfm_chat::Card::from_inspect(&reply);
+        set_check_item(&mut app, "row", card);
+        assert_eq!(app.viewport.dfm.selected_key(), None);
+        act(&mut app, &egui::Context::default(), r#"{"type":"finding","runId":"run-1","id":"sheet-1/F2"}"#).expect("the row chooses a finding");
+        assert_eq!(app.viewport.dfm.selected_key(), Some(("run-1", "sheet-1/F2")), "the model shows the row");
+        // A label click writes the host state; the list reads the same pair.
+        app.viewport.select_dfm_finding(Some("sheet-1/F2"));
+        assert_eq!(selected_finding(&app), Some(("run-1".to_string(), "sheet-1/F2".to_string())));
+        // The row action refuses a finding that is not in the loaded run.
+        assert!(act(&mut app, &egui::Context::default(), r#"{"type":"finding","runId":"run-1","id":"sheet-9/F9"}"#).is_err());
     }
 
     /// A queued run reads as running, and a failed or replaced run keeps its state and reason.
