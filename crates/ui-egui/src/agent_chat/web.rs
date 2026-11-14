@@ -566,6 +566,7 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
     let index = |name: &str| action.get(name).and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok());
     match text("type").ok_or("no type")? {
         "dfm_check" => run_check(app),
+        "dfm_poll" => poll_check(app),
         "finding" => {
             let run = text("runId").ok_or("finding: no runId")?;
             let id = text("id").ok_or("finding: no id")?;
@@ -856,53 +857,128 @@ fn run_check(app: &mut SolveApp) {
     });
     let card = crate::dfm_chat::run(app);
     let failed = card.status == "error";
+    set_check_item(app, &id, card);
+    if !failed {
+        // The run may already be finished (a small sheet); ask once, then the page polls.
+        poll_check(app);
+    }
+    app.agent_chat.notice(tr("ui.dfm_check.title"), failed);
+}
+
+/// Ask `inspect.dfm` for the live report and update the newest check row. The page calls this
+/// while the row says running.
+fn poll_check(app: &mut SolveApp) {
+    let Some(id) = app.agent_chat.items.iter().rev().find_map(|item| match item {
+        Item::Tool { id, kind, .. } if kind == "dfm.check" => Some(id.clone()),
+        _ => None,
+    }) else {
+        return;
+    };
+    let card = crate::dfm_chat::refresh(app);
+    set_check_item(app, &id, card);
+}
+
+fn set_check_item(app: &mut SolveApp, id: &str, card: crate::dfm_chat::Card) {
+    let status = match card.status.as_str() {
+        "running" => backend::ToolStatus::InProgress,
+        "error" => backend::ToolStatus::Failed,
+        _ => backend::ToolStatus::Completed,
+    };
     let output = serde_json::to_string(&card).unwrap_or_default();
     app.dfm_chat.card = Some(card);
     for item in app.agent_chat.items.iter_mut().rev() {
-        if let Item::Tool { id: shown, status, output: shown_output, .. } = item
+        if let Item::Tool { id: shown, status: shown_status, output: shown_output, .. } = item
             && *shown == id
         {
-            *status = Some(if failed { backend::ToolStatus::Failed } else { backend::ToolStatus::Completed });
+            *shown_status = Some(status);
             *shown_output = Some(output.clone());
             break;
         }
     }
-    app.agent_chat.notice(tr("ui.dfm_check.title"), failed);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// One `inspect.dfm` reply: a finished current run with its CONTRACT §2 findings object.
     fn report() -> Value {
         json!({
-            "runId": "run-1", "candidateDigest": "c", "configDigest": "g", "modelVersion": "m", "projectId": "p",
-            "source": "native", "freshness": "current", "notChecked": "Not checked here.",
-            "findings": [{
-                "id": "sheet-1/F2", "sheet": 1, "body": "Plate", "from": "rules", "rules": ["sm.hole_min_diameter"],
-                "state": "advisory", "status": "needs_review", "code": null,
-                "measured": {"value": 2.4, "unit": "mm"},
-                "requirement": {"value": 3.0, "unit": "mm", "layer": "factory", "confirmed": "factory_confirmed", "source": "shop"},
-                "feature": {"kind": "hole", "number": 2}, "anchor": [1.0, 2.0, 3.0], "flat": [1.0, 2.0],
-                "faces": ["Face1"], "outline": [], "reason": null
-            }],
-            "rules": [{"ruleId": "sm.hole_min_diameter", "state": "advisory", "count": 1}]
+            "available": true, "running": false, "runId": "run-1", "outcome": "current",
+            "modelVersion": "model-1", "candidateDigest": "candidate-1", "configDigest": "config-1",
+            "freshness": "staleModel", "summary": "2 findings", "sourceRevision": "r1",
+            "findings": {
+                "schemaVersion": 2, "runId": "run-1", "candidateDigest": "candidate-1",
+                "profileDigest": "profile-1", "configDigest": "config-1", "modelVersion": "model-1",
+                "projectId": "project-1", "source": {"kind": "native"},
+                "findings": [{
+                    "id": "sheet-1/F2", "sheet": 1, "body": "Plate", "from": "rules", "rules": ["sm.hole_min_diameter"],
+                    "state": "advisory", "status": "needs_review", "code": null,
+                    "measured": {"value": 2.4, "unit": "mm"},
+                    "requirement": {"value": 3.0, "unit": "mm", "layer": "factory", "confirmed": "factory_confirmed", "source": "shop"},
+                    "feature": {"kind": "hole", "number": 2}, "anchor": [1.0, 2.0, 3.0], "flat": [1.0, 2.0],
+                    "faces": ["Face1"], "outline": [], "reason": null
+                }],
+                "rules": [
+                    {"ruleId": "sm.hole_min_diameter", "state": "advisory", "count": 1},
+                    {"ruleId": "sm.hole_to_edge", "state": "unsupported", "count": 0}
+                ],
+                "notChecked": "Not checked here."
+            }
         })
     }
 
-    /// The page and a model see only the report's finding fields, never a requirements table.
+    /// The nested findings object is read, not a bare array: counts, row values and freshness.
     #[test]
-    fn the_check_payload_carries_no_factory_requirements_table() {
-        let card = crate::dfm_chat::Card::from_value(&report());
+    fn the_inspect_reply_fills_the_card_and_keeps_the_stale_banner() {
+        let card = crate::dfm_chat::Card::from_inspect(&report());
+        assert_eq!(card.status, "done");
+        assert_eq!(card.freshness, "staleModel", "the page shows the stale banner");
+        assert_eq!(card.run_id, "run-1");
+        assert_eq!(card.project_id, "project-1");
+        assert_eq!(card.findings.len(), 1);
+        let counts = card.counts();
+        assert_eq!(counts["advisory"], 1);
+        assert_eq!(counts["unsupported"], 1);
+        assert_eq!(card.findings[0].measured.as_ref().map(|m| m.value), Some(2.4));
+        assert_eq!(card.findings[0].requirement.as_ref().map(|r| r.value), Some(3.0));
+        assert_eq!(card.not_checked, "Not checked here.");
+
         let page = crate::dfm_chat::page(&card).to_string();
+        assert!(page.contains("\"status\":\"done\""));
         assert!(page.contains("\"findings\""));
         assert!(!page.contains("\"requirements\""));
         let model = crate::dfm_chat::model_context(&card).to_string();
         assert!(model.contains("\"requirement\""), "each finding keeps its own number");
         assert!(!model.contains("\"requirements\""));
         assert!(!model.contains("confirmation"), "the stored row identity stays home");
-        assert_eq!(card.findings[0].measured.as_ref().map(|m| m.value), Some(2.4));
-        assert_eq!(card.counts()["advisory"], 1);
+    }
+
+    /// A queued run reads as running, and a failed or replaced run keeps its state and reason.
+    #[test]
+    fn the_card_reads_running_cancelled_and_failed_runs() {
+        let running = crate::dfm_chat::Card::from_inspect(&json!({"available": false, "running": true, "runId": "run-2"}));
+        assert_eq!(running.status, "running");
+
+        let cancelled = crate::dfm_chat::Card::from_inspect(&json!({
+            "available": true, "running": false, "runId": "run-3", "outcome": "cancelled",
+            "reason": "cancelled by the user",
+            "findings": {"runId": "run-3", "findings": [], "rules": [], "notChecked": ""}
+        }));
+        assert_eq!(cancelled.status, "cancelled");
+        assert_eq!(cancelled.reason.as_deref(), Some("cancelled by the user"));
+
+        let failed = crate::dfm_chat::Card::from_inspect(&json!({
+            "available": true, "running": false, "runId": "run-4", "outcome": "failed",
+            "reason": "the sheet could not be read",
+            "findings": {"runId": "run-4", "findings": [], "rules": [], "notChecked": ""}
+        }));
+        assert_eq!(failed.status, "error");
+        assert_eq!(failed.error.as_deref(), Some("the sheet could not be read"));
+
+        let queued = crate::dfm_chat::Card::from_check(&json!({"projectId": "p", "candidateDigest": "c", "configDigest": "g", "sheets": 1}));
+        assert_eq!(queued.status, "running");
+        assert_eq!(queued.project_id, "p");
     }
 
     /// Chat's "检查一下当前设计" calls the same entry as the card's refresh button.
