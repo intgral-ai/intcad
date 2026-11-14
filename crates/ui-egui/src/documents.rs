@@ -539,6 +539,10 @@ pub fn new_design(app: &mut SolveApp) {
     if app.file_picker_busy() {
         return;
     }
+    if app.preferences.new_design_makes_project && app.services.pick_folder.is_some() {
+        crate::new_project::open(app);
+        return;
+    }
     app.home.open = false;
     if active_is_blank(app) {
         crate::prefs::apply_new_design(app);
@@ -2133,5 +2137,51 @@ mod tests {
         crate::dialogs::cancel(&mut h.app);
         assert!(h.app.dialog.is_none());
         assert_eq!((h.app.session.doc.features.len(), h.app.session.doc.marker), (features, None), "Cancel puts the history back");
+    }
+
+    /// The New Design preference: on (with a folder picker) asks for a project; off keeps the
+    /// pathless design it has always made, and so does a host that cannot ask for a folder.
+    #[test]
+    fn a_new_design_asks_for_a_project_only_when_the_preference_is_on() {
+        let mut a = app();
+        a.preferences.new_design_makes_project = true;
+        a.services.pick_folder = Some(Box::new(|| Box::pin(std::future::pending())));
+        new_design(&mut a);
+        assert!(a.new_project.is_some(), "the project window is open");
+        assert_eq!(a.docs.count(), 1, "the window replaces the new tab");
+
+        let mut a = app();
+        a.preferences.new_design_makes_project = false;
+        a.services.pick_folder = Some(Box::new(|| Box::pin(std::future::pending())));
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        new_design(&mut a);
+        assert!(a.new_project.is_none(), "the preference is off");
+        assert_eq!(a.docs.count(), 2, "a pathless new design is made");
+
+        let mut a = app();
+        a.preferences.new_design_makes_project = true;
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        new_design(&mut a);
+        assert!(a.new_project.is_none(), "a host without a folder dialog cannot ask");
+        assert_eq!(a.docs.count(), 2);
+    }
+
+    /// Cancelling the folder choice keeps the window open and writes nothing: no design, no
+    /// `.intgral` folder.
+    #[test]
+    fn a_cancelled_folder_choice_leaves_no_file_and_no_project() {
+        let mut h = crate::scenario::Harness::new();
+        let target = h.dir.join("chosen");
+        std::fs::create_dir_all(&target).unwrap();
+        h.app.preferences.new_design_makes_project = true;
+        h.app.last_project_folder = Some(target.to_string_lossy().into_owned());
+        h.app.services.pick_folder = Some(Box::new(|| Box::pin(std::future::ready(None))));
+        new_design(&mut h.app);
+        assert!(h.app.new_project.is_some());
+        crate::new_project::choose_folder(&mut h.app);
+        h.frames(2);
+        let dialog = h.app.new_project.as_ref().expect("the window stays open");
+        assert_eq!(dialog.folder, target.to_string_lossy());
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0, "the cancelled choice wrote nothing");
     }
 }

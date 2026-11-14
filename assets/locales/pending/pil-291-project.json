@@ -1,0 +1,68 @@
+{
+  "en": {
+    "cmd.project.create": "New Project",
+    "cmd.project.inspect": "Project Settings",
+    "help.project.create": "Makes a project folder beside the open design, with its settings and check files. Use it when a design needs a shop's rules or project defaults.",
+    "help.project.inspect": "Shows the project settings saved beside the design. Use it to review the shop and its data when a result is not what you expect.",
+    "new_project.choose": "Choose…",
+    "new_project.location": "Location",
+    "new_project.name": "Name",
+    "new_project.title": "New Project",
+    "prefs.new_design_project.label": "New designs make a project folder"
+  },
+  "ar": {
+    "cmd.project.create": "مشروع جديد",
+    "cmd.project.inspect": "إعدادات المشروع",
+    "help.project.create": "ينشئ مجلد مشروع بجوار التصميم المفتوح، مع ملفات الإعداد والتحقق. استخدمه عندما يحتاج التصميم إلى قواعد ورشة أو إعدادات مشروع.",
+    "help.project.inspect": "يعرض إعدادات المشروع المحفوظة بجوار التصميم. استخدمه لمراجعة الورشة وبياناتها عندما لا تكون النتيجة كما تتوقع.",
+    "new_project.choose": "اختيار…",
+    "new_project.location": "الموقع",
+    "new_project.name": "الاسم",
+    "new_project.title": "مشروع جديد",
+    "prefs.new_design_project.label": "التصاميم الجديدة تنشئ مجلد مشروع"
+  },
+  "he": {
+    "cmd.project.create": "פרויקט חדש",
+    "cmd.project.inspect": "הגדרות פרויקט",
+    "help.project.create": "יוצר תיקיית פרויקט ליד העיצוב הפתוח, עם קובצי ההגדרות והבדיקה. השתמשו בו כשהעיצוב זקוק לכללי בית מלאכה או להגדרות פרויקט.",
+    "help.project.inspect": "מציג את הגדרות הפרויקט השמורות ליד העיצוב. השתמשו בו כדי לבדוק את בית המלאכה והנתונים כשהתוצאה אינה כצפוי.",
+    "new_project.choose": "בחירה…",
+    "new_project.location": "מיקום",
+    "new_project.name": "שם",
+    "new_project.title": "פרויקט חדש",
+    "prefs.new_design_project.label": "עיצובים חדשים יוצרים תיקיית פרויקט"
+  },
+  "ja": {
+    "cmd.project.create": "新規プロジェクト",
+    "cmd.project.inspect": "プロジェクト設定",
+    "help.project.create": "開いている設計の隣に、設定とチェックのファイルを含むプロジェクトフォルダーを作成します。設計に工場のルールやプロジェクト設定が必要なときに使います。",
+    "help.project.inspect": "設計の隣に保存されたプロジェクト設定を表示します。結果が期待と違うときに工場とデータの設定を確認するときに使います。",
+    "new_project.choose": "選択…",
+    "new_project.location": "場所",
+    "new_project.name": "名前",
+    "new_project.title": "新規プロジェクト",
+    "prefs.new_design_project.label": "新規設計でプロジェクトフォルダーを作成"
+  },
+  "vi": {
+    "cmd.project.create": "Dự án mới",
+    "cmd.project.inspect": "Cài đặt dự án",
+    "help.project.create": "Tạo thư mục dự án bên cạnh thiết kế đang mở, cùng các tệp cài đặt và kiểm tra. Dùng khi thiết kế cần quy tắc xưởng hoặc cài đặt dự án.",
+    "help.project.inspect": "Hiển thị cài đặt dự án đã lưu bên cạnh thiết kế. Dùng khi cần xem lại xưởng và dữ liệu nếu kết quả không như mong đợi.",
+    "new_project.choose": "Chọn…",
+    "new_project.location": "Vị trí",
+    "new_project.name": "Tên",
+    "new_project.title": "Dự án mới",
+    "prefs.new_design_project.label": "Thiết kế mới tạo thư mục dự án"
+  },
+  "zh": {
+    "cmd.project.create": "新建项目",
+    "cmd.project.inspect": "项目设置",
+    "help.project.create": "在打开的设计旁创建项目文件夹，包含设置和检查文件。需要车间规则或项目设置时用它开始设计。",
+    "help.project.inspect": "显示保存在设计旁的项目设置。当结果与预期不符时，用它查看车间和数据设置。",
+    "new_project.choose": "选择…",
+    "new_project.location": "位置",
+    "new_project.name": "名称",
+    "new_project.title": "新建项目",
+    "prefs.new_design_project.label": "新设计创建项目文件夹"
+  }
+}
