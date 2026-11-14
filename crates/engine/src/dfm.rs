@@ -190,6 +190,107 @@ pub fn check_sheet(sheet: &SheetBody, parameters: SheetCheckParameters) -> Resul
     Ok(DfmOutcome { facts, report })
 }
 
+/// The App's flat self-overlap rule id ([`CONTRACT.md`] §2). C's run layer calls
+/// [`flat_no_overlap`] for one sheet and turns each observation into a finding with
+/// `from = App` and `rules = ["app.flat_no_overlap"]`.
+pub const FLAT_NO_OVERLAP_RULE: &str = "app.flat_no_overlap";
+
+/// How `app.flat_no_overlap` decided one sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlatOverlapState {
+    /// The flat pieces do not overlap.
+    Passed,
+    /// A pair of flat pieces shares more than the area tolerance.
+    Failed,
+    /// The flat pattern could not be measured; nothing is claimed.
+    Unsupported,
+}
+
+/// One finding-shaped observation of `app.flat_no_overlap` for C's run layer.
+///
+/// The fields match what CONTRACT.md §2's `Finding` needs: the rule id, the App state, an optional
+/// reason code, the measured area in mm², `feature.kind = "region"`, the pair of structural
+/// pieces, a flat locate point, and the overlap outline.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlatOverlapObservation {
+    pub rule: &'static str,
+    pub state: FlatOverlapState,
+    pub code: Option<String>,
+    pub message: String,
+    /// The intersection area in mm², set only for a failure.
+    pub measured_mm2: Option<f64>,
+    /// Always `"region"` when there is a measured area.
+    pub feature_kind: Option<&'static str>,
+    /// The area tolerance the check used, in mm².
+    pub tolerance_mm2: f64,
+    /// The two structural pieces, e.g. `["base", "panel 0"]`.
+    pub pieces: Option<[String; 2]>,
+    /// A point inside the overlap in flat coordinates, to locate it.
+    pub flat: Option<[f64; 2]>,
+    /// The overlap's largest loop in flat coordinates, as `[x, y, 0]`. Empty when there is none.
+    pub outline: Vec<[f64; 3]>,
+}
+
+/// Run the App's flat self-overlap check on one sheet body, as finding-shaped observations.
+///
+/// A clear sheet gives one `Passed` observation, an overlapping sheet gives one `Failed`
+/// observation per overlapping pair, and a sheet that cannot be measured gives one `Unsupported`
+/// observation with a typed reason code. The check needs no factory data.
+pub fn flat_no_overlap(sheet: &SheetBody) -> Result<Vec<FlatOverlapObservation>, DfmError> {
+    let outcome = sheet_dfm::flat_overlap(sheet).map_err(|error| DfmError::Facts(error.to_string()))?;
+    let base = FlatOverlapObservation {
+        rule: FLAT_NO_OVERLAP_RULE,
+        state: FlatOverlapState::Passed,
+        code: None,
+        message: String::new(),
+        measured_mm2: None,
+        feature_kind: None,
+        tolerance_mm2: sheet_dfm::OVERLAP_AREA_TOLERANCE_MM2,
+        pieces: None,
+        flat: None,
+        outline: Vec::new(),
+    };
+    match outcome {
+        sheet_dfm::Overlap::Clear => Ok(vec![FlatOverlapObservation { message: "the flat panels and bend zones do not overlap".into(), ..base }]),
+        sheet_dfm::Overlap::NotCovered { reason } => Ok(vec![FlatOverlapObservation {
+            state: FlatOverlapState::Unsupported,
+            code: Some(reason.code().to_string()),
+            message: match reason {
+                sheet_dfm::OverlapNotCovered::CannotUnfold => "the sheet has no flat pattern that matches the part".into(),
+                sheet_dfm::OverlapNotCovered::CannotIntersect => "the flat panels and bend zones could not be intersected".into(),
+            },
+            ..base
+        }]),
+        sheet_dfm::Overlap::Overlapping { pairs } => Ok(pairs
+            .iter()
+            .map(|pair| {
+                let pieces = pair.pieces.map(sheet_dfm::FlatPiece::label);
+                let outline = pair.outline.first().map(|points| points.iter().map(|point| [point[0], point[1], 0.0]).collect()).unwrap_or_default();
+                let flat = pair.outline.first().and_then(|points| points.first()).copied();
+                FlatOverlapObservation {
+                    state: FlatOverlapState::Failed,
+                    code: Some("FLAT_OVERLAP".into()),
+                    message: format!(
+                        "{} and {} share {:.3} mm² after unfolding, above the {:.3} mm² overlap tolerance",
+                        pieces[0],
+                        pieces[1],
+                        pair.area_mm2,
+                        sheet_dfm::OVERLAP_AREA_TOLERANCE_MM2
+                    ),
+                    measured_mm2: Some(pair.area_mm2),
+                    feature_kind: Some("region"),
+                    pieces: Some(pieces),
+                    flat,
+                    outline,
+                    ..base.clone()
+                }
+            })
+            .collect()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,6 +906,68 @@ mod tests {
         let later: solidcraft_dfm_rules::intdfm_report::Report = serde_json::from_value(fixture["later"].clone()).expect("later");
         let expected: solidcraft_dfm_rules::intdfm_report::Recheck = serde_json::from_value(fixture["expected"].clone()).expect("expected");
         assert_eq!(recheck_reports(&earlier, &later).expect("recheck"), expected);
+    }
+
+    /// A 40 x 25 plate with one flange whose flat panel is the given polygon.
+    fn sheet_with_flange_panel(corners: &[Vec2]) -> SheetBody {
+        let mut sheet = plate_with_holes(40.0, 25.0, &[]);
+        sheet.flanges.push(flange(None, Vec2::new(0.0, 25.0), Vec2::X, Vec2::Y, 40.0, 1.5, 10.0));
+        if let Some(f) = sheet.flanges.last_mut() {
+            f.shape = Some(corners.to_vec());
+        }
+        sheet
+    }
+
+    /// `app.flat_no_overlap` is the App entry for the pure flat check: a clear sheet gives one
+    /// passed observation and needs no factory data.
+    #[test]
+    fn the_flat_no_overlap_adapter_passes_a_clear_sheet() {
+        let sheet = plate_with_holes(40.0, 25.0, &[(20.0, 12.5, 1.5)]);
+        let observations = flat_no_overlap(&sheet).expect("the App check");
+        assert_eq!(observations.len(), 1);
+        let finding = &observations[0];
+        assert_eq!(finding.rule, FLAT_NO_OVERLAP_RULE);
+        assert_eq!(finding.state, FlatOverlapState::Passed);
+        assert_eq!(finding.code, None);
+        assert_eq!(finding.measured_mm2, None);
+        assert_eq!(finding.feature_kind, None);
+        assert_eq!(finding.tolerance_mm2, sheet_dfm::OVERLAP_AREA_TOLERANCE_MM2);
+        assert!(finding.outline.is_empty());
+    }
+
+    /// A 5 x 4 mm panel inside the base is a 20 mm² overlap: one failed, App-sourced `region`
+    /// finding with the pair, the area in mm², and an outline to locate it.
+    #[test]
+    fn the_flat_no_overlap_adapter_reports_the_pair_area_and_outline() {
+        let corners = [Vec2::new(30.0, 5.0), Vec2::new(35.0, 5.0), Vec2::new(35.0, 9.0), Vec2::new(30.0, 9.0)];
+        let sheet = sheet_with_flange_panel(&corners);
+        let observations = flat_no_overlap(&sheet).expect("the App check");
+        assert_eq!(observations.len(), 1);
+        let finding = &observations[0];
+        assert_eq!(finding.rule, FLAT_NO_OVERLAP_RULE);
+        assert_eq!(finding.state, FlatOverlapState::Failed);
+        assert_eq!(finding.code.as_deref(), Some("FLAT_OVERLAP"));
+        assert_eq!(finding.feature_kind, Some("region"));
+        assert!((finding.measured_mm2.expect("a measured area") - 20.0).abs() < 1e-9);
+        assert_eq!(finding.pieces, Some(["base".to_string(), "panel 0".to_string()]));
+        assert!(finding.message.contains("20.000 mm"), "{}", finding.message);
+        let at = finding.flat.expect("a locate point");
+        assert!((30.0..=35.0).contains(&at[0]) && (5.0..=9.0).contains(&at[1]));
+        assert!(!finding.outline.is_empty(), "the overlap needs an outline");
+        assert!(finding.outline.iter().all(|point| point[2] == 0.0), "the outline is in the flat frame");
+    }
+
+    /// A body that cannot unfold gives a typed not-covered reason, never a pass.
+    #[test]
+    fn the_flat_no_overlap_adapter_reports_not_covered() {
+        let corners = [Vec2::new(30.0, 5.0), Vec2::new(35.0, 5.0), Vec2::new(35.0, 9.0), Vec2::new(30.0, 9.0)];
+        let mut sheet = sheet_with_flange_panel(&corners);
+        sheet.altered_by = Some("Fillet1".into());
+        let observations = flat_no_overlap(&sheet).expect("the App check");
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].state, FlatOverlapState::Unsupported);
+        assert_eq!(observations[0].code.as_deref(), Some("CANNOT_UNFOLD"));
+        assert_eq!(observations[0].measured_mm2, None);
     }
 
     #[test]
