@@ -47,6 +47,23 @@ pub struct RunInput {
     pub source: String,
 }
 
+impl RunInput {
+    /// Copy the frozen configuration one run uses. `source` is the model source for the report:
+    /// `native` or `converted <sha256>`.
+    pub fn from_frozen(frozen: &crate::project::FrozenProject, source: &str) -> RunInput {
+        RunInput {
+            project_id: frozen.project_id.clone(),
+            project_name: frozen.project_name.clone(),
+            config_digest: frozen.config_digest.clone(),
+            declared: frozen.declared.clone(),
+            generic: frozen.generic.clone(),
+            shop: frozen.shop.clone(),
+            overrides: frozen.overrides.clone(),
+            source: source.to_string(),
+        }
+    }
+}
+
 /// One sheet body a run checks.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

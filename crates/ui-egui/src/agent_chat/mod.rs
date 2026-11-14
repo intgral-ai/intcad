@@ -610,7 +610,6 @@ impl AgentChat {
 
     pub(crate) fn disconnect_document(&mut self, session: &mut solidcraft_engine::Session, wait: bool) {
         finish_turn(self, session);
-        self.dfm.cancel_active();
         self.clear_config();
         self.stop_backend(wait);
         self.runtime = None;
@@ -1401,37 +1400,46 @@ pub fn disconnect(app: &mut SolveApp) {
     app.agent_chat.disconnect_document(&mut app.session, false);
 }
 
-/// Install the host that captures and submits DFM checks for the open project (PIL-302). Without
-/// one, Run DFM and automatic checks are inert: this seam keeps the window thread free and lets
-/// the project-backed host land when the project module does.
-#[allow(dead_code)]
-pub(crate) fn install_dfm_host(app: &mut SolveApp, host: Box<dyn dfm_runtime::RunHost>) {
-    app.agent_chat.dfm.install(host);
-}
-
 /// Read the project's `ci.toml` automatic-check switch.
 #[allow(dead_code)]
 pub(crate) fn set_dfm_auto_enabled(app: &mut SolveApp, enabled: bool) {
     app.agent_chat.dfm.set_auto_enabled(enabled);
 }
 
+/// Submit a decided trigger through the engine's background DFM service. This is the one host
+/// entry: the Run DFM command and the automatic checks both come through here.
+fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
+    match solidcraft_engine::dfm::service::start(&mut app.session) {
+        Ok(_) => true,
+        Err(error) => {
+            log::warn!("the DFM check did not start after {trigger:?}: {error}");
+            false
+        }
+    }
+}
+
 /// The host's Run DFM entry: no AI connection is needed. Returns whether a run was submitted.
 #[allow(dead_code)]
 pub(crate) fn run_dfm(app: &mut SolveApp) -> bool {
     let stamp = app.session.document_stamp();
-    app.agent_chat.dfm.manual(&stamp.document_id, stamp.revision)
+    match app.agent_chat.dfm.manual(&stamp.document_id, stamp.revision) {
+        Some(trigger) => submit_dfm(app, trigger),
+        None => false,
+    }
 }
 
 /// Cancel the live check (the result, if it still commits, can never take `latest` back).
 #[allow(dead_code)]
-pub(crate) fn cancel_dfm(app: &mut SolveApp) {
-    app.agent_chat.dfm.cancel_active();
+pub(crate) fn cancel_dfm(app: &mut SolveApp) -> bool {
+    let _ = app;
+    solidcraft_engine::dfm::service::cancel()
 }
 
 /// The live check's `(run_id, document_id)`, if one is running.
 #[allow(dead_code)]
-pub(crate) fn running_dfm(app: &SolveApp) -> Option<(String, String)> {
-    app.agent_chat.dfm.active().map(|(run, document)| (run.to_string(), document.to_string()))
+pub(crate) fn running_dfm(app: &SolveApp) -> Option<String> {
+    let _ = app;
+    solidcraft_engine::dfm::service::status().active_run
 }
 
 /// PIL-300's accept path calls this after `review::accept` applied the preview and committed it.
@@ -1447,7 +1455,9 @@ pub(crate) fn running_dfm(app: &SolveApp) -> Option<(String, String)> {
 #[allow(dead_code)]
 pub(crate) fn preview_accepted(app: &mut SolveApp, preview: u64) {
     let stamp = app.session.document_stamp();
-    app.agent_chat.dfm.on_preview_accepted(&stamp.document_id, &format!("preview-{preview}"), stamp.revision);
+    if let Some(trigger) = app.agent_chat.dfm.on_preview_accepted(&stamp.document_id, &format!("preview-{preview}"), stamp.revision) {
+        submit_dfm(app, trigger);
+    }
 }
 
 /// A rejected preview, a failed accept, or an accept refused because the design changed meanwhile.
@@ -2550,7 +2560,11 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     {
         let stamp = app.session.document_stamp();
         let idle = app.control_job.is_none() && app.control_held.is_empty() && !app.agent.busy();
-        app.agent_chat.dfm.observe(&stamp.document_id, stamp.revision, idle);
+        if let Some(trigger) = app.agent_chat.dfm.observe(&stamp.document_id, stamp.revision, idle) {
+            submit_dfm(app, trigger);
+        }
+        // A person's edit makes the old report stale and stops its check; it starts nothing.
+        solidcraft_engine::dfm::service::cancel_if_stale(&mut app.session);
     }
     if !app.agent_chat.held.is_empty() || app.agent_chat.state() == State::Busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));

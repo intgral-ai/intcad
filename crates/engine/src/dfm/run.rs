@@ -72,6 +72,9 @@ pub struct RunMeta {
     /// The frozen project configuration digest.
     pub config_digest: String,
     pub model_version: String,
+    /// The captured document revision (in-session freshness compares it without a new snapshot).
+    #[serde(default)]
+    pub source_revision: String,
     /// RFC 3339 UTC with milliseconds.
     pub started_at: String,
     pub ended_at: String,
@@ -101,6 +104,7 @@ impl RunMeta {
             candidate_digest: candidate_digest.into(),
             config_digest: config_digest.into(),
             model_version: model_version.into(),
+            source_revision: String::new(),
             started_at: started_at.into(),
             ended_at: ended_at.into(),
             outcome,
@@ -542,6 +546,7 @@ pub fn run_once(
         RunOutcome::Current,
         None,
     );
+    meta.source_revision = request.candidate.source.revision.clone();
     store.mark_submitted(&meta)?;
     on_submitted(&run_id);
     if cancel.load(Ordering::Acquire) {
