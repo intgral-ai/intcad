@@ -218,10 +218,9 @@ pub fn start(session: &mut Session) -> Result<CheckTicket, EngineError> {
     let project = open_project(session)?;
     let frozen = project.freeze().map_err(|error| internal(error.to_string()))?;
     let captured = session.execute("document.snapshot.capture", &json!({}))?;
-    let candidate: CandidateRef = serde_json::from_value(
-        captured.get("candidate").cloned().ok_or_else(|| internal("the snapshot reply has no candidate"))?,
-    )
-    .map_err(|error| internal(format!("the snapshot reply is malformed: {error}")))?;
+    let candidate: CandidateRef =
+        serde_json::from_value(captured.get("candidate").cloned().ok_or_else(|| internal("the snapshot reply has no candidate"))?)
+            .map_err(|error| internal(format!("the snapshot reply is malformed: {error}")))?;
     let sheets: Vec<SheetRef> = session
         .model
         .state()
@@ -290,14 +289,7 @@ pub fn cancel_if_stale(session: &mut Session) {
 
 /// The live job's state, for a running/cancel/error entry in the window.
 pub fn status() -> ServiceStatus {
-    let empty = || ServiceStatus {
-        running: false,
-        active_run: None,
-        last_run: None,
-        last_outcome: None,
-        last_reason: None,
-        error: None,
-    };
+    let empty = || ServiceStatus { running: false, active_run: None, last_run: None, last_outcome: None, last_reason: None, error: None };
     let shared = match slot().lock() {
         Ok(slot) => match slot.as_ref() {
             Some(service) => Arc::clone(&service.shared),

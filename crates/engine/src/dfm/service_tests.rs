@@ -1,5 +1,6 @@
 //! The manual host entry end to end: a saved project design, `dfm.check` on the window thread,
 //! the worker, and `inspect.dfm` after it finishes.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -38,9 +39,7 @@ fn a_manual_check_without_ai_writes_a_report_that_inspect_reopens() {
     let created = crate::project::create(&root, "Bracket", "Bracket").unwrap();
     let mut session = crate::Session::default();
     sheet_design(&mut session);
-    session
-        .execute("file.save_as", &serde_json::json!({"path": created.design.to_string_lossy(), "overwrite": true}))
-        .unwrap();
+    session.execute("file.save_as", &serde_json::json!({"path": created.design.to_string_lossy(), "overwrite": true})).unwrap();
     assert!(session.path.is_some(), "the session is saved in the project");
 
     let ticket = session.execute("dfm.check", &serde_json::json!({})).unwrap();

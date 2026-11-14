@@ -27,9 +27,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .noundo()
         .contract(&CHECK_CONTRACT)
         .output(crate::schema::output_schema_for::<DfmCheckReply>)
-        .params("→ the open project's DFM check starts in the background: one dfm.sheet check per native sheet body, based on a \
+        .params(
+            "→ the open project's DFM check starts in the background: one dfm.sheet check per native sheet body, based on a \
                  snapshot captured now and the project's frozen process, material, thickness and data. Returns the project identity, \
-                 the model and configuration digests and the sheet count. Saving and editing stay usable; dfm.status reports progress"),
+                 the model and configuration digests and the sheet count. Saving and editing stay usable; dfm.status reports progress",
+        ),
     CommandSpec::new("dfm.cancel", "Cancel DFM Check", crate::checked!("dfm.cancel", cancel))
         .icon("stop")
         .noundo()
@@ -47,9 +49,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .noundo()
         .contract(&INSPECT_CONTRACT)
         .output(crate::schema::output_schema_for::<InspectDfmReply>)
-        .params("run?: a run id (default: the newest complete run); modelDigest?: the live candidate digest → the saved findings from \
+        .params(
+            "run?: a run id (default: the newest complete run); modelDigest?: the live candidate digest → the saved findings from \
                  CONTRACT §2, the outcome, the summary and freshness (current, staleModel, staleConfig, staleBoth or unknown). \
-                 Never returns factory rows"),
+                 Never returns factory rows",
+        ),
 ];
 
 fn check(s: &mut Session, _: &Value) -> Result<Value> {
