@@ -412,12 +412,13 @@ impl Pipes {
             return Err(ProcessIoError::OversizedFrame);
         }
         let charge = bytes.capacity();
-        // Strict tracked producers run only on the off-frame runtime worker.
         // Queue admission still never waits for capacity or OS IO. Serialize
         // the bounded bookkeeping instead of turning a stderr/read lock race
-        // into a spurious physical write failure. ACP keeps its original try-lock.
-        let mut state =
-            if ticket.is_some() { self.state.lock().map_err(|_| ProcessIoError::Closed)? } else { self.state.try_lock().map_err(lock_error)? };
+        // into a spurious physical write failure. Both producers use the same
+        // short critical section: ACP sends from the frame that owns the
+        // backend, so a transient `WouldBlock` there used to fail the whole
+        // transport (and close the agent's stdin) under load.
+        let mut state = self.state.lock().map_err(|_| ProcessIoError::Closed)?;
         if state.input_closed || self.stop.requested() {
             return Err(ProcessIoError::Closed);
         }
@@ -1453,6 +1454,23 @@ mod tests {
         while let Some(event) = io.recv().unwrap() {
             assert!(matches!(event, ProcessEvent::Written(9002)));
         }
+    }
+
+    /// An ACP send from the frame must serialize with the reader's short bookkeeping lock.
+    /// The old try-lock reported `ResourceExhausted` there, which `AgentProcess::send` turns
+    /// into `fail()`: stdin closes and the agent exits under ordinary thread contention.
+    #[test]
+    fn acp_send_waits_for_the_bookkeeping_lock_instead_of_failing() {
+        let io = Pipes::new(limits(), Arc::new(|| {}));
+        let held = io.state.lock().unwrap();
+        let sender = io.clone();
+        let send = std::thread::spawn(move || sender.send(b"prompt\n".to_vec(), PipeLane::Data));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!send.is_finished(), "the send must wait for the short lock, not fail");
+        drop(held);
+        assert_eq!(send.join().unwrap(), Ok(()));
+        assert!(!io.stop.requested(), "a contended send must not stop the transport");
+        assert!(!io.state.lock().unwrap().data.is_empty());
     }
 
     #[test]
