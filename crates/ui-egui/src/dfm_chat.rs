@@ -280,7 +280,19 @@ pub fn refresh(app: &mut SolveApp) -> Card {
 /// A message that asks for the check in words, so chat and the button share one entry.
 pub fn is_check_request(text: &str) -> bool {
     let text = text.trim().trim_end_matches(['.', '。', '!', '！']).to_lowercase();
-    matches!(text.as_str(), "检查一下当前设计" | "检查当前设计" | "check this design" | "check the current design")
+    matches!(
+        text.as_str(),
+        "检查一下当前设计"
+            | "检查当前设计"
+            | "检查一下当前钣金件"
+            | "检查当前钣金件"
+            | "检查一下当前零件"
+            | "检查当前零件"
+            | "check this design"
+            | "check the current design"
+            | "check this part"
+            | "check the current part"
+    )
 }
 
 /// Select one `(run_id, finding_id)` from the card.
@@ -295,4 +307,26 @@ pub fn select(app: &mut SolveApp, run_id: &str, finding_id: &str) -> Result<(), 
     app.dfm_chat.selected = Some((run_id.to_string(), finding_id.to_string()));
     // B's overlay reads this selection from `app.dfm_chat.selected` and locates the same key.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_check_request;
+
+    #[test]
+    fn the_check_shortcut_takes_only_clear_imperatives() {
+        for text in [
+            "检查一下当前设计",
+            "检查当前设计。",
+            "检查一下当前钣金件",
+            "检查当前钣金件！",
+            "检查当前零件",
+            "Check this part.",
+        ] {
+            assert!(is_check_request(text), "{text}");
+        }
+        for text in ["不要检查当前零件", "上次为什么检查失败？", "检查一下这个零件的孔", "why did the check fail?"] {
+            assert!(!is_check_request(text), "{text}");
+        }
+    }
 }
