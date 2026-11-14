@@ -154,6 +154,7 @@ pub struct Finding {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleRow {
+    #[serde(rename = "ruleId")]
     pub rule: String,
     pub state: FindingState,
     pub count: usize,
