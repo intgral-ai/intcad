@@ -800,7 +800,7 @@ fn bend_fact(sheet: &SheetBody, i: usize, f: &crate::sheet::SheetFlange) -> Bend
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sheet::{AngleDisplay, ReliefShape, RuleValues, SheetFlange, base_flange};
+    use crate::sheet::{AngleDisplay, ReliefShape, RuleValues, SheetFlange, SheetPerforation, base_flange};
     use solidcore_record::Plane;
     use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -829,6 +829,80 @@ mod tests {
 
     fn cut_round(sheet: &mut SheetBody, x: f64, y: f64, radius: f64) {
         sheet.holes.push(Region2 { outer: Loop2::circle(Vec2::new(x, y), radius), holes: Vec::new() });
+    }
+
+    /// A 40 x 25 plate with a 90° flange on the y = 25 edge and one hole on each panel.
+    fn flanged_pair_sheet() -> SheetBody {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        let radius = 1.5;
+        let leg = 10.0;
+        sheet.flanges.push(SheetFlange {
+            parent: None,
+            p: Vec2::new(0.0, 25.0),
+            d: Vec2::X,
+            len: 40.0,
+            n: Vec2::Y,
+            angle: FRAC_PI_2,
+            radius,
+            leg,
+            ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
+            tear: (false, false),
+            shape: None,
+            exact: None,
+            zone_shape: None,
+            tag: String::new(),
+        });
+        let allowance = (PI / 2.0) * (radius + 0.5 * 1.5);
+        cut_round(&mut sheet, 20.0, 15.0, 1.5);
+        cut_round(&mut sheet, 20.0, 25.0 + allowance + 3.0, 1.5);
+        sheet
+    }
+
+    /// A whole-body rigid frame: turn about Z, then translate.
+    fn turned_frame(angle: f64, translation: Vec3) -> Plane {
+        let (sin, cos) = angle.sin_cos();
+        Plane { origin: translation, x: Vec3::new(cos, sin, 0.0), y: Vec3::new(-sin, cos, 0.0) }
+    }
+
+    fn rotate_z(angle: f64, point: Vec3) -> Vec3 {
+        let (sin, cos) = angle.sin_cos();
+        Vec3::new(cos * point.x - sin * point.y, sin * point.x + cos * point.y, point.z)
+    }
+
+    /// Everything except a folded position is a flat-frame fact, so a rigid whole-body move must
+    /// leave it unchanged.
+    fn assert_same_flat_facts(before: &SheetFacts, after: &SheetFacts) {
+        assert_eq!(after.holes.len(), before.holes.len());
+        assert_eq!(after.bends.len(), before.bends.len());
+        assert_eq!(after.other_openings, before.other_openings);
+        close(after.thickness_mm, before.thickness_mm);
+        for (a, b) in before.holes.iter().zip(&after.holes) {
+            assert_eq!(b.number, a.number);
+            close(b.diameter_mm, a.diameter_mm);
+            close(b.depth_mm, a.depth_mm);
+            assert_eq!(b.flat, a.flat);
+            assert_eq!(b.flat_assigned, a.flat_assigned);
+            assert_eq!(b.edge_kind, a.edge_kind);
+            match (a.edge_mm, b.edge_mm) {
+                (Some(x), Some(y)) => close(y, x),
+                (None, None) => {}
+                other => panic!("the edge distance changed: {other:?}"),
+            }
+            assert_eq!(b.bend_gaps.len(), a.bend_gaps.len());
+            for (ga, gb) in a.bend_gaps.iter().zip(&b.bend_gaps) {
+                assert_eq!(gb.bend, ga.bend);
+                close(gb.gap_mm, ga.gap_mm);
+                close(gb.inside_radius_mm, ga.inside_radius_mm);
+            }
+        }
+        for (a, b) in before.bends.iter().zip(&after.bends) {
+            assert_eq!(b.number, a.number);
+            close(b.inside_radius_mm, a.inside_radius_mm);
+            close(b.angle_deg, a.angle_deg);
+            close(b.length_mm, a.length_mm);
+            assert_eq!(b.flats, a.flats);
+        }
     }
 
     fn close(actual: f64, expected: f64) {
@@ -1185,6 +1259,108 @@ mod tests {
         let at = hole.edge_at_mm.unwrap();
         close(at[0], 20.0);
         close(at[1], 25.0);
+    }
+
+    /// A perforation field is a grid of round through holes on whichever panel holds it. Every
+    /// hole has a stable number, its diameter and depth, and a cut-edge distance.
+    #[test]
+    fn a_perforation_array_reports_every_hole_on_the_base_panel() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        sheet.perforations.push(SheetPerforation {
+            feature: 7,
+            diameter: 2.0,
+            pitch: 5.0,
+            margin: 1.0,
+            square: true,
+            from_right: false,
+            outline: None,
+        });
+
+        let measured = facts(&sheet).unwrap();
+        assert!(measured.flat);
+        // The grid starts at margin + radius = 2 mm, so x = 2, 7, ..., 37 and y = 2, 7, ..., 22.
+        assert_eq!(measured.holes.len(), 8 * 5);
+        assert_eq!(measured.other_openings, 0);
+        assert!(measured.holes.iter().all(|hole| hole.flat_assigned && hole.flat.is_none() && hole.diameter_mm == 2.0));
+        assert_eq!(measured.holes.iter().map(|hole| hole.number).collect::<Vec<_>>(), (1..=40).collect::<Vec<_>>());
+
+        let first = &measured.holes[0];
+        close(first.x_mm, 2.0);
+        close(first.y_mm, 2.0);
+        close(first.z_mm, 0.75);
+        close(first.depth_mm, 1.5);
+        assert_eq!(first.flat, None);
+        // x = 0 and y = 0 are both 2 mm from the centre, so 1 mm from the Ø2 wall.
+        close(first.edge_mm.unwrap(), 1.0);
+        assert_eq!(first.edge_kind, Some(EdgeKind::Outline));
+        assert!(first.bend_gaps.is_empty());
+
+        let last = &measured.holes[39];
+        close(last.x_mm, 37.0);
+        close(last.y_mm, 22.0);
+        // The far edges x = 40 and y = 25 are 3 mm away, so 2 mm of material.
+        close(last.edge_mm.unwrap(), 2.0);
+    }
+
+    /// Moving the whole body through its frame moves the folded centres and edge points, but the
+    /// measured hole and bend facts stay the same.
+    #[test]
+    fn a_translated_body_keeps_its_hole_facts() {
+        let sheet = flanged_pair_sheet();
+        let before = facts(&sheet).unwrap();
+        let translation = Vec3::new(5.0, -3.0, 2.0);
+        let mut moved = sheet;
+        moved.frame = turned_frame(0.0, translation);
+
+        let after = facts(&moved).unwrap();
+        assert_same_flat_facts(&before, &after);
+        for (a, b) in before.holes.iter().zip(&after.holes) {
+            close(b.x_mm, a.x_mm + translation.x);
+            close(b.y_mm, a.y_mm + translation.y);
+            close(b.z_mm, a.z_mm + translation.z);
+            let at = a.edge_at_mm.unwrap();
+            let moved_at = b.edge_at_mm.unwrap();
+            close(moved_at[0], at[0] + translation.x);
+            close(moved_at[1], at[1] + translation.y);
+            close(moved_at[2], at[2] + translation.z);
+        }
+        for (a, b) in before.bends.iter().zip(&after.bends) {
+            close(b.x_mm, a.x_mm + translation.x);
+            close(b.y_mm, a.y_mm + translation.y);
+            close(b.z_mm, a.z_mm + translation.z);
+        }
+    }
+
+    /// Turning the whole body about Z turns the folded centres and edge points, while the flat
+    /// facts, including each bend gap, stay the same.
+    #[test]
+    fn a_rotated_body_keeps_its_hole_facts() {
+        let sheet = flanged_pair_sheet();
+        let before = facts(&sheet).unwrap();
+        let angle = 0.523_598_775_598_298_8;
+        let mut turned = sheet;
+        turned.frame = turned_frame(angle, Vec3::ZERO);
+
+        let after = facts(&turned).unwrap();
+        assert_same_flat_facts(&before, &after);
+        for (a, b) in before.holes.iter().zip(&after.holes) {
+            let expected = rotate_z(angle, Vec3::new(a.x_mm, a.y_mm, a.z_mm));
+            close(b.x_mm, expected.x);
+            close(b.y_mm, expected.y);
+            close(b.z_mm, expected.z);
+            let at = a.edge_at_mm.unwrap();
+            let expected = rotate_z(angle, Vec3::new(at[0], at[1], at[2]));
+            let moved_at = b.edge_at_mm.unwrap();
+            close(moved_at[0], expected.x);
+            close(moved_at[1], expected.y);
+            close(moved_at[2], expected.z);
+        }
+        for (a, b) in before.bends.iter().zip(&after.bends) {
+            let expected = rotate_z(angle, Vec3::new(a.x_mm, a.y_mm, a.z_mm));
+            close(b.x_mm, expected.x);
+            close(b.y_mm, expected.y);
+            close(b.z_mm, expected.z);
+        }
     }
 
     /// A body a later feature altered still reports facts; the caller decides they are unusable.
