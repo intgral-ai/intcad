@@ -821,7 +821,7 @@ class NativeBaselineWorkflow(unittest.TestCase):
         self.assertEqual(lines[-1], "PY")
         return "\n".join(lines[1:-1])
 
-    def run_raw(self, *, status=0, outcome="passed", listing_status=0, revision=None, heavy=None):
+    def run_raw(self, *, status=0, outcome="passed", listing_status=0, revision=None):
         # This external Cargo fixture tests command/exit/report plumbing, not native CAD success.
         # The workflow executes the actual T4 adapter against real git and child processes.
         import gate
@@ -863,12 +863,11 @@ class NativeBaselineWorkflow(unittest.TestCase):
                              "sys.exit(91)\n")
             cargo.chmod(0o755)
             summary = root / "summary.md"
-            script = self.raw_script("Run raw ignored matrix suite" if heavy else "Run full raw native baseline")
+            script = self.raw_script("Run full raw native baseline")
             run = subprocess.run([sys.executable, "-I", "-c", script], cwd=root, text=True,
                                  capture_output=True, env={**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
-                                                          "BASELINE_SUITE": heavy or "native",
                                                           "GITHUB_STEP_SUMMARY": str(summary)})
-            evidence = root / ("evidence/raw-heavy" if heavy else "evidence/raw-native")
+            evidence = root / "evidence/raw-native"
             result_path = evidence / "raw-result.json"
             result = json.loads(result_path.read_text()) if result_path.exists() else None
             if result:
@@ -879,22 +878,8 @@ class NativeBaselineWorkflow(unittest.TestCase):
                 if len(commands) > 1:
                     self.assertEqual(gate.nextest_configuration(commands[0]["argv"], "list"),
                                      gate.nextest_configuration(commands[1]["argv"], "run"))
-                    if heavy:
-                        self.assertIn("--archive-file", commands[1]["argv"])
-                        self.assertIn("--run-ignored", commands[1]["argv"])
-                        self.assertIn("only", commands[1]["argv"])
-                        name = "action_matrix_determinism" if heavy == "determinism" else "action_matrix_shard"
-                        self.assertEqual(commands[1]["argv"][commands[1]["argv"].index("-E") + 1],
-                                         "binary(action_matrix) & test(=" + name + ")")
-                        child_env = json.loads((evidence / "command-1.log").read_text())
-                        if heavy != "determinism":
-                            self.assertEqual(child_env["ACTION_MATRIX_SHARD"], heavy + "/16")
-                        for key, filename in (("ACTION_MATRIX_RESULTS", "results.json"),
-                                              ("ACTION_MATRIX_TIMINGS", "timings.jsonl"), ("ACTION_MATRIX_WORKDIR", "raw")):
-                            self.assertEqual(child_env[key], str(evidence / filename))
-                    else:
-                        self.assertIn("all() & not (binary(boolean_props) | binary(atomic_commands))", commands[1]["argv"])
-                        self.assertIn("--workspace", commands[1]["argv"])
+                    self.assertIn("all() & not (binary(boolean_props) | binary(atomic_commands))", commands[1]["argv"])
+                    self.assertIn("--workspace", commands[1]["argv"])
                     self.assertTrue((evidence / "junit.xml").is_file())
             return run, result, summary.read_text() if summary.exists() else ""
 
@@ -929,16 +914,17 @@ class NativeBaselineWorkflow(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("actual checkout SHA differs", run.stderr)
 
-    def test_ignored_heavy_matrix_keeps_raw_exits_and_exact_selection(self):
-        self.assertIn("shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, determinism]", self.workflow)
-        self.assertIn("fail-fast: false", self.workflow)
-        for suite in ("1", "16", "determinism"):
-            for status, outcome in ((0, "passed"), (100, "failed"), (101, "passed"), (0, "missing")):
-                with self.subTest(suite=suite, status=status, outcome=outcome):
-                    run, result, summary = self.run_raw(status=status, outcome=outcome, heavy=suite)
-                    self.assertEqual(run.returncode, status or (1 if outcome == "missing" else 0), run.stderr)
-                    self.assertEqual(result["commands"][1]["exitCode"], status)
-                    self.assertIn("Raw ignored matrix baseline:", summary)
+    def test_geometry_matrix_runs_once_and_raw_reads_its_evidence(self):
+        self.assertIn("Raw geometry matrix result", self.workflow)
+        self.assertIn("scripts/ci/raw_matrix.py verify --plan selection/plan.json --evidence raw-evidence", self.workflow)
+        self.assertIn("pattern: action-matrix-*", self.workflow)
+        self.assertNotIn("cargo nextest run", self.workflow)
+        self.assertNotIn("strategy:\n      fail-fast: false", self.workflow)
+        ci = (self.root / ".github/workflows/ci.yml").read_text()
+        self.assertIn("scripts/ci/raw_matrix.py run --plan selection/plan.json --shard", ci)
+        self.assertIn("name: action-matrix-determinism", ci)
+        self.assertIn("path: action-matrix-determinism", ci)
+        self.assertIn("if-no-files-found: error", ci)
 
     def test_conclusion_rejects_missing_failed_cancelled_and_skipped_jobs(self):
         script = self.raw_script("Report actual full and raw results")
