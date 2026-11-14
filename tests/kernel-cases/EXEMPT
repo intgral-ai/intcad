@@ -146,6 +146,9 @@ pointcloud.delete                 point clouds: points drawn, never a body
 pointcloud.edit                   point clouds: points drawn, never a body
 pointcloud.insert                 point clouds: points drawn, never a body
 pointcloud.list                   point clouds: points drawn, never a body
+project.attach                    a project folder beside a saved design, not geometry: project::tests::attach_keeps_the_design_and_puts_the_project_beside_it
+project.create                    a project folder and its templates, not geometry: project::tests::a_created_project_reopens_with_the_same_identity_and_settings
+project.inspect                   reading a project folder, not geometry: cmd::project::attach_tests::attach_uses_the_open_designs_path_and_inspect_finds_the_project
 render.aging.describe             rendering: images, cameras, stages
 render.backends                   rendering: images, cameras, stages
 render.batch                      rendering: images, cameras, stages
