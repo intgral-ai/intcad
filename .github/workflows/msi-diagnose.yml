@@ -30,6 +30,12 @@ jobs:
           mkdir -p dist evidence
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-linux-x86_64 --dir dist
           find dist -maxdepth 3 -type f | sort | head -40
+      - name: Install the Linux runtime dependency the desktop app links
+        # The deb/rpm declare this dependency; the tar.gz is verified on a host that
+        # has it, exactly as a desktop package install would.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-0
       - name: Extract, hash, and run the packaged binaries
         run: |
           set -euo pipefail
