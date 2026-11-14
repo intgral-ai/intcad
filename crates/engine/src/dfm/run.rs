@@ -614,7 +614,7 @@ pub fn run_once(
         source: SourceRef::from_source(&request.input.source),
     };
     let mut findings = findings::build_with_reasons(&identity, &sheet_checks, &reasons);
-    let (app, app_not_checked) = app_findings(&report);
+    let (app, app_not_checked) = app_findings(report.checks.iter().find(|check| check.check_id == compile::FLAT_OVERLAP_CHECK));
     findings.extend_with_app(app, &app_not_checked);
     let files = RunFiles { profile: compiled.profile, report, findings: findings.clone(), sheets: evidence };
     let outcome = store.write_complete(&meta, &files)?;
@@ -626,10 +626,10 @@ pub fn run_once(
 }
 
 /// The App's own check results (flat self-overlap) as findings, and what it could not check.
-fn app_findings(report: &ValidationReport) -> (Vec<findings::Finding>, Vec<String>) {
+pub(super) fn app_findings(check: Option<&crate::validation::CheckResult>) -> (Vec<findings::Finding>, Vec<String>) {
     use findings::{FeatureRef, Finding, FindingFrom, FindingState, Measure, MeasureUnit, RequirementView};
 
-    let Some(check) = report.checks.iter().find(|check| check.check_id == compile::FLAT_OVERLAP_CHECK) else {
+    let Some(check) = check else {
         return (Vec::new(), Vec::new());
     };
     let tolerance = check.actual.get("toleranceMm2").and_then(serde_json::Value::as_f64);
