@@ -858,7 +858,7 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
 
 /// Run `dfm.check` for the button and the chat phrase, and keep one Tool row per run so the page
 /// can show running, done or error.
-fn run_check(app: &mut SolveApp) {
+pub(crate) fn run_check(app: &mut SolveApp) {
     let n = app.dfm_chat.next;
     app.dfm_chat.next = app.dfm_chat.next.saturating_add(1);
     let id = format!("dfm-check-{n}");

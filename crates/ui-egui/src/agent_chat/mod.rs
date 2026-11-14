@@ -3114,7 +3114,13 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
         }
     }
     if let Some(text) = p.get("send").and_then(Value::as_str) {
-        send(app, ctx, text.to_string());
+        // The page's send button treats a check request as the button's command; the host path
+        // must do the same, or a scripted/CI send would start a model turn instead.
+        if crate::dfm_chat::is_check_request(text) {
+            crate::agent_chat::web::run_check(app);
+        } else {
+            send(app, ctx, text.to_string());
+        }
     }
     // Ask Here: open the box beside the pick, or send a message with exactly the selection.
     if p.get("ask_here").and_then(Value::as_bool) == Some(true) {
