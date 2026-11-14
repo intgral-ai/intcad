@@ -845,3 +845,49 @@ fn a_cancelled_run_writes_a_reason_and_keeps_the_previous_record() {
     assert_eq!(RunStore::new(&request.project_root).latest().unwrap().unwrap().run_id, first.run_id);
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// The App's flat-overlap check reaches the same findings document as the rule layer: a failed
+/// pair carries the area, the region pair and the outline; a clear body contributes a pass row.
+#[test]
+fn a_flat_overlap_result_becomes_an_app_finding() {
+    let check = crate::validation::CheckResult {
+        check_id: compile::FLAT_OVERLAP_CHECK.into(),
+        required: false,
+        state: crate::validation::CheckState::Failed,
+        expected: serde_json::json!({}),
+        actual: serde_json::json!({
+            "toleranceMm2": 0.01,
+            "sheets": [{
+                "sheet": 0,
+                "body": "Plate",
+                "observations": [{
+                    "rule": "app.flat_no_overlap",
+                    "state": "failed",
+                    "code": "FLAT_OVERLAP",
+                    "message": "base and panel 0 share 12.5 mm2",
+                    "measuredMm2": 12.5,
+                    "featureKind": "region",
+                    "toleranceMm2": 0.01,
+                    "pieces": ["base", "panel 0"],
+                    "flat": [1.0, 2.0],
+                    "outline": [[1.0, 2.0, 0.0], [3.0, 2.0, 0.0]]
+                }]
+            }]
+        }),
+        evidence: Vec::new(),
+    };
+    let (app, not_checked) = run::app_findings(Some(&check));
+    assert_eq!(app.len(), 1);
+    assert_eq!(app[0].state, findings::FindingState::Failed);
+    assert_eq!(app[0].rules, ["app.flat_no_overlap"]);
+    assert_eq!(app[0].measured.as_ref().map(|m| m.value), Some(12.5));
+    assert_eq!(app[0].flat, Some([1.0, 2.0]));
+    assert_eq!(app[0].outline.len(), 2);
+    assert!(not_checked.is_empty());
+
+    let mut built = findings::build(&identity("run-1"), &[]);
+    built.extend_with_app(app, &not_checked);
+    let row = built.rules.iter().find(|row| row.rule == "app.flat_no_overlap").expect("the app rule row");
+    assert_eq!((row.state, row.count), (findings::FindingState::Failed, 1));
+    assert_eq!(built.findings[0].id, "sheet-1/A1");
+}
