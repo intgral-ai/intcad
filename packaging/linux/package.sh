@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Build and package SolidCraft for Linux (<arch> is x86_64 or aarch64):
 #
-#   $DIST/solidcraft-<version>-linux-<arch>.AppImage        any distro with glibc >= the build host's
-#   $DIST/solidcraft-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
+#   $DIST/intcad-<version>-linux-<arch>.AppImage        any distro with glibc >= the build host's
+#   $DIST/intcad-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
 #   $DIST/solvecraft-<version>-linux-<arch>.AppImage.zsync  the same, for pre-rename AppImages
-#   $DIST/solidcraft-<version>-linux-<arch>.deb             Debian, Ubuntu, Mint, Pop!_OS, ...
-#   $DIST/solidcraft-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
-#   $DIST/solidcraft-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
+#   $DIST/intcad-<version>-linux-<arch>.deb             Debian, Ubuntu, Mint, Pop!_OS, ...
+#   $DIST/intcad-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
+#   $DIST/intcad-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
 #
 # Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--with-mastra]
 #
@@ -42,7 +42,7 @@ case "$ARCH" in
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
 export SOLIDCRAFT_MAINTAINER="${SOLIDCRAFT_MAINTAINER:-${SOLVECRAFT_MAINTAINER:-Intgral <https://github.com/intgral-ai/open-skyfall-desktop>}}"  # SOLVECRAFT_*: compatibility shim, see docs/compatibility.md
-BASENAME="solidcraft-$VERSION-linux-$ARCH"
+BASENAME="intcad-$VERSION-linux-$ARCH"
 
 echo "==> SolidCraft $VERSION for Linux $ARCH ($FORMATS)"
 
@@ -165,7 +165,7 @@ if has appimage; then
   # release through the .zsync published next to each AppImage. `latest` is the newest published
   # release that is not a pre-release.
   REPO="${GITHUB_REPOSITORY:-intgral-ai/open-skyfall-desktop}"
-  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|solidcraft-*-linux-$ARCH.AppImage.zsync"
+  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|intcad-*-linux-$ARCH.AppImage.zsync"
   # Extract-and-run: works without FUSE (containers, CI). With zsyncmake on the host appimagetool
   # also writes the .zsync, into its working directory, hence the cd.
   (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream -u "$UPDATE_INFO" "$APPDIR" "$OUT")

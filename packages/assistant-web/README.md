@@ -119,7 +119,7 @@ and a saved one is put back.
 - **Windows**: WebView2, in a child window of the app's. WebView2 serves no scheme of the app's
   own, so the page has an `http` address there (`http://openskyfall-assistant.localhost/…`, the
   form `wry` gives a custom scheme), which only this view answers. WebView2 keeps its files in
-  `%LOCALAPPDATA%\SolidCraft\assistant-web-view`, or in the settings folder a run was given
+  `%LOCALAPPDATA%\Intcad\assistant-web-view`, or in the settings folder a run was given
   (`SOLIDCRAFT_SETTINGS_DIR`); left to itself it would write beside the exe. The view is square
   and opaque, as on Linux. WebView2 takes the keyboard when it is clicked, and a press on the
   rest of the window gives it back to the window. A browser's own keys (find, print, reload,

@@ -21,7 +21,7 @@ import tempfile
 import time
 import zlib
 
-APP_ID = "io.tangencylabs.solidcraft"
+APP_ID = "ai.intgral.intcad"
 MAX_PIXELS = 16_000_000
 MAX_PNG_BYTES = 70_000_000
 SANDBOX_PROBE = r'''
@@ -238,8 +238,8 @@ def probe(gl_saved_four=False, backend="x11"):
         software_gl = ('export LIBGL_ALWAYS_SOFTWARE=1\nexport MESA_LOADER_DRIVER_OVERRIDE=llvmpipe\n'
                        if os.environ.get("SOLIDCRAFT_SMOKE_SOFTWARE_GL") == "1" else '')
         shell = shell.replace('solidcraft --control',
-                              'mkdir -p "$XDG_DATA_HOME/solidcraft"\n'
-                              'printf \'{"msaa":4}\' >"$XDG_DATA_HOME/solidcraft/graphics.json"\n'
+                              'mkdir -p "$XDG_DATA_HOME/intcad"\n'
+                              'printf \'{"msaa":4}\' >"$XDG_DATA_HOME/intcad/graphics.json"\n'
                               'export WGPU_BACKEND=gl\n'
                               + software_gl +
                               'solidcraft --control')

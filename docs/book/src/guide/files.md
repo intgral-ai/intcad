@@ -88,8 +88,8 @@ this row. SolidCraft isn't affiliated with Printables. Scripts use `file.open_in
 and an AI agent's request to use it asks first.
 
 Files sent to a slicer go to a folder only you can
-read: `~/.cache/solidcraft/slicer` on Linux, `~/Library/Caches/SolidCraft/slicer` on macOS and
-`%LOCALAPPDATA%\SolidCraft\slicer` on Windows. The name stays the same for the same design and
+read: `~/.cache/intcad/slicer` on Linux, `~/Library/Caches/Intcad/slicer` on macOS and
+`%LOCALAPPDATA%\Intcad\slicer` on Windows. The name stays the same for the same design and
 the same bodies, so sending again **replaces the file the slicer has open**: use the slicer's
 Reload from disk to pick it up. If Windows won't let the file be replaced because the slicer holds
 it, the new copy gets a number (`name-2.3mf`) and the status line says so. Files older than seven days are

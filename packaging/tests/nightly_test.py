@@ -161,7 +161,7 @@ class ForkWorkflowSafety(unittest.TestCase):
         self.assertIn("ip link set lo up", text)
         self.assertIn("solidcraft.cli --version", text)
         # Flatpak's existing sandbox denies network; keep its real desktop smoke.
-        manifest = (ROOT / "packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml").read_text()
+        manifest = (ROOT / "packaging/linux/flatpak/ai.intgral.intcad.bundle.yml").read_text()
         self.assertNotRegex(manifest, r"(?m)^\s+- --share=network\s*$")
         self.assertIn("packaging/linux/flatpak-bundle.sh", text)
         # The installed checks start the desktop app: each takes the network away from it.

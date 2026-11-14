@@ -853,7 +853,7 @@ fn http_call(url: &str, timeout: std::time::Duration) -> Result<ureq::http::Resp
 /// The per-user settings folder: eframe's storage (`app.ron`) and the anti-aliasing preference.
 fn settings_dir() -> Result<Option<std::path::PathBuf>, String> {
     let selected = std::env::var_os("SOLIDCRAFT_SETTINGS_DIR");
-    startup::settings_directory(selected.as_deref(), eframe::storage_dir("SolidCraft"))
+    startup::settings_directory(selected.as_deref(), eframe::storage_dir("Intcad"))
 }
 
 /// The anti-aliasing preference, kept next to eframe's storage (it is needed before the
@@ -862,29 +862,30 @@ fn graphics_path() -> Option<std::path::PathBuf> {
     settings_dir().ok().flatten().map(|d| d.join("graphics.json"))
 }
 
-/// Compatibility shim (docs/compatibility.md): on the first launch after the rename, copy the
-/// settings of earlier releases into the new folder. They kept `graphics.json` (and, on Linux
-/// and macOS, the recovery folder) under the old product name, and eframe's `app.ron` under the
+/// Compatibility shim (docs/compatibility.md): on the first launch with a new settings folder,
+/// copy the settings of earlier builds into it. They kept `graphics.json` (and, on Linux and
+/// macOS, the recovery folder) under an earlier product name, and eframe's `app.ron` under the
 /// window's old app id. In the Flatpak sandbox, earlier releases kept everything under an
-/// old app id's `~/.var/app` folder; those copies come first, newest first. The old folders
-/// are never changed.
+/// old app id's `~/.var/app` folder; those copies come first, newest first, then the folder
+/// builds used before Intcad had one of its own. The old folders are never changed.
 fn adopt_legacy_settings() {
     let (Some(current), Some(legacy)) = (settings_dir().ok().flatten(), eframe::storage_dir("SolveCraft")) else { return };
     let legacy_eframe = eframe::storage_dir(solidcraft_engine::io::LEGACY_APP_ID);
-    let old_flatpak = solidcraft_engine::io::legacy_flatpak_paths(&current);
-    if let Err(e) = adopt_settings(&current, &old_flatpak, &legacy, legacy_eframe.as_deref()) {
+    let mut earlier = solidcraft_engine::io::legacy_flatpak_paths(&current);
+    earlier.extend(eframe::storage_dir("SolidCraft"));
+    if let Err(e) = adopt_settings(&current, &earlier, &legacy, legacy_eframe.as_deref()) {
         log::warn!("settings: could not copy the previous release's settings into {}: {e}", current.display());
     }
 }
 
 fn adopt_settings(
     current: &std::path::Path,
-    old_flatpak: &[std::path::PathBuf],
+    earlier: &[std::path::PathBuf],
     legacy: &std::path::Path,
     legacy_eframe: Option<&std::path::Path>,
 ) -> std::io::Result<()> {
     let fresh = !current.exists();
-    for old in old_flatpak {
+    for old in earlier {
         solidcraft_engine::io::adopt_legacy_dir(current, old)?;
     }
     solidcraft_engine::io::adopt_legacy_dir(current, legacy)?;
@@ -2331,6 +2332,12 @@ mod msaa_tests {
         super::adopt_settings(&current, &[], &legacy, Some(&legacy_eframe)).unwrap();
         assert_eq!(std::fs::read_to_string(current.join("app.ron")).unwrap(), "(mine)");
         assert!(!current.join("graphics.json").exists());
+        // A folder from before Intcad had one of its own is copied the same way, ahead of the
+        // pre-rename one.
+        let newest = d.join("intcad");
+        super::adopt_settings(&newest, std::slice::from_ref(&current), &legacy, None).unwrap();
+        assert_eq!(std::fs::read_to_string(newest.join("app.ron")).unwrap(), "(mine)");
+        assert!(!newest.join("graphics.json").exists(), "the pre-rename folder is not mixed in");
         let _ = std::fs::remove_dir_all(&d);
     }
 

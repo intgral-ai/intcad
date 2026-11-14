@@ -167,7 +167,7 @@ not read-only, `destructiveHint` and `openWorldHint` are true.
 
 ### Client configuration
 
-`solidcraft-cli` is on `PATH` after every package install: the Windows installer adds its folder, the deb, rpm and FreeBSD packages install it in `/usr/bin`, the Homebrew cask links it, the AppImage writes a small `solidcraft-cli` launcher into `~/.local/bin` on its first run, and the macOS app links it into `/opt/homebrew/bin` or `/usr/local/bin` when it starts (Help > Install solidcraft-cli command does it with an administrator prompt when those are not writable). Two packages keep it out of `PATH` by design: Snap exposes it as `solidcraft.cli`, and Flatpak runs it as `flatpak run --command=solidcraft-cli io.tangencylabs.solidcraft`; use those as the client's `command` (with `mcp` as the arguments).
+`solidcraft-cli` is on `PATH` after every package install: the Windows installer adds its folder, the deb, rpm and FreeBSD packages install it in `/usr/bin`, the Homebrew cask links it, the AppImage writes a small `solidcraft-cli` launcher into `~/.local/bin` on its first run, and the macOS app links it into `/opt/homebrew/bin` or `/usr/local/bin` when it starts (Help > Install solidcraft-cli command does it with an administrator prompt when those are not writable). Two packages keep it out of `PATH` by design: Snap exposes it as `solidcraft.cli`, and Flatpak runs it as `flatpak run --command=solidcraft-cli ai.intgral.intcad`; use those as the client's `command` (with `mcp` as the arguments).
 
 The quickest way: **Help > Connect AI assistants…** in the app, or
 
@@ -232,8 +232,8 @@ added under the previous name keeps working, see the [compatibility notes](https
 
 If a terminal doesn't find `solidcraft-cli` (older Windows installers don't put its folder on
 `PATH`; see below for where it is), give its full path (by default
-`C:\Program Files\SolidCraft\solidcraft-cli.exe`):
-`claude mcp add solidcraft -- "C:\Program Files\SolidCraft\solidcraft-cli.exe" mcp`.
+`C:\Program Files\Intcad\solidcraft-cli.exe`):
+`claude mcp add solidcraft -- "C:\Program Files\Intcad\solidcraft-cli.exe" mcp`.
 
 Claude Desktop (`claude_desktop_config.json`), bridged to a running app:
 
@@ -246,7 +246,7 @@ Claude Desktop (`claude_desktop_config.json`), bridged to a running app:
 ```
 
 On Windows the installer puts `solidcraft-cli.exe` next to `solidcraft.exe` in
-`C:\Program Files\SolidCraft` (the portable zip has both too). Give the full path, with each
+`C:\Program Files\Intcad` (the portable zip has both too). Give the full path, with each
 backslash doubled in JSON. This configuration declares two servers: `solidcraft` models
 headless (no window; steadier for timings), `solidcraft-live` drives the app you have open, so
 you can watch the agent model. `--allow-path` names a folder where the agent may save and
@@ -256,11 +256,11 @@ export; it must already exist.
 {
   "mcpServers": {
     "solidcraft": {
-      "command": "C:\\Program Files\\SolidCraft\\solidcraft-cli.exe",
+      "command": "C:\\Program Files\\Intcad\\solidcraft-cli.exe",
       "args": ["mcp", "--allow-path", "C:\\Users\\NAME\\SolidCraft-Agent"]
     },
     "solidcraft-live": {
-      "command": "C:\\Program Files\\SolidCraft\\solidcraft-cli.exe",
+      "command": "C:\\Program Files\\Intcad\\solidcraft-cli.exe",
       "args": ["mcp", "--connect", "127.0.0.1:7878", "--allow-path", "C:\\Users\\NAME\\SolidCraft-Agent"]
     }
   }
@@ -268,7 +268,7 @@ export; it must already exist.
 ```
 
 Start the app with its control channel for `solidcraft-live`, from PowerShell:
-`& "C:\Program Files\SolidCraft\solidcraft.exe" --control 7878`, or once for every launch:
+`& "C:\Program Files\Intcad\solidcraft.exe" --control 7878`, or once for every launch:
 `setx SOLIDCRAFT_CONTROL_PORT 7878`.
 
 Open `claude_desktop_config.json` with Claude Desktop's **Settings > Developer > Edit Config**

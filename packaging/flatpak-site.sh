@@ -6,7 +6,7 @@ trap 'echo "flatpak-site.sh: line $LINENO: \"$BASH_COMMAND\" failed (exit $?)" >
 
 site="${1:?site directory required}"
 tag="${RELEASE_TAG:-}"
-app_id=io.tangencylabs.solidcraft
+app_id=ai.intgral.intcad
 # Compatibility shim (docs/compatibility.md): earlier releases used these app ids (newest first:
 # 0.8 until the move to Tangency Labs, then releases before 0.8). Their refs stay in the
 # repository, marked end-of-life with a rebase to $app_id once a release under $app_id has been
@@ -46,7 +46,7 @@ if curl --fail --silent --location --output /dev/null "$previous_url/summary"; t
   ostree --repo="$repo_dir" remote delete previous
 fi
 for arch in x86_64 aarch64; do
-  asset="solidcraft-$version-linux-$arch.flatpak"
+  asset="intcad-$version-linux-$arch.flatpak"
   gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir "$bundles"
   (
     cd "$bundles"

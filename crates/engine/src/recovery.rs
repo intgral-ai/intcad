@@ -39,10 +39,10 @@ pub fn default_dir() -> Option<PathBuf> {
         env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))?
     };
     let (dir, legacy) = dirs_under(&long_names(&root), cfg!(windows) || cfg!(target_os = "macos"));
-    // Compatibility shim (docs/compatibility.md): autosaves made before the rename (or, in the
-    // Flatpak sandbox, under an earlier app id) are copied to the new folder on first launch; the
-    // old folder is left as it was.
-    for old in solidcraft_io::legacy_flatpak_paths(&dir).into_iter().chain([legacy]) {
+    // Compatibility shim (docs/compatibility.md): autosaves made under an earlier folder name
+    // (or, in the Flatpak sandbox, under an earlier app id) are copied to the new folder on first
+    // launch, from the newest earlier folder that exists; the old folder is left as it was.
+    for old in solidcraft_io::legacy_flatpak_paths(&dir).into_iter().chain(legacy) {
         if let Err(e) = solidcraft_io::adopt_legacy_dir(&dir, &old) {
             log::warn!("recovery: could not copy {} to {}: {e}", old.display(), dir.display());
         }
@@ -50,26 +50,27 @@ pub fn default_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// SolidCraft's per-user data folder (the recovery folder's parent unless
-/// `SOLIDCRAFT_RECOVERY_DIR` moves that): `%LOCALAPPDATA%\SolidCraft`,
-/// `~/Library/Application Support/SolidCraft`, or `$XDG_DATA_HOME/solidcraft`
-/// (`~/.local/share/solidcraft`).
+/// Intcad's per-user data folder (the recovery folder's parent unless
+/// `SOLIDCRAFT_RECOVERY_DIR` moves that): `%LOCALAPPDATA%\Intcad`,
+/// `~/Library/Application Support/Intcad`, or `$XDG_DATA_HOME/intcad`
+/// (`~/.local/share/intcad`).
 pub fn data_dir() -> Option<PathBuf> {
     let env = |k: &str| std::env::var_os(k).filter(|d| !d.is_empty()).map(PathBuf::from);
     if cfg!(windows) {
-        Some(env("LOCALAPPDATA")?.join("SolidCraft"))
+        Some(env("LOCALAPPDATA")?.join("Intcad"))
     } else if cfg!(target_os = "macos") {
-        Some(env("HOME")?.join("Library/Application Support/SolidCraft"))
+        Some(env("HOME")?.join("Library/Application Support/Intcad"))
     } else {
-        Some(env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))?.join("solidcraft"))
+        Some(env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))?.join("intcad"))
     }
 }
 
-/// The recovery folder under the per-user data `root`, and the folder earlier releases used.
+/// The recovery folder under the per-user data `root`, and the folders earlier builds used,
+/// newest first: the one from before Intcad had a folder of its own, then the pre-rename one.
 /// Windows and macOS name the app's folder in title case, other systems in lower case.
-fn dirs_under(root: &Path, title_case: bool) -> (PathBuf, PathBuf) {
-    let (name, legacy) = if title_case { ("SolidCraft", "SolveCraft") } else { ("solidcraft", "solvecraft") };
-    (root.join(name).join("recovery"), root.join(legacy).join("recovery"))
+fn dirs_under(root: &Path, title_case: bool) -> (PathBuf, [PathBuf; 2]) {
+    let [name, before, oldest] = if title_case { ["Intcad", "SolidCraft", "SolveCraft"] } else { ["intcad", "solidcraft", "solvecraft"] };
+    (root.join(name).join("recovery"), [root.join(before).join("recovery"), root.join(oldest).join("recovery")])
 }
 
 /// What an entry's `<id>.json` holds.
@@ -500,9 +501,11 @@ mod tests {
     #[test]
     fn recovery_dirs_and_their_legacy_names() {
         let (dir, legacy) = super::dirs_under(Path::new("/data"), false);
-        assert_eq!((dir.as_path(), legacy.as_path()), (Path::new("/data/solidcraft/recovery"), Path::new("/data/solvecraft/recovery")));
+        assert_eq!(dir, Path::new("/data/intcad/recovery"));
+        assert_eq!(legacy, [Path::new("/data/solidcraft/recovery"), Path::new("/data/solvecraft/recovery")]);
         let (dir, legacy) = super::dirs_under(Path::new("/data"), true);
-        assert_eq!((dir.as_path(), legacy.as_path()), (Path::new("/data/SolidCraft/recovery"), Path::new("/data/SolveCraft/recovery")));
+        assert_eq!(dir, Path::new("/data/Intcad/recovery"));
+        assert_eq!(legacy, [Path::new("/data/SolidCraft/recovery"), Path::new("/data/SolveCraft/recovery")]);
     }
 
     use super::*;

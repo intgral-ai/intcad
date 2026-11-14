@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Entitlements for the pinned Node executable nested inside SolidCraft.app. Node's V8 JIT needs
+  Entitlements for the pinned Node executable nested inside Intcad.app. Node's V8 JIT needs
   executable memory that is not signed ahead of time. The app bundle keeps its own entitlements.
 -->
 <plist version="1.0">

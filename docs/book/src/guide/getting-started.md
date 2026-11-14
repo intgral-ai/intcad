@@ -22,7 +22,7 @@ cargo run --release -p solidcraft -- --sample   # opens with a sample part
 
 ### macOS
 
-Open the release `.dmg` and drag `SolidCraft.app` onto Applications.
+Open the release `.dmg` and drag `Intcad.app` onto Applications.
 
 The release `.dmg` is signed with a Developer ID and notarized by Apple, and the app and the disk
 image carry the notarization ticket, so macOS opens SolidCraft normally, even offline.
@@ -34,7 +34,7 @@ message about SolidCraft, click **Open Anyway** and confirm: the app opens norma
 From a terminal, remove the quarantine flag instead:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/SolidCraft.app
+xattr -dr com.apple.quarantine /Applications/Intcad.app
 ```
 
 When updating from a build released under the previous product name, follow the
@@ -43,11 +43,11 @@ When updating from a build released under the previous product name, follow the
 ### Linux AppImage
 
 The first time you open the AppImage it adds a menu entry and icons under `~/.local/share`
-(`applications/io.tangencylabs.solidcraft.desktop`, `icons/hicolor`), so the desktop shows the
+(`applications/ai.intgral.intcad.desktop`, `icons/hicolor`), so the desktop shows the
 right name and icon. It adds nothing if [appimaged](https://github.com/probonopd/go-appimage)
 already made an entry for the file, or if a launcher such as Gear Lever or AppImageLauncher
 started it (and removes the entry SolidCraft added before). To
-turn it off for good, create an empty file `~/.local/share/solidcraft/no-desktop-integration`, or
+turn it off for good, create an empty file `~/.local/share/intcad/no-desktop-integration`, or
 start the AppImage with `SOLIDCRAFT_NO_DESKTOP_INTEGRATION=1`.
 
 If the AppImage doesn't start and prints a FUSE message followed by `execv error: No such file
@@ -64,8 +64,8 @@ to the same user installation:
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak remote-add --user --if-not-exists solidcraft https://docs.solidcraft.io/flatpak/solidcraft.flatpakrepo
-flatpak install --user solidcraft io.tangencylabs.solidcraft
-flatpak run io.tangencylabs.solidcraft
+flatpak install --user solidcraft ai.intgral.intcad
+flatpak run ai.intgral.intcad
 ```
 
 A SolidCraft remote added before the project moved to `docs.solidcraft.io` (from
@@ -76,7 +76,7 @@ A SolidCraft remote added before the project moved to `docs.solidcraft.io` (from
 Earlier releases used the application IDs `ai.storyteller.solidcraft` and, up to 0.7,
 `ai.storyteller.solvecraft`. If you installed one of those from the SolidCraft remote,
 `flatpak update --user` reports it as end-of-life and offers to replace it with
-`io.tangencylabs.solidcraft`; accept, and your settings and autosaves move with it. If you
+`ai.intgral.intcad`; accept, and your settings and autosaves move with it. If you
 installed a `.flatpak` bundle, install the new bundle, launch it once (it copies your settings),
 then run `flatpak uninstall --user ai.storyteller.solidcraft` (or `ai.storyteller.solvecraft`; see the
 [compatibility notes](https://github.com/tangency-labs/solidcraft/blob/main/docs/compatibility.md#linux-app-id)).
@@ -84,7 +84,7 @@ then run `flatpak uninstall --user ai.storyteller.solidcraft` (or `ai.storytelle
 Alternatively, download the release's `.flatpak` file for your architecture and run
 `flatpak install --user ./solidcraft-VERSION-linux-ARCH.flatpak`. The bundle supplies the
 Flathub runtime repository address; installation still needs internet access to fetch any
-missing runtime. Launch with `flatpak run io.tangencylabs.solidcraft`, rather than looking for
+missing runtime. Launch with `flatpak run ai.intgral.intcad`, rather than looking for
 a host `solidcraft` binary. Files chosen through Open/Save use the desktop file-chooser portal;
 command-line paths outside Documents may need a specific additional filesystem permission.
 

@@ -129,7 +129,7 @@ class PackageContents(unittest.TestCase):
 
     def test_derived_package_records_source_name_and_digest(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "solidcraft-linux-x86_64.tar.gz"
+            source = Path(directory) / "intcad-linux-x86_64.tar.gz"
             make_tar(source, ["bin/solidcraft"])
             report = Path(directory) / "contents.json"
             result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),

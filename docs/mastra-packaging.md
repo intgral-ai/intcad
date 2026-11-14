@@ -17,7 +17,7 @@ from the running program, never from the development checkout, `PATH`, `npx` or 
 |---|---|---|
 | Linux `.deb`, `.rpm`, `.tar.gz`, AppImage, snap | `/usr/lib/solidcraft/mastra` (inside the image/sandbox: the same FHS path) | `usr/bin/solidcraft` → `../lib/solidcraft/mastra` |
 | Flatpak | `/app/lib/solidcraft/mastra` | `/app/bin/solidcraft` → `../lib/solidcraft/mastra` |
-| macOS `.app` (single architecture) | `SolidCraft.app/Contents/Resources/mastra` | `Contents/MacOS/SolidCraft` → `../Resources/mastra` |
+| macOS `.app` (single architecture) | `Intcad.app/Contents/Resources/mastra` | `Contents/MacOS/SolidCraft` → `../Resources/mastra` |
 | macOS `.app` (universal) | `Contents/Resources/mastra/aarch64-apple-darwin` and `.../x86_64-apple-darwin` | the matching slice by host target |
 | Windows MSI and portable zip | `mastra\` beside `solidcraft.exe` | beside the executable |
 

@@ -39,9 +39,9 @@ stays editable for retrying. Copying or opening a report does not modify the des
 
 | System | Folder |
 |---|---|
-| Linux | `~/.local/share/solidcraft/crashes` (or `$XDG_DATA_HOME/solidcraft/crashes`) |
-| Windows | `%LOCALAPPDATA%\SolidCraft\crashes` |
-| macOS | `~/Library/Application Support/SolidCraft/crashes` |
+| Linux | `~/.local/share/intcad/crashes` (or `$XDG_DATA_HOME/intcad/crashes`) |
+| Windows | `%LOCALAPPDATA%\Intcad\crashes` |
+| macOS | `~/Library/Application Support/Intcad/crashes` |
 
 `SOLIDCRAFT_CRASH_DIR` overrides the folder. `solidcraft --crash-log` and
 `solidcraft-cli crashes dir` print it.

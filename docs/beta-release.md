@@ -31,9 +31,9 @@ new SHA.
 4. Check the actual package content and install shape:
 
    ```sh
-   tar -tzf dist/linux/solidcraft-<version>-linux-x86_64.tar.gz | head
-   hdiutil attach -readonly -nobrowse dist/macos/solidcraft-<version>-macos-universal.dmg
-   # Windows x64: msiexec /i <msi> /qn, then check C:\Program Files\SolidCraft
+   tar -tzf dist/linux/intcad-<version>-linux-x86_64.tar.gz | head
+   hdiutil attach -readonly -nobrowse dist/macos/intcad-<version>-macos-universal.dmg
+   # Windows x64: msiexec /i <msi> /qn, then check C:\Program Files\Intcad
    ```
    The `package-evidence-*` artifacts contain `build.json` and `contents.json`; the latter is the
    runtime-marker scan used by the release gate.

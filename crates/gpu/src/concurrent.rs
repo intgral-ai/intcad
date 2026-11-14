@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn d3d12_never_loads_a_dxcompiler_found_on_path_unless_asked_to() {
-        let beside = || Some(std::path::PathBuf::from(r"C:\Program Files\SolidCraft\dxcompiler.dll"));
+        let beside = || Some(std::path::PathBuf::from(r"C:\Program Files\Intcad\dxcompiler.dll"));
         let is_fxc = |c: &wgpu::Dx12Compiler| matches!(c, wgpu::Dx12Compiler::Fxc);
         let by_name = |c: &wgpu::Dx12Compiler| matches!(c, wgpu::Dx12Compiler::DynamicDxc { dxc_path } if dxc_path == "dxcompiler.dll");
         let beside_program =

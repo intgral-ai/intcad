@@ -10,7 +10,7 @@
 # address. It stays while people may still have designs here.
 #
 # Stable and the release candidate are not rebuilt: the release workflow already attaches
-# solidcraft-web-<version>.zip (packaging/web/package.sh, built by that tag's own workflow), and
+# intcad-web-<version>.zip (packaging/web/package.sh, built by that tag's own workflow), and
 # a deploy takes that zip as it is. Rebuilding old tags here would need each tag's own build steps
 # (they changed: the kernel moved from SMLib to solidcore). The channels are not nested, because
 # the app's service worker controls everything under its own directory (apps/solidcraft-web/sw.js).
@@ -34,10 +34,10 @@ version_sort() { sed 's/-/~/' | sort -V | sed 's/~/-/'; }
 fetch_build() {
   local tag="$1" dest="$2" tmp
   tmp="$(mktemp -d)"
-  gh release download "$tag" --repo "$repo" --pattern "solidcraft-web-*.zip" --dir "$tmp"
+  gh release download "$tag" --repo "$repo" --pattern "intcad-web-*.zip" --dir "$tmp"
   gh release download "$tag" --repo "$repo" --pattern SHA256SUMS.txt --dir "$tmp"
   local zip
-  zip="$(find "$tmp" -name 'solidcraft-web-*.zip' | head -n1)"
+  zip="$(find "$tmp" -name 'intcad-web-*.zip' | head -n1)"
   test -n "$zip"
   (cd "$tmp" && awk -v file="$(basename "$zip")" '$2 == file || $2 == "*" file { print; found=1 } END { exit !found }' SHA256SUMS.txt | sha256sum --check -)
   unzip -q "$zip" -d "$tmp/unpacked"

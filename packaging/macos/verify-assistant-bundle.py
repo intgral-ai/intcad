@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the Assistant page and its records inside an installed SolidCraft.app.
+"""Verify the Assistant page and its records inside an installed Intcad.app.
 
 The page is not a folder of files in the app: solidcraft embeds packages/assistant-web/dist in
 its executable with include_bytes!. This check therefore looks for each built file's exact bytes
@@ -11,7 +11,7 @@ inside Contents/MacOS/SolidCraft, and for the records the package carries beside
 It never reads the build tree as if it were the installed app: the caller must pass an .app copied
 out of the disk image (packaging/macos/installed-check.sh does).
 
-  python3 packaging/macos/verify-assistant-bundle.py --app path/to/SolidCraft.app
+  python3 packaging/macos/verify-assistant-bundle.py --app path/to/Intcad.app
 """
 import argparse
 import json
@@ -31,7 +31,7 @@ def check(passed, what):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--app", required=True, help="the SolidCraft.app copied out of the disk image")
+    parser.add_argument("--app", required=True, help="the Intcad.app copied out of the disk image")
     parser.add_argument("--source", default=str(Path(__file__).resolve().parents[2] / "packages" / "assistant-web"),
                         help="the page's source folder in this checkout")
     args = parser.parse_args()

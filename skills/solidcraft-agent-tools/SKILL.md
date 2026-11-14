@@ -7,7 +7,7 @@ description: "Use when running SolidCraft to see a change working, driving it th
 
 ## Run it and look at it
 - `cargo run --release -p solidcraft -- --sample --control PORT` starts the sample design with the control channel. Pick a free port. With no display, run it under `Xvfb :99` with `DISPLAY=:99`.
-- Talk JSON lines to `127.0.0.1:PORT` (`docs/control-protocol.md`). The first request on a connection carries the launch token as `"token"`: read it from `~/.local/share/solidcraft/control/PORT.token`, or start the app with `SOLIDCRAFT_CONTROL_TOKEN=$(openssl rand -hex 32)` and send that. Never paste the token into a PR or issue.
+- Talk JSON lines to `127.0.0.1:PORT` (`docs/control-protocol.md`). The first request on a connection carries the launch token as `"token"`: read it from `~/.local/share/intcad/control/PORT.token`, or start the app with `SOLIDCRAFT_CONTROL_TOKEN=$(openssl rand -hex 32)` and send that. Never paste the token into a PR or issue.
   - `{"id":1,"method":"engine.execute","params":{"command":"solid.extrude","params":{"distance":20}}}`
   - `{"id":2,"method":"ui.start","params":{"command":"sketch.create"}}`, then `ui.click {x, y}`
   - `{"id":3,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`, then read the PNG

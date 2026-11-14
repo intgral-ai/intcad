@@ -301,9 +301,9 @@ launch and writes it, as one line of hex, to a file only the user can read:
 
 | System | Token file |
 |---|---|
-| Linux | `$XDG_DATA_HOME/solidcraft/control/PORT.token` (`~/.local/share/solidcraft/control/PORT.token`) |
-| macOS | `~/Library/Application Support/SolidCraft/control/PORT.token` |
-| Windows | `%LOCALAPPDATA%\SolidCraft\control\PORT.token` |
+| Linux | `$XDG_DATA_HOME/intcad/control/PORT.token` (`~/.local/share/intcad/control/PORT.token`) |
+| macOS | `~/Library/Application Support/Intcad/control/PORT.token` |
+| Windows | `%LOCALAPPDATA%\Intcad\control\PORT.token` |
 
 On Unix the folder is `0700` and the file `0600`; on Windows the file's inherited permissions are
 replaced by a single entry for the user. `SOLIDCRAFT_CONTROL_DIR` moves the folder. If Windows
@@ -338,7 +338,7 @@ sandboxed package whose data folder the client can't see, start the app with
 written. A one-line client in Python:
 
 ```python
-token = (Path.home() / ".local/share/solidcraft/control/7878.token").read_text().strip()
+token = (Path.home() / ".local/share/intcad/control/7878.token").read_text().strip()
 sock.sendall((json.dumps({"id": 1, "method": "ui.inspect", "params": {}, "token": token}) + "\n").encode())
 ```
 
