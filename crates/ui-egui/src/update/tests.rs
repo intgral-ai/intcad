@@ -563,7 +563,10 @@ fn the_pill_shortens_in_a_narrow_title_bar() {
             last = p.width();
         }
         shortened |= pill.is_none_or(|p| p.width() < wide.width());
-        if width == 1000.0 {
+        if width == 800.0 {
+            // The version in the bar changes the room, so assert the short label at a width
+            // where both a release (`0.1.0`) and a pre-release (`0.1.0-beta.3`) version must
+            // give way; the loop still proves it never grows or overlaps Report a bug.
             assert!(h.widget("Update").is_some() && h.widget(&label).is_none(), "the short label keeps room for the tabs");
         }
     }
