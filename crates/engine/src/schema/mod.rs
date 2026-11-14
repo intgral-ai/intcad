@@ -62,6 +62,7 @@ pub mod compare;
 pub mod component;
 pub mod config;
 pub mod construct;
+pub mod dfm;
 pub mod diagnostics;
 pub mod edit;
 pub mod features;
