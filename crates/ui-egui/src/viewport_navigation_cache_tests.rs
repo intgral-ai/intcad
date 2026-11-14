@@ -142,6 +142,19 @@ fn face_feedback_reuses_geometry_but_retains_fresh_pick_points() {
     assert_ne!(highlight_geometry_key(&app), key, "leaving the model clears feedback");
 }
 
+#[test]
+fn dfm_marks_change_the_highlight_key() {
+    let mut app = app();
+    let before = highlight_geometry_key(&app);
+    let run: crate::dfm_overlay::RunFindings =
+        serde_json::from_str(include_str!("test_data/dfm_run_findings.json")).expect("the synthetic run findings");
+    app.viewport.load_dfm_run(&run, crate::dfm_overlay::Freshness::Current);
+    assert_ne!(highlight_geometry_key(&app), before, "drawing new marks invalidates the cached highlight");
+    let with_marks = highlight_geometry_key(&app);
+    app.viewport.set_dfm_display(crate::dfm_overlay::DfmDisplay::Off);
+    assert_ne!(highlight_geometry_key(&app), with_marks, "hiding the marks invalidates it too");
+}
+
 /// A STEP opens with its assembly placement active. Re-expanding all descendants for every
 /// new hover used to dominate the frame; cached membership must still follow real edits.
 #[test]

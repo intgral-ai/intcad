@@ -68,6 +68,14 @@ pub struct ViewportState {
     /// goes when nothing asks for it any more.
     pub(crate) refused_ring: Vec<(String, usize)>,
     pub(crate) refused_ring_next: Vec<(String, usize)>,
+    /// The DFM marks drawn now: a face reference to tint, a model-space outline, a tone and the
+    /// `(run_id, finding_id)` that names it. Kept in step with [`ViewportState::dfm`].
+    pub(crate) dfm_marks: Vec<crate::dfm_overlay::DfmMark>,
+    /// The DFM report's identity, freshness, selection and display mode. The host (the report
+    /// list) changes this; the viewport only draws and hit-tests what it says.
+    pub(crate) dfm: crate::dfm_overlay::DfmMarksState,
+    /// The labels' screen rectangles from the last frame, for click hit-testing and tests.
+    pub(crate) dfm_labels: Vec<crate::dfm_overlay::DfmLabel>,
     /// A drag on the handles of the drawing being placed (Insert SVG / DXF).
     pub(crate) insert_drag: Option<crate::insert_handles::Drag>,
     /// A drag on the handles of the Transform window's box.
@@ -322,6 +330,43 @@ impl ViewportState {
     #[cfg(test)]
     pub(crate) fn set_pixels_per_point(&mut self, scale: f32) {
         self.physical_scale = scale;
+    }
+
+    /// Take a DFM run's findings, so the viewport draws exactly that run's marks.
+    pub fn load_dfm_run(&mut self, run: &crate::dfm_overlay::RunFindings, freshness: crate::dfm_overlay::Freshness) {
+        self.dfm.load(run, freshness);
+        self.sync_dfm_marks();
+    }
+
+    /// The report's freshness changed. A non-current report hides the marks and cancels a locate.
+    pub fn set_dfm_freshness(&mut self, freshness: crate::dfm_overlay::Freshness) {
+        self.dfm.set_freshness(freshness);
+        self.dfm_labels.clear();
+        self.sync_dfm_marks();
+    }
+
+    /// Show all marks, only the selected one, or none.
+    pub fn set_dfm_display(&mut self, display: crate::dfm_overlay::DfmDisplay) {
+        self.dfm.display_mode(display);
+        self.sync_dfm_marks();
+    }
+
+    /// A report row chooses a finding: the list-to-model direction.
+    pub fn select_dfm_finding(&mut self, id: Option<&str>) -> bool {
+        let selected = self.dfm.select(id);
+        self.sync_dfm_marks();
+        selected
+    }
+
+    /// Cancel a running locate without changing the selection.
+    pub fn cancel_dfm_locate(&mut self) {
+        self.dfm.cancel_locate();
+    }
+
+    fn sync_dfm_marks(&mut self) {
+        // `visible_marks` borrows `self.dfm`, so take the owned copy before assigning.
+        let marks: Vec<crate::dfm_overlay::DfmMark> = self.dfm.visible_marks().into_iter().cloned().collect();
+        self.dfm_marks = marks;
     }
 }
 
@@ -3824,6 +3869,9 @@ fn highlight_geometry_key(app: &SolveApp) -> u64 {
     app.preview.effective_replaced().hash(&mut h);
     app.preview.rolled_back.hash(&mut h);
     app.viewport.refused_ring.hash(&mut h);
+    // DFM marks: a new run, another tone, a moved anchor or a new outline must not reuse the
+    // cached highlight that drew the old marks.
+    app.viewport.dfm_marks.hash(&mut h);
     // Where a Move dialog has moved its bodies; while its triad is dragged, only that it is.
     if crate::dialogs_move::dragging(app) {
         "dragging".hash(&mut h);
@@ -4216,6 +4264,28 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
         for (ei, e) in m.edges.iter().enumerate() {
             if m.edge_faces.get(ei).is_some_and(|f| f.iter().any(|x| *x as usize == *face)) && m.edge_pickable(ei) {
                 edge_lines(&mut sc, e, colours, 3.0, &edge_normals(&m, e));
+            }
+        }
+    }
+    // DFM marks: the same face-tint and outline path the refused faces use, in the mark's tone.
+    for mark in &app.viewport.dfm_marks {
+        let colour = match mark.tone {
+            crate::dfm_overlay::DfmTone::Failed => t.error,
+            crate::dfm_overlay::DfmTone::Advisory => t.warning,
+            crate::dfm_overlay::DfmTone::Dimmed => t.text_dim,
+        };
+        for name in &mark.faces {
+            if let Some(hit) = solidcraft_engine::doc::naming::locate_face(&st, name, mark.anchor)
+                && let Some(body) = st.bodies.get(hit.body)
+                && app.session.body_visible(&body.name)
+            {
+                face_tris(&mut sc, &shown(body), hit.face, c4(colour.gamma_multiply(0.32)), false);
+            }
+        }
+        if mark.outline.len() >= 2 {
+            let line = sc.color(c4(colour));
+            for pair in mark.outline.windows(2) {
+                sc.line(pair[0].to_f32(), pair[1].to_f32(), line, 2.6, true);
             }
         }
     }
@@ -5456,6 +5526,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::sketch_tools::show(app, ui, &painter, &proj);
     crate::sketch_line_arc::paint_mode(app, ui, &painter, &proj);
     crate::design_properties::overlay(app, &painter, &proj);
+    crate::dfm_overlay::show(app, ui, &proj, rect);
     crate::sketch_dims::show(app, ui, &proj);
     crate::select_other::show(app, ui.ctx());
     axis_view(app, ui, rect);

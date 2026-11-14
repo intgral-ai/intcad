@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 2,
+  "runId": "run-7",
+  "candidateDigest": "candidate-abc",
+  "profileDigest": "profile-1",
+  "configDigest": "config-1",
+  "modelVersion": "doc-7",
+  "projectId": "project-1",
+  "source": {
+    "kind": "native"
+  },
+  "findings": [
+    {
+      "id": "sheet-1/F2",
+      "sheet": 0,
+      "body": "Bracket1",
+      "from": "rules",
+      "rules": [
+        "sm.hole_min_diameter"
+      ],
+      "state": "failed",
+      "status": "below",
+      "code": null,
+      "measured": {
+        "value": 2.4,
+        "unit": "mm"
+      },
+      "requirement": null,
+      "feature": {
+        "kind": "hole",
+        "number": 1
+      },
+      "anchor": [
+        10.0,
+        12.5,
+        0.75
+      ],
+      "flat": [
+        10.0,
+        12.5
+      ],
+      "faces": [
+        "sheet:Bracket1:base:top"
+      ],
+      "outline": []
+    },
+    {
+      "id": "sheet-2/F2",
+      "sheet": 1,
+      "body": "Bracket2",
+      "from": "rules",
+      "rules": [
+        "sm.hole_min_diameter"
+      ],
+      "state": "failed",
+      "status": "below",
+      "code": null,
+      "measured": {
+        "value": 2.4,
+        "unit": "mm"
+      },
+      "requirement": null,
+      "feature": {
+        "kind": "hole",
+        "number": 1
+      },
+      "anchor": [
+        10.0,
+        12.6,
+        0.75
+      ],
+      "flat": [
+        10.0,
+        12.6
+      ],
+      "faces": [
+        "sheet:Bracket2:base:top"
+      ],
+      "outline": []
+    },
+    {
+      "id": "sheet-1/F4",
+      "sheet": 0,
+      "body": "Bracket1",
+      "from": "rules",
+      "rules": [
+        "sm.hole_to_edge"
+      ],
+      "state": "advisory",
+      "status": "below",
+      "code": null,
+      "measured": {
+        "value": 1.5,
+        "unit": "mm"
+      },
+      "requirement": null,
+      "feature": {
+        "kind": "hole",
+        "number": 2
+      },
+      "anchor": [
+        22.0,
+        12.5,
+        0.75
+      ],
+      "flat": [
+        22.0,
+        12.5
+      ],
+      "faces": [
+        "sheet:Bracket1:base:top"
+      ],
+      "outline": [
+        [
+          18.0,
+          12.5,
+          0.75
+        ],
+        [
+          22.0,
+          12.5,
+          0.75
+        ],
+        [
+          22.0,
+          16.0,
+          0.75
+        ],
+        [
+          18.0,
+          16.0,
+          0.75
+        ],
+        [
+          18.0,
+          12.5,
+          0.75
+        ]
+      ]
+    },
+    {
+      "id": "sheet-1/F9",
+      "sheet": 0,
+      "body": "Bracket1",
+      "from": "rules",
+      "rules": [
+        "sm.countersink_depth"
+      ],
+      "state": "unsupported",
+      "status": "unsupported",
+      "code": "RULE_NOT_IMPLEMENTED",
+      "measured": null,
+      "requirement": null,
+      "feature": null,
+      "anchor": null,
+      "flat": null,
+      "faces": [],
+      "outline": []
+    }
+  ],
+  "rules": [],
+  "notChecked": ""
+}
