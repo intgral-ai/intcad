@@ -42,15 +42,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if ($env:SOLIDCRAFT_WITH_MASTRA -eq '1') { $WithMastra = $true }
-# A same-architecture native build can run its CLI here; an x64 host can also run
-# an x86 build. Cross-arch builds (for example arm64 on x64) cannot and say so.
-$HostArch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
-  'X64' { 'x64' }
-  'X86' { 'x86' }
-  'Arm64' { 'arm64' }
-  default { throw "unknown host architecture $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" }
-}
-$CanRun = ($HostArch -eq $Arch) -or ($HostArch -eq 'x64' -and $Arch -eq 'x86')
 
 function Invoke-Native([string] $What, [scriptblock] $Block) {
   Write-Output "==> $What"
@@ -115,6 +106,9 @@ if ($Phase -ne 'package') {
   # The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
   # which the app carries built in as well (Help > About > Licences).
   Copy-Item (Join-Path $Root 'packages\assistant-web\THIRD-PARTY-NOTICES.txt') (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt')
+  # GTK/WebKitGTK (Linux), WebView2 (Windows) and WKWebView (macOS) licence texts, including
+  # the LGPL text; also built into Help > About > Licences.
+  Copy-Item (Join-Path $Root 'packaging\notices\WEB-VIEW-PLATFORM-NOTICES.txt') (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt')
   # Application-relative Mastra runtime. Bundling is opt-in because the artifact is still
   # unapproved (DQ-7, #15). 1.0 supports Windows x86_64 MSVC only; ordinary packaging keeps the
   # previous release behavior and the WXS harvests an empty folder.
@@ -157,6 +151,7 @@ New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
 foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Portable }
 Copy-Item (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt') $Portable
+Copy-Item (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt') $Portable
 if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
 $Zip = Join-Path $Dist "solidcraft-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue

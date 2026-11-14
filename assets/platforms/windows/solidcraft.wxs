@@ -148,6 +148,11 @@
       <Component Id="AssistantPageNotices">
         <File Id="AssistantNotices" Source="$(var.BinDir)\ASSISTANT-THIRD-PARTY-NOTICES.txt" KeyPath="yes" />
       </Component>
+      <!-- The web view platform's licences (GTK/WebKitGTK, WebView2, WKWebView), including the
+           LGPL text; also built into Help > About > Licences. -->
+      <Component Id="WebViewPlatformNotices">
+        <File Id="WebViewNotices" Source="$(var.BinDir)\WEB-VIEW-PLATFORM-NOTICES.txt" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
   </Fragment>
 

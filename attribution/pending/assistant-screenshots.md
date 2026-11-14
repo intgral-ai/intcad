@@ -1,0 +1,7 @@
+| File | Author | Source | Licence |
+|---|---|---|---|
+| docs/screenshots/linux-xwayland-assistant-first-input.png | SolidCraft contributors | screenshot of the SolidCraft app itself on X11: the Assistant page in the main window with `abc` typed after one click, captured from the production app in an isolated Xvfb session | MIT OR Apache-2.0 |
+| docs/screenshots/linux-xwayland-ime-preedit.png | SolidCraft contributors | screenshot of the SolidCraft app itself on X11: fcitx5 preedit `ni hao` and its candidate window in the Assistant composer, captured from the production app in an isolated Xvfb session | MIT OR Apache-2.0 |
+| docs/screenshots/linux-xwayland-ime-commit.png | SolidCraft contributors | screenshot of the SolidCraft app itself on X11: the Chinese text `你好` committed into the Assistant composer after the fcitx candidate, captured from the production app in an isolated Xvfb session | MIT OR Apache-2.0 |
+| docs/screenshots/linux-nix-ime-preedit.png | SolidCraft contributors | screenshot of the packaged Nix build of SolidCraft on X11: fcitx5 preedit and candidates in the Assistant composer, captured in an isolated Xvfb session | MIT OR Apache-2.0 |
+| docs/screenshots/linux-nix-ime-commit.png | SolidCraft contributors | screenshot of the packaged Nix build of SolidCraft on X11: `你好` committed into the Assistant composer, captured in an isolated Xvfb session | MIT OR Apache-2.0 |

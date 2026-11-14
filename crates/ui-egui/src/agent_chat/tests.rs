@@ -8494,107 +8494,24 @@ fn ai_features_and_the_toolbar_button_are_on_by_default() {
     assert!(p.ai_features && p.ai_toolbar_button);
 }
 
-/// Pop out puts the chat in its own window (a native window on the desktop, which can go to
-/// another screen; embedded here, where the test context has one viewport), and Dock puts it back
-/// in the side panel. The control channel does the same.
+/// The Assistant is always a panel of the app's window. The old egui panel's "Own window"
+/// button and state are gone, and a saved choice (or an older client asking for one over the
+/// control channel) is put back, so the conversation cannot be split across two windows.
 #[test]
-fn the_chat_pops_out_into_its_own_window_and_docks_back() {
+fn the_assistant_never_pops_out_into_a_window() {
     use crate::scenario::{handle_at, rect_of};
     let mut h = crate::scenario::Harness::new();
     h.call("ui.agent_chat", json!({"open": true}));
     h.frames(3);
-    assert!(rect_of("agent_chat:panel").is_some() && rect_of("agent_chat:window").is_none(), "docked by default");
-    assert!(!h.app.preferences.agent_chat_popped);
-    let pop = handle_at("agent_chat:pop_out").expect("a pop-out button in the header");
-    h.call("ui.click", json!({"x": pop.x, "y": pop.y}));
-    h.frames(3);
-    assert!(h.app.preferences.agent_chat_popped);
-    assert!(rect_of("agent_chat:panel").is_none(), "the side panel is gone");
-    assert!(rect_of("agent_chat:window").is_some(), "the chat is in its own window");
-    assert_eq!(status(&h.app)["popped"], json!(true));
-    // A window has its own minimise; the strip and the side drag are the docked panel's.
-    assert!(handle_at("agent_chat:minimize").is_none() && handle_at("agent_chat:grip").is_none());
-    let dock = handle_at("agent_chat:dock").expect("a dock button in the popped-out header");
-    h.call("ui.click", json!({"x": dock.x, "y": dock.y}));
-    h.frames(3);
-    assert!(!h.app.preferences.agent_chat_popped);
-    assert!(rect_of("agent_chat:panel").is_some() && rect_of("agent_chat:window").is_none(), "back in the side panel");
-    h.call("ui.agent_chat", json!({"popped": true}));
-    h.frames(3);
-    assert!(rect_of("agent_chat:window").is_some() && rect_of("agent_chat:panel").is_none());
-    // Closing the chat keeps where it lives: it opens popped out again.
-    h.call("ui.agent_chat", json!({"open": false}));
-    h.frames(2);
-    assert!(rect_of("agent_chat:window").is_none());
-    h.call("ui.agent_chat", json!({"open": true}));
-    h.frames(3);
-    assert!(rect_of("agent_chat:window").is_some());
-}
-
-/// The saved place is given to the window once, when it opens; after that the system owns it.
-/// Given every frame, it chased the system's own rounding: a window that shook a pixel up and
-/// down (686, 687, 686…) on a Retina screen.
-#[test]
-fn the_window_place_is_given_once_when_it_opens() {
-    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
-    app.preferences.agent_chat_window = Some([1967.0, 160.0, 569.0, 686.0]);
-    let first = panel::window_builder(&app);
-    assert_eq!(first.position, Some(egui::pos2(1967.0, 160.0)));
-    assert_eq!(first.inner_size, Some(egui::vec2(569.0, 686.0)));
-    app.agent_chat.window_placed = true;
-    app.preferences.agent_chat_window = Some([1967.0, 160.0, 569.0, 687.0]);
-    let later = panel::window_builder(&app);
-    assert_eq!((later.position, later.inner_size), (None, None), "nothing to move or resize once it is open");
-    assert!(later.title.is_some());
-    // Docked or closed, the next pop-out opens at the saved place again.
-    let mut h = crate::scenario::Harness::new();
+    assert!(rect_of("agent_chat:window").is_none(), "no window of its own");
+    assert!(rect_of("agent_chat:panel").is_some(), "the side panel is there");
+    assert!(handle_at("agent_chat:pop_out").is_none(), "there is no pop-out button");
+    assert!(handle_at("agent_chat:dock").is_none(), "and nothing to dock back");
+    // An older control client's request is accepted and does nothing.
     h.call("ui.agent_chat", json!({"open": true, "popped": true}));
-    h.frames(2);
-    assert!(h.app.agent_chat.window_placed);
-    h.call("ui.agent_chat", json!({"popped": false}));
-    h.frames(2);
-    assert!(!h.app.agent_chat.window_placed);
-    h.call("ui.agent_chat", json!({"popped": true}));
-    h.frames(2);
-    h.call("ui.agent_chat", json!({"open": false}));
-    h.frames(2);
-    assert!(!h.app.agent_chat.window_placed);
-}
-
-/// macOS shows the text cursor only in the active window: the chat's own window becomes active
-/// when the pointer comes over its text box from the app's main window, and never takes the focus
-/// from another app.
-#[test]
-fn the_chat_window_takes_the_focus_for_its_text_box_from_the_main_window_only() {
-    assert!(panel::take_focus_for_text(true, true, Some(false), Some(true)));
-    assert!(!panel::take_focus_for_text(true, true, Some(false), Some(false)), "another app is active");
-    assert!(!panel::take_focus_for_text(true, true, Some(true), Some(false)), "already active");
-    assert!(!panel::take_focus_for_text(true, false, Some(false), Some(true)), "not over the text box");
-    assert!(!panel::take_focus_for_text(false, true, Some(false), Some(true)), "docked: the main window shows it");
-    assert!(!panel::take_focus_for_text(true, true, None, Some(true)), "unknown: leave it");
-}
-
-/// Whether the chat is popped out, and its window's place and size, are preferences; ones saved
-/// before they existed load docked, and an unusable saved place is ignored.
-#[test]
-fn the_popped_out_window_and_its_place_are_remembered() {
-    use crate::prefs::Prefs;
-    let mut p = Prefs::default();
-    assert!(!p.agent_chat_popped && p.agent_chat_window.is_none());
-    p.agent_chat_popped = true;
-    p.agent_chat_window = Some([-1600.0, 80.0, 420.0, 700.0]);
-    let back: Prefs = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
-    assert!(back.agent_chat_popped);
-    assert_eq!(back.agent_chat_window, Some([-1600.0, 80.0, 420.0, 700.0]), "a place on a screen left of the main one is kept");
-    let mut old = serde_json::to_value(Prefs::default()).unwrap();
-    old.as_object_mut().unwrap().remove("agent_chat_popped");
-    old.as_object_mut().unwrap().remove("agent_chat_window");
-    let old: Prefs = serde_json::from_value(old).unwrap();
-    assert!(!old.agent_chat_popped && old.agent_chat_window.is_none());
-    assert_eq!(panel::window_place(Some([10.0, 20.0, 400.0, 600.0])), Some(([10.0, 20.0], [400.0, 600.0])));
-    for bad in [[f32::NAN, 0.0, 400.0, 600.0], [0.0, 0.0, 10.0, 600.0], [0.0, 0.0, 400.0, f32::INFINITY], [1e9, 0.0, 400.0, 600.0]] {
-        assert_eq!(panel::window_place(Some(bad)), None, "{bad:?}");
-    }
+    h.frames(3);
+    assert!(rect_of("agent_chat:window").is_none());
+    assert!(rect_of("agent_chat:panel").is_some());
 }
 
 /// "Ask every time": a modelling command waits for Allow; "Always allow" lets the same command
@@ -11908,34 +11825,6 @@ fn files_dropped_on_the_chat_attach_and_the_app_does_not_open_them() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// The chat popped out into its own window takes drops too, and says so while files are dragged
-/// over it (#2812). Here the window floats inside the app, as it does where the system can't open
-/// one: a drop on the window is the chat's, one elsewhere is not.
-#[test]
-fn files_dropped_on_the_popped_out_chat_attach() {
-    use crate::scenario::rect_of;
-    let d = attachable("popdrop");
-    let mut h = narrow_chat();
-    h.call("ui.resize", json!({"width": 1600, "height": 1000}));
-    h.app.preferences.agent_chat_popped = true;
-    h.frames(4);
-    let window = rect_of("agent_chat:window").expect("popped out");
-    let hovered = || vec![egui::HoveredFile { path: Some(d.join("target.png")), mime: String::new() }];
-    h.drag_files(window.center(), hovered(), Vec::new());
-    assert!(rect_of("agent_chat:drop_hint").is_some_and(|r| window.contains(r.center())), "the hint over the window");
-    let outside = egui::pos2(5.0, 500.0);
-    assert!(!window.contains(outside));
-    h.drag_files(outside, hovered(), Vec::new());
-    assert!(rect_of("agent_chat:drop_hint").is_none(), "no hint away from it");
-    drop_files(&mut h, window.center(), &[d.join("target.png"), d.join("brief.md")]);
-    settle_chat(&mut h);
-    assert_eq!(status(&h.app)["attachments"], json!(["target.png", "brief.md"]));
-    assert!(!h.app.file_load.busy(), "the app doesn't open them as well");
-    drop_files(&mut h, outside, &[d.join("brief.md")]);
-    assert_eq!(status(&h.app)["attachments"].as_array().map(Vec::len), Some(2), "away from the window: not the chat's");
-    let _ = std::fs::remove_dir_all(&d);
-}
-
 /// Many files and a long message in a narrow chat: the chips wrap onto more rows and the text box
 /// keeps to the chat (a row of chips wider than the chat would widen everything under it).
 #[test]
@@ -12435,12 +12324,11 @@ fn a_message_sent_again_after_sign_in_stays_the_message_it_was() {
     assert_eq!(counts, [0, 1]);
 }
 
-/// The picture viewer opens over the chat's own window too, not only over the docked panel (#1745).
+/// The picture viewer opens over the Assistant panel (#1745).
 #[test]
-fn the_viewer_opens_in_the_popped_out_window() {
+fn the_viewer_opens_over_the_panel() {
     let mut h = crate::scenario::Harness::new();
     h.call("ui.agent_chat", json!({"open": true}));
-    h.app.preferences.agent_chat_popped = true;
     h.app.agent_chat.items.push(Item::User {
         text: "look".into(),
         image: true,
@@ -13038,24 +12926,23 @@ fn a_screenshot_card_hides_the_path_until_details() {
 #[test]
 fn the_composer_box_fills_its_parent_in_every_layout() {
     use crate::scenario::rect_of;
-    for (layout, popped) in [("floating", false), ("docked", false), ("floating", true), ("docked", true)] {
+    for layout in ["floating", "docked"] {
         let mut h = narrow_chat();
         h.call("ui.resize", json!({"width": 1600, "height": 1000}));
         h.call("ui.set", json!({"layout": layout}));
-        h.app.preferences.agent_chat_popped = popped;
         h.app.agent_chat.state = Some(State::Ready);
         h.frames(4);
-        let footer = rect_of("agent_chat:composer_footer").unwrap_or_else(|| panic!("{layout} popped={popped}: the composer area"));
+        let footer = rect_of("agent_chat:composer_footer").unwrap_or_else(|| panic!("{layout}: the composer area"));
         let boxed = rect_of("agent_chat:composer_box").expect("the input box");
         let (l, r, t, b) =
             (boxed.left() - footer.left(), footer.right() - boxed.right(), boxed.top() - footer.top(), footer.bottom() - boxed.bottom());
         for (edge, gap) in [("left", l), ("right", r), ("top", t), ("bottom", b)] {
-            assert!(gap.abs() <= 1.0, "{layout} popped={popped}: box {edge} edge is {gap} from its parent ({boxed:?} in {footer:?})");
+            assert!(gap.abs() <= 1.0, "{layout}: box {edge} edge is {gap} from its parent ({boxed:?} in {footer:?})");
         }
         let input = rect_of("agent_chat:input").expect("the text");
-        assert!(input.left() > boxed.left() + 2.0, "{layout} popped={popped}: the text keeps its own padding");
+        assert!(input.left() > boxed.left() + 2.0, "{layout}: the text keeps its own padding");
         let send = rect_of("agent_chat:send").expect("Send");
-        assert!(boxed.contains_rect(send), "{layout} popped={popped}: Send stays inside the box");
+        assert!(boxed.contains_rect(send), "{layout}: Send stays inside the box");
     }
 }
 
@@ -13099,7 +12986,6 @@ fn tool_room_beside_the_docked_assistant_survives_an_inside_out_view() {
     app.ui.layout = crate::shell::LayoutMode::Floating;
     app.preferences.ai_features = true;
     app.agent_chat.open = true;
-    app.preferences.agent_chat_popped = false;
     app.agent_chat.panel_rect = Some(egui::Rect::from_min_max(egui::pos2(100.0, 40.0), egui::pos2(150.0, 600.0)));
     let inside_out = egui::Rect::from_min_max(egui::pos2(264.1875, 40.0), egui::pos2(159.0, 600.0));
     for side in ["right", "left"] {
@@ -15911,19 +15797,16 @@ fn a_picture_opened_from_the_web_page_shows_in_the_viewer_and_the_web_view_steps
 }
 
 /// With the host's web view the Assistant is a panel inside the app's window and never a window
-/// of its own: a saved choice of its own window is put back, and the page has no way to ask for
-/// one.
+/// of its own; the old own-window request does nothing, and the page has no way to ask for one.
 #[test]
 fn with_the_web_view_the_assistant_stays_inside_the_apps_window() {
     let mut h = crate::scenario::Harness::new();
-    h.app.preferences.agent_chat_popped = true;
     h.call("ui.agent_chat", json!({"open": true}));
     h.frames(3);
-    assert!(crate::scenario::rect_of("agent_chat:window").is_some(), "the built-in panel follows the saved choice");
+    assert!(crate::scenario::rect_of("agent_chat:window").is_none(), "no window of its own");
 
     web::set_host(&mut h.app, true);
     h.frames(3);
-    assert!(!h.app.preferences.agent_chat_popped, "the choice is put back");
     assert!(crate::scenario::rect_of("agent_chat:window").is_none(), "no window of its own");
     let panel = crate::scenario::rect_of("agent_chat:panel").expect("the panel, in the app's window");
     let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
@@ -15933,7 +15816,7 @@ fn with_the_web_view_the_assistant_stays_inside_the_apps_window() {
     // Asked for over the control channel, it is put back as well.
     h.call("ui.agent_chat", json!({"popped": true}));
     h.frames(3);
-    assert!(!h.app.preferences.agent_chat_popped && crate::scenario::rect_of("agent_chat:window").is_none());
+    assert!(crate::scenario::rect_of("agent_chat:window").is_none());
     assert!(crate::scenario::rect_of("agent_chat:web").is_some());
 
     // The page cannot ask for it, and is told nothing of it.
@@ -15944,14 +15827,14 @@ fn with_the_web_view_the_assistant_stays_inside_the_apps_window() {
     let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
     assert!(state.get("popped").is_none() && state["strings"].get("popOut").is_none());
 
-    // Preferences offers the two sides, and no window of its own; the built-in panel offers all three.
+    // Preferences offers the two sides and nothing else, with or without a host view.
     crate::prefs::open_at(&mut h.app, crate::prefs::PAGE_ASSISTANT);
     h.frames(4);
     assert!(h.widget_near("Right", "Dock the chat").is_some(), "the sides are offered");
-    assert!(h.widget("Own window").is_none(), "a window of its own is not");
+    assert!(h.widget("Own window").is_none(), "a window of its own is not offered");
     web::set_host(&mut h.app, false);
     h.frames(3);
-    assert!(h.widget("Own window").is_some(), "the built-in panel still offers it");
+    assert!(h.widget("Own window").is_none(), "the old panel's own window is gone on the desktop too");
 }
 
 /// Floating, the web view leaves the strip at the panel's inner edge to the app, so the panel can

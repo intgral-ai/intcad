@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
-"""Start the installed SolidCraft snap on headless X11 and Wayland and model a box in it.
+"""Start the installed SolidCraft snap on headless X11 and Wayland, model a box and
+open the Assistant.
 
 Runs the confined app (`snap install --dangerous` first) with its normal plugs, drives it over
 the control channel from the host (snaps share the host's network namespace), checks a
-30x20x10 box measures 6000 mm³ and that the GPU drew a non-blank frame, and copies each frame
-to --out (default: the current directory) as snap-<backend>.png. Needs xvfb-run and weston.
-Reuses the frame checks of flatpak-smoke.py.
+30x20x10 box measures 6000 mm³, opens the Assistant and requires its page to load
+(webView.host and webView.page true), checks the GPU drew a non-blank frame, and copies each
+frame to --out (default: the current directory) as snap-<backend>.png. Needs xvfb-run and
+weston. Reuses the frame checks of flatpak-smoke.py.
+
+The page is served by the app itself, so it needs no network; the update check is turned off
+with SOLIDCRAFT_UPDATE_CHECK=0. release.yml runs the X11 variant inside `sudo unshare -n` with
+only loopback, after proving the namespace has a single link; that keeps the release policy that
+no network-enabled desktop is started. A strict snap can still be moved back to the host network
+namespace by snapd; the control connection then fails and the job reports the failure rather than
+passing. The release job also checks that the gnome extension provides libgtk-3.so.0 and
+libwebkit2gtk-4.1.so.0.
 """
 import argparse
 import importlib.util
@@ -39,7 +49,7 @@ REQUESTS = [
 
 
 def drive(app, port, frame):
-    """Connect to the app's control port, model the box and capture a frame."""
+    """Connect to the app's control port, model the box, open the Assistant and capture a frame."""
     deadline = time.monotonic() + 60
     while True:
         if app.poll() is not None:
@@ -85,15 +95,42 @@ def drive(app, port, frame):
             time.sleep(.25)
         conn.settimeout(60)
         replies = [line]
-        for request in REQUESTS[1:] + [{"id": 4, "method": "ui.screenshot", "params": {"path": str(frame)}},
-                                      {"id": 5, "method": "app.quit", "params": {"force": True}}]:
+
+        def call(request):
             io.write(json.dumps(request) + "\n")
             io.flush()
-            replies.append(io.readline())
+            raw = io.readline()
+            if not raw:
+                raise RuntimeError(f"the control connection closed at {request['method']}")
+            reply = json.loads(raw)
+            if not isinstance(reply, dict) or reply.get("id") != request["id"] or reply.get("ok") is not True:
+                raise ValueError(f"{request['method']} failed: {reply}")
+            replies.append(raw)
+            return reply
+
+        call(REQUESTS[1])
+        call(REQUESTS[2])
+        # The Assistant: the start page covers the workspace, then the panel must load its page.
+        call({"id": 4, "method": "ui.home", "params": {"open": False}})
+        call({"id": 5, "method": "ui.agent_chat", "params": {"open": True}})
+        request_id = 6
+        deadline = time.monotonic() + 120
+        while True:
+            state = call({"id": request_id, "method": "ui.agent_chat", "params": {}})["result"] or {}
+            web = state.get("webView") or {}
+            if state.get("open") is not True:
+                raise ValueError(f"the Assistant panel did not open: {state}")
+            if web.get("host") is False:
+                raise ValueError(f"the Assistant made no web view: {web}")
+            if web.get("host") is True and web.get("page") is True:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"the Assistant's page never loaded: {web}")
+            time.sleep(.25)
+            request_id += 1
+        capture = call({"id": request_id + 1, "method": "ui.screenshot", "params": {"path": str(frame)}})
+        call({"id": request_id + 2, "method": "app.quit", "params": {"force": True}})
     renderer = flatpak_smoke.validate_replies("".join(replies[:3]))
-    capture = json.loads(replies[3])
-    if any(json.loads(reply).get("ok") is not True for reply in replies[4:]):
-        raise ValueError(f"app.quit failed: {replies[4:]}")
     if capture.get("ok") is not True or renderer != "gpu":
         raise ValueError(f"GPU frame capture failed: renderer={renderer}, {capture}")
     return renderer, flatpak_smoke.frame_statistics(frame.read_bytes())
@@ -103,7 +140,8 @@ def run_backend(backend, out):
     runtime = Path(f"/run/user/{os.getuid()}")
     if not runtime.is_dir():
         raise RuntimeError(f"{runtime} is missing: snaps expect the login session's runtime directory")
-    env = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), SOLIDCRAFT_CONTROL_TOKEN=TOKEN)
+    env = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), SOLIDCRAFT_CONTROL_TOKEN=TOKEN,
+               SOLIDCRAFT_UPDATE_CHECK="0")
     for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY", "SOLIDCRAFT_WAYLAND", "SOLVECRAFT_WAYLAND"):
         env.pop(name, None)
     # The snap can write to the (non-hidden) home folder, not to the host's /tmp.
@@ -146,7 +184,7 @@ def run_backend(backend, out):
                 os.killpg(app.pid, signal.SIGKILL)
                 app.wait()
         shutil.copy(work / "frame.png", out / f"snap-{backend}.png")
-        print(f"snap {backend}: PASS renderer={renderer}, box=6000 mm³, frame={stats}")
+        print(f"snap {backend}: PASS renderer={renderer}, box=6000 mm³, Assistant page loaded, frame={stats}")
     except BaseException:
         log.flush()
         sys.stderr.write((work / "app.log").read_text(errors="replace")[-8000:])

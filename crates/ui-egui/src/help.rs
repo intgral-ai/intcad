@@ -24,10 +24,19 @@ pub const ASSISTANT_PAGE_NOTICES: Option<&str> = Some(include_str!("../../../pac
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub const ASSISTANT_PAGE_NOTICES: Option<&str> = None;
 
+/// The platform libraries the Assistant's web view links: GTK 3 and WebKitGTK 4.1 on Linux,
+/// WebView2 on Windows, WKWebView on macOS, with the LGPL/BSD texts each needs. Built in, so a
+/// single downloaded executable or an AppImage carries the same notice as the packages that
+/// install `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt`.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub const WEB_VIEW_NOTICES: Option<&str> = Some(include_str!("../../../packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt"));
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+pub const WEB_VIEW_NOTICES: Option<&str> = None;
+
 /// Every licence text the program carries, as one text.
 fn all_licences() -> String {
     let mut all = solidcraft_engine::licences::all();
-    if let Some(notices) = ASSISTANT_PAGE_NOTICES {
+    for notices in [WEB_VIEW_NOTICES, ASSISTANT_PAGE_NOTICES].into_iter().flatten() {
         all.push('\n');
         all.push_str(&"=".repeat(80));
         all.push('\n');
@@ -243,6 +252,9 @@ fn about(app: &mut SolveApp, ctx: &egui::Context) {
                         ui_kit::text_lines(ui, "sc_third_party", THIRD_PARTY);
                         if let Some(notices) = ASSISTANT_PAGE_NOTICES {
                             ui_kit::text_lines(ui, "sc_assistant_page_notices", notices);
+                        }
+                        if let Some(notices) = WEB_VIEW_NOTICES {
+                            ui_kit::text_lines(ui, "sc_web_view_notices", notices);
                         }
                     });
                 });

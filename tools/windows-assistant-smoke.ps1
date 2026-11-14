@@ -6,18 +6,37 @@
 # the window are taken from the screen, so the native view is in them, and go to -Evidence with the
 # app's error output.
 #
-# On a machine without the WebView2 runtime the view cannot be made. The check then only makes sure
-# that the panel went back to the built-in conversation and that the app still quits cleanly. Where
-# the runtime is there, the app is started a second time with the runtime hidden from it (the
-# loader looks where WEBVIEW2_BROWSER_EXECUTABLE_FOLDER says, and an empty folder holds none), to
-# see the same going back.
+# The Assistant is WebView2 and has no built-in fallback. The runtime is detected before the app
+# starts (packaging/windows/webview2-runtime.ps1). When it is absent this check does not pass:
+# -WebView2Recovery Auto installs it (online bootstrapper, or -WebView2OfflineInstaller when one
+# is supplied); ReportOnly writes that the Assistant page was NOT checked and fails. With the
+# runtime present the page must load and report in.
+#
+# The app is then started once more with the runtime hidden from it (the loader looks where
+# WEBVIEW2_BROWSER_EXECUTABLE_FOLDER says, and an empty folder holds none). The app must report
+# that the view could not be made and leave no blank window over the panel: a silent blank panel
+# is a failure.
 #
 # What this can't check on a CI runner (one monitor at 100 %, no GPU): input methods, a scale other
 # than 100 %, files dropped on the panel, and the view over a real graphics card.
 #
 # Usage: tools/windows-assistant-smoke.ps1 -Exe target\ci\solidcraft.exe -Evidence assistant-smoke
-param([Parameter(Mandatory = $true)][string]$Exe, [string]$Evidence = 'assistant-smoke')
+param(
+    [Parameter(Mandatory = $true)][string]$Exe,
+    [string]$Evidence = 'assistant-smoke',
+    [ValidateSet('Auto', 'Online', 'Offline', 'ReportOnly')][string]$WebView2Recovery = 'Auto',
+    [string]$WebView2OfflineInstaller = $env:SOLIDCRAFT_WEBVIEW2_OFFLINE_INSTALLER,
+    [string]$WebView2InstallerSha256 = $env:SOLIDCRAFT_WEBVIEW2_INSTALLER_SHA256
+)
 $ErrorActionPreference = 'Stop'
+
+$runtimeHelper = Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\windows\webview2-runtime.ps1'
+if (-not (Test-Path -LiteralPath $runtimeHelper)) { throw "WebView2 helper not found: $runtimeHelper" }
+# The helper declares its own `$Evidence` parameter; dot-sourcing would replace our evidence
+# folder with its default (empty) before line 189. Keep the caller's value.
+$EvidenceBeforeHelper = $Evidence
+. $runtimeHelper
+$Evidence = $EvidenceBeforeHelper
 
 Add-Type @'
 using System;
@@ -106,21 +125,9 @@ function Name($h) {
     "window 0x{0:x} of class '{1}'" -f $h.ToInt64(), [AssistantWin]::Class($h)
 }
 
-# The version of the WebView2 runtime on this machine, or nothing: the registry values Microsoft
-# documents for finding it (per machine, 64-bit and 32-bit, and per user).
-function WebView2Runtime {
-    $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-    $keys = @(
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
-        "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client",
-        "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$client"
-    )
-    foreach ($key in $keys) {
-        $found = Get-ItemProperty -Path $key -Name pv -ErrorAction SilentlyContinue
-        if ($found -and $found.pv -and $found.pv -ne '0.0.0.0') { return $found.pv }
-    }
-    return $null
-}
+# WebView2 detection and recovery live in packaging/windows/webview2-runtime.ps1, dot-sourced
+# above. It checks Microsoft's per-machine (native and WOW6432Node) and per-user keys and the
+# known version folders, and never treats pv 0.0.0.0 as an install.
 
 # The app's window as the screen shows it, native child windows included (the app's own
 # `ui.screenshot` holds only what the app draws).
@@ -172,6 +179,19 @@ function Click([int]$x, [int]$y) {
     Start-Sleep -Milliseconds 700
 }
 
+# Windows moves the keyboard in its own messages, and a busy frame can delay that past the click's
+# pause. Poll for the window the check expects; a real failure still ends on the wrong window or
+# none at all within the limit.
+function WaitFocus([scriptblock]$ok, [int]$seconds = 5) {
+    $until = (Get-Date).AddSeconds($seconds)
+    do {
+        $focus = [AssistantWin]::Focus()
+        if (& $ok $focus) { return $focus }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $until)
+    $focus
+}
+
 # Lower-case letters and spaces, as key presses.
 function Keys([string]$text) {
     foreach ($c in $text.ToCharArray()) {
@@ -193,8 +213,29 @@ $exePath = (Resolve-Path $Exe).Path
 $beside = "$exePath.WebView2"
 $besideBefore = Test-Path $beside
 
-$runtime = WebView2Runtime
-if ($runtime) { Write-Host "WebView2 runtime: $runtime" } else { Write-Host 'WebView2 runtime: none found in the registry' }
+$runtime = Get-WebView2Runtime
+if ($runtime -and -not $runtime.Healthy) {
+    throw "the WebView2 registry names version $($runtime.Version), but msedgewebview2.exe is missing; the runtime is damaged, not present"
+}
+if (-not $runtime) {
+    if ($WebView2Recovery -eq 'ReportOnly') {
+        $gap = "Windows Assistant check: the WebView2 Runtime is NOT installed. The Assistant page was NOT checked, so this is not a pass. Install it with packaging/windows/webview2-runtime.ps1 -Action Install (online, or offline with -OfflineInstaller and -ExpectedSha256)."
+        Write-Host "NOT COVERED: $gap"
+        if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $gap }
+        throw $gap
+    }
+    $installMode = switch ($WebView2Recovery) {
+        'Online' { 'Online' }
+        'Offline' { 'Offline' }
+        default { 'Auto' }
+    }
+    Write-Host "==> WebView2 runtime absent: $WebView2Recovery recovery"
+    $runtime = Install-WebView2Runtime -InstallMode $installMode -InstallScope 'Auto' `
+        -InstallerPath $WebView2OfflineInstaller -Sha256 $WebView2InstallerSha256 -EvidenceDirectory $Evidence
+    if (-not $runtime) { throw 'the WebView2 recovery path returned no runtime' }
+    Write-Host "WebView2 runtime installed by the recovery path: $($runtime.Version) ($($runtime.Scope), $($runtime.Source))"
+}
+Write-Host "WebView2 runtime: $($runtime.Version) ($($runtime.Scope), $($runtime.Source))"
 
 # Start the app with settings of its own and wait for its window and its control channel. The
 # window is put at a known place and size that fits the runner's screen (physical px; the minimum
@@ -330,7 +371,7 @@ try {
                 Write-Host "skipped: the keyboard checks (this session doesn't move the pointer: at $($pt.X),$($pt.Y))"
             } else {
                 Click $x $y
-                $focus = [AssistantWin]::Focus()
+                $focus = WaitFocus { param($f) $f -ne [IntPtr]::Zero -and $f -ne $h -and [AssistantWin]::IsChild($h, $f) }
                 $inPage = ($focus -ne [IntPtr]::Zero -and $focus -ne $h -and [AssistantWin]::IsChild($h, $focus))
                 if ($focus -eq [IntPtr]::Zero) {
                     Write-Host 'unknown: which window has the keyboard after a click on the page (Windows named none)'
@@ -345,11 +386,7 @@ try {
                 # The 3D view, in the part of the window the panel leaves free.
                 $free = if (($v.Left - $w.Left) -ge ($w.Right - $v.Right)) { [int](($w.Left + $v.Left) / 2) } else { [int](($v.Right + $w.Right) / 2) }
                 Click $free ([int](($w.Top + $w.Bottom) / 2))
-                # The app moves the keyboard on the click's own message; give that message a
-                # moment to arrive before asking which window has it (a runner read the page's
-                # window on the next line, 2026-11-13).
-                Start-Sleep -Milliseconds 500
-                $focus = [AssistantWin]::Focus()
+                $focus = WaitFocus { param($f) $f -eq $h }
                 if ($focus -eq [IntPtr]::Zero) {
                     Write-Host 'unknown: which window has the keyboard after a click on the rest of the window (Windows named none)'
                 } else {
@@ -386,11 +423,7 @@ try {
         Check (Test-Path $data) "WebView2 keeps its files in the app's data folder ($data)"
         Check ($besideBefore -or -not (Test-Path $beside)) "WebView2 wrote nothing beside the exe ($beside)"
     } elseif ($state.webView -and -not $state.webView.host) {
-        if ($runtime) {
-            Check $false "the WebView2 runtime $runtime is installed, but the web view could not be made (the app's error output below says why)"
-        } else {
-            Write-Host 'skipped: the web view checks (no WebView2 runtime on this machine; the panel draws the built-in conversation)'
-        }
+        Check $false "the WebView2 runtime $($runtime.Version) is installed, but the web view could not be made (the app's error output below says why)"
     } else {
         Check $false 'the page in the web view reported to the app within 90 s'
     }
@@ -402,13 +435,13 @@ try {
     [void](Finish 'first-run')
 }
 
-# The same app with no runtime to be found: the panel goes back to the built-in conversation, the
-# app says why on its error output, and it still quits cleanly.
+# The same app with no runtime to be found: the app must report that the view could not be made
+# and leave no blank window over the panel. It must not quietly pass as a working Assistant.
 if ($made) {
     Write-Host '=== the Assistant with the runtime hidden'
     $none = Join-Path $root 'no-runtime'
     New-Item -ItemType Directory -Force $none | Out-Null
-    $fellBack = $false
+    $reported = $false
     try {
         Launch 47952 @{ WEBVIEW2_BROWSER_EXECUTABLE_FOLDER = $none }
         $state = OpenAssistant 60
@@ -416,16 +449,16 @@ if ($made) {
         [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '05-app-frame-runtime-hidden.png') })
         $left = Views $h 'runtime hidden' -Any
         if ($state.webView -and -not $state.webView.host) {
-            $fellBack = $true
-            Check $true 'with the runtime hidden, the app gives the view up and draws the built-in conversation'
+            $reported = $true
+            Check $true 'with the runtime hidden, the app reports that the web view could not be made instead of drawing a blank panel'
             # The view's toolkit begins with a window of its own in the app's; one left shown
-            # there lies over the built-in conversation as a blank box.
+            # there lies over the Assistant as a blank box.
             $what = if ($left) { Name $left.Window } else { 'none' }
             Check ($null -eq $left) "with the runtime hidden, no window is left shown over the panel ($what)"
         } elseif ($state.webView -and $state.webView.page) {
-            Write-Host 'unknown: the app without a runtime (an empty WEBVIEW2_BROWSER_EXECUTABLE_FOLDER did not keep the view from being made)'
+            Check $false 'with the runtime hidden, the app still made the view (WEBVIEW2_BROWSER_EXECUTABLE_FOLDER was ignored), so the missing-runtime path was NOT exercised'
         } else {
-            Check $false 'with the runtime hidden, the app gives the view up within 60 s'
+            Check $false 'with the runtime hidden, the app reports the missing web view within 60 s'
         }
         Quit
     } catch {
@@ -434,7 +467,10 @@ if ($made) {
     } finally {
         $said = Finish 'runtime-hidden'
     }
-    if ($fellBack) { Check ($said -match 'assistant web view: could not be created') "with the runtime hidden, the app's error output says the view could not be created" }
+    if ($reported) {
+        Check ($said -match 'assistant web view:') "with the runtime hidden, the app's error output says what happened to the web view"
+        Check ($said -match '(could not be created|WebView2|runtime|not installed|missing)') 'with the runtime hidden, the app error output names the missing view or runtime'
+    }
 }
 
 $reports = @(Get-ChildItem -Recurse -Filter report.json $crashes -ErrorAction SilentlyContinue)

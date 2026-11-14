@@ -153,7 +153,12 @@ class ForkWorkflowSafety(unittest.TestCase):
 
     def test_package_smokes_do_not_start_network_enabled_desktop(self):
         text = self.workflow("release")
-        self.assertNotIn("python3 packaging/linux/snap-smoke.py", text)
+        # The Snap desktop smoke is allowed only inside a private network namespace with loopback:
+        # the package job must never start a network-enabled desktop.
+        self.assertIn("sudo unshare -n", text)
+        self.assertRegex(text, r"unshare -n[^\n]*snap-smoke\.py")
+        self.assertNotRegex(text, r"(?m)^\s*python3 packaging/linux/snap-smoke\.py")
+        self.assertIn("ip link set lo up", text)
         self.assertIn("solidcraft.cli --version", text)
         # Flatpak's existing sandbox denies network; keep its real desktop smoke.
         manifest = (ROOT / "packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml").read_text()
@@ -168,12 +173,13 @@ class ForkWorkflowSafety(unittest.TestCase):
         self.assertEqual(len(re.findall(r"(?m)^docker run ", linux)), 2)
         self.assertIn("installed-check-inside.sh run", linux[linux.index("docker run --rm --network none"):])
         self.assertIn("this system reaches the network", (ROOT / "packaging/linux/installed-check-inside.sh").read_text())
-        launches = re.findall(r"(?m)^.*packaging/assistant-check\.py.*$", text)
-        self.assertTrue(launches)
-        for launch in launches:
-            if not launch.lstrip().startswith("#"):
-                self.assertIn('--run-with "${OFFLINE[*]}', launch)
-        self.assertIn('OFFLINE=(sandbox-exec -f "$PWD/packaging/macos/no-network.sb")', text)
+        # The macOS step is the installed-check script, which copies the app out of the image,
+        # proves the no-network profile blocks curl, and runs the Assistant check under it.
+        self.assertIn("packaging/macos/installed-check.sh", text)
+        mac = (ROOT / "packaging/macos/installed-check.sh").read_text()
+        self.assertIn('SANDBOX="$ROOT/packaging/macos/no-network.sb"', mac)
+        self.assertIn('sandbox-exec -f "$SANDBOX" /usr/bin/curl', mac)
+        self.assertIn('--run-with "$prefix"', mac)
         self.assertIn("(deny network*)", (ROOT / "packaging/macos/no-network.sb").read_text())
         windows = (ROOT / "packaging/windows/installed-check.ps1").read_text()
         self.assertLess(windows.index("New-NetFirewallRule"), windows.index("windows-assistant-smoke.ps1') -Exe"))

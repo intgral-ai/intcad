@@ -131,7 +131,12 @@ The [architecture page](docs/architecture.md) has the layer table. The short ver
    MIT OR Apache-2.0, and its solver and blends are written from the maths. (Running an
    open-source application to get reference values for a test is fine; reading its source is
    not.) Permissive
-   dependencies are fine. Note which one you're adding and why in the PR. THIRD-PARTY-LICENSES.txt
+   dependencies are fine. One narrow exception exists for the desktop web view only:
+   the app dynamically links the system's unmodified GTK 3 and WebKitGTK 4.1 (LGPL/BSD)
+   through the `wry`, `gtk` and `webkit2gtk` Rust crates, with notices and licence text
+   shipped (`docs/web-view-licences.md`). Never copy, vendor, statically link, modify or
+   patch them, and the exception never extends to a CAD kernel, solver, geometry or UI
+   library. Note which one you're adding and why in the PR. THIRD-PARTY-LICENSES.txt
    lists it once the change lands: in this fork the Generated files workflow runs on
    `develop` and opens a draft PR to `develop`.
    `cargo xtask licences --check` inventories Cargo crates (and bundled font notices),

@@ -122,6 +122,10 @@ wry = { version = "0.57", default-features = false, features = ["os-webview", "x
 # GTK itself, which winit does not run: started for the web view and given its turns there (the
 # version wry uses).
 gtk = "0.18"
+# GTK's own X11 window for the page, so it can be reparented into the app's window: wry's
+# `build_as_child` uses a foreign GdkWindow that GTK never marks active (and its input method
+# never starts). Already in the tree through wry's x11 support.
+gdkx11 = "0.18"
 
 [build-dependencies]
 embed-resource = "3.0.11"
