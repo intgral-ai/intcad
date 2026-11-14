@@ -564,7 +564,7 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
         // A project's location: the folder the project folder is made in.
         pick_folder: Some(Box::new(move || {
             let future = project_folder.start(folder_parent.clone()).pick_folder();
-            Box::pin(async move { future.await.map(|p| p.to_string_lossy().into_owned()) })
+            Box::pin(async move { future.await.map(|p| p.path().to_string_lossy().into_owned()) })
         })),
         pick_save: Some(Box::new(move |name: &str, exts: &[&str]| {
             let dialog = save_folder.start(parent.clone()).set_file_name(name);

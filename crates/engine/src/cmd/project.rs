@@ -30,6 +30,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              The open design is saved into the project. A refused call leaves no folder behind",
         ),
     CommandSpec::new("project.inspect", "Project Settings", crate::checked!("project.inspect", inspect))
+        .icon("settings")
         .noundo()
         .contract(&INSPECT_CONTRACT)
         .output(crate::schema::output_schema_for::<InspectReply>)
