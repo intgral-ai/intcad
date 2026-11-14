@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Make a project folder: a design, `.intgral/` and its templates, offline.
+/// Make a project folder: a design, `.intcad/` and its templates, offline.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct CreateParams {
@@ -14,7 +14,7 @@ pub struct CreateParams {
     pub folder: String,
 }
 
-/// Put a `.intgral/` folder beside an existing, saved design.
+/// Put a `.intcad/` folder beside an existing, saved design.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AttachParams {
@@ -42,7 +42,7 @@ pub struct CreateReply {
 #[schemars(deny_unknown_fields)]
 pub struct InspectParams {
     /// A design file or a folder to start from (default: the open design). The nearest folder at
-    /// or above it that holds `.intgral/project.toml` is the project.
+    /// or above it that holds `.intcad/project.toml` is the project.
     #[serde(default)]
     pub path: Option<String>,
 }
