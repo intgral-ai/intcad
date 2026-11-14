@@ -564,7 +564,8 @@ fn an_app_overlap_finding_may_fail_without_factory_data() {
 
 #[test]
 fn compile_puts_one_check_per_sheet_after_the_native_baseline() {
-    let sheets = [SheetRef { sheet: 0, body: "Plate".into() }, SheetRef { sheet: 1, body: "Bracket".into() }];
+    let sheets =
+        [SheetRef { sheet: 0, body: "Plate".into(), ..Default::default() }, SheetRef { sheet: 1, body: "Bracket".into(), ..Default::default() }];
     let compiled = compile::compile(&run_input(), &sheets, "sha256:model-a").unwrap();
     let ids: Vec<&str> = compiled.profile.checks.iter().map(|check| check.check_id.as_str()).collect();
     assert_eq!(ids, ["dfm.sheet.000", "dfm.sheet.001", "input.integrity", "native.rebuild"]);
@@ -574,9 +575,38 @@ fn compile_puts_one_check_per_sheet_after_the_native_baseline() {
     assert_eq!(compiled.sheets[1].body, "Bracket");
 }
 
+/// A project without a declared thickness checks a native body at the body's own model
+/// thickness, recording where the value came from. Converted bodies never get that fallback.
+#[test]
+fn a_missing_project_thickness_falls_back_to_a_native_bodys_model_thickness() {
+    let mut input = run_input();
+    input.declared.thickness_mm = None;
+    input.declared.thickness_from = None;
+    let sheets = [SheetRef { sheet: 0, body: "Plate".into(), thickness_mm: Some(2.0), ..Default::default() }];
+    let compiled = compile::compile(&input, &sheets, "sha256:model-a").unwrap();
+    assert_eq!(compiled.sheets[0].declared.thickness_mm, Some(2.0));
+    assert_eq!(compiled.sheets[0].declared.thickness_from.as_deref(), Some("model"));
+
+    let converted = [SheetRef { sheet: 0, body: "Imported".into(), thickness_mm: Some(2.0), converted: true, ..Default::default() }];
+    let compiled = compile::compile(&input, &converted, "sha256:model-a").unwrap();
+    assert_eq!(compiled.sheets[0].declared.thickness_mm, None, "a converted body never borrows the model thickness");
+    assert_eq!(compiled.sheets[0].declared.thickness_from, None);
+}
+
+/// An explicit project thickness is used as written, even when one body differs; that body's own
+/// gate reports the conflict and other bodies still run.
+#[test]
+fn an_explicit_project_thickness_is_not_replaced_by_a_bodys_own() {
+    let sheets = [SheetRef { sheet: 0, body: "Plate".into(), thickness_mm: Some(2.0), ..Default::default() }];
+    let compiled = compile::compile(&run_input(), &sheets, "sha256:model-a").unwrap();
+    assert_eq!(compiled.sheets[0].declared.thickness_mm, Some(1.5));
+    assert_eq!(compiled.sheets[0].declared.thickness_from.as_deref(), Some("declared"));
+}
+
 #[test]
 fn compile_refuses_duplicate_sheets_and_a_missing_model_identity() {
-    let sheets = [SheetRef { sheet: 0, body: "Plate".into() }, SheetRef { sheet: 0, body: "Other".into() }];
+    let sheets =
+        [SheetRef { sheet: 0, body: "Plate".into(), ..Default::default() }, SheetRef { sheet: 0, body: "Other".into(), ..Default::default() }];
     assert!(compile::compile(&run_input(), &sheets, "sha256:model-a").is_err());
     assert!(compile::compile(&run_input(), &[], "").is_err());
     let empty = compile::compile(&run_input(), &[], "sha256:model-a").unwrap();
@@ -654,7 +684,7 @@ fn worker_fixture(tag: &str) -> (RunRequest, Arc<crate::validation::ValidationPo
             declared: Declared { process: Some("press brake".into()), material: Some("5052-H32".into()), thickness_mm: None, thickness_from: None },
             ..run_input()
         },
-        sheets: vec![SheetRef { sheet: 0, body }],
+        sheets: vec![SheetRef { sheet: 0, body, ..Default::default() }],
         started_at: "2026-11-14T01:00:00.000Z".into(),
     };
     (request, port, root)
@@ -720,7 +750,11 @@ fn two_native_bodies_with_different_thicknesses_are_blocked_separately() {
             },
             ..run_input()
         },
-        sheets: bodies.iter().enumerate().map(|(sheet, body)| SheetRef { sheet, body: body.clone() }).collect(),
+        sheets: bodies
+            .iter()
+            .enumerate()
+            .map(|(sheet, body)| SheetRef { sheet, body: body.clone(), thickness_mm: Some(1.5), ..Default::default() })
+            .collect(),
         started_at: "2026-11-14T02:00:00.000Z".into(),
     };
     let result = run::run_once(&port, &request, &std::sync::atomic::AtomicBool::new(false), &|_| {}).unwrap();

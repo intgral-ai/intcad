@@ -30,11 +30,15 @@ pub struct RunInput {
     pub project_name: String,
     /// SHA-256 over the frozen configuration; staleness compares it.
     pub config_digest: String,
-    /// `project.toml`'s declared process, material and thickness as written.
+    /// `project.toml`'s declared process, material and thickness as written. `None` means the
+    /// project declares no thickness; it does not mean the data rows do not apply. Each native
+    /// sheet then falls back to its own model thickness in [`compile`].
     pub declared: Declared,
     /// The generic rows exactly as the rule layer parsed them.
     pub generic: Profile,
-    /// The selected factory or standard rows, when there are any.
+    /// The selected factory or standard rows, when the rows were parsed. A copy that is
+    /// unavailable only because a declaration is missing still passes its rows; an unreadable,
+    /// digest-mismatched or unparsable copy is the caller's `None`.
     #[serde(default)]
     pub shop: Option<Profile>,
     #[serde(default)]
@@ -44,12 +48,21 @@ pub struct RunInput {
 }
 
 /// One sheet body a run checks.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SheetRef {
     /// The body's index in the evaluated model; a rename cannot select another body.
     pub sheet: usize,
     pub body: String,
+    /// The body's own model thickness. When the project declares no thickness, a native body's
+    /// declared value falls back to this and records `thicknessFrom = "model"`; the rule layer
+    /// then selects rows for that thickness. `None` means the caller could not measure it.
+    #[serde(default)]
+    pub thickness_mm: Option<f64>,
+    /// A converted or imported body. It never gets the native thickness fallback: the rules run
+    /// on the converted model, and its thickness must come from the project.
+    #[serde(default)]
+    pub converted: bool,
 }
 
 /// The checks and parameters one run submits.
@@ -101,10 +114,21 @@ pub fn compile(input: &RunInput, sheets: &[SheetRef], model_version: &str) -> Re
     profile.version = format!("{PROFILE_VERSION}+{suffix}");
     let mut parameters = Vec::with_capacity(sheets.len());
     for sheet in sheets {
+        // A project without a declared thickness still checks a native body: the body's own model
+        // thickness is the declared value and the report says where it came from. Converted
+        // bodies get no fallback. An explicit project thickness is used as written, even when it
+        // conflicts with one body; that body's own gate then reports the conflict.
+        let mut declared = input.declared.clone();
+        if declared.thickness_mm.is_none() && !sheet.converted {
+            declared.thickness_mm = sheet.thickness_mm;
+            if declared.thickness_mm.is_some() {
+                declared.thickness_from = Some("model".into());
+            }
+        }
         let check = SheetCheckParameters {
             sheet: sheet.sheet,
             body: sheet.body.clone(),
-            declared: input.declared.clone(),
+            declared,
             generic: input.generic.clone(),
             shop: input.shop.clone(),
             overrides: input.overrides.clone(),
