@@ -42,6 +42,8 @@ pub enum ProjectError {
     Invalid { file: String, message: String },
     #[error("{path} already exists; choose another name or folder")]
     TargetExists { path: String },
+    #[error("{path} is already inside a project")]
+    AlreadyInProject { path: String },
     #[error("{path}: {message}")]
     Io { path: String, message: String },
 }
@@ -282,6 +284,37 @@ pub fn create(parent: &Path, name: &str, design_name: &str) -> Result<CreatedPro
         return Err(error);
     }
     Ok(CreatedProject { project, design })
+}
+
+/// Put a `.intgral/` folder beside an existing, saved design file. The design is never moved or
+/// rewritten; only the folder and its templates are made. Refused when a project already covers
+/// the design, so opening an old design never changes it by itself.
+pub fn attach(design: &Path) -> Result<CreatedProject, ProjectError> {
+    if !design.is_file() {
+        return Err(ProjectError::Io { path: design.display().to_string(), message: "the design file does not exist; save it first".into() });
+    }
+    let Some(root) = design.parent() else {
+        return Err(ProjectError::Io { path: design.display().to_string(), message: "the design has no folder".into() });
+    };
+    if Project::locate(root).is_some() {
+        return Err(ProjectError::AlreadyInProject { path: root.display().to_string() });
+    }
+    let folder = root.join(FOLDER);
+    let building = root.join(format!("{FOLDER}.new"));
+    if folder.exists() || building.exists() {
+        return Err(ProjectError::TargetExists { path: folder.display().to_string() });
+    }
+    let name = design.file_stem().and_then(|stem| stem.to_str()).map(str::trim).filter(|stem| !stem.is_empty()).unwrap_or("design").to_string();
+    if let Err(error) = build_project(root, &building, &name, design) {
+        let _ = fs::remove_dir_all(&building);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&building, &folder) {
+        let _ = fs::remove_dir_all(&building);
+        return Err(ProjectError::io(&folder, &error));
+    }
+    let project = Project::open(root)?;
+    Ok(CreatedProject { project, design: design.to_path_buf() })
 }
 
 /// The design file a project starts with: the chosen name with the design extension.

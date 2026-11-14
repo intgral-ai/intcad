@@ -7,10 +7,18 @@ use serde_json::json;
 
 use crate::{SolveApp, ui_kit};
 
-/// What is being typed, and the last refusal from `project.create`.
+/// Whether the window makes a new folder or adds `.intgral/` beside an existing design.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode {
+    New,
+    Beside { design: String },
+}
+
+/// What is being typed, and the last refusal from `project.create` or `project.attach`.
 pub struct NewProject {
     pub name: String,
     pub folder: String,
+    pub mode: Mode,
     pub error: Option<String>,
 }
 
@@ -18,7 +26,17 @@ pub struct NewProject {
 /// folder).
 pub fn open(app: &mut SolveApp) {
     let folder = app.last_project_folder.clone().or_else(home_folder).unwrap_or_default();
-    app.new_project = Some(NewProject { name: app.session.doc.name.clone(), folder, error: None });
+    app.new_project = Some(NewProject { name: app.session.doc.name.clone(), folder, mode: Mode::New, error: None });
+    app.home.open = false;
+}
+
+/// Open the same window for a saved design that has no project beside it. The design's folder is
+/// fixed; the name is the design's.
+pub fn open_beside(app: &mut SolveApp, design: &str) {
+    let path = std::path::Path::new(design);
+    let name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("design").to_string();
+    let folder = path.parent().map(|parent| parent.display().to_string()).unwrap_or_default();
+    app.new_project = Some(NewProject { name, folder, mode: Mode::Beside { design: design.to_string() }, error: None });
     app.home.open = false;
 }
 
@@ -39,7 +57,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut dialog) = app.new_project.take() else { return };
     let mut choose = false;
     let title = crate::i18n::tr("new_project.title");
-    let valid = !dialog.name.trim().is_empty() && !dialog.folder.trim().is_empty();
+    let beside = matches!(dialog.mode, Mode::Beside { .. });
+    let valid = beside || (!dialog.name.trim().is_empty() && !dialog.folder.trim().is_empty());
     let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_new_project"), "new", title)
         .actions(crate::i18n::tr("ui.create"), crate::i18n::tr("ui.cancel"), None)
         .fields()
@@ -50,11 +69,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             });
             let location = crate::i18n::tr("new_project.location");
             ui_kit::row(ui, location, |ui| {
-                if ui_kit::button(ui, crate::i18n::tr("new_project.choose"), ui_kit::Button::Normal).clicked() {
+                if !beside && ui_kit::button(ui, crate::i18n::tr("new_project.choose"), ui_kit::Button::Normal).clicked() {
                     choose = true;
                 }
                 ui_kit::text(ui, &dialog.folder, ui_kit::Text::Note("folder"));
             });
+            if let Mode::Beside { design } = &dialog.mode {
+                let hint = crate::i18n::format("new_project.beside_hint", &[("design", design)]);
+                ui_kit::text(ui, &hint, ui_kit::Text::Note("beside"));
+            }
             if let Some(error) = &dialog.error {
                 ui_kit::text(ui, error, ui_kit::Text::Report("error", true));
             }
@@ -64,9 +87,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if action == ui_kit::Action::Ok {
         let folder = dialog.folder.trim().to_string();
-        match app.run("project.create", json!({ "name": dialog.name.trim(), "folder": folder })) {
+        let result = match &dialog.mode {
+            Mode::New => app.run("project.create", json!({ "name": dialog.name.trim(), "folder": folder })),
+            Mode::Beside { design } => app.run("project.attach", json!({ "path": design })),
+        };
+        match result {
             Ok(_) => {
-                // The command saved the open design into the project, so its tab is this design.
+                // A new project saved the open design into it; its tab is this design.
                 app.last_project_folder = Some(folder);
                 return;
             }

@@ -11,10 +11,11 @@ use serde_json::{Value, json};
 use super::CommandSpec;
 use crate::params::{bad, str_};
 use crate::schema::TypedContract;
-use crate::schema::project::{CiSummary, CreateParams, CreateReply, InspectParams, InspectReply, ManifestSummary};
+use crate::schema::project::{AttachParams, CiSummary, CreateParams, CreateReply, InspectParams, InspectReply, ManifestSummary};
 use crate::{Result, Session};
 
 const CREATE_CONTRACT: TypedContract<CreateParams> = TypedContract::new();
+const ATTACH_CONTRACT: TypedContract<AttachParams> = TypedContract::new();
 const INSPECT_CONTRACT: TypedContract<InspectParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
@@ -28,6 +29,15 @@ pub static COMMANDS: &[CommandSpec] = &[
              folder: the existing folder the project folder is made in \
              → project (the project folder), design (the design file inside it), id (the project's identity), name. \
              The open design is saved into the project. A refused call leaves no folder behind",
+        ),
+    CommandSpec::new("project.attach", "Project Beside This Design", crate::checked!("project.attach", attach))
+        .icon("folder")
+        .noundo()
+        .contract(&ATTACH_CONTRACT)
+        .output(crate::schema::output_schema_for::<CreateReply>)
+        .params(
+            "path?: the saved design file (default: the open design) → project (the folder holding .intgral), \
+             design, id, name. The design is not moved or rewritten; a design already inside a project is refused",
         ),
     CommandSpec::new("project.inspect", "Project Settings", crate::checked!("project.inspect", inspect))
         .icon("settings")
@@ -62,6 +72,19 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         name: made.project.manifest().name.clone(),
     };
     serde_json::to_value(reply).map_err(|error| bad("project.create", format!("the result could not be written: {error}")))
+}
+
+fn attach(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = str_(p, "path").map(str::to_string).or_else(|| s.path.clone());
+    let path = path.ok_or_else(|| bad("project.attach", "the design has no saved path; save it before making a project"))?;
+    let made = crate::project::attach(Path::new(&path)).map_err(|error| bad("project.attach", error.to_string()))?;
+    let reply = CreateReply {
+        project: made.project.root().display().to_string(),
+        design: made.design.display().to_string(),
+        id: made.project.manifest().id.clone(),
+        name: made.project.manifest().name.clone(),
+    };
+    serde_json::to_value(reply).map_err(|error| bad("project.attach", format!("the result could not be written: {error}")))
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
@@ -197,5 +220,38 @@ mod tests {
         let error = inspected["error"].as_str().expect("error");
         assert!(error.contains("ci.toml") && error.contains("line 2"), "{error}");
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod attach_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn attach_uses_the_open_designs_path_and_inspect_finds_the_project() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-attach-cmd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch");
+        let design = dir.join("plate.sc");
+        fs::write(&design, b"design").expect("design");
+        let mut s = Session { path: Some(design.to_string_lossy().to_string()), ..Session::default() };
+        let reply = s.execute("project.attach", &json!({})).expect("attach");
+        assert_eq!(reply["design"], design.to_string_lossy().as_ref());
+        assert_eq!(reply["project"], dir.to_string_lossy().as_ref());
+        assert!(dir.join(".intgral/project.toml").is_file());
+        let inspected = s.execute("project.inspect", &json!({})).expect("inspect");
+        assert_eq!(inspected["hasProject"], true);
+        assert_eq!(inspected["project"]["designs"][0], "plate.sc");
+        let error = s.execute("project.attach", &json!({})).expect_err("second");
+        assert!(error.to_string().contains("already inside a project"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attach_refuses_an_unsaved_design() {
+        let mut s = Session::default();
+        let error = s.execute("project.attach", &json!({})).expect_err("no path");
+        assert!(error.to_string().contains("no saved path"), "{error}");
     }
 }

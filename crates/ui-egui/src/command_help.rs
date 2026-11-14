@@ -138,6 +138,7 @@ pub const DOCUMENTED: &[&str] = &[
     "plastic.rest",
     "plastic.snap_fit",
     "pointcloud.insert",
+    "project.attach",
     "project.create",
     "project.inspect",
     "sheet.convert",
