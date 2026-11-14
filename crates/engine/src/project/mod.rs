@@ -8,9 +8,12 @@
 //! of being rewritten, and a damaged file names the file and the position of the problem.
 
 use std::collections::BTreeMap;
+use std::collections::hash_map::RandomState;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -293,6 +296,29 @@ fn design_file_name(name: &str) -> String {
     format!("{stem}.sc")
 }
 
+/// A UUID v4-looking project identity from the standard library's randomly seeded hasher plus the
+/// clock and process id. It is a project identity, never a credential, and compiles for wasm,
+/// where only reading a project is offered.
+fn new_project_id() -> String {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let pid = u64::from(std::process::id());
+    let first_state = RandomState::new();
+    let second_state = RandomState::new();
+    let mut first = first_state.build_hasher();
+    first.write_u128(nanos);
+    first.write_u64(pid);
+    let mut second = second_state.build_hasher();
+    second.write_u128(nanos.rotate_left(64));
+    second.write_u64(pid);
+    let mut bytes = [0_u8; 16];
+    bytes[..8].copy_from_slice(&first.finish().to_be_bytes());
+    bytes[8..].copy_from_slice(&second.finish().to_be_bytes());
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
 fn build_project(root: &Path, folder: &Path, name: &str, design: &Path) -> Result<(), ProjectError> {
     fs::create_dir(folder).map_err(|error| ProjectError::io(folder, &error))?;
     for inside in ["specs", "checks/runs"] {
@@ -301,7 +327,7 @@ fn build_project(root: &Path, folder: &Path, name: &str, design: &Path) -> Resul
     }
     let manifest = ProjectManifest {
         schema_version: SCHEMA_VERSION,
-        id: crate::validation::uuid_v4(),
+        id: new_project_id(),
         name: name.to_string(),
         process: "sheet-metal".into(),
         material: String::new(),
