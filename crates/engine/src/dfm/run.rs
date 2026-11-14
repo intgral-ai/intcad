@@ -1,6 +1,6 @@
 //! The durable project-side record of DFM runs (CONTRACT §3).
 //!
-//! A run lives in `<project>/.intgral/checks/runs/<run-id>/` while its results are written, and
+//! A run lives in `<project>/.intcad/checks/runs/<run-id>/` while its results are written, and
 //! `checks/latest.json` points at the newest submitted run only after every file is complete. A
 //! run that returns after a newer submission is recorded as `superseded` in its own folder and
 //! never takes `latest` back; a cancelled or failed run leaves the previous record alone.
@@ -24,14 +24,17 @@ use crate::validation::{self, CheckState, ValidationPort, ValidationState};
 
 use super::findings::RunFindings;
 
-/// Where a project keeps its check records.
-pub const CHECKS_DIR: &str = ".intgral/checks";
+/// The folder stream A creates and discovers at the project root. The run layer builds only the
+/// paths below it and never creates the folder itself.
+pub const PROJECT_FOLDER: &str = ".intcad";
+/// The checks folder under the project folder.
+const CHECKS: &str = "checks";
 /// The run folders.
-pub const RUNS_DIR: &str = ".intgral/checks/runs";
+const RUNS: &str = "runs";
 /// The newest complete run's identity.
-pub const LATEST_FILE: &str = ".intgral/checks/latest.json";
+const LATEST: &str = "latest.json";
 /// The internal submission-order marker (no times, not a report).
-pub const SUBMITTED_FILE: &str = ".intgral/checks/submitted.json";
+const SUBMITTED: &str = "submitted.json";
 /// The run record's schema version.
 pub const RUN_SCHEMA_VERSION: u32 = 1;
 
@@ -283,14 +286,14 @@ impl ProjectReport {
     }
 }
 
-/// `<project>/.intgral/checks/...`, written atomically.
+/// `<project>/.intcad/checks/...`, written atomically.
 #[derive(Clone, Debug)]
 pub struct RunStore {
     root: PathBuf,
 }
 
 impl RunStore {
-    /// A store for the project at `root` (the folder holding `.intgral/`).
+    /// A store for the project at `root` (the folder holding `.intcad/`).
     pub fn new(root: impl Into<PathBuf>) -> RunStore {
         RunStore { root: root.into() }
     }
@@ -300,11 +303,11 @@ impl RunStore {
     }
 
     pub fn checks_dir(&self) -> PathBuf {
-        self.root.join(CHECKS_DIR)
+        self.root.join(PROJECT_FOLDER).join(CHECKS)
     }
 
     pub fn runs_dir(&self) -> PathBuf {
-        self.root.join(RUNS_DIR)
+        self.checks_dir().join(RUNS)
     }
 
     /// One run's folder. The id is checked, so a hostile id cannot escape the runs folder.
@@ -325,12 +328,12 @@ impl RunStore {
             config_digest: meta.config_digest.clone(),
             model_version: meta.model_version.clone(),
         };
-        write_json(&self.root.join(SUBMITTED_FILE), &submitted)
+        write_json(&self.checks_dir().join(SUBMITTED), &submitted)
     }
 
     /// The newest submitted run's identity, if a submission was recorded.
     pub fn submitted(&self) -> Result<Option<SubmittedIdentity>, RunStoreError> {
-        read_optional_json(&self.root.join(SUBMITTED_FILE)).map(|record| {
+        read_optional_json(&self.checks_dir().join(SUBMITTED)).map(|record| {
             record.map(|submitted: SubmittedRun| SubmittedIdentity {
                 project_id: submitted.project_id,
                 run_id: submitted.run_id,
@@ -435,13 +438,13 @@ impl RunStore {
                 super::findings::SourceRef::Converted { .. } => "converted".into(),
             },
         };
-        write_json(&self.root.join(LATEST_FILE), &latest)
+        write_json(&self.checks_dir().join(LATEST), &latest)
     }
 
     /// The newest complete run, or `None` before the first one. A damaged pointer is an error,
     /// never a panic and never `Current`.
     pub fn latest(&self) -> Result<Option<LatestRun>, RunStoreError> {
-        read_optional_json(&self.root.join(LATEST_FILE))
+        read_optional_json(&self.checks_dir().join(LATEST))
     }
 
     /// Read one run's record.
