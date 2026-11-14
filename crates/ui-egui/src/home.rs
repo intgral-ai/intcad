@@ -619,6 +619,7 @@ enum FileAction {
     Crashes,
     About,
     Recovery(solidcraft_engine::recovery::Entry, bool),
+    AttachProject(String),
 }
 
 /// File view replaces the workspace while keeping the open design and its history intact.
@@ -768,6 +769,13 @@ fn navigation(app: &SolveApp, ui: &mut egui::Ui, action: &mut Option<FileAction>
     }
 }
 
+/// The open design's saved path when it has no project at or above it: the explicit entry to
+/// make one beside it. Merely opening a design never creates anything.
+fn projectless_saved_design(app: &SolveApp) -> Option<String> {
+    let path = app.session.path.as_deref().filter(|path| !path.is_empty())?;
+    solidcraft_engine::project::Project::locate(std::path::Path::new(path)).is_none().then(|| path.to_string())
+}
+
 fn publish(id: &str, response: &egui::Response) {
     crate::scenario::publish_handle(id, response.rect.center());
     crate::scenario::publish_rect(id, response.rect);
@@ -853,6 +861,17 @@ fn start_content(app: &mut SolveApp, ui: &mut egui::Ui, action: &mut Option<File
             }
         });
     });
+    if let Some(design) = projectless_saved_design(app) {
+        ui.add_space(t.file_section_gap);
+        FileView::section(ui, app.tr("project.attach.title"), t.space_10, |ui| {
+            ui_kit::text(ui, app.tr("project.attach.hint"), ui_kit::Text::Note("attach_hint"));
+            let response = ui_kit::button(ui, app.tr("project.attach.action"), ui_kit::Button::Normal);
+            crate::scenario::publish_rect("home:attach_project", response.rect);
+            if response.clicked() {
+                *action = Some(FileAction::AttachProject(design.clone()));
+            }
+        });
+    }
     ui.add_space(t.file_section_gap);
     FileView::section(ui, app.tr("home.recent"), t.space_10, |ui| {
         if app.home.recent.is_empty() {
@@ -1115,6 +1134,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, action: FileAction) {
             app.home.open = false;
             app.start("document.metadata");
         }
+        FileAction::AttachProject(design) => crate::new_project::open_beside(app, &design),
         FileAction::Settings => crate::prefs::open_at(app, 0),
         FileAction::Shortcuts => {
             app.keymap.open = true;
@@ -1699,5 +1719,25 @@ mod tests {
         click_file(&mut h, "home:new_inches");
         assert_eq!(h.app.docs.count(), 2);
         assert_eq!(h.app.session.doc.units, "in");
+    }
+
+    /// The explicit "create a project beside this design" entry appears only for a design that
+    /// is saved and has no project at or above it. Merely setting the path writes nothing.
+    #[test]
+    fn the_attach_entry_is_offered_only_for_a_projectless_saved_design() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-home-attach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let design = dir.join("legacy.sc");
+        std::fs::write(&design, b"design").unwrap();
+        let path = design.to_string_lossy().into_owned();
+        let mut app = crate::test_support::sample_app();
+        assert_eq!(projectless_saved_design(&app), None, "a design with no saved path has no entry");
+        app.session.path = Some(path.clone());
+        assert_eq!(projectless_saved_design(&app), Some(path.clone()));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "showing the entry writes nothing");
+        solidcraft_engine::project::attach(&design).expect("attach");
+        assert_eq!(projectless_saved_design(&app), None, "a project beside it removes the entry");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

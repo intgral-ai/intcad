@@ -179,7 +179,7 @@ cargo xtask layers
    1e-6 mm before comparison. The rule threshold's 1e-6 rounding is separate.
 3. **More cases:** hole-by-slot, hole spanning a bend, blind/tilted hole, countersink, perforation
    array, multiple sheet bodies with different thicknesses.
-4. **App report storage:** add `findings.json`/evidence export and the `.intgral` run identity
+4. **App report storage:** add `findings.json`/evidence export and the `.intcad` run identity
    before the UI work. This stage stops at the structured report.
 5. **Result surface:** `dfm.sheet` is a validation check kind; there is no `dfm.check` command or
    chat item yet. That is the next slice, after the UI decision.
