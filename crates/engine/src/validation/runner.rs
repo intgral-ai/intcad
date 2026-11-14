@@ -565,7 +565,9 @@ struct Workspace {
 
 impl Workspace {
     fn extract(run_id: &str, files: &[solidcraft_io::candidate::CandidateFile]) -> Result<Self, String> {
-        let base = solidcraft_io::vfs::temp_dir();
+        // Runner scratch lives in the app's data area (never beside the user's design); the
+        // system temporary folder is only a fallback when no data folder can be resolved.
+        let base = crate::recovery::data_dir().map(|dir| dir.join("validation-work")).unwrap_or_else(solidcraft_io::vfs::temp_dir);
         let root = base.join(format!("solidcraft-validation-{run_id}-{}", std::process::id()));
         // A previous crashed run must not leak inputs into this one.
         let _ = fs::remove_dir_all(&root);
