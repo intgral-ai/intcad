@@ -124,7 +124,11 @@ def test_scope(plan, *, full):
 
 
 def native_commands(plan, *, full):
-    expression = "all()" if full else "default() & not (binary(action_matrix) & test(=action_matrix_sample))"
+    # The randomized property binaries run in the dedicated property lane. Running them again
+    # here would add a second, unreviewed random sample to the required regression gate; the
+    # property lane keeps its exact exception list.
+    property_lane = "(binary(boolean_props) | binary(atomic_commands))"
+    expression = "all() & not " + property_lane if full else "default() & not (binary(action_matrix) & test(=action_matrix_sample))"
     scope, bound = test_scope(plan, full=full)
     common = scope + ["--cargo-profile", "ci", "--locked", "--profile", "ci",
                       "--ignore-default-filter", "-E", expression, *bound]

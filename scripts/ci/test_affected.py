@@ -893,7 +893,7 @@ class NativeBaselineWorkflow(unittest.TestCase):
                                               ("ACTION_MATRIX_TIMINGS", "timings.jsonl"), ("ACTION_MATRIX_WORKDIR", "raw")):
                             self.assertEqual(child_env[key], str(evidence / filename))
                     else:
-                        self.assertIn("all()", commands[1]["argv"])
+                        self.assertIn("all() & not (binary(boolean_props) | binary(atomic_commands))", commands[1]["argv"])
                         self.assertIn("--workspace", commands[1]["argv"])
                     self.assertTrue((evidence / "junit.xml").is_file())
             return run, result, summary.read_text() if summary.exists() else ""

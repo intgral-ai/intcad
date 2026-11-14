@@ -359,7 +359,59 @@ the kernel. They do **not** change the `capture_face_anchor` comparison or the `
 - The `press_pull` “not a fillet’s or a chamfer’s” group (4) needs a separate action-matrix or
   face-class decision; it is not part of the plane/face mismatch.
 
+## Cylinder/Sphere boolean refusal (Beta.3 property lane)
+
+The Beta.3 property lane hit one exact SMLib refusal that is not in the 213 action-matrix
+ratchet:
+
+- Input: cylinder `at [22.5, 12.5, 2.5], axis X, r 11.25, h 5`; sphere `at [10, 2.5, 0], r 12.5`;
+  operation union, both operand orders, uniform scales 0.05/1/40 and translations
+  `off 0/1e3/1e5`.
+- SMLib returns `SMLib boolean: SMLib's check refuses the result: ... SmFace::Test #12
+  Face->Vertex ... SmVertex::Test #1 Bad Vertex Gap ... offset=12.5, tolerance=2e-05`.
+- The sphere's rightmost point `(22.5, 2.5, 0)` is inside the cylinder's start cap, so the two
+  solids touch at exactly one interior point. Their union is not a manifold solid; the checker
+  is refusing an invalid topology, not a valid no-volume union.
+- Transform matrix, measured at the pin: union refused at 1x, 0.05x, offset 0 and offset 1e3
+  (the offset stays 12.5); union built at 40x (volume `650,833,278.09`, normalised `A+B`) and
+  offset 1e5 (volume `A+B`). Intersect is empty and cut is the cylinder at every transform. The
+  built bodies pass `validity()`. No input body changes, and the engine preview leaves the
+  document unchanged.
+- The fork's `crates/kernel`, `crates/smlib`, and both solidcore pins (`8ddce9016`,
+  `f5e8e9a29`) are unchanged from the fork point; the same code is on upstream/develop. This is
+  upstream-common at the pin, not a fork-only regression.
+- The three property tests (`commutative`, `identity_on_grid`, `scale_invariant`) share the
+  minimal input. `crates/kernel/tests/boolean_props.rs` accepts only that exact relative
+  geometry, operand order, uniform scale and translation, and the exact error text; a
+  different sphere/cylinder/error, transform or built volume fails. The deterministic
+  `cyl_sphere_refusal_is_the_exact_reviewed_upstream_case` asserts the refusal, the transform
+  outcomes, `A+B` volume and the input invariants; if SMLib starts behaving differently, that
+  test fails and the exception must be removed.
+- No upstream issue/comment was posted. This is recorded for later tracking; a kernel fix is out
+  of this Beta's scope.
+
+## Cylinder/Sphere seam refusal (Beta.3 property lane)
+
+A second exact case is a boolean seam limitation, not a point tangency:
+
+- Class: an axis-X cylinder and a sphere. The generator hit e.g. cylinder
+  `at [0, 17.5, 17.5], axis X, r 7.5, h 12.5` with sphere `at [0, 25, 27.5], r 11.25`, and
+  cylinder `at [17.5, 10, 0], axis X, r 10, h 5` with sphere `at [7.5, 20, 0], r 11.25`;
+  operations intersect and cut; uniform scales 0.05/1 and translations `off 0/1e3/1e5`.
+- Union builds a sound body. Intersect and cut are refused at 1x and 0.05x with
+  `SMLib boolean: SMLib's check refuses the result: ... SmFace::Test #29 Face crosses Seam:
+  Face boundary illegally crosses a surface seam. [owner SmFace]`.
+- At offset 1e5 all three operations can hit the reviewed #56 `SmBSplineSurface::Test #5 Bad
+  NonMonotonic CPts` (`[owner SmSphere]`) refusal. The operation fails safely; no body is
+  returned and no input body changes.
+- The predicate binds that primitive pair, the two operations and the exact checker error, in
+  either operand order; a different primitive pair, operation or error fails. The deterministic
+  `cyl_sphere_seam_refusal_is_the_exact_reviewed_upstream_case` asserts the refusals and the
+  union/scale/translation paths. This is upstream-common at the pin; a kernel/checker fix is out
+  of this Beta's scope.
+
 ## Evidence index
+
 
 The `/tmp/opencode/...` paths are local investigation artifacts, not files committed to this
 repository.
@@ -373,3 +425,5 @@ repository.
 - Fork-point and pin proofs: commands in sections 1 and 2.
 - Upstream fixes read: `1a4f3e4a6`, `94ce45a1f` (plane/face candidate); `1ee2ecc1c` (#55 root
   fix); upstream `main` `3b561df76` (`KNOWN_FAILING_TESTS`, `boolean_props.rs`).
+- Cylinder/Sphere property refusal: run `43381698526`, tested merge `13417bb37`; the property
+  JUnit and the deterministic test above.
