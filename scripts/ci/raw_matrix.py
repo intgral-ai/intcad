@@ -53,10 +53,10 @@ def commands_for(bundle):
     gate.require(gate.nextest_configuration(listings[0]["argv"], "list") ==
                  gate.nextest_configuration(runs[0]["argv"], "run"),
                  "listing/run configuration mismatch")
-    gate.require("--run-ignored" in runs[0]["argv"] and "only" in runs[0]["argv"],
-                 "run did not select ignored geometry cases")
-    gate.require("--run-ignored" in listings[0]["argv"] and "only" in listings[0]["argv"],
-                 "listing did not select ignored geometry cases")
+    for label, command in (("run", runs[0]), ("listing", listings[0])):
+        gate.require("--ignore-default-filter" in command["argv"], label + " did not disable the default filter")
+        gate.require("--run-ignored" in command["argv"] and "only" in command["argv"],
+                     label + " did not select ignored geometry cases")
     gate.require("--test-threads" in runs[0]["argv"] and runs[0]["argv"][runs[0]["argv"].index("--test-threads") + 1:][:1] == ["2"],
                  "geometry run must use two test threads")
     return commands, listings[0], runs[0]
