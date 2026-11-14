@@ -596,7 +596,7 @@ fn compile_puts_one_check_per_sheet_after_the_native_baseline() {
         [SheetRef { sheet: 0, body: "Plate".into(), ..Default::default() }, SheetRef { sheet: 1, body: "Bracket".into(), ..Default::default() }];
     let compiled = compile::compile(&run_input(), &sheets, "sha256:model-a").unwrap();
     let ids: Vec<&str> = compiled.profile.checks.iter().map(|check| check.check_id.as_str()).collect();
-    assert_eq!(ids, ["dfm.sheet.000", "dfm.sheet.001", "input.integrity", "native.rebuild"]);
+    assert_eq!(ids, ["dfm.sheet.000", "dfm.sheet.001", "dfm.sheet.flat_overlap", "input.integrity", "native.rebuild"]);
     assert!(compiled.profile.checks.iter().filter(|check| check.kind == "dfm.sheet").all(|check| !check.required));
     assert_eq!(compiled.sheets.len(), 2);
     assert_eq!(compiled.sheets[1].model.model_version, "sha256:model-a");

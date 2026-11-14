@@ -668,11 +668,7 @@ fn app_findings(report: &ValidationReport) -> (Vec<findings::Finding>, Vec<Strin
                 })
                 .unwrap_or_default();
             if state == FindingState::Unsupported {
-                not_checked.push(format!(
-                    "Sheet {} (`{}`): the flat self-overlap check could not measure this body.",
-                    index + 1,
-                    body
-                ));
+                not_checked.push(format!("Sheet {} (`{}`): the flat self-overlap check could not measure this body.", index + 1, body));
             }
             out.push(Finding {
                 id: format!("sheet-{}/A{}", index + 1, position + 1),
