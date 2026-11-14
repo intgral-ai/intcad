@@ -71,7 +71,9 @@ def bundle(root, shard, plan, *, outcome="passed", exit_code=0, name=None, revis
     (folder / "selection.json").write_text(json.dumps(selected))
     (folder / "junit.xml").write_bytes(junit(name, "skipped" if skipped else outcome))
     evidence = dict(version=1, shard=shard,
-                    matrixShard="" if shard == "determinism" else shard + "/16", sourceRevision=revision,
+                    matrixShard="" if shard == "determinism" else shard + "/16",
+                    environment={"ACTION_MATRIX_JOBS": "2", "ACTION_MATRIX_ACTION_TIMEOUT": "1800"},
+                    sourceRevision=revision,
                     planDigest=digest or gate.digest_for(gate.BoundPlan(plan)),
                     rawExitCode=exit_code, expectedIds=[f"{SUITE}::{name}"] +
                     ([f"{SUITE}::{expected_extra}"] if expected_extra else []),
@@ -164,6 +166,14 @@ class RawMatrixTest(unittest.TestCase):
         path = self.evidence / "action-matrix-8" / "matrix-evidence.json"
         data = json.load(open(path))
         data["matrixShard"] = "9/16"
+        path.write_text(json.dumps(data))
+        self.assertEqual(self.verify(), 1)
+
+    def test_wrong_matrix_environment_cannot_pass(self):
+        self.all_shards()
+        path = self.evidence / "action-matrix-9" / "matrix-evidence.json"
+        data = json.load(open(path))
+        data["environment"]["ACTION_MATRIX_JOBS"] = "1"
         path.write_text(json.dumps(data))
         self.assertEqual(self.verify(), 1)
 

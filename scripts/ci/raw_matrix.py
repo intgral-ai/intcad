@@ -24,6 +24,8 @@ import main_merge  # noqa: E402
 
 VERSION = 1
 SHARDS = tuple(str(number) for number in range(1, 17)) + ("determinism",)
+ENVIRONMENT = ("ACTION_MATRIX_JOBS", "ACTION_MATRIX_ACTION_TIMEOUT", "SOLIDCRAFT_GPU",
+               "SOLIDCRAFT_REQUIRE_GPU", "WGPU_BACKEND")
 RUN_EXPRESSION = {
     **{str(number): "binary(action_matrix) & test(=action_matrix_shard)" for number in range(1, 17)},
     "determinism": "binary(action_matrix) & test(=action_matrix_determinism)",
@@ -74,6 +76,10 @@ def validate_bundle(bundle, plan, shard):
     gate.require(evidence.get("shard") == shard, "evidence shard mismatch")
     gate.require(evidence.get("matrixShard") == ("" if shard == "determinism" else shard + "/16"),
                  "executed matrix shard differs from its evidence")
+    environment = evidence.get("environment")
+    gate.require(isinstance(environment, dict), "evidence has no environment snapshot")
+    gate.require(environment.get("ACTION_MATRIX_JOBS") == "2", "matrix did not use two workers")
+    gate.require(environment.get("ACTION_MATRIX_ACTION_TIMEOUT") == "1800", "matrix action timeout changed")
     gate.require(evidence.get("sourceRevision") == plan["sourceRevision"], "evidence sourceRevision mismatch")
     gate.require(evidence.get("planDigest") == gate.digest_for(plan), "evidence planDigest mismatch")
     commands, listing, run = commands_for(bundle)
@@ -191,6 +197,7 @@ def record(plan_path, shard, out):
     evidence = dict(version=VERSION, shard=shard, matrixShard=os.environ.get("ACTION_MATRIX_SHARD", ""),
                     sourceRevision=plan["sourceRevision"],
                     planDigest=gate.digest_for(plan), runId=os.environ.get("GITHUB_RUN_ID", ""),
+                    environment={key: os.environ.get(key, "") for key in ENVIRONMENT},
                     runAttempt=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
                     rawExitCode=run["exitCode"] if run else 1,
                     expectedIds=sorted(expected), passedIds=sorted(key for key, value in outcomes.items() if value == "passed"),
