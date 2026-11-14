@@ -1,4 +1,6 @@
-//! Contract and result types for `project.create` and `project.inspect` in `cmd/project.rs`.
+//! Contract and result types for the project commands in `cmd/project.rs` and `cmd/dfm.rs`.
+
+use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -96,4 +98,106 @@ pub struct CiSummary {
     pub skip: Vec<String>,
     /// The rules whose numbers this project overrides.
     pub overridden_rules: Vec<String>,
+    pub overrides: Vec<OverrideSummary>,
+    /// Whether the selected data copy was read and hashed.
+    pub data_available: bool,
+    /// Why the selected data cannot be used, when it cannot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_unavailable: Option<String>,
+}
+
+/// One project override as the interface shows it.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OverrideSummary {
+    pub rule: String,
+    /// `min` or `max`.
+    pub limit: String,
+    pub value: BTreeMap<String, f64>,
+    pub reason: String,
+    pub by: String,
+    pub date: String,
+}
+
+/// Change the project's process, material, thickness and automatic checks.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SettingsParams {
+    #[serde(default)]
+    pub process: Option<String>,
+    #[serde(default)]
+    pub material: Option<String>,
+    /// The declared thickness in mm; omitted keeps it, `null` clears it.
+    #[serde(default)]
+    pub thickness_mm: Option<f64>,
+    /// Clear the declared thickness (each sheet body then uses its own).
+    #[serde(default)]
+    pub clear_thickness: bool,
+    #[serde(default)]
+    pub auto_check: Option<bool>,
+}
+
+/// Turn automatic checks on or off and set the rules the project skips.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct CiParams {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub skip: Option<Vec<String>>,
+}
+
+/// Import a whole factory or standard file, or choose the built-in generic data.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct DataParams {
+    /// `generic`, `factory` or `standard`.
+    pub kind: String,
+    /// The file to import, for `factory` and `standard`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Replace a different data selection the project already has.
+    #[serde(default)]
+    pub upgrade: bool,
+}
+
+/// What `project.data_set` selected.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DataReply {
+    pub kind: String,
+    pub name: String,
+    pub version: String,
+    pub sha256: String,
+    pub file: String,
+    /// Whether a file was copied; false when the built-in generic data was chosen.
+    pub imported: bool,
+}
+
+/// Add or remove one project override.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct OverrideParams {
+    pub rule: String,
+    /// `min` or `max`; defaults to `min`.
+    #[serde(default)]
+    pub limit: Option<String>,
+    #[serde(default)]
+    pub value: Option<BTreeMap<String, f64>>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub by: Option<String>,
+    #[serde(default)]
+    pub date: Option<String>,
+    /// Remove the matching override instead of adding it.
+    #[serde(default)]
+    pub remove: bool,
+}
+
+/// The project's overrides after an override command.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OverridesReply {
+    pub overrides: Vec<OverrideSummary>,
 }

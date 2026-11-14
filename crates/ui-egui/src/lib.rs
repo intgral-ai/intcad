@@ -218,6 +218,7 @@ mod primitive_placement;
 #[cfg(test)]
 mod primitive_units_tests;
 mod print_face_ui;
+pub mod project_settings;
 pub(crate) mod quick_measure;
 #[cfg(test)]
 mod quick_measure_tests;
@@ -780,6 +781,8 @@ pub struct SolveApp {
     pub home: home::HomeState,
     /// The New Project window, when open.
     pub new_project: Option<new_project::NewProject>,
+    /// The Project Settings window, when open.
+    pub project_settings: Option<project_settings::ProjectSettings>,
     /// The folder the last project was made in, offered as the next one's location.
     pub(crate) last_project_folder: Option<String>,
     /// The 3D mouse: which device, its reading, and the calibration window.
@@ -957,6 +960,7 @@ impl SolveApp {
             embed_editor: false,
             home: home::HomeState::default(),
             new_project: None,
+            project_settings: None,
             last_project_folder: None,
             space_mouse: Default::default(),
             file_load: file_load::FileLoad::default(),
@@ -1952,6 +1956,10 @@ impl SolveApp {
         }
         if matches!(id, "document.metadata" | "document.metadata.set") {
             design_properties::open(self);
+            return;
+        }
+        if id == "project.inspect" {
+            project_settings::open(self);
             return;
         }
         if id == "sketch.inspect" {
@@ -3305,6 +3313,7 @@ impl SolveApp {
         stand_up::show(self, ui.ctx());
         prefs_notice::show(self, ui.ctx());
         new_project::show(self, ui.ctx());
+        project_settings::show(self, ui.ctx());
         context_menu::show(self, ui.ctx());
         mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());

@@ -1,0 +1,56 @@
+{
+  "format": 1,
+  "name": "PIL-291 two-tier test shop",
+  "version": "1.0.0-test",
+  "layer": "factory",
+  "requirements": [
+    {
+      "rule": "sm.hole_min_diameter",
+      "limit": "min",
+      "value": { "mm": 2.0 },
+      "inputs": { "mm": "mm" },
+      "measuring_line": "TEST-ONLY: the hole diameter.",
+      "method": "TEST-ONLY: invented for the PIL-291 acceptance run.",
+      "source": "TEST-ONLY: written for this repository; not a real factory table.",
+      "rights": "Original test data, distributed with this repository under its MIT OR Apache-2.0 licence.",
+      "applies": { "process": ["sheet-metal"], "material": ["5052"], "thickness_mm": [0.5, 1.5] },
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.hole_min_diameter",
+      "limit": "min",
+      "value": { "mm": 3.5 },
+      "inputs": { "mm": "mm" },
+      "measuring_line": "TEST-ONLY: the hole diameter.",
+      "method": "TEST-ONLY: invented for the PIL-291 acceptance run.",
+      "source": "TEST-ONLY: written for this repository; not a real factory table.",
+      "rights": "Original test data, distributed with this repository under its MIT OR Apache-2.0 licence.",
+      "applies": { "process": ["sheet-metal"], "material": ["5052"], "thickness_mm": [1.5, 3.0] },
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.hole_to_edge",
+      "limit": "min",
+      "value": { "mm": 3.0 },
+      "inputs": { "mm": "mm" },
+      "measuring_line": "TEST-ONLY: hole wall to the nearest cut edge.",
+      "method": "TEST-ONLY: invented for the PIL-291 acceptance run.",
+      "source": "TEST-ONLY: written for this repository; not a real factory table.",
+      "rights": "Original test data, distributed with this repository under its MIT OR Apache-2.0 licence.",
+      "applies": { "process": ["sheet-metal"], "material": ["5052"], "thickness_mm": [0.5, 1.5] },
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.hole_to_edge",
+      "limit": "min",
+      "value": { "mm": 5.0 },
+      "inputs": { "mm": "mm" },
+      "measuring_line": "TEST-ONLY: hole wall to the nearest cut edge.",
+      "method": "TEST-ONLY: invented for the PIL-291 acceptance run.",
+      "source": "TEST-ONLY: written for this repository; not a real factory table.",
+      "rights": "Original test data, distributed with this repository under its MIT OR Apache-2.0 licence.",
+      "applies": { "process": ["sheet-metal"], "material": ["5052"], "thickness_mm": [1.5, 3.0] },
+      "confirmation": "factory_confirmed"
+    }
+  ]
+}
