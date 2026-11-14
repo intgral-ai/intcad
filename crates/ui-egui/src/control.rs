@@ -1750,6 +1750,37 @@ mod tests {
         }
     }
 
+    /// The assistant cannot change a project's data, checks or a rule's number, directly or
+    /// wrapped in an inner batch. The app itself may: the same call without a chat turn reaches
+    /// the command.
+    #[test]
+    fn assistant_writes_to_project_settings_and_overrides_are_refused() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let assistant = |app: &mut SolveApp, method: &str, params: Value| {
+            let (mut req, _rx) = ControlRequest::new(method, params);
+            req.chat_turn = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
+            let Outcome::Done(reply) = handle(app, &egui::Context::default(), &req) else { panic!("synchronous reply") };
+            reply
+        };
+        let cases = [
+            ("engine.execute", json!({"command":"dfm.override","params":{"rule":"sm.hole_min_diameter","value":{"mm":2.5},"reason":"x","by":"y"}})),
+            ("engine.execute", json!({"command":"project.ci_set","params":{"enabled":false}})),
+            ("engine.execute", json!({"command":"project.settings_set","params":{"material":"6061"}})),
+            ("engine.execute", json!({"command":"project.data_set","params":{"kind":"generic"}})),
+            ("engine.execute", json!({"command":"engine.batch","params":{"commands":[{"command":"project.ci_set","params":{"enabled":false}}]}})),
+            ("engine.batch", json!({"commands":[{"command":"dfm.override","params":{}}]})),
+        ];
+        for (method, params) in cases {
+            let reply = assistant(&mut app, method, params.clone());
+            assert_eq!(reply["errorDetails"]["code"], "FORBIDDEN", "{method} {params}: {reply}");
+        }
+        // The same call from the app (no assistant turn) is not refused by this guard: it reaches
+        // the command and reports that the design is not in a project.
+        let (req, _rx) = ControlRequest::new("engine.execute", json!({"command":"project.ci_set","params":{"enabled":false}}));
+        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &req) else { panic!("synchronous reply") };
+        assert_ne!(reply["errorDetails"]["code"], "FORBIDDEN", "{reply}");
+    }
+
     #[test]
     fn guarded_control_nested_stamps_refused_direct() {
         guard_nested_cases(false);
