@@ -12,8 +12,8 @@ SolidCraft under another label:
   - Windows: install folder, registry key, file-association ProgIds, and an UpgradeCode and
     component GUIDs of Intcad's own
   - the deb / rpm package name
-  - the settings, data and cache folders, where docs, comments and messages spell them (the
-    code that picks the folders and copies an earlier one on first launch is edited by hand)
+  - the settings, data and cache folders, where docs, comments, messages and check scripts
+    spell them (the code that picks the folders is edited by hand)
 
 Binary names (`solidcraft`, `solidcraft-cli`) and the MCP server name are a separate change. Until
 it lands the two products still collide where those names are installed: the Linux packages
@@ -89,6 +89,10 @@ RULES = [
     (re.compile(r"(%(?:LOCAL)?APPDATA%\\{1,2})SolidCraft\b"), r"\1Intcad"),
     (re.compile(r"((?:\.local/share|\.cache|XDG_(?:DATA|CACHE)_HOME)/)solidcraft\b"), r"\1intcad"),
     (re.compile(r"(AppData[\\/]Local[\\/])SolidCraft\b"), r"\1Intcad"),
+    # The same folders as the Windows check scripts build them, one path segment at a time.
+    (re.compile(r"(['\"])SolidCraft\\(data|assistant-web-view)\b"), r"\1Intcad\\\2"),
+    # The app id inside a regular expression, its dots escaped.
+    (re.compile(r"io\\\.tangencylabs\\\.solidcraft"), r"ai\\.intgral\\.intcad"),
 ]
 
 # Exact text in one file: (old, new). Each old text must be there, or its new text already.

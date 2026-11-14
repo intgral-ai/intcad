@@ -3,7 +3,8 @@
 #
 #   $DIST/intcad-<version>-linux-<arch>.AppImage        any distro with glibc >= the build host's
 #   $DIST/intcad-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
-#   $DIST/solvecraft-<version>-linux-<arch>.AppImage.zsync  the same, for pre-rename AppImages
+#   $DIST/{solidcraft,solvecraft}-<version>-linux-<arch>.AppImage.zsync  the same, for AppImages
+#                                                        published under those earlier names
 #   $DIST/intcad-<version>-linux-<arch>.deb             Debian, Ubuntu, Mint, Pop!_OS, ...
 #   $DIST/intcad-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
 #   $DIST/intcad-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
@@ -172,12 +173,18 @@ if has appimage; then
   echo "wrote $OUT"
   if [ -s "$OUT.zsync" ]; then
     echo "wrote $OUT.zsync"
-    # Compatibility shim (docs/compatibility.md): AppImages from before the rename look for
-    # `solvecraft-*-linux-$ARCH.AppImage.zsync` in the latest release. The same .zsync under that
-    # name (its URL is the new AppImage's file name, relative to the release) updates them to
-    # SolidCraft.
-    cp "$OUT.zsync" "$DIST/solvecraft-$VERSION-linux-$ARCH.AppImage.zsync"
-    echo "wrote $DIST/solvecraft-$VERSION-linux-$ARCH.AppImage.zsync (legacy update alias)"
+    # Compatibility shim (docs/compatibility.md): an AppImage published under an earlier name
+    # looks in the latest release for the .zsync under that name: `solidcraft` until Intcad had
+    # its own, `solvecraft` before the rename. The same .zsync under each name (it names the new
+    # AppImage's file, relative to the release) updates them to this one.
+    for earlier in solidcraft solvecraft; do
+      alias="$DIST/$earlier-$VERSION-linux-$ARCH.AppImage.zsync"
+      cp "$OUT.zsync" "$alias"
+      # The earlier build's selector is <name>-*-linux-<arch>.AppImage.zsync: the copy must
+      # match it and lead to the new image.
+      grep -a -m1 -qxF "Filename: $BASENAME.AppImage" "$alias" || { echo "error: $alias does not name $BASENAME.AppImage" >&2; exit 1; }
+      echo "wrote $alias (update alias for the earlier name)"
+    done
   else
     warn "zsyncmake not found, so $OUT.zsync was not written; AppImage delta updates need it"
   fi

@@ -39,10 +39,10 @@ pub fn default_dir() -> Option<PathBuf> {
         env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))?
     };
     let (dir, legacy) = dirs_under(&long_names(&root), cfg!(windows) || cfg!(target_os = "macos"));
-    // Compatibility shim (docs/compatibility.md): autosaves made under an earlier folder name
-    // (or, in the Flatpak sandbox, under an earlier app id) are copied to the new folder on first
-    // launch, from the newest earlier folder that exists; the old folder is left as it was.
-    for old in solidcraft_io::legacy_flatpak_paths(&dir).into_iter().chain(legacy) {
+    // Compatibility shim (docs/compatibility.md): autosaves made before the rename (or, in the
+    // Flatpak sandbox, under an earlier app id) are copied to the new folder on first launch; the
+    // old folder is left as it was.
+    for old in solidcraft_io::legacy_flatpak_paths(&dir).into_iter().chain([legacy]) {
         if let Err(e) = solidcraft_io::adopt_legacy_dir(&dir, &old) {
             log::warn!("recovery: could not copy {} to {}: {e}", old.display(), dir.display());
         }
@@ -65,12 +65,13 @@ pub fn data_dir() -> Option<PathBuf> {
     }
 }
 
-/// The recovery folder under the per-user data `root`, and the folders earlier builds used,
-/// newest first: the one from before Intcad had a folder of its own, then the pre-rename one.
-/// Windows and macOS name the app's folder in title case, other systems in lower case.
-fn dirs_under(root: &Path, title_case: bool) -> (PathBuf, [PathBuf; 2]) {
-    let [name, before, oldest] = if title_case { ["Intcad", "SolidCraft", "SolveCraft"] } else { ["intcad", "solidcraft", "solvecraft"] };
-    (root.join(name).join("recovery"), [root.join(before).join("recovery"), root.join(oldest).join("recovery")])
+/// The recovery folder under the per-user data `root`, and the folder pre-rename releases used.
+/// Windows and macOS name the app's folder in title case, other systems in lower case. The folder
+/// upstream SolidCraft uses is deliberately not the earlier one: beside an upstream install its
+/// autosaves are another product's unsaved work, and Intcad does not offer to recover them.
+fn dirs_under(root: &Path, title_case: bool) -> (PathBuf, PathBuf) {
+    let (name, legacy) = if title_case { ("Intcad", "SolveCraft") } else { ("intcad", "solvecraft") };
+    (root.join(name).join("recovery"), root.join(legacy).join("recovery"))
 }
 
 /// What an entry's `<id>.json` holds.
@@ -501,11 +502,41 @@ mod tests {
     #[test]
     fn recovery_dirs_and_their_legacy_names() {
         let (dir, legacy) = super::dirs_under(Path::new("/data"), false);
-        assert_eq!(dir, Path::new("/data/intcad/recovery"));
-        assert_eq!(legacy, [Path::new("/data/solidcraft/recovery"), Path::new("/data/solvecraft/recovery")]);
+        assert_eq!((dir.as_path(), legacy.as_path()), (Path::new("/data/intcad/recovery"), Path::new("/data/solvecraft/recovery")));
         let (dir, legacy) = super::dirs_under(Path::new("/data"), true);
-        assert_eq!(dir, Path::new("/data/Intcad/recovery"));
-        assert_eq!(legacy, [Path::new("/data/SolidCraft/recovery"), Path::new("/data/SolveCraft/recovery")]);
+        assert_eq!((dir.as_path(), legacy.as_path()), (Path::new("/data/Intcad/recovery"), Path::new("/data/SolveCraft/recovery")));
+    }
+
+    /// A machine may have a `SolidCraft` data folder only because upstream SolidCraft is
+    /// installed. Its autosave is not copied, Intcad offers nothing to recover, and upstream's
+    /// files stay as they were.
+    #[test]
+    fn an_upstream_solidcraft_autosave_is_not_adopted() {
+        for title_case in [true, false] {
+            let root = dir(if title_case { "upstream-title" } else { "upstream-lower" });
+            let upstream = root.join(if title_case { "SolidCraft" } else { "solidcraft" });
+            let entry = Entry { id: "a".into(), path: None, name: "Upstream part".into(), saved_at: 1, features: 3 };
+            let files = [
+                ("recovery/a.json".to_string(), serde_json::to_string(&entry).unwrap()),
+                ("recovery/a.sc".to_string(), "unsaved".to_string()),
+                ("control/7878.token".to_string(), "secret".to_string()),
+                ("graphics.json".to_string(), r#"{"msaa":8}"#.to_string()),
+            ];
+            for (name, text) in &files {
+                let path = upstream.join(name);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, text).unwrap();
+            }
+            assert_eq!(orphans(&upstream.join("recovery")).len(), 1, "the fixture is an autosave upstream would offer");
+            let (ours, legacy) = super::dirs_under(&root, title_case);
+            assert!(!legacy.starts_with(&upstream), "{legacy:?}");
+            assert!(!solidcraft_io::adopt_legacy_dir(&ours, &legacy).unwrap());
+            assert!(!ours.exists() && orphans(&ours).is_empty(), "Intcad starts with nothing to recover");
+            for (name, text) in &files {
+                assert_eq!(fs::read_to_string(upstream.join(name)).unwrap(), *text, "{name} is as upstream left it");
+            }
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 
     use super::*;

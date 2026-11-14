@@ -133,7 +133,7 @@ jobs:
             "$appimage" --appimage-updateinformation | grep -F 'gh-releases-zsync|'
             test -s "$appimage.zsync"
           done
-          ls dist/release/solvecraft-*-linux-*.AppImage.zsync
+          ls dist/release/{solidcraft,solvecraft}-*-linux-*.AppImage.zsync
       # Each package on bare systems, with nothing but what it declares, then started there with
       # the Assistant opened (packaging/linux/installed-check.sh). The tarball has the same
       # program files as the AppImage and no launcher of its own; it is not installed here.
@@ -323,7 +323,11 @@ jobs:
         env:
           PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
         run: |
-          tar --zstd -tf "$PKG" | grep -E '^usr/bin/solidcraft$|^usr/bin/solidcraft-cli$|^usr/share/applications/io\.tangencylabs\.solidcraft\.desktop$'
+          # Each path on its own: an alternation passes as soon as one of them is there.
+          listing="$(tar --zstd -tf "$PKG")"
+          for path in usr/bin/solidcraft usr/bin/solidcraft-cli usr/share/applications/ai.intgral.intcad.desktop; do
+            grep -qxF "$path" <<<"$listing" || { echo "::error::$path is not in the package"; exit 1; }
+          done
           info="$(mktemp)"
           tar --zstd -xOf "$PKG" .PKGINFO >"$info"
           grep -E '^(pkgname|pkgver|arch) = ' "$info"
@@ -448,8 +452,13 @@ jobs:
             git config --global --add safe.directory "$PWD"
             export CARGO_TARGET_DIR=/var/tmp/solidcraft-target CARGO_BUILD_JOBS=4
             bash packaging/freebsd/package.sh
-            tar -tzf dist/release/intcad-*-freebsd-x86_64.tar.gz \
-              | grep -E '/bin/solidcraft$|/bin/solidcraft-cli$|/share/applications/io\.tangencylabs\.solidcraft\.desktop$|/share/doc/solidcraft/THIRD-PARTY-LICENSES\.txt$'
+            # Each path on its own: an alternation passes as soon as one of them is there.
+            listing="$(tar -tzf dist/release/intcad-*-freebsd-x86_64.tar.gz)"
+            for path in bin/solidcraft bin/solidcraft-cli share/applications/ai.intgral.intcad.desktop share/doc/solidcraft/THIRD-PARTY-LICENSES.txt; do
+              found=0
+              for entry in $listing; do case "$entry" in */"$path") found=1; break ;; esac; done
+              [ "$found" = 1 ] || { echo "$path is not in the package" >&2; exit 1; }
+            done
       - *package-evidence
       - *upload-package
       - *upload-evidence

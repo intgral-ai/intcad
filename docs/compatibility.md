@@ -83,10 +83,14 @@ New folders use the Intcad name:
 | Preferences, graphics settings | `~/.local/share/intcad` | `~/Library/Application Support/Intcad` | `%APPDATA%\Intcad\data` |
 | Recovery (autosave) | `…/intcad/recovery` | `…/Intcad/recovery` | `%LOCALAPPDATA%\Intcad\recovery` |
 
-On first launch, if the new folder doesn't exist, the newest earlier one that does
-(`solidcraft` / `SolidCraft`, which builds used before Intcad had folders of its own, then
-`solvecraft` / `SolveCraft`) is **copied** to the new location; the old folder is never deleted
-or changed. An upstream SolidCraft install on the same machine keeps using its own folder. The
+On first launch, if the new folder doesn't exist but the pre-rename one (`solvecraft` /
+`SolveCraft`) does, it is **copied** to the new location; the old folder is never deleted or
+changed. The `solidcraft` / `SolidCraft` folder is not a source. It may be there only because
+upstream SolidCraft is installed, and Intcad starts clean beside it: upstream's settings,
+autosaves and control tokens are neither copied nor offered for recovery (tests
+`first_launch_leaves_an_upstream_solidcraft_folder_alone`,
+`an_upstream_solidcraft_autosave_is_not_adopted`). Builds of Intcad from before it had folders
+of its own used that folder too; their settings are not carried over. The
 window and UI state that eframe kept under `ai.storyteller.solvecraft` is copied the same way.
 Autosaves copied from the old folder (`<id>.solvecraft`) are listed and recovered like new ones.
 The preferences key in eframe's storage is `solidcraft.prefs`; `solvecraft.prefs` is read when
@@ -145,7 +149,17 @@ applies the mechanical part and can be run again after a merge from upstream.
 | MSI `UpgradeCode`, install folder, registry key, ProgIDs | Intcad's own `UpgradeCode`; `Program Files\Intcad`; `HKLM\Software\Intcad`; `Intcad.Design`, `Intcad.Model` | With upstream's `UpgradeCode` each product's installer removed the other. The `UpgradeCode` is now fixed for Intcad: never change it again. |
 | deb / rpm package | `intcad` | Its own entry in the package database (`/var/lib/dpkg/info/intcad.list` is how the update check recognises a deb install). |
 | Release files | `intcad-<version>-<platform>…`, and `Intcad-<version>-windows-x64.exe` | The update check and the download page pick files by these names. |
-| Settings, recovery and cache folders | `Intcad` / `intcad` (section 4) | Two products no longer write one `graphics.json` and one recovery folder. |
+| Settings, recovery and cache folders | `Intcad` / `intcad` (section 4); nothing is taken from a `SolidCraft` folder | Two products no longer write one `graphics.json` and one recovery folder. |
+
+Two things keep working for what was published under the earlier names:
+
+- An AppImage looks in the latest release for its `.zsync` under the name it was published with.
+  Each release carries the same `.zsync` under `solidcraft-…` and `solvecraft-…` as well
+  (`packaging/linux/package.sh`), so the build before this change still finds its update.
+- `packaging/web-channels.sh` takes each release's web zip under the name that release gave it,
+  and checks it against that release's `SHA256SUMS.txt` under the same name, so stable can come
+  from an old tag while the release candidate comes from a new one
+  (`packaging/tests/web_channels_test.py`).
 
 Intcad does not present itself as the successor of upstream's app: `io.tangencylabs.solidcraft`
 is not added to the AppStream `<replaces>`, `X-Flatpak-RenamedFrom` or the Flatpak rebase list,

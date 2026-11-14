@@ -115,7 +115,7 @@ function CheckBorder($h, [string]$when) {
 $port = 47901
 $root = Join-Path $env:RUNNER_TEMP 'resize-smoke'
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-$settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'SolidCraft\data'
+$settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Intcad\data'
 Remove-Item -Recurse -Force $settings -ErrorAction SilentlyContinue
 $local = Join-Path $root 'local'
 $crashes = Join-Path $root 'crashes'
