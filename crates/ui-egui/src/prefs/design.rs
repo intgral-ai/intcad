@@ -76,6 +76,10 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     crate::scenario::publish_target(&format!("dialog:{}", app.tr("prefs.parameter_list_rows")), response.rect);
                 });
             });
+            ui.horizontal_wrapped(|ui| {
+                let response = setting::new_design_makes_project(app, ui);
+                crate::scenario::publish_target("prefs:new_design_makes_project", response.rect);
+            });
             for (setting, help, target, legacy) in [
                 (
                     setting::step_values as fn(&mut SolveApp, &mut egui::Ui) -> egui::Response,

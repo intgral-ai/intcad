@@ -514,6 +514,8 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
     let program_parent = parent.clone();
     let file_parent = parent.clone();
     let (open_folder, file_folder, save_folder) = (folder.clone(), folder.clone(), folder.clone());
+    let project_folder = folder.clone();
+    let folder_parent = parent.clone();
     Services {
         pick_open: Some(Box::new(move |first: &[&str]| {
             // The chooser that opens may not be the desktop's own (#10159).
@@ -557,6 +559,11 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
             let dialog = program_parent.clone().set_title("Choose your slicer");
             let dialog = if cfg!(target_os = "windows") { dialog.add_filter("Programs", &["exe"]) } else { dialog };
             let future = dialog.pick_file();
+            Box::pin(async move { future.await.map(|p| p.path().to_string_lossy().into_owned()) })
+        })),
+        // A project's location: the folder the project folder is made in.
+        pick_folder: Some(Box::new(move || {
+            let future = project_folder.start(folder_parent.clone()).pick_folder();
             Box::pin(async move { future.await.map(|p| p.path().to_string_lossy().into_owned()) })
         })),
         pick_save: Some(Box::new(move |name: &str, exts: &[&str]| {

@@ -77,6 +77,7 @@ pub mod panels;
 pub mod parameter_sweep;
 pub mod parts;
 pub mod print_face;
+pub mod project;
 pub mod render;
 pub mod render_library;
 pub mod render_lights;
