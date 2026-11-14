@@ -475,7 +475,7 @@ pub fn show(app: &mut SolveApp, ui: &egui::Ui, proj: &Proj, view: Rect) {
         let response = ui.interact(label.rect, ui.id().with(("dfm_label", &label.run_id, &label.finding_id)), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &text));
         if response.clicked() {
-            app.viewport.dfm.select(Some(&label.finding_id));
+            app.viewport.select_dfm_finding(Some(&label.finding_id));
         }
     }
     app.viewport.dfm_labels = labels;
@@ -641,5 +641,21 @@ mod tests {
         assert_eq!(assistant_obstacle(false, Some(panel)), Some(panel));
         assert_eq!(assistant_obstacle(true, Some(panel)), None);
         assert_eq!(assistant_obstacle(false, None), None);
+    }
+
+    /// The viewport's drawable marks follow the host state: a stale run empties them, a current
+    /// run brings them back, and a stale run refuses a selection.
+    #[test]
+    fn the_viewport_marks_follow_the_run_state() {
+        let mut viewport = crate::viewport::ViewportState::default();
+        viewport.load_dfm_run(&fixture(), Freshness::Current);
+        assert_eq!(viewport.dfm_marks.len(), 3);
+        assert!(viewport.select_dfm_finding(Some("sheet-1/F2")));
+        viewport.set_dfm_freshness(Freshness::StaleModel);
+        assert!(viewport.dfm_marks.is_empty(), "a stale run draws no marks");
+        assert_eq!(viewport.dfm.locate_target(), None);
+        assert!(!viewport.select_dfm_finding(Some("sheet-1/F4")));
+        viewport.set_dfm_freshness(Freshness::Current);
+        assert_eq!(viewport.dfm_marks.len(), 3, "a current run brings the marks back");
     }
 }
