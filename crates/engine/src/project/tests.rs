@@ -394,7 +394,7 @@ fn a_missing_mismatched_or_inapplicable_copy_is_not_covered_and_never_switches()
     assert_eq!(hole_state(&mismatched, 2.4), solidcraft_dfm_rules::AppState::Unsupported);
 
     // Material mismatch: keep the table, but say why no row applies.
-    let mut project = Project::open(project.root()).expect("open");
+    let project = Project::open(project.root()).expect("open");
     fs::write(project.folder().join(CI), read(&ci).replace(&"0".repeat(64), &imported.sha256)).expect("restore digest");
     let mut project = Project::open(project.root()).expect("reopen");
     project.update_settings(None, Some("6061-T6".into()), None, None).expect("material");
