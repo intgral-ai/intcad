@@ -893,3 +893,86 @@ fn a_flat_overlap_result_becomes_an_app_finding() {
     assert_eq!((row.state, row.count), (findings::FindingState::Failed, 1));
     assert_eq!(built.findings[0].id, "sheet-1/A1");
 }
+
+/// A real sheet body whose flange panel lies over the base (20 mm²) goes through the same
+/// adapter and finding mapping the run uses, with its area, region pair and folded anchor.
+#[test]
+fn a_real_overlapping_sheet_becomes_a_failed_app_finding_with_an_anchor() {
+    use solidcore_record::{Loop2, Plane, Region2, Vec2, Vec3};
+    use solidcraft_doc::sheet::{AngleDisplay, ReliefShape, SheetBody, SheetFlange};
+
+    let mut sheet = SheetBody {
+        body: "Plate".into(),
+        rule: "Steel (mm)".into(),
+        t: 1.5,
+        k: 0.44,
+        frame: Plane::new(Vec3::ZERO, Vec3::X, Vec3::Y).expect("XY plane"),
+        base: Region2 {
+            outer: Loop2::polygon(&[Vec2::new(0.0, 0.0), Vec2::new(40.0, 0.0), Vec2::new(40.0, 25.0), Vec2::new(0.0, 25.0)]),
+            holes: Vec::new(),
+        },
+        flanges: vec![SheetFlange {
+            parent: None,
+            p: Vec2::new(0.0, 25.0),
+            d: Vec2::X,
+            len: 40.0,
+            n: Vec2::Y,
+            angle: std::f64::consts::FRAC_PI_2,
+            radius: 1.5,
+            leg: 10.0,
+            ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
+            tear: (false, false),
+            shape: Some(vec![Vec2::new(30.0, 5.0), Vec2::new(35.0, 5.0), Vec2::new(35.0, 9.0), Vec2::new(30.0, 9.0)]),
+            exact: None,
+            zone_shape: None,
+            tag: String::new(),
+        }],
+        holes: Vec::new(),
+        pockets: Vec::new(),
+        bores: Vec::new(),
+        perforations: Vec::new(),
+        labels: Vec::new(),
+        flat: false,
+        gap: 0.0,
+        relief: ReliefShape::Notch,
+        relief_size: 0.0,
+        bend_relief: (0.0, 0.0),
+        angle_display: AngleDisplay::Bend,
+        base_curves: Vec::new(),
+        altered_by: None,
+    };
+    let observations = crate::dfm::flat_no_overlap(&sheet).expect("the App adapter");
+    let failed = observations.iter().find(|o| o.state == crate::dfm::FlatOverlapState::Failed).expect("an overlap");
+    assert!((failed.measured_mm2.unwrap_or(0.0) - 20.0).abs() < 1e-9);
+    let anchor = crate::dfm::overlap_anchor(&sheet, failed).expect("the folded anchor");
+    assert!(anchor.x.is_finite() && anchor.y.is_finite() && anchor.z.is_finite());
+    let values: Vec<serde_json::Value> = observations
+        .iter()
+        .map(|observation| {
+            let mut value = serde_json::to_value(observation).unwrap();
+            if let Some(anchor) = crate::dfm::overlap_anchor(&sheet, observation) {
+                value["anchor"] = serde_json::json!([anchor.x, anchor.y, anchor.z]);
+            }
+            value
+        })
+        .collect();
+    let check = crate::validation::CheckResult {
+        check_id: compile::FLAT_OVERLAP_CHECK.into(),
+        required: false,
+        state: crate::validation::CheckState::Failed,
+        expected: serde_json::json!({}),
+        actual: serde_json::json!({"toleranceMm2": 0.01, "sheets": [{"sheet": 0, "body": "Plate", "observations": values}]}),
+        evidence: Vec::new(),
+    };
+    let (app, not_checked) = run::app_findings(Some(&check));
+    let finding = app.iter().find(|finding| finding.state == findings::FindingState::Failed).expect("a failed finding");
+    assert!((finding.measured.as_ref().map(|m| m.value).unwrap_or(0.0) - 20.0).abs() < 1e-9);
+    assert_eq!(finding.feature.as_ref().map(|f| f.kind.as_str()), Some("region"));
+    assert!(finding.anchor.is_some(), "the viewport mark has a folded anchor");
+    assert!(finding.flat.is_some() && !finding.outline.is_empty());
+    assert!(not_checked.is_empty());
+    sheet.altered_by = Some("Fillet1".into());
+    let not_covered = crate::dfm::flat_no_overlap(&sheet).expect("the App adapter");
+    assert!(not_covered.iter().all(|observation| observation.state != crate::dfm::FlatOverlapState::Failed));
+}
