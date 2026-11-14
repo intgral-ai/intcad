@@ -1,7 +1,7 @@
 //! The bytes one DFM run uses, read once and hashed.
 //!
 //! [`Project::freeze`] runs on the UI thread together with the model snapshot. After it returns, a
-//! run never reads `.intgral/`, the live project or the app data directory again. A missing or
+//! run never reads `.intcad/`, the live project or the app data directory again. A missing or
 //! mismatched data copy is a frozen state with a reason, not a silent fallback to another table.
 
 use std::fs;
@@ -40,7 +40,7 @@ pub struct FrozenProject {
     pub generic: Profile,
     /// The selected data rows exactly as parsed by the rule layer, when the copy is usable.
     pub shop: Option<Profile>,
-    /// Name, version, sha256, and the project-relative path of the copy in `.intgral/`.
+    /// Name, version, sha256, and the project-relative path of the copy in `.intcad/`.
     pub data: FrozenDataRef,
     pub overrides: Vec<RuleOverride>,
     /// SHA-256 over the canonical JSON of everything above, model excluded.

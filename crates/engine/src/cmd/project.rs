@@ -82,7 +82,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params(
             "kind: generic | factory | standard; path?: the whole factory or standard file to import; \
              upgrade: replace a different selection the project already has \
-             → kind, name, version, sha256, file, imported. The whole file is copied into .intgral/",
+             → kind, name, version, sha256, file, imported. The whole file is copied into .intcad/",
         ),
 ];
 

@@ -23,7 +23,7 @@ pub struct ImportedData {
     pub name: String,
     pub version: String,
     pub sha256: String,
-    /// Project-relative path of the copy, always inside `.intgral/data/`.
+    /// Project-relative path of the copy, always inside `.intcad/data/`.
     pub file: String,
     pub profile: Profile,
 }
@@ -80,7 +80,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex
 }
 
-/// Read, validate and copy `bytes` into `root/.intgral/data/`. Nothing in the project is changed
+/// Read, validate and copy `bytes` into `root/.intcad/data/`. Nothing in the project is changed
 /// before the whole file is valid; the copy has a unique name so an upgrade never overwrites the
 /// copy the project still points at.
 pub fn import_into(root: &Path, bytes: &[u8], kind: DataKind) -> Result<ImportedData, DataError> {
@@ -95,7 +95,7 @@ pub fn import_into(root: &Path, bytes: &[u8], kind: DataKind) -> Result<Imported
     }
     let sha256 = sha256_hex(bytes);
     let short = sha256.get(..8).unwrap_or(&sha256);
-    let file = format!(".intgral/data/{short}-{}.json", slug(&profile.name, &profile.version));
+    let file = format!(".intcad/data/{short}-{}.json", slug(&profile.name, &profile.version));
     let folder = root.join(FOLDER).join("data");
     fs::create_dir_all(&folder).map_err(|error| DataError::io(&folder, &error))?;
     let path = root.join(&file);
