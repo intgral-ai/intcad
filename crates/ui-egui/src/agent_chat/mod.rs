@@ -555,6 +555,23 @@ impl Drop for AgentChat {
     }
 }
 
+/// Append a text delta to this turn's existing agent item, even when tool items arrived after
+/// it. Multi-round answers therefore stay one `Item::Agent`; a different `thought` stream still
+/// gets its own item.
+fn append_agent_text(items: &mut [Item], thought: bool, text: &str) -> bool {
+    let start = items.iter().rposition(|item| matches!(item, Item::User { .. })).unwrap_or(0);
+    let last = items[start..].iter_mut().rev().find_map(|item| match item {
+        Item::Agent { thought: t, text } if *t == thought => Some(text),
+        _ => None,
+    });
+    if let Some(last) = last {
+        last.push_str(text);
+        true
+    } else {
+        false
+    }
+}
+
 impl AgentChat {
     /// Exchange document state, keeping window services and preferences UI in the window.
     pub(crate) fn swap_document(&mut self, other: &mut Self) {
@@ -846,11 +863,7 @@ impl AgentChat {
                 {
                     turn.replied = true;
                 }
-                if let Some(Item::Agent { thought: t, text: last }) = self.items.last_mut()
-                    && *t == thought
-                {
-                    last.push_str(&text);
-                } else {
+                if !append_agent_text(&mut self.items, thought, &text) {
                     self.push(Item::Agent { thought, text });
                 }
             }
@@ -1284,10 +1297,16 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)
         }
         (agents::Execution::Direct, agents::Kind::Api | agents::Kind::Anthropic) => match host {
-            Some(host_ai) => {
-                api_client::ApiBackend::start(api_client::ApiConfig { connection_id: entry.id.clone(), model: entry.model.clone(), host_ai }, start)
-                    .map(|b| Box::new(b) as Box<dyn ChatBackend>)
-            }
+            Some(host_ai) => api_client::ApiBackend::start(
+                api_client::ApiConfig {
+                    connection_id: entry.id.clone(),
+                    model: entry.model.clone(),
+                    host_ai,
+                    streaming: app.preferences.agent_direct_streaming,
+                },
+                start,
+            )
+            .map(|b| Box::new(b) as Box<dyn ChatBackend>),
             None => Err(tr("ui.ai_no_http").to_string()),
         },
     };

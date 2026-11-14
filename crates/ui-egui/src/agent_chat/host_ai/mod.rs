@@ -8,7 +8,7 @@ use std::{
 
 use sha2::Digest;
 
-use super::backend::{HttpFn, Secrets};
+use super::backend::{HttpFn, HttpStreamFn, Secrets};
 
 mod artifacts;
 mod call;
@@ -17,11 +17,13 @@ pub(super) mod continuation;
 pub(super) mod go;
 pub(super) mod messages;
 pub(super) mod provider;
+mod stream;
 mod task;
 mod types;
 
 pub use call::{CallControl, HttpAdmission, ModelCallBudget, TurnControl};
 pub use connections::{AcpBinding, ConnectionBinding, ConnectionCatalog};
+pub(crate) use stream::Redactor;
 #[allow(unused_imports)]
 pub(crate) use task::{
     AcpTaskExecutor, PermissionAnswer, TaskCommand, TaskControl, TaskOutcome, TaskPermissionState, TaskProgress, TaskProposal, TaskRequest,
@@ -37,6 +39,7 @@ pub use types::{
 pub struct AiShared {
     connections: ConnectionCatalog,
     http: Arc<HttpAdmission>,
+    stream: Mutex<Option<HttpStreamFn>>,
 }
 
 impl Default for AiShared {
@@ -47,11 +50,28 @@ impl Default for AiShared {
 
 impl AiShared {
     pub fn new(http: Arc<HttpAdmission>) -> Self {
-        Self { connections: ConnectionCatalog::default(), http }
+        Self { connections: ConnectionCatalog::default(), http, stream: Mutex::default() }
     }
 
     pub fn connections(&self) -> &ConnectionCatalog {
         &self.connections
+    }
+
+    /// The host is the only code that opens a socket. A shared catalog may be used by several
+    /// windows; every stream goes through this one injected seam.
+    pub fn set_stream(&self, stream: Option<HttpStreamFn>) {
+        if let Ok(mut current) = self.stream.lock() {
+            *current = stream;
+        }
+    }
+
+    pub(crate) fn stream(&self) -> Option<HttpStreamFn> {
+        self.stream.lock().ok().and_then(|stream| stream.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn http_admission(&self) -> &Arc<HttpAdmission> {
+        &self.http
     }
 }
 
@@ -167,6 +187,15 @@ impl HostAi {
 
     pub(crate) fn check_binding(&self, binding: &ConnectionBinding) -> Result<(), AiError> {
         self.deps.shared.connections.resolve(binding).map(|_| ())
+    }
+
+    /// Worker only: the current secret text for pre-emission redaction. It never enters a panel
+    /// frame, history, error or log; it lives only in the streaming redactor.
+    pub(crate) fn secret_text(&self, binding: &ConnectionBinding) -> Result<Option<String>, AiError> {
+        let connection = self.deps.shared.connections.resolve(binding)?;
+        let secret = connections::resolve_secret(&connection, self.deps.secrets.as_deref())?;
+        self.deps.shared.connections.resolve(binding)?;
+        Ok(secret.map(|secret| secret.as_str().to_string()))
     }
 
     /// Explicit saved-connection Test action; never a hidden describe/generate probe.
@@ -558,6 +587,24 @@ impl HostAi {
         deadline: Duration,
     ) -> Result<provider::ProviderReply, AiError> {
         provider::invoke_once(&self.deps, binding, call, control, deadline)
+    }
+
+    /// One physical streaming attempt. `Ok(None)` permits one buffered fallback because nothing
+    /// was emitted or executed; every other outcome is terminal for this attempt.
+    pub(crate) fn invoke_stream(
+        &self,
+        binding: &ConnectionBinding,
+        call: provider::ProviderCall,
+        control: &Arc<CallControl>,
+        deadline: Duration,
+        on_text: &mut dyn FnMut(bool, &str) -> Result<String, AiError>,
+        on_flush: &mut dyn FnMut(bool) -> Result<String, AiError>,
+    ) -> Result<Option<provider::ProviderReply>, AiError> {
+        provider::invoke_stream(&self.deps, binding, call, control, deadline, on_text, on_flush)
+    }
+
+    pub(crate) fn streaming_supported(&self, binding: &ConnectionBinding) -> bool {
+        provider::streaming_supported(binding)
     }
 
     /// Explicit worker-only picker operation. Reuse the existing GET codec/transport;

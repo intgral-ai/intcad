@@ -216,6 +216,55 @@ impl std::fmt::Debug for HttpRequest {
 /// Sends an [`HttpRequest`]: the status and the body, or why it failed.
 pub type HttpFn = std::sync::Arc<dyn Fn(&HttpRequest) -> Result<(u16, Vec<u8>), String> + Send + Sync>;
 
+/// An open HTTP response body. Status and headers are available before any body byte is read,
+/// so a streaming caller can reject a non-2xx or non-SSE answer before it produces output.
+pub struct HttpStreamResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub reader: Box<dyn std::io::Read + Send>,
+}
+
+/// One request's cancellation handle. The host registers its transport shutdown before the
+/// request blocks, so Stop can interrupt TLS/headers/body reads through `ureq`'s agent shutdown.
+#[derive(Default)]
+pub struct StreamCancellation {
+    shutdown: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+impl StreamCancellation {
+    /// Stop may arrive before the host has a transport to shut down. The latch makes that
+    /// cancellation stick: a later registration is invoked immediately.
+    pub fn register(&self, shutdown: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        use std::sync::atomic::Ordering;
+        let cancel_now = {
+            let Ok(mut slot) = self.shutdown.lock() else { return };
+            if self.cancelled.load(Ordering::Acquire) {
+                true
+            } else {
+                *slot = Some(shutdown.clone());
+                false
+            }
+        };
+        if cancel_now {
+            shutdown();
+        }
+    }
+
+    pub fn cancel(&self) {
+        use std::sync::atomic::Ordering;
+        self.cancelled.store(true, Ordering::Release);
+        let shutdown = self.shutdown.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(shutdown) = shutdown {
+            shutdown();
+        }
+    }
+}
+
+/// Sends an [`HttpRequest`] and hands back the open body without buffering it. The caller's
+/// cancellation handle is registered before any blocking work starts.
+pub type HttpStreamFn = std::sync::Arc<dyn Fn(&HttpRequest, &std::sync::Arc<StreamCancellation>) -> Result<HttpStreamResponse, String> + Send + Sync>;
+
 /// The system keychain (the desktop host's), for API keys: never in the preferences.
 pub trait Secrets: Send + Sync {
     fn get(&self, id: &str) -> Result<Option<String>, String>;

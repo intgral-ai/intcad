@@ -8235,6 +8235,24 @@ fn streamed_text_joins_and_tool_updates_change_their_call() {
 }
 
 #[test]
+fn multi_round_streamed_text_stays_one_agent_item() {
+    let mut c = chat();
+    c.on_event(Event::Text { thought: false, text: "round one".into() });
+    c.on_event(Event::Tool {
+        id: "call".into(),
+        title: Some("measure".into()),
+        kind: None,
+        status: Some(ToolStatus::Completed),
+        input: None,
+        output: Some("ok".into()),
+    });
+    c.on_event(Event::Text { thought: false, text: " round two".into() });
+    let agents: Vec<&str> = c.items.iter().filter_map(|item| if let Item::Agent { text, .. } = item { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(agents, vec!["round one round two"], "{:?}", c.items);
+    assert_eq!(c.items.iter().filter(|item| matches!(item, Item::Tool { .. })).count(), 1);
+}
+
+#[test]
 fn a_sign_in_request_keeps_the_question_for_after_the_login() {
     let mut c = chat();
     c.last = Some(("make a cube".into(), false, None, vec![attach::Attachment::imported("motor.step".into())]));

@@ -1,0 +1,34 @@
+{
+  "en": {
+    "ai.prefs.direct_streaming": "Stream direct API chat",
+    "ai.prefs.direct_streaming_note": "Show text and tool calls as they arrive when the endpoint supports streaming. Off keeps the previous buffered behaviour. Direct API connections only, not Mastra workflows."
+  },
+  "de": {
+    "ai.prefs.direct_streaming": "Stream direct API chat",
+    "ai.prefs.direct_streaming_note": "Show text and tool calls as they arrive when the endpoint supports streaming. Off keeps the previous buffered behaviour. Direct API connections only, not Mastra workflows."
+  },
+  "ar": {
+    "ai.prefs.direct_streaming": "Stream direct API chat",
+    "ai.prefs.direct_streaming_note": "Show text and tool calls as they arrive when the endpoint supports streaming. Off keeps the previous buffered behaviour. Direct API connections only, not Mastra workflows."
+  },
+  "he": {
+    "ai.prefs.direct_streaming": "Stream direct API chat",
+    "ai.prefs.direct_streaming_note": "Show text and tool calls as they arrive when the endpoint supports streaming. Off keeps the previous buffered behaviour. Direct API connections only, not Mastra workflows."
+  },
+  "ja": {
+    "ai.prefs.direct_streaming": "Stream direct API chat",
+    "ai.prefs.direct_streaming_note": "Show text and tool calls as they arrive when the endpoint supports streaming. Off keeps the previous buffered behaviour. Direct API connections only, not Mastra workflows."
+  },
+  "ko": {
+    "ai.prefs.direct_streaming": "Stream direct API chat",
+    "ai.prefs.direct_streaming_note": "Show text and tool calls as they arrive when the endpoint supports streaming. Off keeps the previous buffered behaviour. Direct API connections only, not Mastra workflows."
+  },
+  "vi": {
+    "ai.prefs.direct_streaming": "Stream direct API chat",
+    "ai.prefs.direct_streaming_note": "Show text and tool calls as they arrive when the endpoint supports streaming. Off keeps the previous buffered behaviour. Direct API connections only, not Mastra workflows."
+  },
+  "zh": {
+    "ai.prefs.direct_streaming": "Stream direct API chat",
+    "ai.prefs.direct_streaming_note": "Show text and tool calls as they arrive when the endpoint supports streaming. Off keeps the previous buffered behaviour. Direct API connections only, not Mastra workflows."
+  }
+}
