@@ -110,8 +110,10 @@ least one evidence artifact whose digest and size verify at report time.
   adopted before its terminal state is published; a tampered or unverifiable report is
   not adopted. A lost or ambiguous worker result becomes `unknown`; a queued job that
   never started becomes `infrastructure_error`.
-- A terminal state is immutable and is never paired with a report for another state. If
-  a terminal run's report is missing or corrupt, `status` verifies availability before
+- A terminal state is immutable and is never paired with a report for another state. A
+  second process that commits the same terminal state keeps the first report: the commit
+  is idempotent, so a cancelled submit and a cancel do not race into `REPORT_MISMATCH`.
+  If a terminal run's report is missing or corrupt, `status` verifies availability before
   reporting it (read-only observers included), and `report()` returns `NOT_READY`.
   A worker reconcile removes the unverifiable report, keeps the terminal state and
   persists `reportAvailable: false`; it does not rewrite `passed` as `unknown`.

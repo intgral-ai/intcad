@@ -86,7 +86,7 @@ class ForkExecution(unittest.TestCase):
                 self.assertEqual(listing[-2:], ["--message-format", "json"])
                 self.assertEqual(run[-2:], ["--test-threads", "2"])
                 expression = run[run.index("-E") + 1]
-                self.assertEqual(expression, "all()" if full else
+                self.assertEqual(expression, "all() & not (binary(boolean_props) | binary(atomic_commands))" if full else
                                  "default() & not (binary(action_matrix) & test(=action_matrix_sample))")
                 self.assertEqual(grader, ["cargo", "xtask", "known-failing", "--junit", "target/nextest/ci/junit.xml"])
                 if full:
