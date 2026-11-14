@@ -550,6 +550,52 @@ The agent reaches the open design only through SolidCraft's own tools (the
   an attached selection (and are shown the same way), and the box is empty again afterwards.
   **Cancel** keeps what was picked before.
 
+## Preview, then accept
+
+Preferences → AI → **Preview the agent's changes before they apply** (off by default) lets you
+judge a message's changes before they reach your design.
+
+- **The agent works on a copy.** While it answers, everything it changes goes to a copy of the
+  design, not to the design itself: the design you have open stays as it is, and so does its undo
+  history. The agent reads the copy (inspections, measurements) and gets the copy's answers, so it
+  sees its own changes.
+- **The view shows the copy over the design**, as a feature dialog's preview does: changed and new
+  bodies in place of the old ones, the material the message adds in green (the theme's success
+  colour), the material it removes in red (the cut colour). It follows the agent as it works.
+- **The window stays free while the copy computes.** A slow step runs in the background: you can
+  orbit, select and read while it does. The card to come shows the steps so far and the one
+  computing, with its time, and so does the chip above the view's navigation bar. **Stop** on the
+  chip stops that step: the agent is told, and the copy goes back to how it was before it.
+- **When the agent finishes, a card asks.** **Proposed changes** lists the steps in words and the
+  bodies made, changed and removed, each with its volume (a changed body with its volume before and
+  after). **Accept** applies the steps to the design as one undo step, named after your message, as
+  a message without preview does; **Undo these changes** then appears under it. **Reject** drops
+  the copy: the design is as it was. The agent's next message tells it which you chose.
+- **Your own edits come first.** If you change the design while the agent works or while the card
+  waits, **Accept** refuses ("the design changed since the preview") and changes nothing: reject
+  the card and ask again.
+- **One message at a time.** While a card waits, a new message stays in the box and queued messages
+  wait for **Send**: accept or reject first.
+- **What doesn't run on the copy.** Files (save, open, export, import), a new design and commands
+  that need the window (picking a point in the view, panel layout) are refused while the agent works
+  on a copy, and the agent is told why. A picture of the view the agent takes shows the copy drawn
+  over the design; a rendered picture (`ui.render`) shows the design without it. Built-in skills
+  (Text-to-CAD, Anatomy) run as before, without a preview.
+
+Accept replays the agent's steps on your design rather than putting the copy in its place. This is
+provisional (see [the design note](design/in-app-agent-chat.md#preview-then-accept)): replaying
+keeps the stale-edit check and the one-undo-step-per-message rule exactly as they are.
+
+## Ask on the model
+
+Select a face, an edge or a feature and press **Ctrl+K** (**Ask Here**; change its key in
+Preferences › Keyboard Shortcuts). A small box opens beside the pointer: type your question or
+request and press **Enter**. It goes to the conversation as a message with exactly what you
+selected attached, as if you had ticked **Attach selection** (files waiting for your next message
+and **Attach view** are left for that message), and the conversation opens for the answer. While a
+**Proposed changes** card waits, accept or reject it first: the box stays open with your words. **Esc** closes the box. With **Preview the agent's changes** on, the changes it makes come
+back as a **Proposed changes** card to accept or reject.
+
 ## Custom instructions
 
 Preferences → AI → **Custom instructions** holds your own text for the agent: how you like to
