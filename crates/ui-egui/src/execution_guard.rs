@@ -11,10 +11,24 @@ use solidcraft_engine::DocumentStamp;
 use crate::{ControlRequest, SolveApp, control};
 
 pub(crate) enum GuardRefusal {
-    InvalidRequest { field: String, message: String },
-    Stale { expected: DocumentStamp, current: Option<DocumentStamp> },
-    Unsupported { capability: String },
-    Cancelled { operation: String },
+    InvalidRequest {
+        field: String,
+        message: String,
+    },
+    Stale {
+        expected: DocumentStamp,
+        current: Option<DocumentStamp>,
+    },
+    Unsupported {
+        capability: String,
+    },
+    /// A setting only the app may change, asked for by the assistant.
+    Forbidden {
+        command: String,
+    },
+    Cancelled {
+        operation: String,
+    },
 }
 
 #[derive(Clone)]
@@ -67,6 +81,7 @@ pub(crate) fn refusal_json(error: &GuardRefusal) -> Value {
         GuardRefusal::Unsupported { capability } => {
             ("UNSUPPORTED_CAPABILITY", "This execution path does not support guarded requests.", json!({"capability":capability}))
         }
+        GuardRefusal::Forbidden { command } => ("FORBIDDEN", "This setting can only be changed in the app.", json!({"command":command})),
         GuardRefusal::Cancelled { operation } => {
             ("CANCELLED", "not run: the agent chat turn ended or its document tab was left", json!({"operation":operation}))
         }
@@ -85,6 +100,62 @@ pub(crate) fn cancelled(method: &str) -> GuardRefusal {
         _ => "control request",
     };
     GuardRefusal::Cancelled { operation: operation.into() }
+}
+
+/// Settings only a person may change: project data, checks and a rule's number. The assistant
+/// cannot switch data, lower a threshold or turn checks off, directly or through a batch.
+const UI_ONLY: &[&str] = &["dfm.override", "project.ci_set", "project.data_set", "project.settings_set"];
+
+fn ui_only(command: &str) -> Option<&'static str> {
+    let canonical = solidcraft_engine::find_command(command).map_or(command, |spec| spec.id);
+    UI_ONLY.iter().copied().find(|id| *id == canonical)
+}
+
+fn scan_id(id: Option<&str>, params: &Value, depth: usize) -> Option<&'static str> {
+    if depth > 5 {
+        return None;
+    }
+    let id = id?;
+    if let Some(hit) = ui_only(id) {
+        return Some(hit);
+    }
+    let canonical = solidcraft_engine::find_command(id).map_or(id, |spec| spec.id);
+    match canonical {
+        "engine.batch" | "batch" => scan_batch(params, depth + 1),
+        "engine.execute" | "command" => scan_envelope(params, depth + 1),
+        _ => None,
+    }
+}
+
+fn scan_batch(envelope: &Value, depth: usize) -> Option<&'static str> {
+    if depth > 5 {
+        return None;
+    }
+    let steps = envelope.get("commands").and_then(Value::as_array)?;
+    for step in steps {
+        let id = control::batch_step_command(step);
+        if let Some(hit) = scan_id(id, step.get("params").unwrap_or(&Value::Null), depth + 1) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+fn scan_envelope(envelope: &Value, depth: usize) -> Option<&'static str> {
+    if depth > 5 {
+        return None;
+    }
+    let id = control::execute_command(envelope);
+    scan_id(id, envelope.get("params").unwrap_or(&Value::Null), depth + 1)
+}
+
+/// The first UI-only command in an assistant request, including nested batches.
+fn assistant_ui_only(method: &str, envelope: &Value) -> Option<&'static str> {
+    match method {
+        "engine.execute" | "command" => scan_envelope(envelope, 0),
+        "engine.batch" => scan_batch(envelope, 0),
+        _ => None,
+    }
 }
 
 fn check_step(step: &Value, raw: Option<&str>) -> Result<(), GuardRefusal> {
@@ -202,6 +273,11 @@ pub(crate) fn check_application(app: &mut SolveApp, req: &ControlRequest) -> Res
         return Err(cancelled(&req.method));
     }
     check_nested_stamps(&req.method, &req.params)?;
+    if req.chat_turn.is_some()
+        && let Some(command) = assistant_ui_only(&req.method, &req.params)
+    {
+        return Err(GuardRefusal::Forbidden { command: command.into() });
+    }
     let expected = match &req.guarded {
         Some(admission) => admission.expected.clone(),
         None => match parse_expected_document(&req.params)? {
