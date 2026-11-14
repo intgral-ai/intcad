@@ -67,6 +67,7 @@ type Part =
   | { kind: 'approval'; item: Approval }
   | { kind: 'changes'; item: Of<'changes'> }
   | { kind: 'notice'; item: Of<'notice'> }
+  | { kind: 'check'; item: Of<'check'> }
   | { kind: 'skill'; item: Of<'skill'> };
 
 interface Turn {
@@ -313,6 +314,102 @@ function Answer({ part, streaming }: { part: Extract<Part, { kind: 'text' }>; st
   );
 }
 
+/** The DFM check card: counts, "not checked", and one expandable row per finding. */
+function CheckCardView({ item, strings }: { item: Of<'check'>; strings: Strings }) {
+  const card = item.card;
+  const [open, setOpen] = useState<string | null>(null);
+  if (item.status === 'running' || item.status === 'pending') {
+    return (
+      <Notice variant="note" title={strings.dfmCheckTitle}>
+        <Notice.Message>{strings.dfmRunning}</Notice.Message>
+      </Notice>
+    );
+  }
+  if (item.status === 'error' || !card || card.status === 'error') {
+    return (
+      <Notice variant="destructive" title={strings.dfmCheckTitle}>
+        <Notice.Message>{card?.error ?? strings.dfmError}</Notice.Message>
+      </Notice>
+    );
+  }
+  const state = card.status === 'cancelled' ? strings.dfmCancelled : strings.dfmDone;
+  const stale = card.freshness !== 'current';
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border1 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Txt variant="ui-md" weight="medium">{strings.dfmCheckTitle}</Txt>
+        <Badge>{state}</Badge>
+        {stale && <Badge variant="warning">{strings.dfmStale}</Badge>}
+        <Button type="button" size="sm" variant="ghost" onClick={() => post({ type: 'dfm_check' })}>
+          {strings.dfmRefresh}
+        </Button>
+      </div>
+      <Txt variant="caption" tone="muted">
+        {card.counts.failed} {strings.dfmFailed} · {card.counts.advisory} {strings.dfmAdvisory} · {card.counts.checked} {strings.dfmChecked} ·{' '}
+        {card.counts.unsupported} {strings.dfmNotCovered}
+      </Txt>
+      {card.notChecked && <Txt variant="caption" tone="muted">{card.notChecked}</Txt>}
+      <div className="flex flex-wrap items-center gap-1">
+        {(['all', 'selected', 'off'] as const).map(mode => (
+          <Button
+            key={mode}
+            type="button"
+            size="sm"
+            variant={item.display === mode ? 'default' : 'ghost'}
+            onClick={() => post({ type: 'dfm_display', mode })}
+          >
+            {mode === 'all' ? strings.dfmAll : mode === 'selected' ? strings.dfmSelected : strings.dfmOff}
+          </Button>
+        ))}
+      </div>
+      <div className="flex min-w-0 flex-col">
+        {card.findings.map(finding => {
+          const shown = open === finding.id;
+          const selected = item.selected?.runId === card.runId && item.selected.findingId === finding.id;
+          return (
+            <div key={finding.id} className="border-t border-border1 py-1">
+              <button
+                type="button"
+                className="flex w-full min-w-0 items-center gap-2 text-left"
+                aria-expanded={shown}
+                onClick={() => {
+                  setOpen(shown ? null : finding.id);
+                  post({ type: 'finding', runId: card.runId, id: finding.id });
+                }}
+              >
+                <Badge variant={finding.state === 'failed' ? 'destructive' : finding.state === 'advisory' ? 'warning' : 'default'}>
+                  {finding.state}
+                </Badge>
+                <Txt variant="caption" className="min-w-0 truncate">
+                  {finding.rules.join(', ')} · {finding.body}
+                </Txt>
+                {selected && <Txt variant="caption" tone="muted">{strings.dfmSelect}</Txt>}
+              </button>
+              {shown && (
+                <div className="flex flex-col gap-1 pt-1">
+                  <Txt variant="caption">
+                    {finding.measured ? `${strings.dfmMeasured}: ${finding.measured.value} ${finding.measured.unit}` : strings.dfmNotCovered}
+                  </Txt>
+                  {finding.requirement ? (
+                    <Txt variant="caption" tone="muted">
+                      {strings.dfmRequirement}: {finding.requirement.value} {finding.requirement.unit} · {finding.requirement.layer} ·{' '}
+                      {finding.requirement.source}
+                      {finding.requirement.confirmed ? ` · ${finding.requirement.confirmed}` : ''}
+                    </Txt>
+                  ) : (
+                    <Txt variant="caption" tone="muted">{finding.reason ?? strings.dfmNotCovered}</Txt>
+                  )}
+                  {finding.code && <Txt variant="caption" tone="muted">{finding.code}</Txt>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings: Strings }) {
   const lastText = turn.parts.reduce((found, part, index) => (part.kind === 'text' && !part.thought ? index : found), -1);
   return (
@@ -380,6 +477,8 @@ function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings:
                 <Notice.Message>{part.item.text}</Notice.Message>
               </Notice>
             );
+          case 'check':
+            return <CheckCardView key={key} item={part.item} strings={strings} />;
           case 'skill':
             return (
               <div key={key} className="flex min-w-0 flex-col gap-2">

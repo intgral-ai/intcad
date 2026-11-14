@@ -33,6 +33,7 @@ pub mod crash_ui;
 pub mod deferred;
 pub mod delete;
 pub mod design_properties;
+pub mod dfm_chat;
 pub mod dfm_overlay;
 pub mod dialog_column;
 mod dialog_descriptor;
@@ -784,6 +785,8 @@ pub struct SolveApp {
     pub new_project: Option<new_project::NewProject>,
     /// The Project Settings window, when open.
     pub project_settings: Option<project_settings::ProjectSettings>,
+    /// The Assistant's DFM check card and the finding the viewport marks.
+    pub dfm_chat: dfm_chat::State,
     /// The folder the last project was made in, offered as the next one's location.
     pub(crate) last_project_folder: Option<String>,
     /// The 3D mouse: which device, its reading, and the calibration window.
@@ -962,6 +965,7 @@ impl SolveApp {
             home: home::HomeState::default(),
             new_project: None,
             project_settings: None,
+            dfm_chat: dfm_chat::State::default(),
             last_project_folder: None,
             space_mouse: Default::default(),
             file_load: file_load::FileLoad::default(),
