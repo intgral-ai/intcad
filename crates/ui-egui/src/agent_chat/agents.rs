@@ -221,6 +221,9 @@ pub struct Entry {
     pub problem: Option<String>,
     /// Found installed: the command that installs it again.
     pub install: &'static str,
+    /// Found installed, though its maker has retired it: used when picked, and the default only
+    /// while no other agent can be.
+    pub retired: bool,
 }
 
 impl Entry {
@@ -240,7 +243,24 @@ impl Entry {
             reasoning_effort: reasoning_effort(&c.reasoning_effort),
             problem: None,
             install: "",
+            retired: false,
         }
+    }
+    /// What is known of an installed agent without starting it, as the picker's row says it:
+    /// `does_not_start`, `retired`, `signed_in` (a connection from this window succeeded),
+    /// `signed_out`, else `installed`. Installed is all that is claimed: whether it will connect
+    /// is known only once it has. `None` for an agent the user added.
+    pub fn status(&self) -> Option<&'static str> {
+        if !self.found {
+            return None;
+        }
+        Some(match (&self.problem, self.retired, self.login) {
+            (Some(_), _, _) => "does_not_start",
+            (None, true, _) => "retired",
+            (None, false, "signed_in") => "signed_in",
+            (None, false, "signed_out") => "signed_out",
+            _ => "installed",
+        })
     }
     /// A short line under the name: the version, the model, the command, or why it can't start.
     pub fn detail(&self) -> String {
@@ -285,6 +305,7 @@ pub fn entries(app: &crate::SolveApp) -> Vec<Entry> {
             reasoning_effort: String::new(),
             problem: f.problem.clone(),
             install: f.install,
+            retired: super::discover::KNOWN.iter().any(|known| known.id == f.id && known.retired),
         }));
     }
     out.extend(app.preferences.agents.iter().map(Entry::from_config));
@@ -298,11 +319,22 @@ pub fn entries(app: &crate::SolveApp) -> Vec<Entry> {
     out
 }
 
-/// The agent a conversation uses: the one picked in the panel, else the default, else the first.
+/// The agent used while none is picked or saved as the default: the first that can be expected
+/// to work (its program starts, and its maker has not retired it), else the first whose program
+/// starts, else the first. Found agents come in the order of `discover::KNOWN`, so Claude Code is
+/// looked for first and Codex second, then the agents the user added. It was the first entry
+/// whatever its state, which made a retired command line without an ACP mode the default while a
+/// working agent stood next in the list. Whether a program speaks ACP is not checked here.
+pub fn default_of(all: &[Entry]) -> Option<&Entry> {
+    all.iter().find(|e| e.problem.is_none() && !e.retired).or_else(|| all.iter().find(|e| e.problem.is_none())).or_else(|| all.first())
+}
+
+/// The agent a conversation uses: the one picked in the panel, else the saved default
+/// (`agent_default`, which names any listed agent, a retired one too), else [`default_of`].
 pub fn current(app: &crate::SolveApp) -> Option<Entry> {
     let all = entries(app);
     let pick = |id: &str| all.iter().find(|e| e.id == id).cloned();
-    app.agent_chat.agent_id.as_deref().and_then(pick).or_else(|| pick(&app.preferences.agent_default)).or_else(|| all.first().cloned())
+    app.agent_chat.agent_id.as_deref().and_then(pick).or_else(|| pick(&app.preferences.agent_default)).or_else(|| default_of(&all).cloned())
 }
 
 /// The permission mode for an agent: its own, else the global one.

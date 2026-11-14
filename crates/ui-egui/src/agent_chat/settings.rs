@@ -753,7 +753,7 @@ fn pointer_section(app: &mut SolveApp, ui: &mut egui::Ui) {
 fn agents_section(app: &mut SolveApp, ui: &mut egui::Ui) {
     let all = agents::entries(app);
     let d = &app.preferences.agent_default;
-    let default = if all.iter().any(|e| &e.id == d) { Some(d.clone()) } else { all.first().map(|e| e.id.clone()) };
+    let default = if all.iter().any(|e| &e.id == d) { Some(d.clone()) } else { agents::default_of(&all).map(|e| e.id.clone()) };
     let mut remove: Option<String> = None;
     let mut test: Option<agents::Entry> = None;
     let mut edit: Option<String> = None;
@@ -1255,6 +1255,7 @@ pub fn dialog(app: &mut SolveApp, ctx: &egui::Context) {
                 reasoning_effort: agents::reasoning_effort(&s.reasoning_effort),
                 problem: None,
                 install: "",
+                retired: false,
             };
             // Editing with the key field left empty tests with the stored key, which is only ever
             // sent where a saved key may go (HTTPS or this computer).

@@ -39,7 +39,7 @@ With AI features on, the panel opens from:
 - **View settings** (the last button of the navigation bar under the view) → **Agent chat**.
 
 Nothing runs until you need it: SolidCraft looks for installed agents (a quick `--version`
-each, in the background) when the panel or the AI page first opens, and starts an agent only
+each, in the background) each time the panel opens and when the AI page first opens, and starts an agent only
 when you send a message or press **Connect** (or at launch, when you turned that on above).
 
 ## The panel
@@ -261,6 +261,13 @@ Preferences → AI → **Agents** lists every agent the chat can use, each with 
 an endpoint), version or model, whether it looks signed in, **Test**, **Default** (the one a new
 conversation starts with), its own permission setting, and **Edit** and **Remove** for the ones you added.
 
+With no agent picked in the panel and no **Default** set, a conversation uses the first agent that
+can be expected to work: the installed ones in the order of the table below (Claude Code, then
+Codex, and so on), then the ones you added. An agent whose program does not start, and one its
+maker has retired (Gemini CLI), are passed over while another agent can be; before, the first
+agent found was used whatever its state. A retired agent is still listed and can still be picked:
+press **Default** on its card to have conversations start with it again.
+
 ### Found by themselves
 
 SolidCraft looks for agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
@@ -299,6 +306,28 @@ doesn't change the last known login state.
 | GitHub Copilot CLI, Qwen Code, goose | listed with their install command when missing |
 
 The panel lists agents that aren't installed with their install command and a **Copy** button.
+
+The agent menu always lists four agents, installed or not: Claude Code, Codex, OpenCode and Kimi
+Code. Every other known agent is listed once it is found. Each installed agent's row says what is
+known of it without starting it: **Installed**, **Not signed in** (its login file is missing),
+**Does not start**, **Retired by its maker**, and **Signed in** only after a connection from this
+window has succeeded. Installed is all that is claimed; whether an agent connects shows when you
+connect it.
+
+A basic agent that cannot be picked yet stands under **Not ready yet**: **Not installed**, or, for
+Claude Code and Codex, **Adapter missing**. Those two have no ACP mode of their own, and
+SolidCraft reaches them through the adapters in the table; with the `claude` or `codex` command
+line installed and no adapter, an empty conversation names the agent too. Choosing such a row
+shows what is missing and how to install it, with **Copy** and **Refresh**; once it is found it
+is an agent like the others. The command line is only looked for as a file (by the names the
+system can run: `claude.exe` or `claude.cmd` on Windows). It is never started, not even for its
+version; SolidCraft installs nothing itself. Most install lines are npm's: where no `npm` is found
+either, as after Claude Code's own installer on a computer without Node.js, the card says that
+Node.js comes first.
+
+SolidCraft looks for agents each time the panel is opened, so one installed meanwhile shows
+without **Refresh**; what connections have shown about each agent's sign-in is kept then, and
+**Refresh** starts over on it.
 
 For Mistral Vibe, put `vibe-acp` on your PATH and refresh the agent list. Follow Vibe's sign-in
 prompt, run `vibe --setup` in a terminal, or set `MISTRAL_API_KEY` before launching SolidCraft.

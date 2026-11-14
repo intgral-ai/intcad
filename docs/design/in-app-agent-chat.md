@@ -248,6 +248,16 @@ As before, plus key variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_AP
 reported as *key set*, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` respected, and OpenCode's
 `~/.local/share/opencode/auth.json`. Nothing is started except `--version`.
 
+Claude Code and Codex are reached through a separate adapter, so "installed" has two parts.
+Discovery also looks for the agent's own command line (`claude`, `codex`) as a file, without
+starting it, and records its place on the missing entry (`Missing::base`): the agent menu then
+lists it as not ready, with the adapter's install line, instead of leaving it out. Four agents
+(`discover::BASIC`) are always listed, each row with what is known of it without starting it,
+and discovery runs again each time the panel opens. The default
+agent is the first that can be expected to work (`agents::default_of`): a retired agent and one
+whose `--version` check failed are passed over while another agent can be. Whether a found
+program speaks ACP at all is still not checked before the first connection.
+
 ### Panel
 
 Opened from the **AI** button at the toolbar row's right end (the panels give it room and spill

@@ -8112,6 +8112,66 @@ fn agent_login_file_does_not_claim_a_verified_sign_in() {
     assert_eq!(agents::current(&app).unwrap().login, "login_found");
 }
 
+/// With nothing picked and no default saved, the conversation uses the first agent that can be
+/// expected to work: one its maker has retired, or one whose program does not start, is passed
+/// over while another agent can be. A saved default still names any listed agent, the retired
+/// one too, so the earlier pick stays within reach; and a computer with nothing else keeps it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_default_agent_is_the_first_usable_one_and_a_saved_choice_stays() {
+    let found = |id: &'static str, problem: Option<&str>| discover::Found {
+        id,
+        name: id,
+        argv: vec![id.into()],
+        version: None,
+        login: discover::Login::Unknown,
+        problem: problem.map(str::to_string),
+        install: "",
+    };
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    let found_are =
+        |app: &mut SolveApp, found: Vec<discover::Found>| app.agent_chat.detection = Some(discover::Detection { found, ..Default::default() });
+    let current = |app: &SolveApp| agents::current(app).map(|entry| entry.id);
+
+    // Gemini CLI is retired and OpenCode did not start when asked its version: Qwen Code it is.
+    found_are(&mut app, vec![found("gemini", None), found("opencode", Some("not a valid application")), found("qwen", None)]);
+    assert_eq!(current(&app).as_deref(), Some("qwen"));
+    assert_eq!(agents::default_of(&agents::entries(&app)).map(|entry| entry.id.as_str()), Some("qwen"), "Preferences marks the same agent");
+    // A saved default names the retired agent, and one picked in the panel comes before both.
+    app.preferences.agent_default = "gemini".into();
+    assert_eq!(current(&app).as_deref(), Some("gemini"));
+    app.agent_chat.agent_id = Some("opencode".into());
+    assert_eq!(current(&app).as_deref(), Some("opencode"));
+    app.agent_chat.agent_id = None;
+    app.preferences.agent_default = String::new();
+
+    // Found agents keep the order they are known in: Claude Code first, then Codex.
+    found_are(&mut app, vec![found("claude", None), found("codex", None), found("gemini", None)]);
+    assert_eq!(current(&app).as_deref(), Some("claude"));
+    found_are(&mut app, vec![found("codex", None), found("gemini", None), found("opencode", None)]);
+    assert_eq!(current(&app).as_deref(), Some("codex"));
+
+    // An agent the user added comes before a retired one.
+    found_are(&mut app, vec![found("gemini", None)]);
+    app.preferences.agents.push(agents::AgentConfig {
+        id: "custom-1".into(),
+        name: "Mine".into(),
+        command: "mine --acp".into(),
+        ..Default::default()
+    });
+    assert_eq!(current(&app).as_deref(), Some("custom-1"));
+    app.preferences.agents.clear();
+
+    // With nothing better, what is there is used: a retired agent that starts, then the first.
+    assert_eq!(current(&app).as_deref(), Some("gemini"));
+    found_are(&mut app, vec![found("opencode", Some("not a valid application")), found("gemini", None)]);
+    assert_eq!(current(&app).as_deref(), Some("gemini"));
+    found_are(&mut app, vec![found("opencode", Some("not a valid application")), found("qwen", Some("not a valid application"))]);
+    assert_eq!(current(&app).as_deref(), Some("opencode"));
+    found_are(&mut app, Vec::new());
+    assert_eq!(current(&app), None);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn agent_login_follows_chat_authentication_results() {
@@ -15669,6 +15729,174 @@ fn the_web_page_is_told_the_queue_the_pictures_and_the_names_an_answer_selects()
             .as_object()
             .is_some_and(|words| words.values().all(|word| word.as_str().is_some_and(|word| !word.is_empty() && !word.starts_with("ui."))))
     );
+}
+
+/// An agent whose own command line is installed, but not the ACP adapter the app reaches it
+/// through, is no agent to pick: the page is told where the command line is and, in the app's
+/// words, what is missing, with the line that installs it. One not installed at all carries only
+/// its install line. The app can ask for the page's agent menu, and the page says when it closed.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_web_page_is_told_which_agents_lack_only_their_adapter() {
+    let mut h = app_with_cover_and_base();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let missing = |id: &'static str, base: Option<&str>| {
+        let known = discover::KNOWN.iter().find(|known| known.id == id).expect("a known agent");
+        discover::Missing {
+            id,
+            name: known.name,
+            install: known.install,
+            base: base.map(std::path::PathBuf::from),
+            basic: discover::BASIC.contains(&id),
+        }
+    };
+    h.app.agent_chat.detection = Some(discover::Detection {
+        missing: vec![missing("claude", Some("/opt/tools/claude")), missing("codex", None), missing("goose", None)],
+        npm: true,
+        ..Default::default()
+    });
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    assert_eq!(state["agents"], json!([]), "neither is an agent to pick");
+    let claude = &state["missing"][0];
+    assert_eq!((&claude["id"], &claude["name"], &claude["found"]), (&json!("claude"), &json!("Claude Code"), &json!("/opt/tools/claude")));
+    assert_eq!(claude["install"], "npm install -g @agentclientprotocol/claude-agent-acp");
+    assert_eq!(claude["title"], "Claude Code needs one more step");
+    let body = claude["body"].as_str().expect("what is missing");
+    assert!(body.contains("Claude Code is installed") && body.contains("/opt/tools/claude") && body.contains("ACP adapter"), "{body}");
+    assert_eq!(claude["note"], Value::Null, "npm is here: the line can be run as it stands");
+    assert_eq!(claude["basic"], true);
+    // A basic agent that is not installed at all is listed too, in its own words.
+    let codex = &state["missing"][1];
+    assert_eq!((&codex["id"], &codex["basic"], &codex["found"], &codex["note"]), (&json!("codex"), &json!(true), &Value::Null, &Value::Null));
+    assert_eq!(codex["title"], "Codex is not installed");
+    assert!(codex["body"].as_str().is_some_and(|body| body.contains("did not find Codex") && body.contains("Refresh")), "{}", codex["body"]);
+    // Any other known agent that is missing carries only its install line: the page does not list it.
+    assert_eq!(
+        state["missing"][2],
+        json!({
+            "id": "goose", "name": "goose", "install": "see block.github.io/goose (installer script or Homebrew)",
+            "basic": false, "found": null, "title": null, "body": null, "note": null,
+        })
+    );
+    // The control channel says the same of the same computer.
+    let detection = &h.call("ui.agent_chat", json!({}))["result"]["detection"];
+    assert_eq!(
+        detection["missing"][0],
+        json!({"id": "claude", "install": "npm install -g @agentclientprotocol/claude-agent-acp", "base": "/opt/tools/claude", "basic": true})
+    );
+    assert_eq!(detection["missing"][1]["base"], Value::Null);
+    assert_eq!(detection["npm"], true);
+
+    // Without npm the line cannot be run as it stands: the agent that is one step away says that
+    // Node.js comes first. One not installed at all keeps to its install line.
+    if let Some(detection) = h.app.agent_chat.detection.as_mut() {
+        detection.npm = false;
+    }
+    let without: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    for listed in [&without["missing"][0], &without["missing"][1]] {
+        let note = &listed["note"];
+        assert!(note.as_str().is_some_and(|note| note.contains("Node.js") && note.contains("npm")), "{note}");
+    }
+    assert_eq!(without["missing"][2]["note"], Value::Null, "its line is not npm's, and it is not listed");
+    assert_eq!(h.call("ui.agent_chat", json!({}))["result"]["detection"]["npm"], false);
+
+    // The agent menu: asked for by the app, and over once the page says it closed.
+    assert_eq!(state["picking"], false);
+    h.call("ui.agent_chat", json!({"picker": true}));
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    assert_eq!(state["picking"], true);
+    let ctx = h.ctx.clone();
+    assert!(web::act(&mut h.app, &ctx, &json!({"type": "picker"}).to_string()).is_err(), "open or closed must be said");
+    web::act(&mut h.app, &ctx, &json!({"type": "picker", "open": false}).to_string()).expect("the menu closed");
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    assert_eq!(state["picking"], false);
+}
+
+/// Each installed agent's row says what is known of it without starting it, and no more than that:
+/// "installed" is not "connected". A program that did not start says so, a retired agent says so
+/// whatever its sign-in, a missing login file reads as not signed in, and "signed in" appears only
+/// after a connection from this window succeeded. An agent the user added carries no word.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_web_page_is_told_what_is_known_of_each_installed_agent() {
+    let found = |id: &'static str, login: discover::Login, problem: Option<&str>| discover::Found {
+        id,
+        name: id,
+        argv: vec![id.into()],
+        version: None,
+        login,
+        problem: problem.map(str::to_string),
+        install: "",
+    };
+    let mut h = app_with_cover_and_base();
+    h.app.agent_chat.detection = Some(discover::Detection {
+        found: vec![
+            found("claude", discover::Login::Unknown, None),
+            found("codex", discover::Login::NotLoggedIn, None),
+            found("gemini", discover::Login::LooksLoggedIn, None),
+            found("opencode", discover::Login::LooksLoggedIn, Some("not a valid application")),
+            found("qwen", discover::Login::LooksLoggedIn, None),
+        ],
+        ..Default::default()
+    });
+    h.app.preferences.agents.push(agents::AgentConfig {
+        id: "custom-1".into(),
+        name: "Mine".into(),
+        command: "mine --acp".into(),
+        ..Default::default()
+    });
+    let rows = |app: &mut SolveApp| -> Vec<(String, Value, Value)> {
+        let state: Value = serde_json::from_str(&web::state(app)).expect("the state is JSON");
+        let agents = state["agents"].as_array().expect("agents").clone();
+        agents
+            .into_iter()
+            .map(|agent| (agent["id"].as_str().unwrap_or_default().to_string(), agent["status"].clone(), agent["hint"].clone()))
+            .collect()
+    };
+    let expected = [
+        ("claude", json!("installed"), json!("Installed")),
+        ("codex", json!("signed_out"), json!("not signed in")),
+        ("gemini", json!("retired"), json!("Retired by its maker")),
+        ("opencode", json!("does_not_start"), json!("Does not start")),
+        ("qwen", json!("installed"), json!("Installed")),
+        ("custom-1", Value::Null, Value::Null),
+    ];
+    let told = rows(&mut h.app);
+    assert_eq!(told.len(), expected.len());
+    for ((id, status, hint), (want_id, want_status, want_hint)) in told.iter().zip(&expected) {
+        assert_eq!((id.as_str(), status, hint), (*want_id, want_status, want_hint));
+    }
+    // A connection that succeeded is the only thing that makes a row say "signed in".
+    h.app.agent_chat.login_results.insert("claude".into(), true);
+    let told = rows(&mut h.app);
+    assert_eq!((&told[0].1, &told[0].2), (&json!("signed_in"), &json!("signed in")));
+}
+
+/// The app looks for installed agents when it knows nothing yet, and again each time the panel
+/// opens once it has looked by itself, so an agent installed meanwhile shows without Refresh.
+/// While the panel stays open it does not look again, and a detection it was given (a test's)
+/// is kept: opening the panel over one starts no look.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_app_looks_for_agents_each_time_the_panel_opens() {
+    // (the panel opened this frame, a detection is known, it came from a look) -> look now
+    assert!(looks_on_open(true, false, false), "nothing is known yet");
+    assert!(looks_on_open(false, false, false), "nothing is known yet, on any open frame");
+    assert!(looks_on_open(true, true, true), "opened again after the app's own look");
+    assert!(!looks_on_open(false, true, true), "still open: Refresh is what looks again");
+    assert!(!looks_on_open(true, true, false), "a detection that was given is kept");
+    assert!(!looks_on_open(false, true, false));
+
+    let mut h = app_with_cover_and_base();
+    h.app.agent_chat.detection = Some(discover::Detection::default());
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    assert!(h.app.agent_chat.detecting.is_none() && !h.app.agent_chat.looked, "a given detection started a look");
+    assert!(h.app.agent_chat.seen_open);
+    h.call("ui.agent_chat", json!({"open": false}));
+    h.frames(2);
+    assert!(!h.app.agent_chat.seen_open, "closing is seen, so the next opening counts as one");
 }
 
 /// The queue, the picked things, an answer's names and a message's pictures are acted on only as

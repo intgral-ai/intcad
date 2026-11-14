@@ -854,6 +854,16 @@ API endpoint, to an agent with a model option, and to a legacy agent that listed
 leaves its previous model and adds a notice. `modelsNote` says why an endpoint's models could not be
 listed, or is `null`.
 
+In the reply's `detection`, `found` lists the installed agents and `missing` the known ones that
+are not, each with its `install` line. A missing agent's `base` is the place of its own command
+line when that is installed and only its ACP adapter is not (Claude Code, Codex), else `null`;
+`npm` says whether an `npm` program was found, which the install lines beginning with `npm` need;
+`basic` marks the agents the page's menu lists although they are not installed.
+`currentAgent` is the picked agent, else the saved default, else the first agent that can be
+expected to work (a retired agent and one whose program does not start are passed over while
+another can be). `picker` opens (`true`) or closes (`false`) the Assistant page's agent menu, where
+the page shows the conversation; choosing in it or clicking away closes it as well.
+
 The reply's `webView` says how the desktop app shows the conversation. `host` is true while the app
 has a web view to show it in, and false where it has none: in a native Wayland window (the panel
 shows a diagnostic and offers Graphics settings), in the browser build (which keeps the old egui
