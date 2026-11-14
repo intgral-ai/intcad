@@ -301,33 +301,23 @@ doesn't change the last known login state.
 | OpenCode | `npm install -g opencode-ai` (`opencode acp`) |
 | Mistral Vibe | `uv tool install mistral-vibe` (`vibe-acp`) |
 | Kimi Code | the installer script on [its page](https://moonshotai.github.io/kimi-code/) (`kimi acp`) |
-| Factory Droid | installer script, Homebrew or npm, see [Factory's quickstart](https://docs.factory.com/cli/getting-started/quickstart) (`droid exec --output-format acp-daemon`) |
 | XAI Grok | [Grok Build installer](https://docs.x.ai/build/overview), then `grok login` (`grok agent stdio` speaks ACP) |
 | GitHub Copilot CLI, Qwen Code, goose | listed with their install command when missing |
 
 The panel lists agents that aren't installed with their install command and a **Copy** button.
 
-The agent menu always lists four agents, installed or not: Claude Code, Codex, OpenCode and Kimi
-Code. Every other known agent is listed once it is found. Each installed agent's row says what is
+The agent menu always lists four agents, found or not: Claude Code, Codex, OpenCode and Kimi
+Code. Every other known agent is listed once it is found. Each found agent's row says what is
 known of it without starting it: **Installed**, **Not signed in** (its login file is missing),
 **Does not start**, **Retired by its maker**, and **Signed in** only after a connection from this
 window has succeeded. Installed is all that is claimed; whether an agent connects shows when you
 connect it.
 
-A basic agent that cannot be picked yet stands under **Not ready yet**: **Not installed**, or, for
-Claude Code and Codex, **Adapter missing**. Those two have no ACP mode of their own, and
-SolidCraft reaches them through the adapters in the table; with the `claude` or `codex` command
-line installed and no adapter, an empty conversation names the agent too. Choosing such a row
-shows what is missing and how to install it, with **Copy** and **Refresh**; once it is found it
-is an agent like the others. The command line is only looked for as a file (by the names the
-system can run: `claude.exe` or `claude.cmd` on Windows). It is never started, not even for its
-version; SolidCraft installs nothing itself. Most install lines are npm's: where no `npm` is found
-either, as after Claude Code's own installer on a computer without Node.js, the card says that
-Node.js comes first.
+A basic agent that is not found stands under **Not ready yet** as **Not set up**. Choosing it
+shows the line that sets it up, with **Copy** and **Refresh**; SolidCraft installs nothing itself.
 
 SolidCraft looks for agents each time the panel is opened, so one installed meanwhile shows
-without **Refresh**; what connections have shown about each agent's sign-in is kept then, and
-**Refresh** starts over on it.
+without **Refresh**.
 
 For Mistral Vibe, put `vibe-acp` on your PATH and refresh the agent list. Follow Vibe's sign-in
 prompt, run `vibe --setup` in a terminal, or set `MISTRAL_API_KEY` before launching SolidCraft.

@@ -19,7 +19,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import type { AssistantState, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings } from './host';
 import { pictureUrl, post } from './host';
@@ -860,14 +860,9 @@ function stateBadge(state: AssistantState) {
   }
 }
 
-/** The agents installed on this computer but for their ACP adapter: one step from working here. */
-function oneStepOf(state: AssistantState) {
-  return state.missing.filter(agent => agent.found);
-}
-
-/** What the agent menu lists though it cannot be picked: those, and the basic agents not installed. */
+/** What the agent menu lists though it cannot be picked: the basic agents not found. */
 function notReadyOf(state: AssistantState) {
-  return state.missing.filter(agent => agent.found || agent.basic);
+  return state.missing.filter(agent => agent.basic);
 }
 
 /** What is known of an agent, at the end of its row in the menu. */
@@ -882,20 +877,11 @@ function AssistantBar({ state, onSetup }: { state: AssistantState; onSetup: (id:
   // The agent's own settings; its model is picked beside the message box.
   const settings = (state.config ?? []).filter(option => option.category !== 'model');
   const notReady = notReadyOf(state);
-  // The menu also opens and closes when the app asks, and says when an opening it asked for is over.
-  const [menu, setMenu] = useState(false);
-  useEffect(() => setMenu(state.picking), [state.picking]);
   return (
     <ChatShell.Bar>
       <ChatShell.Column className="flex-row items-center justify-between gap-2 py-2">
         <div className="-m-0.5 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 gap-y-2 overflow-hidden p-0.5">
-          <DropdownMenu
-            open={menu}
-            onOpenChange={open => {
-              setMenu(open);
-              if (!open && state.picking) post({ type: 'picker', open: false });
-            }}
-          >
+          <DropdownMenu>
             <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={strings.switchAgent} tooltip={strings.switchAgent} className="max-w-full min-w-12">
               <span className="truncate">{name}</span>
               <ChevronDown />
@@ -931,7 +917,7 @@ function AssistantBar({ state, onSetup }: { state: AssistantState; onSetup: (id:
                     <DropdownMenu.Item key={entry.id} onClick={() => onSetup(entry.id)}>
                       <span className="flex min-w-0 flex-1 items-center">
                         <span className="truncate">{entry.name}</span>
-                        <span className={ROW_HINT}>{entry.found ? strings.adapterMissing : strings.notInstalled}</span>
+                        <span className={ROW_HINT}>{strings.notSetUp}</span>
                       </span>
                       <span aria-hidden className="size-icon-sm shrink-0" />
                     </DropdownMenu.Item>
@@ -1046,15 +1032,14 @@ function SignIn({ state }: { state: AssistantState }) {
   );
 }
 
-/** An agent installed here but for its ACP adapter: what is missing, the line that adds it, and Refresh. */
+/** A basic agent that is not found: what to do, the line that sets it up, and Refresh. */
 function AdapterSetup({ agent, strings, onClose }: { agent: MissingAgent; strings: Strings; onClose: () => void }) {
   return (
     // Capped as the other parts by the message box are: a long path scrolls in its own place, and in
     // a short panel the card scrolls, so the message box under it is never pushed out of the panel.
-    <Notice variant="info" title={agent.title ?? agent.name} className="max-h-[calc(100dvh-12rem)] overflow-y-auto bg-card">
+    <Notice variant="info" title={agent.name} className="max-h-[calc(100dvh-12rem)] overflow-y-auto bg-card">
       <div className="flex max-h-[30dvh] min-w-0 shrink-0 flex-col gap-2 overflow-y-auto">
         <Notice.Message>{agent.body}</Notice.Message>
-        {agent.note && <Notice.Message>{agent.note}</Notice.Message>}
       </div>
       <div className="flex min-w-0 flex-col gap-3 pt-2">
         <div className="flex min-w-0 items-start gap-2">
@@ -1074,31 +1059,9 @@ function AdapterSetup({ agent, strings, onClose }: { agent: MissingAgent; string
   );
 }
 
-/** Agents to install, each with the line that does it; one that lacks only its adapter says so first. */
-function Installs({ caption, agents }: { caption: string; agents: MissingAgent[] }) {
-  if (agents.length === 0) return null;
-  return (
-    <div className="flex min-w-0 flex-col gap-3">
-      <Txt variant="caption">{caption}</Txt>
-      {agents.map(agent => (
-        <div key={agent.id} className="flex min-w-0 flex-col gap-1">
-          <Txt variant="caption">{agent.name}</Txt>
-          {agent.body && <Txt variant="caption">{agent.body}</Txt>}
-          {agent.note && <Txt variant="caption">{agent.note}</Txt>}
-          <div className="flex min-w-0 items-start gap-2">
-            <ToolCallOutput text={agent.install} />
-            <CopyButton content={agent.install} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /** Nothing said yet: the Assistant's name, or how to get an agent when there is none. */
-function Welcome({ state, onSetup }: { state: AssistantState; onSetup: (id: string) => void }) {
+function Welcome({ state }: { state: AssistantState }) {
   const { strings } = state;
-  const notReady = oneStepOf(state);
   if (state.agents.length === 0 && !state.detecting) {
     return (
       <div className="flex min-w-0 flex-col gap-4">
@@ -1112,31 +1075,24 @@ function Welcome({ state, onSetup }: { state: AssistantState; onSetup: (id: stri
             </Button>
           }
         />
-        {/* What lacks only an adapter comes first: it is the shortest way to a working agent. */}
-        <Installs caption={strings.notReadyFound} agents={notReady} />
-        <Installs caption={strings.notInstalled} agents={state.missing.filter(agent => !agent.found)} />
+        {state.missing.length > 0 && (
+          <div className="flex min-w-0 flex-col gap-3">
+            <Txt variant="caption">{strings.notInstalled}</Txt>
+            {state.missing.map(agent => (
+              <div key={agent.name} className="flex min-w-0 flex-col gap-1">
+                <Txt variant="caption">{agent.name}</Txt>
+                <div className="flex min-w-0 items-start gap-2">
+                  <ToolCallOutput text={agent.install} />
+                  <CopyButton content={agent.install} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
-  if (notReady.length === 0) return <EmptyState iconSlot={<MessageSquare />} titleSlot={strings.title} />;
-  return (
-    <div className="flex min-w-0 flex-col gap-4">
-      <EmptyState iconSlot={<MessageSquare />} titleSlot={strings.title} />
-      <div className="flex min-w-0 flex-col gap-1">
-        <Txt variant="caption">{strings.notReadyFound}</Txt>
-        {notReady.map(agent => (
-          <div key={agent.id} className="flex min-w-0 items-center justify-between gap-2">
-            <Txt variant="caption" className="truncate">
-              {agent.name}
-            </Txt>
-            <Button type="button" size="sm" variant="ghost" className="shrink-0" onClick={() => onSetup(agent.id)}>
-              {strings.adapterHow}
-            </Button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  return <EmptyState iconSlot={<MessageSquare />} titleSlot={strings.title} />;
 }
 
 /**
@@ -1194,7 +1150,7 @@ export function App({ state }: { state: AssistantState | null }) {
                   </Notice>
                 )}
                 {state.auth && <SignIn state={state} />}
-                {turns.length === 0 && state.pending.length === 0 && !state.auth && <Welcome state={state} onSetup={setSetup} />}
+                {turns.length === 0 && state.pending.length === 0 && !state.auth && <Welcome state={state} />}
                 {turns.map((turn, index) => {
                   const live = busy && index === turns.length - 1;
                   return (

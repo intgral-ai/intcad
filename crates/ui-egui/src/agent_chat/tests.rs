@@ -15731,86 +15731,30 @@ fn the_web_page_is_told_the_queue_the_pictures_and_the_names_an_answer_selects()
     );
 }
 
-/// An agent whose own command line is installed, but not the ACP adapter the app reaches it
-/// through, is no agent to pick: the page is told where the command line is and, in the app's
-/// words, what is missing, with the line that installs it. One not installed at all carries only
-/// its install line. The app can ask for the page's agent menu, and the page says when it closed.
-#[cfg(not(target_arch = "wasm32"))]
+/// A basic agent that is not found is no agent to pick, but the page lists it: with the line
+/// that sets it up and, in the app's words, what to do with it. Any other known agent that is
+/// missing carries only its install line.
 #[test]
-fn the_web_page_is_told_which_agents_lack_only_their_adapter() {
+fn the_web_page_is_told_which_missing_agents_to_list() {
     let mut h = app_with_cover_and_base();
     h.call("ui.agent_chat", json!({"open": true}));
     h.frames(3);
-    let missing = |id: &'static str, base: Option<&str>| {
+    let missing = |id: &'static str| {
         let known = discover::KNOWN.iter().find(|known| known.id == id).expect("a known agent");
-        discover::Missing {
-            id,
-            name: known.name,
-            install: known.install,
-            base: base.map(std::path::PathBuf::from),
-            basic: discover::BASIC.contains(&id),
-        }
+        discover::Missing { id, name: known.name, install: known.install, basic: discover::BASIC.contains(&id) }
     };
-    h.app.agent_chat.detection = Some(discover::Detection {
-        missing: vec![missing("claude", Some("/opt/tools/claude")), missing("codex", None), missing("goose", None)],
-        npm: true,
-        ..Default::default()
-    });
+    h.app.agent_chat.detection = Some(discover::Detection { missing: vec![missing("claude"), missing("goose")], ..Default::default() });
     let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
     assert_eq!(state["agents"], json!([]), "neither is an agent to pick");
     let claude = &state["missing"][0];
-    assert_eq!((&claude["id"], &claude["name"], &claude["found"]), (&json!("claude"), &json!("Claude Code"), &json!("/opt/tools/claude")));
+    assert_eq!((&claude["id"], &claude["basic"]), (&json!("claude"), &json!(true)));
     assert_eq!(claude["install"], "npm install -g @agentclientprotocol/claude-agent-acp");
-    assert_eq!(claude["title"], "Claude Code needs one more step");
-    let body = claude["body"].as_str().expect("what is missing");
-    assert!(body.contains("Claude Code is installed") && body.contains("/opt/tools/claude") && body.contains("ACP adapter"), "{body}");
-    assert_eq!(claude["note"], Value::Null, "npm is here: the line can be run as it stands");
-    assert_eq!(claude["basic"], true);
-    // A basic agent that is not installed at all is listed too, in its own words.
-    let codex = &state["missing"][1];
-    assert_eq!((&codex["id"], &codex["basic"], &codex["found"], &codex["note"]), (&json!("codex"), &json!(true), &Value::Null, &Value::Null));
-    assert_eq!(codex["title"], "Codex is not installed");
-    assert!(codex["body"].as_str().is_some_and(|body| body.contains("did not find Codex") && body.contains("Refresh")), "{}", codex["body"]);
-    // Any other known agent that is missing carries only its install line: the page does not list it.
-    assert_eq!(
-        state["missing"][2],
-        json!({
-            "id": "goose", "name": "goose", "install": "see block.github.io/goose (installer script or Homebrew)",
-            "basic": false, "found": null, "title": null, "body": null, "note": null,
-        })
-    );
-    // The control channel says the same of the same computer.
+    assert!(claude["body"].as_str().is_some_and(|body| body.contains("Claude Code") && body.contains("Refresh")), "{}", claude["body"]);
+    let goose =
+        json!({"id": "goose", "name": "goose", "install": "see block.github.io/goose (installer script or Homebrew)", "basic": false, "body": null});
+    assert_eq!(state["missing"][1], goose);
     let detection = &h.call("ui.agent_chat", json!({}))["result"]["detection"];
-    assert_eq!(
-        detection["missing"][0],
-        json!({"id": "claude", "install": "npm install -g @agentclientprotocol/claude-agent-acp", "base": "/opt/tools/claude", "basic": true})
-    );
-    assert_eq!(detection["missing"][1]["base"], Value::Null);
-    assert_eq!(detection["npm"], true);
-
-    // Without npm the line cannot be run as it stands: the agent that is one step away says that
-    // Node.js comes first. One not installed at all keeps to its install line.
-    if let Some(detection) = h.app.agent_chat.detection.as_mut() {
-        detection.npm = false;
-    }
-    let without: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
-    for listed in [&without["missing"][0], &without["missing"][1]] {
-        let note = &listed["note"];
-        assert!(note.as_str().is_some_and(|note| note.contains("Node.js") && note.contains("npm")), "{note}");
-    }
-    assert_eq!(without["missing"][2]["note"], Value::Null, "its line is not npm's, and it is not listed");
-    assert_eq!(h.call("ui.agent_chat", json!({}))["result"]["detection"]["npm"], false);
-
-    // The agent menu: asked for by the app, and over once the page says it closed.
-    assert_eq!(state["picking"], false);
-    h.call("ui.agent_chat", json!({"picker": true}));
-    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
-    assert_eq!(state["picking"], true);
-    let ctx = h.ctx.clone();
-    assert!(web::act(&mut h.app, &ctx, &json!({"type": "picker"}).to_string()).is_err(), "open or closed must be said");
-    web::act(&mut h.app, &ctx, &json!({"type": "picker", "open": false}).to_string()).expect("the menu closed");
-    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
-    assert_eq!(state["picking"], false);
+    assert_eq!(detection["missing"][0], json!({"id": "claude", "install": "npm install -g @agentclientprotocol/claude-agent-acp", "basic": true}));
 }
 
 /// Each installed agent's row says what is known of it without starting it, and no more than that:
@@ -15846,31 +15790,27 @@ fn the_web_page_is_told_what_is_known_of_each_installed_agent() {
         command: "mine --acp".into(),
         ..Default::default()
     });
-    let rows = |app: &mut SolveApp| -> Vec<(String, Value, Value)> {
+    let rows = |app: &mut SolveApp| -> Vec<(String, Value)> {
         let state: Value = serde_json::from_str(&web::state(app)).expect("the state is JSON");
         let agents = state["agents"].as_array().expect("agents").clone();
-        agents
-            .into_iter()
-            .map(|agent| (agent["id"].as_str().unwrap_or_default().to_string(), agent["status"].clone(), agent["hint"].clone()))
-            .collect()
+        agents.into_iter().map(|agent| (agent["id"].as_str().unwrap_or_default().to_string(), agent["hint"].clone())).collect()
     };
     let expected = [
-        ("claude", json!("installed"), json!("Installed")),
-        ("codex", json!("signed_out"), json!("not signed in")),
-        ("gemini", json!("retired"), json!("Retired by its maker")),
-        ("opencode", json!("does_not_start"), json!("Does not start")),
-        ("qwen", json!("installed"), json!("Installed")),
-        ("custom-1", Value::Null, Value::Null),
+        ("claude", json!("Installed")),
+        ("codex", json!("not signed in")),
+        ("gemini", json!("Retired by its maker")),
+        ("opencode", json!("Does not start")),
+        ("qwen", json!("Installed")),
+        ("custom-1", Value::Null),
     ];
     let told = rows(&mut h.app);
     assert_eq!(told.len(), expected.len());
-    for ((id, status, hint), (want_id, want_status, want_hint)) in told.iter().zip(&expected) {
-        assert_eq!((id.as_str(), status, hint), (*want_id, want_status, want_hint));
+    for ((id, hint), (want_id, want_hint)) in told.iter().zip(&expected) {
+        assert_eq!((id.as_str(), hint), (*want_id, want_hint));
     }
     // A connection that succeeded is the only thing that makes a row say "signed in".
     h.app.agent_chat.login_results.insert("claude".into(), true);
-    let told = rows(&mut h.app);
-    assert_eq!((&told[0].1, &told[0].2), (&json!("signed_in"), &json!("signed in")));
+    assert_eq!(rows(&mut h.app)[0].1, json!("signed in"));
 }
 
 /// The app looks for installed agents when it knows nothing yet, and again each time the panel
@@ -15880,14 +15820,6 @@ fn the_web_page_is_told_what_is_known_of_each_installed_agent() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn the_app_looks_for_agents_each_time_the_panel_opens() {
-    // (the panel opened this frame, a detection is known, it came from a look) -> look now
-    assert!(looks_on_open(true, false, false), "nothing is known yet");
-    assert!(looks_on_open(false, false, false), "nothing is known yet, on any open frame");
-    assert!(looks_on_open(true, true, true), "opened again after the app's own look");
-    assert!(!looks_on_open(false, true, true), "still open: Refresh is what looks again");
-    assert!(!looks_on_open(true, true, false), "a detection that was given is kept");
-    assert!(!looks_on_open(false, true, false));
-
     let mut h = app_with_cover_and_base();
     h.app.agent_chat.detection = Some(discover::Detection::default());
     h.call("ui.agent_chat", json!({"open": true}));

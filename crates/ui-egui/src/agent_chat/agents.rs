@@ -246,20 +246,16 @@ impl Entry {
             retired: false,
         }
     }
-    /// What is known of an installed agent without starting it, as the picker's row says it:
-    /// `does_not_start`, `retired`, `signed_in` (a connection from this window succeeded),
-    /// `signed_out`, else `installed`. Installed is all that is claimed: whether it will connect
-    /// is known only once it has. `None` for an agent the user added.
+    /// What is known of an installed agent without starting it: the catalog key of the word its
+    /// row in the picker shows. "Signed in" only after a connection from this window succeeded,
+    /// and installed is all that is claimed otherwise. `None` for an agent the user added.
     pub fn status(&self) -> Option<&'static str> {
-        if !self.found {
-            return None;
-        }
-        Some(match (&self.problem, self.retired, self.login) {
-            (Some(_), _, _) => "does_not_start",
-            (None, true, _) => "retired",
-            (None, false, "signed_in") => "signed_in",
-            (None, false, "signed_out") => "signed_out",
-            _ => "installed",
+        self.found.then_some(match (&self.problem, self.retired, self.login) {
+            (Some(_), _, _) => "ui.agent_chat_does_not_start",
+            (None, true, _) => "ui.agent_chat_retired",
+            (None, false, "signed_in") => "ui.agent_chat_signed_in",
+            (None, false, "signed_out") => "ui.agent_chat_not_signed_in",
+            _ => "ui.agent_chat_installed",
         })
     }
     /// A short line under the name: the version, the model, the command, or why it can't start.

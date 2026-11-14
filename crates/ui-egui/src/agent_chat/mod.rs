@@ -551,10 +551,6 @@ pub struct AgentChat {
     /// it is taken again each time the panel opens.
     #[cfg(not(target_arch = "wasm32"))]
     looked: bool,
-    /// The look under way began as the panel opened, not from Refresh: what connections have
-    /// shown about each agent's sign-in is kept.
-    #[cfg(not(target_arch = "wasm32"))]
-    look_keeps_results: bool,
     /// The panel was open on the last frame.
     #[cfg(not(target_arch = "wasm32"))]
     seen_open: bool,
@@ -2386,13 +2382,9 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(rx) = &app.agent_chat.detecting
         && let Ok(d) = rx.try_recv()
     {
-        // Refresh starts over on what is known of each agent's sign-in; the look taken as the
-        // panel opens keeps it.
-        if !std::mem::take(&mut app.agent_chat.look_keeps_results) {
-            for found in &d.found {
-                app.agent_chat.login_results.remove(found.id);
-                app.agent_chat.settings.tests.remove(found.id);
-            }
+        for found in &d.found {
+            app.agent_chat.login_results.remove(found.id);
+            app.agent_chat.settings.tests.remove(found.id);
         }
         app.agent_chat.detection = Some(d);
         app.agent_chat.detecting = None;
@@ -2487,31 +2479,24 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
-/// Whether to look for installed agents now, on a frame with the panel open: when nothing is
-/// known yet, and again each time the panel opens, so what was installed or removed meanwhile
-/// shows without Refresh. A detection that did not come from a look (a test's, a caller's) is
-/// kept as it was given.
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn looks_on_open(opened: bool, known: bool, looked: bool) -> bool {
-    !known || (opened && looked)
-}
-
-/// The panel is open this frame: look for installed agents when [`looks_on_open`] says so.
+/// The panel is open this frame: look for installed agents when nothing is known yet, and again
+/// each time the panel opens, so what was installed or removed meanwhile shows without Refresh.
+/// A detection that did not come from a look (a test's, a caller's) is kept as it was given.
+// ponytail: the look on opening is a plain Refresh, so reopening the panel forgets "Signed in"
+// until the next connection. If that matters, keep `login_results` for a look begun here.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn look_on_open(app: &mut SolveApp, ctx: &egui::Context) {
     let opened = !std::mem::replace(&mut app.agent_chat.seen_open, true);
     let chat = &app.agent_chat;
-    if chat.detecting.is_none() && looks_on_open(opened, chat.detection.is_some(), chat.looked) {
+    if chat.detecting.is_none() && (chat.detection.is_none() || (opened && chat.looked)) {
         refresh(app, ctx);
-        app.agent_chat.look_keeps_results = true;
     }
 }
 
 /// Look for installed agents in the background (cached until the panel opens again; Refresh
-/// looks at once, and starts over on what is known of each agent's sign-in).
+/// looks at once).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
-    app.agent_chat.look_keeps_results = false;
     if app.agent_chat.detecting.is_some() {
         return;
     }
@@ -3018,8 +3003,7 @@ pub fn status(app: &SolveApp) -> Value {
     let detection = c.detection.as_ref().map(|d| {
         json!({
             "found": d.found.iter().map(|f| json!({"id": f.id, "name": f.name, "argv": f.argv, "version": f.version, "login": f.login.id(), "problem": f.problem})).collect::<Vec<_>>(),
-            "missing": d.missing.iter().map(|m| json!({"id": m.id, "install": m.install, "base": m.base.as_ref().map(|path| path.display().to_string()), "basic": m.basic})).collect::<Vec<_>>(),
-            "npm": d.npm,
+            "missing": d.missing.iter().map(|m| json!({"id": m.id, "install": m.install, "basic": m.basic})).collect::<Vec<_>>(),
             "ms": d.took_ms,
         })
     });
