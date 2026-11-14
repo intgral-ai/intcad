@@ -18,17 +18,17 @@
   <!-- Never change the UpgradeCode: it is what lets a new MSI replace every earlier install,
        including those from before the SolveCraft -> SolidCraft rename (docs/compatibility.md). -->
   <Package
-      Name="open-skyfall"
+      Name="Intcad"
       Manufacturer="Intgral"
       Version="$(var.Version)"
       UpgradeCode="6A145FD6-D285-428D-AE84-A69570CDF4DB"
       Scope="perMachine"
       Compressed="yes"
       Language="1033">
-    <SummaryInformation Description="open-skyfall parametric 3D CAD" Manufacturer="Intgral" />
+    <SummaryInformation Description="Intcad parametric 3D CAD" Manufacturer="Intgral" />
     <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other. -->
     <MajorUpgrade AllowSameVersionUpgrades="yes"
-        DowngradeErrorMessage="A newer version of open-skyfall is already installed." />
+        DowngradeErrorMessage="A newer version of Intcad is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <!-- Advertised shortcuts to an .exe need an .exe icon identifier (ICE50). -->
@@ -51,7 +51,7 @@
       <RegistrySearch Id="PreviousInstallFolder" Root="HKLM" Key="Software\SolidCraft" Name="InstallDir" Type="raw" />
     </Property>
 
-    <Feature Id="Main" Title="open-skyfall" Level="1">
+    <Feature Id="Main" Title="Intcad" Level="1">
       <ComponentGroupRef Id="SolidcraftFiles" />
       <?if $(var.HasMastra) = 1 ?>
       <ComponentGroupRef Id="SolidcraftMastra" />
@@ -68,8 +68,8 @@
     </UI>
 
     <Property Id="SolidcraftVersion" Value="$(var.DisplayVersion)" />
-    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="open-skyfall $(var.DisplayVersion) is installed. You can start it any time from the Start menu." />
-    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch open-skyfall" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Intcad $(var.DisplayVersion) is installed. You can start it any time from the Start menu." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Intcad" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
     <Property Id="WixShellExecTarget" Value="[#SolidcraftExe]" />
     <!-- Runs in the wizard's own (unelevated) process, so the app starts as the user. -->
@@ -82,13 +82,13 @@
            The UpgradeCode above is unchanged, so this MSI major-upgrades a pre-rename install. -->
       <Component Id="SolidcraftApp" Guid="A379D509-D776-4B34-A3A4-71FBF5724971">
         <File Id="SolidcraftExe" Source="$(var.BinDir)\solidcraft.exe" KeyPath="yes">
-          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="open-skyfall"
-              Description="open-skyfall parametric 3D CAD" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Intcad"
+              Description="Intcad parametric 3D CAD" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
               Icon="SolidcraftIcon.exe" IconIndex="0" />
         </File>
 
         <!-- .sc: SolidCraft's own format; SolidCraft is its default app. -->
-        <ProgId Id="Solidcraft.Design" Description="open-skyfall Design" Icon="SolidcraftExe" IconIndex="0">
+        <ProgId Id="Solidcraft.Design" Description="Intcad Design" Icon="SolidcraftExe" IconIndex="0">
           <Extension Id="sc" ContentType="application/x-solidcraft">
             <Verb Id="open" Command="Open" TargetFile="SolidcraftExe" Argument="&quot;%1&quot;" />
           </Extension>
@@ -111,7 +111,7 @@
         <RegistryValue Root="HKLM" Key="Software\Classes\.stl\OpenWithProgids" Name="Solidcraft.Model" Value="" Type="string" />
 
         <!-- "Open with" app list and the Run dialog (Win+R "solidcraft"). -->
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe" Name="FriendlyAppName" Value="open-skyfall" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe" Name="FriendlyAppName" Value="Intcad" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\shell\open\command" Value="&quot;[#SolidcraftExe]&quot; &quot;%1&quot;" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".sc" Value="" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".solidcraft" Value="" Type="string" />
@@ -142,6 +142,16 @@
         <File Id="LicenseApache" Source="$(var.BinDir)\LICENSE-APACHE" />
         <File Id="Notice" Source="$(var.BinDir)\NOTICE" />
         <File Id="ThirdParty" Source="$(var.BinDir)\THIRD-PARTY-LICENSES.txt" />
+      </Component>
+      <!-- The third-party notices of the Assistant's page (packages/assistant-web). A component
+           of its own: the one above keeps the files it has always had. -->
+      <Component Id="AssistantPageNotices">
+        <File Id="AssistantNotices" Source="$(var.BinDir)\ASSISTANT-THIRD-PARTY-NOTICES.txt" KeyPath="yes" />
+      </Component>
+      <!-- The web view platform's licences (GTK/WebKitGTK, WebView2, WKWebView), including the
+           LGPL text; also built into Help > About > Licences. -->
+      <Component Id="WebViewPlatformNotices">
+        <File Id="WebViewNotices" Source="$(var.BinDir)\WEB-VIEW-PLATFORM-NOTICES.txt" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

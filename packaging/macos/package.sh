@@ -162,12 +162,20 @@ cp "$WORK/bin/solidcraft" "$APP/Contents/MacOS/SolidCraft"
 # solidcraft-cli next to the app, as every other package has it: the agent chat starts it as the
 # agent's MCP server (`solidcraft-cli mcp --connect`) and looks for it beside the running program.
 cp "$WORK/bin/solidcraft-cli" "$APP/Contents/MacOS/solidcraft-cli"
-# Apple-compiled layered icon and older-macOS fallback (regeneration: assets/README.md).
-# Keep compiled resources so packaging also works on runners with older Xcode versions.
-cp "$ROOT/assets/icons/app/macos/exports/Assets.car" "$APP/Contents/Resources/Assets.car"
+# The icon file with the product's mark (regeneration: assets/README.md). No layered icon is
+# installed: the Assets.car under assets/ still holds the upstream artwork, and compiling one
+# for the mark needs Xcode 26. macOS 26 would show a layered icon in place of the icon file.
 cp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$APP/Contents/Resources/SolidCraft.icns"
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
+# The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
+# which the app carries built in as well (Help > About > Licences).
+cp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
+cp "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$APP/Contents/Resources/Licenses/WEB-VIEW-PLATFORM-NOTICES.txt"
+# The inventory of what that page was built from. The page itself is embedded in the executable
+# (include_bytes!); packaging/macos/verify-assistant-bundle.py checks both in the finished app.
+mkdir -p "$APP/Contents/Resources/Assistant"
+cp "$ROOT/packages/assistant-web/inventory.json" "$APP/Contents/Resources/Assistant/inventory.json"
 
 # ---- Mastra runtime (opt-in; application-relative, pinned Node) ---------------------------------
 # Bundling is opt-in because the artifact is still unapproved (DQ-7, #15). A universal app needs
@@ -257,21 +265,31 @@ plutil -lint "$MNT/SolidCraft.app/Contents/Info.plist"
 # Check the names Finder/LaunchServices actually use, and the bundle identity. The executable and
 # icon file keep the upstream names so existing bundles and update scripts stay compatible.
 for key in CFBundleName CFBundleDisplayName; do
-  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = open-skyfall
+  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = Intcad
 done
-for key in CFBundleExecutable CFBundleIconFile CFBundleIconName; do
+for key in CFBundleExecutable CFBundleIconFile; do
   test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = SolidCraft
 done
+# Nothing names or carries a layered icon, which macOS 26 would show in place of the icon file.
+if /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$MNT/SolidCraft.app/Contents/Info.plist" >/dev/null 2>&1; then
+  echo "the bundle names a layered icon (CFBundleIconName)" >&2
+  exit 1
+fi
+test ! -e "$MNT/SolidCraft.app/Contents/Resources/Assets.car"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MNT/SolidCraft.app/Contents/Info.plist")" = "$MACOS_BUNDLE_ID"
 test -s "$MNT/SolidCraft.app/Contents/Resources/SolidCraft.icns"
 cmp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$MNT/SolidCraft.app/Contents/Resources/SolidCraft.icns"
-cmp "$ROOT/assets/icons/app/macos/exports/Assets.car" "$MNT/SolidCraft.app/Contents/Resources/Assets.car"
 cmp "$ROOT/assets/platforms/macos/README.txt" "$MNT/README.txt"
 case "$ARCH" in universal) WANT=(arm64 x86_64) ;; aarch64) WANT=(arm64) ;; *) WANT=(x86_64) ;; esac
 for arch in "${WANT[@]}"; do
   lipo "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" -verify_arch "$arch"
 done
 test -s "$MNT/SolidCraft.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
+cmp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$MNT/SolidCraft.app/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
+cmp "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$MNT/SolidCraft.app/Contents/Resources/Licenses/WEB-VIEW-PLATFORM-NOTICES.txt"
+# The page's files are embedded in the executable and its inventory/notices are beside it: check
+# the app as the mounted image carries it, not the build output it came from.
+python3 "$ROOT/packaging/macos/verify-assistant-bundle.py" --app "$MNT/SolidCraft.app" --source "$ROOT/packages/assistant-web"
 if [ "$WITH_MASTRA" = 1 ]; then
   case "$ARCH" in
     universal)

@@ -8235,6 +8235,24 @@ fn streamed_text_joins_and_tool_updates_change_their_call() {
 }
 
 #[test]
+fn multi_round_streamed_text_stays_one_agent_item() {
+    let mut c = chat();
+    c.on_event(Event::Text { thought: false, text: "round one".into() });
+    c.on_event(Event::Tool {
+        id: "call".into(),
+        title: Some("measure".into()),
+        kind: None,
+        status: Some(ToolStatus::Completed),
+        input: None,
+        output: Some("ok".into()),
+    });
+    c.on_event(Event::Text { thought: false, text: " round two".into() });
+    let agents: Vec<&str> = c.items.iter().filter_map(|item| if let Item::Agent { text, .. } = item { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(agents, vec!["round one round two"], "{:?}", c.items);
+    assert_eq!(c.items.iter().filter(|item| matches!(item, Item::Tool { .. })).count(), 1);
+}
+
+#[test]
 fn a_sign_in_request_keeps_the_question_for_after_the_login() {
     let mut c = chat();
     c.last = Some(("make a cube".into(), false, None, vec![attach::Attachment::imported("motor.step".into())]));
@@ -8494,107 +8512,24 @@ fn ai_features_and_the_toolbar_button_are_on_by_default() {
     assert!(p.ai_features && p.ai_toolbar_button);
 }
 
-/// Pop out puts the chat in its own window (a native window on the desktop, which can go to
-/// another screen; embedded here, where the test context has one viewport), and Dock puts it back
-/// in the side panel. The control channel does the same.
+/// The Assistant is always a panel of the app's window. The old egui panel's "Own window"
+/// button and state are gone, and a saved choice (or an older client asking for one over the
+/// control channel) is put back, so the conversation cannot be split across two windows.
 #[test]
-fn the_chat_pops_out_into_its_own_window_and_docks_back() {
+fn the_assistant_never_pops_out_into_a_window() {
     use crate::scenario::{handle_at, rect_of};
     let mut h = crate::scenario::Harness::new();
     h.call("ui.agent_chat", json!({"open": true}));
     h.frames(3);
-    assert!(rect_of("agent_chat:panel").is_some() && rect_of("agent_chat:window").is_none(), "docked by default");
-    assert!(!h.app.preferences.agent_chat_popped);
-    let pop = handle_at("agent_chat:pop_out").expect("a pop-out button in the header");
-    h.call("ui.click", json!({"x": pop.x, "y": pop.y}));
-    h.frames(3);
-    assert!(h.app.preferences.agent_chat_popped);
-    assert!(rect_of("agent_chat:panel").is_none(), "the side panel is gone");
-    assert!(rect_of("agent_chat:window").is_some(), "the chat is in its own window");
-    assert_eq!(status(&h.app)["popped"], json!(true));
-    // A window has its own minimise; the strip and the side drag are the docked panel's.
-    assert!(handle_at("agent_chat:minimize").is_none() && handle_at("agent_chat:grip").is_none());
-    let dock = handle_at("agent_chat:dock").expect("a dock button in the popped-out header");
-    h.call("ui.click", json!({"x": dock.x, "y": dock.y}));
-    h.frames(3);
-    assert!(!h.app.preferences.agent_chat_popped);
-    assert!(rect_of("agent_chat:panel").is_some() && rect_of("agent_chat:window").is_none(), "back in the side panel");
-    h.call("ui.agent_chat", json!({"popped": true}));
-    h.frames(3);
-    assert!(rect_of("agent_chat:window").is_some() && rect_of("agent_chat:panel").is_none());
-    // Closing the chat keeps where it lives: it opens popped out again.
-    h.call("ui.agent_chat", json!({"open": false}));
-    h.frames(2);
-    assert!(rect_of("agent_chat:window").is_none());
-    h.call("ui.agent_chat", json!({"open": true}));
-    h.frames(3);
-    assert!(rect_of("agent_chat:window").is_some());
-}
-
-/// The saved place is given to the window once, when it opens; after that the system owns it.
-/// Given every frame, it chased the system's own rounding: a window that shook a pixel up and
-/// down (686, 687, 686…) on a Retina screen.
-#[test]
-fn the_window_place_is_given_once_when_it_opens() {
-    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
-    app.preferences.agent_chat_window = Some([1967.0, 160.0, 569.0, 686.0]);
-    let first = panel::window_builder(&app);
-    assert_eq!(first.position, Some(egui::pos2(1967.0, 160.0)));
-    assert_eq!(first.inner_size, Some(egui::vec2(569.0, 686.0)));
-    app.agent_chat.window_placed = true;
-    app.preferences.agent_chat_window = Some([1967.0, 160.0, 569.0, 687.0]);
-    let later = panel::window_builder(&app);
-    assert_eq!((later.position, later.inner_size), (None, None), "nothing to move or resize once it is open");
-    assert!(later.title.is_some());
-    // Docked or closed, the next pop-out opens at the saved place again.
-    let mut h = crate::scenario::Harness::new();
+    assert!(rect_of("agent_chat:window").is_none(), "no window of its own");
+    assert!(rect_of("agent_chat:panel").is_some(), "the side panel is there");
+    assert!(handle_at("agent_chat:pop_out").is_none(), "there is no pop-out button");
+    assert!(handle_at("agent_chat:dock").is_none(), "and nothing to dock back");
+    // An older control client's request is accepted and does nothing.
     h.call("ui.agent_chat", json!({"open": true, "popped": true}));
-    h.frames(2);
-    assert!(h.app.agent_chat.window_placed);
-    h.call("ui.agent_chat", json!({"popped": false}));
-    h.frames(2);
-    assert!(!h.app.agent_chat.window_placed);
-    h.call("ui.agent_chat", json!({"popped": true}));
-    h.frames(2);
-    h.call("ui.agent_chat", json!({"open": false}));
-    h.frames(2);
-    assert!(!h.app.agent_chat.window_placed);
-}
-
-/// macOS shows the text cursor only in the active window: the chat's own window becomes active
-/// when the pointer comes over its text box from the app's main window, and never takes the focus
-/// from another app.
-#[test]
-fn the_chat_window_takes_the_focus_for_its_text_box_from_the_main_window_only() {
-    assert!(panel::take_focus_for_text(true, true, Some(false), Some(true)));
-    assert!(!panel::take_focus_for_text(true, true, Some(false), Some(false)), "another app is active");
-    assert!(!panel::take_focus_for_text(true, true, Some(true), Some(false)), "already active");
-    assert!(!panel::take_focus_for_text(true, false, Some(false), Some(true)), "not over the text box");
-    assert!(!panel::take_focus_for_text(false, true, Some(false), Some(true)), "docked: the main window shows it");
-    assert!(!panel::take_focus_for_text(true, true, None, Some(true)), "unknown: leave it");
-}
-
-/// Whether the chat is popped out, and its window's place and size, are preferences; ones saved
-/// before they existed load docked, and an unusable saved place is ignored.
-#[test]
-fn the_popped_out_window_and_its_place_are_remembered() {
-    use crate::prefs::Prefs;
-    let mut p = Prefs::default();
-    assert!(!p.agent_chat_popped && p.agent_chat_window.is_none());
-    p.agent_chat_popped = true;
-    p.agent_chat_window = Some([-1600.0, 80.0, 420.0, 700.0]);
-    let back: Prefs = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
-    assert!(back.agent_chat_popped);
-    assert_eq!(back.agent_chat_window, Some([-1600.0, 80.0, 420.0, 700.0]), "a place on a screen left of the main one is kept");
-    let mut old = serde_json::to_value(Prefs::default()).unwrap();
-    old.as_object_mut().unwrap().remove("agent_chat_popped");
-    old.as_object_mut().unwrap().remove("agent_chat_window");
-    let old: Prefs = serde_json::from_value(old).unwrap();
-    assert!(!old.agent_chat_popped && old.agent_chat_window.is_none());
-    assert_eq!(panel::window_place(Some([10.0, 20.0, 400.0, 600.0])), Some(([10.0, 20.0], [400.0, 600.0])));
-    for bad in [[f32::NAN, 0.0, 400.0, 600.0], [0.0, 0.0, 10.0, 600.0], [0.0, 0.0, 400.0, f32::INFINITY], [1e9, 0.0, 400.0, 600.0]] {
-        assert_eq!(panel::window_place(Some(bad)), None, "{bad:?}");
-    }
+    h.frames(3);
+    assert!(rect_of("agent_chat:window").is_none());
+    assert!(rect_of("agent_chat:panel").is_some());
 }
 
 /// "Ask every time": a modelling command waits for Allow; "Always allow" lets the same command
@@ -8656,8 +8591,8 @@ fn the_agents_own_questions_are_answered_by_the_mode_or_asked() {
             PermissionOption { id: "no".into(), name: "Reject".into(), kind: "reject_once".into() },
         ]
     };
-    on_permission(&mut app, 1, "mcp__solidcraft-app__batch".into(), Some("other"), opts());
-    assert!(matches!(app.agent_chat.items.last(), Some(Item::Notice { text, .. }) if text.contains("mcp__solidcraft-app__batch")));
+    on_permission(&mut app, 1, "mcp__intcad-app__batch".into(), Some("other"), opts());
+    assert!(matches!(app.agent_chat.items.last(), Some(Item::Notice { text, .. }) if text.contains("mcp__intcad-app__batch")));
     on_permission(&mut app, 2, "Run ls".into(), None, opts());
     assert!(matches!(app.agent_chat.items.last(), Some(Item::Permission { answer: None, .. })));
     let n = app.agent_chat.items.len() - 1;
@@ -8679,7 +8614,7 @@ fn a_title_that_mentions_solidcraft_goes_through_the_users_mode() {
         ("run solidcraft-cli; ls", None),
         ("Edit ~/.local/share/solidcraft/agent-chat/work/notes.txt", Some("edit")),
         ("mcp__solidcraft__batch", Some("other")),
-        ("mcp__solidcraft-app__batch", Some("execute")),
+        ("mcp__intcad-app__batch", Some("execute")),
     ];
     for mode in [agents::Mode::Ask, agents::Mode::Edits] {
         app.preferences.agent_permissions.insert("codex".into(), mode);
@@ -8689,7 +8624,7 @@ fn a_title_that_mentions_solidcraft_goes_through_the_users_mode() {
             app.agent_chat.items.clear();
         }
         // The chat's own tool stays a single question, the gate's.
-        on_permission(&mut app, 2, "mcp__solidcraft-app__batch".into(), Some("other"), opts());
+        on_permission(&mut app, 2, "mcp__intcad-app__batch".into(), Some("other"), opts());
         assert!(matches!(app.agent_chat.items.last(), Some(Item::Notice { .. })), "{mode:?}");
         app.agent_chat.items.clear();
     }
@@ -9305,7 +9240,7 @@ fn a_late_sign_in_retry_or_permission_cannot_restart_a_departed_turn() {
     crate::documents::open_tab(&mut app, solidcraft_engine::Session::default()).unwrap();
     script.report(Event::Permission {
         key: 7,
-        title: "mcp__solidcraft-app__batch".into(),
+        title: "mcp__intcad-app__batch".into(),
         kind: None,
         options: vec![PermissionOption { id: "allow".into(), name: "Allow".into(), kind: "allow_once".into() }],
     });
@@ -9852,7 +9787,7 @@ fn a_change_by_hand_between_messages_is_told_to_the_agent() {
     let (mut app, script, ctx) = app_with_script();
     let (tx, rx) = channel();
     app.agent_chat.tools_rx = Some(rx);
-    app.agent_chat.attach_selection = false;
+    app.preferences.agent_chat_attach_selection = false;
     let expr = |app: &SolveApp| app.session.doc.params.iter().find(|p| p.name == "w").map(|p| p.expr.clone()).unwrap();
 
     send(&mut app, &ctx, "a box and a parameter w".into());
@@ -11908,34 +11843,6 @@ fn files_dropped_on_the_chat_attach_and_the_app_does_not_open_them() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// The chat popped out into its own window takes drops too, and says so while files are dragged
-/// over it (#2812). Here the window floats inside the app, as it does where the system can't open
-/// one: a drop on the window is the chat's, one elsewhere is not.
-#[test]
-fn files_dropped_on_the_popped_out_chat_attach() {
-    use crate::scenario::rect_of;
-    let d = attachable("popdrop");
-    let mut h = narrow_chat();
-    h.call("ui.resize", json!({"width": 1600, "height": 1000}));
-    h.app.preferences.agent_chat_popped = true;
-    h.frames(4);
-    let window = rect_of("agent_chat:window").expect("popped out");
-    let hovered = || vec![egui::HoveredFile { path: Some(d.join("target.png")), mime: String::new() }];
-    h.drag_files(window.center(), hovered(), Vec::new());
-    assert!(rect_of("agent_chat:drop_hint").is_some_and(|r| window.contains(r.center())), "the hint over the window");
-    let outside = egui::pos2(5.0, 500.0);
-    assert!(!window.contains(outside));
-    h.drag_files(outside, hovered(), Vec::new());
-    assert!(rect_of("agent_chat:drop_hint").is_none(), "no hint away from it");
-    drop_files(&mut h, window.center(), &[d.join("target.png"), d.join("brief.md")]);
-    settle_chat(&mut h);
-    assert_eq!(status(&h.app)["attachments"], json!(["target.png", "brief.md"]));
-    assert!(!h.app.file_load.busy(), "the app doesn't open them as well");
-    drop_files(&mut h, outside, &[d.join("brief.md")]);
-    assert_eq!(status(&h.app)["attachments"].as_array().map(Vec::len), Some(2), "away from the window: not the chat's");
-    let _ = std::fs::remove_dir_all(&d);
-}
-
 /// Many files and a long message in a narrow chat: the chips wrap onto more rows and the text box
 /// keeps to the chat (a row of chips wider than the chat would widen everything under it).
 #[test]
@@ -11997,16 +11904,18 @@ fn box_selection(app: &mut SolveApp) -> Vec<solidcraft_engine::Sel> {
 fn an_attached_selection_goes_as_text_for_the_agent_and_as_chips_in_the_conversation() {
     let (mut app, script, ctx) = app_with_script();
     app.session.selection = box_selection(&mut app);
-    // Off: the message is just the message.
+    assert!(app.preferences.agent_chat_attach_selection, "on unless the preference is turned off");
+    // Off, as it was before this was a preference: the message is just the message.
+    app.preferences.agent_chat_attach_selection = false;
     send(&mut app, &ctx, "plain".into());
     assert_eq!(script.calls(), ["prompt: plain"]);
     ended(&script, "");
     poll(&mut app, &ctx);
 
-    app.agent_chat.attach_selection = true;
+    app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "round this".into());
     let prompt = script.calls().pop().expect("a prompt");
-    assert!(prompt.starts_with("prompt: round this\n\n[Selected in open-skyfall"), "{prompt}");
+    assert!(prompt.starts_with("prompt: round this\n\n[Selected in Intcad"), "{prompt}");
     for want in ["Elements:", "- Flat face ", "planar", "area ", "- Edge ", "length ", "name ", "Features:", "feature id", "Bodies:", "- Body1"] {
         assert!(prompt.contains(want), "{want:?} missing from {prompt}");
     }
@@ -12029,7 +11938,7 @@ fn an_attached_selection_goes_as_text_for_the_agent_and_as_chips_in_the_conversa
 fn queued_messages_keep_the_selection_they_were_typed_with() {
     use solidcraft_engine::Sel;
     let (mut app, script, ctx) = app_with_script();
-    app.agent_chat.attach_selection = true;
+    app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "first".into());
     app.session.selection = vec![Sel::Body { name: "Alpha".into() }];
     send(&mut app, &ctx, "second".into());
@@ -12433,12 +12342,11 @@ fn a_message_sent_again_after_sign_in_stays_the_message_it_was() {
     assert_eq!(counts, [0, 1]);
 }
 
-/// The picture viewer opens over the chat's own window too, not only over the docked panel (#1745).
+/// The picture viewer opens over the Assistant panel (#1745).
 #[test]
-fn the_viewer_opens_in_the_popped_out_window() {
+fn the_viewer_opens_over_the_panel() {
     let mut h = crate::scenario::Harness::new();
     h.call("ui.agent_chat", json!({"open": true}));
-    h.app.preferences.agent_chat_popped = true;
     h.app.agent_chat.items.push(Item::User {
         text: "look".into(),
         image: true,
@@ -12537,10 +12445,10 @@ fn the_picks_go_with_the_next_message_once() {
 
     // The same body is also selected and Attach selection is on: it is listed once.
     app.session.selection = vec![sels[3].clone(), sels[0].clone()];
-    app.agent_chat.attach_selection = true;
+    app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "look at these".into());
     let prompt = script.calls().pop().expect("a prompt");
-    assert!(prompt.starts_with("prompt: look at these\n\n[Selected in open-skyfall"), "{prompt}");
+    assert!(prompt.starts_with("prompt: look at these\n\n[Selected in Intcad"), "{prompt}");
     assert!(prompt.contains("3 item(s)"), "two picked and one more selected: {prompt}");
     assert_eq!(prompt.matches("- Body1").count(), 1, "{prompt}");
     let Some(Item::User { context, .. }) = app.agent_chat.items.last() else { panic!("a sent message") };
@@ -12549,7 +12457,7 @@ fn the_picks_go_with_the_next_message_once() {
     // The next message carries nothing of it.
     ended(&script, "");
     poll(&mut app, &ctx);
-    app.agent_chat.attach_selection = false;
+    app.preferences.agent_chat_attach_selection = false;
     send(&mut app, &ctx, "and now?".into());
     assert_eq!(script.calls().pop().as_deref(), Some("prompt: and now?"));
 }
@@ -12578,7 +12486,7 @@ fn a_rim_clicked_once_is_one_item_not_its_pieces() {
     assert_eq!(app.session.selection.len(), 2, "two clicks selected the two rims");
     assert_eq!(selected_count(&mut app), 2, "the checkbox counts the two clicks");
 
-    app.agent_chat.attach_selection = true;
+    app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "these two rims".into());
     let prompt = script.calls().pop().expect("a prompt");
     assert!(prompt.contains("2 item(s)"), "{prompt}");
@@ -12613,7 +12521,7 @@ fn a_split_wall_clicked_once_is_one_item() {
     );
     assert!(!app.session.selection.is_empty());
     assert_eq!(selected_count(&mut app), 1, "one click, however many patches it selected: {:?}", app.session.selection);
-    app.agent_chat.attach_selection = true;
+    app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "this wall".into());
     let prompt = script.calls().pop().expect("a prompt");
     assert!(prompt.contains("1 item(s)") && prompt.contains("Round face r10"), "{prompt}");
@@ -12859,6 +12767,8 @@ fn tool_calls_read_as_what_they_did() {
     assert_eq!(said("execute: solid.extrude", extrude.clone(), None).as_deref(), Some("Extrude Sketch1 by 10 mm"));
     // As an ACP agent names the bridged tool, with the body the result made.
     let made = r#"{"feature": 4, "name": "Extrude1", "created_bodies": ["Body2"], "changed_bodies": []}"#;
+    assert_eq!(said("mcp__intcad-app__execute", extrude.clone(), Some(made)).as_deref(), Some("Extrude Sketch1 by 10 mm → Body2"));
+    // A conversation saved while the chat's server was `solidcraft-app` reads the same.
     assert_eq!(said("mcp__solidcraft-app__execute", extrude, Some(made)).as_deref(), Some("Extrude Sketch1 by 10 mm → Body2"));
     let edges = json!([[20, 0, 20], [20, 30, 20], [0, 15, 20], [40, 15, 20]]);
     let batch = json!({"commands": [
@@ -12890,7 +12800,7 @@ fn tool_calls_read_as_what_they_did() {
 fn tool_cards_show_file_names_never_paths() {
     let shot = r"ui.screenshot: C:\Users\bherbruck\AppData\Local\Temp\solidcraft-mcp-8608-b4c7b64\shot-0.png";
     assert_eq!(said(shot, json!({}), None).as_deref(), Some("Screenshot"));
-    assert_eq!(said("mcp__solidcraft-app__ui.screenshot", json!({}), None).as_deref(), Some("Screenshot"));
+    assert_eq!(said("mcp__intcad-app__ui.screenshot", json!({}), None).as_deref(), Some("Screenshot"));
     // The fallback title (another agent's tools) is cut to file names; temp files drop out.
     assert_eq!(summary::plain_title(shot), "ui.screenshot");
     assert_eq!(summary::plain_title(r"Read C:\Users\Jane Doe\Documents\part.step"), "Read part.step");
@@ -13034,24 +12944,23 @@ fn a_screenshot_card_hides_the_path_until_details() {
 #[test]
 fn the_composer_box_fills_its_parent_in_every_layout() {
     use crate::scenario::rect_of;
-    for (layout, popped) in [("floating", false), ("docked", false), ("floating", true), ("docked", true)] {
+    for layout in ["floating", "docked"] {
         let mut h = narrow_chat();
         h.call("ui.resize", json!({"width": 1600, "height": 1000}));
         h.call("ui.set", json!({"layout": layout}));
-        h.app.preferences.agent_chat_popped = popped;
         h.app.agent_chat.state = Some(State::Ready);
         h.frames(4);
-        let footer = rect_of("agent_chat:composer_footer").unwrap_or_else(|| panic!("{layout} popped={popped}: the composer area"));
+        let footer = rect_of("agent_chat:composer_footer").unwrap_or_else(|| panic!("{layout}: the composer area"));
         let boxed = rect_of("agent_chat:composer_box").expect("the input box");
         let (l, r, t, b) =
             (boxed.left() - footer.left(), footer.right() - boxed.right(), boxed.top() - footer.top(), footer.bottom() - boxed.bottom());
         for (edge, gap) in [("left", l), ("right", r), ("top", t), ("bottom", b)] {
-            assert!(gap.abs() <= 1.0, "{layout} popped={popped}: box {edge} edge is {gap} from its parent ({boxed:?} in {footer:?})");
+            assert!(gap.abs() <= 1.0, "{layout}: box {edge} edge is {gap} from its parent ({boxed:?} in {footer:?})");
         }
         let input = rect_of("agent_chat:input").expect("the text");
-        assert!(input.left() > boxed.left() + 2.0, "{layout} popped={popped}: the text keeps its own padding");
+        assert!(input.left() > boxed.left() + 2.0, "{layout}: the text keeps its own padding");
         let send = rect_of("agent_chat:send").expect("Send");
-        assert!(boxed.contains_rect(send), "{layout} popped={popped}: Send stays inside the box");
+        assert!(boxed.contains_rect(send), "{layout}: Send stays inside the box");
     }
 }
 
@@ -13095,7 +13004,6 @@ fn tool_room_beside_the_docked_assistant_survives_an_inside_out_view() {
     app.ui.layout = crate::shell::LayoutMode::Floating;
     app.preferences.ai_features = true;
     app.agent_chat.open = true;
-    app.preferences.agent_chat_popped = false;
     app.agent_chat.panel_rect = Some(egui::Rect::from_min_max(egui::pos2(100.0, 40.0), egui::pos2(150.0, 600.0)));
     let inside_out = egui::Rect::from_min_max(egui::pos2(264.1875, 40.0), egui::pos2(159.0, 600.0));
     for side in ["right", "left"] {
@@ -15413,7 +15321,7 @@ fn a_skill_turn_freezes_the_current_selection_labels() {
     app.session.execute("solid.box", &json!({"length": 10, "width": 10, "height": 5, "body_name": "Plate"})).unwrap();
     app.session.selection = vec![solidcraft_engine::Sel::Body { name: "Plate".into() }];
     app.agent_chat.skill = skill::Skill::TextToCad;
-    app.agent_chat.attach_selection = true;
+    app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "make the plate 20 mm wide".into());
     let binding = app.agent_chat.skill_binding.as_ref().expect("a frozen binding");
     assert!(binding.selection.iter().any(|label| label == "Plate"), "{:?}", binding.selection);
@@ -15481,4 +15389,553 @@ fn host_reference_collection_never_selects_a_same_name_from_another_document() {
     first.app.session = solidcraft_engine::Session::default();
     first.app.session.execute("solid.box", &json!({"length": 1, "width": 1, "height": 1, "body_name": "Cover"})).unwrap();
     assert!(object_ref::resolve(&mut first.app.session, &cover).is_err());
+}
+
+/// Where the desktop host has a web view, the whole Assistant is drawn in it and the panel is only
+/// its frame; a host without one leaves the Assistant to the panel.
+#[test]
+fn the_panel_gives_its_room_to_the_hosts_web_view() {
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    assert!(crate::scenario::rect_of("agent_chat:web").is_none(), "no host: the panel draws the conversation itself");
+    assert!(crate::scenario::handle_at("agent_chat:send").is_some());
+    assert_eq!(web::placement(&mut h.app, &h.ctx), None, "nothing for a web view to cover");
+
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let panel = crate::scenario::rect_of("agent_chat:panel").expect("the panel");
+    assert!(panel.expand(1.0).contains_rect(place), "inside the panel: {place:?} in {panel:?}");
+    assert!(place.height() > panel.height() * 0.9 && place.width() > panel.width() * 0.9, "all of the panel's room: {place:?} of {panel:?}");
+    assert!(crate::scenario::handle_at("agent_chat:send").is_none(), "the composer is the page's");
+    assert!(crate::scenario::handle_at("agent_chat:switcher").is_none(), "so are the agent's controls");
+    assert_eq!(web::placement(&mut h.app, &h.ctx), Some(place));
+    assert_eq!(web::placement(&mut h.app, &h.ctx), None, "a place is good for the frame that gave it");
+}
+
+/// Where the application bar is the window's title bar, the window's edges resize it, and a
+/// native view would take the presses meant for them: the web view's place stops short of the
+/// edges, so a panel at the window's edge leaves that edge for resizing.
+#[test]
+fn the_web_view_keeps_off_the_windows_resize_edges() {
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.agent_chat", json!({"open": true}));
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    let (_, layer) = h.app.agent_chat.web_place.expect("the place given up to the web view");
+    let window = h.ctx.content_rect();
+    let inside = crate::titlebar::inside_resize_zones(&h.ctx);
+    assert!(window.contains_rect(inside) && inside.width() < window.width() && inside.height() < window.height(), "{inside:?} in {window:?}");
+    // A panel in the window's lower right corner, whatever the layout is.
+    let at_edge = egui::Rect::from_min_max(egui::pos2(window.right() - 300.0, window.top() + 60.0), window.right_bottom());
+
+    h.app.custom_titlebar = false;
+    h.app.agent_chat.web_place = Some((at_edge, layer));
+    assert_eq!(web::placement(&mut h.app, &h.ctx), Some(at_edge), "the system's own frame is outside what the app draws");
+
+    h.app.custom_titlebar = true;
+    h.app.agent_chat.web_place = Some((at_edge, layer));
+    let kept = web::placement(&mut h.app, &h.ctx).expect("still a place");
+    assert_eq!(kept, at_edge.intersect(inside));
+    assert_eq!(kept.left_top(), at_edge.left_top(), "only the window's edges are kept free");
+    assert!(kept.right() < window.right() && kept.bottom() < window.bottom(), "{kept:?} in {window:?}");
+
+    // A place that is all resize edge is no place.
+    h.app.agent_chat.web_place = Some((egui::Rect::from_min_max(egui::pos2(inside.right(), window.top()), window.right_bottom()), layer));
+    assert_eq!(web::placement(&mut h.app, &h.ctx), None);
+}
+
+/// The page is told the transcript and the composer's state in the app's language, with what it
+/// needs to answer one request and not another: an approval by its id, a permission and an undo
+/// by their place.
+#[test]
+fn the_web_page_is_told_the_conversation_in_the_apps_language() {
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let doc = h.app.session.doc.clone();
+    h.app.agent_chat.items = vec![
+        Item::User { text: "make a plate".into(), image: false, pictures: Vec::new(), files: vec!["notes.txt".into()], context: Context::default() },
+        Item::Agent { thought: false, text: "On it.".into() },
+        Item::Plan(vec![("Draw".into(), "completed".into()), ("Extrude".into(), "in_progress".into())]),
+        Item::Tool {
+            id: "t1".into(),
+            title: "batch: solid.box".into(),
+            kind: "edit".into(),
+            status: Some(ToolStatus::Failed),
+            input: None,
+            output: Some("x".repeat(9000)),
+        },
+        Item::Permission {
+            key: 1,
+            title: "Export plate.step".into(),
+            answer: None,
+            options: vec![PermissionOption { id: "once".into(), name: "Allow once".into(), kind: "allow_once".into() }],
+        },
+        Item::Changes { steps: 2, doc, undone: false },
+        Item::Notice { text: "careful".into(), error: true },
+    ];
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    let kinds: Vec<&str> = state["items"].as_array().unwrap().iter().map(|item| item["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["user", "text", "plan", "tool", "permission", "changes", "notice"]);
+    assert_eq!(state["items"][0]["files"], json!(["notes.txt"]));
+    assert_eq!(state["items"][2]["steps"][1], json!({"text": "Extrude", "status": "in_progress"}));
+    assert_eq!(state["items"][3]["status"], "failed");
+    assert_eq!(state["items"][3]["output"].as_str().unwrap().chars().count(), 8001, "a long result is cut, with an ellipsis");
+    assert_eq!(state["items"][4]["index"], 4);
+    assert!(state["items"][4]["heading"].as_str().unwrap().contains("Export plate.step"));
+    assert_eq!(state["items"][4]["answered"], Value::Null);
+    assert_eq!(state["items"][5], json!({"kind": "changes", "index": 5, "label": "Changes: 2, one undo step", "undone": false, "undoable": true}));
+    assert_eq!(state["state"], "off");
+    assert_eq!(state["running"], false);
+    assert_eq!(state["confirmNew"], false);
+    assert_eq!(state["auth"], Value::Null, "no sign-in is asked for");
+    assert!(state["agents"].is_array() && state["notes"].is_array() && state["missing"].is_array());
+    assert_eq!(state["permissions"], "edits");
+    assert_eq!(state["strings"]["send"], "Send");
+    // The host asks outside the app's own passes: the words still follow the app's language.
+    h.app.preferences.language = "zh".into();
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    let expected = {
+        let _language = crate::i18n::scope("zh");
+        (tr("ui.agent_chat_send").to_string(), trf("ui.agent_chat_changes", &[("n", "2")]))
+    };
+    assert_ne!(expected.0, "Send", "the catalog has the word in Chinese");
+    assert_eq!(state["strings"]["send"], expected.0);
+    assert_eq!(state["items"][5]["label"], expected.1);
+}
+
+/// The page may ask only for what is listed, and each request is checked against the chat as it
+/// is: nothing unknown, no answer to a request that is not waiting, no undo of other changes, no
+/// address that is not a web address.
+#[test]
+fn the_web_page_may_only_ask_for_listed_actions_that_fit_the_chat() {
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    let act = |h: &mut crate::scenario::Harness, action: Value| web::act(&mut h.app, &ctx, &action.to_string());
+    for refused in [
+        json!({"type": "execute", "command": "solid.box"}),
+        json!({"type": "agent", "id": "no-such-agent"}),
+        json!({"type": "agent_mode", "id": "no-such-mode"}),
+        json!({"type": "model", "id": "no-such-model"}),
+        json!({"type": "config", "id": "no-such-option", "value": "x"}),
+        json!({"type": "auth", "id": "no-such-method"}),
+        json!({"type": "confirm_new", "yes": true}),
+        json!({"no": "type"}),
+        json!({"type": "send", "text": "   "}),
+        json!({"type": "approve", "id": 7, "allow": true}),
+        json!({"type": "permission", "index": 0, "option": "once"}),
+        json!({"type": "undo", "index": 0}),
+        json!({"type": "permissions", "mode": "everything"}),
+        json!({"type": "skill", "id": "nope"}),
+        json!({"type": "open_link", "url": "javascript:alert(1)"}),
+        json!({"type": "open_link", "url": "file:///etc/passwd"}),
+        json!({"type": "surface", "color": "red"}),
+        json!({"type": "surface", "color": "#12345"}),
+    ] {
+        assert!(act(&mut h, refused.clone()).is_err(), "{refused} is refused");
+    }
+    assert!(web::act(&mut h.app, &ctx, "not json").is_err());
+    assert!(h.app.agent_chat.items.is_empty(), "nothing refused left a trace in the conversation");
+
+    // What is listed acts, on the request it names.
+    h.app.agent_chat.items.push(Item::Permission {
+        key: 1,
+        title: "Export plate.step".into(),
+        answer: None,
+        options: vec![PermissionOption { id: "once".into(), name: "Allow once".into(), kind: "allow_once".into() }],
+    });
+    assert!(act(&mut h, json!({"type": "permission", "index": 0, "option": "never"})).is_err(), "not an option of that request");
+    act(&mut h, json!({"type": "permission", "index": 0, "option": "once"})).expect("an offered option");
+    assert!(matches!(&h.app.agent_chat.items[0], Item::Permission { answer: Some(_), .. }));
+    assert!(act(&mut h, json!({"type": "permission", "index": 0, "option": "once"})).is_err(), "answered once");
+
+    act(&mut h, json!({"type": "attach_selection", "on": true})).expect("a listed toggle");
+    assert!(h.app.preferences.agent_chat_attach_selection);
+    act(&mut h, json!({"type": "permissions", "mode": "ask"})).expect("a listed mode");
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    assert_eq!(state["permissions"], "ask");
+    assert_eq!(state["attachSelection"], true);
+
+    let other = Arc::new((*h.app.session.doc).clone());
+    h.app.agent_chat.items.push(Item::Changes { steps: 1, doc: other, undone: false });
+    assert!(act(&mut h, json!({"type": "undo", "index": 1})).is_err(), "the design has moved on since those changes");
+
+    // The page says what colour its own surface is, for the frame the app draws around it. It
+    // is the page's first word to the app, so the control channel's status tells from it that
+    // the page is up.
+    assert_eq!(status(&h.app)["webView"]["page"], false);
+    act(&mut h, json!({"type": "surface", "color": "#0e0e0e"})).expect("a colour");
+    assert_eq!(h.app.agent_chat.web_canvas.map(|colour| colour.to_array()), Some([14, 14, 14, 255]));
+    assert_eq!(status(&h.app)["webView"], json!({"host": h.app.agent_chat.web_host, "page": true}));
+
+    // The panel's own controls are the page's too.
+    act(&mut h, json!({"type": "side", "left": true})).expect("a listed panel control");
+    assert_eq!(h.app.preferences.agent_chat_side, "left");
+    h.app.agent_chat.confirm_new = true;
+    act(&mut h, json!({"type": "confirm_new", "yes": false})).expect("the answer to a question that was asked");
+    assert!(!h.app.agent_chat.confirm_new && h.app.agent_chat.items.len() == 2, "Cancel keeps the conversation");
+    act(&mut h, json!({"type": "close"})).expect("a listed panel control");
+    assert!(!h.app.agent_chat.open);
+}
+
+/// The page is told what a message, the queue and the composer carry besides text: a message's
+/// pictures by a name the host serves them under (never their bytes), what it was sent with in
+/// groups, the names an answer may select, the skill row's warnings, and the queue as it waits.
+/// The page's own words are exactly the ones it has names for.
+#[test]
+fn the_web_page_is_told_the_queue_the_pictures_and_the_names_an_answer_selects() {
+    let mut h = app_with_cover_and_base();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let refs = object_ref::collect(&mut h.app.session);
+    let labels: Vec<String> = refs.iter().map(|reference| reference.label.clone()).collect();
+    let entry = |kind, label: String| context::Entry { kind, detail: format!("{label}, in detail"), label };
+    let mut with = Context { items: (0..8).map(|n| entry(context::Kind::Body, format!("Body {n}"))).collect(), omitted: 3 };
+    with.items.push(entry(context::Kind::Feature, "Extrude 1".into()));
+    let (red, blue) = (test_png([200, 30, 30, 255], 8), test_png([30, 30, 200, 255], 8));
+    h.app.agent_chat.items = vec![
+        Item::User {
+            text: String::new(),
+            image: true,
+            pictures: vec![Picture::new(red.clone(), ""), Picture::new(blue, "sketch.png")],
+            files: Vec::new(),
+            context: with.clone(),
+        },
+        Item::AgentRefs { text: "The Cover sits on the Base.".into(), refs },
+        Item::Skill {
+            title: "Anatomy".into(),
+            version: "1".into(),
+            document_id: "another-design".into(),
+            revision: 0,
+            model: "m".into(),
+            selection: 2,
+            support: skill::SkillSupport::Unverified,
+            terminal: None,
+        },
+    ];
+    h.app.agent_chat.pending.push(Pending { text: "then fillet".into(), image: false, context: Context::default(), files: Vec::new() });
+    h.app.agent_chat.picked_context = with;
+    h.app.agent_chat.stopped = true;
+    let told = web::state(&mut h.app);
+    let state: Value = serde_json::from_str(&told).expect("the state is JSON");
+
+    let message = &state["items"][0];
+    assert_eq!(message["index"], 0);
+    let pictures = message["pictures"].as_array().expect("the message's pictures");
+    assert_eq!(pictures.len(), 2);
+    assert_eq!(pictures[1]["note"], "sketch.png");
+    assert_ne!(pictures[0]["key"], pictures[1]["key"], "each picture has its own name");
+    assert!(pictures.iter().all(|picture| picture.as_object().is_some_and(|fields| fields.len() == 3)), "a name, a note and a kind; no bytes");
+    let held = web::pictures(&h.app);
+    let first = held.iter().find(|(key, _)| pictures[0]["key"] == key.as_str()).expect("the host has the picture under that name");
+    assert_eq!(*first.1, red, "the name is for those bytes");
+
+    let groups = message["context"]["groups"].as_array().expect("groups");
+    assert_eq!(groups.len(), 2, "a group for each kind there is");
+    assert_eq!(groups[0]["heading"], "Features 1");
+    assert_eq!(groups[0]["items"][0], json!({"index": 8, "label": "Extrude 1", "detail": "Extrude 1, in detail"}));
+    assert_eq!(groups[1]["heading"], "Bodies 8");
+    assert_eq!(groups[1]["items"].as_array().map(Vec::len), Some(6), "the first few as chips");
+    assert_eq!(groups[1]["more"], "+2 more");
+    assert_eq!(message["context"]["omitted"], "+3 more");
+    assert_eq!(state["picked"], message["context"], "what is picked for the next message reads the same way");
+
+    assert_eq!(state["items"][1]["index"], 1);
+    assert_eq!(state["items"][1]["objects"], json!(labels), "the names the host can select, in its own order");
+    let skill = &state["items"][2];
+    assert!(skill["line"].as_str().is_some_and(|line| line.contains("Anatomy")));
+    assert_eq!(skill["warnings"].as_array().map(Vec::len), Some(2), "not verified here, and made for another design");
+    assert_eq!(skill["revalidate"], false);
+
+    assert_eq!(state["stopped"], true);
+    assert_eq!(state["pending"], json!([{"text": "then fillet", "image": false, "files": [], "context": {"groups": [], "omitted": null}}]));
+    assert_eq!(state["customModels"], false, "no agent runs");
+    assert_eq!(state["dragging"], false);
+
+    // Every word the page has a name for is sent, and no other.
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/assistant-web/src/host.ts")).expect("the page's bridge");
+    let names = page.split("export type StringKey =").nth(1).and_then(|rest| rest.split(';').next()).expect("the page's names for its words");
+    let mut named: Vec<&str> = names.split('|').map(|name| name.trim().trim_matches('\'')).filter(|name| !name.is_empty()).collect();
+    let mut sent: Vec<&str> = state["strings"].as_object().expect("words").keys().map(String::as_str).collect();
+    named.sort_unstable();
+    sent.sort_unstable();
+    assert_eq!(sent, named);
+    assert!(
+        state["strings"]
+            .as_object()
+            .is_some_and(|words| words.values().all(|word| word.as_str().is_some_and(|word| !word.is_empty() && !word.starts_with("ui."))))
+    );
+}
+
+/// The queue, the picked things, an answer's names and a message's pictures are acted on only as
+/// the page names them: a queued message by its text, a chip by its label, a name by the place
+/// the host listed it at. A queue or a list that has moved on refuses.
+#[test]
+fn the_web_page_edits_the_queue_and_selects_only_what_it_names_rightly() {
+    let mut h = app_with_cover_and_base();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    let act = |h: &mut crate::scenario::Harness, action: Value| web::act(&mut h.app, &ctx, &action.to_string());
+    for refused in [
+        json!({"type": "send_now"}),
+        json!({"type": "remove_pending", "index": 0, "text": "x"}),
+        json!({"type": "edit_pending", "index": 0, "was": "x", "text": "y"}),
+        json!({"type": "remove_picked", "index": 0, "label": "x"}),
+        json!({"type": "object", "index": 0, "ref": 0, "label": "Cover"}),
+        json!({"type": "picture", "index": 0, "at": 0}),
+        json!({"type": "revalidate"}),
+        json!({"type": "custom_model", "text": "any-model"}),
+    ] {
+        assert!(act(&mut h, refused.clone()).is_err(), "{refused} is refused");
+    }
+    assert!(h.app.agent_chat.items.is_empty() && h.app.agent_chat.gallery.is_none(), "nothing refused left a trace");
+
+    // The queue: a message is named by its place and its text.
+    let queued = |text: &str| Pending { text: text.into(), image: false, context: Context::default(), files: Vec::new() };
+    h.app.agent_chat.pending = vec![queued("first"), queued("second")];
+    assert!(act(&mut h, json!({"type": "edit_pending", "index": 0, "was": "second", "text": "x"})).is_err(), "not the text at that place");
+    assert!(act(&mut h, json!({"type": "edit_pending", "index": 1, "was": "second", "text": "  "})).is_err(), "a queued message is not emptied");
+    act(&mut h, json!({"type": "edit_pending", "index": 1, "was": "second", "text": "second, reworded"})).expect("the text at that place");
+    assert_eq!(h.app.agent_chat.pending[1].text, "second, reworded");
+    assert!(act(&mut h, json!({"type": "remove_pending", "index": 1, "text": "second"})).is_err(), "the queue has changed since");
+    act(&mut h, json!({"type": "remove_pending", "index": 0, "text": "first"})).expect("the text at that place");
+    assert_eq!(h.app.agent_chat.pending.iter().map(|message| message.text.as_str()).collect::<Vec<_>>(), ["second, reworded"]);
+
+    // What is picked for the next message: a chip by its place and its label.
+    let entry = |label: &str| context::Entry { kind: context::Kind::Body, label: label.into(), detail: String::new() };
+    h.app.agent_chat.picked_context = Context { items: vec![entry("Cover"), entry("Base")], omitted: 0 };
+    assert!(act(&mut h, json!({"type": "remove_picked", "index": 0, "label": "Base"})).is_err());
+    act(&mut h, json!({"type": "remove_picked", "index": 0, "label": "Cover"})).expect("the chip at that place");
+    assert_eq!(h.app.agent_chat.picked_context.items, vec![entry("Base")]);
+
+    // An answer's names: only the host's list, at the place it gave.
+    let refs = object_ref::collect(&mut h.app.session);
+    let cover = refs.iter().position(|reference| reference.label == "Cover").expect("Cover reference");
+    h.app.agent_chat.items.push(Item::Agent { thought: false, text: "The Cover sits on the Base.".into() });
+    h.app.agent_chat.items.push(Item::AgentRefs { text: "The Cover sits on the Base.".into(), refs });
+    assert!(act(&mut h, json!({"type": "object", "index": 0, "ref": cover, "label": "Cover"})).is_err(), "an answer the host listed no names for");
+    assert!(act(&mut h, json!({"type": "object", "index": 1, "ref": cover, "label": "Base"})).is_err(), "not the name at that place");
+    assert!(act(&mut h, json!({"type": "object", "index": 1, "ref": 99, "label": "Cover"})).is_err());
+    assert!(h.app.session.selection.is_empty(), "a refused name selects nothing");
+    let (stamp, undo) = (h.app.session.document_stamp(), h.app.session.undo.len());
+    act(&mut h, json!({"type": "object", "index": 1, "ref": cover, "label": "Cover"})).expect("a listed name");
+    assert!(
+        h.app.session.selection.iter().any(|sel| matches!(sel, solidcraft_engine::Sel::Body { name } if name == "Cover")),
+        "{:?}",
+        h.app.session.selection
+    );
+    assert_eq!((h.app.session.document_stamp(), h.app.session.undo.len()), (stamp, undo), "selecting changes nothing in the design");
+    // The design moved on: the name is said to be out of date, and nothing of the same name is selected.
+    h.app.session.selection.clear();
+    h.app.session.execute("solid.box", &json!({"length": 5, "width": 5, "height": 5, "body_name": "Later"})).unwrap();
+    let before = h.app.agent_chat.items.len();
+    act(&mut h, json!({"type": "object", "index": 1, "ref": cover, "label": "Cover"})).expect("listed, though no longer current");
+    assert!(h.app.session.selection.is_empty());
+    assert!(matches!(h.app.agent_chat.items.get(before), Some(Item::Notice { error: true, .. })), "the conversation says why");
+
+    // A message's picture opens in the viewer, by its place in that message.
+    h.app.agent_chat.items.push(Item::User {
+        text: "look".into(),
+        image: false,
+        pictures: vec![Picture::new(test_png([200, 30, 30, 255], 8), "a.png"), Picture::new(test_png([30, 30, 200, 255], 8), "b.png")],
+        files: Vec::new(),
+        context: Context::default(),
+    });
+    let message = h.app.agent_chat.items.len() - 1;
+    assert!(act(&mut h, json!({"type": "picture", "index": message, "at": 2})).is_err(), "the message has two");
+    assert!(act(&mut h, json!({"type": "picture", "index": 1, "at": 0})).is_err(), "an answer has none");
+    act(&mut h, json!({"type": "picture", "index": message, "at": 1})).expect("one of its pictures");
+    assert_eq!(h.app.agent_chat.gallery.as_ref().map(|gallery| (gallery.at, gallery.pictures.len())), Some((1, 2)));
+}
+
+/// Send now from the page steers as the panel's own does: the running step is stopped and the
+/// queue goes once the agent has ended it. A message sent with Ctrl+Enter goes the same way,
+/// with what was typed.
+#[test]
+fn the_web_page_steers_with_send_now_and_with_a_message_sent_now() {
+    let (mut app, script, ctx) = app_with_script();
+    let act = |app: &mut SolveApp, action: Value| web::act(app, &ctx, &action.to_string());
+    act(&mut app, json!({"type": "send", "text": "build a gearbox"})).expect("a message");
+    act(&mut app, json!({"type": "send", "text": "use 12 teeth instead"})).expect("queued behind the running one");
+    assert_eq!(texts(&app), ["use 12 teeth instead"]);
+    act(&mut app, json!({"type": "send_now"})).expect("the queue's Send now");
+    assert_eq!(script.calls(), ["prompt: build a gearbox", "cancel"], "the step is stopped; the queue waits for its end");
+    ended(&script, "cancelled");
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls().last().cloned(), Some(format!("prompt: {INTERRUPT_NOTE}\n\nuse 12 teeth instead")));
+    assert!(app.agent_chat.pending.is_empty());
+
+    act(&mut app, json!({"type": "send", "text": "and add a cover", "now": true})).expect("a message sent now");
+    assert_eq!(script.calls().last().map(String::as_str), Some("cancel"), "the running step is stopped for it");
+    assert_eq!(texts(&app), ["and add a cover"]);
+    ended(&script, "cancelled");
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls().last().cloned(), Some(format!("prompt: {INTERRUPT_NOTE}\n\nand add a cover")));
+    assert!(app.agent_chat.pending.is_empty() && !app.agent_chat.stopped);
+
+    // Stop leaves a queued message waiting; the queue's Send then sends it, with nothing to stop.
+    act(&mut app, json!({"type": "send", "text": "then paint it"})).expect("queued");
+    act(&mut app, json!({"type": "stop"})).expect("Stop");
+    ended(&script, "cancelled");
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.stopped && texts(&app) == ["then paint it"], "stopped, not sent");
+    act(&mut app, json!({"type": "send_now"})).expect("the queue's Send");
+    assert_eq!(script.calls().last().map(String::as_str), Some("prompt: then paint it"));
+    assert!(app.agent_chat.pending.is_empty());
+}
+
+/// A picture opened from the page shows in the app's viewer, and the web view gives up its place
+/// while the viewer is open, so the viewer and its keys are not under the page.
+#[test]
+fn a_picture_opened_from_the_web_page_shows_in_the_viewer_and_the_web_view_steps_aside() {
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.agent_chat", json!({"open": true}));
+    web::set_host(&mut h.app, true);
+    let pictures = vec![Picture::new(test_png([200, 30, 30, 255], 8), "first view"), Picture::new(test_png([30, 30, 200, 255], 16), "")];
+    let ours = pictures.clone();
+    h.app.agent_chat.items.push(Item::User { text: "look".into(), image: true, pictures, files: Vec::new(), context: Context::default() });
+    h.frames(3);
+    assert!(web::placement(&mut h.app, &h.ctx).is_some(), "the page has the panel");
+    let ctx = h.ctx.clone();
+    web::act(&mut h.app, &ctx, &json!({"type": "picture", "index": 0, "at": 1}).to_string()).expect("one of the message's pictures");
+    h.frames(2);
+    assert!(until_decoded(&mut h, &ours[1]), "the picture was decoded");
+    assert_eq!(h.app.agent_chat.gallery.as_ref().map(|gallery| gallery.at), Some(1));
+    assert!(crate::scenario::rect_of("agent_chat:gallery_picture").is_some(), "the viewer draws the picture");
+    assert_eq!(web::placement(&mut h.app, &h.ctx), None, "the web view is out of the viewer's way");
+    h.call("ui.key", json!({"key": "Escape"}));
+    h.frames(3);
+    assert!(h.app.agent_chat.gallery.is_none(), "Esc closes the viewer");
+    assert!(web::placement(&mut h.app, &h.ctx).is_some(), "and the page has its place again");
+}
+
+/// With the host's web view the Assistant is a panel inside the app's window and never a window
+/// of its own; the old own-window request does nothing, and the page has no way to ask for one.
+#[test]
+fn with_the_web_view_the_assistant_stays_inside_the_apps_window() {
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    assert!(crate::scenario::rect_of("agent_chat:window").is_none(), "no window of its own");
+
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    assert!(crate::scenario::rect_of("agent_chat:window").is_none(), "no window of its own");
+    let panel = crate::scenario::rect_of("agent_chat:panel").expect("the panel, in the app's window");
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!(panel.expand(1.0).contains_rect(place), "inside the panel: {place:?} in {panel:?}");
+    assert_eq!(web::placement(&mut h.app, &h.ctx), Some(place));
+
+    // Asked for over the control channel, it is put back as well.
+    h.call("ui.agent_chat", json!({"popped": true}));
+    h.frames(3);
+    assert!(crate::scenario::rect_of("agent_chat:window").is_none());
+    assert!(crate::scenario::rect_of("agent_chat:web").is_some());
+
+    // The page cannot ask for it, and is told nothing of it.
+    let ctx = h.ctx.clone();
+    for refused in [json!({"type": "pop_out"}), json!({"type": "dock"})] {
+        assert!(web::act(&mut h.app, &ctx, &refused.to_string()).is_err(), "{refused} is not the page's to ask");
+    }
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    assert!(state.get("popped").is_none() && state["strings"].get("popOut").is_none());
+
+    // Preferences offers the two sides and nothing else, with or without a host view.
+    crate::prefs::open_at(&mut h.app, crate::prefs::PAGE_ASSISTANT);
+    h.frames(4);
+    assert!(h.widget_near("Right", "Dock the chat").is_some(), "the sides are offered");
+    assert!(h.widget("Own window").is_none(), "a window of its own is not offered");
+    web::set_host(&mut h.app, false);
+    h.frames(3);
+    assert!(h.widget("Own window").is_none(), "the old panel's own window is gone on the desktop too");
+}
+
+/// Floating, the web view leaves the strip at the panel's inner edge to the app, so the panel can
+/// still be dragged wider beside a native view; the page is told the radius its own surface has
+/// inside the panel's frame, and what is selected in the design, by name.
+#[test]
+fn the_floating_panel_keeps_its_drag_strip_and_the_page_is_told_the_selection() {
+    let mut h = app_with_cover_and_base();
+    h.app.ui.layout = crate::shell::LayoutMode::Floating;
+    h.call("ui.agent_chat", json!({"open": true}));
+    web::set_host(&mut h.app, true);
+    h.frames(4);
+    let panel = crate::scenario::rect_of("agent_chat:panel").expect("the panel");
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let rail = crate::scenario::handle_at("agent_chat:resize").expect("the strip the panel is dragged by");
+    assert!(panel.contains(rail) && !place.contains(rail), "the strip is the app's, beside the web view: {rail:?} outside {place:?}");
+    assert!(panel.width() - place.width() >= web::rail(), "{panel:?} {place:?}");
+
+    // Dragging the strip away from the panel makes the panel wider.
+    let before = h.app.preferences.agent_chat_width;
+    let away = if h.app.preferences.agent_chat_side == "left" { 60.0 } else { -60.0 };
+    h.call("ui.drag", json!({"x0": rail.x, "y0": rail.y, "x1": rail.x + away, "y1": rail.y, "steps": 6}));
+    h.frames(3);
+    assert!(h.app.preferences.agent_chat_width > before + 30.0, "{before} -> {}", h.app.preferences.agent_chat_width);
+
+    let told = |h: &mut crate::scenario::Harness| serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON");
+    let tokens = crate::theme::Tokens::get();
+    let inside = f64::from(web::frame_radius()) - f64::from(tokens.primary_border(tokens.dialog_border).width);
+    assert!(web::frame_radius() >= 16, "as round as Mastra's large surfaces");
+    assert_eq!(told(&mut h)["radius"].as_f64(), Some(inside), "the page's surface is rounded inside the frame's border");
+
+    // Nothing selected, then a body: the page shows it as what the agent can see.
+    assert_eq!(told(&mut h)["selection"], json!({"groups": [], "omitted": null}));
+    crate::viewport::select(&mut h.app, Some(solidcraft_engine::Sel::Body { name: "Cover".into() }), false, false);
+    let state = told(&mut h);
+    let groups = state["selection"]["groups"].as_array().expect("groups");
+    assert_eq!(groups.len(), 1, "{state:?}", state = state["selection"]);
+    assert!(groups[0]["items"][0]["label"].as_str().is_some_and(|label| label.contains("Cover")), "{:?}", groups[0]);
+    assert_eq!(state["attachSelection"], true, "and written into each message, unless that is turned off");
+
+    // Docked, the panel meets the window's edge: square, and all of its room is the page's.
+    h.app.ui.layout = crate::shell::LayoutMode::Docked;
+    h.frames(4);
+    assert_eq!(told(&mut h)["radius"].as_f64(), Some(0.0));
+}
+
+/// Files dropped on the host's web view are attached to the next message as files dropped on the
+/// panel are, and one that cannot be says why; while they are over the view the page is told.
+#[test]
+fn files_dropped_on_the_web_view_join_the_next_message() {
+    let d = attachable("web-drop");
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let dragging =
+        |h: &mut crate::scenario::Harness| serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["dragging"].clone();
+    web::dragging(&mut h.app, true);
+    assert_eq!(dragging(&mut h), true);
+    web::dropped(&mut h.app, vec![d.join("brief.md"), d.join("no-such-picture.png"), std::path::PathBuf::new()]);
+    assert_eq!(dragging(&mut h), false, "the drop ends the drag");
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    assert_eq!(state["attachments"], json!([{"name": "brief.md", "picture": null}]));
+    assert!(matches!(h.app.agent_chat.items.as_slice(), [Item::Notice { error: true, .. }]), "the missing file is said, the empty path is nothing");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The web view is the window's, not one design's: a design opened in another tab, whose
+/// conversation starts afresh, is shown in it too, on the surface colour the page already said.
+#[test]
+fn a_new_tab_shows_its_conversation_in_the_hosts_web_view() {
+    let mut h = crate::scenario::Harness::new();
+    web::set_host(&mut h.app, true);
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    web::act(&mut h.app, &ctx, &json!({"type": "surface", "color": "#0e0e0e"}).to_string()).expect("a colour");
+
+    crate::documents::open_tab(&mut h.app, solidcraft_engine::Session::default()).unwrap();
+    h.frames(3);
+    assert!(h.app.agent_chat.web_host && h.app.agent_chat.web_canvas.is_some(), "the new tab's conversation is the web view's too");
+    assert!(crate::scenario::rect_of("agent_chat:web").is_some(), "the panel gives its room up in the new tab");
+
+    crate::documents::switch(&mut h.app, 0);
+    h.frames(3);
+    assert!(h.app.agent_chat.web_host && crate::scenario::rect_of("agent_chat:web").is_some(), "and back in the first");
 }

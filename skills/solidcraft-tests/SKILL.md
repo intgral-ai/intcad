@@ -23,13 +23,12 @@ A failing test cannot merge without its fix (it turns `main` red): include it, o
 
 ## Running
 - `cargo xtask test` builds with the `ci` profile and runs every test binary at once; arguments after `--` go to each binary (`cargo xtask test -- shell`). It builds several times faster than `--release`; a test failing only in a debug build: say so in the PR.
-- `SOLIDCRAFT_TEST_JOBS=N` bounds concurrent commands. `cargo xtask ci` is the gate before a commit (fmt, lints, clippy `-D warnings`, tests, wasm).
+- `SOLIDCRAFT_TEST_JOBS=N` bounds concurrent commands; see [the validation policy](../../docs/validation-policy.md) for when the full local gate is required and when a result may be reused. Never report an unrun check as passed.
 - Tests run in their own processes: no shared state, no wall-clock timing.
 
 ## Goldens, matrices and skipped tests
 - The kernel's reference is the ladder (`tests/kernel-cases/ladder/`, `cargo xtask kernel-cases --ladder`, `docs/kernel-ladder.md`).
 - Kernel PRs run `kernel-rig.yml` (areas by `PATHS` against `KNOWN_FAILING`, the ladder against its golden). In the same PR a fix drops its line, a pin bump's new failure adds one, a changed ladder result is re-recorded (`--record "why"`), a new command gets an `EXEMPT` line (`tests/kernel-cases/README.md`).
-- Maintainers' PRs run native, GPU and reference tests on affected packages; others wait for `approved-for-ci`. `release-gate.yml` runs all before develop replaces main.
+- This fork has no `approved-for-ci` gate or merge queue: PRs run selected checks; heavy tests run in `native-baseline.yml` and the fixed-SHA `release-gate`.
 - The action matrix is a ratchet: bless a newly passing action (`cargo xtask action-matrix --bless`, `docs/action-matrix.md`).
-- PRs skip a few heavy tests, run in the merge queue, nightly and on `main`. Check them after merging (`.config/nextest.toml`).
 - Mutation testing: `docs/mutation-testing.md`.

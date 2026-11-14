@@ -9,8 +9,8 @@
 //! The loop runs on a thread of its own: a model request can take a while.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -46,6 +46,42 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(330);
 const CANCEL_POLL: Duration = Duration::from_millis(40);
 /// The connection test's own timeout: it asks for a token or two, not a whole answer.
 const TEST_TIMEOUT_S: u64 = 60;
+/// Events waiting for the panel. A full queue stops the turn instead of growing without bound.
+const PANEL_EVENTS: usize = 512;
+/// Slots reserved for tool outcomes and the terminal event, so a committed write is never lost
+/// when ordinary text fills the queue.
+const PANEL_RESERVED: usize = 128;
+/// Two more slots are reserved: one for a resource/error notice, one exclusively for `TurnEnded`.
+const PANEL_NORMAL: usize = PANEL_EVENTS - PANEL_RESERVED - 2;
+
+/// Add one to a counter while it is below `cap`. `fetch_update` is deprecated on Rust 1.100
+/// (renamed `try_update`), and `try_update` does not exist on the minimum Rust. A compare-exchange
+/// loop works on both. The result is the previous value, or the value that blocked the add.
+fn try_increment(counter: &AtomicUsize, cap: usize) -> Result<usize, usize> {
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        if current >= cap {
+            return Err(current);
+        }
+        match counter.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Ok(current),
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+/// Subtract one from a counter without wrapping below zero. The result is the previous value, or
+/// zero when there is nothing to subtract.
+fn try_decrement(counter: &AtomicUsize) -> Result<usize, usize> {
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        let Some(next) = current.checked_sub(1) else { return Err(current) };
+        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Ok(current),
+            Err(actual) => current = actual,
+        }
+    }
+}
 
 /// Tools the model is not offered.
 const HIDDEN_TOOLS: &[&str] = &["crash_reports"];
@@ -66,6 +102,9 @@ pub struct ApiConfig {
     pub connection_id: String,
     pub model: String,
     pub host_ai: Arc<HostAi>,
+    /// Opt-in: the old buffered path stays the default. Verified providers stream only when this
+    /// preference is on.
+    pub streaming: bool,
 }
 
 enum Cmd {
@@ -77,7 +116,9 @@ enum Cmd {
 
 pub struct ApiBackend {
     cmds: Option<Sender<Cmd>>,
-    events: Receiver<(Option<Arc<TurnControl>>, Event)>,
+    events: Receiver<(Option<Arc<TurnControl>>, Event, bool)>,
+    pending: Arc<AtomicUsize>,
+    normal: Arc<AtomicUsize>,
     turn: Arc<TurnControl>,
     mcp: Option<ProcessHandle>,
 }
@@ -86,6 +127,7 @@ impl ApiBackend {
     pub fn start(cfg: ApiConfig, ctx: StartContext) -> Result<ApiBackend, String> {
         let binding = cfg.host_ai.bind(&cfg.connection_id, &cfg.model).map_err(direct_error)?;
         let protocol = binding.protocol();
+        let streaming = cfg.streaming && cfg.host_ai.streaming_supported(&binding);
         // One stable session ID per chat for OpenCode Go's routing and prompt cache.
         let session_id = new_session_id();
         // The same MCP server an ACP agent would get.
@@ -98,7 +140,11 @@ impl ApiBackend {
         };
         let handle = mcp.as_ref().map(AgentProcess::handle);
         let (cmd_tx, cmd_rx) = channel::<Cmd>();
-        let (ev_tx, events) = channel();
+        let (ev_tx, events) = sync_channel(PANEL_EVENTS);
+        let pending = Arc::new(AtomicUsize::new(0));
+        let worker_pending = Arc::clone(&pending);
+        let normal = Arc::new(AtomicUsize::new(0));
+        let worker_normal = Arc::clone(&normal);
         let turn = Arc::new(TurnControl::new());
         let parent = Arc::clone(&turn);
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(ctx.wake);
@@ -116,34 +162,51 @@ impl ApiBackend {
                 session_id,
                 gemini_sigs: Default::default(),
                 events: ev_tx,
+                pending: worker_pending,
+                normal: worker_normal,
+                overflowed: Arc::new(AtomicBool::new(false)),
                 wake,
                 turn: parent,
                 in_turn: false,
                 no_reasoning: Default::default(),
+                streaming,
+                redactor: std::cell::RefCell::new(super::host_ai::Redactor::new(None)),
+                internal_error: Default::default(),
             };
             w.run(cmd_rx);
         });
-        Ok(ApiBackend { cmds: Some(cmd_tx), events, turn, mcp: handle })
+        Ok(ApiBackend { cmds: Some(cmd_tx), events, pending, normal, turn, mcp: handle })
     }
 }
 
 impl ChatBackend for ApiBackend {
     fn poll(&mut self) -> Vec<Event> {
-        self.events
-            .try_iter()
-            .take(512)
-            .filter_map(|(scope, event)| {
-                if let Some(scope) = scope {
-                    if !Arc::ptr_eq(&scope, &self.turn) {
-                        return None;
-                    }
-                    if scope.check().is_err() && !matches!(event, Event::TurnEnded { .. }) {
-                        return None;
-                    }
+        let mut out = Vec::new();
+        for (scope, event, ordinary) in self.events.try_iter().take(PANEL_EVENTS) {
+            let _ = try_decrement(&self.pending);
+            if ordinary {
+                let previous = try_decrement(&self.normal);
+                debug_assert!(previous.is_ok(), "ordinary panel events must balance");
+            }
+            if let Some(scope) = scope {
+                if !Arc::ptr_eq(&scope, &self.turn) {
+                    continue;
                 }
-                Some(event)
-            })
-            .collect()
+                // A cancelled turn still reports a dispatched tool's truthful outcome before its
+                // terminal event. Text and starts are dropped as before.
+                let truthful = matches!(
+                    event,
+                    Event::TurnEnded { .. }
+                        | Event::Error(_)
+                        | Event::Tool { status: Some(ToolStatus::Completed | ToolStatus::Failed), output: Some(_), .. }
+                );
+                if scope.check().is_err() && !truthful {
+                    continue;
+                }
+            }
+            out.push(event);
+        }
+        out
     }
     fn prompt(&mut self, parts: &[PromptPart]) {
         // The old parent is irrevocably revoked before the new one becomes observable.
@@ -217,18 +280,94 @@ struct Worker {
     /// Thought signatures of Gemini function-call parts, by kept call id, for the
     /// next tool request. Stays outside the history so other protocols never see it.
     gemini_sigs: std::cell::RefCell<std::collections::BTreeMap<String, String>>,
-    events: Sender<(Option<Arc<TurnControl>>, Event)>,
+    events: SyncSender<(Option<Arc<TurnControl>>, Event, bool)>,
+    pending: Arc<AtomicUsize>,
+    normal: Arc<AtomicUsize>,
+    overflowed: Arc<AtomicBool>,
     wake: Arc<dyn Fn() + Send + Sync>,
     turn: Arc<TurnControl>,
     in_turn: bool,
     /// Set once the endpoint refused tools together with a reasoning effort: later requests ask for none.
     no_reasoning: std::cell::Cell<bool>,
+    /// On for the verified streaming providers only. Unknown providers stay buffered from start.
+    streaming: bool,
+    /// Rolling key redaction across chunks and model rounds.
+    redactor: std::cell::RefCell<super::host_ai::Redactor>,
+    /// The last model attempt failed because a managed thread could not be joined.
+    internal_error: std::cell::Cell<bool>,
 }
 
 impl Worker {
-    fn emit(&self, e: Event) {
-        let _ = self.events.send((self.in_turn.then(|| Arc::clone(&self.turn)), e));
-        (self.wake)();
+    /// Queue one host-to-panel event. A full queue aborts the turn rather than growing without
+    /// bound; the terminal event below has one reserved slot.
+    fn emit(&self, e: Event) -> bool {
+        let ordinary = matches!(e, Event::Text { .. } | Event::Tool { status: Some(ToolStatus::InProgress), .. });
+        self.try_send(e, ordinary, PANEL_EVENTS)
+    }
+
+    /// Tool outcomes and the terminal event use the reserved slots: a committed write is more
+    /// important than later text. A real full channel still fails loudly.
+    fn send_priority(&self, e: Event) -> bool {
+        self.try_send(e, false, PANEL_EVENTS - 2)
+    }
+
+    /// The resource/error notice has its own slot between the tool reserve and the terminal.
+    fn send_error(&self, e: Event) -> bool {
+        self.try_send(e, false, PANEL_EVENTS - 1)
+    }
+
+    /// The terminal event has one slot no normal/priority/error event may consume.
+    fn send_terminal(&self, e: Event) -> bool {
+        self.try_send(e, false, PANEL_EVENTS)
+    }
+
+    fn try_send(&self, e: Event, ordinary: bool, ceiling: usize) -> bool {
+        if self.pending.load(Ordering::Acquire) >= ceiling {
+            self.overflowed.store(true, Ordering::Release);
+            return false;
+        }
+        if ordinary {
+            let previous = try_increment(&self.normal, PANEL_NORMAL);
+            if previous.is_err() {
+                self.overflowed.store(true, Ordering::Release);
+                return false;
+            }
+            debug_assert!(self.normal.load(Ordering::Acquire) <= PANEL_NORMAL);
+        }
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        match self.events.try_send((self.in_turn.then(|| Arc::clone(&self.turn)), e, ordinary)) {
+            Ok(()) => {
+                (self.wake)();
+                true
+            }
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                let _ = try_decrement(&self.pending);
+                if ordinary {
+                    let _ = try_decrement(&self.normal);
+                }
+                self.overflowed.store(true, Ordering::Release);
+                false
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                let _ = try_decrement(&self.pending);
+                if ordinary {
+                    let _ = try_decrement(&self.normal);
+                }
+                false
+            }
+        }
+    }
+
+    /// The single terminal path: flush any withheld redaction carry before `TurnEnded`.
+    fn end_turn(&mut self, reason: &str) {
+        if reason == "resource" {
+            self.send_error(Event::Error(AiError::exhausted("panel_events", PANEL_EVENTS as u32).message()));
+        }
+        let tail = self.redactor.borrow_mut().finish();
+        if !tail.is_empty() {
+            self.try_send(Event::Text { thought: false, text: tail }, true, PANEL_EVENTS);
+        }
+        self.send_terminal(Event::TurnEnded { reason: reason.into() });
     }
 
     fn run(&mut self, cmds: Receiver<Cmd>) {
@@ -287,16 +426,25 @@ impl Worker {
 
     /// One MCP request to the server; its `result`.
     fn mcp_call(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        let Some(m) = self.mcp.as_ref() else { return Err("no SolidCraft tools in this session".into()) };
+        let Some(m) = self.mcp.as_ref() else { return Err("no Intcad tools in this session".into()) };
+        if self.turn.check().is_err() {
+            return Err("cancelled by the user".into());
+        }
         self.next += 1;
         let id = self.next;
         m.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        // Once sent, the host tool may already have applied its write. Do not claim "no write":
+        // keep listening briefly for the real result, then report the dispatch truthfully.
         let deadline = std::time::Instant::now() + TOOL_TIMEOUT;
+        let mut cancel_seen = false;
+        let mut cancel_deadline = None;
         loop {
-            // Wait in short slices so Stop and Send now do not wait for a slow tool: its late
-            // answer is skipped later (its id no longer matches).
-            if self.turn.check().is_err() {
-                return Err("cancelled by the user".into());
+            if !cancel_seen && self.turn.check().is_err() {
+                cancel_seen = true;
+                cancel_deadline = Some(std::time::Instant::now() + Duration::from_secs(2));
+            }
+            if cancel_seen && cancel_deadline.is_some_and(|until| std::time::Instant::now() >= until) {
+                return Err("cancelled by the user; the tool was already sent and its write may have been applied".into());
             }
             let left = deadline.saturating_duration_since(std::time::Instant::now()).min(CANCEL_POLL);
             match m.from_agent.recv_timeout(left) {
@@ -310,9 +458,9 @@ impl Worker {
                     }
                     return Ok(v.get("result").cloned().unwrap_or(Value::Null));
                 }
-                Ok(FromAgent::Exited(_)) => return Err("the SolidCraft tools stopped".into()),
+                Ok(FromAgent::Exited(_)) => return Err("the Intcad tools stopped".into()),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if std::time::Instant::now() < deadline => {}
-                Err(_) => return Err("the SolidCraft tools did not answer".into()),
+                Err(_) => return Err("the Intcad tools did not answer".into()),
             }
         }
     }
@@ -342,12 +490,12 @@ impl Worker {
             Ok(binding) if binding.protocol() == self.protocol => binding,
             Ok(_) => {
                 self.emit(Event::Error(crate::i18n::tr("ui.host_ai_reconnect_required").into()));
-                self.emit(Event::TurnEnded { reason: "error".into() });
+                self.end_turn("error");
                 return;
             }
             Err(error) => {
                 self.emit(Event::Error(direct_error(error)));
-                self.emit(Event::TurnEnded { reason: "error".into() });
+                self.end_turn("error");
                 return;
             }
         };
@@ -363,33 +511,43 @@ impl Worker {
         }
         // No cap on requests: Stop sets `cancel`, checked at the top of every round.
         loop {
+            if self.overflowed.load(Ordering::Acquire) {
+                self.end_turn("resource");
+                return;
+            }
             // The history as of here is complete (every tool call answered): a cancelled request
             // goes back to it, so no half-finished round is left to confuse the next message.
             let sound = self.history.len();
             if self.turn.check().is_err() {
-                self.emit(Event::TurnEnded { reason: "cancelled".into() });
+                self.end_turn("cancelled");
                 return;
             }
             let reply = match self.request() {
                 Ok(_) if self.turn.check().is_err() => {
                     self.history.truncate(sound);
-                    self.emit(Event::TurnEnded { reason: "cancelled".into() });
+                    self.end_turn("cancelled");
                     return;
                 }
                 Ok(r) => r,
-                Err(_) if self.turn.check().is_err() => {
+                Err(_e) if self.turn.check().is_err() && !self.internal_error.get() => {
                     self.history.truncate(sound);
-                    self.emit(Event::TurnEnded { reason: "cancelled".into() });
+                    self.end_turn("cancelled");
                     return;
                 }
                 Err(e) => {
+                    // A reader/join failure is an error even when the user also pressed Stop.
                     self.emit(Event::Error(e));
-                    self.emit(Event::TurnEnded { reason: "error".into() });
+                    self.end_turn(if self.overflowed.load(Ordering::Acquire) { "resource" } else { "error" });
                     return;
                 }
             };
+            if self.overflowed.load(Ordering::Acquire) {
+                self.history.truncate(sound);
+                self.end_turn("resource");
+                return;
+            }
             if reply.calls.is_empty() {
-                self.emit(Event::TurnEnded { reason: reply.stop.into() });
+                self.end_turn(reply.stop);
                 return;
             }
             // Anthropic takes every result of a round in one user message; OpenAI takes one
@@ -401,15 +559,18 @@ impl Worker {
                 }
                 let args = c.arguments.clone().unwrap_or_else(|_| json!({}));
                 let title = tool_title(&c.name, &args);
-                let tool_id = format!("{}-{}", c.id, self.next);
-                self.emit(Event::Tool {
+                let tool_id = c.id.clone();
+                if !self.emit(Event::Tool {
                     id: tool_id.clone(),
                     title: Some(title),
                     kind: Some(String::new()),
                     status: Some(ToolStatus::InProgress),
                     input: c.arguments.as_ref().ok().filter(|a| a.is_object()).cloned(),
                     output: None,
-                });
+                }) {
+                    self.end_turn("resource");
+                    return;
+                }
                 let (text, failed) = if self.turn.check().is_err() {
                     ("cancelled by the user".to_string(), true)
                 } else if let Err(e) = &c.arguments {
@@ -423,11 +584,10 @@ impl Worker {
                         Err(e) => (e, true),
                     }
                 };
-                if self.turn.check().is_err() {
-                    break;
-                }
+                // A cancel after dispatch may still have an accepted write; report that result
+                // before the terminal guard truncates the unfinished round.
                 let shown: String = text.chars().take(2000).collect();
-                self.emit(Event::Tool {
+                self.send_priority(Event::Tool {
                     id: tool_id,
                     title: None,
                     kind: None,
@@ -442,9 +602,14 @@ impl Worker {
                     }
                 }
             }
+            if self.overflowed.load(Ordering::Acquire) {
+                self.history.truncate(sound);
+                self.end_turn("resource");
+                return;
+            }
             if self.turn.check().is_err() {
                 self.history.truncate(sound);
-                self.emit(Event::TurnEnded { reason: "cancelled".into() });
+                self.end_turn("cancelled");
                 return;
             }
             if self.protocol == Protocol::Anthropic && !results.is_empty() {
@@ -474,6 +639,7 @@ impl Worker {
     }
 
     fn request(&mut self) -> Result<Reply, String> {
+        self.internal_error.set(false);
         let go = self.protocol == Protocol::OpenAi && is_opencode_go(&self.binding.configuration().base_url);
         let first = if go { go_protocol(self.binding.model_id()) } else { self.protocol.into() };
         let mut order = vec![first];
@@ -511,6 +677,15 @@ impl Worker {
 
     /// One fresh child per physical attempt, including explicit compatibility attempts.
     fn attempt(&mut self, wire: GoProtocol) -> Result<Reply, AiError> {
+        let go = self.protocol == Protocol::OpenAi && is_opencode_go(&self.binding.configuration().base_url);
+        if self.streaming && !go && matches!(wire, GoProtocol::Chat | GoProtocol::Messages) {
+            match self.attempt_stream(wire) {
+                Ok(Some(reply)) => return Ok(reply),
+                // Only a clean, output-free stream may make the one buffered attempt below.
+                Ok(None) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let control = self.turn.new_call()?;
         let timeout = self.limit_s();
         let deadline = self.cfg.host_ai.deadline_after(Duration::from_secs(timeout));
@@ -541,6 +716,7 @@ impl Worker {
             Ok(proposal) => proposal,
             Err(error) => {
                 control.cancel();
+                self.internal_error.set(error.code() == AiErrorCode::InternalError);
                 return Err(error);
             }
         };
@@ -551,7 +727,9 @@ impl Worker {
             self.history.push(reply.assistant.clone());
             for (thought, text) in &reply.text {
                 // Internal queue only: the external wake callback is below, outside the gate.
-                let _ = self.events.send((self.in_turn.then(|| Arc::clone(&self.turn)), Event::Text { thought: *thought, text: text.clone() }));
+                if !self.try_send(Event::Text { thought: *thought, text: text.clone() }, true, PANEL_EVENTS) {
+                    break;
+                }
             }
             Ok(reply)
         });
@@ -563,6 +741,115 @@ impl Worker {
     #[cfg(test)]
     fn go_reply(protocol: GoProtocol, body: &Value) -> Reply {
         decoded_direct_reply(protocol, true, body)
+    }
+
+    /// One streaming attempt. Text is emitted as it arrives; tool calls stay cached until the
+    /// provider closes them and this function returns the completed proposal.
+    fn attempt_stream(&mut self, wire: GoProtocol) -> Result<Option<Reply>, AiError> {
+        let control = self.turn.new_call()?;
+        let timeout = self.limit_s();
+        let deadline = self.cfg.host_ai.deadline_after(Duration::from_secs(timeout));
+        let effort = if wire == GoProtocol::Chat {
+            self.reasoning_effort().or_else(|| (!self.tools.is_empty() && self.no_reasoning.get()).then_some("none")).map(str::to_owned)
+        } else {
+            None
+        };
+        let call = ProviderCall {
+            wire,
+            system: self.note.clone(),
+            history: self.history.clone(),
+            tools: self.tools.clone(),
+            max_output_tokens: None,
+            temperature: None,
+            reasoning_effort: effort,
+            timeout_seconds: timeout,
+            http_per_connection: 2,
+            http_per_host: 8,
+            model_budget: None,
+            private: ProviderState {
+                routing_session_id: self.session_id.clone(),
+                gemini_signatures: self.gemini_sigs.borrow().clone(),
+                ..Default::default()
+            },
+        };
+        let secret = match self.cfg.host_ai.secret_text(&self.binding) {
+            Ok(secret) => secret,
+            Err(error) => {
+                control.cancel();
+                return Err(error);
+            }
+        };
+        self.redactor.borrow_mut().set_secret(secret.as_deref());
+        let events = self.events.clone();
+        let pending = Arc::clone(&self.pending);
+        let normal = Arc::clone(&self.normal);
+        let overflowed = Arc::clone(&self.overflowed);
+        let in_turn = self.in_turn;
+        let turn = Arc::clone(&self.turn);
+        let redactor = &self.redactor;
+        let mut on_text = |thought: bool, raw: &str| -> Result<String, AiError> {
+            let text = redactor.borrow_mut().push(raw);
+            if !text.is_empty() {
+                if pending.load(Ordering::Acquire) >= PANEL_EVENTS || try_increment(&normal, PANEL_NORMAL).is_err() {
+                    overflowed.store(true, Ordering::Release);
+                    return Err(AiError::exhausted("panel_events", PANEL_EVENTS as u32));
+                }
+                pending.fetch_add(1, Ordering::AcqRel);
+                if let Err(error) = events.try_send((in_turn.then(|| Arc::clone(&turn)), Event::Text { thought, text: text.clone() }, true)) {
+                    let _ = try_decrement(&pending);
+                    let _ = try_decrement(&normal);
+                    overflowed.store(true, Ordering::Release);
+                    return match error {
+                        std::sync::mpsc::TrySendError::Full(_) => Err(AiError::exhausted("panel_events", PANEL_EVENTS as u32)),
+                        std::sync::mpsc::TrySendError::Disconnected(_) => Err(AiError::cancelled()),
+                    };
+                }
+            }
+            Ok(text)
+        };
+        let mut on_flush = |to_panel: bool| -> Result<String, AiError> {
+            let text = self.redactor.borrow_mut().finish();
+            if to_panel && !text.is_empty() {
+                if pending.load(Ordering::Acquire) >= PANEL_EVENTS || try_increment(&normal, PANEL_NORMAL).is_err() {
+                    overflowed.store(true, Ordering::Release);
+                    return Err(AiError::exhausted("panel_events", PANEL_EVENTS as u32));
+                }
+                pending.fetch_add(1, Ordering::AcqRel);
+                if let Err(error) = events.try_send((in_turn.then(|| Arc::clone(&turn)), Event::Text { thought: false, text: text.clone() }, true)) {
+                    let _ = try_decrement(&pending);
+                    let _ = try_decrement(&normal);
+                    overflowed.store(true, Ordering::Release);
+                    return match error {
+                        std::sync::mpsc::TrySendError::Full(_) => Err(AiError::exhausted("panel_events", PANEL_EVENTS as u32)),
+                        std::sync::mpsc::TrySendError::Disconnected(_) => Err(AiError::cancelled()),
+                    };
+                }
+            }
+            Ok(text)
+        };
+        let streamed = self.cfg.host_ai.invoke_stream(&self.binding, call, &control, deadline, &mut on_text, &mut on_flush);
+        (self.wake)();
+        let proposal = match streamed {
+            Ok(Some(proposal)) => proposal,
+            Ok(None) => {
+                // No text, tool or side effect: the caller may make its one buffered attempt.
+                control.cancel();
+                return Ok(None);
+            }
+            Err(error) => {
+                control.cancel();
+                self.internal_error.set(error.code() == AiErrorCode::InternalError);
+                return Err(error);
+            }
+        };
+        let result = control.publish(|| {
+            self.cfg.host_ai.check_binding(&self.binding)?;
+            let (reply, private) = direct_reply(proposal);
+            *self.gemini_sigs.borrow_mut() = private.gemini_signatures;
+            self.history.push(reply.assistant.clone());
+            Ok(reply)
+        });
+        result.map(Some)
     }
 }
 
@@ -995,8 +1282,8 @@ mod tests {
         go_responses_input, go_responses_reply, go_url,
     };
     use super::super::host_ai::provider::tool_arguments;
-    use super::super::host_ai::provider::{ProviderCall, ProviderReply, ProviderState, WireProtocol, invoke_once};
-    use super::super::host_ai::{AiError, ConnectionBinding, HostAiDependencies, ModelCallBudget};
+    use super::super::host_ai::provider::{ProviderCall, ProviderReply, ProviderState, WireProtocol, invoke_once, invoke_stream};
+    use super::super::host_ai::{AiError, ConnectionBinding, HostAiDependencies, ModelCallBudget, Redactor};
     use super::super::host_ai::{AiErrorCode, AiLimits, AiShared, CallControl, ClockFn, HttpAdmission, TurnControl, test_support as connection_test};
     use super::*;
     use std::sync::atomic::AtomicBool;
@@ -1017,7 +1304,12 @@ mod tests {
         shared.connections().replace(&[config]).unwrap();
         let secrets = Arc::new(CurrentSecrets::new());
         *secrets.value.lock().unwrap() = Ok(key.map(str::to_owned));
-        ApiConfig { connection_id: "api-original-7".into(), model: model.into(), host_ai: HostAi::direct(shared, Some(http), Some(secrets)).unwrap() }
+        ApiConfig {
+            connection_id: "api-original-7".into(),
+            model: model.into(),
+            host_ai: HostAi::direct(shared, Some(http), Some(secrets)).unwrap(),
+            streaming: false,
+        }
     }
 
     const KEY_A: &str = "task2-key-A-long-private-sentinel-never-echo-7b83b230";
@@ -3344,6 +3636,107 @@ mod tests {
         }
     }
 
+    #[test]
+    fn streaming_dispatch_strips_the_key_when_the_policy_changes_after_resolution() {
+        let stream =
+            ScriptedStream::new(vec![sse("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")]);
+        let mut deps = primitive_deps(Arc::new(|_: &HttpRequest| Err("unused buffered".into())));
+        deps.shared.connections().replace(&[AgentConfig { base_url: "https://api.openai.com/v1".into(), ..original_connection() }]).unwrap();
+        deps.shared.set_stream(Some(stream.stream()));
+        // The key is resolved first; the fourth clock check is inside dispatch admission, after
+        // `key_text` is Some and before the physical request is sent.
+        let shared = Arc::clone(&deps.shared);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&calls);
+        deps.clock = Arc::new(move || {
+            if count.fetch_add(1, Ordering::SeqCst) == 3 {
+                shared
+                    .connections()
+                    .replace(&[AgentConfig { key: false, base_url: "https://api.openai.com/v1".into(), ..original_connection() }])
+                    .unwrap();
+            }
+            Duration::ZERO
+        });
+        let binding = deps.shared.connections().bind("api-original-7", "selected").unwrap();
+        let reply = std::thread::spawn(move || {
+            let control = Arc::new(CallControl::new());
+            let mut text = |_: bool, raw: &str| Ok(raw.to_string());
+            let mut flush = |_: bool| Ok(String::new());
+            invoke_stream(&deps, &binding, primitive_call(WireProtocol::Chat), &control, Duration::from_secs(60), &mut text, &mut flush)
+        })
+        .join()
+        .unwrap()
+        .unwrap()
+        .expect("streamed reply");
+        assert_eq!(reply.text.len(), 1);
+        assert!(calls.load(Ordering::SeqCst) >= 4);
+        let recorded = stream.seen.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].headers.iter().all(|(name, _)| name != "Authorization" && name != "x-api-key"), "{:?}", recorded[0].headers);
+    }
+
+    #[test]
+    fn a_stuck_stream_holds_admission_until_it_is_cancelled_and_joined() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_after = release_tx.clone();
+        let release = Arc::new(Mutex::new(release_rx));
+        let stream: super::super::backend::HttpStreamFn =
+            Arc::new(move |_req: &HttpRequest, cancel: &Arc<super::super::backend::StreamCancellation>| {
+                let release_tx = release_tx.clone();
+                cancel.register(Arc::new(move || {
+                    let _ = release_tx.send(());
+                }));
+                let _ = entered_tx.send(());
+                let _ = release.lock().unwrap().recv_timeout(Duration::from_secs(10));
+                Ok(super::super::backend::HttpStreamResponse {
+                    status: 200,
+                    content_type: Some("text/event-stream".into()),
+                    reader: Box::new(std::io::Cursor::new(
+                        b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_vec(),
+                    )),
+                })
+            });
+        let deps = primitive_deps(Arc::new(|_: &HttpRequest| Err("unused".into())));
+        deps.shared.connections().replace(&[AgentConfig { base_url: "https://api.openai.com/v1".into(), ..original_connection() }]).unwrap();
+        deps.shared.set_stream(Some(stream));
+        let binding = deps.shared.connections().bind("api-original-7", "selected").unwrap();
+        let worker_binding = binding.clone();
+        let control = Arc::new(CallControl::new());
+        let worker_control = Arc::clone(&control);
+        let worker_deps = Arc::new(deps);
+        let second_deps = Arc::clone(&worker_deps);
+        let worker = std::thread::spawn(move || {
+            let mut call = primitive_call(WireProtocol::Chat);
+            call.http_per_connection = 1;
+            let mut text = |_: bool, raw: &str| Ok(raw.to_string());
+            let mut flush = |_: bool| Ok(String::new());
+            invoke_stream(&worker_deps, &worker_binding, call, &worker_control, Duration::from_secs(60), &mut text, &mut flush)
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let second_binding = binding.clone();
+        let permit_deps = Arc::clone(&second_deps);
+        let (second_tx, second_rx) = mpsc::channel();
+        let second_worker = std::thread::spawn(move || {
+            let control = Arc::new(CallControl::new());
+            let mut no_text = |_: bool, _: &str| Ok(String::new());
+            let mut no_flush = |_: bool| Ok(String::new());
+            let mut call = primitive_call(WireProtocol::Chat);
+            call.http_per_connection = 1;
+            let result = invoke_stream(&second_deps, &second_binding, call, &control, Duration::from_secs(60), &mut no_text, &mut no_flush);
+            let _ = second_tx.send(result);
+        });
+        let second = second_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        second_worker.join().unwrap();
+        assert_eq!(second.err().unwrap().code(), AiErrorCode::ResourceExhausted);
+        control.cancel();
+        let _ = release_after.send(());
+        let _ = worker.join().unwrap();
+        // The permit is released only after the worker joined.
+        let permit = permit_deps.shared.http_admission().try_acquire("api-original-7", 1, 8);
+        assert!(permit.is_ok());
+    }
+
     // Catches off-by-one/debit-at-preflight, and failure paths refunding a scheduled attempt.
     #[test]
     fn host_ai_primitive_model_budget_debits_only_dispatch() {
@@ -4198,6 +4591,7 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, Event::Tool { status: Some(ToolStatus::Failed), .. })), "{events:?}");
         assert!(events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "Done.")), "{events:?}");
         assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason.is_empty()), "{events:?}");
+        assert_eq!(b.normal.load(Ordering::Acquire), 0, "buffered text and tool starts balance after poll");
         // The second request carried the tool's answer.
         let sent = seen.lock().unwrap();
         assert_eq!(sent.len(), 2);
@@ -4422,6 +4816,848 @@ mod tests {
         events
     }
 
+    /// Streaming fixtures: status/content type/body are scripted and every physical request is
+    /// recorded. The stream seam is optional so an unsupported provider can be checked too.
+    struct ScriptedStream {
+        seen: Arc<Mutex<Vec<HttpRequest>>>,
+        replies: Mutex<std::collections::VecDeque<(u16, Option<String>, String)>>,
+    }
+
+    impl ScriptedStream {
+        fn new(replies: Vec<(u16, Option<String>, String)>) -> Arc<Self> {
+            Arc::new(Self { seen: Arc::default(), replies: Mutex::new(replies.into()) })
+        }
+
+        fn stream(self: &Arc<Self>) -> super::super::backend::HttpStreamFn {
+            let script = Arc::clone(self);
+            Arc::new(move |req: &HttpRequest, _cancel: &Arc<super::super::backend::StreamCancellation>| {
+                script.seen.lock().unwrap().push(req.clone());
+                let (status, content_type, body) = script.replies.lock().unwrap().pop_front().expect("unexpected stream attempt");
+                Ok(super::super::backend::HttpStreamResponse { status, content_type, reader: Box::new(std::io::Cursor::new(body.into_bytes())) })
+            })
+        }
+    }
+
+    fn streaming_config(protocol: Protocol, base: &str, key: Option<&str>, http: HttpFn, stream: super::super::backend::HttpStreamFn) -> ApiConfig {
+        let shared = Arc::new(AiShared::default());
+        let config = AgentConfig {
+            id: "api-original-7".into(),
+            name: "Test".into(),
+            kind: protocol.kind(),
+            base_url: base.into(),
+            model: "m".into(),
+            key: key.is_some(),
+            request_timeout_s: 300,
+            ..Default::default()
+        };
+        shared.connections().replace(&[config]).unwrap();
+        shared.set_stream(Some(stream));
+        let secrets = Arc::new(CurrentSecrets::new());
+        *secrets.value.lock().unwrap() = Ok(key.map(str::to_owned));
+        ApiConfig {
+            connection_id: "api-original-7".into(),
+            model: "m".into(),
+            host_ai: HostAi::direct(shared, Some(http), Some(secrets)).unwrap(),
+            streaming: true,
+        }
+    }
+
+    fn sse(body: &str) -> (u16, Option<String>, String) {
+        (200, Some("text/event-stream".into()), body.into())
+    }
+
+    fn empty_models() -> Vec<u8> {
+        b"{\"data\":[]}".to_vec()
+    }
+
+    #[test]
+    fn streamed_text_appends_and_the_turn_ends_once() {
+        let stream = ScriptedStream::new(vec![sse(concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ))]);
+        let http: HttpFn =
+            Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("buffered must not run".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let events = wait_for_turn(&mut b);
+        let text: String = events.iter().filter_map(|e| if let Event::Text { text, .. } = e { Some(text.as_str()) } else { None }).collect();
+        assert_eq!(text, "Hello", "{events:?}");
+        assert_eq!(events.iter().filter(|e| matches!(e, Event::TurnEnded { .. })).count(), 1, "{events:?}");
+        assert!(stream.seen.lock().unwrap()[0].body.as_deref().is_some_and(|body| String::from_utf8_lossy(body).contains("\"stream\":true")));
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn streamed_tool_calls_wait_for_completion_and_keep_the_provider_id() {
+        let stream = ScriptedStream::new(vec![
+            sse(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"one \"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"two \"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"three\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-9\",\"function\":{\"name\":\"measure\",\"arguments\":\"{}\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n",
+            )),
+            sse("data: {\"choices\":[{\"delta\":{\"content\":\"Done.\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"),
+        ]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("measure".into())]);
+        let events = wait_for_turn(&mut b);
+        let ids: Vec<&str> = events.iter().filter_map(|e| if let Event::Tool { id, .. } = e { Some(id.as_str()) } else { None }).collect();
+        assert!(!ids.is_empty() && ids.iter().all(|id| *id == "call-9"), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "Done.")), "{events:?}");
+        assert_eq!(b.normal.load(Ordering::Acquire), 0, "streamed text and tool starts balance after poll");
+        assert_eq!(stream.seen.lock().unwrap().len(), 2);
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn invalid_streamed_tool_ids_are_protocol_errors_without_a_tool() {
+        let stream = ScriptedStream::new(vec![sse(concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"measure\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+        ))]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("bad call".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(!events.iter().any(|e| matches!(e, Event::Tool { .. })), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::Error(_))), "{events:?}");
+        assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason == "error"), "{events:?}");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn an_abnormal_stream_end_is_not_a_tool_or_a_normal_turn() {
+        let stream = ScriptedStream::new(vec![sse(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"measure\",\"arguments\":\"{}\"}}]}}]}\n\n",
+        )]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("half".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(!events.iter().any(|e| matches!(e, Event::Tool { .. })), "{events:?}");
+        assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason == "error"), "{events:?}");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn a_non_2xx_stream_fails_before_text_or_fallback() {
+        let stream = ScriptedStream::new(vec![(401, Some("application/json".into()), "{\"error\":{\"message\":\"bad key\"}}".into())]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", Some("sk-live"), http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(!events.iter().any(|e| matches!(e, Event::Text { .. } | Event::Tool { .. })), "{events:?}");
+        assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason == "error"), "{events:?}");
+        assert_eq!(stream.seen.lock().unwrap().len(), 1);
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn a_non_sse_2xx_stream_falls_back_once_before_output() {
+        let stream = ScriptedStream::new(vec![(200, Some("application/json".into()), "{}".into())]);
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&posts);
+        let http: HttpFn = Arc::new(move |r: &HttpRequest| {
+            if r.method == "GET" {
+                return Ok((200, empty_models()));
+            }
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok((200, json!({"choices":[{"message":{"role":"assistant","content":"buffered"},"finish_reason":"stop"}]}).to_string().into_bytes()))
+        });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "buffered")), "{events:?}");
+        assert_eq!(stream.seen.lock().unwrap().len(), 1);
+        assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(events.iter().filter(|e| matches!(e, Event::Text { .. })).count(), 1, "{events:?}");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn an_unsupported_provider_is_buffered_from_the_start() {
+        let stream = ScriptedStream::new(vec![]);
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&posts);
+        let http: HttpFn = Arc::new(move |r: &HttpRequest| {
+            if r.method == "GET" {
+                return Ok((200, empty_models()));
+            }
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok((200, json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}).to_string().into_bytes()))
+        });
+        let cfg = streaming_config(Protocol::OpenAi, "http://localhost:1/v1", None, http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "ok")), "{events:?}");
+        assert!(stream.seen.lock().unwrap().is_empty());
+        assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn a_key_split_across_stream_chunks_is_redacted() {
+        let key = "sk-live-secret-42";
+        let stream = ScriptedStream::new(vec![sse(concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello sk-live-\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"secret-42 world\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ))]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", Some(key), http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let events = wait_for_turn(&mut b);
+        let text: String = events.iter().filter_map(|e| if let Event::Text { text, .. } = e { Some(text.as_str()) } else { None }).collect();
+        assert!(!text.contains(key), "{text}");
+        assert!(text.contains("hello "), "{text}");
+        assert!(text.contains(" world"), "{text}");
+        b.shutdown(true);
+    }
+
+    struct GateRead {
+        first: Option<Vec<u8>>,
+        gate: Arc<Mutex<mpsc::Receiver<()>>>,
+    }
+
+    impl std::io::Read for GateRead {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(first) = self.first.take() {
+                let n = first.len().min(buf.len());
+                buf[..n].copy_from_slice(&first[..n]);
+                return Ok(n);
+            }
+            let _ = self.gate.lock().unwrap().recv_timeout(Duration::from_secs(5));
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn cancel_mid_text_stops_the_reader_and_never_starts_a_tool() {
+        let (gate_tx, gate_rx) = channel();
+        let gate = Arc::new(Mutex::new(gate_rx));
+        let stream_gate = Arc::clone(&gate);
+        let stream: super::super::backend::HttpStreamFn =
+            Arc::new(move |_req: &HttpRequest, _cancel: &Arc<super::super::backend::StreamCancellation>| {
+                Ok(super::super::backend::HttpStreamResponse {
+                    status: 200,
+                    content_type: Some("text/event-stream".into()),
+                    reader: Box::new(GateRead {
+                        first: Some(b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_vec()),
+                        gate: Arc::clone(&stream_gate),
+                    }),
+                })
+            });
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream);
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("long".into())]);
+        let start = std::time::Instant::now();
+        let mut events = Vec::new();
+        while !events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "partial")) && start.elapsed() < Duration::from_secs(5) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "partial")), "{events:?}");
+        b.cancel();
+        let _ = gate_tx.send(());
+        while !events.iter().any(|e| matches!(e, Event::TurnEnded { .. })) && start.elapsed() < Duration::from_secs(5) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!events.iter().any(|e| matches!(e, Event::Tool { .. })), "{events:?}");
+        assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason == "cancelled"), "{events:?}");
+        b.shutdown(true);
+    }
+
+    fn stream_body(request: &HttpRequest) -> Value {
+        serde_json::from_slice(request.body.as_deref().unwrap_or(b"null")).unwrap()
+    }
+
+    fn assistant_content(body: &Value) -> String {
+        body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["role"] == "assistant")
+            .map(|message| match &message["content"] {
+                Value::String(text) => text.clone(),
+                Value::Array(blocks) => blocks.iter().filter_map(|block| block["text"].as_str()).collect(),
+                _ => String::new(),
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_stream_error_after_text_never_falls_back_or_duplicates() {
+        let stream = ScriptedStream::new(vec![sse("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")]);
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&posts);
+        let http: HttpFn = Arc::new(move |r: &HttpRequest| {
+            if r.method == "GET" {
+                return Ok((200, empty_models()));
+            }
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok((200, json!({"choices":[{"message":{"role":"assistant","content":"buffered"}}]}).to_string().into_bytes()))
+        });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "partial")), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::Error(_))), "{events:?}");
+        assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 0, "no buffered retry after output");
+        assert!(!events.iter().any(|e| matches!(e, Event::Text { text, .. } if text == "buffered")), "{events:?}");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn a_key_in_streamed_tool_arguments_is_never_executed() {
+        let key = "sk-tool-secret-7";
+        let stream = ScriptedStream::new(vec![sse(concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-key\",\"function\":{\"name\":\"measure\",\"arguments\":\"{\\\"secret\\\":\\\"sk-tool-\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"secret-7\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ))]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", Some(key), http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("call".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(!events.iter().any(|e| matches!(e, Event::Tool { .. })), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::Error(_))), "{events:?}");
+        assert!(!format!("{events:?}").contains(key));
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn a_key_in_a_streamed_provider_error_is_not_echoed() {
+        let key = "sk-error-secret-9";
+        let stream = ScriptedStream::new(vec![(400, Some("application/json".into()), format!("{{\"error\":{{\"message\":\"bad {key}\"}}}}"))]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", Some(key), http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let events = wait_for_turn(&mut b);
+        assert!(events.iter().any(|e| matches!(e, Event::Error(_))), "{events:?}");
+        assert!(!format!("{events:?}").contains(key), "{events:?}");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn the_withheld_redaction_tail_reaches_history_and_the_panel() {
+        let key = "sk-tail-secret-11";
+        let stream = ScriptedStream::new(vec![
+            sse(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello sk-tail-\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"secret-11 done\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n",
+            )),
+            sse("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"),
+        ]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", Some(key), http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let first = wait_for_turn(&mut b);
+        let panel: String = first.iter().filter_map(|e| if let Event::Text { text, .. } = e { Some(text.as_str()) } else { None }).collect();
+        assert!(panel.ends_with(" done"), "{panel}");
+        assert!(!panel.contains(key), "{panel}");
+        b.prompt(&[PromptPart::Text("again".into())]);
+        let _ = wait_for_turn(&mut b);
+        let seen = stream.seen.lock().unwrap();
+        let body = stream_body(&seen[1]);
+        let history = assistant_content(&body);
+        assert!(history.contains("hello ") && history.ends_with(" done"), "{history}");
+        assert!(!format!("{body}").contains(key), "history must not contain the key");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn redaction_carries_across_rounds_and_history() {
+        let key = "sk-round-secret-13";
+        let stream = ScriptedStream::new(vec![
+            sse(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"round one sk-round-\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-r\",\"function\":{\"name\":\"measure\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n",
+            )),
+            sse(concat!("data: {\"choices\":[{\"delta\":{\"content\":\"secret-13 end\"},\"finish_reason\":\"stop\"}]}\n\n", "data: [DONE]\n\n",)),
+        ]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", Some(key), http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("hi".into())]);
+        let events = wait_for_turn(&mut b);
+        let text: String = events.iter().filter_map(|e| if let Event::Text { text, .. } = e { Some(text.as_str()) } else { None }).collect();
+        assert!(text.contains("round one ") && text.contains(" end"), "{text}");
+        assert!(!format!("{events:?}").contains(key));
+        let seen = stream.seen.lock().unwrap();
+        let body = stream_body(&seen[1]);
+        assert!(!format!("{body:?}").contains(key));
+        assert!(!format!("{body:?}").contains("sk-round-"), "no key prefix reaches any assistant history: {body}");
+        let assistant = assistant_content(&body);
+        assert!(assistant.contains("round one "), "each tool round keeps its visible tail: {assistant}");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn a_long_anthropic_answer_is_one_text_block() {
+        let mut body = String::new();
+        for _ in 0..200 {
+            body.push_str("event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n");
+        }
+        body.push_str("event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n");
+        body.push_str("event: message_stop\ndata: {}\n\n");
+        let stream = ScriptedStream::new(vec![
+            sse(&body),
+            sse(
+                "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"}}\n\nevent: message_stop\ndata: {}\n\n",
+            ),
+        ]);
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::Anthropic, "https://api.anthropic.com", None, http, stream.stream());
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("long".into())]);
+        let _ = wait_for_turn(&mut b);
+        b.prompt(&[PromptPart::Text("again".into())]);
+        let _ = wait_for_turn(&mut b);
+        let seen = stream.seen.lock().unwrap();
+        let body = stream_body(&seen[1]);
+        let assistant = body["messages"].as_array().unwrap().iter().find(|m| m["role"] == "assistant").unwrap();
+        let content = assistant["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1, "{assistant}");
+        assert_eq!(content[0]["text"].as_str().unwrap().len(), 200);
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn a_handshake_that_outlives_cancel_is_reported_not_called_clean() {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let release = Arc::new(Mutex::new(release_rx));
+        let stream: super::super::backend::HttpStreamFn =
+            Arc::new(move |_req: &HttpRequest, _cancel: &Arc<super::super::backend::StreamCancellation>| {
+                let _ = entered_tx.send(());
+                let _ = release.lock().unwrap().recv_timeout(Duration::from_secs(10));
+                Ok(super::super::backend::HttpStreamResponse {
+                    status: 200,
+                    content_type: Some("text/event-stream".into()),
+                    reader: Box::new(std::io::Cursor::new(b"data: [DONE]\n\n".to_vec())),
+                })
+            });
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream);
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("slow".into())]);
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        b.cancel();
+        std::thread::sleep(Duration::from_millis(2_200));
+        let _ = release_tx.send(());
+        let mut events = Vec::new();
+        let start = std::time::Instant::now();
+        while !events.iter().any(|e| matches!(e, Event::TurnEnded { .. })) && start.elapsed() < Duration::from_secs(8) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!events.iter().any(|e| matches!(e, Event::Error(_))), "{events:?}");
+        assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason == "cancelled"), "{events:?}");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn a_connect_that_never_returns_cannot_block_stop_forever() {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let stream: super::super::backend::HttpStreamFn =
+            Arc::new(move |_req: &HttpRequest, cancel: &Arc<super::super::backend::StreamCancellation>| {
+                let release_tx = release_tx.clone();
+                cancel.register(Arc::new(move || {
+                    let _ = release_tx.send(());
+                }));
+                let _ = entered_tx.send(());
+                let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(10));
+                Ok(super::super::backend::HttpStreamResponse {
+                    status: 200,
+                    content_type: Some("text/event-stream".into()),
+                    reader: Box::new(std::io::Cursor::new(b"data: [DONE]\n\n".to_vec())),
+                })
+            });
+        let http: HttpFn = Arc::new(|r: &HttpRequest| if r.method == "GET" { Ok((200, empty_models())) } else { Err("no buffered".into()) });
+        let cfg = streaming_config(Protocol::OpenAi, "https://api.openai.com/v1", None, http, stream);
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("never".into())]);
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        b.cancel();
+        let start = std::time::Instant::now();
+        let mut events = Vec::new();
+        while !events.iter().any(|e| matches!(e, Event::TurnEnded { .. })) && start.elapsed() < Duration::from_secs(6) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(start.elapsed() < Duration::from_secs(6), "Stop must return once shutdown releases the connect");
+        assert!(!events.iter().any(|e| matches!(e, Event::Error(_))), "{events:?}");
+        assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason == "cancelled"), "{events:?}");
+    }
+
+    /// A cancelled turn still carries a dispatched tool's truthful outcome; starts and text stop.
+    #[test]
+    fn cancel_keeps_the_truthful_tool_result_and_drops_later_starts() {
+        let (tx, rx) = channel();
+        let turn = Arc::new(TurnControl::new());
+        turn.cancel();
+        tx.send((
+            Some(Arc::clone(&turn)),
+            Event::Tool { id: "call".into(), title: None, kind: None, status: Some(ToolStatus::InProgress), input: None, output: None },
+            true,
+        ))
+        .unwrap();
+        tx.send((
+            Some(Arc::clone(&turn)),
+            Event::Tool {
+                id: "call".into(),
+                title: None,
+                kind: None,
+                status: Some(ToolStatus::Completed),
+                input: None,
+                output: Some("applied".into()),
+            },
+            false,
+        ))
+        .unwrap();
+        tx.send((Some(Arc::clone(&turn)), Event::Text { thought: false, text: "late".into() }, true)).unwrap();
+        let mut backend =
+            ApiBackend { cmds: None, events: rx, pending: Arc::new(AtomicUsize::new(3)), normal: Arc::new(AtomicUsize::new(2)), turn, mcp: None };
+        let events = backend.poll();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(matches!(&events[0], Event::Tool { status: Some(ToolStatus::Completed), output: Some(output), .. } if output == "applied"));
+    }
+
+    #[test]
+    fn a_dispatched_tool_result_reaches_the_panel_at_capacity() {
+        let dir = std::env::temp_dir().join(format!("sc-bm2-mcp-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let script = "while IFS= read -r line; do printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}'; done";
+        let mcp = AgentProcess::spawn(&["/bin/sh".into(), "-c".into(), script.into()], &dir, &[], || {}).expect("fake MCP starts");
+        let answers = std::sync::Mutex::new(
+            vec![
+                json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "measure", "arguments": "{}"}}]}}]}),
+                json!({"choices": [{"message": {"role": "assistant", "content": "done"}}]}),
+            ]
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>(),
+        );
+        let http: HttpFn = Arc::new(move |_r: &HttpRequest| Ok((200, answers.lock().unwrap().pop().unwrap().to_string().into_bytes())));
+        let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", None, http, "");
+        let binding = cfg.host_ai.bind(&cfg.connection_id, &cfg.model).unwrap();
+        let (events, rx) = sync_channel(PANEL_EVENTS);
+        let mut w = Worker {
+            cfg,
+            binding,
+            protocol: Protocol::OpenAi,
+            mcp: Some(mcp),
+            next: 0,
+            tools: vec![json!({"type": "function", "function": {"name": "measure"}})],
+            tool_names: vec!["measure".into()],
+            history: vec![json!({"role": "user", "content": "hi"})],
+            note: super::super::acp::SYSTEM_NOTE.to_string(),
+            session_id: "test-session".to_string(),
+            gemini_sigs: Default::default(),
+            events,
+            pending: Arc::new(AtomicUsize::new(0)),
+            normal: Arc::new(AtomicUsize::new(0)),
+            overflowed: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(|| {}),
+            turn: Arc::new(TurnControl::new()),
+            in_turn: true,
+            no_reasoning: Default::default(),
+            streaming: false,
+            redactor: std::cell::RefCell::new(Redactor::new(None)),
+            internal_error: Default::default(),
+        };
+        for _ in 0..PANEL_NORMAL - 1 {
+            w.events.try_send((None, Event::Text { thought: false, text: "filler".into() }, true)).unwrap();
+            w.pending.fetch_add(1, Ordering::SeqCst);
+        }
+        w.normal.store(PANEL_NORMAL - 1, Ordering::SeqCst);
+        w.turn(vec![PromptPart::Text("measure it".into())]);
+        let events: Vec<Event> = rx.try_iter().map(|(_, event, _)| event).collect();
+        assert!(events.iter().any(|event| matches!(event, Event::Tool { id, status: Some(ToolStatus::Completed), .. } if id == "c1")), "{events:?}");
+        assert!(events.iter().any(|event| matches!(event, Event::TurnEnded { .. })), "{events:?}");
+        assert_eq!(w.next, 1, "one tools/call for the provider id, no replay");
+        if let Some(mcp) = w.mcp.as_mut() {
+            mcp.shutdown(false);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_terminal_slot_survives_128_priority_tool_outcomes() {
+        let (mut w, _seen) = scripted_worker(vec![]);
+        let (events, rx) = sync_channel(PANEL_EVENTS);
+        w.events = events;
+        w.pending = Arc::new(AtomicUsize::new(0));
+        w.normal = Arc::new(AtomicUsize::new(0));
+        for _ in 0..PANEL_NORMAL {
+            w.events.try_send((None, Event::Text { thought: false, text: "filler".into() }, true)).unwrap();
+            w.pending.fetch_add(1, Ordering::SeqCst);
+        }
+        w.normal.store(PANEL_NORMAL, Ordering::SeqCst);
+        for n in 0..PANEL_RESERVED {
+            assert!(
+                w.send_priority(Event::Tool {
+                    id: format!("call-{n}"),
+                    title: None,
+                    kind: None,
+                    status: Some(ToolStatus::Completed),
+                    input: None,
+                    output: Some("applied".into()),
+                }),
+                "tool {n}"
+            );
+        }
+        assert!(w.send_error(Event::Error("resource".into())));
+        assert!(w.send_terminal(Event::TurnEnded { reason: "resource".into() }));
+        assert_eq!(w.pending.load(Ordering::SeqCst), PANEL_EVENTS);
+        let events: Vec<Event> = rx.try_iter().map(|(_, event, _)| event).collect();
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::Tool { .. })).count(), PANEL_RESERVED);
+        assert!(events.iter().any(|event| matches!(event, Event::Error(_))));
+        assert!(matches!(events.last(), Some(Event::TurnEnded { .. })));
+    }
+
+    #[test]
+    fn sixty_four_tool_start_result_pairs_leave_error_and_terminal_slots() {
+        let (mut w, _seen) = scripted_worker(vec![]);
+        let (events, rx) = sync_channel(PANEL_EVENTS);
+        w.events = events;
+        w.pending = Arc::new(AtomicUsize::new(0));
+        w.normal = Arc::new(AtomicUsize::new(0));
+        for _ in 0..PANEL_NORMAL - 64 {
+            w.events.try_send((None, Event::Text { thought: false, text: "filler".into() }, true)).unwrap();
+            w.pending.fetch_add(1, Ordering::SeqCst);
+        }
+        w.normal.store(PANEL_NORMAL - 64, Ordering::SeqCst);
+        for n in 0..64 {
+            assert!(w.emit(Event::Tool {
+                id: format!("start-{n}"),
+                title: None,
+                kind: None,
+                status: Some(ToolStatus::InProgress),
+                input: None,
+                output: None,
+            }));
+            assert!(w.send_priority(Event::Tool {
+                id: format!("done-{n}"),
+                title: None,
+                kind: None,
+                status: Some(ToolStatus::Completed),
+                input: None,
+                output: Some("applied".into()),
+            }));
+        }
+        assert!(w.send_error(Event::Error("resource".into())));
+        assert!(w.send_terminal(Event::TurnEnded { reason: "resource".into() }));
+        let events: Vec<Event> = rx.try_iter().map(|(_, event, _)| event).collect();
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::Tool { status: Some(ToolStatus::InProgress), .. })).count(), 64);
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::Tool { status: Some(ToolStatus::Completed), .. })).count(), 64);
+        assert!(events.iter().any(|event| matches!(event, Event::Error(_))));
+        assert!(matches!(events.last(), Some(Event::TurnEnded { .. })));
+    }
+
+    #[test]
+    fn a_full_ordinary_allowance_aborts_before_dispatch_without_wrapping() {
+        let answers = std::sync::Mutex::new(vec![
+            json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "measure", "arguments": "{}"}}]}}]}),
+        ]);
+        let http: HttpFn = Arc::new(move |_r: &HttpRequest| Ok((200, answers.lock().unwrap().pop().unwrap().to_string().into_bytes())));
+        let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", None, http, "");
+        let binding = cfg.host_ai.bind(&cfg.connection_id, &cfg.model).unwrap();
+        let (events, rx) = sync_channel(PANEL_EVENTS);
+        let mut w = Worker {
+            cfg,
+            binding,
+            protocol: Protocol::OpenAi,
+            mcp: None,
+            next: 0,
+            tools: vec![json!({"type": "function", "function": {"name": "measure"}})],
+            tool_names: vec!["measure".into()],
+            history: vec![json!({"role": "user", "content": "hi"})],
+            note: super::super::acp::SYSTEM_NOTE.to_string(),
+            session_id: "test-session".to_string(),
+            gemini_sigs: Default::default(),
+            events,
+            pending: Arc::new(AtomicUsize::new(0)),
+            normal: Arc::new(AtomicUsize::new(0)),
+            overflowed: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(|| {}),
+            turn: Arc::new(TurnControl::new()),
+            in_turn: true,
+            no_reasoning: Default::default(),
+            streaming: false,
+            redactor: std::cell::RefCell::new(Redactor::new(None)),
+            internal_error: Default::default(),
+        };
+        for _ in 0..PANEL_NORMAL {
+            w.events.try_send((None, Event::Text { thought: false, text: "filler".into() }, true)).unwrap();
+            w.pending.fetch_add(1, Ordering::SeqCst);
+        }
+        w.normal.store(PANEL_NORMAL, Ordering::SeqCst);
+        w.turn(vec![PromptPart::Text("measure it".into())]);
+        let events: Vec<Event> = rx.try_iter().map(|(_, event, _)| event).collect();
+        assert!(!events.iter().any(|event| matches!(event, Event::Tool { .. })), "{events:?}");
+        assert!(matches!(events.last(), Some(Event::TurnEnded { reason }) if reason == "resource"), "{events:?}");
+        assert_eq!(w.next, 0, "no tools/call after the ordinary allowance was full");
+        assert_eq!(w.normal.load(Ordering::SeqCst), PANEL_NORMAL, "no wrap or underflow");
+    }
+
+    #[test]
+    fn a_genuinely_full_channel_reports_overflow_instead_of_growing() {
+        let (mut w, _seen) = scripted_worker(vec![]);
+        let (events, rx) = sync_channel(PANEL_EVENTS);
+        w.events = events;
+        w.pending = Arc::new(AtomicUsize::new(0));
+        w.normal = Arc::new(AtomicUsize::new(0));
+        for _ in 0..PANEL_EVENTS {
+            w.events.try_send((None, Event::Text { thought: false, text: "filler".into() }, true)).unwrap();
+        }
+        assert!(!w.emit(Event::Text { thought: false, text: "over".into() }));
+        assert!(!w.send_priority(Event::Tool {
+            id: "late".into(),
+            title: None,
+            kind: None,
+            status: Some(ToolStatus::Failed),
+            input: None,
+            output: Some("unknown".into()),
+        }));
+        assert!(w.overflowed.load(Ordering::SeqCst));
+        assert_eq!(rx.try_iter().count(), PANEL_EVENTS, "the channel capacity itself is the bound");
+    }
+
+    #[test]
+    fn a_tool_result_reaches_the_panel_when_ordinary_slots_are_full() {
+        let answers = std::sync::Mutex::new(
+            vec![
+                json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "measure", "arguments": "{}"}}]}}]}),
+                json!({"choices": [{"message": {"role": "assistant", "content": "later"}}]}),
+            ]
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>(),
+        );
+        let http: HttpFn = Arc::new(move |_r: &HttpRequest| Ok((200, answers.lock().unwrap().pop().unwrap().to_string().into_bytes())));
+        let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", None, http, "");
+        let binding = cfg.host_ai.bind(&cfg.connection_id, &cfg.model).unwrap();
+        let (events, rx) = sync_channel(PANEL_EVENTS);
+        let mut w = Worker {
+            cfg,
+            binding,
+            protocol: Protocol::OpenAi,
+            mcp: None,
+            next: 0,
+            tools: vec![json!({"type": "function", "function": {"name": "measure"}})],
+            tool_names: vec!["measure".into()],
+            history: vec![json!({"role": "user", "content": "hi"})],
+            note: super::super::acp::SYSTEM_NOTE.to_string(),
+            session_id: "test-session".to_string(),
+            gemini_sigs: Default::default(),
+            events,
+            pending: Arc::new(AtomicUsize::new(0)),
+            normal: Arc::new(AtomicUsize::new(0)),
+            overflowed: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(|| {}),
+            turn: Arc::new(TurnControl::new()),
+            in_turn: true,
+            no_reasoning: Default::default(),
+            streaming: false,
+            redactor: std::cell::RefCell::new(Redactor::new(None)),
+            internal_error: Default::default(),
+        };
+        // Leave the ordinary cap full but the reserved slots free.
+        for _ in 0..PANEL_NORMAL - 1 {
+            w.events.try_send((None, Event::Text { thought: false, text: "filler".into() }, true)).unwrap();
+            w.pending.fetch_add(1, Ordering::SeqCst);
+        }
+        w.normal.store(PANEL_NORMAL - 1, Ordering::SeqCst);
+        w.turn(vec![PromptPart::Text("measure it".into())]);
+        let events: Vec<Event> = rx.try_iter().map(|(_, event, _)| event).collect();
+        assert!(
+            events.iter().any(|event| matches!(event, Event::Tool { id, status: Some(ToolStatus::Failed), output: Some(_), .. } if id == "c1")),
+            "{events:?}"
+        );
+        assert!(events.iter().any(|event| matches!(event, Event::TurnEnded { .. })), "{events:?}");
+        assert!(w.pending.load(Ordering::SeqCst) <= PANEL_EVENTS);
+    }
+
+    #[test]
+    fn a_real_full_panel_queue_still_carries_the_tool_result_and_terminal() {
+        let (mut w, _seen) = scripted_worker(vec![]);
+        let (events, rx) = sync_channel(PANEL_EVENTS);
+        w.events = events;
+        w.pending = Arc::new(AtomicUsize::new(0));
+        w.normal = Arc::new(AtomicUsize::new(0));
+        // Fill every ordinary slot with real queued text, then a normal emit must stop.
+        for _ in 0..PANEL_NORMAL {
+            w.events.try_send((None, Event::Text { thought: false, text: "filler".into() }, true)).unwrap();
+            w.pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        // The real worker counts every ordinary event it queues; do the same here, so the next
+        // ordinary emit is refused by the allowance and not only by the channel.
+        w.normal.store(PANEL_NORMAL, std::sync::atomic::Ordering::SeqCst);
+        assert!(!w.emit(Event::Text { thought: false, text: "over".into() }));
+        assert!(w.overflowed.load(std::sync::atomic::Ordering::SeqCst));
+        // The reserved slot accepts a truthful tool outcome even though ordinary slots are full.
+        assert!(w.send_priority(Event::Tool {
+            id: "call".into(),
+            title: None,
+            kind: None,
+            status: Some(ToolStatus::Completed),
+            input: None,
+            output: Some("applied".into()),
+        }));
+        assert!(w.send_priority(Event::TurnEnded { reason: "cancelled".into() }));
+        assert!(w.pending.load(std::sync::atomic::Ordering::SeqCst) <= PANEL_EVENTS);
+        let events: Vec<Event> = rx.try_iter().map(|(_, event, _)| event).collect();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Tool { status: Some(ToolStatus::Completed), output: Some(output), .. } if output == "applied")),
+            "{events:?}"
+        );
+        assert!(matches!(events.last(), Some(Event::TurnEnded { .. })), "{events:?}");
+    }
+
+    /// Every Go protocol carries the session header; other endpoints see none.
     /// Every Go protocol carries the session header; other endpoints see none.
     #[test]
     fn go_session_header_goes_on_every_protocol() {
@@ -4949,7 +6185,7 @@ mod tests {
         });
         let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", Some("sk-secret"), http, effort);
         let binding = cfg.host_ai.bind(&cfg.connection_id, &cfg.model).unwrap();
-        let (events, _rx) = channel();
+        let (events, _rx) = sync_channel(PANEL_EVENTS);
         let w = Worker {
             cfg,
             binding,
@@ -4967,6 +6203,12 @@ mod tests {
             turn: Arc::new(TurnControl::new()),
             in_turn: true,
             no_reasoning: Default::default(),
+            streaming: false,
+            redactor: std::cell::RefCell::new(Redactor::new(None)),
+            pending: Arc::new(AtomicUsize::new(0)),
+            normal: Arc::new(AtomicUsize::new(0)),
+            overflowed: Arc::new(AtomicBool::new(false)),
+            internal_error: Default::default(),
         };
         (w, seen)
     }

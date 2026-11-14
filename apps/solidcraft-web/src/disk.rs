@@ -175,8 +175,8 @@ pub fn save_type(name: &str) -> (&'static str, &'static str, String) {
     let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
     match ext.as_deref() {
         Some("json") => ("Plain JSON design", "application/json", ".json".into()),
-        Some(e) if solidcraft_engine::io::is_design_ext(e) => ("open-skyfall design", "application/octet-stream", format!(".{e}")),
-        _ => ("open-skyfall design", "application/octet-stream", format!(".{}", solidcraft_engine::io::DESIGN_EXT)),
+        Some(e) if solidcraft_engine::io::is_design_ext(e) => ("Intcad design", "application/octet-stream", format!(".{e}")),
+        _ => ("Intcad design", "application/octet-stream", format!(".{}", solidcraft_engine::io::DESIGN_EXT)),
     }
 }
 

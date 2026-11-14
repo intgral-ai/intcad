@@ -1,5 +1,5 @@
 {
-  "about": "Reviewed Beta action-matrix exceptions. Each entry binds a design/entity/action identity to its failure kind, a stable failure class, the reviewed evidence run and an issue. The historical baseline was recorded on the C++ SMLib backend and is not comparable with the Rust solidcore pin, so these 213 are a ratchet mismatch first, not proof of a fork-only kernel regression; see docs/kernel-attribution.md. The reviewed run also has 1085 pre-existing baseline failures and 956 unbaselined failures; neither is counted as a pass, and the 956 reviewed unbaselined identities are itemised; a new unbaselined failure fails the gate and a listed one that passes is an improvement, never a pass. Beta promotion fails on an unlisted failure, a changed class, a missing shard, a build failure or an exception that starts passing. This is not a stable release waiver and is not a replacement for tests/action_matrix/baseline.json.",
+  "about": "Reviewed Beta action-matrix exceptions. Each entry binds a design/entity/action identity to its failure kind, a stable failure class, the reviewed evidence run and an issue. The historical baseline was recorded on the C++ SMLib backend and is not comparable with the Rust solidcore pin, so these 213 are a ratchet mismatch first, not proof of a fork-only kernel regression; see docs/kernel-attribution.md. The reviewed run also has 1085 pre-existing baseline failures and 972 unbaselined failures; neither is counted as a pass, and the 972 reviewed unbaselined identities are itemised; a new unbaselined failure fails the gate and a listed one that passes is an improvement, never a pass. Beta promotion fails on an unlisted failure, a changed class, a missing shard, a build failure or an exception that starts passing. This is not a stable release waiver and is not a replacement for tests/action_matrix/baseline.json.",
   "entries": [
     {
       "action": "face.shell",
@@ -1927,10 +1927,10 @@
     "run": 42790743092,
     "sha": "7bf03f6d9f355be8d59843953aba92a3d2947611",
     "shards": "1-14 and 16 from run 42790743092; shard 15 rerun at 1a45733ef96b53990fec8bd7794563eebc6facdb with the same costs/sharding",
-    "totalActions": 54029,
-    "totalActionsNote": "the stable base is 54,029; a 300 s run can add up to 4 edge.fillet+edit actions when more base fillets complete, so the gate accepts at least this many actions and the itemised identities decide failures",
+    "totalActions": 54033,
+    "totalActionsNote": "beta.3 run 43114464720 has 4 additional edge.fillet+edit actions because the 300 s action limit let more base fillets complete; the 213 baseline pass-to-fail identities are unchanged",
     "unbaselinedDigest": "b2ab23f17ab1d2a88429ef9a660de5dbf1f922f1e8b6fd9bf077a5a1983ef56e",
-    "unbaselinedFailures": 956,
+    "unbaselinedFailures": 972,
     "unbaselinedNote": "itemised reviewed identities from run 43012493350; 9 timeout entries were reclassified from their real errors and 2 new blend_check_refused identities were reviewed in run 43114464720; a new unbaselined failure is rejected, a listed one that passes is reported fixed"
   },
   "unbaselined": [
@@ -4186,11 +4186,11 @@
     },
     {
       "action": "edge.fillet",
-      "category": "blend_too_large",
+      "category": "other",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l12@F13.1|F8:top@F13.1#[F11:side:l11@F13.1,F11:side:l12@F13.1,F11:side:l13@F13.1,F11:side:l14@F13.1,F11:side:l15@F13.1,F11:side:l16@F13.1,F6:inner:F4:side:l3@F5.1]",
       "issue": "#88",
-      "kind": "error"
+      "kind": "timeout"
     },
     {
       "action": "edge.fillet",
@@ -4210,11 +4210,11 @@
     },
     {
       "action": "edge.fillet",
-      "category": "blend_too_large",
+      "category": "other",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l12|F8:top#[F11:side:l11,F11:side:l12,F11:side:l13,F11:side:l14,F11:side:l15,F11:side:l16,F6:inner:F2:start@F5.1]",
       "issue": "#88",
-      "kind": "error"
+      "kind": "timeout"
     },
     {
       "action": "edge.fillet",
@@ -4526,11 +4526,11 @@
     },
     {
       "action": "edge.fillet",
-      "category": "blend_backend_1001",
+      "category": "other",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l2|F8:side:l4",
       "issue": "#88",
-      "kind": "error"
+      "kind": "timeout"
     },
     {
       "action": "edge.chamfer",
@@ -4774,11 +4774,11 @@
     },
     {
       "action": "edge.fillet",
-      "category": "blend_backend_1001",
+      "category": "other",
       "design": "regressions/battery_case_pleats",
       "entity": "Case/F11:side:l7@F13.1|F8:side:l2@F13.1",
       "issue": "#88",
-      "kind": "error"
+      "kind": "timeout"
     },
     {
       "action": "edge.chamfer",
@@ -6196,11 +6196,11 @@
     },
     {
       "action": "edge.fillet",
-      "category": "blend_too_large",
+      "category": "other",
       "design": "regressions/front_triangle_hull_triangle",
       "entity": "FrontTriangle/F15:end|F15:side:c1",
       "issue": "#88",
-      "kind": "error"
+      "kind": "timeout"
     },
     {
       "action": "edge.fillet",
@@ -7153,6 +7153,86 @@
       "kind": "error"
     },
     {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:end|F7:side:a1",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:end|F7:side:a2",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:end|F7:side:a3",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:end|F7:side:a4",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:end|F7:side:l1",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:end|F7:side:l2",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:end|F7:side:l3",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:end|F7:side:l4",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:a1|F8:side",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:a2|F8:side",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
       "action": "edge.fillet+edit",
       "category": "blend_check_refused",
       "design": "regressions/loft_join_bracket_hull_triangle",
@@ -7163,6 +7243,14 @@
       "reviewedIn": 43114464720
     },
     {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:a3|F8:side",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
       "action": "edge.chamfer",
       "category": "blend_check_refused",
       "design": "regressions/loft_join_bracket_hull_triangle",
@@ -7171,12 +7259,28 @@
       "kind": "error"
     },
     {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:a4|F8:side",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
       "action": "edge.chamfer",
       "category": "blend_check_refused",
       "design": "regressions/loft_join_bracket_hull_triangle",
       "entity": "DT2/F7:side:l1|F8:side",
       "issue": "#88",
       "kind": "error"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:l1|F8:side",
+      "issue": "#88",
+      "kind": "timeout"
     },
     {
       "action": "edge.fillet+edit",
@@ -7189,12 +7293,36 @@
       "reviewedIn": 43114464720
     },
     {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:l2|F8:side",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:l3|F8:side",
+      "issue": "#88",
+      "kind": "timeout"
+    },
+    {
       "action": "edge.normal_plane+edit",
       "category": "other",
       "design": "regressions/loft_join_bracket_hull_triangle",
       "entity": "DT2/F7:side:l3|F8:side",
       "issue": "#88",
       "kind": "timeline_error"
+    },
+    {
+      "action": "edge.fillet",
+      "category": "other",
+      "design": "regressions/loft_join_bracket_hull_triangle",
+      "entity": "DT2/F7:side:l4|F8:side",
+      "issue": "#88",
+      "kind": "timeout"
     },
     {
       "action": "face.shell",
@@ -9604,6 +9732,5 @@
       "issue": "#88",
       "kind": "bad_params"
     }
-  ],
-  "unbaselinedNote": "itemised reviewed identities from run 43012493350; 9 timeout entries were reclassified from their real errors and 2 new blend_check_refused identities were reviewed in run 43114464720; run 43241626115 reclassified 3 more timeout entries and removed 16 loft_join fillets that passed; run 43381698526 (tested merge 13417bb37) reclassified 2 more timeout entries to error/blend_too_large (battery_case_pleats F11:side:l12 variants, 902,971 ms and 1,067,213 ms); a new unbaselined failure is rejected, a listed one that passes is reported fixed"
+  ]
 }

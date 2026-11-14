@@ -52,6 +52,8 @@ pub mod skill;
 pub mod summary;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod task_runtime;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -360,7 +362,9 @@ enum Reading {
 }
 
 impl Loading {
-    /// A CAD file being imported (its part lands in the design whatever the message does).
+    /// A CAD file being imported (its part lands in the design whatever the message does). The old
+    /// egui conversation's loading chip reads it; the page is told the same state in `web::state`.
+    #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
     pub fn importing(&self) -> bool {
         matches!(self.what, Reading::Import(_))
     }
@@ -401,11 +405,13 @@ pub struct AgentChat {
     pub(crate) task: Option<task_runtime::Runtime>,
     /// Send a picture of the view with the next message.
     pub attach_view: bool,
-    /// Send what is selected in the model with the next message.
-    pub attach_selection: bool,
     /// How many things the current selection is by clicks, kept while the selection and the design
     /// stay as they are: (the selection, the design's address, the count).
     selected_count: Option<(Vec<solidcraft_engine::Sel>, usize, usize)>,
+    /// How the current selection reads, kept as [`Self::selected_count`] is: (the selection, the
+    /// design's address, the description). The host's page shows it as what the agent can see.
+    #[cfg(not(target_arch = "wasm32"))]
+    selected_context: Option<(Vec<solidcraft_engine::Sel>, usize, Context)>,
     /// What the user picked with Pick context for the next message, and how it reads.
     pub picked: Vec<solidcraft_engine::Sel>,
     pub picked_context: Context,
@@ -433,6 +439,25 @@ pub struct AgentChat {
     pub confirm_new: bool,
     /// Where the panel was drawn last (for its shortcuts).
     pub panel_rect: Option<egui::Rect>,
+    /// The desktop host can show the Assistant in a web view ([`web::set_host`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_host: bool,
+    /// Why the desktop host has no web view, when it should have one ([`web::set_problem`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_problem: Option<web::Problem>,
+    /// The panel asked the host to try once more ([`web::request_retry`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_retry: bool,
+    /// The place the panel gave up to the host's web view this frame, and the layer it is in.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_place: Option<(egui::Rect, egui::LayerId)>,
+    /// The colour of the page's own surface, as the page said it ([`web::act`], `surface`): the
+    /// floating panel's frame is filled with it, so the page and the strip beside it are one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_canvas: Option<egui::Color32>,
+    /// Files are being dragged over the host's web view ([`web::dragging`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_drag: bool,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -445,7 +470,9 @@ pub struct AgentChat {
     pasted: usize,
     /// When the last text paste arrived (input time), so the V key coming up after it isn't a second paste.
     pub(crate) text_pasted_at: Option<f64>,
-    /// The chips' thumbnails, by the picture they show.
+    /// The chips' thumbnails, by the picture they show. The old egui conversation's chips; the
+    /// page draws its own pictures.
+    #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
     thumbs: std::collections::HashMap<u64, egui::TextureHandle>,
     /// The last id given to a file added to a message.
     last_file_id: u64,
@@ -470,8 +497,6 @@ pub struct AgentChat {
     pub connection_auth: Option<bool>,
     /// The running backend hands turns to a Mastra workflow, so [`Event::Ready`] is not a sign-in.
     mastra: bool,
-    /// The popped-out chat window was given its saved place (it is open); see `panel::window_builder`.
-    pub(crate) window_placed: bool,
     /// The agent's own modes, and the current one.
     modes: Vec<(String, String)>,
     mode: String,
@@ -530,6 +555,23 @@ impl Drop for AgentChat {
     }
 }
 
+/// Append a text delta to this turn's existing agent item, even when tool items arrived after
+/// it. Multi-round answers therefore stay one `Item::Agent`; a different `thought` stream still
+/// gets its own item.
+fn append_agent_text(items: &mut [Item], thought: bool, text: &str) -> bool {
+    let start = items.iter().rposition(|item| matches!(item, Item::User { .. })).unwrap_or(0);
+    let last = items[start..].iter_mut().rev().find_map(|item| match item {
+        Item::Agent { thought: t, text } if *t == thought => Some(text),
+        _ => None,
+    });
+    if let Some(last) = last {
+        last.push_str(text);
+        true
+    } else {
+        false
+    }
+}
+
 impl AgentChat {
     /// Exchange document state, keeping window services and preferences UI in the window.
     pub(crate) fn swap_document(&mut self, other: &mut Self) {
@@ -539,7 +581,6 @@ impl AgentChat {
         std::mem::swap(&mut self.settings, &mut other.settings);
         std::mem::swap(&mut self.control_starter, &mut other.control_starter);
         std::mem::swap(&mut self.models_cache, &mut other.models_cache);
-        std::mem::swap(&mut self.window_placed, &mut other.window_placed);
         std::mem::swap(&mut self.connect_at_start, &mut other.connect_at_start);
         // A sign-in proven in one tab holds for that agent in every tab (#9293).
         std::mem::swap(&mut self.login_results, &mut other.login_results);
@@ -547,6 +588,10 @@ impl AgentChat {
         {
             std::mem::swap(&mut self.detection, &mut other.detection);
             std::mem::swap(&mut self.detecting, &mut other.detecting);
+            // The web view is the window's, whichever design its conversation is about.
+            std::mem::swap(&mut self.web_host, &mut other.web_host);
+            std::mem::swap(&mut self.web_canvas, &mut other.web_canvas);
+            std::mem::swap(&mut self.web_drag, &mut other.web_drag);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;
@@ -818,11 +863,7 @@ impl AgentChat {
                 {
                     turn.replied = true;
                 }
-                if let Some(Item::Agent { thought: t, text: last }) = self.items.last_mut()
-                    && *t == thought
-                {
-                    last.push_str(&text);
-                } else {
+                if !append_agent_text(&mut self.items, thought, &text) {
                     self.push(Item::Agent { thought, text });
                 }
             }
@@ -1256,10 +1297,16 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)
         }
         (agents::Execution::Direct, agents::Kind::Api | agents::Kind::Anthropic) => match host {
-            Some(host_ai) => {
-                api_client::ApiBackend::start(api_client::ApiConfig { connection_id: entry.id.clone(), model: entry.model.clone(), host_ai }, start)
-                    .map(|b| Box::new(b) as Box<dyn ChatBackend>)
-            }
+            Some(host_ai) => api_client::ApiBackend::start(
+                api_client::ApiConfig {
+                    connection_id: entry.id.clone(),
+                    model: entry.model.clone(),
+                    host_ai,
+                    streaming: app.preferences.agent_direct_streaming,
+                },
+                start,
+            )
+            .map(|b| Box::new(b) as Box<dyn ChatBackend>),
             None => Err(tr("ui.ai_no_http").to_string()),
         },
     };
@@ -1576,7 +1623,7 @@ pub fn send(app: &mut SolveApp, ctx: &egui::Context, text: String) {
     // What was picked goes first, then what is selected (without what was picked twice).
     let mut context = std::mem::take(&mut app.agent_chat.picked_context);
     app.agent_chat.picked.clear();
-    if app.agent_chat.attach_selection {
+    if app.preferences.agent_chat_attach_selection {
         let mut selected = context::describe_selection(&mut app.session);
         selected.items.retain(|i| !context.items.contains(i));
         context.merge(selected);
@@ -2833,9 +2880,7 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     if let Some(m) = p.get("minimized").and_then(Value::as_bool) {
         app.preferences.agent_chat_minimized = m;
     }
-    if let Some(w) = p.get("popped").and_then(Value::as_bool) {
-        app.preferences.agent_chat_popped = w;
-    }
+    // `popped` is accepted for older clients and ignored: the Assistant has no own window.
     if let Some(w) = p.get("width").and_then(Value::as_f64).filter(|w| w.is_finite()) {
         app.preferences.agent_chat_width = (w as f32).clamp(panel::MIN_WIDTH, panel::MAX_WIDTH);
         panel::forget_width(ctx);
@@ -2851,7 +2896,7 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
         app.agent_chat.attach_view = a;
     }
     if let Some(a) = p.get("attach_selection").and_then(Value::as_bool) {
-        app.agent_chat.attach_selection = a;
+        app.preferences.agent_chat_attach_selection = a;
     }
     if p.get("pick").and_then(Value::as_bool) == Some(true) {
         start_pick(app);
@@ -2963,8 +3008,9 @@ pub fn status(app: &SolveApp) -> Value {
         "open": c.open,
         "side": app.preferences.agent_chat_side,
         "minimized": app.preferences.agent_chat_minimized,
-        "popped": app.preferences.agent_chat_popped,
-        "window": app.preferences.agent_chat_window,
+        // Kept in the reply for older clients; the Assistant never opens a window of its own.
+        "popped": false,
+        "window": serde_json::Value::Null,
         "width": app.preferences.agent_chat_width,
         "state": c.state().id(),
         "agent": c.agent,
@@ -2990,6 +3036,23 @@ pub fn status(app: &SolveApp) -> Value {
         state.insert("modelsNote".into(), json!(c.models_note));
         state.insert("customModels".into(), json!(custom_models_accepted(app)));
         state.insert("instructions".into(), json!(app.preferences.agent_instructions));
+        // How the desktop app shows the conversation: whether its host has a web view to offer,
+        // and whether the page in that view has reported to the app yet. The browser build has
+        // no host.
+        #[cfg(not(target_arch = "wasm32"))]
+        let web_view = json!({"host": c.web_host, "page": c.web_canvas.is_some()});
+        #[cfg(target_arch = "wasm32")]
+        let web_view = json!({"host": false, "page": false});
+        state.insert("webView".into(), web_view);
+        #[cfg(not(target_arch = "wasm32"))]
+        state.insert(
+            "webProblem".into(),
+            match c.web_problem {
+                Some(web::Problem::NativeWayland) => json!("native-wayland"),
+                Some(web::Problem::Failed) => json!("failed"),
+                None => serde_json::Value::Null,
+            },
+        );
     }
     state
 }

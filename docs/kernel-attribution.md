@@ -49,7 +49,7 @@ mirror it back”, #13153). The fork is therefore on the last git-pinned generat
 
 ### Fork points
 
-- **Open-skyfall fork point:** `06749ac46`, the last upstream commit on the fork's first-parent
+- **Intcad fork point:** `06749ac46`, the last upstream commit on the fork's first-parent
   line. First fork-only commit: `238bce2cc` (“AI connections: share BYOK model calls…”).
   `bd2dc3fad` is an earlier upstream commit, not the fork point; it is only used below because
   a parent-revision action-matrix run exists there.
@@ -114,7 +114,7 @@ $ git diff --name-only 06749ac46..359cf5849 -- \
   It consumes the pinned record crate; it does not modify or replace it. The kernel's own
   record export remains `crates/smlib/src/export.rs` (validated at line 1269 with
   `solidcraft_geom::brep::check::validate_built` over `solidcore_record::brep`).
-- **Rebrand:** the app is displayed as `open-skyfall`; internal identifiers stay
+- **Rebrand:** the app is displayed as `Intcad`; internal identifiers stay
   `solidcraft`, as required by `docs/compatibility.md`. Rebrand commits change strings and
   appearance authorship, not topology names.
 

@@ -10,7 +10,7 @@ floor in `Cargo.toml`.
 Run the current app without installing it:
 
 ```sh
-nix run github:bherbruck/solidcraft#solidcraft -- --sample
+nix run github:intgral-ai/open-skyfall-desktop#solidcraft -- --sample
 ```
 
 Inside a checkout, `nix run .` and `nix run .#solidcraft` launch the desktop app.
@@ -21,7 +21,7 @@ older executable already on your shell's `PATH`.
 Build without installing:
 
 ```sh
-nix build github:bherbruck/solidcraft#solidcraft
+nix build github:intgral-ai/open-skyfall-desktop#solidcraft
 ./result/bin/solidcraft --version
 ./result/bin/solidcraft --sample
 ```
@@ -31,7 +31,7 @@ The result contains `solidcraft`, `solidcraft-cli` and the deprecated old-name C
 profile installation, run:
 
 ```sh
-nix profile install github:bherbruck/solidcraft#solidcraft
+nix profile install github:intgral-ai/open-skyfall-desktop#solidcraft
 solidcraft --sample
 ```
 
@@ -50,7 +50,7 @@ Check which executable a plain terminal command would run:
 type -a solidcraft
 readlink -f "$(command -v solidcraft)"
 solidcraft --version
-nix run github:bherbruck/solidcraft#solidcraft -- --version
+nix run github:intgral-ai/open-skyfall-desktop#solidcraft -- --version
 ```
 
 An unrelated old executable on `PATH` is not updated by `nix build`.
@@ -81,7 +81,13 @@ this repository does not change `flake.nix` here.
 ## Graphics and file dialogs
 
 The app wrapper includes Wayland, X11, xkbcommon, EGL, Vulkan-loader and D-Bus
-libraries. It exposes `/run/opengl-driver/lib` and
+libraries, and GTK 3 with WebKitGTK 4.1 for the Assistant's page. `wrapGAppsHook3`
+also sets the GDK pixbuf loaders, GIO modules and GSettings schemas those two need,
+so the packaged app works outside `nix develop`. It builds an input-method cache from this closure's GTK and
+`fcitx5-gtk` (`$out/lib/gtk-3.0/3.0.0/immodules.cache`) and sets `GTK_IM_MODULE_FILE` to it, so a
+user's fcitx5 daemon can compose Chinese without GTK loading the session's module, which is built
+against a different GTK/GLib and is refused for a micro-version mismatch. `GTK_PATH` keeps the
+same `fcitx5-gtk`; choosing fcitx as the session input method is still the user's setting. It exposes `/run/opengl-driver/lib` and
 `/run/opengl-driver/share` so NixOS's graphics drivers and Vulkan manifests are
 discoverable. Enable `hardware.graphics.enable = true` on NixOS and keep the
 system's driver stack consistent with the compositor. File pickers also need a
@@ -115,9 +121,15 @@ On Linux the app runs through XWayland whenever an X display is available, becau
 winit only supports dragging files from a file manager into the window on X11. On
 niri (detected from `XDG_CURRENT_DESKTOP` with a Wayland socket present) it stays on
 native Wayland instead, since window management such as maximize/restore misbehaves
-under niri's XWayland. The trade-off: **on native Wayland, dropping files onto the
-window does not work**; use File > Open or pass the file on the command line.
-This applies to every build, not only the Nix package.
+under niri's XWayland. The trade-offs: **on native Wayland, dropping files onto the
+window does not work** (use File > Open or pass the file on the command line), and the
+**Assistant's web view is unavailable**: WebKitGTK draws the page in an X11 child
+window, and a native Wayland surface has no such child. The Assistant panel says so and
+offers **Graphics settings**; it does not fall back to a second egui
+conversation. To use the Assistant on niri, set **Window system** to X11 (or Automatic)
+and restart — the model view is then XWayland as well. This applies to every build, not
+only the Nix package. The way back to native Wayland and the embedding question are
+tracked in [native-wayland.md](native-wayland.md).
 
 Choose it in Preferences › Graphics › **Window system** (Automatic, Wayland or X11; it applies
 at the next start). The pane says which one is running and, on native Wayland, links to

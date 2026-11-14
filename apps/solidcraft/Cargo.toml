@@ -1,6 +1,6 @@
 [package]
 name = "solidcraft"
-description = "open-skyfall desktop app"
+description = "Intcad desktop app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -47,7 +47,7 @@ ron = "0.12"
 pollster = { workspace = true }
 getrandom = "0.3"
 # The update check (docs/updates.md): HTTPS with rustls, certificates from the operating system.
-ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # API keys of the agent chat's API agents (docs/agent-chat.md) live in the system keychain:
 # Keychain on macOS, Credential Manager on Windows, the Secret Service (pure-Rust D-Bus) elsewhere.
@@ -82,6 +82,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.56"
+# The Assistant's web view (src/assistant_web.rs): WebView2, the system's own. Its loader is
+# linked into the exe (webview2-com-sys), so no DLL goes with the app.
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21.2", default-features = false }
@@ -99,6 +102,7 @@ block2 = "0.6"
 # Native crash capture (src/native_crash_macos.rs): the signal handler, the faulting module
 # (already in the tree through many crates).
 libc = "0.2"
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["x11"] }
@@ -112,6 +116,16 @@ x11rb = { version = "0.13", default-features = false }
 # The desktop's dark or light preference through the XDG Desktop Portal (src/desktop_theme.rs,
 # #7944); already in the tree through eframe's accessibility support (accesskit_unix).
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# The Assistant's web view (src/assistant_web.rs): WebKitGTK in a child of the app's X11 window,
+# which is what wry's `x11` is for. The system's WebKitGTK and GTK are linked as libraries.
+wry = { version = "0.57", default-features = false, features = ["os-webview", "x11"] }
+# GTK itself, which winit does not run: started for the web view and given its turns there (the
+# version wry uses).
+gtk = "0.18"
+# GTK's own X11 window for the page, so it can be reparented into the app's window: wry's
+# `build_as_child` uses a foreign GdkWindow that GTK never marks active (and its input method
+# never starts). Already in the tree through wry's x11 support.
+gdkx11 = "0.18"
 
 [build-dependencies]
 embed-resource = "3.0.11"

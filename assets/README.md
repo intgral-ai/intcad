@@ -10,7 +10,7 @@ assets/
     app/
       shared/source/                 # original Rust mark and executable ICO encoder
       macos/source/SolidCraft.icon/   # approved Composer project and linked SVGs
-      macos/exports/                 # paired Assets.car and icon.icns
+      macos/exports/                 # icon.icns (the mark) and the upstream Assets.car
       windows/exports/               # executable DIB ICO and installer PNG ICO
       linux/exports/hicolor/         # Linux/FreeBSD package images, 16–512 px
     ui/design/svg/                   # authoritative original UI icon masters
@@ -46,13 +46,19 @@ the current UI set or preview card. Keep any future `.vectorcraft`, `.ai` or oth
 native work and linked inputs under that resource's `source/work/`, with an
 attribution row; retain the editable document alongside its exports.
 
-Regenerate all exports of the shared Windows/Linux/FreeBSD mark together:
+Regenerate all exports of the shared mark together: the Windows, Linux and FreeBSD images and
+the macOS icon file (`icons/app/macos/exports/icon.icns`, the mark with the margin of Apple's
+icon grid):
 
 ```sh
 cargo xtask app-icons
 ```
 
-For macOS, use Xcode with Icon Composer support:
+The macOS bundle installs that icon file alone. `icons/app/macos/exports/Assets.car` and its
+Composer master still hold the upstream artwork and are not installed: macOS 26 shows a
+layered icon in place of the icon file, so a bundle that carried it would show the upstream
+icon. A layered icon for the mark needs a new Composer master and Xcode with Icon Composer
+support, with `CFBundleIconName` back in `platforms/macos/Info.plist.in`:
 
 ```sh
 mkdir -p target/resources/macos-icon
@@ -62,7 +68,6 @@ xcrun actool assets/icons/app/macos/source/SolidCraft.icon \
   --output-partial-info-plist target/resources/macos-icon/icon-info.plist \
   --output-format human-readable-text
 cp target/resources/macos-icon/Assets.car assets/icons/app/macos/exports/Assets.car
-cp target/resources/macos-icon/SolidCraft.icns assets/icons/app/macos/exports/icon.icns
 ```
 
 Review and commit source changes and required exports together. Temporary renders,
@@ -74,7 +79,7 @@ The CLI still supports arbitrary PNG/ICO exports with `solidcraft-cli icon`.
 
 | Platform | Resources and output paths |
 | --- | --- |
-| macOS | Composer master and paired exports; bundle installs `Assets.car` and `SolidCraft.icns` |
+| macOS | `icon.icns` from `cargo xtask app-icons`; bundle installs it as `SolidCraft.icns`. The Composer master and `Assets.car` are the upstream icon, kept and not installed |
 | Windows executable | `solidcraft-executable.ico`: original DIB/mask representations at 16/24/32/48/64/128/256 px |
 | Windows installer | `solidcraft.ico`: PNG representations at 16/20/24/32/40/48/64/128/256 px; `SOLIDCRAFT_ICONS` override retained |
 | Linux, Nix, deb/rpm, tar, Flatpak, Snap | Copy canonical hicolor images; icon name stays `io.tangencylabs.solidcraft` |

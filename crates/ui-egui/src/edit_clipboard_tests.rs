@@ -150,7 +150,7 @@ fn copy_leaves_text_on_the_system_clipboard_so_paste_can_follow() {
             _ => None,
         }));
     }
-    assert!(copied.iter().any(|t| t.starts_with("open-skyfall sketch geometry")), "{copied:?}");
+    assert!(copied.iter().any(|t| t.starts_with("Intcad sketch geometry")), "{copied:?}");
 }
 
 #[test]

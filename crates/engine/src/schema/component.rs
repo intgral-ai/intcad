@@ -14,7 +14,7 @@ use crate::params;
 /// tab of its own, with the rest of the assembly drawn faded around it as the placement `path`
 /// puts it; `component.finish_edit` goes back. It fails when the component is not linked, the
 /// assembly has no file yet, something is open or running in it, or the linked file is missing,
-/// on a network location not allowed yet or open in another SolidCraft. Asked while the
+/// on a network location not allowed yet or open in another Intcad. Asked while the
 /// assembly's agent is in its turn, the part opens once the turn ends (`queued`). Outside the
 /// window it only checks the component and the placement.
 #[derive(Debug, Deserialize, JsonSchema)]

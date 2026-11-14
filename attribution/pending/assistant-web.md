@@ -1,0 +1,7 @@
+| File | Author | Source | Licence |
+|---|---|---|---|
+| packages/assistant-web/dist/assistant.js | Mastra AI, Inc. and the authors of the bundled npm packages; glue by the Intcad authors | Built from packages/assistant-web/src with mastra-ai/mastra packages/playground-ui at commit aa406eaae60717422a1dba07da5b97fb26a0b998; the bundled packages are listed in packages/assistant-web/inventory.json, their licence texts in packages/assistant-web/THIRD-PARTY-NOTICES.txt | Apache-2.0 (playground-ui); bundled packages under their own licences |
+| packages/assistant-web/dist/style.css | Mastra AI, Inc. | Built from mastra-ai/mastra packages/playground-ui/src/index.css at commit aa406eaae60717422a1dba07da5b97fb26a0b998 | Apache-2.0 |
+| packages/assistant-web/dist/MonaSans-VariableFont_wdth-wght.ttf | The Mona Sans Project Authors (https://github.com/github/mona-sans) | mastra-ai/mastra packages/playground/src/assets/fonts at commit aa406eaae60717422a1dba07da5b97fb26a0b998 | SIL OFL 1.1 |
+| packages/assistant-web/dist/CommitMono-400-Regular.woff2 | The Commit Mono authors (the bundled OFL-CommitMono.txt names no copyright holder) | mastra-ai/mastra packages/playground/src/assets/fonts at commit aa406eaae60717422a1dba07da5b97fb26a0b998 | SIL OFL 1.1 |
+| packages/assistant-web/dist/CommitMono-700-Regular.woff2 | The Commit Mono authors (the bundled OFL-CommitMono.txt names no copyright holder) | mastra-ai/mastra packages/playground/src/assets/fonts at commit aa406eaae60717422a1dba07da5b97fb26a0b998 | SIL OFL 1.1 |

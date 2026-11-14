@@ -21,6 +21,10 @@ pub fn run(root: &Path) -> Result<(), String> {
     let executable = stage.join("solidcraft-executable.ico");
     std::fs::write(&executable, windows_ico::encode().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     exports.push((executable, "windows/exports/solidcraft-executable.ico".into()));
+    // The macOS icon file: every size of an icon set, drawn with the margin of Apple's icon grid.
+    let mac = stage.join("icon.icns");
+    draw(&mac, 1024)?;
+    exports.push((mac, "macos/exports/icon.icns".into()));
 
     // Finish generation before replacing any canonical exports.
     for (source, relative) in exports {

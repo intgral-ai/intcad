@@ -221,9 +221,9 @@ def repository_commands(*, full=True):
     """Fast policy/format checks on every run; full repository evidence nightly.
 
     The pull-request lane keeps only checks that cannot mutate the checkout and
-    finish on a standard runner. The owning xtask binary tests, the web-offline
-    build and the packaging suites move to the full/nightly run. Nothing is
-    reported as passing unless it actually ran.
+    finish on a standard runner. The owning xtask binary tests and the packaging
+    suites move to the full/nightly run; the web-offline harness has its own
+    selected job and budget. Nothing is reported as passing unless it actually ran.
     """
     commands = [["cargo", "fmt", "--all", "--", "--check"]]
     for args in (["assets"], ["icons"], ["licences", "--check"], ["layers"], ["ui-containers"], ["lists"],
@@ -232,9 +232,8 @@ def repository_commands(*, full=True):
     commands += [["bash", "scripts/test-format-pending.sh"]]
     commands += [["python3", "-I", "scripts/ci/" + name + ".py"] for name in
                  ("test_affected", "test_beta_gate", "test_gate", "test_main_merge", "test_kernel_rig_plan",
-                  "test_package_contents", "test_release_content")]
+                  "test_package_contents", "test_release_content", "test_release_candidate", "test_rejudge")]
     if full:
-        commands += [["cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"]]
         commands += [["cargo", "test", "-p", "xtask", name, "--locked"]
                      for name in ("ui_containers", "mesh_decisions", "skills")]
         for name in ("apprun", "flatpak", "nightly", "windows_icon"):
@@ -249,6 +248,11 @@ def repository_commands(*, full=True):
                        for path in Path("scripts", area).glob("*.test.js"))
     gate.require(bot_tests, "bot test selection is empty")
     return commands + [["node", "--test", *bot_tests]]
+
+
+def web_offline_commands():
+    """The browser offline/update harness in its own job and budget."""
+    return [["cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"]]
 
 
 RUNTIME_PACKAGE = "@intgral-ai/solidcraft-mastra-runtime"
@@ -358,6 +362,8 @@ def execute_workflow(plan_file, job, out, *, full=False):
         argvs = contract_ts_commands()
     elif job == "wasm":
         argvs = wasm_commands()
+    elif job == "web-offline":
+        argvs = web_offline_commands()
     elif job == "artifact-policy":
         argvs = artifact_commands()
     elif job == "integration":

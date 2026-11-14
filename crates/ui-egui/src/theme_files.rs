@@ -79,6 +79,10 @@ pub struct ThemeFile {
     /// Optional corner radii in logical UI points. Missing entries keep the base values.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub radii: BTreeMap<String, u8>,
+    /// Optional scroll bar settings ([`SCROLLBAR_KEYS`]): all four or none. A theme without
+    /// them keeps the standard scroll bars.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scrollbar: BTreeMap<String, f32>,
     /// Optional border roles; absent entries retain the existing surface-specific styling.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub borders: BTreeMap<String, Value>,
@@ -121,6 +125,7 @@ impl Default for ThemeFile {
             base: Base::default(),
             colors: BTreeMap::new(),
             radii: BTreeMap::new(),
+            scrollbar: BTreeMap::new(),
             borders: BTreeMap::new(),
             icon_palette: BTreeMap::new(),
             tabs: BTreeMap::new(),
@@ -257,6 +262,62 @@ pub struct OptionNotice {
 /// Maximum imported radius, in logical UI points; widgets clamp to their own bounds.
 const MAX_RADIUS: u8 = 32;
 const RADIUS_KEYS: [&str; 6] = ["radius_sm", "radius_md", "radius_lg", "radius_xl", "control_radius", "sketch_mode_radius"];
+
+/// A theme's scroll bar settings: the handle's width in logical UI points and its opacity as a
+/// fraction of the ink colour, with the pointer over the scrolling area (`width`, `opacity`) and
+/// with the pointer on the handle (`hover_width`, `hover_opacity`).
+const SCROLLBAR_KEYS: [&str; 4] = ["width", "opacity", "hover_width", "hover_opacity"];
+const MAX_SCROLLBAR_WIDTH: f32 = 16.0;
+
+/// The scroll bar a theme's table describes. An empty table is the standard scroll bar; any
+/// other gives all four settings, each finite and in range.
+pub(crate) fn parse_scrollbar(values: &BTreeMap<String, f32>) -> Result<Option<crate::theme::Scrollbar>, String> {
+    if values.is_empty() {
+        return Ok(None);
+    }
+    if let Some(key) = values.keys().find(|key| !SCROLLBAR_KEYS.contains(&key.as_str())) {
+        return Err(format!("`scrollbar.{key}` is not a scroll bar setting"));
+    }
+    let width = |key: &str| {
+        values
+            .get(key)
+            .copied()
+            .filter(|v| v.is_finite() && (1.0..=MAX_SCROLLBAR_WIDTH).contains(v))
+            .ok_or_else(|| format!("`scrollbar.{key}` must be a number from 1 to {MAX_SCROLLBAR_WIDTH}"))
+    };
+    let opacity = |key: &str| {
+        values
+            .get(key)
+            .copied()
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            .ok_or_else(|| format!("`scrollbar.{key}` must be a number from 0 to 1"))
+    };
+    Ok(Some(crate::theme::Scrollbar {
+        width: width("width")?,
+        opacity: opacity("opacity")?,
+        hover_width: width("hover_width")?,
+        hover_opacity: opacity("hover_opacity")?,
+    }))
+}
+
+/// A theme file's `scrollbar` object as stored settings, checked with [`parse_scrollbar`].
+fn scrollbar_table(value: Option<&Value>) -> Result<BTreeMap<String, f32>, String> {
+    let table = match value {
+        None => return Ok(BTreeMap::new()),
+        Some(Value::Object(table)) => table,
+        Some(_) => return Err("`scrollbar` must be an object of scroll bar settings".into()),
+    };
+    if table.len() > SCROLLBAR_KEYS.len() {
+        return Err(format!("`scrollbar` has more than {} entries", SCROLLBAR_KEYS.len()));
+    }
+    let mut settings = BTreeMap::new();
+    for (key, value) in table {
+        let number = value.as_f64().ok_or_else(|| format!("`scrollbar.{key}` must be a number"))?;
+        settings.insert(key.clone(), number as f32);
+    }
+    parse_scrollbar(&settings)?;
+    Ok(settings)
+}
 
 fn radius_slot<'a>(t: &'a mut Tokens, key: &str) -> Option<&'a mut u8> {
     match key {
@@ -469,7 +530,7 @@ macro_rules! theme_keys {
             // Not colours: the hover lift is a grey step, the analysis colours belong to shaders.
             let Tokens {
                 $($one: _,)* $($many: _,)*
-                hover_face_lift: _, analysis: _, icons: _, borders: _, icon_palette: _,
+                hover_face_lift: _, analysis: _, icons: _, borders: _, scrollbar: _, icon_palette: _,
                 file_action_height: _, file_back_height: _, file_recovery_icon: _, file_grid_gap: _,
                 file_nav_width: _, file_nav_height: _, file_tile_height: _, file_tile_icon: _, file_recent_height: _,
                 file_sample_image_height: _, file_content_inset_x: _, file_content_inset_y: _, file_section_gap: _, font_start_title: _,
@@ -601,6 +662,7 @@ pub fn from_value(v: &Value) -> Result<ThemeFile, String> {
         base,
         colors: layer.colors,
         radii: layer.radii,
+        scrollbar: scrollbar_table(v.get("scrollbar"))?,
         borders: layer.borders,
         icon_palette: layer.icon_palette,
         tabs,
@@ -1166,6 +1228,7 @@ fn resolve_base(theme: &ThemeFile) -> Tokens {
         }
     }
     // Malformed hand-edited saved settings cannot introduce non-finite drawing geometry.
+    t.scrollbar = parse_scrollbar(&theme.scrollbar).unwrap_or_default();
     t.borders = parse_borders(&theme.borders).unwrap_or_default();
     t.icon_palette = parse_icon_palette(&theme.icon_palette).unwrap_or_default();
     // Conflicting sketch geometry is drawn in the theme's own error colour unless it sets one of
@@ -1283,7 +1346,16 @@ pub fn export(name: &str, base: Base, t: &Tokens) -> Value {
         );
     }
     let icon_palette = export_icon_palette(t.icon_palette);
-    json!({"format": FORMAT, "name": name, "base": base, "colors": colors, "radii": radii, "borders": borders, "icon_palette": icon_palette})
+    let mut file =
+        json!({"format": FORMAT, "name": name, "base": base, "colors": colors, "radii": radii, "borders": borders, "icon_palette": icon_palette});
+    // Only a theme with its own scroll bars names them: the others keep reading as before.
+    if let (Some(bar), Some(file)) = (t.scrollbar, file.as_object_mut()) {
+        file.insert(
+            "scrollbar".into(),
+            json!({"width": bar.width, "opacity": bar.opacity, "hover_width": bar.hover_width, "hover_opacity": bar.hover_opacity}),
+        );
+    }
+    file
 }
 
 /// Export a theme definition, preserving its options and overlays rather than flattening them
@@ -1293,6 +1365,9 @@ pub fn export_file(theme: &ThemeFile) -> Value {
     if let Some(obj) = value.as_object_mut() {
         if !theme.radii.is_empty() {
             obj.insert("radii".into(), json!(theme.radii));
+        }
+        if !theme.scrollbar.is_empty() {
+            obj.insert("scrollbar".into(), json!(theme.scrollbar));
         }
         if !theme.borders.is_empty() {
             obj.insert("borders".into(), json!(theme.borders));
@@ -3133,6 +3208,72 @@ mod tests {
         assert!(error.contains("radii.typo") && error.contains("radii.radius_sm"));
         let hand_edited = ThemeFile { radii: BTreeMap::from([("radius_sm".into(), 255), ("typo".into(), 6)]), ..Default::default() };
         assert_eq!(resolve(&hand_edited), Tokens::dark());
+    }
+
+    #[test]
+    fn optional_scrollbar_reads_exports_and_leaves_other_themes_standard() {
+        let bar = crate::theme::Scrollbar { width: 4.0, opacity: 0.25, hover_width: 6.0, hover_opacity: 0.5 };
+        let settings = json!({"width": 4, "opacity": 0.25, "hover_width": 6, "hover_opacity": 0.5});
+        for base in [Base::Dark, Base::Light] {
+            let defaults = if base.is_dark() { Tokens::dark() } else { Tokens::light() };
+            assert_eq!(defaults.scrollbar, None, "the built-in palettes keep the standard scroll bars");
+            let plain = from_value(&json!({"format": FORMAT, "name": "Plain", "base": base})).unwrap();
+            assert!(plain.scrollbar.is_empty());
+            assert!(export_file(&plain).get("scrollbar").is_none() && export("Plain", base, &resolve(&plain)).get("scrollbar").is_none());
+            let themed = from_value(&json!({"format": FORMAT, "name": "Thin", "base": base, "scrollbar": settings})).unwrap();
+            assert_eq!(resolve(&themed), Tokens { scrollbar: Some(bar), ..defaults });
+            // The definition, the complete snapshot and the saved preferences all keep it.
+            assert_eq!(export_file(&themed)["scrollbar"], json!(themed.scrollbar));
+            assert_eq!(resolve(&from_value(&export("Thin", base, &resolve(&themed))).unwrap()).scrollbar, Some(bar));
+            let restored: ThemeFile = serde_json::from_value(serde_json::to_value(&themed).unwrap()).unwrap();
+            assert_eq!(resolve(&restored).scrollbar, Some(bar));
+        }
+        assert_eq!(bar.style().floating_width, 4.0);
+        assert_eq!(bar.style().bar_width, 6.0);
+        assert_eq!((bar.style().dormant_handle_opacity, bar.style().active_handle_opacity, bar.style().interact_handle_opacity), (0.0, 0.25, 0.5));
+        let track = [bar.style().dormant_background_opacity, bar.style().active_background_opacity, bar.style().interact_background_opacity];
+        assert_eq!(track, [0.0; 3], "a themed scroll bar has no track");
+        assert_eq!(bar.style().floating_allocated_width, 0.0, "and takes no room from the content");
+    }
+
+    #[test]
+    fn invalid_scrollbar_settings_are_refused_and_hand_edited_ones_resolve_safely() {
+        let file = |scrollbar: Value| json!({"format": FORMAT, "name": "Bad", "base": "dark", "scrollbar": scrollbar});
+        let good = json!({"width": 4, "opacity": 0.2, "hover_width": 6, "hover_opacity": 0.4});
+        assert!(from_value(&file(good.clone())).is_ok());
+        for (key, value) in [
+            ("width", json!(0)),
+            ("width", json!(17)),
+            ("hover_width", json!(-1)),
+            ("hover_width", json!("6")),
+            ("opacity", json!(1.5)),
+            ("opacity", json!(null)),
+            ("hover_opacity", json!(-0.1)),
+            ("hover_opacity", json!([0.4])),
+        ] {
+            let mut bad = good.clone();
+            bad[key] = value;
+            let error = from_value(&file(bad)).unwrap_err();
+            assert!(error.contains(&format!("scrollbar.{key}")), "{key}: {error}");
+        }
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove("hover_opacity");
+        assert!(from_value(&file(missing)).unwrap_err().contains("scrollbar.hover_opacity"), "all four settings or none");
+        let mut extra = good.clone();
+        extra["colour"] = json!(1);
+        assert!(from_value(&file(extra)).unwrap_err().contains("scrollbar"));
+        assert!(from_value(&file(json!([4, 6]))).unwrap_err().contains("scrollbar"));
+        assert!(from_value(&file(json!({"typo": 4}))).unwrap_err().contains("scrollbar.typo"));
+        assert!(from_value(&file(json!({}))).unwrap().scrollbar.is_empty(), "an empty table is the standard scroll bar");
+        for hand_edited in [
+            BTreeMap::from([("width".to_string(), f32::NAN), ("opacity".into(), 0.2), ("hover_width".into(), 6.0), ("hover_opacity".into(), 0.4)]),
+            BTreeMap::from([("width".to_string(), 400.0), ("opacity".into(), 0.2), ("hover_width".into(), 6.0), ("hover_opacity".into(), 0.4)]),
+            BTreeMap::from([("width".to_string(), 4.0), ("typo".into(), 1.0)]),
+        ] {
+            assert!(parse_scrollbar(&hand_edited).is_err());
+            let theme = ThemeFile { scrollbar: hand_edited, ..Default::default() };
+            assert_eq!(resolve(&theme), Tokens::dark(), "a saved table that cannot be read is the standard scroll bar");
+        }
     }
 
     #[test]

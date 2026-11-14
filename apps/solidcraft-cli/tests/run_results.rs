@@ -179,7 +179,7 @@ fn unknown_pending_concepts_preserve_the_open_design_and_output_files() {
             let undo = session.undo.len();
             let dirty = session.is_dirty();
             let err = session.execute("doc.open", &json!({"path": source})).unwrap_err().to_string();
-            assert!(err.contains("experimental-card") && err.contains("update SolidCraft"), "{err}");
+            assert!(err.contains("experimental-card") && err.contains("update Intcad"), "{err}");
             assert_eq!(session.doc, original);
             assert_eq!(session.path, original_path);
             assert_eq!(session.undo.len(), undo);
@@ -195,7 +195,7 @@ fn unknown_pending_concepts_preserve_the_open_design_and_output_files() {
                 let output = cli().args(["run", "--in"]).arg(&source).arg("--save").arg(&destination).output().unwrap();
                 assert_eq!(output.status.code(), Some(1));
                 let error = String::from_utf8_lossy(&output.stderr);
-                assert!(error.contains("experimental-card") && error.contains("update SolidCraft"), "{error}");
+                assert!(error.contains("experimental-card") && error.contains("update Intcad"), "{error}");
                 if existing {
                     assert_eq!(std::fs::read(&destination).unwrap(), b"existing design");
                     assert_eq!(std::fs::read(&backup).unwrap(), b"existing backup");

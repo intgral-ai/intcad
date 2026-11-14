@@ -21,8 +21,12 @@ The `main` ruleset requires the `release-gate` context (not the direct affected
 runs the full `ci` for stable promotions and runs the Beta evaluation for a
 Beta promotion; no repository setting is bypassed for an individual merge.
 
-The direct `ci` check on the same pull request still runs the affected lane. A
-Beta pull request is never a stable release candidate.
+The direct `ci` check on the same pull request runs the affected lane during
+preparation. It is not duplicated on `ready_for_review`: that transition starts
+the full `release-gate`, which validates the fixed candidate. A Beta pull request
+is never a stable release candidate. A commit pushed after the gate starts has no
+release-gate result; mark the PR draft and ready again to verify the new SHA. See
+[validation policy](validation-policy.md).
 
 The historical baseline was recorded on the C++ SMLib backend at
 `ea772a043`; it was never re-blessed after the Rust `solidcore` switch. It is
@@ -53,7 +57,9 @@ failed Linux/macOS/Windows package.
 
 The reviewed run also has 1,085 failures already recorded as failing in the
 historical baseline and 956 failures on actions the historical baseline never
-recorded. Neither group is counted as a pass. The 956 reviewed unbaselined identities are itemised by design/entity/action,
+recorded. Neither group is counted as a pass. This revision itemises
+**972** reviewed unbaselined identities; the reviewed Beta.3 run recorded 956
+after the documented reclassifications. They are itemised by design/entity/action,
 kind and failure class in the same exception file. Fourteen reviewed timeout entries
 were reclassified to their real errors after the 1800-second action limit let
 them finish (nine in the earlier review, three in run 43241626115, two in run
@@ -114,6 +120,24 @@ The historical `tests/action_matrix/baseline.json` remains report-only. The Beta
 list is not a baseline refresh and never replaces the full matrix result; the
 Beta evidence always states "Beta accepted exceptions", not "full matrix green".
 
+## Re-judging an existing Beta run
+
+A change to the exception list or baseline may be checked against the raw results
+of an existing Beta run without rebuilding or re-running geometry. The command is
+`python3 -I scripts/ci/rejudge.py evaluate` with the downloaded plan, evidence,
+matrix, properties and job list; see [validation policy](validation-policy.md).
+It refuses a changed source SHA, tree, plan, raw result, job list, receipt or
+`beta_gate.py`, and it prints `formalGate: false`. A changed exception or baseline
+changes the rules digest and is the supported re-judgment case; a changed
+`beta_gate.py` is rejected, so this round cannot change decision code over old
+results. The digests prove file/manifest consistency, not a signature or who
+produced the execution. It is an auditable diagnostic: the required `release-gate`
+still needs the exact candidate's full run. The Beta job records `execution.json`
+(run id/attempt, source and tree, runner identity, input and rules digests) next to
+`beta-gate.json`; if recording fails, there is no re-judgment evidence for that run
+and the formal Beta decision is unchanged. Timeouts, cancellations, missing shards
+and incomplete results remain failures.
+
 ## Candidate identity
 
 A promotion must be built from the exact candidate SHA. A package descriptor whose
@@ -123,14 +147,15 @@ continues to require the full `release-gate` without the Beta exceptions.
 
 ## Beta.3 correction evidence
 
-The Beta.3 gate adds the itemised 956 unbaselined identities and the configurable
-1800-second action timeout. Run `43381698526` at tested merge `13417bb37` produced
-54,033 actions, 2,254 failures, 213 strict exceptions, 956 unbaselined failures,
-and 0 unexcused/changed/fixed actions after the fourteen reviewed timeout
-reclassifications and the 16 removed loft-join fillets. The property lane keeps the
-exact #56 case and the exact Cylinder/Sphere case above. The determinism job has
-150-minute headroom; the load-sensitive process tests use deterministic timing and
-an ACP fixture with an open stdout. The candidate SHA, its gate run and the
-package/install verification for this correction are recorded in the promotion PR
-and the release notes. The earlier beta.2/`0.40.0-rc.2` reads were runner
+The Beta.3 gate adds the itemised unbaselined identities (972 in this revision,
+956 in the reviewed run) and the configurable 1800-second action timeout. Run
+`43381698526` at tested merge `13417bb37` produced 54,033 actions, 2,254
+failures, 213 strict exceptions, 956 unbaselined failures, and 0
+unexcused/changed/fixed actions after the fourteen reviewed timeout
+reclassifications and the 16 removed loft-join fillets. The property lane keeps
+the exact #56 case and the exact Cylinder/Sphere cases above. The determinism job
+has 150-minute headroom; the load-sensitive process tests use deterministic
+timing and an ACP fixture with an open stdout. The candidate SHA, its gate run and
+the package/install verification for this correction are recorded in the promotion
+PR and the release notes. The earlier beta.2/`0.40.0-rc.2` reads were runner
 contamination, not the MSI payload.

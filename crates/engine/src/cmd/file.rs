@@ -31,7 +31,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("open")
         .key("Ctrl+O")
         .noundo()
-        .params("path: .sc design (or a .solidcraft design from an earlier release), .dxf/.svg drawing (opens as a new, unsaved design with an XY sketch, using sketch.insert_dxf/sketch.insert_svg units and defaults), or a .step/.stp/.igs/.fcstd/.3dm/.3mf/.stl/.obj/.glb/.gltf file (STEP, IGES, FreeCAD, Rhino, 3MF, STL, OBJ or glTF; opens as a new design holding the file as a component named after it, as file.insert_step and file.insert_mesh make), or a .ply/.xyz/.pts point cloud (opens as a new design holding it, as pointcloud.insert makes; its `units` and `max_points` as there); up?: z|y for a STEP, IGES, FreeCAD, Rhino or glTF file (see file.insert_step and file.insert_mesh); names?: auto|solid|product|instance for a STEP, IGES, FreeCAD or Rhino file (see file.insert_step); read_only?: bool (a design: saving to its own file is refused, file.save_as keeps the changes elsewhere) → open_elsewhere: {host, user, app, opened} when another SolidCraft has the design open (its lock file is fresh)"),
+        .params("path: .sc design (or a .solidcraft design from an earlier release), .dxf/.svg drawing (opens as a new, unsaved design with an XY sketch, using sketch.insert_dxf/sketch.insert_svg units and defaults), or a .step/.stp/.igs/.fcstd/.3dm/.3mf/.stl/.obj/.glb/.gltf file (STEP, IGES, FreeCAD, Rhino, 3MF, STL, OBJ or glTF; opens as a new design holding the file as a component named after it, as file.insert_step and file.insert_mesh make), or a .ply/.xyz/.pts point cloud (opens as a new design holding it, as pointcloud.insert makes; its `units` and `max_points` as there); up?: z|y for a STEP, IGES, FreeCAD, Rhino or glTF file (see file.insert_step and file.insert_mesh); names?: auto|solid|product|instance for a STEP, IGES, FreeCAD or Rhino file (see file.insert_step); read_only?: bool (a design: saving to its own file is refused, file.save_as keeps the changes elsewhere) → open_elsewhere: {host, user, app, opened} when another Intcad has the design open (its lock file is fresh)"),
     CommandSpec::new("file.insert_step", "Insert STEP", insert_step)
         .at("SOLID", "INSERT")
         .icon("import")
@@ -500,7 +500,7 @@ fn other_file_kind(path: &str) -> Option<&'static str> {
     } else if solidcraft_io::is_point_cloud_path(path) {
         Some("a point cloud")
     } else if solidcraft_io::is_drawing_path(path) {
-        Some("a SolidCraft drawing")
+        Some("an Intcad drawing")
     } else {
         None
     }

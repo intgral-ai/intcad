@@ -309,7 +309,7 @@ fn check(owner: Owner, key: &str, value: Value) -> Result<Option<Value>> {
     }
     let shown: String = key.chars().take(64).collect();
     Err(invalid(format!(
-        "`{shown}` is not a {}: SolidCraft's are {}; another tool's data goes under a reverse-DNS key such as `com.example.tool`",
+        "`{shown}` is not a {}: Intcad's are {}; another tool's data goes under a reverse-DNS key such as `com.example.tool`",
         owner.names().0,
         key_list(owner)
     )))
@@ -447,13 +447,13 @@ mod tests {
         let refusal = |owner, key: &str| Metadata::default().set(owner, key, json!("x")).unwrap_err().to_string();
         assert_eq!(
             refusal(Design, "colour"),
-            "`colour` is not a design property: SolidCraft's are project, part_number, revision, author, organization, \
+            "`colour` is not a design property: Intcad's are project, part_number, revision, author, organization, \
              description, license; another tool's data goes under a reverse-DNS key such as `com.example.tool`",
             "the design's wording is as it was"
         );
         assert_eq!(
             refusal(Component, "colour"),
-            "`colour` is not a part property: SolidCraft's are project, part_number, revision, author, organization, \
+            "`colour` is not a part property: Intcad's are project, part_number, revision, author, organization, \
              description, license, bom_type; another tool's data goes under a reverse-DNS key such as `com.example.tool`"
         );
         for owner in [Design, Component] {

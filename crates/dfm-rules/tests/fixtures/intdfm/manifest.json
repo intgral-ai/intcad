@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "file": "hole_min_diameter.above.json",
+      "id": "hole_min_diameter.above",
+      "kind": "above"
+    },
+    {
+      "file": "hole_min_diameter.below.json",
+      "id": "hole_min_diameter.below",
+      "kind": "below"
+    },
+    {
+      "file": "hole_min_diameter.boundary.json",
+      "id": "hole_min_diameter.boundary",
+      "kind": "boundary"
+    },
+    {
+      "file": "hole_min_diameter.factory.below.json",
+      "id": "hole_min_diameter.factory.below",
+      "kind": "below"
+    },
+    {
+      "file": "hole_to_edge.below.json",
+      "id": "hole_to_edge.below",
+      "kind": "below"
+    },
+    {
+      "file": "hole_to_bend.below.json",
+      "id": "hole_to_bend.below",
+      "kind": "below"
+    },
+    {
+      "file": "hole_to_bend.not_applicable.json",
+      "id": "hole_to_bend.not_applicable",
+      "kind": "missing_input"
+    },
+    {
+      "file": "missing_thickness.json",
+      "id": "missing_thickness",
+      "kind": "missing_input"
+    },
+    {
+      "file": "holes_step_failed.json",
+      "id": "holes_step_failed",
+      "kind": "error"
+    },
+    {
+      "file": "shop_not_applicable.json",
+      "id": "shop_not_applicable",
+      "kind": "missing_input"
+    }
+  ],
+  "required": [
+    "hole_min_diameter.above",
+    "hole_min_diameter.below",
+    "hole_min_diameter.boundary",
+    "hole_min_diameter.factory.below",
+    "hole_to_edge.below",
+    "hole_to_bend.below",
+    "hole_to_bend.not_applicable",
+    "missing_thickness",
+    "holes_step_failed",
+    "shop_not_applicable"
+  ],
+  "source": "intdfm@2f24830fcd84c8e3047eb6643139b94c27b8c1b6"
+}

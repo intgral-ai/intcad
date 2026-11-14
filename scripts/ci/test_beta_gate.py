@@ -83,6 +83,18 @@ class Matrix(unittest.TestCase):
         self.assertTrue(result["problems"])
         self.assertIn("now pass", result["problems"][0])
 
+    def test_a_rules_change_rejudges_the_same_matrix_without_a_rerun(self):
+        matrix = write_matrix(self.matrix)
+        other = dict(ENTRY, design="demo/other")
+        self.exceptions.write_text(json.dumps(manifest(entries=[other])))
+        old = beta_gate.evaluate_matrix(matrix, self.exceptions)
+        self.assertTrue(old["problems"])
+        self.assertIn("unexcused action failures", old["problems"][0])
+        self.exceptions.write_text(json.dumps(manifest()))
+        new = beta_gate.evaluate_matrix(matrix, self.exceptions)
+        self.assertEqual(new["problems"], [])
+        self.assertEqual((new["excused"], new["unexcused"]), (1, 0))
+
     def test_changed_class_or_kind_is_not_excused(self):
         actions = [dict(ACTIONS[0], message="not supported yet: SMLib shell for this geometry"),
                    ACTIONS[1], ACTIONS[2]]
@@ -126,12 +138,14 @@ class Matrix(unittest.TestCase):
 
     def test_repository_manifest_is_itemised_and_classified(self):
         data, entries = beta_gate.load_exceptions(ROOT / "tests/action_matrix/beta-exceptions.json")
-        self.assertEqual(data["source"]["totalActions"], 54029)
+        self.assertEqual(data["source"]["totalActions"], 54033)
         self.assertEqual(len(entries), 213)
         self.assertEqual(len(entries), len({(e["design"], e["entity"], e["action"]) for e in entries.values()}))
         self.assertTrue(all(entry["issue"] in ("#55", "#83", "#88") for entry in entries.values()))
-        self.assertEqual(data["source"]["unbaselinedFailures"], 956)
-        self.assertEqual(len(data["unbaselined"]), 956)
+        # The develop manifest carries the 972 reviewed identities; main's older
+        # 956 entry is superseded by the later review recorded here.
+        self.assertEqual(data["source"]["unbaselinedFailures"], 972)
+        self.assertEqual(len(data["unbaselined"]), 972)
 
 
 class Properties(unittest.TestCase):
@@ -226,6 +240,21 @@ class Jobs(unittest.TestCase):
                     jobs = [job for job in jobs if job["name"] != "ci / Action matrix (7/16)"]
                 else:
                     jobs = [job for job in jobs if job["name"] != "ci / Full baseline randomized properties (raw, many cases)"]
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "jobs.json"
+                    path.write_text(json.dumps(dict(jobs=jobs)))
+                    result = beta_gate.evaluate_jobs(path, dict(problems=[]), dict(rawExit=100, unexcused=0))
+                self.assertTrue(result["problems"])
+
+    def test_cancelled_or_timed_out_jobs_are_not_evidence(self):
+        for name, conclusion in (
+            ("ci / Select checks", "cancelled"),
+            ("ci / Action matrix (3/16)", "cancelled"),
+            ("ci / Full baseline randomized properties (raw, many cases)", "timed_out"),
+        ):
+            with self.subTest(name=name, conclusion=conclusion):
+                jobs = self.jobs()
+                next(job for job in jobs if job["name"] == name)["conclusion"] = conclusion
                 with tempfile.TemporaryDirectory() as directory:
                     path = Path(directory) / "jobs.json"
                     path.write_text(json.dumps(dict(jobs=jobs)))

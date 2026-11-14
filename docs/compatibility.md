@@ -1,6 +1,6 @@
 # Compatibility with the SolveCraft and SolidCraft names
 
-This repository displays the product as **open-skyfall**, an Intgral fork. Internal identifiers
+This repository displays the product as **Intcad**, an Intgral fork. Internal identifiers
 remain `solidcraft` so designs, scripts, settings and packages keep working: crate and binary
 names, `.sc` and the `solidcraft/N` tag, `SOLIDCRAFT_*` variables, settings folders, app IDs and
 the MCP server. The upstream project keeps the SolidCraft name and logo.

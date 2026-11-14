@@ -328,11 +328,13 @@ else:
         commands = main_merge.repository_commands()
         for name in ("apprun", "flatpak", "nightly", "windows_icon"):
             self.assertTrue(any(c[-1] == "packaging/tests/" + name + "_test.py" for c in commands))
-        for name in ("assets", "icons", "licences", "layers", "ui-containers", "lists", "i18n", "mesh-decisions", "skills", "web-offline-test"):
+        for name in ("assets", "icons", "licences", "layers", "ui-containers", "lists", "i18n", "mesh-decisions", "skills"):
             self.assertTrue(any(c[:7] == ["cargo", "run", "--locked", "--package", "xtask", "--", name] for c in commands), name)
         self.assertIn(["python3", "-I", "scripts/ci/test_gate.py"], commands)
         self.assertIn(["bash", "scripts/test-format-pending.sh"], commands)
         self.assertEqual(commands[-1], ["node", "--test", "scripts/claim/fixture.test.js"])
+        # The web-offline harness has its own job, never the repository-checks lane.
+        self.assertFalse([c for c in commands if c[-1] == "web-offline-test"])
         fast = main_merge.repository_commands(full=False)
         fast_names = {tuple(c[:7]) for c in fast}
         self.assertIn(("cargo", "run", "--locked", "--package", "xtask", "--", "lists"), fast_names)
@@ -340,6 +342,8 @@ else:
         self.assertFalse([c for c in fast if c[-1].startswith("packaging/tests/")])
         self.assertFalse([c for c in fast if c[:3] == ["cargo", "test", "-p"]])
         self.assertEqual(fast[-1][:2], ["node", "--test"])
+        self.assertEqual(main_merge.web_offline_commands(),
+                         [["cargo", "run", "--locked", "--package", "xtask", "--", "web-offline-test"]])
 
     def test_packaging_owning_commands_fail_on_nonempty_file_with_zero_tests(self):
         (self.root / "scripts/claim").mkdir(parents=True)
@@ -449,13 +453,13 @@ else:
                     release_required=False, diff_complete=True)
         self.plan_file.write_text(json.dumps(value))
         main_merge.execute_workflow(self.plan_file, "rust", self.root / "receipts/rust")
-        for job in ("repo", "wasm"):
+        for job in ("repo", "wasm", "web-offline"):
             out = self.root / "receipts" / job
             commands = main_merge.capture_commands([[sys.executable, "-I", "-c", "pass"]], out)
             receipt = main_merge.gate.record_receipt(self.plan_file.read_bytes(), job, commands, None, None, set())
             (out / "receipt.json").write_text(json.dumps(receipt))
         main_merge.execute_workflow(self.plan_file, "pr-policy", self.root / "receipts/pr-policy")
-        extras = ["rust", "wasm", "clippy", "doc-tests", "oracle", "windows-fxc", "windows-startup",
+        extras = ["rust", "wasm", "web-offline", "clippy", "doc-tests", "oracle", "windows-fxc", "windows-startup",
                   "property-tests", "build-tests", "action-matrix", "action-matrix-determinism", "dependency-advisories"]
         self.needs.update({job: {"result": "success"} for job in extras})
         self.assertEqual(self.aggregate()[0], 0)
@@ -466,6 +470,43 @@ else:
                 self.assertEqual(status, 1)
                 self.assertIn(job + ":", output)
                 self.needs[job]["result"] = "success"
+
+    def test_selected_web_offline_requires_a_successful_job_and_receipt(self):
+        value = main_merge.applicability.make_plan(
+            self.meta, ["packaging/web/package.sh"],
+            dict(contractPresent=True, runtimePresent=True, runtimePayloadRequested=False,
+                 artifactVerifierPresent=True, missingContractInputs=[], missingRuntimeInputs=[]),
+            source_revision=self.source, event_name="pull_request", base_ref="develop", head_ref="task",
+            full=False, release_required=False, diff_complete=True)
+        self.assertEqual(value["jobs"]["web-offline"]["decision"], "run")
+        self.plan_file.write_text(json.dumps(value))
+        self.policy_event()
+        run_jobs = [job for job, entry in value["jobs"].items() if entry["decision"] == "run"]
+        for job in run_jobs:
+            if job == "pr-policy":
+                main_merge.execute_workflow(self.plan_file, "pr-policy", self.root / "receipts/pr-policy")
+                continue
+            out = self.root / "receipts" / job
+            commands = main_merge.capture_commands([[sys.executable, "-I", "-c", "pass"]], out)
+            receipt = main_merge.gate.record_receipt(self.plan_file.read_bytes(), job, commands, None, None, set())
+            (out / "receipt.json").write_text(json.dumps(receipt))
+        self.needs = {"changes": {"result": "success", "outputs": {"deps": "false"}}}
+        self.needs.update({job: {"result": "success"} for job in run_jobs})
+        status, output = self.aggregate()
+        self.assertEqual(status, 0, output)
+        for state in ("failure", "cancelled", "timed_out", "skipped"):
+            with self.subTest(state=state):
+                self.needs["web-offline"]["result"] = state
+                status, output = self.aggregate()
+                self.assertEqual(status, 1)
+                self.assertIn("web-offline", output)
+        del self.needs["web-offline"]
+        self.assertEqual(self.aggregate()[0], 1)
+        self.needs["web-offline"] = {"result": "success"}
+        (self.root / "receipts/web-offline/receipt.json").unlink()
+        status, output = self.aggregate()
+        self.assertEqual(status, 1)
+        self.assertIn("web-offline: missing receipt", output)
 
     def test_platform_tool_selects_windows_jobs_without_the_heavy_matrix(self):
         value = self.plan(["tools/windows-resize-smoke.ps1"])

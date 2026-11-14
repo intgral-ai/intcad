@@ -290,7 +290,7 @@ fn damaged_files_are_refused_and_never_patched() {
     let why = custom(json!([1e10, 100.0]));
     assert!(why.starts_with("damaged drawing: the number ") && why.ends_with(" is out of range"), "checked before the record: {why}");
     let nan = d.to_json().unwrap().replacen("600.0", "NaN", 1);
-    assert!(Drawing::from_json(&nan).unwrap_err().to_string().starts_with("not a SolidCraft drawing: "), "NaN isn't JSON");
+    assert!(Drawing::from_json(&nan).unwrap_err().to_string().starts_with("not an Intcad drawing: "), "NaN isn't JSON");
     assert_eq!(
         refused(&d, |v| v["sheets"][1]["border"]["margins"]["top_mm"] = json!(-1.0)),
         format!("damaged drawing: sheet {bolt_sheet_id}: drawing sheet: a margin is finite and 0 to 5000 mm")
@@ -336,7 +336,7 @@ fn damaged_files_are_refused_and_never_patched() {
     assert_eq!(
         why,
         format!(
-            "this drawing was saved by a newer SolidCraft (file format {newer}; this version reads formats up to {current}): update SolidCraft to open it"
+            "this drawing was saved by a newer Intcad (file format {newer}; this version reads formats up to {current}): update Intcad to open it"
         )
     );
     // A list of pending changes means nothing beside a format made of none; beside the pending
@@ -345,24 +345,24 @@ fn damaged_files_are_refused_and_never_patched() {
     if DRAWING.pending_names().is_empty() {
         assert_eq!(why, "read");
     } else {
-        assert!(why.contains("newer SolidCraft"), "{why}");
+        assert!(why.contains("newer Intcad"), "{why}");
     }
     // A design is never read as a drawing, nor a drawing as a design.
     let design = crate::Document::new("Plate").to_json();
     let design_format = crate::format::format_string(crate::format::FORMAT);
-    assert_eq!(Drawing::from_json(&design).unwrap_err().to_string(), format!("not a SolidCraft drawing (format `{design_format}`)"));
+    assert_eq!(Drawing::from_json(&design).unwrap_err().to_string(), format!("not an Intcad drawing (format `{design_format}`)"));
     let drawing_format = DRAWING.format_string(current);
     assert_eq!(
         crate::Document::from_json(&d.to_json().unwrap()).unwrap_err().to_string(),
-        format!("not a SolidCraft design (format `{drawing_format}`)")
+        format!("not an Intcad design (format `{drawing_format}`)")
     );
     // Not an object, not JSON, nested too deeply, too large.
-    assert_eq!(Drawing::from_json("[]").unwrap_err().to_string(), "not a SolidCraft drawing (expected a JSON object)");
-    assert!(Drawing::from_json("").unwrap_err().to_string().starts_with("not a SolidCraft drawing: "));
+    assert_eq!(Drawing::from_json("[]").unwrap_err().to_string(), "not an Intcad drawing (expected a JSON object)");
+    assert!(Drawing::from_json("").unwrap_err().to_string().starts_with("not an Intcad drawing: "));
     let deep: Value = serde_json::from_str(&format!("{}1{}", "[".repeat(100), "]".repeat(100))).unwrap();
     assert_eq!(refused(&d, |v| v["views"] = deep), "damaged drawing: nested too deeply");
     let deeper = format!("{{\"format\": \"{drawing_format}\", \"views\": {}1{}}}", "[".repeat(200), "]".repeat(200));
-    assert!(Drawing::from_json(&deeper).unwrap_err().to_string().starts_with("not a SolidCraft drawing: "));
+    assert!(Drawing::from_json(&deeper).unwrap_err().to_string().starts_with("not an Intcad drawing: "));
     let text = d.to_json().unwrap();
     let at_cap = text.clone() + &" ".repeat(MAX_DRAWING_BYTES - text.len());
     assert_eq!(Drawing::from_json(&at_cap).unwrap(), d);

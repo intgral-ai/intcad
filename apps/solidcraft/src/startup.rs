@@ -388,9 +388,9 @@ pub fn max_file_size(value: Option<&str>) -> Result<u64, String> {
 
 /// The message shown when no window could be opened at all.
 pub fn no_window_message(error: &str, settings: Option<&Path>) -> String {
-    let folder = settings.map(|d| d.display().to_string()).unwrap_or_else(|| "the open-skyfall settings folder".into());
+    let folder = settings.map(|d| d.display().to_string()).unwrap_or_else(|| "the Intcad settings folder".into());
     format!(
-        "open-skyfall could not open its window.\n\n{error}\n\n\
+        "Intcad could not open its window.\n\n{error}\n\n\
          The software renderer was tried too. Things to try:\n\
          - Install or update the graphics driver (on Windows, from the GPU maker's site rather than Windows Update).\n\
          - Over Remote Desktop or in a virtual machine, enable 3D acceleration or run it on the machine itself.\n\

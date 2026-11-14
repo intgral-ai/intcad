@@ -1552,16 +1552,19 @@ preference_settings! {
     agent_chat_side: String = "right".into(), PAGE_ASSISTANT;
     agent_chat_width: f32 = 380.0, PAGE_ASSISTANT;
     agent_chat_minimized: bool = false, PAGE_ASSISTANT;
-    /// Whether the chat is in its own window instead of the side panel, and that window's place
-    /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
-    /// negative or past the main screen when the window sits on another one).
-    agent_chat_popped: bool = false, PAGE_ASSISTANT;
-    agent_chat_window: Option<[f32; 4]> = None, PAGE_ASSISTANT;
+    /// Whether what is selected in the design is written into each message (Attach selection),
+    /// so the agent knows what "this" means without asking the app. Off: the agent is sent the
+    /// selection only when it reads it through the app's tools, as before this was a setting.
+    agent_chat_attach_selection: bool = true, PAGE_ASSISTANT;
+
     /// Changes the agent may make for one message; 0 is no limit.
     agent_chat_turn_limit: u32 = crate::agent_chat::gate::DEFAULT_TURN_LIMIT, PAGE_ASSISTANT;
     /// Custom instructions (#8220): text the agent chat adds to its system note when a session
     /// starts (`agent_chat::acp::system_note`). No page reset discards this user-authored text.
     agent_instructions: String = String::new();
+    /// Direct API chat may stream verified providers. Off (the default): the previous buffered
+    /// behaviour, so no user-visible default changes without this preference.
+    agent_direct_streaming: bool = false;
     /// How chat turns execute: directly on the selected AI connection (the default, as before)
     /// or through a Mastra workflow runtime. Separate from the connection and model identity.
     chat_execution: crate::agent_chat::agents::Execution = crate::agent_chat::agents::Execution::Direct, PAGE_ASSISTANT;
@@ -4113,6 +4116,7 @@ fn prepare_preferences(
     }
     for theme in &new.custom_themes {
         theme.validate_radii()?;
+        crate::theme_files::parse_scrollbar(&theme.scrollbar)?;
         crate::theme_files::parse_icon_palette(&theme.icon_palette)?;
         crate::theme_files::parse_borders(&theme.borders)?;
     }
@@ -8418,6 +8422,20 @@ mod tests {
         assert_eq!((app.preferences.validation, app.session.validation()), (Validation::Off, Validation::Off));
         super::defaults(&mut app, super::PAGE_DESIGN);
         assert_eq!(app.preferences.validation, Validation::EachFeature);
+    }
+
+    #[test]
+    fn direct_streaming_keeps_the_old_buffered_behaviour_by_default() {
+        assert!(!super::Prefs::default().agent_direct_streaming);
+    }
+
+    #[test]
+    fn direct_streaming_toggles_and_persists() {
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        assert!(!app.preferences.agent_direct_streaming);
+        let saved = super::set(&mut app, &json!({"agent_direct_streaming": true})).unwrap();
+        assert_eq!(saved["agent_direct_streaming"], true);
+        assert!(app.preferences.agent_direct_streaming);
     }
 
     #[test]

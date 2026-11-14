@@ -20,6 +20,8 @@
 #[cfg(not(target_os = "macos"))]
 #[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+mod assistant_web;
 mod come_forward;
 mod control_server;
 #[cfg(target_os = "linux")]
@@ -99,6 +101,9 @@ struct App {
     space_mouse: space_mouse::SpaceMouse,
     #[cfg(target_os = "macos")]
     native_menu: Option<native_menu::NativeMenu>,
+    /// The Assistant's conversation as a web view over its panel.
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    assistant_web: assistant_web::AssistantWeb,
     /// A device's own app moving the view (Preferences › Navigation, off by default).
     nav_bridge: nav_bridge::NavBridge,
     /// Where the next file dialog opens: it follows the open design (#7756).
@@ -244,6 +249,9 @@ impl eframe::App for App {
             menu.tick(&mut self.solve, ctx);
         }
         self.solve.logic(ctx);
+        // The Assistant's page asks and is told with the app's logic, painted or not.
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        self.assistant_web.logic(&mut self.solve, ctx);
         // The file chooser that opened is not the desktop's own: the user has to be told (#10159).
         #[cfg(target_os = "linux")]
         if let Some(reason) = desktop_chooser::take_reason() {
@@ -278,6 +286,20 @@ impl eframe::App for App {
     }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         content_ui(&mut self.solve, ui);
+        // After the frame's UI, which says where the Assistant panel is this frame.
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        self.assistant_web.tick(&mut self.solve, ui.ctx(), frame);
+        #[cfg(target_os = "macos")]
+        {
+            // Cut, Copy, Paste and Select All are in the Edit menu while the page has the keyboard.
+            if let Some(menu) = &mut self.native_menu {
+                // Undo and Redo chosen while the page had the keyboard are its text's.
+                for redo in menu.take_text_edits() {
+                    self.assistant_web.edit_text(redo);
+                }
+                menu.set_text_editing(&self.solve, self.assistant_web.focused());
+            }
+        }
         // After the frame's UI, so a setting changed in it (Preferences' OK) is written now.
         let now = std::time::Instant::now();
         if self.prefs_writer.due(ui.input(|i| i.events.iter().any(changes_settings)), now)
@@ -293,6 +315,9 @@ impl eframe::App for App {
         self.prefs_writer.written = Some(prefs);
     }
     fn on_exit(&mut self) {
+        // The Assistant's web view is a child of the window: it goes while the window is there.
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        self.assistant_web.close();
         // The agent chat's agent and everything it started end with the app.
         solidcraft_ui_egui::agent_chat::shutdown(&mut self.solve);
         // A save still being written ends before the app does.
@@ -538,9 +563,9 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
             let dialog = save_folder.start(parent.clone()).set_file_name(name);
             let dialog = if exts == [io::DESIGN_EXT, "json"] {
                 if name.ends_with(".json") {
-                    dialog.add_filter("Plain JSON design", &["json"]).add_filter("open-skyfall container", &[io::DESIGN_EXT])
+                    dialog.add_filter("Plain JSON design", &["json"]).add_filter("Intcad container", &[io::DESIGN_EXT])
                 } else {
-                    dialog.add_filter("open-skyfall container", &[io::DESIGN_EXT]).add_filter("Plain JSON design", &["json"])
+                    dialog.add_filter("Intcad container", &[io::DESIGN_EXT]).add_filter("Plain JSON design", &["json"])
                 }
             } else {
                 dialog.add_filter("File", exts)
@@ -605,7 +630,9 @@ fn process_wide_http_limiter() -> std::sync::Arc<solidcraft_ui_egui::agent_chat:
 
 #[cfg(not(target_arch = "wasm32"))]
 fn new_window_ai() -> std::sync::Arc<solidcraft_ui_egui::agent_chat::host_ai::AiShared> {
-    std::sync::Arc::new(solidcraft_ui_egui::agent_chat::host_ai::AiShared::new(process_wide_http_limiter()))
+    let shared = solidcraft_ui_egui::agent_chat::host_ai::AiShared::new(process_wide_http_limiter());
+    shared.set_stream(Some(std::sync::Arc::new(agent_http_stream)));
+    std::sync::Arc::new(shared)
 }
 
 /// HTTPS GET for the update check (docs/updates.md): certificates from the operating system, a
@@ -679,6 +706,65 @@ fn agent_http(r: &solidcraft_ui_egui::agent_chat::backend::HttpRequest) -> Resul
     let status = response.status().as_u16();
     let body = response.body_mut().with_config().limit(16 << 20).read_to_vec().map_err(|e| e.to_string())?;
     Ok((status, body))
+}
+
+/// Streaming HTTP for the verified direct providers. The status and content type are read before
+/// any body byte is exposed; the body reader has a short per-read timeout so a cancelled turn can
+/// observe its close signal within a second. No redirect is followed.
+fn agent_http_stream(
+    r: &solidcraft_ui_egui::agent_chat::backend::HttpRequest,
+    cancellation: &std::sync::Arc<solidcraft_ui_egui::agent_chat::backend::StreamCancellation>,
+) -> Result<solidcraft_ui_egui::agent_chat::backend::HttpStreamResponse, String> {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    let tls = ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .unversioned_rustls_crypto_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(tls)
+        .http_status_as_error(false)
+        .timeout_global(Some(Duration::from_secs(r.timeout_s.clamp(1, 3600))))
+        .timeout_resolve(Some(Duration::from_secs(5)))
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .timeout_recv_response(Some(Duration::from_secs(10)))
+        // `timeout_recv_body` is a total body budget in ureq, not an idle timeout. Give it the
+        // whole request budget; a real answer can last longer than a second. Agent shutdown
+        // interrupts a blocked body read on Stop, so this is an upper bound, not the Stop path.
+        .timeout_recv_body(Some(Duration::from_secs(r.timeout_s.clamp(1, 3600))))
+        .user_agent("open-skyfall")
+        .max_redirects(0)
+        .build()
+        .into();
+    // One agent per streaming request. Its clone is the request's only shutdown scope; Stop
+    // shuts it down before joining the worker, interruptting headers/body reads immediately.
+    let agent_for_shutdown = agent.clone();
+    let shutdown = Arc::new(Mutex::new(Some(agent_for_shutdown)));
+    let slot = Arc::clone(&shutdown);
+    cancellation.register(Arc::new(move || {
+        if let Ok(mut agent) = slot.lock()
+            && let Some(agent) = agent.take()
+        {
+            agent.shutdown();
+        }
+    }));
+    let response = if r.method == "POST" {
+        let mut request = agent.post(&r.url);
+        for (k, v) in &r.headers {
+            request = request.header(k, v);
+        }
+        request.send(r.body.as_deref().unwrap_or_default())
+    } else {
+        let mut request = agent.get(&r.url);
+        for (k, v) in &r.headers {
+            request = request.header(k, v);
+        }
+        request.call()
+    }
+    .map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    let content_type = response.headers().get("content-type").and_then(|v| v.to_str().ok()).map(str::to_owned);
+    Ok(solidcraft_ui_egui::agent_chat::backend::HttpStreamResponse { status, content_type, reader: Box::new(response.into_body().into_reader()) })
 }
 
 /// Open with EasyPrint: upload the model to Printables' import endpoint on a worker and answer on
@@ -907,14 +993,14 @@ const MSAA: u16 = 4;
 
 /// `custom_titlebar`: no OS decorations, the application bar is the title bar.
 fn app_viewport(custom_titlebar: bool) -> Result<egui::ViewportBuilder, eframe::Error> {
-    // Let macOS use the bundle's layered icon; eframe's default bitmap would replace it.
+    // Let macOS use the bundle's icon; eframe's default bitmap would replace it.
     #[cfg(target_os = "macos")]
     let icon = egui::IconData::default();
     #[cfg(not(target_os = "macos"))]
     let icon =
         egui::IconData { rgba: app_icon::rgba(64).map_err(|e| eframe::Error::AppCreation(std::io::Error::other(e).into()))?, width: 64, height: 64 };
     Ok(egui::ViewportBuilder::default()
-        .with_title("open-skyfall")
+        .with_title("Intcad")
         .with_icon(icon)
         .with_inner_size([1600.0, 1000.0])
         .with_min_inner_size([960.0, 600.0])
@@ -943,7 +1029,7 @@ impl Drop for DriverClient {
 
 fn main() -> eframe::Result {
     #[cfg(target_os = "macos")]
-    objc2_foundation::NSProcessInfo::processInfo().setProcessName(objc2_foundation::ns_string!("open-skyfall"));
+    objc2_foundation::NSProcessInfo::processInfo().setProcessName(objc2_foundation::ns_string!("Intcad"));
     mark("main");
     // On OCLP-patched Macs, wgpu picks a Metal Shading Language standard that the system's
     // compiler refuses (`invalid value 'metal3.2'`), because the patched OS reports a newer
@@ -1314,6 +1400,9 @@ fn main() -> eframe::Result {
             {
                 app.native_file_menu = native_menu.is_some();
             }
+            // The Assistant's conversation is a web view where the host has one.
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            let assistant_web = assistant_web::AssistantWeb::new(&mut app);
             mark("app created");
             solidcraft_engine::crash::phase("first frame");
             Ok(Box::new(App {
@@ -1329,6 +1418,8 @@ fn main() -> eframe::Result {
                 space_mouse,
                 #[cfg(target_os = "macos")]
                 native_menu,
+                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                assistant_web,
                 nav_bridge,
                 dialog_folder,
             }))
@@ -1417,13 +1508,13 @@ fn no_window(error: eframe::Error, tried_cpu: bool, failed: eframe::wgpu::Backen
         }
     }
     let message = if explicit {
-        format!("SolidCraft could not open its window with WGPU_BACKEND.\n\n{error}\n\nChange or remove WGPU_BACKEND to try another graphics API.")
+        format!("Intcad could not open its window with WGPU_BACKEND.\n\n{error}\n\nChange or remove WGPU_BACKEND to try another graphics API.")
     } else {
         startup::no_window_message(&error.to_string(), settings)
     };
     let _ = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
-        .set_title("SolidCraft could not start")
+        .set_title("Intcad could not start")
         .set_description(message)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
@@ -1608,6 +1699,274 @@ mod backend_tests {
         assert!(!titlebar_choice(Some(""), Some("system")));
         // Anything unknown keeps the application bar.
         assert!(titlebar_choice(Some("ssd"), None));
+    }
+}
+
+#[cfg(test)]
+mod agent_http_stream_tests {
+    use super::agent_http_stream;
+    use solidcraft_ui_egui::agent_chat::backend::HttpRequest;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    /// A real socket stream lasting more than one second must not hit a total body budget.
+    #[test]
+    fn a_stream_longer_than_one_second_is_delivered() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = socket.read(&mut buffer);
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").unwrap();
+            socket.flush().unwrap();
+            for part in [b"data: one\n\n".as_slice(), b"data: two\n\n".as_slice(), b"data: three\n\n".as_slice(), b"data: [DONE]\n\n".as_slice()] {
+                std::thread::sleep(Duration::from_millis(400));
+                socket.write_all(part).unwrap();
+                socket.flush().unwrap();
+            }
+        });
+        let request = HttpRequest {
+            method: "POST",
+            url: format!("http://{address}/v1/chat/completions"),
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: Some(b"{}".to_vec()),
+            timeout_s: 5,
+        };
+        let started = std::time::Instant::now();
+        let cancellation = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let mut response = agent_http_stream(&request, &cancellation).expect("stream opens");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type.as_deref(), Some("text/event-stream"));
+        let mut body = String::new();
+        response.reader.read_to_string(&mut body).expect("stream body");
+        assert!(started.elapsed() > Duration::from_millis(1_000));
+        assert!(body.contains("data: one") && body.contains("data: three") && body.contains("data: [DONE]"), "{body}");
+        server.join().unwrap();
+    }
+    /// One request's cancellation never shuts another request down, and repeated Stop is safe.
+    #[test]
+    fn cancellation_is_idempotent_and_isolated() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let first = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let second = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let a = std::sync::Arc::new(AtomicUsize::new(0));
+        let b = std::sync::Arc::new(AtomicUsize::new(0));
+        let ca = std::sync::Arc::clone(&a);
+        let cb = std::sync::Arc::clone(&b);
+        first.register(std::sync::Arc::new(move || {
+            ca.fetch_add(1, Ordering::SeqCst);
+        }));
+        second.register(std::sync::Arc::new(move || {
+            cb.fetch_add(1, Ordering::SeqCst);
+        }));
+        first.cancel();
+        first.cancel();
+        assert_eq!(a.load(Ordering::SeqCst), 1);
+        assert_eq!(b.load(Ordering::SeqCst), 0);
+        second.cancel();
+        assert_eq!(b.load(Ordering::SeqCst), 1);
+        // Stop before the host registers a shutdown closure is latched, not lost.
+        let early = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let late = std::sync::Arc::new(AtomicUsize::new(0));
+        let late_count = std::sync::Arc::clone(&late);
+        early.cancel();
+        early.register(std::sync::Arc::new(move || {
+            late_count.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(late.load(Ordering::SeqCst), 1);
+        early.cancel();
+        assert_eq!(late.load(Ordering::SeqCst), 1);
+    }
+
+    /// Stop shuts the request's own agent down and the body reader returns instead of waiting
+    /// for the server to finish.
+    #[test]
+    fn shutdown_interrupts_a_blocked_body_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = socket.read(&mut buffer);
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n").unwrap();
+            socket.write_all(b"data: first\n\n").unwrap();
+            socket.flush().unwrap();
+            ready_tx.send(()).unwrap();
+            // Hold the socket open without sending anything else; only shutdown can end the read.
+            std::thread::sleep(Duration::from_secs(10));
+        });
+        let request = HttpRequest {
+            method: "POST",
+            url: format!("http://{address}/v1/chat/completions"),
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: Some(b"{}".to_vec()),
+            timeout_s: 30,
+        };
+        let cancellation = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let response = agent_http_stream(&request, &cancellation).expect("stream opens");
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut reader = response.reader;
+        let reading = std::thread::spawn(move || {
+            let mut body = Vec::new();
+            let _ = reader.read_to_end(&mut body);
+            body
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        let started = std::time::Instant::now();
+        cancellation.cancel();
+        let body = reading.join().expect("body thread joins");
+        // A response without Content-Length treats the shut socket as clean EOF, so Ok is fine;
+        // the proof is that the read returned before the server's 10 s hold expired.
+        assert!(started.elapsed() < Duration::from_secs(3), "shutdown must interrupt the body read");
+        assert_eq!(body, b"data: first\n\n");
+        drop(server);
+    }
+
+    /// The same agent shutdown interrupts a request waiting for response headers.
+    #[test]
+    fn shutdown_interrupts_a_request_waiting_for_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            accepted_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_secs(10));
+        });
+        let request = HttpRequest {
+            method: "POST",
+            url: format!("http://{address}/v1/chat/completions"),
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: Some(b"{}".to_vec()),
+            timeout_s: 30,
+        };
+        let cancellation = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let cancel = std::sync::Arc::clone(&cancellation);
+        let calling = std::thread::spawn(move || agent_http_stream(&request, &cancel));
+        accepted_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let started = std::time::Instant::now();
+        cancellation.cancel();
+        let result = calling.join().expect("request thread joins");
+        assert!(result.is_err(), "shutdown must fail a header wait");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        server.join().unwrap();
+    }
+    /// Two real streams use independent agents: cancelling one leaves the other running.
+    #[test]
+    fn two_concurrent_streams_cancel_independently() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                std::thread::spawn(move || {
+                    let mut buffer = [0u8; 4096];
+                    let _ = socket.read(&mut buffer);
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n").unwrap();
+                    socket.write_all(b"data: first\n\n").unwrap();
+                    socket.flush().unwrap();
+                    std::thread::sleep(Duration::from_millis(200));
+                    socket.write_all(b"data: second\n\n").unwrap();
+                    socket.flush().unwrap();
+                });
+            }
+        });
+        let make = || HttpRequest {
+            method: "POST",
+            url: format!("http://{address}/v1/chat/completions"),
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: Some(b"{}".to_vec()),
+            timeout_s: 10,
+        };
+        let first = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let second = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let (first_req, second_req) = (make(), make());
+        let c1 = std::sync::Arc::clone(&first);
+        let c2 = std::sync::Arc::clone(&second);
+        let one = std::thread::spawn(move || agent_http_stream(&first_req, &c1));
+        let two = std::thread::spawn(move || agent_http_stream(&second_req, &c2));
+        let first_response = one.join().unwrap().expect("first stream");
+        let second_response = two.join().unwrap().expect("second stream");
+        let mut first_reader = first_response.reader;
+        let mut second_reader = second_response.reader;
+        let second_body = std::thread::spawn(move || {
+            let mut body = Vec::new();
+            let _ = second_reader.read_to_end(&mut body);
+            body
+        });
+        let first_body = std::thread::spawn(move || {
+            let mut body = Vec::new();
+            let _ = first_reader.read_to_end(&mut body);
+            body
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        first.cancel();
+        let first_body = first_body.join().unwrap();
+        let second_body = second_body.join().unwrap();
+        assert!(!first_body.ends_with(b"data: second\n\n"), "the cancelled stream stopped");
+        assert!(second_body.ends_with(b"data: second\n\n"), "the other stream completed: {second_body:?}");
+        drop(second);
+        drop(server);
+    }
+
+    /// A stalled TLS handshake is interrupted by the same agent shutdown.
+    #[test]
+    fn shutdown_interrupts_a_tls_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            accepted_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_secs(10));
+        });
+        let request = HttpRequest {
+            method: "POST",
+            url: format!("https://{address}/v1/chat/completions"),
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: Some(b"{}".to_vec()),
+            timeout_s: 30,
+        };
+        let cancellation = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+        let cancel = std::sync::Arc::clone(&cancellation);
+        let calling = std::thread::spawn(move || agent_http_stream(&request, &cancel));
+        accepted_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let started = std::time::Instant::now();
+        cancellation.cancel();
+        let result = calling.join().expect("TLS request joins");
+        assert!(result.is_err(), "shutdown must fail the TLS handshake");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(server);
+    }
+
+    /// A real DNS/TCP connect phase that is shut down still joins within its explicit bound.
+    #[test]
+    fn shutdown_of_a_dns_or_connect_phase_joins_within_the_bound() {
+        for url in ["http://192.0.2.1:81/v1/chat/completions", "http://bm2-does-not-exist.invalid/v1/chat/completions"] {
+            let request = HttpRequest {
+                method: "POST",
+                url: url.into(),
+                headers: vec![("Content-Type".into(), "application/json".into())],
+                body: Some(b"{}".to_vec()),
+                timeout_s: 30,
+            };
+            let cancellation = std::sync::Arc::new(solidcraft_ui_egui::agent_chat::backend::StreamCancellation::default());
+            let cancel = std::sync::Arc::clone(&cancellation);
+            let calling = std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                let _ = agent_http_stream(&request, &cancel);
+                started.elapsed()
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            cancellation.cancel();
+            let elapsed = calling.join().expect("connect request joins");
+            assert!(elapsed < Duration::from_secs(8), "{url} must be bounded, took {elapsed:?}");
+        }
     }
 }
 
