@@ -73,29 +73,30 @@ as fixed and must be removed in the change. The action count can grow by up to f
 least the stable 54,029 actions and judges the itemised identities. A baseline pass that starts failing is the
 213-item gate condition above.
 
-The property lane keeps its exact #56 exception and two narrow Cylinder/Sphere cases.
-The first is a point tangency: the cylinder `at [22.5, 12.5, 2.5], axis X, r 11.25, h 5`
-and the sphere `at [10, 2.5, 0], r 12.5` touch at exactly one point, so the union is not
-a manifold solid and SMLib's refusal is correct. It refuses the union at 1x, 0.05x and
-offsets 0 and 1e3 with `SmVertex::Test #1 Bad Vertex Gap` (offset 12.5 at 1x, tolerance
-2e-05) and `SmFace::Test #12 Face->Vertex`; at 40x and offset 1e5 it builds the union,
-whose volume is the sum of the operands, and intersect is empty and cut is the cylinder
-at every transform.
-The second is a seam class: an axis-X cylinder and a sphere build a valid union, but
-SMLib refuses their intersect and cut at 1x and 0.05x with `SmFace::Test #29 Face
-crosses Seam`; at offset 1e5 the same class can hit the reviewed #56 NURBS refusal.
-The tests accept only that primitive pair, those two operations and that exact checker
-error, in either operand order; a different primitive pair, operation or error still
-fails. This is one checker limitation, not every Cylinder/Sphere failure.
-The deterministic `cyl_sphere_refusal_is_the_exact_reviewed_upstream_case` and
-`cyl_sphere_seam_refusal_is_the_exact_reviewed_upstream_case` assert the refusals, the
-transform outcomes, the built union volume and the input invariants; if the kernel
-starts behaving differently, those tests fail and the exceptions must be removed.
+The property lane is graded by `tests/KNOWN_FAILING_TESTS`, the same list the native
+test job uses. This tree itemises three randomized identities and their causes:
+`identity_on_grid` and `scale_invariant` (a 0.05x cylinder/sphere intersection refused
+with `SmFace::Test #29 Face crosses Seam`, #117) and `translation_invariant` (a
+1e5-offset sphere/box union refused by the non-monotonic B-spline check, #56). An
+unlisted failure still fails the lane; a listed one that starts passing must be removed
+in the same change.
+
+The Beta.3 line also carried two deterministic Cylinder/Sphere regressions
+(`cyl_sphere_refusal_is_the_exact_reviewed_upstream_case` and
+`cyl_sphere_seam_refusal_is_the_exact_reviewed_upstream_case`). They are not in this
+tree: on the current kernel the broader point-tangency class (for example a cylinder
+`at [15, 25, 20]`, axis Y, `r 12.5`, `h 5` against a sphere `at [22.5, 17.5, 30]`,
+`r 7.5`) is refused with `SmVertex::Test #1 Bad Vertex Gap` and the `commutative`
+property does not accept that refusal. Restoring those exact tests needs a kernel or
+test rule that accepts the reviewed class first (#61, #83, #88). Until then the
+randomized lane above is the property evidence, not a claim that every Cylinder/Sphere
+case passes.
+
 The randomized property lane is recorded with the Beta evidence but is not a Beta
-blocker: the reviewed action matrix and the selected deterministic regressions are the
-Beta kernel gate. The stable release gate keeps the property requirement. The lane is
-not claimed green: other upstream SMLib refusals still appear in its JUnit and stay
-visible, not accepted as passes.
+blocker: the reviewed action matrix and the itemised property exceptions are the Beta
+kernel gate. The stable release gate keeps the property requirement. The lane is not
+claimed universally green: other upstream SMLib refusals still appear in its JUnit and
+stay visible, not accepted as passes.
 
 The Beta gate fails when any of these changes:
 
