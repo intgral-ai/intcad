@@ -6,15 +6,16 @@
 //!
 //! On Linux the view is WebKitGTK in a child of the app's X11 window, which in a Wayland session
 //! is an XWayland window: the one the app opens there unless it is told otherwise. A native
-//! Wayland window has no such child: there the panel draws its own conversation. winit does not
-//! run GTK, so GTK is started here and given its turns each frame. The X server sends typed keys
-//! to the window that has the keyboard, the app's, so the view's window is given the keyboard
-//! when the page is pressed and the app's window has it back when the rest of it is pressed.
+//! Wayland window has no X11 child to give it: the panel says so and offers Graphics settings and
+//! Retry, never a second conversation (docs/native-wayland.md). winit does not run GTK, so GTK is
+//! started here and given its turns each frame. The X server sends typed keys to the window that
+//! has the keyboard, the app's, so the view's window is given it in GTK's press callback, before
+//! the first key, and the app's window has it back when the rest of it is pressed.
 //!
 //! On Windows the view is WebView2 in a child window of the app's. WebView2 serves no scheme of
 //! the app's own, so the page has an `http` address there that only this view answers, and it
 //! keeps its files in the user's data folder. A machine without the WebView2 runtime has no view:
-//! there the panel draws its own conversation.
+//! the panel names it and offers Retry and Assistant settings.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -55,9 +56,11 @@ const SEE_THROUGH: bool = cfg!(target_os = "macos");
 const GTK_AT_WORK: std::time::Duration = std::time::Duration::from_millis(16);
 #[cfg(target_os = "linux")]
 const GTK_AT_REST: std::time::Duration = std::time::Duration::from_millis(100);
-/// While the page has the keyboard and nothing is typed: a first key is not kept waiting long.
+/// While the page has the keyboard: a key, a composition or a candidate list is not kept waiting
+/// for a turn. The app's own frame is cheap here (the page, not the model, is what changes), and
+/// the rate falls back to [`GTK_AT_REST`] as soon as the app's window is pressed again.
 #[cfg(target_os = "linux")]
-const GTK_WITH_KEYBOARD: std::time::Duration = std::time::Duration::from_millis(50);
+const GTK_WITH_KEYBOARD: std::time::Duration = std::time::Duration::from_millis(16);
 /// No more of GTK's turns than this at once: the app's own frame is waiting.
 #[cfg(target_os = "linux")]
 const GTK_TURNS: usize = 256;
@@ -225,17 +228,6 @@ impl Keyboard {
         Some(Self { connection, app, view })
     }
 
-    /// The window keys go to for the page. GTK makes one window of its own inside the one the
-    /// view was given and takes keys there: a key sent to the outer one, with the pointer
-    /// elsewhere, reaches no one. That window is looked for as the page is pressed, when it is
-    /// surely there; the view's own window stands in when it holds none, or several.
-    fn page(&self) -> u32 {
-        match Self::inside(&self.connection, self.view).as_deref() {
-            Some([page]) => *page,
-            _ => self.view,
-        }
-    }
-
     fn give(&self, window: u32) -> Result<(), String> {
         use x11rb::protocol::xproto::{ConnectionExt, InputFocus};
         // Should the window stop being shown, the keyboard goes to the window it is in.
@@ -280,19 +272,27 @@ pub struct AssistantWeb {
     /// GTK was started for the view, and takes turns.
     #[cfg(target_os = "linux")]
     gtk: bool,
-    /// GTK had something to do in a turn since the last frame.
+    /// The GTK window that holds the page: GDK's own toplevel, reparented into the app's X11
+    /// window. wry's `build_as_child` makes a foreign GdkWindow that GTK never marks active,
+    /// which costs the page its input method; a GDK window keeps focus.
     #[cfg(target_os = "linux")]
-    at_work: bool,
-    /// The page was pressed since the last frame: GTK says so, the app sees no press on a child
-    /// window.
+    gtk_window: Option<gtk::Window>,
+    /// GTK had something to do in a turn since the last frame. Set by the page's draw, its IPC
+    /// and its presses, not by every idle timer GTK happens to have: an Assistant at rest must
+    /// not keep the app at 60 fps.
     #[cfg(target_os = "linux")]
-    pressed: Rc<Cell<bool>>,
-    /// The way to hand the keyboard over, once the view's window is known.
+    at_work: Rc<Cell<bool>>,
+    /// The page drew since the last turn (GTK's `draw` signal on the web view).
     #[cfg(target_os = "linux")]
-    keyboard: Option<Keyboard>,
-    /// The view's window was given the keyboard, and the app's has not been given it back.
+    drew: Rc<Cell<bool>>,
+    /// The page has the X11 keyboard. Set in GTK's press callback, before the next frame, so the
+    /// first key after a click is not lost to the hand-over.
     #[cfg(target_os = "linux")]
-    with_keyboard: bool,
+    page_focused: Rc<Cell<bool>>,
+    /// The way to hand the keyboard over, once the view's window is known. Shared with the press
+    /// callback, which gives it over at once.
+    #[cfg(target_os = "linux")]
+    keyboard: Rc<RefCell<Option<Keyboard>>>,
 }
 
 impl AssistantWeb {
@@ -301,22 +301,29 @@ impl AssistantWeb {
         let available = available();
         if cfg!(target_os = "linux") && !available {
             note(
-                "this run's window is a native Wayland one, which holds no web view: the panel draws the built-in conversation (Window system: Automatic or X11 in Preferences opens an X11 window)",
+                "this run's window is a native Wayland one, which holds no X11 child window for WebKitGTK: the Assistant panel shows a diagnostic (Window system: Automatic or X11 in Preferences opens an X11 window)",
             );
         }
         web::set_host(solve, available);
+        if !available {
+            web::set_problem(solve, web::Problem::NativeWayland);
+        }
         Self::default()
     }
 
     /// The view goes before the window it is a child of does.
     pub fn close(&mut self) {
         self.view = None;
+        #[cfg(target_os = "linux")]
+        {
+            self.gtk_window = None;
+        }
         self.placed = None;
         self.shown = false;
         #[cfg(target_os = "linux")]
         {
-            self.keyboard = None;
-            self.with_keyboard = false;
+            *self.keyboard.borrow_mut() = None;
+            self.page_focused.set(false);
             self.turn_gtk();
         }
     }
@@ -333,7 +340,11 @@ impl AssistantWeb {
             gtk::main_iteration_do(false);
             turns += 1;
         }
-        self.at_work |= turns > 0;
+        // A page that drew needs another turn soon (its compositor is still catching up); an
+        // idle GTK timer does not. This is what keeps an untouched Assistant from pinning the
+        // app to the display's frame rate.
+        let drew = self.drew.replace(false);
+        self.at_work.set(self.at_work.get() || drew);
     }
 
     /// The page has the keyboard: text editing keys and menu items belong to it.
@@ -360,10 +371,18 @@ impl AssistantWeb {
         self.turn_gtk();
         web::advance(solve, ctx);
         let messages: Vec<String> = self.inbox.borrow_mut().drain(..).collect();
+        #[cfg(target_os = "linux")]
+        if !messages.is_empty() {
+            self.at_work.set(true);
+        }
         for message in messages {
             self.receive(solve, ctx, &message);
         }
         let drags: Vec<Drag> = self.drags.borrow_mut().drain(..).collect();
+        #[cfg(target_os = "linux")]
+        if !drags.is_empty() {
+            self.at_work.set(true);
+        }
         for drag in drags {
             match drag {
                 Drag::Over(over) => web::dragging(solve, over),
@@ -383,7 +402,11 @@ impl AssistantWeb {
                 *held = web::pictures(solve).into_iter().collect();
             }
             match view.evaluate_script(&format!("window.__assistantHost&&window.__assistantHost.state({state})")) {
-                Ok(()) => self.told = state,
+                Ok(()) => {
+                    self.told = state;
+                    #[cfg(target_os = "linux")]
+                    self.at_work.set(true);
+                }
                 Err(error) => note(&format!("could not be told the state: {error}")),
             }
         }
@@ -391,6 +414,15 @@ impl AssistantWeb {
 
     /// Once a frame, after the app's UI: keep the web view on the place the panel gave it.
     pub fn tick(&mut self, solve: &mut SolveApp, ctx: &egui::Context, frame: &eframe::Frame) {
+        // The panel's Retry: the conversation is the app's state, so a new view picks it up
+        // whole; only the view and its place are made again.
+        if web::take_retry(solve) {
+            self.view = None;
+            self.placed = None;
+            self.shown = false;
+            web::set_host(solve, true);
+            ctx.request_repaint();
+        }
         self.keep_place(solve, ctx, frame);
         // WebView2 takes the keyboard when it is clicked, and a press on the rest of the window
         // does not take it back (Windows): the window is given it. The app sees only the presses
@@ -405,32 +437,23 @@ impl AssistantWeb {
         #[cfg(target_os = "linux")]
         {
             self.turn_gtk();
-            // A press on the page gives the view's window the keyboard, and a press on the rest
-            // of the app's window gives it back: the app sees only the presses not on the view.
-            if self.pressed.take()
-                && self.shown
-                && let Some(keyboard) = &self.keyboard
-            {
-                match keyboard.give(keyboard.page()) {
-                    Ok(()) => self.with_keyboard = true,
-                    Err(error) => note(&format!("could not be given the keyboard: {error}")),
-                }
-            }
-            if self.with_keyboard
-                && ctx.input(|input| input.pointer.any_pressed())
-                && let Some(keyboard) = &self.keyboard
-            {
-                if let Err(error) = keyboard.give(keyboard.app) {
+            // A press on the page gives the view's window the keyboard in GTK's own callback
+            // (`create`), not a frame later: a key typed at once was lost there. A press on the
+            // rest of the app's window gives it back; the app sees only those presses.
+            if self.page_focused.get() && ctx.input(|input| input.pointer.any_pressed()) {
+                if let Some(keyboard) = self.keyboard.borrow().as_ref()
+                    && let Err(error) = keyboard.give(keyboard.app)
+                {
                     note(&format!("could not give the keyboard back: {error}"));
                 }
-                self.with_keyboard = false;
+                self.page_focused.set(false);
             }
             // The next turn: soon while the page is at work, seldom while it rests, and between
             // the two while it has the keyboard and waits for a key.
             if self.shown {
-                let wait = if std::mem::take(&mut self.at_work) {
+                let wait = if self.at_work.replace(false) {
                     GTK_AT_WORK
-                } else if self.with_keyboard || self.focused {
+                } else if self.page_focused.get() || self.focused {
                     GTK_WITH_KEYBOARD
                 } else {
                     GTK_AT_REST
@@ -441,6 +464,13 @@ impl AssistantWeb {
     }
 
     fn keep_place(&mut self, solve: &mut SolveApp, ctx: &egui::Context, frame: &eframe::Frame) {
+        #[cfg(target_os = "linux")]
+        if !available() {
+            web::set_host(solve, false);
+            web::set_problem(solve, web::Problem::NativeWayland);
+            self.show(false);
+            return;
+        }
         let Some(rect) = web::placement(solve, ctx) else {
             self.show(false);
             return;
@@ -448,14 +478,21 @@ impl AssistantWeb {
         let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point() };
         let backing = web::backing(solve, ctx);
         if self.view.is_none() && !self.create(ctx, frame, at, backing) {
-            // No web view on this machine: the panel draws its own conversation again.
+            // No web view on this machine: the panel says why and offers Retry; it does not draw
+            // a second conversation.
             web::set_host(solve, false);
+            web::set_problem(solve, web::Problem::Failed);
             ctx.request_repaint();
             return;
         }
         if self.placed != Some(at)
             && let Some(view) = &self.view
         {
+            #[cfg(target_os = "linux")]
+            if let Some(window) = self.gtk_window.as_ref() {
+                place_gtk(window, at);
+            }
+            #[cfg(not(target_os = "linux"))]
             if let Err(error) = view.set_bounds(place(at)) {
                 note(&format!("could not be moved: {error}"));
             }
@@ -478,10 +515,6 @@ impl AssistantWeb {
             self.backed = Some(backing);
         }
         self.show(true);
-        #[cfg(target_os = "linux")]
-        if let Some(view) = &self.view {
-            fit(view, at);
-        }
         self.tell(solve);
     }
 
@@ -597,9 +630,31 @@ impl AssistantWeb {
         // keyboard there: a click on it does.
         let builder = if cfg!(target_os = "windows") { builder.with_visible(false).with_focused(false) } else { builder };
         // The builder panics on a window it cannot take; the app goes on without the web view.
-        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.build_as_child(frame)));
+        #[cfg(target_os = "linux")]
+        let mut gtk_window = None;
+        #[cfg(target_os = "linux")]
+        let built: Result<wry::WebView, String> = {
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build_embedded_gtk(builder, frame, at, &mut gtk_window)));
+            match built {
+                Ok(result) => result,
+                Err(_) => Err("could not be created in this window".into()),
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let built: Result<wry::WebView, String> = {
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.build_as_child(frame)));
+            match built {
+                Ok(Ok(view)) => Ok(view),
+                Ok(Err(error)) => Err(format!("could not be created: {error}")),
+                Err(_) => Err("could not be created in this window".into()),
+            }
+        };
         match built {
-            Ok(Ok(view)) => {
+            Ok(view) => {
+                #[cfg(target_os = "linux")]
+                {
+                    self.gtk_window = gtk_window;
+                }
                 if let Err(error) = view.zoom(page_zoom(&view, at)) {
                     note(&format!("could not be zoomed: {error}"));
                 }
@@ -610,18 +665,61 @@ impl AssistantWeb {
                 }
                 #[cfg(target_os = "linux")]
                 {
-                    use gtk::prelude::WidgetExt;
+                    use gtk::glib::Cast as _;
+                    use gtk::prelude::{GtkWindowExt, WidgetExt};
                     use wry::WebViewExtUnix;
-                    let (pressed, repaint) = (self.pressed.clone(), ctx.clone());
+                    let found = Keyboard::of(before);
+                    if found.is_none() {
+                        note("its window was not found among the app's: typed keys reach the page only while the pointer is over it");
+                    }
+                    *self.keyboard.borrow_mut() = found;
+                    let (keyboard, page_focused, repaint) = (self.keyboard.clone(), self.page_focused.clone(), ctx.clone());
+                    let press_work = self.at_work.clone();
+                    let page_widget = view.webview().clone();
+                    {
+                        let (drew, at_work) = (self.drew.clone(), self.at_work.clone());
+                        page_widget.connect_draw(move |_, _| {
+                            drew.set(true);
+                            at_work.set(true);
+                            gtk::glib::Propagation::Proceed
+                        });
+                    }
+                    if let Some(gtk_window) = page_widget.toplevel().and_then(|top| top.downcast::<gtk::Window>().ok()) {
+                        let keyboard = self.keyboard.clone();
+                        let page_focused = self.page_focused.clone();
+                        let press_work = self.at_work.clone();
+                        let repaint = ctx.clone();
+                        gtk_window.connect_button_press_event(move |_, _| {
+                            press_work.set(true);
+                            if let Some(keyboard) = keyboard.borrow().as_ref() {
+                                match keyboard.give(keyboard.view) {
+                                    Ok(()) => page_focused.set(true),
+                                    Err(error) => note(&format!("could not be given the keyboard from the window: {error}")),
+                                }
+                            }
+                            repaint.request_repaint();
+                            gtk::glib::Propagation::Proceed
+                        });
+                    }
                     view.webview().connect_button_press_event(move |_, _| {
-                        pressed.set(true);
+                        press_work.set(true);
+                        // GTK runs this in the X event that pressed the page, before the first key
+                        // that follows it: hand the keyboard to the view's own GTK window here.
+                        // That window is GDK's (reparented into the app's), so GTK marks it active
+                        // and the page's input method context gets its focus-in.
+                        if let Some(keyboard) = keyboard.borrow().as_ref() {
+                            match keyboard.give(keyboard.view) {
+                                Ok(()) => page_focused.set(true),
+                                Err(error) => note(&format!("could not be given the keyboard: {error}")),
+                            }
+                        }
+                        page_widget.grab_focus();
+                        if let Some(window) = page_widget.toplevel().and_then(|top| top.downcast::<gtk::Window>().ok()) {
+                            window.set_focus(Some(&page_widget));
+                        }
                         repaint.request_repaint();
                         gtk::glib::Propagation::Proceed
                     });
-                    self.keyboard = Keyboard::of(before);
-                    if self.keyboard.is_none() {
-                        note("its window was not found among the app's: typed keys reach the page only while the pointer is over it");
-                    }
                 }
                 self.view = Some(view);
                 self.placed = Some(at);
@@ -629,12 +727,8 @@ impl AssistantWeb {
                 self.shown = true;
                 true
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 note(&format!("could not be created: {error}"));
-                false
-            }
-            Err(_) => {
-                note("could not be created in this window");
                 false
             }
         }
@@ -643,6 +737,11 @@ impl AssistantWeb {
     fn show(&mut self, shown: bool) {
         if self.shown == shown {
             return;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(window) = &self.gtk_window {
+            use gtk::prelude::WidgetExt;
+            if shown { window.show_all() } else { window.hide() }
         }
         if let Some(view) = &self.view {
             if let Err(error) = view.set_visible(shown) {
@@ -658,7 +757,7 @@ impl AssistantWeb {
             }
             #[cfg(target_os = "linux")]
             if !shown {
-                self.with_keyboard = false;
+                self.page_focused.set(false);
             }
         }
         self.shown = shown;
@@ -670,6 +769,87 @@ impl AssistantWeb {
 /// and a child window on Windows is placed in pixels anyway.
 fn place(at: Placed) -> wry::Rect {
     if cfg!(target_os = "macos") { bounds(at.rect, at.zoom) } else { bounds_in_pixels(at.rect, at.pixels_per_point) }
+}
+
+/// The page in a GTK window of its own, reparented into the app's X11 window (Linux). wry's
+/// `build_as_child` wraps a foreign GdkWindow that GDK selects no focus events on, so GTK never
+/// marks the window active and the page's input method never starts. A GtkWindow owns its
+/// GdkWindow: reparented before it is mapped it is a child of the app's window with working
+/// focus and input, and the window manager never sees it.
+#[cfg(target_os = "linux")]
+fn build_embedded_gtk(
+    builder: wry::WebViewBuilder<'_>,
+    frame: &eframe::Frame,
+    at: Placed,
+    slot: &mut Option<gtk::Window>,
+) -> Result<wry::WebView, String> {
+    use gtk::glib::Cast as _;
+    use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use wry::WebViewBuilderExtUnix;
+    let parent = match frame.window_handle().map_err(|error| error.to_string())?.as_raw() {
+        RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).map_err(|_| "the app's window id is too large".to_string())?,
+        RawWindowHandle::Xcb(handle) => handle.window.get(),
+        _ => return Err("the app's window is not an X11 one".into()),
+    };
+    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    window.set_decorated(false);
+    window.set_skip_taskbar_hint(true);
+    window.set_skip_pager_hint(true);
+    window.set_type_hint(gtk::gdk::WindowTypeHint::Utility);
+    let wanted = bounds_in_pixels(at.rect, at.pixels_per_point).size.to_logical::<i32>(f64::from(window.scale_factor().max(1)));
+    window.set_default_size(wanted.width.max(1), wanted.height.max(1));
+    let bx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    window.add(&bx);
+    let view = builder.build_gtk(&bx).map_err(|error| format!("could not be created: {error}"))?;
+    window.realize();
+    let child = window
+        .window()
+        .and_then(|window| window.downcast::<gdkx11::X11Window>().ok())
+        .map(|window| window.xid() as u32)
+        .ok_or_else(|| "the GTK window has no X11 window".to_string())?;
+    if let Ok((connection, _)) = x11rb::connect(None) {
+        use x11rb::protocol::xproto::ConnectionExt;
+        connection.reparent_window(child, parent, 0, 0).map_err(|error| error.to_string())?;
+        // A round-trip here: GDK's map (another connection) must not reach the server before
+        // this reparent, or the window is mapped as a root child and GTK keeps it at 0,0.
+        if let Ok(request) = connection.get_input_focus() {
+            let _ = request.reply();
+        }
+    }
+    place_gtk(&window, at);
+    window.show_all();
+    window.resize(wanted.width.max(1), wanted.height.max(1));
+    place_gtk(&window, at);
+    // GTK may set a toplevel's position as it maps it; put the child back on its panel once
+    // more after the map has gone through.
+    let placed = window.clone();
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+        place_gtk(&placed, at);
+        gtk::glib::ControlFlow::Break
+    });
+    *slot = Some(window);
+    Ok(view)
+}
+
+/// The embedded page's place in the app's window, in the window's pixels.
+#[cfg(target_os = "linux")]
+fn place_gtk(window: &gtk::Window, at: Placed) {
+    use gtk::glib::Cast as _;
+    use gtk::prelude::WidgetExt;
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt};
+    let Some(xid) = window.window().and_then(|window| window.downcast::<gdkx11::X11Window>().ok()).map(|window| window.xid() as u32) else {
+        return;
+    };
+    let rect = bounds_in_pixels(at.rect, at.pixels_per_point);
+    let position = rect.position.to_logical::<i32>(1.0);
+    let size = rect.size.to_logical::<u32>(1.0);
+    if let Ok((connection, _)) = x11rb::connect(None) {
+        let _ = connection
+            .configure_window(xid, &ConfigureWindowAux::new().x(position.x).y(position.y).width(size.width.max(1)).height(size.height.max(1)));
+        let _ = connection.flush();
+    }
 }
 
 /// An egui rectangle as the web view's place in the window: egui points times the UI zoom are the
@@ -691,19 +871,6 @@ fn bounds_in_pixels(rect: egui::Rect, pixels_per_point: f32) -> wry::Rect {
         position: PhysicalPosition::new(left, top).into(),
         size: PhysicalSize::new((pixel(rect.right()) - left).max(1.0), (pixel(rect.bottom()) - top).max(1.0)).into(),
     }
-}
-
-/// Give the page the size of its place (Linux), every frame it is shown. wry resizes the X11
-/// window the view is in, but GTK goes on laying the page out at the size that window was made
-/// with, and does so again whenever the view is shown: the page's widget is given its size here,
-/// which costs nothing while it has it.
-#[cfg(target_os = "linux")]
-fn fit(view: &wry::WebView, at: Placed) {
-    use gtk::prelude::WidgetExt;
-    use wry::WebViewExtUnix;
-    let page = view.webview();
-    let size = bounds_in_pixels(at.rect, at.pixels_per_point).size.to_logical::<i32>(f64::from(page.scale_factor().max(1)));
-    page.size_allocate(&gtk::Allocation::new(0, 0, size.width.max(1), size.height.max(1)));
 }
 
 /// The page's zoom at which a point of the page is a point of the app.

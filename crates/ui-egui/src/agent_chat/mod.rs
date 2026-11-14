@@ -362,7 +362,9 @@ enum Reading {
 }
 
 impl Loading {
-    /// A CAD file being imported (its part lands in the design whatever the message does).
+    /// A CAD file being imported (its part lands in the design whatever the message does). The old
+    /// egui conversation's loading chip reads it; the page is told the same state in `web::state`.
+    #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
     pub fn importing(&self) -> bool {
         matches!(self.what, Reading::Import(_))
     }
@@ -440,6 +442,12 @@ pub struct AgentChat {
     /// The desktop host can show the Assistant in a web view ([`web::set_host`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_host: bool,
+    /// Why the desktop host has no web view, when it should have one ([`web::set_problem`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_problem: Option<web::Problem>,
+    /// The panel asked the host to try once more ([`web::request_retry`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_retry: bool,
     /// The place the panel gave up to the host's web view this frame, and the layer it is in.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_place: Option<(egui::Rect, egui::LayerId)>,
@@ -462,7 +470,9 @@ pub struct AgentChat {
     pasted: usize,
     /// When the last text paste arrived (input time), so the V key coming up after it isn't a second paste.
     pub(crate) text_pasted_at: Option<f64>,
-    /// The chips' thumbnails, by the picture they show.
+    /// The chips' thumbnails, by the picture they show. The old egui conversation's chips; the
+    /// page draws its own pictures.
+    #[cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
     thumbs: std::collections::HashMap<u64, egui::TextureHandle>,
     /// The last id given to a file added to a message.
     last_file_id: u64,
@@ -487,8 +497,6 @@ pub struct AgentChat {
     pub connection_auth: Option<bool>,
     /// The running backend hands turns to a Mastra workflow, so [`Event::Ready`] is not a sign-in.
     mastra: bool,
-    /// The popped-out chat window was given its saved place (it is open); see `panel::window_builder`.
-    pub(crate) window_placed: bool,
     /// The agent's own modes, and the current one.
     modes: Vec<(String, String)>,
     mode: String,
@@ -556,7 +564,6 @@ impl AgentChat {
         std::mem::swap(&mut self.settings, &mut other.settings);
         std::mem::swap(&mut self.control_starter, &mut other.control_starter);
         std::mem::swap(&mut self.models_cache, &mut other.models_cache);
-        std::mem::swap(&mut self.window_placed, &mut other.window_placed);
         std::mem::swap(&mut self.connect_at_start, &mut other.connect_at_start);
         // A sign-in proven in one tab holds for that agent in every tab (#9293).
         std::mem::swap(&mut self.login_results, &mut other.login_results);
@@ -2854,9 +2861,7 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     if let Some(m) = p.get("minimized").and_then(Value::as_bool) {
         app.preferences.agent_chat_minimized = m;
     }
-    if let Some(w) = p.get("popped").and_then(Value::as_bool) {
-        app.preferences.agent_chat_popped = w;
-    }
+    // `popped` is accepted for older clients and ignored: the Assistant has no own window.
     if let Some(w) = p.get("width").and_then(Value::as_f64).filter(|w| w.is_finite()) {
         app.preferences.agent_chat_width = (w as f32).clamp(panel::MIN_WIDTH, panel::MAX_WIDTH);
         panel::forget_width(ctx);
@@ -2984,8 +2989,9 @@ pub fn status(app: &SolveApp) -> Value {
         "open": c.open,
         "side": app.preferences.agent_chat_side,
         "minimized": app.preferences.agent_chat_minimized,
-        "popped": app.preferences.agent_chat_popped,
-        "window": app.preferences.agent_chat_window,
+        // Kept in the reply for older clients; the Assistant never opens a window of its own.
+        "popped": false,
+        "window": serde_json::Value::Null,
         "width": app.preferences.agent_chat_width,
         "state": c.state().id(),
         "agent": c.agent,
@@ -3019,6 +3025,15 @@ pub fn status(app: &SolveApp) -> Value {
         #[cfg(target_arch = "wasm32")]
         let web_view = json!({"host": false, "page": false});
         state.insert("webView".into(), web_view);
+        #[cfg(not(target_arch = "wasm32"))]
+        state.insert(
+            "webProblem".into(),
+            match c.web_problem {
+                Some(web::Problem::NativeWayland) => json!("native-wayland"),
+                Some(web::Problem::Failed) => json!("failed"),
+                None => serde_json::Value::Null,
+            },
+        );
     }
     state
 }

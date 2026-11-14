@@ -200,13 +200,6 @@ jobs:
           if package_id.startswith(('release-flatpak-', 'release-arch-', 'release-snap-')):
               arch = package_id.rsplit('-', 1)[-1]
               sources = sorted(Path('dist/linux').glob('solidcraft-*-linux-' + arch + '.tar.gz'))
-              # Arch renames a prerelease tarball for pkgver, leaving both copies.
-              # Prefer the exact checkout version the Linux descriptor names.
-              version = os.environ.get('SOLIDCRAFT_VERSION') or os.environ.get('VERSION')
-              if version:
-                  exact = Path('dist/linux') / ('solidcraft-' + version + '-linux-' + arch + '.tar.gz')
-                  if exact.is_file():
-                      sources = [exact]
               if len(sources) != 1:
                   raise SystemExit('derived package needs exactly one source Linux tarball')
               command += ['--derived-from', 'release-linux-' + arch, '--source-artifact', str(sources[0])]
@@ -243,6 +236,8 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-flatpak-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      # aarch64's runtime GL under Xvfb needs the software driver; x86_64 passes without it.
+      SOLIDCRAFT_SMOKE_SOFTWARE_GL: ${{ matrix.arch == 'aarch64' && '1' || '0' }}
     steps:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -252,7 +247,7 @@ jobs:
       - name: Install flatpak-builder and smoke tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common xvfb xauth weston dbus-x11
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common xvfb xauth weston xwayland dbus-x11
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build and smoke-test the Flatpak in its network-denying sandbox
         # The existing manifest grants no network. Its desktop smoke stays inside
@@ -280,19 +275,28 @@ jobs:
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/linux
+      - name: Install libarchive (bsdtar) for .PKGINFO/.MTREE
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libarchive-tools
       - id: pkgver
         name: Arch version
         env:
           ARCH: ${{ matrix.arch }}
         run: |
+          # Arch pkgver allows no hyphen. The arch-package action derives its version from
+          # the tarball name with ^([A-Za-z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+[^-_]*)-linux-...$,
+          # so a prerelease such as 0.1.0-beta.1 must be handed over as 0.1.0beta.1 or the
+          # action falls back to 0.0.0. The alias goes to dist/arch, so dist/linux keeps the
+          # one inspected Linux tarball the package-evidence step requires.
           pkgver="${VERSION//-/}"
           echo "pkgver=$pkgver" >>"$GITHUB_OUTPUT"
-          if [ "$pkgver" != "$VERSION" ]; then
-            cp "dist/linux/solidcraft-$VERSION-linux-$ARCH.tar.gz" "dist/linux/solidcraft-$pkgver-linux-$ARCH.tar.gz"
-          fi
+          # The action derives the package version from the tarball name, but the evidence
+          # step requires exactly one source tarball in dist/linux. Hand the action an alias
+          # in dist/arch so the inspected Linux artifact stays the only dist/linux tarball.
+          mkdir -p dist/arch
+          cp "dist/linux/solidcraft-$VERSION-linux-$ARCH.tar.gz" "dist/arch/solidcraft-$pkgver-linux-$ARCH.tar.gz"
       - uses: storytold/craft-common-actions/actions/arch-package@fa5ef18780cf5e7d5d3b8de068de56cffc83cac5 # main
         with:
-          tarball: dist/linux/solidcraft-${{ steps.pkgver.outputs.pkgver }}-linux-${{ matrix.arch }}.tar.gz
+          tarball: dist/arch/solidcraft-${{ steps.pkgver.outputs.pkgver }}-linux-${{ matrix.arch }}.tar.gz
           arch: ${{ matrix.arch }}
       - name: The package under the checkout version
         if: steps.pkgver.outputs.pkgver != env.VERSION
@@ -300,13 +304,26 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PKGVER: ${{ steps.pkgver.outputs.pkgver }}
         run: sudo mv "dist/release/solidcraft-$PKGVER-linux-$ARCH.pkg.tar.zst" "dist/release/solidcraft-$VERSION-linux-$ARCH.pkg.tar.zst"
+      # The arch-package action writes a fixed depends list with no input for more. The app
+      # links libgtk-3.so.0 and libwebkit2gtk-4.1.so.0 directly, so the package must declare
+      # Arch's gtk3 and webkit2gtk-4.1 or a clean install will not start. Rewrite .PKGINFO
+      # (package files and .MTREE are untouched) and then fail unless both are there.
+      - name: Declare the Assistant's runtime libraries
+        env:
+          PKG: dist/release/solidcraft-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+        run: packaging/linux/arch-depends.sh "$PKG" gtk3 webkit2gtk-4.1
       - name: Check the package
         env:
           PKG: dist/release/solidcraft-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
         run: |
           tar --zstd -tf "$PKG" | grep -E '^usr/bin/solidcraft$|^usr/bin/solidcraft-cli$|^usr/share/applications/io\.tangencylabs\.solidcraft\.desktop$'
-          tar --zstd -xOf "$PKG" .PKGINFO | grep -E '^(pkgname|pkgver|arch) = '
-          tar --zstd -xOf "$PKG" .PKGINFO | grep -qx 'pkgname = io.tangencylabs.solidcraft'
+          info="$(mktemp)"
+          tar --zstd -xOf "$PKG" .PKGINFO >"$info"
+          grep -E '^(pkgname|pkgver|arch) = ' "$info"
+          grep -qx 'pkgname = io.tangencylabs.solidcraft' "$info"
+          grep -qx 'depend = gtk3' "$info"
+          grep -qx 'depend = webkit2gtk-4.1' "$info"
+          rm -f "$info"
       - *package-evidence
       - *upload-package
       - *upload-evidence
@@ -339,14 +356,50 @@ jobs:
           sudo --preserve-env=SOLIDCRAFT_VERSION,SOLIDCRAFT_BUILD_DATE env "PATH=$PATH" \
             packaging/linux/snap-pack.sh --destructive-mode "dist/linux/solidcraft-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.tar.gz"
           sudo chown -R "$(id -u):$(id -g)" dist target
-      - name: Install and check CLI only (desktop network isolation not implemented)
+      - name: Install and check the package
         run: |
           snap_file="dist/release/solidcraft-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.snap"
           sudo snap install --dangerous "$snap_file"
           snap info --verbose "$snap_file" | head -n 12
           snap connections solidcraft
           solidcraft.cli --version
-          echo 'Snap desktop smoke BLOCKED: no supported updater-off switch; #14 installed runtime validation is still required.' >>"$GITHUB_STEP_SUMMARY"
+          # The gnome extension on core24 is gnome-46-2404. Its content snap stage-packages
+          # libwebkit2gtk-4.1-0 and its SDK supplies GTK 3, so a clean install gets the
+          # Assistant's two libraries without duplicating them in this snap. Check the
+          # mounted content and its connection; the app itself is not started here.
+          snap connections solidcraft | grep -F 'gnome-46-2404'
+          for lib in libgtk-3.so.0 libwebkit2gtk-4.1.so.0; do
+            if [ -z "$(find -L /snap/gnome-46-2404/current -name "$lib" -print -quit)" ]; then
+              echo "::error::the gnome-46-2404 content snap does not provide $lib"
+              exit 1
+            fi
+          done
+          echo 'Snap Assistant desktop smoke NOT run in the normal step: a strict snap uses the host network, and release policy forbids starting a network-enabled desktop. The gnome extension supplies GTK 3 and WebKitGTK 4.1 (checked above).' >>"$GITHUB_STEP_SUMMARY"
+      - name: Open the Assistant on a network-isolated desktop
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth iproute2
+          mkdir -p "$RUNNER_TEMP/snap-offline"
+          set +e
+          runner=$(id -un)
+          uid=$(id -u)
+          work=$(pwd)
+          temp=$RUNNER_TEMP
+          sudo unshare -n -- bash -c "ip link set lo up; test \"\$(ip -o link | wc -l)\" -eq 1; exec su $runner -s /bin/bash -c 'cd $work && HOME=$HOME XDG_RUNTIME_DIR=/run/user/$uid python3 packaging/linux/snap-smoke.py --backend x11 --out $temp/snap-offline'" 2>&1 | tee "$RUNNER_TEMP/snap-offline/smoke.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -eq 0 ]; then
+            echo 'Snap offline desktop smoke PASS (network namespace, loopback only).' >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Snap offline desktop smoke FAILED; see snap-offline-evidence. A strict snap may be moved back to the host network namespace by snapd.' >>"$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+      - name: Keep the offline smoke evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snap-offline-evidence-${{ matrix.arch }}
+          path: ${{ runner.temp }}/snap-offline
+          if-no-files-found: warn
       - *package-evidence
       - *upload-package
       - *upload-evidence
@@ -450,26 +503,13 @@ jobs:
       # and Gatekeeper is not asked: an ad-hoc signature does not pass it on a user's Mac, and
       # this step says nothing about that.
       - name: Copy the app out of the disk image and open the Assistant
+        # The script checks the embedded page, inventory and notices inside the installed copy,
+        # verifies the local signature, proves the no-network profile works, and opens the
+        # Assistant in both halves of the universal app where the runner can run them.
         run: |
-          DMG="$(find dist/release -maxdepth 1 -name '*.dmg' -print -quit)"
-          MNT="$(mktemp -d)"
-          APPS="$(mktemp -d)"
-          hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
-          cp -R "$MNT/SolidCraft.app" "$APPS/"
-          hdiutil detach "$MNT"
-          EXE="$APPS/SolidCraft.app/Contents/MacOS/SolidCraft"
-          OFFLINE=(sandbox-exec -f "$PWD/packaging/macos/no-network.sb")
-          if "${OFFLINE[@]}" /usr/bin/curl -s -m 5 -o /dev/null https://api.github.com/; then
-            echo "::error::the sandbox does not take the network away on this runner"
-            exit 1
-          fi
-          python3 packaging/assistant-check.py --run-with "${OFFLINE[*]}" --exe "$EXE" --evidence "$RUNNER_TEMP/installed-check/native" --screen
-          # The other half of the universal file, where this runner can run it.
-          if arch -x86_64 /usr/bin/true 2>/dev/null; then
-            python3 packaging/assistant-check.py --run-with "${OFFLINE[*]} arch -x86_64" --exe "$EXE" --evidence "$RUNNER_TEMP/installed-check/x86_64" --screen
-          else
-            echo 'macOS installed check: no Rosetta on this runner, so the Intel half of the app was not started.' >>"$GITHUB_STEP_SUMMARY"
-          fi
+          packaging/macos/installed-check.sh \
+            "$(find dist/release -maxdepth 1 -name '*.dmg' -print -quit)" \
+            "$RUNNER_TEMP/installed-check"
       - name: Keep the installed check's log and pictures
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

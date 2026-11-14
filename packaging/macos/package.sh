@@ -171,6 +171,11 @@ copy_docs "$APP/Contents/Resources/Licenses"
 # The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
 # which the app carries built in as well (Help > About > Licences).
 cp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
+cp "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$APP/Contents/Resources/Licenses/WEB-VIEW-PLATFORM-NOTICES.txt"
+# The inventory of what that page was built from. The page itself is embedded in the executable
+# (include_bytes!); packaging/macos/verify-assistant-bundle.py checks both in the finished app.
+mkdir -p "$APP/Contents/Resources/Assistant"
+cp "$ROOT/packages/assistant-web/inventory.json" "$APP/Contents/Resources/Assistant/inventory.json"
 
 # ---- Mastra runtime (opt-in; application-relative, pinned Node) ---------------------------------
 # Bundling is opt-in because the artifact is still unapproved (DQ-7, #15). A universal app needs
@@ -281,6 +286,10 @@ for arch in "${WANT[@]}"; do
 done
 test -s "$MNT/SolidCraft.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
 cmp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$MNT/SolidCraft.app/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
+cmp "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$MNT/SolidCraft.app/Contents/Resources/Licenses/WEB-VIEW-PLATFORM-NOTICES.txt"
+# The page's files are embedded in the executable and its inventory/notices are beside it: check
+# the app as the mounted image carries it, not the build output it came from.
+python3 "$ROOT/packaging/macos/verify-assistant-bundle.py" --app "$MNT/SolidCraft.app" --source "$ROOT/packages/assistant-web"
 if [ "$WITH_MASTRA" = 1 ]; then
   case "$ARCH" in
     universal)

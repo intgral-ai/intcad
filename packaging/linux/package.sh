@@ -84,6 +84,9 @@ copy_docs "$STAGE/usr/share/doc/solidcraft"
 # The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
 # which the app carries built in as well (Help > About > Licences).
 install -Dm644 "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$STAGE/usr/share/doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt"
+# The platform web view's licences (GTK 3, WebKitGTK 4.1, WebView2, WKWebView), including the
+# LGPL text a dynamically linked system library needs. Also built into About > Licences.
+install -Dm644 "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$STAGE/usr/share/doc/solidcraft/WEB-VIEW-PLATFORM-NOTICES.txt"
 
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"
@@ -161,7 +164,7 @@ if has appimage; then
   # Update information: AppImageUpdate and the like fetch only the changed blocks of a newer
   # release through the .zsync published next to each AppImage. `latest` is the newest published
   # release that is not a pre-release.
-  REPO="${GITHUB_REPOSITORY:-bherbruck/solidcraft}"
+  REPO="${GITHUB_REPOSITORY:-intgral-ai/open-skyfall-desktop}"
   UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|solidcraft-*-linux-$ARCH.AppImage.zsync"
   # Extract-and-run: works without FUSE (containers, CI). With zsyncmake on the host appimagetool
   # also writes the .zsync, into its working directory, hence the cd.

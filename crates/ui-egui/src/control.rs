@@ -843,6 +843,9 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             "hover": app.viewport.hover,
             "renderer": if app.viewport.gpu.is_some() { "gpu" } else { "cpu" },
             "frame_ms": app.frame_ms,
+            // The gaps between recent frames, so a caller can tell a slow frame from a frame
+            // the event loop never asked for (100 ms apart is not 10 FPS of work).
+            "frame_gaps_ms": app.frame_clock.gaps().map(|ms| (ms * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
             "draw": app.viewport.draw_stats.as_ref().and_then(|s| s.lock().ok().map(|d| json!({
                 "draw_calls": d.draw_calls, "triangles": d.triangles, "line_segments": d.line_segments, "supersampled": d.supersampled,
             }))),

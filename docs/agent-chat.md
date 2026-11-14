@@ -88,17 +88,24 @@ and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
 - While you type in the message box, the Edit menu has **Cut**, **Copy**, **Paste** and
   **Select All**, and undo and redo stay with the text you are typing.
 - The conversation goes on while the window is behind another one.
-- The Assistant does not open in a window of its own there: its menu has no **Own window**, and
-  one chosen earlier goes back to the side panel.
+- The Assistant never opens in a window of its own: its menu has no **Own window**, and one
+  chosen by an older version opens in the side panel.
 - On Linux the web view is WebKitGTK and needs an X11 window, which the app opens by default,
-  in a Wayland session as well (through XWayland). The panel's corners are square there. While
-  you type in the message box the keys are the page's: the app's own shortcuts work again after
-  a click anywhere else in the window. In a native Wayland window (on niri, or with
-  **Preferences › Graphics › Window system** set to Wayland) the built-in panel is drawn.
-- On Windows the web view is WebView2, which Windows 11 has and most Windows 10 machines have;
-  on a machine without it the built-in panel is drawn. The panel's corners are square there.
-  While you type in the message box the keys are the page's: the app's own shortcuts work again
-  after a click anywhere else in the window.
+  in a Wayland session as well (through XWayland). The panel's corners are square there. A click
+  on the page gives it the keyboard at once, before the first key, so nothing typed at click
+  time is lost; a click anywhere else in the window gives the keyboard back to the app. GTK is
+  told the page has focus as well, so its input method can offer a composition and a candidate
+  list to the page. In a native Wayland window (on niri, or with
+  **Preferences › Graphics › Window system** set to Wayland) Wayland has no X11 child window for
+  WebKitGTK, so the panel says so and offers **Graphics settings**; it does not draw a second
+  conversation. Set **Window system** to X11 (or Automatic) and restart to use the Assistant
+  there. Its licences and the notices each package must ship are in
+  [web-view-licences.md](web-view-licences.md).
+- On Windows the web view is WebView2, which Windows 11 has and most Windows 10 machines have.
+  A machine without the runtime gets a panel that names it and offers **Retry** and **Assistant
+  settings**, not a second conversation; install the Evergreen runtime and retry. The panel's
+  corners are square there. While you type in the message box the keys are the page's: a click
+  anywhere else in the window gives them back to the app.
 - Where the app draws its own title bar (Windows and Linux), the web view stays off the window's
   edges, so an edge beside a docked panel still resizes the window.
 - The browser still draws the built-in panel, which the rest of this page describes (**Own
@@ -123,12 +130,8 @@ all of it.
   window and let go. The side it would land on lights up while you drag. You can also pick
   **Left** or **Right** under Preferences → AI → Panel. SolidCraft remembers the side.
 - **Width:** drag the panel's inner edge. SolidCraft remembers it.
-- **Its own window:** the pop-out button in the header (a window with an arrow) moves the chat
-  into a window of its own, named after the design, which you can move anywhere, including
-  another screen. The window's own close button closes the chat, which opens there again next
-  time; **Dock** (the same place in its header) puts it back in the side panel. You can also
-  pick **Own window** under Preferences → AI → Panel. SolidCraft remembers where the window
-  was and how big.
+- **No own window:** the Assistant is always a panel of the app's window. Its old pop-out button
+  and **Own window** preference are gone; a saved choice opens in the side panel.
 - **Minimise** (the line in the header) folds the panel into a small floating strip (a side strip in the docked layout) that keeps the chat
   icon, the agent's state, and a count of anything waiting for your answer. Click the icon to
   unfold it. **Close** (×) hides the panel. Neither stops the agent; **Stop** does.

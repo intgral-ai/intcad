@@ -5,21 +5,32 @@
 # It repackages the release's own Linux tarball (solidcraft-<version>-linux-<arch>.tar.gz, built
 # on Ubuntu 22.04 by package.sh) instead of compiling Rust inside flatpak-builder: no network
 # during the build, and the same binaries as the AppImage/deb/rpm. The binaries need glibc >= 2.35
-# and load X11, Wayland, xkbcommon and Vulkan at runtime; the freedesktop runtime has all of
-# them, and the GPU driver comes from its org.freedesktop.Platform.GL extension.
+# and load X11, Wayland, xkbcommon and Vulkan at runtime; the runtime has all of them, and the
+# GPU driver comes from its org.freedesktop.Platform.GL extension.
+#
+# The runtime is GNOME 51 (based on freedesktop-sdk 26.08.2, the same base the old
+# org.freedesktop.Platform 26.08 pin used) because the Assistant's web view links the system's
+# GTK 3 and WebKitGTK 4.1. org.freedesktop.Platform 26.08 ships GTK 3 but no WebKitGTK at all;
+# org.gnome.Platform 51 ships both (gnome-build-meta 51.1, elements/sdk-platform.bst, which is
+# the stack of the Platform image, contains sdk/gtk+-3.bst and sdk/webkit2gtk-4.1.bst). Using
+# the runtime instead of a bundled WebKitGTK module keeps the build network-free and keeps
+# WebKit's helpers and data next to the library they belong to.
+#
 # Earlier releases used the ids ai.storyteller.solidcraft (0.8 until the move to Tangency Labs)
 # and ai.storyteller.solvecraft (before 0.8). The Flatpak repository marks both end-of-life with a
 # rebase to this one, so `flatpak update` moves existing installs over (packaging/flatpak-site.sh,
 # docs/compatibility.md).
 id: io.tangencylabs.solidcraft
-runtime: org.freedesktop.Platform
-runtime-version: '26.08'
-sdk: org.freedesktop.Sdk
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
 command: solidcraft
 finish-args:
-  # Display: Wayland first; X11 only when no Wayland compositor is running.
+  # Display: Wayland first, with the X11 socket for the XWayland window whose child view hosts
+  # the Assistant. `fallback-x11` gives no X11 socket under a Wayland session, so the page could
+  # not be embedded there; native Wayland still runs without XWayland. docs/native-wayland.md.
   - --socket=wayland
-  - --socket=fallback-x11
+  - --socket=x11
   # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
   - --share=ipc
   # GPU access for the wgpu viewport (Vulkan, or GL as a fallback).

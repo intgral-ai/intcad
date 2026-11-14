@@ -44,8 +44,9 @@ def rgba_png(width, height, rows):
 
 class Control:
     """A control connection whose first frame can arrive after the port opens."""
-    def __init__(self, viewports):
+    def __init__(self, viewports, page=True):
         self.viewports = iter(viewports)
+        self.page = page
         self.requests = []
         self.settimeout = Mock()
 
@@ -70,6 +71,10 @@ class Control:
         reply = healthy_replies()[index] if index < 3 else {"id": request["id"], "ok": True, "result": {}}
         if index == 0:
             reply["result"]["viewport"] = next(self.viewports)
+        if request["method"] == "ui.home":
+            reply["result"] = {"open": False}
+        elif request["method"] == "ui.agent_chat":
+            reply["result"] = {"open": True, "webView": {"host": True, "page": self.page}}
         return json.dumps(reply) + "\n"
 
 
@@ -93,13 +98,20 @@ class SnapStartup(unittest.TestCase):
         self.assertEqual(renderer, "gpu")
         self.assertEqual(statistics["nonblack"], 4)
         self.assertEqual([request["method"] for request in control.requests], [
-            "ui.inspect", "ui.inspect", "engine.execute", "document.inspect", "ui.screenshot", "app.quit"
+            "ui.inspect", "ui.inspect", "engine.execute", "document.inspect", "ui.home",
+            "ui.agent_chat", "ui.agent_chat", "ui.screenshot", "app.quit"
         ])
 
     def test_ready_startup_does_not_wait(self):
         control = Control([[250, 126, 1000, 700]])
         self.drive(control)
         self.assertEqual(sum(r["method"] == "ui.inspect" for r in control.requests), 1)
+
+    def test_assistant_must_load_its_page(self):
+        control = Control([[250, 126, 1000, 700]], page=False)
+        with self.assertRaisesRegex(RuntimeError, "page"):
+            self.drive(control, [0, 0, 0, 0, 200])
+        self.assertIn("ui.agent_chat", [r["method"] for r in control.requests])
 
     def test_missing_first_frame_times_out_before_modelling(self):
         control = Control(itertools.repeat(None))
@@ -124,7 +136,7 @@ class SnapStartup(unittest.TestCase):
 
     def test_read_timeout_uses_remaining_readiness_deadline_then_restores_operation_timeout(self):
         control = Control([None, [250, 126, 1000, 700]])
-        self.drive(control, [0, 0, 20, 50])
+        self.drive(control, [0, 0, 20, 50, 50, 50])
         self.assertEqual([call.args[0] for call in control.settimeout.call_args_list], [40, 10, 60])
 
     def test_closed_or_malformed_control_fails_before_modelling(self):
@@ -188,6 +200,42 @@ class DesktopProbe(unittest.TestCase):
                     replies[2]["result"]["bodies"][0]["bbox"]["max"][0] = 29
                 with self.assertRaises(ValueError):
                     SMOKE.validate_replies(output(replies))
+
+    def test_flatpak_assistant_needs_an_open_panel_and_a_loaded_page(self):
+        good = {"ok": True, "result": {"open": True, "webView": {"host": True, "page": True}}}
+        self.assertEqual(SMOKE.validate_assistant([good], "x11"), "page loaded")
+        for state in [
+            {"ok": False, "error": "no Assistant"},
+            {"ok": True, "result": {"open": False, "webView": {"host": True, "page": False}}},
+            {"ok": True, "result": {"open": True, "webView": {"host": False, "page": False}}},
+            {"ok": True, "result": {"open": True, "webView": {"host": True, "page": False}}},
+            {"ok": True, "result": {"open": True}},
+        ]:
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                SMOKE.validate_assistant([state], "x11")
+
+    def test_native_wayland_diagnostic_is_not_a_page_load(self):
+        diagnostic = {"ok": True, "result": {"open": True,
+                                             "webView": {"host": False, "page": False},
+                                             "webProblem": "native-wayland"}}
+        self.assertEqual(SMOKE.validate_assistant([diagnostic], "wayland"),
+                         "native-Wayland diagnostic")
+        for backend in ("x11", "xwayland"):
+            with self.assertRaises(ValueError):
+                SMOKE.validate_assistant([diagnostic], backend)
+        failed = {"ok": True, "result": {"open": True,
+                                         "webView": {"host": False, "page": False},
+                                         "webProblem": "failed"}}
+        with self.assertRaises(ValueError):
+            SMOKE.validate_assistant([failed], "wayland")
+
+    def test_xwayland_requires_the_page_and_native_wayland_rejects_one(self):
+        page = {"ok": True, "result": {"open": True,
+                                       "webView": {"host": True, "page": True},
+                                       "webProblem": None}}
+        self.assertEqual(SMOKE.validate_assistant([page], "xwayland"), "page loaded")
+        with self.assertRaises(ValueError):
+            SMOKE.validate_assistant([page], "wayland")
 
 
 if __name__ == "__main__":

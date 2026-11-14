@@ -18,6 +18,18 @@ as libraries. truck-shapeops 0.4.0 is vendored in vendor/truck-shapeops with Sol
 modifications (listed in vendor/README.md and marked in the source); its licence is in
 vendor/truck-shapeops/LICENSE. Copyright (c) RICOS Co. Ltd.
 
+Desktop web view. The Assistant's interface on Linux is drawn by the system's GTK 3 and
+WebKitGTK 4.1 libraries: the app loads them as unmodified shared libraries through the
+wry, gtk and webkit2gtk Rust crates. GTK 3 is LGPL-2.1-or-later; WebKitGTK is LGPL and
+BSD-2-Clause. Neither library is copied, modified or bundled by the deb, rpm, tarball or
+AppImage; the Nix package's closure does carry both. Copyright notices, licence texts and
+what each package must ship are in docs/web-view-licences.md and
+packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt. On Windows the Assistant uses the
+Microsoft Edge WebView2 Runtime, which the MSI and portable build do not redistribute; the
+WebView2Loader static library compiled into the executable comes from Microsoft's WebView2
+SDK and is subject to Microsoft's terms. On macOS the Assistant uses the system's WKWebView
+framework. These are notices, not a legal clearance.
+
 Some code is adapted from sibling projects in the storytold family (CADCraft, GridCraft), which are
 licensed MIT OR Apache-2.0; ATTRIBUTION.md lists the files.
 The release packaging (.github/workflows/release.yml, packaging/) is adapted from PhotoCraft

@@ -97,11 +97,15 @@ start the next full gate at the new SHA -> publish only after the required
 Do not start a network-enabled desktop to smoke-test a release build. The existing
 CLI/version, archive, installer and icon checks remain. Flatpak keeps its actual
 desktop modelling smoke **inside its existing network-denying sandbox**, with no
-network override. Snap's desktop smoke is not invoked: it shares the host network
-and has no supported updater-off switch. The CLI/package checks remain; the
-missing safe installed desktop/runtime acceptance is explicitly blocking, not a
-skipped successful requirement. Other package desktop `--version` calls exit
-before UI/updater startup; do not replace them with a normal app launch.
+network override, and that smoke now also opens the Assistant and fails unless its
+page reported in. Snap's desktop smoke is still not invoked: a strict snap uses the
+host network, so the step cannot take the network away. The snap step instead checks
+that the connected gnome-46-2404 content snap contains GTK 3 and WebKitGTK 4.1; the
+Assistant's page there remains a hardware/manual check (`packaging/linux/snap-smoke.py`).
+The CLI/package checks remain; the missing safe installed desktop/runtime acceptance is
+explicitly blocking, not a skipped successful requirement. Other package desktop
+`--version` calls exit before UI/updater startup; do not replace them with a normal app
+launch.
 
 ### Installed checks of the deb, rpm, AppImage, disk image and MSI
 
@@ -153,9 +157,20 @@ found and what the packages state about themselves, **not** a rights clearance.
 opens, the page loads and reports in, the app quits with exit code 0 and leaves no
 crash report. Logs and pictures are uploaded as `installed-check-*` artifacts and
 are **not** release evidence: #14's installed-runtime acceptance, signatures and
-notarization stay open. Not covered: the tarball, Flatpak, Snap, Arch and Nix
-packages (none brings or declares the web view's libraries yet), a real GPU, and
-any machine with a person in front of it.
+notarization stay open.
+
+The deb and rpm declare the Assistant's GTK 3 and WebKitGTK 4.1 and their installed
+checks open the page without a network. The Flatpak step opens the same page check
+inside its sandbox (the GNOME 51 runtime supplies both libraries). The Snap stages
+neither, because its core24 gnome extension (gnome-46-2404) already supplies both;
+the release job verifies they are present in the mounted content snap, but does not
+start the desktop. The Arch package is built by an external action whose fixed
+`depends` list omits the two libraries, so the job adds `gtk3` and `webkit2gtk-4.1`
+to `.PKGINFO` and fails unless both are there; it does not start the app. Not covered
+by a run here: the tarball, Nix, an Assistant launch from Snap or Arch, a real GPU,
+and any machine with a person in front of it. The deb, rpm, AppImage, macOS and
+Flatpak steps above are the page runs in this workflow; Snap and Arch get
+package/library checks only.
 
 Docker keeps a local image build and HTTP smoke test (`push: false`). Pages keeps
 the book/web build and offline browser test as an ordinary Actions artifact, with
