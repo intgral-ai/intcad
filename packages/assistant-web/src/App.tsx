@@ -19,7 +19,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import type { AssistantState, ContextChip, ContextGroups, Item, PermissionOption, PictureRef, QueuedMessage, Strings } from './host';
 import { pictureUrl, post } from './host';
@@ -318,6 +318,12 @@ function Answer({ part, streaming }: { part: Extract<Part, { kind: 'text' }>; st
 function CheckCardView({ item, strings }: { item: Of<'check'>; strings: Strings }) {
   const card = item.card;
   const [open, setOpen] = useState<string | null>(null);
+  // A queued run finishes on the host's worker; ask the host for the report until it does.
+  useEffect(() => {
+    if (item.status !== 'running' && item.status !== 'pending') return;
+    const timer = window.setInterval(() => post({ type: 'dfm_poll' }), 500);
+    return () => window.clearInterval(timer);
+  }, [item.status]);
   if (item.status === 'running' || item.status === 'pending') {
     return (
       <Notice variant="note" title={strings.dfmCheckTitle}>
