@@ -613,7 +613,9 @@ pub fn run_once(
         project_id: request.input.project_id.clone(),
         source: SourceRef::from_source(&request.input.source),
     };
-    let findings = findings::build_with_reasons(&identity, &sheet_checks, &reasons);
+    let mut findings = findings::build_with_reasons(&identity, &sheet_checks, &reasons);
+    let (app, app_not_checked) = app_findings(&report);
+    findings.extend_with_app(app, &app_not_checked);
     let files = RunFiles { profile: compiled.profile, report, findings: findings.clone(), sheets: evidence };
     let outcome = store.write_complete(&meta, &files)?;
     let reason = match outcome {
@@ -621,6 +623,83 @@ pub fn run_once(
         _ => None,
     };
     Ok(RunResult { run_id, outcome, findings: Some(findings), reason })
+}
+
+/// The App's own check results (flat self-overlap) as findings, and what it could not check.
+fn app_findings(report: &ValidationReport) -> (Vec<findings::Finding>, Vec<String>) {
+    use findings::{FeatureRef, Finding, FindingFrom, FindingState, Measure, MeasureUnit, RequirementView};
+
+    let Some(check) = report.checks.iter().find(|check| check.check_id == compile::FLAT_OVERLAP_CHECK) else {
+        return (Vec::new(), Vec::new());
+    };
+    let tolerance = check.actual.get("toleranceMm2").and_then(serde_json::Value::as_f64);
+    let mut out = Vec::new();
+    let mut not_checked = Vec::new();
+    let Some(sheets) = check.actual.get("sheets").and_then(serde_json::Value::as_array) else {
+        return (out, not_checked);
+    };
+    for sheet in sheets {
+        let index = sheet.get("sheet").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
+        let body = sheet.get("body").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+        let Some(observations) = sheet.get("observations").and_then(serde_json::Value::as_array) else { continue };
+        for (position, observation) in observations.iter().enumerate() {
+            let (state, status) = match observation.get("state").and_then(serde_json::Value::as_str) {
+                Some("failed") => (FindingState::Failed, "violation"),
+                Some("unsupported") => (FindingState::Unsupported, "not_verified"),
+                _ => (FindingState::Passed, "pass"),
+            };
+            let measured = observation.get("measuredMm2").and_then(serde_json::Value::as_f64);
+            let flat = observation
+                .get("flat")
+                .and_then(serde_json::Value::as_array)
+                .filter(|points| points.len() == 2)
+                .and_then(|points| Some([points[0].as_f64()?, points[1].as_f64()?]));
+            let outline = observation
+                .get("outline")
+                .and_then(serde_json::Value::as_array)
+                .map(|points| {
+                    points
+                        .iter()
+                        .filter_map(|point| {
+                            let point = point.as_array()?;
+                            Some([point.first()?.as_f64()?, point.get(1)?.as_f64()?, point.get(2)?.as_f64()?])
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if state == FindingState::Unsupported {
+                not_checked.push(format!(
+                    "Sheet {} (`{}`): the flat self-overlap check could not measure this body.",
+                    index + 1,
+                    body
+                ));
+            }
+            out.push(Finding {
+                id: format!("sheet-{}/A{}", index + 1, position + 1),
+                sheet: index,
+                body: body.clone(),
+                from: FindingFrom::App,
+                rules: vec![crate::dfm::FLAT_NO_OVERLAP_RULE.to_string()],
+                state,
+                status: status.to_string(),
+                code: observation.get("code").and_then(serde_json::Value::as_str).map(str::to_string),
+                measured: measured.map(|value| Measure { value, unit: MeasureUnit::SquareMillimetre }),
+                requirement: tolerance.map(|value| RequirementView {
+                    value,
+                    unit: MeasureUnit::SquareMillimetre,
+                    layer: solidcraft_dfm_rules::Layer::Project,
+                    confirmed: None,
+                    source: crate::dfm::FLAT_NO_OVERLAP_RULE.to_string(),
+                }),
+                feature: Some(FeatureRef { kind: "region".into(), number: Some(index) }),
+                anchor: None,
+                flat,
+                faces: Vec::new(),
+                outline,
+            });
+        }
+    }
+    (out, not_checked)
 }
 
 /// The native checks protect the run: a candidate that does not rebuild cannot produce a report

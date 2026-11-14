@@ -170,6 +170,16 @@ pub fn compile(input: &RunInput, sheets: &[SheetRef], model_version: &str) -> Re
         });
         parameters.push(check);
     }
+    if !sheets.is_empty() {
+        let parameters = flat_overlap_parameters(model_version, sheets);
+        crate::dfm::validate_flat_parameters(&parameters)?;
+        profile.checks.push(CheckRequirement {
+            check_id: FLAT_OVERLAP_CHECK.into(),
+            kind: FLAT_OVERLAP_CHECK.into(),
+            required: false,
+            parameters,
+        });
+    }
     profile.checks.sort_by(|a, b| a.check_id.cmp(&b.check_id));
     validate_profile(&profile).map_err(|error| DfmError::Parameters(error.to_string()))?;
     Ok(CompiledProfile { profile, sheets: parameters })

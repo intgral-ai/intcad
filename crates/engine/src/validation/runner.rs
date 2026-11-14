@@ -164,6 +164,7 @@ impl Runner for LocalRunner {
                 "parameters.required" => parameter_check(session.as_mut(), requirement),
                 "geometry.exact" => geometry_check(session.as_mut(), requirement),
                 "dfm.sheet" => dfm_sheet_check(session.as_ref(), requirement),
+                "dfm.sheet.flat_overlap" => dfm_flat_overlap_check(session.as_ref(), requirement),
                 other => CheckOutcome {
                     check_id: requirement.check_id.clone(),
                     state: CheckState::Unsupported,
@@ -533,6 +534,64 @@ fn dfm_sheet_check(session: Option<&Session>, check: &super::profile::CheckRequi
             evidence: vec![evidence_json(&json!({"reason": reason}))],
         },
         Err(error) => error_check(check, ValidationError::invalid_request(error.to_string())),
+    }
+}
+
+/// The App's own flat self-overlap check over every sheet of the run. One check keeps the
+/// geometric conclusion in one place; each sheet carries its own pieces, areas and outlines.
+fn dfm_flat_overlap_check(session: Option<&Session>, check: &super::profile::CheckRequirement) -> CheckOutcome {
+    let parameters = match crate::dfm::validate_flat_parameters(&check.parameters) {
+        Ok(parameters) => parameters,
+        Err(error) => return error_check(check, ValidationError::invalid_request(error.to_string())),
+    };
+    let Some(session) = session else {
+        return not_run(check, "native.rebuild did not produce a session");
+    };
+    let state = session.model.state();
+    let mut sheets = Vec::new();
+    let mut failed = false;
+    let mut unsupported = false;
+    for reference in &parameters.sheets {
+        let Some(sheet) = state.sheets.get(reference.sheet).filter(|sheet| sheet.body == reference.body) else {
+            return error_check(
+                check,
+                ValidationError::invalid_request(format!("sheet {} is not `{}` in the evaluated model", reference.sheet, reference.body)),
+            );
+        };
+        let observations = match crate::dfm::flat_no_overlap(sheet) {
+            Ok(observations) => observations,
+            Err(error) => return error_check(check, ValidationError::invalid_request(error.to_string())),
+        };
+        for observation in &observations {
+            failed |= observation.state == crate::dfm::FlatOverlapState::Failed;
+            unsupported |= observation.state == crate::dfm::FlatOverlapState::Unsupported;
+        }
+        sheets.push(json!({
+            "sheet": reference.sheet,
+            "body": reference.body,
+            "observations": observations,
+        }));
+    }
+    let actual = json!({
+        "toleranceMm2": parameters.tolerance_mm2,
+        "sheets": sheets,
+    });
+    let check_state = if failed {
+        CheckState::Failed
+    } else if unsupported {
+        CheckState::Unsupported
+    } else {
+        CheckState::Passed
+    };
+    CheckOutcome {
+        check_id: check.check_id.clone(),
+        state: check_state,
+        expected: json!({
+            "rule": crate::dfm::FLAT_NO_OVERLAP_RULE,
+            "toleranceMm2": parameters.tolerance_mm2,
+        }),
+        actual: actual.clone(),
+        evidence: vec![evidence_json(&actual)],
     }
 }
 
