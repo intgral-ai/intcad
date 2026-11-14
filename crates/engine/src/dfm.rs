@@ -3,6 +3,26 @@
 //! No OCP, no network and no files. The live document is only read through [`SheetBody`]; the
 //! rule crate decides on the facts and data it is given.
 
+// The run record, profile compilation and export need the desktop validation port; the browser
+// has no background worker or project folder.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod compile;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod export;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod findings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod run;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod service;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "dfm/run_tests.rs"]
+mod run_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "dfm/service_tests.rs"]
+mod service_tests;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -88,6 +108,63 @@ pub fn validate_parameters(value: &Value) -> Result<SheetCheckParameters, DfmErr
     let probe = parameters.clone().into_input(RuleFacts::default());
     solidcraft_dfm_rules::validate(&probe).map_err(|error| DfmError::Parameters(error.to_string()))?;
     Ok(parameters)
+}
+
+/// The parameters of the App's own flat self-overlap check (PIL-306). One check covers every
+/// sheet body of the run, so the report has one place for the geometric conclusion.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlatOverlapParameters {
+    pub model_version: String,
+    pub sheets: Vec<FlatSheetRef>,
+    /// The area tolerance in mm²; it must be the one the geometry used.
+    pub tolerance_mm2: f64,
+}
+
+/// One sheet body the flat self-overlap check covers.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlatSheetRef {
+    pub sheet: usize,
+    pub body: String,
+}
+
+/// Parse and check the flat self-overlap parameters before a run starts.
+pub fn validate_flat_parameters(value: &Value) -> Result<FlatOverlapParameters, DfmError> {
+    let parameters: FlatOverlapParameters = serde_json::from_value(value.clone()).map_err(|error| DfmError::Parameters(error.to_string()))?;
+    if parameters.model_version.trim().is_empty() {
+        return Err(DfmError::Parameters("the model version must be recorded".into()));
+    }
+    if parameters.sheets.is_empty() || parameters.sheets.len() > 1024 {
+        return Err(DfmError::Parameters("the flat check needs 1..=1024 sheet bodies".into()));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for sheet in &parameters.sheets {
+        if sheet.body.trim().is_empty() {
+            return Err(DfmError::Parameters(format!("sheet {} has no body name", sheet.sheet)));
+        }
+        if !seen.insert(sheet.sheet) {
+            return Err(DfmError::Parameters(format!("sheet {} is listed twice", sheet.sheet)));
+        }
+    }
+    if !parameters.tolerance_mm2.is_finite() || parameters.tolerance_mm2 <= 0.0 {
+        return Err(DfmError::Parameters("the overlap tolerance must be a finite number above 0".into()));
+    }
+    if (parameters.tolerance_mm2 - sheet_dfm::OVERLAP_AREA_TOLERANCE_MM2).abs() > f64::EPSILON {
+        return Err(DfmError::Parameters("the overlap tolerance must be the geometry's named tolerance".into()));
+    }
+    Ok(parameters)
+}
+
+/// Map an overlap's flat point back into the folded model through the panel it belongs to.
+pub fn overlap_anchor(sheet: &solidcraft_doc::sheet::SheetBody, observation: &crate::dfm::FlatOverlapObservation) -> Option<solidcore_record::Vec3> {
+    let flat = observation.flat?;
+    let piece = observation.pieces.as_ref()?.first()?;
+    let panel = match piece.as_str() {
+        "base" => None,
+        other => other.rsplit(' ').next()?.parse::<usize>().ok().map(Some)?,
+    };
+    Some(solidcraft_doc::apply_point(&sheet.world(panel), solidcore_record::Vec3::new(flat[0], flat[1], sheet.t / 2.0)))
 }
 
 /// The rule layer has no "base" sentinel: its `None` means an unknown flat, and a hole on it is

@@ -47,6 +47,20 @@ pub use skill::{
 };
 pub use store::MAX_REPORT_BYTES;
 
+/// Unix milliseconds as the contract's RFC 3339 UTC timestamp (`run.json` uses it; nothing else
+/// in a run record carries a time).
+pub fn timestamp(ms: u64) -> String {
+    ids::timestamp(ms)
+}
+
+/// The host's wall clock in Unix milliseconds, for a run's start or end time.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -953,6 +967,24 @@ impl ValidationPort {
             media_type: "application/json".into(),
         };
         Ok(ReportResult { report, reference })
+    }
+
+    /// One verified evidence artifact's bytes from a terminal run. The report is verified first,
+    /// so a caller never reads bytes the report no longer binds.
+    pub fn evidence(&self, run_id: &str, artifact_id: &str) -> Result<Vec<u8>> {
+        let verified = self.report(run_id)?;
+        let artifact = verified
+            .report
+            .checks
+            .iter()
+            .flat_map(|check| check.evidence.iter())
+            .find(|evidence| evidence.artifact_id == artifact_id)
+            .ok_or_else(|| ValidationError::not_found("no such evidence artifact in this run's report"))?;
+        let bytes = self.store.read_bounded(&self.store.evidence_path(run_id, artifact_id), self.limits.evidence_bytes)?;
+        if ids::digest(&bytes) != artifact.digest || bytes.len() as u64 != artifact.size_bytes {
+            return Err(ValidationError::report_mismatch("an evidence artifact was changed after its report"));
+        }
+        Ok(bytes)
     }
 
     fn verify_report(&self, run_id: &str, admission: &AdmissionRecord, state: &StateRecord, report: &ValidationReport) -> Result<()> {
