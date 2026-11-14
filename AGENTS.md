@@ -5,6 +5,15 @@ Intcad: independent Rust/wasm CAD; desktop-only Mastra distribution exception be
 ## Start here
 Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelled `help wanted`, `good first issue`, `needs-triage`; architecture in `docs/architecture.md`. Act when code, docs and rules settle it; ask only when user-visible.
 
+## Multi-agent development
+- **Worktrees.** Give each independent task its own native `git worktree` and branch. Do not assume a path or name. Never modify, reset, delete or clean another agent's workspace or branch.
+- **Builds.** Match checks to the change. A mutable Cargo target shared by worktrees is not trusted evidence. Send heavy regression, packaging and cross-platform validation to CI; check free space before a large local build; assume Git and Cargo, not a particular OS, filesystem, path or tool.
+- **Checkpoints.** Commit at meaningful stages. Keep long work as recoverable WIP commits pushed to the task branch. Never discard uncommitted work to free disk. Report uncommitted and unpushed work when interrupted or finished.
+- **Cleanup.** Before removing your own worktree, confirm its work is saved, no other agent uses it, and untracked or ignored files are not needed. Prefer `git worktree remove`, never recursive deletion. Reclaim only regenerable, unused build output; when unsure, keep it and say why.
+- **Resources.** Avoid concurrent heavy builds and idle caches or workspaces. Do not change system-wide settings, quotas or do system cleanup. These are behaviour rules, not enforced isolation.
+
+See [docs/agent-development.md](docs/agent-development.md) for standard commands and platform notes.
+
 ## Hard rules (what enforces each)
 - Independent: no other-product code/icons/text/templates or commercial CAD automation/data; scoped intgral-ai code only per `skills/solidcraft-ground-rules/SKILL.md`.
 - No GPL/LGPL/AGPL reading/copying/linking (OpenCASCADE, FreeCAD, SolveSpace, CadQuery, LibreCAD, QCAD) except system GTK/WebKitGTK. `cargo xtask licences --check`: Cargo only, not npm/Node or rights clearance.
