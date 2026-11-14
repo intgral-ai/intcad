@@ -71,6 +71,19 @@ export type Item =
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
   | { kind: 'notice'; text: string; error: boolean };
 
+export interface MissingAgent {
+  id: string;
+  name: string;
+  install: string;
+  /** One of the basic agents: listed although it is not installed. */
+  basic: boolean;
+  found: string | null;
+  title: string | null;
+  body: string | null;
+  /** What must be there before the install line can run (Node.js, where no npm was found). */
+  note: string | null;
+}
+
 export interface AssistantState {
   items: Item[];
   /** off, starting, ready, busy, auth, failed, exited */
@@ -97,9 +110,12 @@ export interface AssistantState {
   /** The running turn's change count, in words. */
   turn: string | null;
   /** The agents this conversation can use, and the one it uses. */
-  agents: { id: string; name: string; detail: string }[];
+  /** `hint`: what is known of an installed agent without starting it, in a word; null for one the user added. */
+  agents: { id: string; name: string; detail: string; status: string | null; hint: string | null }[];
   agent: string | null;
   detecting: boolean;
+  /** The app asks for the agent menu to be open. */
+  picking: boolean;
   running: boolean;
   /** The agent's own modes and models, when it has them; `config` replaces both when given. */
   modes: { id: string; name: string }[];
@@ -114,7 +130,12 @@ export interface AssistantState {
   notes: string[];
   /** The agent asks for a sign-in: how each of its methods is done. */
   auth: AuthMethod[] | null;
-  missing: { name: string; install: string }[];
+  /**
+   * The known agents not installed. One whose own command line is on this computer (`found`, its
+   * place) lacks only the ACP adapter `install` names. That one and a basic agent are listed as
+   * not ready, and `title`, `body` and `note` say what is missing.
+   */
+  missing: MissingAgent[];
   confirmNew: boolean;
   left: boolean;
   dark: boolean;
@@ -131,6 +152,7 @@ export type StringKey =
   | 'attachSelection' | 'pickContext' | 'modeAsk' | 'modeEdits' | 'modeAll' | 'queued' | 'viewAttached' | 'waiting'
   | 'connect' | 'disconnect' | 'retry' | 'newChat' | 'newChatConfirm' | 'cancel' | 'close' | 'minimize'
   | 'dockLeft' | 'dockRight' | 'addAgent' | 'settings' | 'switchAgent' | 'detecting' | 'noneFound' | 'notInstalled'
+  | 'notReady' | 'notReadyFound' | 'adapterMissing' | 'adapterHow'
   | 'refresh' | 'authTitle' | 'authNeeded' | 'authNone' | 'authTerminal' | 'authRetry' | 'setupTitle'
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
   | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'revalidate' | 'dropHint' | 'removeChip'
@@ -174,6 +196,7 @@ export type Action =
   | { type: 'config'; id: string; value: string }
   | { type: 'auth'; id: string }
   | { type: 'refresh' }
+  | { type: 'picker'; open: boolean }
   | { type: 'add_agent' }
   | { type: 'settings' }
   | { type: 'close' }

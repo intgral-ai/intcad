@@ -1,7 +1,10 @@
 //! Which ACP agents are installed here (desktop only). A desktop app often starts without the
 //! shell's PATH, so the usual install folders are searched too. Detection never starts a login
 //! or a session: each agent found is asked for `--version` (with a time limit), and whether it
-//! looks logged in comes only from whether its own credentials file exists.
+//! looks logged in comes only from whether its own credentials file exists. Where an agent is
+//! reached through a separate ACP adapter (Claude Code, Codex), its own command line is looked
+//! for as a file too, and never started: found without the adapter, the agent is installed and
+//! one step from working here.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -14,6 +17,9 @@ pub struct Known {
     pub name: &'static str,
     /// Program names to look for, in order of preference.
     pub programs: &'static [&'static str],
+    /// The agent's own command line, where `programs` name a separate ACP adapter for it. It is
+    /// only looked for, never started: it has no ACP mode of its own.
+    pub base: &'static [&'static str],
     /// Arguments that put it in ACP mode.
     pub args: &'static [&'static str],
     /// Its one-line install hint.
@@ -32,12 +38,14 @@ pub struct Known {
     pub reports_version: bool,
 }
 
-/// The agents shown in the picker. The first one found is the default.
+/// The agents shown in the picker, in the order the default is looked for
+/// ([`super::agents::default_of`]).
 pub const KNOWN: &[Known] = &[
     Known {
         id: "claude",
         name: "Claude Code",
         programs: &["claude-agent-acp", "claude-code-acp"],
+        base: &["claude"],
         args: &[],
         install: "npm install -g @agentclientprotocol/claude-agent-acp",
         credentials: Some(".claude/.credentials.json"),
@@ -50,6 +58,7 @@ pub const KNOWN: &[Known] = &[
         id: "codex",
         name: "Codex",
         programs: &["codex-acp"],
+        base: &["codex"],
         args: &[],
         install: "npm install -g @agentclientprotocol/codex-acp",
         credentials: Some(".codex/auth.json"),
@@ -64,6 +73,7 @@ pub const KNOWN: &[Known] = &[
         id: "antigravity",
         name: "Google Antigravity",
         programs: &["agy_acp_server.par", "agy_acp_server"],
+        base: &[],
         args: &[],
         install: "download the Antigravity ACP server for your system (see agentclientprotocol.com/registry), unzip it and put agy_acp_server.par on your PATH",
         credentials: Some(".gemini/antigravity-acp/acp_token.json"),
@@ -78,6 +88,7 @@ pub const KNOWN: &[Known] = &[
         id: "gemini",
         name: "Gemini CLI",
         programs: &["gemini"],
+        base: &[],
         args: &["--acp"],
         install: "npm install -g @google/gemini-cli",
         credentials: Some(".gemini/oauth_creds.json"),
@@ -90,6 +101,7 @@ pub const KNOWN: &[Known] = &[
         id: "opencode",
         name: "OpenCode",
         programs: &["opencode"],
+        base: &[],
         args: &["acp"],
         install: "npm install -g opencode-ai",
         credentials: Some(".local/share/opencode/auth.json"),
@@ -102,6 +114,7 @@ pub const KNOWN: &[Known] = &[
         id: "grok",
         name: "XAI Grok",
         programs: &["grok"],
+        base: &[],
         args: &["agent", "stdio"],
         install: "see https://docs.x.ai/build/overview (Grok Build installer); then run grok login",
         credentials: Some(".grok/auth.json"),
@@ -114,6 +127,7 @@ pub const KNOWN: &[Known] = &[
         id: "copilot",
         name: "GitHub Copilot CLI",
         programs: &["copilot"],
+        base: &[],
         args: &["--acp"],
         install: "npm install -g @github/copilot",
         credentials: None,
@@ -126,6 +140,7 @@ pub const KNOWN: &[Known] = &[
         id: "qwen",
         name: "Qwen Code",
         programs: &["qwen"],
+        base: &[],
         args: &["--acp"],
         install: "npm install -g @qwen-code/qwen-code",
         credentials: Some(".qwen/oauth_creds.json"),
@@ -138,6 +153,7 @@ pub const KNOWN: &[Known] = &[
         id: "goose",
         name: "goose",
         programs: &["goose"],
+        base: &[],
         args: &["acp"],
         install: "see block.github.io/goose (installer script or Homebrew)",
         credentials: None,
@@ -150,6 +166,7 @@ pub const KNOWN: &[Known] = &[
         id: "vibe",
         name: "Mistral Vibe",
         programs: &["vibe-acp"],
+        base: &[],
         args: &[],
         install: "uv tool install mistral-vibe",
         // Vibe may keep its sign-in in the OS keyring. Let it report whether it needs auth.
@@ -159,7 +176,43 @@ pub const KNOWN: &[Known] = &[
         retired: false,
         reports_version: true,
     },
+    // The two below were checked on 2026-11-13 with a real ACP `initialize` on macOS, with the
+    // command lines the ACP registry lists for them: Kimi Code 0.27.0 and Factory Droid 0.121.0,
+    // each as its maker's installer put it there, answered with protocol version 1. Older copies
+    // were not tried. Neither login file is looked at: each program says in ACP whether it needs
+    // a sign-in.
+    Known {
+        id: "kimi",
+        name: "Kimi Code",
+        programs: &["kimi"],
+        base: &[],
+        args: &["acp"],
+        install: "see moonshotai.github.io/kimi-code (installer script)",
+        credentials: None,
+        config_dir_var: None,
+        key_vars: &[],
+        retired: false,
+        reports_version: true,
+    },
+    Known {
+        id: "droid",
+        name: "Factory Droid",
+        programs: &["droid"],
+        base: &[],
+        args: &["exec", "--output-format", "acp-daemon"],
+        install: "see docs.factory.com/cli/getting-started/quickstart (installer script, Homebrew or npm)",
+        credentials: None,
+        config_dir_var: None,
+        key_vars: &["FACTORY_API_KEY"],
+        retired: false,
+        reports_version: true,
+    },
 ];
+
+/// The agents the picker always lists, found or not, each with whether it is installed and the
+/// step that is missing when it is not. Each was connected to from this app with a real ACP
+/// `initialize`. The other known agents are listed once they are found.
+pub const BASIC: &[&str] = &["claude", "codex", "opencode", "kimi"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Login {
@@ -190,6 +243,11 @@ pub struct Missing {
     pub id: &'static str,
     pub name: &'static str,
     pub install: &'static str,
+    /// Where the agent's own command line is, when that is installed and only the ACP adapter
+    /// `install` names is not.
+    pub base: Option<PathBuf>,
+    /// One of [`BASIC`]: the picker lists it although it is not installed.
+    pub basic: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -212,7 +270,17 @@ pub struct Detection {
     pub found: Vec<Found>,
     /// Known agents not found.
     pub missing: Vec<Missing>,
+    /// Whether `npm` was found: the install lines that begin with `npm` assume Node.js is here.
+    pub npm: bool,
     pub took_ms: u64,
+}
+
+impl Missing {
+    /// Whether its install line cannot be run as it stands: it is an `npm` line and no npm was
+    /// found, as on a computer where the agent came from its own installer and Node.js never did.
+    pub fn needs_node(&self, detection: &Detection) -> bool {
+        !detection.npm && self.install.starts_with("npm ")
+    }
 }
 
 /// What the Codex ACP path can do on this machine. Codex is discovered, never bundled: a missing
@@ -264,9 +332,10 @@ fn home() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
-/// PATH, then the usual places npm, Homebrew, nvm, Volta, bun, pipx and Grok put commands, and on
-/// Windows Node's own install folders: a launcher can start SolidCraft with a PATH that lacks
-/// them, and an npm agent's `.cmd` shim then can't find `node` (#9297).
+/// PATH, then the usual places npm, Homebrew, nvm, Volta, bun, pipx and Grok put commands, the
+/// folders the installers of Kimi Code and OpenCode use, and on Windows Node's own install
+/// folders: a launcher can start SolidCraft with a PATH that lacks them, and an npm agent's
+/// `.cmd` shim then can't find `node` (#9297).
 pub fn search_dirs() -> Vec<PathBuf> {
     search_dirs_in(&|name| std::env::var_os(name), cfg!(windows))
 }
@@ -278,7 +347,18 @@ fn search_dirs_in(var: &dyn Fn(&str) -> Option<OsString>, windows: bool) -> Vec<
         dirs.push(if windows { prefix.clone() } else { prefix.join("bin") });
     }
     if let Some(h) = var(if windows { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).filter(|p| p.is_absolute()) {
-        for d in [".local/bin", ".npm-global/bin", ".npm-packages/bin", ".volta/bin", ".bun/bin", ".cargo/bin", ".grok/bin", "bin"] {
+        for d in [
+            ".local/bin",
+            ".npm-global/bin",
+            ".npm-packages/bin",
+            ".volta/bin",
+            ".bun/bin",
+            ".cargo/bin",
+            ".grok/bin",
+            ".kimi-code/bin",
+            ".opencode/bin",
+            "bin",
+        ] {
             dirs.push(h.join(d));
         }
         // nvm: every installed Node version's bin.
@@ -309,8 +389,19 @@ fn search_dirs_in(var: &dyn Fn(&str) -> Option<OsString>, windows: bool) -> Vec<
 
 /// The first `program` in `dirs` (on Windows with `.exe`/`.cmd`/`.bat`).
 pub fn find_in(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let names = names_for(program, cfg!(windows));
+    find_as(program, dirs, cfg!(windows))
+}
+
+/// [`find_in`] by Windows' names or not: adapters and the agents' own command lines are both
+/// looked for through this.
+fn find_as(program: &str, dirs: &[PathBuf], windows: bool) -> Option<PathBuf> {
+    let names = names_for(program, windows);
     dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
+}
+
+/// Where `known`'s own command line is, when its ACP adapter is a separate program. Never started.
+fn base_of(known: &Known, dirs: &[PathBuf], windows: bool) -> Option<PathBuf> {
+    known.base.iter().find_map(|program| find_as(program, dirs, windows))
 }
 
 /// The file names `program` can have. On Windows only ones it can run: npm puts a Unix shell
@@ -515,11 +606,17 @@ pub fn detect() -> Detection {
 
 fn detect_in(dirs: &[PathBuf], home: Option<&Path>, limit: Duration) -> Detection {
     let t0 = Instant::now();
-    let mut d = Detection::default();
+    let mut d = Detection { npm: find_in("npm", dirs).is_some(), ..Detection::default() };
     for k in KNOWN {
         let Some(path) = k.programs.iter().find_map(|p| find_in(p, dirs)) else {
             if !k.retired {
-                d.missing.push(Missing { id: k.id, name: k.name, install: k.install });
+                d.missing.push(Missing {
+                    id: k.id,
+                    name: k.name,
+                    install: k.install,
+                    base: base_of(k, dirs, cfg!(windows)),
+                    basic: BASIC.contains(&k.id),
+                });
             }
             continue;
         };
@@ -927,6 +1024,191 @@ mod tests {
         assert_eq!(found.version.as_deref(), Some("3.0.4"));
         assert_eq!(found.problem, None);
         assert!(!installed.missing.iter().any(|agent| agent.id == "vibe"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Kimi Code and Factory Droid are general command lines with an ACP mode of their own: each
+    /// is offered for install while missing, and once on the search path it is started with the
+    /// arguments that put it in ACP mode.
+    #[test]
+    fn kimi_code_and_factory_droid_are_offered_and_started_in_their_acp_modes() {
+        for (id, program, version, install, acp) in [
+            ("kimi", "kimi", "0.27.0", "see moonshotai.github.io/kimi-code (installer script)", &["acp"][..]),
+            (
+                "droid",
+                "droid",
+                "0.121.0",
+                "see docs.factory.com/cli/getting-started/quickstart (installer script, Homebrew or npm)",
+                &["exec", "--output-format", "acp-daemon"][..],
+            ),
+        ] {
+            let root = std::env::temp_dir().join(format!("sc-agent-{id}-{}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let detect = || detect_in(std::slice::from_ref(&root), None, PROBE_LIMIT);
+            let uninstalled = detect();
+            assert_eq!(uninstalled.missing.iter().find(|agent| agent.id == id).unwrap().install, install);
+
+            let path = if cfg!(windows) { root.join(format!("{program}.cmd")) } else { root.join(program) };
+            let script = if cfg!(windows) {
+                format!("@echo off\r\nif \"%1\"==\"--version\" echo {version}\r\n")
+            } else {
+                format!("#!/bin/sh\n[ \"$1\" = --version ] && echo {version}\n")
+            };
+            std::fs::write(&path, script).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let installed = detect();
+            let found = installed.found.iter().find(|agent| agent.id == id).unwrap();
+            let mut argv = vec![path.to_string_lossy().into_owned()];
+            argv.extend(acp.iter().map(|a| a.to_string()));
+            assert_eq!(found.argv, argv);
+            assert_eq!(found.version.as_deref(), Some(version));
+            assert_eq!(found.problem, None);
+            assert!(!installed.missing.iter().any(|agent| agent.id == id));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    /// Started from the Dock or a desktop launcher, the app gets a PATH without the folders that
+    /// the installers of Kimi Code and OpenCode add to a shell's PATH. They are searched anyway.
+    #[test]
+    fn the_install_folders_of_kimi_code_and_opencode_are_searched_without_them_on_the_path() {
+        let home = std::env::temp_dir().join(format!("sc-agent-home-{}", std::process::id()));
+        let env = |name: &str| -> Option<OsString> {
+            match name {
+                "PATH" => Some("/usr/bin:/bin".into()),
+                "HOME" => Some(home.clone().into()),
+                _ => None,
+            }
+        };
+        let dirs = search_dirs_in(&env, false);
+        for folder in [".kimi-code/bin", ".opencode/bin"] {
+            assert!(dirs.contains(&home.join(folder)), "{folder} in {dirs:?}");
+        }
+        assert_eq!(dirs.first(), Some(&PathBuf::from("/usr/bin")), "the PATH the app was given still comes first");
+    }
+
+    /// Claude Code and Codex have no ACP mode of their own: each is reached through a separate
+    /// adapter. With only the agent's own command line on the search path it stays missing, with
+    /// the place of that command line, so the picker can say one step is left; the command line
+    /// itself is never started. With the adapter beside it, it is a found agent like any other.
+    #[test]
+    fn a_command_line_without_its_acp_adapter_is_missing_and_never_started() {
+        for (id, own, adapter) in [("claude", "claude", "claude-agent-acp"), ("codex", "codex", "codex-acp")] {
+            let root = std::env::temp_dir().join(format!("sc-agent-base-{id}-{}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let detect = || detect_in(std::slice::from_ref(&root), None, PROBE_LIMIT);
+            let install = |program: &str, unix: String, windows: String| {
+                let path = if cfg!(windows) { root.join(format!("{program}.cmd")) } else { root.join(program) };
+                std::fs::write(&path, if cfg!(windows) { windows } else { unix }).unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                path
+            };
+            assert_eq!(detect().missing.iter().find(|agent| agent.id == id).unwrap().base, None);
+
+            // Its own command line leaves a file behind whenever it is started.
+            let started = root.join("started");
+            let own_path = install(
+                own,
+                format!("#!/bin/sh\necho x > '{}'\n", started.display()),
+                format!("@echo off\r\necho x > \"{}\"\r\n", started.display()),
+            );
+            let only_own = detect();
+            let missing = only_own.missing.iter().find(|agent| agent.id == id).unwrap();
+            assert_eq!(missing.base.as_deref(), Some(own_path.as_path()));
+            assert!(!only_own.found.iter().any(|agent| agent.id == id), "{id} was listed as working without its adapter");
+
+            let adapter_path = install(
+                adapter,
+                "#!/bin/sh\n[ \"$1\" = --version ] && echo 1.2.3\n".to_string(),
+                "@echo off\r\nif \"%1\"==\"--version\" echo 1.2.3\r\n".to_string(),
+            );
+            let both = detect();
+            let found = both.found.iter().find(|agent| agent.id == id).unwrap();
+            assert_eq!(found.argv, [adapter_path.to_string_lossy().into_owned()]);
+            assert_eq!(found.version.as_deref(), Some("1.2.3"));
+            assert!(!both.missing.iter().any(|agent| agent.id == id));
+            assert!(!started.exists(), "{id}'s own command line was started");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        // An agent whose program is its own ACP mode has no separate command line to look for.
+        for known in KNOWN {
+            assert_eq!(known.base.is_empty(), !matches!(known.id, "claude" | "codex"), "{}", known.id);
+        }
+    }
+
+    /// The picker's fixed list names agents this app knows how to start, none of them retired, and
+    /// on a computer with none of them each is missing and marked as one the picker still lists.
+    #[test]
+    fn the_basic_agents_are_known_and_listed_while_missing() {
+        for id in BASIC {
+            let known = KNOWN.iter().find(|known| known.id == *id);
+            assert!(known.is_some_and(|known| !known.retired), "{id}");
+        }
+        let root = std::env::temp_dir().join(format!("sc-agent-basic-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let none = detect_in(std::slice::from_ref(&root), None, PROBE_LIMIT);
+        let basic: Vec<&str> = none.missing.iter().filter(|agent| agent.basic).map(|agent| agent.id).collect();
+        assert_eq!(basic, BASIC);
+        assert!(none.missing.iter().any(|agent| !agent.basic), "the other known agents are missing too, and not listed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The agents' own command lines are found by the names adapters are found by. npm on Windows
+    /// puts a Unix shell script with the bare name beside the `.cmd` shim: Windows cannot run
+    /// that, so the shim is what is found, a native installer's `.exe` likewise, and a folder with
+    /// only the bare file holds nothing for Windows. Elsewhere the bare name is the program.
+    #[test]
+    fn an_agents_own_command_line_is_found_by_its_windows_names_on_windows() {
+        let root = std::env::temp_dir().join(format!("sc-agent-base-names-{}", std::process::id()));
+        let (npm, native, bare) = (root.join("npm"), root.join("native"), root.join("bare"));
+        for dir in [&npm, &native, &bare] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        for file in
+            [npm.join("claude"), npm.join("claude.cmd"), native.join("claude.exe"), bare.join("claude"), npm.join("codex"), npm.join("codex.cmd")]
+        {
+            std::fs::write(file, "").unwrap();
+        }
+        let known = |id: &str| KNOWN.iter().find(|known| known.id == id).unwrap();
+        let (claude, codex) = (known("claude"), known("codex"));
+        let dirs = |dir: &PathBuf| std::slice::from_ref(dir).to_vec();
+        assert_eq!(base_of(claude, &dirs(&npm), true), Some(npm.join("claude.cmd")));
+        assert_eq!(base_of(codex, &dirs(&npm), true), Some(npm.join("codex.cmd")));
+        assert_eq!(base_of(claude, &dirs(&native), true), Some(native.join("claude.exe")));
+        assert_eq!(base_of(claude, &dirs(&bare), true), None, "Windows cannot run the bare script");
+        assert_eq!(base_of(claude, &dirs(&npm), false), Some(npm.join("claude")));
+        assert_eq!(base_of(claude, &dirs(&bare), false), Some(bare.join("claude")));
+        assert_eq!(base_of(claude, &dirs(&native), false), None);
+        // An agent with no separate adapter has nothing to look for, whatever lies in the folder.
+        std::fs::write(npm.join("opencode.cmd"), "").unwrap();
+        assert_eq!(base_of(known("opencode"), &dirs(&npm), true), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Most install lines begin with `npm`. Whether npm is here is noted, so a line that cannot be
+    /// run as it stands can say that Node.js comes first; a line that is not npm's needs no note.
+    #[test]
+    fn a_missing_npm_is_noted_for_the_install_lines_that_need_it() {
+        let root = std::env::temp_dir().join(format!("sc-agent-npm-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let detect = || detect_in(std::slice::from_ref(&root), None, PROBE_LIMIT);
+        let without = detect();
+        assert!(!without.npm);
+        let missing = |d: &Detection, id: &str| d.missing.iter().find(|agent| agent.id == id).cloned().unwrap();
+        assert!(missing(&without, "claude").needs_node(&without) && missing(&without, "codex").needs_node(&without));
+        assert!(!missing(&without, "vibe").needs_node(&without), "uv installs it, not npm");
+        std::fs::write(root.join(if cfg!(windows) { "npm.cmd" } else { "npm" }), "").unwrap();
+        let with = detect();
+        assert!(with.npm);
+        assert!(!missing(&with, "claude").needs_node(&with));
         std::fs::remove_dir_all(root).unwrap();
     }
 

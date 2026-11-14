@@ -62,6 +62,8 @@ with SolidCraft, the user installs the agent.
 | Gemini CLI (retired) | `gemini --acp` | `@google/gemini-cli` 0.64, Apache-2.0 | `--version` | Google ended it for consumer accounts on 2026-06-18 in favour of Antigravity. Still found when installed (enterprise licences may keep it working) but no longer offered for install. Its own login `~/.gemini/oauth_creds.json` or a key in the environment. |
 | OpenCode | built in: `opencode acp` | `opencode-ai` 1.19, MIT | `--version` | Its own providers' logins (`~/.local/share/opencode/auth.json`) or keys in the environment. |
 | Mistral Vibe | `uv tool install mistral-vibe`, then `vibe-acp` over stdio | Apache-2.0 | `vibe-acp --version` | Vibe's ACP sign-in or `vibe --setup`. Vibe keeps credentials in its keyring or `~/.vibe/.env` and accepts `MISTRAL_API_KEY`. |
+| Kimi Code | built in: `kimi acp` | Moonshot's installer script (the ACP registry also names the npm package `@moonshot-ai/kimi-code`, MIT, which was not tried); installed separately | `kimi --version` prints `0.27.0` (checked 2026-11-13 on macOS with a real ACP `initialize`: protocol version 1) | Its own sign-in, which it offers in ACP (method `login`). No login file is looked at. |
+| Factory Droid | built in: `droid exec --output-format acp-daemon` | Factory's installer (the ACP registry also names the npm package `droid`, proprietary, which was not tried); installed separately | `droid --version` prints `0.121.0` (checked 2026-11-13 on macOS with a real ACP `initialize`: protocol version 1) | Device pairing or `FACTORY_API_KEY`, both offered in ACP. No login file is looked at. |
 | XAI Grok | built in: `grok agent stdio` | [Grok Build](https://github.com/xai-org/grok-build), Apache-2.0; installed separately | `grok --version` prints `grok 1.0.58 (…) [alpha]` (checked 2026-10-15; in-app connection also checked with 1.0.60) | Its own `~/.grok/auth.json` or `XAI_API_KEY`. `grok login` signs in in the browser; ACP advertises `cached_token` and `grok.com` authentication methods. |
 | Others in the ACP registry | `copilot --acp`, `qwen --acp`, `opencode acp`, `goose acp`, `cline --acp`, `kimi acp`, … | mixed; several are proprietary, one is GPL and one AGPL (we only start them as programs, never link them) | `--version` | each its own |
 
@@ -245,6 +247,16 @@ killed, the agent sees its stdin close and ends with its helpers.
 As before, plus key variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …)
 reported as *key set*, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` respected, and OpenCode's
 `~/.local/share/opencode/auth.json`. Nothing is started except `--version`.
+
+Claude Code and Codex are reached through a separate adapter, so "installed" has two parts.
+Discovery also looks for the agent's own command line (`claude`, `codex`) as a file, without
+starting it, and records its place on the missing entry (`Missing::base`): the agent menu then
+lists it as not ready, with the adapter's install line, instead of leaving it out. Four agents
+(`discover::BASIC`) are always listed, each row with what is known of it without starting it,
+and discovery runs again each time the panel opens. The default
+agent is the first that can be expected to work (`agents::default_of`): a retired agent and one
+whose `--version` check failed are passed over while another agent can be. Whether a found
+program speaks ACP at all is still not checked before the first connection.
 
 ### Panel
 

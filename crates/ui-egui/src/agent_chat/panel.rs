@@ -133,13 +133,15 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         request_new_chat(app);
     }
     if !app.agent_chat.open {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.agent_chat.seen_open = false;
+        }
         return;
     }
-    // Look for installed agents the first time the panel opens (in the background).
+    // Look for installed agents each time the panel opens (in the background).
     #[cfg(not(target_arch = "wasm32"))]
-    if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
-        refresh(app, &ctx);
-    }
+    look_on_open(app, &ctx);
     if Container::for_layout(app.ui.layout, Surface::Panel).floating() {
         floating(app, ui);
         show_drop_hint(app, &ctx);
@@ -1574,10 +1576,14 @@ fn agent_list(app: &mut SolveApp, ui: &mut egui::Ui) {
     if flatpak_hint {
         no_agents(ui);
     }
-    let missing: Vec<discover::Missing> = app.agent_chat.detection.as_ref().map(|d| d.missing.clone()).unwrap_or_default();
+    let detection = app.agent_chat.detection.clone().unwrap_or_default();
+    let mut missing: Vec<discover::Missing> = detection.missing.clone();
+    // An agent whose own command line is here lacks only its ACP adapter: it comes first, and says so.
+    missing.sort_by_key(|m| m.base.is_none());
     if !missing.is_empty() {
         let heading = if all.is_empty() && !flatpak_hint { tr("ui.agent_chat_none_found") } else { tr("ui.agent_chat_not_installed") };
-        ui_kit::section(ui, "sc_agent_missing", heading, all.is_empty(), |ui| {
+        let open = all.is_empty() || missing.iter().any(|m| m.base.is_some());
+        ui_kit::section(ui, "sc_agent_missing", heading, open, |ui| {
             for m in missing {
                 ui.horizontal(|ui| {
                     ui_kit::text(ui, m.name, ui_kit::Text::Inline);
@@ -1585,6 +1591,13 @@ fn agent_list(app: &mut SolveApp, ui: &mut egui::Ui) {
                         ui.ctx().copy_text(m.install.to_string());
                     }
                 });
+                if let Some(program) = &m.base {
+                    let body = trf("ui.agent_chat_adapter_body", &[("agent", m.name), ("program", &program.display().to_string())]);
+                    ui_kit::text(ui, &body, ui_kit::Text::Note(m.id));
+                    if m.needs_node(&detection) {
+                        ui_kit::text(ui, tr("ui.agent_chat_adapter_needs_node"), ui_kit::Text::Note(&format!("{}_needs_node", m.id)));
+                    }
+                }
                 ui_kit::text(ui, m.install, ui_kit::Text::Report(m.name, false));
             }
         });

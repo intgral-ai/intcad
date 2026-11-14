@@ -362,10 +362,42 @@ pub fn state(app: &mut SolveApp) -> String {
             })
             .collect::<Vec<_>>()
     });
+    // The known agents not installed. One whose own command line is here (`found`) lacks only its
+    // ACP adapter: the page lists it as not ready, and says so in these words.
     let missing: Vec<Value> = chat
         .detection
         .as_ref()
-        .map(|found| found.missing.iter().map(|agent| json!({"name": agent.name, "install": agent.install})).collect())
+        .map(|found| {
+            found
+                .missing
+                .iter()
+                .map(|agent| {
+                    let program = agent.base.as_ref().map(|path| path.display().to_string());
+                    // What the page says of one it lists: its own command line is here and only the
+                    // adapter is not, or it is one of the basic agents and not installed at all.
+                    let (title, body) = match &program {
+                        Some(program) => (
+                            Some(trf("ui.agent_chat_adapter_title", &[("agent", agent.name)])),
+                            Some(trf("ui.agent_chat_adapter_body", &[("agent", agent.name), ("program", program)])),
+                        ),
+                        None if agent.basic => (
+                            Some(trf("ui.agent_chat_install_title", &[("agent", agent.name)])),
+                            Some(trf("ui.agent_chat_install_body", &[("agent", agent.name)])),
+                        ),
+                        None => (None, None),
+                    };
+                    json!({
+                        "id": agent.id, "name": agent.name, "install": agent.install,
+                        "basic": agent.basic,
+                        // The line is npm's and there is no npm here: Node.js comes first.
+                        "note": (title.is_some() && agent.needs_node(found)).then(|| tr("ui.agent_chat_adapter_needs_node")),
+                        "title": title,
+                        "body": body,
+                        "found": program,
+                    })
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let strings: serde_json::Map<String, Value> = [
         ("placeholder", "ui.agent_chat_placeholder"),
@@ -416,6 +448,10 @@ pub fn state(app: &mut SolveApp) -> String {
         ("detecting", "ui.agent_chat_detecting"),
         ("noneFound", "ui.agent_chat_none_found_short"),
         ("notInstalled", "ui.agent_chat_not_installed"),
+        ("notReady", "ui.agent_chat_not_ready"),
+        ("notReadyFound", "ui.agent_chat_not_ready_found"),
+        ("adapterMissing", "ui.agent_chat_adapter_missing"),
+        ("adapterHow", "ui.agent_chat_adapter_how"),
         ("refresh", "ui.agent_chat_refresh"),
         ("authTitle", "ui.agent_chat_auth_title"),
         ("authNeeded", "ui.agent_chat_auth_needed"),
@@ -478,9 +514,27 @@ pub fn state(app: &mut SolveApp) -> String {
         "skill": chat.skill.id(),
         "skills": skill::Skill::ALL.iter().map(|skill| json!({"id": skill.id(), "title": skill.title()})).collect::<Vec<_>>(),
         "turn": turn,
-        "agents": entries.iter().map(|entry| json!({"id": entry.id, "name": entry.name, "detail": entry.detail()})).collect::<Vec<_>>(),
+        "agents": entries
+            .iter()
+            .map(|entry| {
+                // What is known of an installed agent without starting it, in a word beside its name.
+                let hint = entry.status().map(|status| {
+                    tr(match status {
+                        "does_not_start" => "ui.agent_chat_does_not_start",
+                        "retired" => "ui.agent_chat_retired",
+                        "signed_in" => "ui.agent_chat_signed_in",
+                        "signed_out" => "ui.agent_chat_not_signed_in",
+                        _ => "ui.agent_chat_installed",
+                    })
+                });
+                json!({"id": entry.id, "name": entry.name, "detail": entry.detail(), "status": entry.status(), "hint": hint})
+            })
+            .collect::<Vec<_>>(),
         "agent": current.as_ref().map(|entry| entry.id.clone()),
         "detecting": chat.detecting.is_some(),
+        // The agent menu is asked for: by `ui.agent_chat {"picker": true}`, or by a Connect that
+        // found no agent to start.
+        "picking": chat.picking == Some(true),
         "running": state.running(),
         "modes": if modern { Vec::new() } else { chat.modes.iter().map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>() },
         "mode": chat.mode,
@@ -512,7 +566,8 @@ pub fn state(app: &mut SolveApp) -> String {
 /// `pick_context`, `remove_picked` (`index`, `label`), `add_file`, `paste_picture`, `remove_file`
 /// (`index`), `skill` (`id`). The agent: `agent` (`id`, one of the listed agents), `connect`,
 /// `disconnect`, `agent_mode` (`id`), `model` (`id`), `custom_model` (`text`), `config` (`id`,
-/// `value`), `auth` (`id`), `refresh`, `add_agent`, `settings`. The panel: `close`, `minimize`,
+/// `value`), `auth` (`id`), `refresh`, `picker` (`open`: the page's agent menu opened or closed, so
+/// an opening the host asked for is not asked again), `add_agent`, `settings`. The panel: `close`, `minimize`,
 /// `side` (`left`); the page cannot move the Assistant to a window of its own. And `surface`
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
@@ -754,6 +809,11 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             app.agent_chat.authenticate(id);
         }
         "refresh" => refresh(app, ctx),
+        // The page's agent menu opened or closed: an opening the host asked for is spent.
+        "picker" => {
+            let open = action.get("open").and_then(Value::as_bool).ok_or("picker: no open")?;
+            app.agent_chat.picking = Some(open);
+        }
         "add_agent" => settings::open_add(app),
         "settings" => crate::prefs::open_at(app, crate::prefs::PAGE_ASSISTANT),
         "close" => app.agent_chat.open = false,
