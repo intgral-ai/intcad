@@ -303,6 +303,7 @@ fn override_summary(over: &Override) -> crate::schema::project::OverrideSummary 
             OverrideLimit::Min => "min".into(),
             OverrideLimit::Max => "max".into(),
         },
+        old: over.old.clone(),
         value: over.value.clone(),
         reason: over.reason.clone(),
         by: over.by.clone(),

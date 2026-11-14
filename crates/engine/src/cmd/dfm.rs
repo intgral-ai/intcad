@@ -52,6 +52,15 @@ fn set_override(s: &mut Session, p: &Value) -> Result<Value> {
         if !RULE_ORDER.contains(&rule.as_str()) || rule.contains("gate_") {
             return Err(bad("dfm.override", format!("`{rule}` is not a rule this project can override")));
         }
+        let old = params.old.filter(|old| !old.is_empty()).ok_or_else(|| bad("dfm.override", "an override needs the number it replaces (`old`)"))?;
+        for (name, number) in &old {
+            if !matches!(name.as_str(), "mm" | "t" | "r" | "d" | "b") {
+                return Err(bad("dfm.override", format!("`{name}` is not a limit input; use mm, t, r, d or b")));
+            }
+            if !number.is_finite() {
+                return Err(bad("dfm.override", "the old value must be a finite number"));
+            }
+        }
         let value = params
             .value
             .filter(|value| !value.is_empty())
@@ -73,7 +82,7 @@ fn set_override(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("dfm.override", "an override needs the name of who asked for it"));
         }
         overrides.retain(|over| !(over.rule == rule && over.limit == limit));
-        overrides.push(Override { rule, limit, value, reason, by, date: params.date.unwrap_or_default() });
+        overrides.push(Override { rule, limit, old, value, reason, by, date: params.date.unwrap_or_default() });
     }
     project.set_overrides(overrides).map_err(|error| bad("dfm.override", error.to_string()))?;
     let reply = OverridesReply {
@@ -87,6 +96,7 @@ fn set_override(s: &mut Session, p: &Value) -> Result<Value> {
                     OverrideLimit::Min => "min".into(),
                     OverrideLimit::Max => "max".into(),
                 },
+                old: over.old.clone(),
                 value: over.value.clone(),
                 reason: over.reason.clone(),
                 by: over.by.clone(),

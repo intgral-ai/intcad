@@ -439,7 +439,7 @@ fn an_override_is_advisory_until_an_independently_confirmed_row_replaces_it() {
     let ci = project.folder().join(CI);
     let text = read(&ci).replace(
         "[checks]",
-        "[[override]]\nrule = \"sm.hole_min_diameter\"\nlimit = \"min\"\nvalue = { mm = 2.5 }\nreason = \"customer drawing\"\nby = \"Zhang\"\ndate = \"2026-11-14\"\n\n[checks]",
+        "[[override]]\nrule = \"sm.hole_min_diameter\"\nlimit = \"min\"\nold = { mm = 3.0 }\nvalue = { mm = 2.5 }\nreason = \"customer drawing\"\nby = \"Zhang\"\ndate = \"2026-11-14\"\n\n[checks]",
     );
     fs::write(&ci, text).expect("write override");
     let with_override = Project::open(project.root()).expect("open").freeze().expect("freeze");
@@ -475,14 +475,43 @@ fn an_override_without_a_reason_or_a_name_is_refused() {
     let ci = made.project.folder().join(CI);
     let before = read(&ci);
     for params in [
-        serde_json::json!({"rule":"sm.hole_min_diameter","value":{"mm":2.5},"by":"Zhang"}),
-        serde_json::json!({"rule":"sm.hole_min_diameter","value":{"mm":2.5},"reason":"drawing"}),
-        serde_json::json!({"rule":"sm.hole_min_diameter","value":{"mm":2.5},"reason":" ","by":" "}),
+        serde_json::json!({"rule":"sm.hole_min_diameter","old":{"mm":3.0},"value":{"mm":2.5},"by":"Zhang"}),
+        serde_json::json!({"rule":"sm.hole_min_diameter","old":{"mm":3.0},"value":{"mm":2.5},"reason":"drawing"}),
+        serde_json::json!({"rule":"sm.hole_min_diameter","old":{"mm":3.0},"value":{"mm":2.5},"reason":" ","by":" "}),
     ] {
         let error = s.execute("dfm.override", &params).expect_err("refused");
         let text = error.to_string();
         assert!(text.contains("reason") || text.contains("name"), "{text}");
     }
     assert_eq!(read(&ci), before, "a refused override writes nothing");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Freeze does not decide a body's thickness: without a declared thickness the selected table is
+/// usable, and a declared one selects the tier. The per-sheet gate belongs to C.
+#[test]
+fn freeze_leaves_per_body_thickness_to_the_sheet() {
+    let dir = scratch("freeze-thickness");
+    let made = create(&dir, "Shop", "Shop").expect("create");
+    let mut project = made.project.clone();
+    choose_shop(&mut project);
+    project.update_settings(None, Some("5052-H32".into()), None, None).expect("process and material");
+
+    // No declared thickness: a native body may use its own, so the copy is not "unavailable".
+    let per_body = project.freeze().expect("freeze");
+    assert!(per_body.shop.is_some());
+    assert_eq!(per_body.data.unavailable, None, "a missing declaration is not a data problem");
+
+    // A declared 2.0 mm picks the upper tier and is covered.
+    project.update_settings(None, None, Some(Some(2.0)), None).expect("thickness");
+    let two = project.freeze().expect("freeze");
+    assert_eq!(two.data.unavailable, None);
+    assert_eq!(rule_value(&two, "sm.hole_min_diameter", 2.0), 3.5);
+
+    // A declared thickness outside every tier says "not covered", but still does not switch tables.
+    project.update_settings(None, None, Some(Some(4.0)), None).expect("thickness");
+    let uncovered = project.freeze().expect("freeze");
+    assert!(uncovered.shop.is_some(), "the selected table stays selected");
+    assert!(uncovered.data.unavailable.as_deref().is_some_and(|why| why.contains("thickness")), "{:?}", uncovered.data.unavailable);
     let _ = fs::remove_dir_all(&dir);
 }

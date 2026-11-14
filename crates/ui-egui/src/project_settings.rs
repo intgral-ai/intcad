@@ -24,6 +24,7 @@ pub struct ProjectSettings {
     pub data_unavailable: Option<String>,
     pub overrides: Vec<Row>,
     pub new_rule: String,
+    pub new_old: String,
     pub new_value: String,
     pub new_reason: String,
     pub new_by: String,
@@ -37,6 +38,7 @@ pub struct ProjectSettings {
 pub struct Row {
     pub rule: String,
     pub limit: String,
+    pub old: String,
     pub value: String,
     pub reason: String,
     pub by: String,
@@ -56,6 +58,10 @@ impl ProjectSettings {
                     .map(|over| Row {
                         rule: text(&over["rule"]),
                         limit: text(&over["limit"]),
+                        old: over["old"]
+                            .as_object()
+                            .map(|values| values.iter().map(|(name, number)| format!("{name} {number}")).collect::<Vec<_>>().join(", "))
+                            .unwrap_or_default(),
                         value: over["value"]
                             .as_object()
                             .map(|values| values.iter().map(|(name, number)| format!("{name} {number}")).collect::<Vec<_>>().join(", "))
@@ -82,6 +88,7 @@ impl ProjectSettings {
             data_unavailable: ci["dataUnavailable"].as_str().map(str::to_string),
             overrides,
             new_rule: String::new(),
+            new_old: String::new(),
             new_value: String::new(),
             new_reason: String::new(),
             new_by: String::new(),
@@ -93,10 +100,17 @@ impl ProjectSettings {
 
     fn reload(&mut self, reply: &Value) {
         let fresh = Self::from_reply(reply);
-        let (new_rule, new_value, new_reason, new_by, new_date) =
-            (self.new_rule.clone(), self.new_value.clone(), self.new_reason.clone(), self.new_by.clone(), self.new_date.clone());
+        let (new_rule, new_old, new_value, new_reason, new_by, new_date) = (
+            self.new_rule.clone(),
+            self.new_old.clone(),
+            self.new_value.clone(),
+            self.new_reason.clone(),
+            self.new_by.clone(),
+            self.new_date.clone(),
+        );
         *self = fresh;
-        (self.new_rule, self.new_value, self.new_reason, self.new_by, self.new_date) = (new_rule, new_value, new_reason, new_by, new_date);
+        (self.new_rule, self.new_old, self.new_value, self.new_reason, self.new_by, self.new_date) =
+            (new_rule, new_old, new_value, new_reason, new_by, new_date);
     }
 }
 
@@ -197,7 +211,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             for row in dialog.overrides.clone() {
                 ui_kit::label_actions(
                     ui,
-                    &format!("{} ({}): {} — {} / {} {}", row.rule, row.limit, row.value, row.reason, row.by, row.date),
+                    &format!("{} ({}): {} → {} — {} / {} {}", row.rule, row.limit, row.old, row.value, row.reason, row.by, row.date),
                     |ui| {
                         if ui_kit::button(ui, crate::i18n::tr_label("Remove"), ui_kit::Button::Normal).clicked() {
                             remove = Some(row.clone());
@@ -209,7 +223,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 ui_kit::row(ui, crate::i18n::tr_label("Rule"), |ui| {
                     let _ = ui_kit::text_field(ui, &mut dialog.new_rule, "sm.hole_to_edge");
                 });
-                ui_kit::row(ui, crate::i18n::tr_label("Value"), |ui| {
+                ui_kit::row(ui, crate::i18n::tr_label("From"), |ui| {
+                    let _ = ui_kit::text_field(ui, &mut dialog.new_old, "3.0");
+                });
+                ui_kit::row(ui, crate::i18n::tr_label("New"), |ui| {
                     let _ = ui_kit::text_field(ui, &mut dialog.new_value, "2.5");
                 });
                 ui_kit::row(ui, crate::i18n::tr("project_settings.reason"), |ui| {
@@ -258,8 +275,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if add {
         let value = dialog.new_value.trim().parse::<f64>();
-        match value {
-            Ok(mm) => {
+        let old = dialog.new_old.trim().parse::<f64>();
+        match (old, value) {
+            (Ok(old), Ok(mm)) => {
                 let rule = dialog.new_rule.trim().to_string();
                 let reason = dialog.new_reason.trim().to_string();
                 let by = dialog.new_by.trim().to_string();
@@ -271,6 +289,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     json!({
                         "rule": rule,
                         "limit": "min",
+                        "old": {"mm": old},
                         "value": {"mm": mm},
                         "reason": reason,
                         "by": by,
@@ -279,12 +298,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 );
                 if done {
                     dialog.new_rule.clear();
+                    dialog.new_old.clear();
                     dialog.new_value.clear();
                     dialog.new_reason.clear();
                     dialog.new_by.clear();
                 }
             }
-            Err(_) => dialog.error = Some("The override needs a number in mm.".into()),
+            _ => dialog.error = Some("The override needs the old and the new number in mm.".into()),
         }
     }
     if keep {

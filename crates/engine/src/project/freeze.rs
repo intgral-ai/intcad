@@ -22,7 +22,8 @@ pub struct FrozenDataRef {
     pub sha256: String,
     /// The copy inside the project, relative to it; empty for generic data.
     pub file: String,
-    /// Why the selected copy cannot be used. `None`: it was read and hashed.
+    /// Why the selected copy cannot be used at all. `None`: it was read and hashed. This is not a
+    /// per-body verdict: a body's own thickness and the per-sheet gate are C's decision.
     #[serde(default)]
     pub unavailable: Option<String>,
 }
@@ -74,7 +75,12 @@ impl Project {
         } else {
             match read_selected(self.root(), &ci.data.file, &ci.data.sha256) {
                 Ok(profile) => {
-                    data.unavailable = factory_data::applicability(&profile, &declared);
+                    // Without a declared thickness a native body may use its own build thickness,
+                    // so row applicability is decided per sheet by C, not here. Only an explicit
+                    // declaration can leave a selected table with no applicable row.
+                    if declared.thickness_mm.is_some() {
+                        data.unavailable = factory_data::applicability(&profile, &declared);
+                    }
                     shop = Some(profile);
                 }
                 Err(reason) => data.unavailable = Some(reason),
