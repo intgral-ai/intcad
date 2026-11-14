@@ -10,11 +10,14 @@
 //!   and each SKILL.md has a front matter `name` equal to its folder and a `description`.
 //! - AGENTS.md stays a router (at most [`ROUTER_MAX_CHARS`]) and a new skill stays short
 //!   (at most [`SKILL_MAX_CHARS`]); the skills in [`LONG_SKILLS`] predate the cap.
+//!
+//! The router cap leaves room for the cross-cutting multi-agent rules; detail still belongs
+//! in skills or docs, not in AGENTS.md.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-pub const ROUTER_MAX_CHARS: usize = 5000;
+pub const ROUTER_MAX_CHARS: usize = 6500;
 pub const SKILL_MAX_CHARS: usize = 3600;
 /// Skills written before the size cap (the modelling skills carry their command shapes).
 const LONG_SKILLS: &[&str] =
