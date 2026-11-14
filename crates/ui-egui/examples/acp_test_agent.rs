@@ -10,7 +10,8 @@
 //!
 //! A message: a plan, a box made with one `batch`, a fillet, a measurement. A message with "save"
 //! in it only saves to the user's Documents folder (which the chat holds for Allow or Deny);
-//! with "ask" in it the agent first asks its own permission for the batch.
+//! with "ask" in it the agent first asks its own permission for the batch. With "hole" in it, it
+//! changes a block named `Block` that is there already: a boss on top and a hole through.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -164,6 +165,24 @@ fn main() {
                     let (out, failed) = m.tool("save", json!({"path": path.to_string_lossy()}));
                     tool(session, "t4", &title, "edit", if failed { "failed" } else { "completed" }, Some(&out));
                     say(session, if failed { "\nThe save didn't go through." } else { "\nSaved." });
+                    reply(json!({"stopReason": "end_turn"}));
+                    continue;
+                }
+                // "hole": change a block that is there already (40 × 30 × 20 mm, `Block`, its
+                // corner at the origin): a boss joined on top and a hole cut through, so a preview
+                // of the changes shows material added and removed.
+                if text.contains("hole") {
+                    say(session, "I'll add a boss on top of Block and drill a hole through it.");
+                    tool(session, "t5", "batch: boss and hole", "edit", "in_progress", None);
+                    let (out, failed) = m.tool(
+                        "batch",
+                        json!({"commands": [
+                            {"command": "solid.box", "params": {"length": 16, "width": 14, "height": 8, "corner": [18, 8, 20], "operation": "join", "targets": ["Block"]}},
+                            {"command": "solid.cylinder", "params": {"radius": 4, "height": 40, "base": [8, 15, -10], "operation": "cut", "targets": ["Block"]}},
+                        ], "verbose": false}),
+                    );
+                    tool(session, "t5", "batch: boss and hole", "edit", if failed { "failed" } else { "completed" }, Some(&out));
+                    say(session, if failed { "\nThat didn't work." } else { "\nDone: a 16 × 14 × 8 mm boss on top and an 8 mm hole through." });
                     reply(json!({"stopReason": "end_turn"}));
                     continue;
                 }

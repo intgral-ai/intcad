@@ -52,6 +52,9 @@ pub(crate) struct HostDfm {
     settling: Option<Settling>,
     last_seen: Option<(String, u64)>,
     manual_serial: u64,
+    /// Tests count decided triggers; the host submits them through the engine service.
+    #[cfg(test)]
+    pub(crate) fired: usize,
 }
 
 #[allow(dead_code)] // the host entry points are used once the project settings page lands
@@ -148,7 +151,12 @@ impl HostDfm {
     }
 
     fn fire(&mut self, key: String, trigger: Trigger) -> Option<Trigger> {
-        self.remember(&key).then_some(trigger)
+        let first = self.remember(&key);
+        #[cfg(test)]
+        if first {
+            self.fired += 1;
+        }
+        first.then_some(trigger)
     }
 
     /// `true` the first time this round/revision is fired.
