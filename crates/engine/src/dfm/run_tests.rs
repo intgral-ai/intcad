@@ -373,13 +373,13 @@ fn damaged_submission_and_latest_records_are_never_current() {
     let first_meta = meta(first, "sha256:config-a");
     store.mark_submitted(&first_meta).unwrap();
     store.write_complete(&first_meta, &files(first, empty_findings(first))).unwrap();
-    std::fs::write(root.join(".intgral/checks/submitted.json"), b"{not json").unwrap();
+    std::fs::write(root.join(".intcad/checks/submitted.json"), b"{not json").unwrap();
     assert!(store.submitted().is_err());
     let second_meta = meta(second, "sha256:config-a");
     assert_eq!(store.write_complete(&second_meta, &files(second, empty_findings(second))).unwrap(), RunOutcome::Superseded);
     assert_eq!(store.latest().unwrap().unwrap().run_id, first, "a damaged submission never publishes over a good record");
     assert!(store.latest().unwrap().unwrap().freshness(None, Some("sha256:config-a")) == Freshness::Unknown);
-    std::fs::write(root.join(".intgral/checks/latest.json"), b"{not json").unwrap();
+    std::fs::write(root.join(".intcad/checks/latest.json"), b"{not json").unwrap();
     assert!(store.latest().is_err());
     let _ = std::fs::remove_dir_all(root);
 }
@@ -387,8 +387,8 @@ fn damaged_submission_and_latest_records_are_never_current() {
 fn damaged_records_are_errors_and_never_current() {
     let root = scratch("damaged");
     let store = RunStore::new(&root);
-    std::fs::create_dir_all(root.join(".intgral/checks")).unwrap();
-    std::fs::write(root.join(".intgral/checks/latest.json"), b"{not json").unwrap();
+    std::fs::create_dir_all(root.join(".intcad/checks")).unwrap();
+    std::fs::write(root.join(".intcad/checks/latest.json"), b"{not json").unwrap();
     assert!(store.latest().is_err());
     let run = "run-aaaaaaaaaaaaaaaa-0000000000000001";
     std::fs::create_dir_all(store.run_dir(run).unwrap()).unwrap();
@@ -643,7 +643,7 @@ fn worker_fixture(tag: &str) -> (RunRequest, Arc<crate::validation::ValidationPo
     let candidates = root.join("candidates");
     let store_root = root.join("validation");
     let project = root.join("project");
-    std::fs::create_dir_all(project.join(".intgral/checks/runs")).unwrap();
+    std::fs::create_dir_all(project.join(".intcad/checks/runs")).unwrap();
     let (design, body) = sheet_design();
     let candidate = write_candidate(&candidates, "cand-sheet", design);
     let port = Arc::new(crate::validation::ValidationPort::open(store_root, candidates).unwrap());
@@ -694,7 +694,7 @@ fn two_native_bodies_with_different_thicknesses_are_blocked_separately() {
     let root = scratch("worker-two-bodies");
     let candidates = root.join("candidates");
     let project = root.join("project");
-    std::fs::create_dir_all(project.join(".intgral/checks/runs")).unwrap();
+    std::fs::create_dir_all(project.join(".intcad/checks/runs")).unwrap();
     let mut session = crate::Session::default();
     for (name, x, thickness) in [("Thin", 0, "1.5 mm"), ("Thick", 60, "2.0 mm")] {
         session.execute("sheet.manage_rules", &serde_json::json!({"name": name, "thickness": thickness})).unwrap();
