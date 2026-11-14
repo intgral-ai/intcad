@@ -140,6 +140,9 @@ jobs:
 
   # The geometry matrix runs once, in the regression call above. This job only
   # judges that execution's 17 evidence bundles. It does not run the tests again.
+  # Trade-off: the removed rerun was the second independent sample for the 16
+  # shards. Determinism still runs its own sample twice; raw-native stays a
+  # separate fresh-build execution.
   raw-heavy:
     name: Raw geometry matrix result
     needs: regression

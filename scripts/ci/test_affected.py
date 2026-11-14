@@ -925,6 +925,9 @@ class NativeBaselineWorkflow(unittest.TestCase):
         self.assertIn("name: action-matrix-determinism", ci)
         self.assertIn("path: action-matrix-determinism", ci)
         self.assertIn("if-no-files-found: error", ci)
+        self.assertIn("set +e", self.workflow)
+        self.assertIn("status=$?", self.workflow)
+        self.assertIn("exit $status", self.workflow)
 
     def test_conclusion_rejects_missing_failed_cancelled_and_skipped_jobs(self):
         script = self.raw_script("Report actual full and raw results")

@@ -14,6 +14,10 @@ import raw_matrix  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 SHA = "a" * 40
 SUITE = "solidcraft-cli::action_matrix"
+EXPECTED_EXPRESSION = {
+    **{str(number): "binary(action_matrix) & test(=action_matrix_shard)" for number in range(1, 17)},
+    "determinism": "binary(action_matrix) & test(=action_matrix_determinism)",
+}
 
 
 def plan_bytes():
@@ -59,7 +63,7 @@ def bundle(root, shard, plan, *, outcome="passed", exit_code=0, name=None, revis
     name = name or ("action_matrix_determinism" if shard == "determinism" else "action_matrix_shard")
     folder = Path(root) / (directory or f"action-matrix-{shard}")
     folder.mkdir(parents=True, exist_ok=True)
-    expression = raw_matrix.RUN_EXPRESSION[shard]
+    expression = EXPECTED_EXPRESSION[shard]
     commands = [dict(argv=command_argv("list", expression), exitCode=0),
                 dict(argv=command_argv("run", expression), exitCode=exit_code)]
     (folder / "commands.json").write_text(json.dumps(commands))
@@ -70,9 +74,11 @@ def bundle(root, shard, plan, *, outcome="passed", exit_code=0, name=None, revis
         selected["test-count"] = 2
     (folder / "selection.json").write_text(json.dumps(selected))
     (folder / "junit.xml").write_bytes(junit(name, "skipped" if skipped else outcome))
-    evidence = dict(version=1, shard=shard,
+    evidence = dict(version=1, shard=shard, complete=True,
                     matrixShard="" if shard == "determinism" else shard + "/16",
                     environment={"ACTION_MATRIX_JOBS": "2", "ACTION_MATRIX_ACTION_TIMEOUT": "1800"},
+                    runId=os.environ.get("GITHUB_RUN_ID", ""),
+                    runAttempt=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
                     sourceRevision=revision,
                     planDigest=digest or gate.digest_for(gate.BoundPlan(plan)),
                     rawExitCode=exit_code, expectedIds=[f"{SUITE}::{name}"] +
@@ -161,6 +167,14 @@ class RawMatrixTest(unittest.TestCase):
         bundle(self.evidence, "4", self.plan, outcome="passed", exit_code=100)
         self.assertEqual(self.verify(), 1)
 
+    def test_incomplete_evidence_cannot_pass(self):
+        self.all_shards()
+        path = self.evidence / "action-matrix-11" / "matrix-evidence.json"
+        data = json.load(open(path))
+        data["complete"] = False
+        path.write_text(json.dumps(data))
+        self.assertEqual(self.verify(), 1)
+
     def test_wrong_executed_shard_cannot_pass(self):
         self.all_shards()
         path = self.evidence / "action-matrix-8" / "matrix-evidence.json"
@@ -200,7 +214,7 @@ class RawMatrixTest(unittest.TestCase):
 
     def _record(self, shard, exit_code, outcome):
         out = self.root / "record" / shard
-        expression = raw_matrix.RUN_EXPRESSION[shard]
+        expression = EXPECTED_EXPRESSION[shard]
 
         def capture(argvs, destination):
             destination = Path(destination)
@@ -210,14 +224,17 @@ class RawMatrixTest(unittest.TestCase):
             junit_path = Path("target/nextest/ci/junit.xml")
             junit_path.parent.mkdir(parents=True, exist_ok=True)
             junit_path.write_bytes(junit(name, outcome))
-            return [dict(argv=argvs[0], exitCode=0), dict(argv=argvs[1], exitCode=exit_code)]
+            commands = [dict(argv=argvs[0], exitCode=0), dict(argv=argvs[1], exitCode=exit_code)]
+            (destination / "commands.json").write_text(json.dumps(commands))
+            return commands
 
         old = os.getcwd()
         os.chdir(self.root)
         try:
             with mock.patch.object(raw_matrix.main_merge, "check_revision"), \
                  mock.patch.object(raw_matrix.main_merge, "capture_commands", side_effect=capture), \
-                 mock.patch.dict(os.environ, {"ACTION_MATRIX_SHARD": "" if shard == "determinism" else shard + "/16"}):
+                 mock.patch.dict(os.environ, {"ACTION_MATRIX_SHARD": "" if shard == "determinism" else shard + "/16",
+                                              "ACTION_MATRIX_JOBS": "2", "ACTION_MATRIX_ACTION_TIMEOUT": "1800"}):
                 status = raw_matrix.record(self.plan_path, shard, out)
         finally:
             os.chdir(old)
@@ -231,9 +248,37 @@ class RawMatrixTest(unittest.TestCase):
         self.assertEqual(status, 100)
         self.assertEqual(json.load(open(out / "matrix-evidence.json"))["rawExitCode"], 100)
 
+    def test_recorded_bundles_pass_verification(self):
+        for shard in raw_matrix.SHARDS:
+            status, _ = self._record(shard, 0, "passed")
+            self.assertEqual(status, 0)
+        self.assertEqual(raw_matrix.verify(self.plan_path, self.root / "record", self.out), 0)
+
+    def test_record_rejects_infrastructure_exit(self):
+        status, out = self._record("8", 101, "passed")
+        self.assertEqual(status, 1)
+        self.assertEqual(json.load(open(out / "matrix-evidence.json"))["rawExitCode"], 101)
+
     def test_record_rejects_exit_100_with_passed_junit(self):
         status, _ = self._record("7", 100, "passed")
         self.assertEqual(status, 1)
+
+    def test_missing_selection_or_junit_cannot_pass(self):
+        for filename in ("selection.json", "junit.xml"):
+            with self.subTest(filename=filename):
+                self.setUp()
+                self.all_shards()
+                (self.evidence / "action-matrix-12" / filename).unlink()
+                self.assertEqual(self.verify(), 1)
+                self.tearDown()
+
+    def test_non_full_plan_cannot_pass(self):
+        import copy
+        schedule = json.loads(self.plan)
+        schedule["scope"] = "affected"
+        self.plan_path.write_text(json.dumps(schedule))
+        self.all_shards()
+        self.assertEqual(self.verify(), 1)
 
     def test_missing_commands_cannot_pass(self):
         self.all_shards()

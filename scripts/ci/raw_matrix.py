@@ -24,8 +24,10 @@ import main_merge  # noqa: E402
 
 VERSION = 1
 SHARDS = tuple(str(number) for number in range(1, 17)) + ("determinism",)
-ENVIRONMENT = ("ACTION_MATRIX_JOBS", "ACTION_MATRIX_ACTION_TIMEOUT", "SOLIDCRAFT_GPU",
-               "SOLIDCRAFT_REQUIRE_GPU", "WGPU_BACKEND")
+# Result-affecting settings only. The old raw-heavy set software-Vulkan
+# variables too; the action-matrix test does not read them. Keep the expected
+# values below in sync with ci.yml; a change there must change both sides.
+ENVIRONMENT = ("ACTION_MATRIX_JOBS", "ACTION_MATRIX_ACTION_TIMEOUT")
 RUN_EXPRESSION = {
     **{str(number): "binary(action_matrix) & test(=action_matrix_shard)" for number in range(1, 17)},
     "determinism": "binary(action_matrix) & test(=action_matrix_determinism)",
@@ -68,10 +70,9 @@ def validate_bundle(bundle, plan, shard):
     bundle = Path(bundle)
     gate.require(shard in SHARDS, "unexpected shard: " + shard)
     evidence = gate.parse_json((bundle / "matrix-evidence.json").read_bytes())
+    gate.require(evidence.get("complete") is True, "evidence is incomplete or was interrupted")
     if os.environ.get("GITHUB_RUN_ID"):
         gate.require(evidence.get("runId") == os.environ["GITHUB_RUN_ID"], "evidence belongs to another run")
-        gate.require(evidence.get("runAttempt") == os.environ.get("GITHUB_RUN_ATTEMPT", ""),
-                     "evidence belongs to another run attempt")
     gate.require(evidence.get("version") == VERSION, "unsupported evidence version")
     gate.require(evidence.get("shard") == shard, "evidence shard mismatch")
     gate.require(evidence.get("matrixShard") == ("" if shard == "determinism" else shard + "/16"),
@@ -121,7 +122,7 @@ def verify(plan_path, evidence_root, out):
     try:
         plan = gate.BoundPlan(Path(plan_path).read_bytes())
         gate.require(plan.get("scope") == "full", "raw geometry matrix needs a full plan")
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         result = dict(version=VERSION, sourceRevision="", planDigest="", expectedShards=list(SHARDS),
                       shards={}, rawPassed=False, problems=[str(error)])
         (out / "raw-result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -142,9 +143,9 @@ def verify(plan_path, evidence_root, out):
                 continue
             try:
                 shards[shard] = validate_bundle(found[shard], plan, shard)
-            except (OSError, ValueError, KeyError) as error:
+            except (OSError, ValueError, KeyError, TypeError) as error:
                 problems.append(f"{shard}: {error}")
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         problems.append(str(error))
     failed = sorted(shard for shard, value in shards.items() if value["exitCode"] == 100)
     if not problems and failed:
@@ -169,6 +170,13 @@ def record(plan_path, shard, out):
     gate.require(shard in SHARDS, "unexpected shard: " + shard)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    skeleton = dict(version=VERSION, shard=shard, matrixShard=os.environ.get("ACTION_MATRIX_SHARD", ""),
+                    sourceRevision=plan["sourceRevision"], planDigest=gate.digest_for(plan),
+                    runId=os.environ.get("GITHUB_RUN_ID", ""), runAttempt=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+                    environment={key: os.environ.get(key, "") for key in ENVIRONMENT},
+                    complete=False, rawExitCode=None, expectedIds=[], passedIds=[], failedIds=[],
+                    skippedIds=[], junitSha256="")
+    (out / "matrix-evidence.json").write_text(json.dumps(skeleton, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     expression_value = RUN_EXPRESSION[shard]
     common = ["--archive-file", "tests.tar.zst", "--workspace-remap", ".", "--extract-to", ".",
               "--extract-overwrite", "--profile", "ci", "--ignore-default-filter", "--run-ignored", "only",
@@ -189,13 +197,14 @@ def record(plan_path, shard, out):
         outcomes = gate.read_junit(out / "junit.xml")
         gate.require(set(outcomes) == expected, "expected and executed cases differ")
         gate.require("skipped" not in outcomes.values(), "skipped cases are not execution evidence")
+        gate.require(run["exitCode"] in (0, 100), "nextest infrastructure/unapproved exit")
         gate.require(("failed" in outcomes.values()) == (run["exitCode"] == 100),
                      "nextest exit disagrees with JUnit")
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         problems.append(str(error))
     failed = sorted(key for key, value in outcomes.items() if value == "failed")
     evidence = dict(version=VERSION, shard=shard, matrixShard=os.environ.get("ACTION_MATRIX_SHARD", ""),
-                    sourceRevision=plan["sourceRevision"],
+                    complete=True, sourceRevision=plan["sourceRevision"],
                     planDigest=gate.digest_for(plan), runId=os.environ.get("GITHUB_RUN_ID", ""),
                     environment={key: os.environ.get(key, "") for key in ENVIRONMENT},
                     runAttempt=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
@@ -230,7 +239,7 @@ def main():
         if args.mode == "run":
             return record(args.plan, args.shard, args.out)
         return verify(args.plan, args.evidence, args.out)
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         print("raw geometry matrix: " + str(error), file=sys.stderr)
         return 1
 
