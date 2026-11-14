@@ -250,6 +250,20 @@ pub fn state(app: &mut SolveApp) -> String {
                 "kind": "text", "index": index, "text": text, "thought": false,
                 "objects": refs.iter().map(|reference| reference.label.as_str()).collect::<Vec<_>>(),
             }),
+            Item::Tool { id, title, kind, status, input, output } if kind == "dfm.check" => {
+                let card: Value = output.as_deref().and_then(|text| serde_json::from_str(text).ok()).unwrap_or(Value::Null);
+                json!({
+                    "kind": "check", "id": id, "status": match status {
+                        Some(backend::ToolStatus::Completed) => "done",
+                        Some(backend::ToolStatus::Failed) => "error",
+                        Some(backend::ToolStatus::InProgress) => "running",
+                        _ => "pending",
+                    },
+                    "card": card,
+                    "display": app.dfm_chat.display.id(),
+                    "selected": app.dfm_chat.selected.as_ref().map(|(run, id)| json!({"runId": run, "findingId": id})),
+                })
+            }
             Item::Tool { id, title, kind, status, input, output } => {
                 let done = *status == Some(backend::ToolStatus::Completed);
                 json!({
@@ -308,6 +322,10 @@ pub fn state(app: &mut SolveApp) -> String {
             0 => trf("ui.agent_chat_changes_n", &[("n", &n)]),
             limit => trf("ui.agent_chat_changes_of", &[("n", &n), ("limit", &limit.to_string())]),
         }
+    });
+    let dfm = json!({
+        "display": app.dfm_chat.display.id(),
+        "selected": app.dfm_chat.selected.as_ref().map(|(run, id)| json!({"runId": run, "findingId": id})),
     });
     let state = chat.state();
     let entries = agents::entries(app);
@@ -445,6 +463,27 @@ pub fn state(app: &mut SolveApp) -> String {
         ("withNext", "ui.agent_chat_web_with_next"),
         ("latest", "ui.agent_chat_web_latest"),
         ("turnLabel", "ui.agent_chat_web_turn"),
+        ("dfmCheckTitle", "ui.dfm_check.title"),
+        ("dfmRunning", "ui.dfm_check.running"),
+        ("dfmDone", "ui.dfm_check.done"),
+        ("dfmCancelled", "ui.dfm_check.cancelled"),
+        ("dfmError", "ui.dfm_check.error"),
+        ("dfmNotChecked", "ui.dfm_check.not_checked"),
+        ("dfmRefresh", "ui.agent_chat_refresh"),
+        ("dfmStale", "ui.dfm_check.stale"),
+        ("dfmFindings", "ui.dfm_check.findings"),
+        ("dfmAdvisory", "ui.dfm_check.advisory"),
+        ("dfmFailed", "ui.dfm_check.failed"),
+        ("dfmChecked", "ui.dfm_check.checked"),
+        ("dfmNotCovered", "ui.dfm_check.not_covered"),
+        ("dfmMeasured", "ui.dfm_check.measured"),
+        ("dfmRequirement", "ui.dfm_check.requirement"),
+        ("dfmSource", "ui.dfm_check.source"),
+        ("dfmOverride", "ui.dfm_check.override"),
+        ("dfmAll", "ui.all"),
+        ("dfmSelected", "ui.dfm_check.selected"),
+        ("dfmOff", "ui.dfm_check.off"),
+        ("dfmSelect", "ui.dfm_check.selected"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), Value::from(tr(key))))
@@ -496,6 +535,7 @@ pub fn state(app: &mut SolveApp) -> String {
         "left": app.preferences.agent_chat_side == "left",
         "dark": crate::theme::is_dark(),
         "strings": strings,
+        "dfm": dfm,
     })
     .to_string()
 }
@@ -525,6 +565,17 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
     let text = |name: &str| action.get(name).and_then(Value::as_str);
     let index = |name: &str| action.get(name).and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok());
     match text("type").ok_or("no type")? {
+        "dfm_check" => run_check(app),
+        "dfm_poll" => poll_check(app),
+        "finding" => {
+            let run = text("runId").ok_or("finding: no runId")?;
+            let id = text("id").ok_or("finding: no id")?;
+            crate::dfm_chat::select(app, run, id)?;
+        }
+        "dfm_display" => {
+            let mode = text("mode").ok_or("dfm_display: no mode")?;
+            app.dfm_chat.display = crate::dfm_chat::Display::from_id(mode).ok_or("dfm_display: mode must be all, selected or off")?;
+        }
         "send" => {
             let body = text("text").ok_or("send: no text")?;
             if body.chars().count() > MAX_MESSAGE {
@@ -536,6 +587,11 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             }
             if body.trim().is_empty() && app.agent_chat.attachments.is_empty() {
                 return Err("send: nothing to send".into());
+            }
+            // A check asked for in words runs the button's command, not a model turn.
+            if crate::dfm_chat::is_check_request(body) {
+                run_check(app);
+                return Ok(());
             }
             send(app, ctx, body.trim_end_matches('\n').to_string());
             // Ctrl+Enter: what is queued goes now, this message with it.
@@ -783,4 +839,166 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
     }
     ctx.request_repaint();
     Ok(())
+}
+
+/// Run `dfm.check` for the button and the chat phrase, and keep one Tool row per run so the page
+/// can show running, done or error.
+fn run_check(app: &mut SolveApp) {
+    let n = app.dfm_chat.next;
+    app.dfm_chat.next = app.dfm_chat.next.saturating_add(1);
+    let id = format!("dfm-check-{n}");
+    app.agent_chat.push(Item::Tool {
+        id: id.clone(),
+        title: tr("ui.dfm_check.title").to_string(),
+        kind: "dfm.check".into(),
+        status: Some(backend::ToolStatus::InProgress),
+        input: None,
+        output: None,
+    });
+    let card = crate::dfm_chat::run(app);
+    let failed = card.status == "error";
+    set_check_item(app, &id, card);
+    if !failed {
+        // The run may already be finished (a small sheet); ask once, then the page polls.
+        poll_check(app);
+    }
+    app.agent_chat.notice(tr("ui.dfm_check.title"), failed);
+}
+
+/// Ask `inspect.dfm` for the live report and update the newest check row. The page calls this
+/// while the row says running.
+fn poll_check(app: &mut SolveApp) {
+    let Some(id) = app.agent_chat.items.iter().rev().find_map(|item| match item {
+        Item::Tool { id, kind, .. } if kind == "dfm.check" => Some(id.clone()),
+        _ => None,
+    }) else {
+        return;
+    };
+    let card = crate::dfm_chat::refresh(app);
+    set_check_item(app, &id, card);
+}
+
+fn set_check_item(app: &mut SolveApp, id: &str, card: crate::dfm_chat::Card) {
+    let status = match card.status.as_str() {
+        "running" => backend::ToolStatus::InProgress,
+        "error" => backend::ToolStatus::Failed,
+        _ => backend::ToolStatus::Completed,
+    };
+    let output = serde_json::to_string(&card).unwrap_or_default();
+    app.dfm_chat.card = Some(card);
+    for item in app.agent_chat.items.iter_mut().rev() {
+        if let Item::Tool { id: shown, status: shown_status, output: shown_output, .. } = item
+            && *shown == id
+        {
+            *shown_status = Some(status);
+            *shown_output = Some(output.clone());
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One `inspect.dfm` reply: a finished current run with its CONTRACT §2 findings object.
+    fn report() -> Value {
+        json!({
+            "available": true, "running": false, "runId": "run-1", "outcome": "current",
+            "modelVersion": "model-1", "candidateDigest": "candidate-1", "configDigest": "config-1",
+            "freshness": "staleModel", "summary": "2 findings", "sourceRevision": "r1",
+            "findings": {
+                "schemaVersion": 2, "runId": "run-1", "candidateDigest": "candidate-1",
+                "profileDigest": "profile-1", "configDigest": "config-1", "modelVersion": "model-1",
+                "projectId": "project-1", "source": {"kind": "native"},
+                "findings": [{
+                    "id": "sheet-1/F2", "sheet": 1, "body": "Plate", "from": "rules", "rules": ["sm.hole_min_diameter"],
+                    "state": "advisory", "status": "needs_review", "code": null,
+                    "measured": {"value": 2.4, "unit": "mm"},
+                    "requirement": {"value": 3.0, "unit": "mm", "layer": "factory", "confirmed": "factory_confirmed", "source": "shop"},
+                    "feature": {"kind": "hole", "number": 2}, "anchor": [1.0, 2.0, 3.0], "flat": [1.0, 2.0],
+                    "faces": ["Face1"], "outline": [], "reason": null
+                }],
+                "rules": [
+                    {"ruleId": "sm.hole_min_diameter", "state": "advisory", "count": 1},
+                    {"ruleId": "sm.hole_to_edge", "state": "unsupported", "count": 0}
+                ],
+                "notChecked": "Not checked here."
+            }
+        })
+    }
+
+    /// The nested findings object is read, not a bare array: counts, row values and freshness.
+    #[test]
+    fn the_inspect_reply_fills_the_card_and_keeps_the_stale_banner() {
+        let card = crate::dfm_chat::Card::from_inspect(&report());
+        assert_eq!(card.status, "done");
+        assert_eq!(card.freshness, "staleModel", "the page shows the stale banner");
+        assert_eq!(card.run_id, "run-1");
+        assert_eq!(card.project_id, "project-1");
+        assert_eq!(card.findings.len(), 1);
+        let counts = card.counts();
+        assert_eq!(counts["advisory"], 1);
+        assert_eq!(counts["unsupported"], 1);
+        assert_eq!(card.findings[0].measured.as_ref().map(|m| m.value), Some(2.4));
+        assert_eq!(card.findings[0].requirement.as_ref().map(|r| r.value), Some(3.0));
+        assert_eq!(card.not_checked, "Not checked here.");
+
+        let page = crate::dfm_chat::page(&card).to_string();
+        assert!(page.contains("\"status\":\"done\""));
+        assert!(page.contains("\"findings\""));
+        assert!(!page.contains("\"requirements\""));
+        let model = crate::dfm_chat::model_context(&card).to_string();
+        assert!(model.contains("\"requirement\""), "each finding keeps its own number");
+        assert!(!model.contains("\"requirements\""));
+        assert!(!model.contains("confirmation"), "the stored row identity stays home");
+    }
+
+    /// A queued run reads as running, and a failed or replaced run keeps its state and reason.
+    #[test]
+    fn the_card_reads_running_cancelled_and_failed_runs() {
+        let running = crate::dfm_chat::Card::from_inspect(&json!({"available": false, "running": true, "runId": "run-2"}));
+        assert_eq!(running.status, "running");
+
+        let cancelled = crate::dfm_chat::Card::from_inspect(&json!({
+            "available": true, "running": false, "runId": "run-3", "outcome": "cancelled",
+            "reason": "cancelled by the user",
+            "findings": {"runId": "run-3", "findings": [], "rules": [], "notChecked": ""}
+        }));
+        assert_eq!(cancelled.status, "cancelled");
+        assert_eq!(cancelled.reason.as_deref(), Some("cancelled by the user"));
+
+        let failed = crate::dfm_chat::Card::from_inspect(&json!({
+            "available": true, "running": false, "runId": "run-4", "outcome": "failed",
+            "reason": "the sheet could not be read",
+            "findings": {"runId": "run-4", "findings": [], "rules": [], "notChecked": ""}
+        }));
+        assert_eq!(failed.status, "error");
+        assert_eq!(failed.error.as_deref(), Some("the sheet could not be read"));
+
+        let queued = crate::dfm_chat::Card::from_check(&json!({"projectId": "p", "candidateDigest": "c", "configDigest": "g", "sheets": 1}));
+        assert_eq!(queued.status, "running");
+        assert_eq!(queued.project_id, "p");
+    }
+
+    /// Chat's "检查一下当前设计" calls the same entry as the card's refresh button.
+    #[test]
+    fn the_chat_phrase_runs_the_same_check_entry_as_the_button() {
+        assert!(crate::dfm_chat::is_check_request("检查一下当前设计"));
+        assert!(crate::dfm_chat::is_check_request("Check this design."));
+        assert!(!crate::dfm_chat::is_check_request("检查一下这个零件的孔"));
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let before = app.agent_chat.items.len();
+        act(&mut app, &egui::Context::default(), r#"{"type":"send","text":"检查一下当前设计"}"#).expect("send");
+        assert_eq!(app.agent_chat.items.len(), before + 2, "a check row and its notice");
+        assert!(app.agent_chat.items.iter().any(|item| matches!(item, Item::Tool { kind, .. } if kind == "dfm.check")));
+        // The command is C's; until it lands the card says why, and the row is an error, not a result.
+        let card = app.dfm_chat.card.as_ref().expect("a card");
+        assert_eq!(card.status, "error");
+        assert!(card.error.as_deref().is_some_and(|why| why.contains("dfm.check")));
+        act(&mut app, &egui::Context::default(), r#"{"type":"dfm_display","mode":"off"}"#).expect("display");
+        assert_eq!(app.dfm_chat.display.id(), "off");
+        assert!(act(&mut app, &egui::Context::default(), r#"{"type":"dfm_display","mode":"nope"}"#).is_err());
+        assert!(act(&mut app, &egui::Context::default(), r#"{"type":"finding","runId":"run-1","id":"sheet-1/F2"}"#).is_err());
+    }
 }
