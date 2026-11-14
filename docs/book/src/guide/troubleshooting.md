@@ -51,7 +51,7 @@ with a bug report.
 |---|---|---|
 | Windows | `%APPDATA%\Intcad` | `%LOCALAPPDATA%\Intcad` |
 | macOS | `~/Library/Application Support/Intcad` | (the same folder) |
-| Linux | `~/.local/share/intcad` | (the same folder); thumbnails in `$XDG_CACHE_HOME/SolidCraft` or `/tmp/SolidCraft` |
+| Linux | `~/.local/share/intcad` | (the same folder); thumbnails in `$XDG_CACHE_HOME/Intcad` or `/tmp/Intcad` |
 | Linux (Flatpak) | `~/.var/app/ai.intgral.intcad/data/solidcraft` | (the same folder) |
 
 On Windows, paste `%APPDATA%` or `%LOCALAPPDATA%` into the Explorer address bar to open the

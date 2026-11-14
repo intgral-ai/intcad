@@ -900,7 +900,7 @@ mod tests {
         assert!(!runs_in_wsl(&[]));
 
         let wsl = |p: &str| wsl_path(std::path::Path::new(p)).to_string_lossy().into_owned();
-        assert_eq!(wsl(r"C:\Users\u\AppData\Local\SolidCraft\agent-chat\work"), "/mnt/c/Users/u/AppData/Local/SolidCraft/agent-chat/work");
+        assert_eq!(wsl(r"C:\Users\u\AppData\Local\Intcad\agent-chat\work"), "/mnt/c/Users/u/AppData/Local/Intcad/agent-chat/work");
         assert_eq!(wsl(r"\\?\D:\Program Files\Intcad\solidcraft-cli.exe"), "/mnt/d/Program Files/Intcad/solidcraft-cli.exe");
         assert_eq!(wsl("E:/designs"), "/mnt/e/designs");
         assert_eq!(wsl("C:"), "/mnt/c/");

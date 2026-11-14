@@ -162,7 +162,7 @@ mod tests {
         let is_fxc = |c: &wgpu::Dx12Compiler| matches!(c, wgpu::Dx12Compiler::Fxc);
         let by_name = |c: &wgpu::Dx12Compiler| matches!(c, wgpu::Dx12Compiler::DynamicDxc { dxc_path } if dxc_path == "dxcompiler.dll");
         let beside_program =
-            |c: &wgpu::Dx12Compiler| matches!(c, wgpu::Dx12Compiler::DynamicDxc { dxc_path } if dxc_path.ends_with(r"SolidCraft\dxcompiler.dll"));
+            |c: &wgpu::Dx12Compiler| matches!(c, wgpu::Dx12Compiler::DynamicDxc { dxc_path } if dxc_path.ends_with(r"Intcad\dxcompiler.dll"));
         // Left to SolidCraft (#6756): FXC, or DXC from the program's folder by its full path,
         // never a `dxcompiler.dll` Windows would find on PATH. wgpu does not trim the value: " fxc "
         // is a value it does not know.

@@ -3,7 +3,7 @@
 
 `scripts/display_name_to_intcad.py` changed the name people read. This script changes what the
 operating system and the installers go by, so an Intcad install is not an install of upstream
-SolidCraft under another label and the two can sit side by side:
+SolidCraft under another label:
 
   - the app id (macOS bundle id and document type, Linux desktop / AppStream / MIME / icon names,
     Flatpak and Arch ids): io.tangencylabs.solidcraft -> ai.intgral.intcad, file names included
@@ -14,6 +14,11 @@ SolidCraft under another label and the two can sit side by side:
   - the deb / rpm package name
   - the settings, data and cache folders, where docs, comments and messages spell them (the
     code that picks the folders and copies an earlier one on first launch is edited by hand)
+
+Binary names (`solidcraft`, `solidcraft-cli`) and the MCP server name are a separate change. Until
+it lands the two products still collide where those names are installed: the Linux packages
+ship the same files under /usr, and on Windows both register `solidcraft.exe` and put their
+folder on PATH. Only on macOS are they fully apart after this script.
 
 It leaves alone, on purpose: crate names, `SOLIDCRAFT_*` variables, the design format
 (`solidcraft/N`, `.sc`, `.solidcraft`, `application/x-solidcraft`), `solidcraft://` URIs, links
@@ -40,6 +45,8 @@ SKIP_FILES = {
     "scripts/display_name_to_intcad.py",  # describes the earlier state
     ".github/release-notes.md",           # upstream's notes for upstream's releases
     "docs/compatibility.md",              # the history of the ids; its Intcad section is written by hand
+    "docs/beta-evidence.md",              # dated records of candidates that were built under the old names
+    "docs/fork-governance.md",            # a dated inventory of what the repository held
 }
 SKIP_DIRS = ("vendor/",)
 
@@ -81,6 +88,7 @@ RULES = [
     (re.compile(r"(Application Support/|Library/Caches/)SolidCraft\b"), r"\1Intcad"),
     (re.compile(r"(%(?:LOCAL)?APPDATA%\\{1,2})SolidCraft\b"), r"\1Intcad"),
     (re.compile(r"((?:\.local/share|\.cache|XDG_(?:DATA|CACHE)_HOME)/)solidcraft\b"), r"\1intcad"),
+    (re.compile(r"(AppData[\\/]Local[\\/])SolidCraft\b"), r"\1Intcad"),
 ]
 
 # Exact text in one file: (old, new). Each old text must be there, or its new text already.
@@ -101,6 +109,11 @@ EXACT = {
     "packaging/linux/nfpm.yaml": [("\nname: solidcraft\n", "\nname: intcad\n")],
     # Where the installed-files check looks for the MSI's install.
     "packaging/windows/installed-check.ps1": [("$Dir = Join-Path $ProgramFiles 'SolidCraft'", "$Dir = Join-Path $ProgramFiles 'Intcad'")],
+    # Folder names that are spelled apart from the path in front of them.
+    "crates/gpu/src/concurrent.rs": [('ends_with(r"SolidCraft\\dxcompiler.dll")', 'ends_with(r"Intcad\\dxcompiler.dll")')],
+    "examples/demo/enclosure_mcp.py": [('Path(os.environ["LOCALAPPDATA"]) / "SolidCraft" / "control"', 'Path(os.environ["LOCALAPPDATA"]) / "Intcad" / "control"')],
+    "scripts/blur-evidence.ps1": [('Join-Path $env:LOCALAPPDATA "SolidCraft/control/$Port.token"', 'Join-Path $env:LOCALAPPDATA "Intcad/control/$Port.token"')],
+    "docs/book/src/guide/troubleshooting.md": [("thumbnails in `$XDG_CACHE_HOME/SolidCraft` or `/tmp/SolidCraft`", "thumbnails in `$XDG_CACHE_HOME/Intcad` or `/tmp/Intcad`")],
     # The guide's table of how the update check recognises each kind of install.
     "docs/book/src/guide/updates.md": [("dpkg knows `solidcraft`", "dpkg knows `intcad`")],
     # The AppImage's opt-out marker sits in the app's data folder.
