@@ -19,6 +19,14 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&ASSISTANT_CONTRACT)
         .output(crate::schema::output_schema_for::<crate::schema::edit::AssistantResult>)
         .params("Show or hide Assistant in the app. Headless calls are refused without changing the design"),
+    CommandSpec::new("ui.ask_here", "Ask Here", crate::checked!("ui.ask_here", ask_here))
+        .icon("assistant")
+        .key("Ctrl+K")
+        .noundo()
+        .doc_only()
+        .contract(&ASK_HERE_CONTRACT)
+        .output(crate::schema::output_schema_for::<crate::schema::edit::AskHereResult>)
+        .params("Open a box beside the selection in the app to ask Assistant about it. Headless calls are refused without changing the design"),
     CommandSpec::new("edit.undo", "Undo", crate::checked!("edit.undo", undo))
         .icon("undo")
         .key("Ctrl+Z")
@@ -158,6 +166,13 @@ const ASSISTANT_CONTRACT: crate::schema::TypedContract<crate::schema::edit::Assi
 
 fn assistant(_s: &mut Session, _p: &Value) -> Result<Value> {
     Err(EngineError::Other("ui.assistant shows or hides Assistant in the app; no assistant panel exists in a headless session".into()))
+}
+
+const ASK_HERE_CONTRACT: crate::schema::TypedContract<crate::schema::edit::AskHereParams> = crate::schema::TypedContract::new();
+
+/// Ask Here opens a box in the app, beside the selection; a headless session has neither.
+fn ask_here(_s: &mut Session, _p: &Value) -> Result<Value> {
+    Err(EngineError::Other("ui.ask_here opens a box in the app to ask Assistant about the selection; there is no app in a headless session".into()))
 }
 
 const REPEAT_CONTRACT: crate::schema::TypedContract<crate::schema::edit::RepeatParams> = crate::schema::TypedContract::new();

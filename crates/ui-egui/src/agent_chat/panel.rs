@@ -1993,6 +1993,10 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         }
     }
+    // The turn's changes so far, while it runs on a copy of the design: the card to come.
+    if let Some((words, computing)) = super::review::progress(&app.agent_chat) {
+        running_review_card(ui, &words, computing);
+    }
     match review_action {
         Some((id, true)) => {
             let _ = super::review::accept(app, id);
@@ -2139,6 +2143,33 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
 /// their volumes, and Accept and Reject while it waits. `Some(true)`: Accept was pressed,
 /// `Some(false)`: Reject.
 #[cfg(not(target_arch = "wasm32"))]
+/// The card of a turn still running on a copy of the design: its steps so far and the one
+/// computing, with how long it has taken.
+fn running_review_card(ui: &mut egui::Ui, words: &[String], computing: Option<(f64, String)>) {
+    const SHOWN: usize = 12;
+    let t = Tokens::get();
+    ui_kit::assistant_tool_frame(ui, false, |ui| {
+        ui.spacing_mut().item_spacing.y = t.space_2;
+        ui.label(RichText::new(tr("ui.agent_chat_review_title")).color(t.text).semibold());
+        let skipped = words.len().saturating_sub(SHOWN);
+        if skipped > 0 {
+            ui.label(RichText::new(trf("ui.agent_chat_review_more_steps", &[("n", &skipped.to_string())])).color(t.text_dim).size(t.font_small));
+        }
+        for words in words.iter().skip(skipped) {
+            ui.add(egui::Label::new(RichText::new(format!("• {words}")).color(t.text_dim).size(t.font_small)).wrap());
+        }
+        if let Some((since, what)) = computing {
+            let seconds = ((crate::now_ms() - since) / 1000.0).floor().max(0.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Spinner::new().size(t.font_small).color(crate::icons::pointer::agent()));
+                let text = trf("ui.agent_chat_review_running", &[("what", &what), ("seconds", &format!("{seconds:.0}"))]);
+                ui.add(egui::Label::new(RichText::new(text).color(t.text).size(t.font_small)).wrap());
+            });
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    });
+}
+
 fn review_card(ui: &mut egui::Ui, card: &super::review::Card, units: summary::Units) -> Option<bool> {
     use super::review::{MAX_BODIES, Outcome, volume_text};
     let t = Tokens::get();

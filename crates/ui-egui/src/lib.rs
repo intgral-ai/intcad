@@ -1638,6 +1638,10 @@ impl SolveApp {
             }
             return;
         }
+        if id == "ui.ask_here" {
+            let _ = agent_chat::ask_here::open(self);
+            return;
+        }
         if id == "ui.palette" {
             shortcut_box::open(self, None);
             return;
@@ -3296,6 +3300,7 @@ impl SolveApp {
         linked_source::show_copies(self, ui.ctx());
         joint_handles::show_warning(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
+        agent_chat::ask_here::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
         toolbar_custom::window(self, ui.ctx());
     }

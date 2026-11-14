@@ -22,6 +22,7 @@ mod acp_client;
 pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 mod api_client;
+pub mod ask_here;
 pub mod attach;
 pub mod backend;
 pub mod context;
@@ -407,6 +408,8 @@ pub struct AgentChat {
     pub attach_view: bool,
     /// Send what is selected in the model with the next message.
     pub attach_selection: bool,
+    /// Ask Here: the box beside a pick in the model ([`ask_here`]).
+    pub ask_box: ask_here::AskBox,
     /// How many things the current selection is by clicks, kept while the selection and the design
     /// stay as they are: (the selection, the design's address, the count).
     selected_count: Option<(Vec<solidcraft_engine::Sel>, usize, usize)>,
@@ -1567,57 +1570,79 @@ pub fn remove_picked(app: &mut SolveApp, at: usize) {
 /// Send what the user typed: now if the agent is ready, queued behind the running message if it
 /// is working, else once it is ready (starting it if needed).
 pub fn send(app: &mut SolveApp, ctx: &egui::Context, text: String) {
+    let _ = send_with(app, ctx, text, None);
+}
+
+/// [`send`], with `only` as the message's whole context when given (Ask Here: exactly the
+/// selection, no files, no picture of the view), instead of what was picked, the files on the
+/// next message and, with Attach selection and Attach view, what is selected and the view.
+/// `Err`: why nothing went (Ask Here keeps its box open with the words).
+pub(crate) fn send_with(app: &mut SolveApp, ctx: &egui::Context, text: String, only: Option<Context>) -> Result<(), String> {
+    let asked = only.is_some();
     // The agent's previewed changes wait for Accept or Reject before it gets another message.
     if review::waiting(&app.agent_chat) && app.agent_chat.state() != State::Busy {
+        let why = tr("ui.agent_chat_review_first").to_string();
+        if asked {
+            return Err(why);
+        }
         if app.agent_chat.input.trim().is_empty() {
             app.agent_chat.input = text;
         }
-        app.agent_chat.notice(tr("ui.agent_chat_review_first"), false);
-        return;
+        app.agent_chat.notice(why.clone(), false);
+        return Err(why);
     }
     // A message waits for its files: the words go back in the box until they are read.
-    if !app.agent_chat.loading.is_empty() {
+    if !asked && !app.agent_chat.loading.is_empty() {
         if app.agent_chat.input.trim().is_empty() {
             app.agent_chat.input = text;
         }
-        app.agent_chat.notice(tr("ui.agent_chat_files_loading"), false);
-        return;
+        let why = tr("ui.agent_chat_files_loading").to_string();
+        app.agent_chat.notice(why.clone(), false);
+        return Err(why);
     }
     let text: String = text.chars().take(MAX_PROMPT).collect();
     // Files alone make a message.
-    if text.trim().is_empty() && app.agent_chat.attachments.is_empty() {
-        return;
+    if text.trim().is_empty() && (asked || app.agent_chat.attachments.is_empty()) {
+        return Err(String::new());
     }
     let text = if text.trim().is_empty() { String::new() } else { text };
-    let image = app.agent_chat.attach_view && app.agent_chat.images;
+    let image = !asked && app.agent_chat.attach_view && app.agent_chat.images;
     // The selection is read now, when the user sends, not when a queued message finally goes.
     // What was picked goes first, then what is selected (without what was picked twice).
-    let mut context = std::mem::take(&mut app.agent_chat.picked_context);
-    app.agent_chat.picked.clear();
-    if app.agent_chat.attach_selection {
-        let mut selected = context::describe_selection(&mut app.session);
-        selected.items.retain(|i| !context.items.contains(i));
-        context.merge(selected);
-    }
+    let context = match only {
+        Some(only) => only,
+        None => {
+            let mut context = std::mem::take(&mut app.agent_chat.picked_context);
+            app.agent_chat.picked.clear();
+            if app.agent_chat.attach_selection {
+                let mut selected = context::describe_selection(&mut app.session);
+                selected.items.retain(|i| !context.items.contains(i));
+                context.merge(selected);
+            }
+            context
+        }
+    };
     if app.agent_chat.state() == State::Busy {
         let chat = &mut app.agent_chat;
         if chat.pending.len() >= MAX_PENDING {
             // The files stay on the chips for when there is room.
-            chat.notice(tr("ui.agent_chat_queue_full"), false);
-        } else {
-            let files = std::mem::take(&mut chat.attachments);
-            chat.pending.push(Pending { text, image, context, files });
+            let why = tr("ui.agent_chat_queue_full").to_string();
+            chat.notice(why.clone(), false);
+            return Err(why);
         }
-        return;
+        let files = if asked { Vec::new() } else { std::mem::take(&mut chat.attachments) };
+        chat.pending.push(Pending { text, image, context, files });
+        return Ok(());
     }
-    let files = std::mem::take(&mut app.agent_chat.attachments);
+    let files = if asked { Vec::new() } else { std::mem::take(&mut app.agent_chat.attachments) };
     // Messages left waiting by Stop go first, in one prompt with this one.
     if !app.agent_chat.pending.is_empty() {
         app.agent_chat.pending.push(Pending { text, image, context, files });
         send_queue(app, ctx, false);
-        return;
+        return Ok(());
     }
     submit(app, ctx, text, image, context, files, false);
+    Ok(())
 }
 
 /// Put `text` in the conversation and send it with its files (`interrupted`: the agent is told it
@@ -2125,15 +2150,10 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
 /// Run an admitted request of the agent's: on the turn's copy of the design while its changes are
 /// previewed ([`review`]), otherwise in the window's queue, as the control channel runs requests.
 fn hand_over(app: &mut SolveApp, mut req: ControlRequest) {
-    if let Some(preview) = app.agent_chat.preview.as_mut().filter(|p| p.phase == review::Phase::Running) {
+    if review::running(&app.agent_chat) {
         match review::route(&req.method, &req.params) {
             Some(true) => {
-                if req.refuse_cancelled_chat() {
-                    return;
-                }
-                let units = summary::Units { units: &app.session.doc.units, decimals: app.preferences.length_decimals };
-                let reply = review::answer(&mut preview.copy, &req, units);
-                let _ = req.reply.send(reply);
+                review::hand_over(app, req);
                 return;
             }
             None => {
@@ -2173,6 +2193,7 @@ fn requests_edit(text: &str) -> bool {
 fn end_turn(app: &mut SolveApp) {
     decline_all(app, "the message ended");
     finish_turn(&mut app.agent_chat, &mut app.session);
+    review::settle(app);
 }
 
 fn finish_turn(chat: &mut AgentChat, session: &mut solidcraft_engine::Session) {
@@ -2201,7 +2222,7 @@ fn finish_turn(chat: &mut AgentChat, session: &mut solidcraft_engine::Session) {
         let doc = session.doc.clone();
         chat.push(Item::Changes { steps, doc, undone: false });
     }
-    review::end(chat, session);
+    review::end(chat);
 }
 
 /// Merge the undo steps made since `start_doc` (at depth `start_undo`) into one, labelled `label`;
@@ -2472,6 +2493,8 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         settings::poll_listing(app, ctx);
         connect_at_start(app, ctx);
     }
+    review::poll(app, ctx);
+    review::settle(app);
     pump_tools(app);
     if !app.agent_chat.held.is_empty() || app.agent_chat.state() == State::Busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -2931,6 +2954,13 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     if let Some(text) = p.get("send").and_then(Value::as_str) {
         send(app, ctx, text.to_string());
     }
+    // Ask Here: open the box beside the pick, or send a message with exactly the selection.
+    if p.get("ask_here").and_then(Value::as_bool) == Some(true) {
+        ask_here::open(app)?;
+    }
+    if let Some(text) = p.get("ask").and_then(Value::as_str) {
+        ask_here::submit(app, ctx, text)?;
+    }
     if let Some(o) = p.get("permission").and_then(Value::as_str) {
         let Some(n) = app.agent_chat.items.iter().rposition(|i| matches!(i, Item::Permission { answer: None, .. })) else {
             return Err("no permission request is waiting".into());
@@ -3063,9 +3093,11 @@ pub fn status(app: &SolveApp) -> Value {
         state.insert("customModels".into(), json!(custom_models_accepted(app)));
         state.insert("instructions".into(), json!(app.preferences.agent_instructions));
         state.insert("previewChanges".into(), json!(app.preferences.agent_chat_preview));
+        state.insert("askHere".into(), json!({"open": c.ask_box.open, "text": c.ask_box.text}));
         state.insert(
             "preview".into(),
-            json!(c.preview.as_ref().map(|p| json!({"id": p.id, "phase": format!("{:?}", p.phase), "steps": p.copy.steps().len(), "busy_ms": p.copy.busy_ms}))),
+            json!(c.preview.as_ref().map(|p| json!({"id": p.id, "phase": format!("{:?}", p.phase), "steps": p.steps, "busy_ms": p.busy_ms,
+                "computing": review::computing(c).map(|(since, what)| json!({"what": what, "ms": (crate::now_ms() - since).max(0.0)}))}))),
         );
     }
     state

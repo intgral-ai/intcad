@@ -195,6 +195,18 @@ stamp from before the turn still matches it. The view draws the copy over the de
 `preview::build_sided`: a new face that faces the old body's material (its exact shape decides) is
 in the cut colour, any other new face in the theme's success colour.
 
+The copy computes off the window thread. A request for it moves the copy to a worker
+(`review::send_away`), which runs it, works out the copy's placed model for the overlay and sends
+the copy back; requests that arrive meanwhile wait in order. Within the app's wait
+(`dialogs::APPLY_AT_ONCE`, 150 ms) a request is answered in the same frame. Otherwise the window
+keeps drawing the last overlay and the running card lists the steps so far and the one computing,
+with its time. The view's agent chip (`SolveApp::agent_computing`) shows the same step, and its
+Stop answers the request as stopped and, once the copy is back, puts it as it was before that
+request (design, history and revision, saved by `Copy::save`; not an engine checkpoint, so the
+agent's own `edit.checkpoint`s stay usable). The
+card's lists and the overlay's scene are worked out on workers too. Headless use and tests
+(`apply_off_thread` unset) run all of it at once.
+
 When the turn ends with changes, the card lists the steps (the tool-card summaries) and the placed
 bodies made, changed (`Body::same` false and a different volume or outline) and removed, with
 display-mesh volumes. **Accept** checks the open design's stamp against the one taken when the
@@ -212,9 +224,9 @@ for line apart from the header's time stamp
 guard handling. The copy shares the evaluation cache, so replay mostly reuses what the copy
 computed.
 
-Measured on zhikun (debug-profile tests, `preview_cost_on_a_big_part`, run by hand): a
-420 × 420 × 10 mm plate with a 20 × 20 pattern of holes (406 faces), and a turn that joins a boss
-and cuts a bore.
+Measured on zhikun (debug-profile tests, run by hand): a 420 × 420 × 10 mm plate with a 20 × 20
+pattern of holes (406 faces), and a turn that joins a boss and cuts a bore.
+`preview_cost_on_a_big_part` runs everything on the test's thread, as headless use does:
 
 | | Time | Resident memory |
 |---|---|---|
@@ -225,15 +237,40 @@ and cuts a bore.
 | Card (body changes, volumes) | 153 ms | |
 | Accept (replay, one undo step) | 0.43 ms | → 228 MB |
 
-Known gaps in this first version:
+`preview_cost_off_the_window_thread` runs the same turn as the app does (`APPLY_AT_ONCE`, a frame
+of chat, control queue and overlay every 16 ms). The two steps were answered after 20.4 s, the
+overlay was drawn after 20.6 s and the card after 20.7 s. Meanwhile 1,252 frames ran, with a median
+of 0.07 ms. Only three took over 16 ms, at 150 to 153 ms each: the app's wait (`APPLY_AT_ONCE`)
+before each of the two requests and the card goes to a worker. Before this change the window
+froze for the whole 20 s. Accept took 0.45 ms.
 
-- Requests on the copy run on the window thread, so **Run slow commands in the background** does
-  not apply to them. The 20 s above froze the window.
-- The overlay and card are built on the window thread when the turn ends or the copy changes.
-- An evicted evaluation cache would make Accept compute the steps again.
-- Built-in skills (Text-to-CAD, Anatomy) don't preview.
+Known gaps:
+
+- An evicted evaluation cache would make Accept compute the steps again, on the window thread.
+- Built-in skills don't preview. Anatomy is read-only, so it has nothing to preview. Text-to-CAD
+  binds its task to the open design (`task_runtime`): the check before and after each tool, the
+  snapshot it validates at the end of the turn and the validation report all read
+  `app.session`. Previewing it means binding that task to the copy while it is away on a worker,
+  then carrying the report over to the revision Accept makes. That is its own piece of work, left
+  for now.
 - `ui.render` shows the design without the overlay.
 - One card at a time: a new message waits until the user accepts or rejects.
+- Tried with the scripted test agent only, not with a real AI agent.
+
+### Ask on the model
+
+**Ask Here** (`ui.ask_here`, Ctrl+K by default, rebindable in Preferences › Keyboard Shortcuts;
+no other command takes Ctrl+K by default and the window handles no Ctrl+K of its own) opens a
+one-line box beside the pointer, where the pick was made, when something is selected
+(`agent_chat::ask_here`). Enter sends the text as a message of the conversation with exactly the
+selection attached (`context::describe_selection`), the same prompt and chips as a message sent
+with Attach selection ticked; anything picked for the next message, the files on it and Attach
+view wait for it. While a card waits for Accept or Reject the box stays open, saying so. Escape, or the
+selection going, closes the box. With previews on, the turn runs on a copy like any other, so its
+changes come back as a preview card. Over the control channel, `ui.agent_chat` takes
+`ask_here: true` (open the box) and `ask: "…"` (send with the selection). Not yet: the box shows
+no answer of its own (the answer is in the conversation, which opens), and it has not been tried
+with a real AI agent.
 
 ### Document ownership
 

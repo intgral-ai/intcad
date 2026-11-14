@@ -1688,3 +1688,15 @@ fn assistant_toggle_is_refused_headlessly_without_changing_the_document() {
     let spec = crate::find_command("ui.assistant").unwrap();
     assert_eq!((spec.shortcut, spec.tab, spec.undoable), (Some("Ctrl+Shift+A"), "", false));
 }
+
+#[test]
+fn ask_here_is_refused_headlessly_without_changing_the_document() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
+    let before = (s.doc.to_json(), s.undo.len());
+    let error = s.execute("ui.ask_here", &json!({})).unwrap_err().to_string();
+    assert!(error.contains("headless session"), "{error}");
+    assert_eq!((s.doc.to_json(), s.undo.len()), before);
+    let spec = crate::find_command("ui.ask_here").unwrap();
+    assert_eq!((spec.shortcut, spec.tab, spec.undoable), (Some("Ctrl+K"), "", false));
+}

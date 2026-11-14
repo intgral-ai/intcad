@@ -17,8 +17,21 @@
 //! to the window as before; a picture of the window shows the overlay. Files, new designs and
 //! commands that need the window (`view.pick`, panel layout) are refused while the turn runs on a
 //! copy: they would act on the open design, or on nothing.
+//!
+//! The copy computes off the window thread. A request for it moves the copy to a worker, which
+//! runs the request, works out the copy's placed model for the overlay and sends the copy back;
+//! the window meanwhile draws the last overlay, answers everything else, and shows which step
+//! computes on the running card and on the view's agent chip, whose Stop puts the copy back as it
+//! was before that request. Requests for the copy that arrive meanwhile wait their turn, in order.
+//! The card's bodies and volumes are worked out there too, once the turn ends. Within the app's
+//! wait ([`crate::dialogs::APPLY_AT_ONCE`]) a request is answered in the same frame; without
+//! threads (tests, headless, the web: [`SolveApp::apply_off_thread`] unset) everything runs here.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use solidcraft_engine::doc::{Document, ModelState};
@@ -49,6 +62,9 @@ pub(crate) struct Copy {
     start_doc: Arc<Document>,
     /// The commands that changed the copy, in order, as Accept replays them.
     steps: Vec<(String, Value)>,
+    /// The replies of the steps not yet put in words (words are made on the window thread, in
+    /// the user's language and units).
+    unworded: Vec<Option<Value>>,
     /// Each step in words, for the card.
     words: Vec<String>,
     /// The copy's placed model, kept until the next step changes it.
@@ -56,7 +72,7 @@ pub(crate) struct Copy {
     /// Counts the copy's changes, so the overlay knows when to draw it again.
     changes: u64,
     /// Time spent running the agent's requests on the copy (ms).
-    pub(crate) busy_ms: f64,
+    busy_ms: f64,
 }
 
 /// Where a preview is.
@@ -64,16 +80,84 @@ pub(crate) struct Copy {
 pub enum Phase {
     /// The turn runs: its changes go to the copy.
     Running,
-    /// The turn ended with changes: the card waits for Accept or Reject.
+    /// The turn ended with changes; the card's bodies and volumes are being worked out.
+    Summing,
+    /// The card waits for Accept or Reject.
     Review,
+}
+
+/// Where the copy is.
+enum Slot {
+    /// Here, on the window thread (boxed: the copy is large, the other states small).
+    Here(Box<Copy>),
+    /// On a worker, computing.
+    Away(Away),
+    /// Its worker ended without sending it back: nothing more can run on it.
+    Lost,
+}
+
+/// What a worker computes on the copy.
+enum Work {
+    /// One of the agent's requests, answered once the copy is back.
+    Request(ControlRequest),
+    /// The card's lists, once the turn ended.
+    Card,
+}
+
+/// What the worker sends back with the copy.
+enum Done {
+    /// The request's reply, and the copy as it was before it (for Stop).
+    Reply(Value, Box<Saved>),
+    /// The card's lists.
+    Card(Lists),
+}
+
+type Lists = (Vec<BodyChange>, Vec<BodyChange>, Vec<BodyChange>);
+
+/// The copy, away on a worker.
+struct Away {
+    done: Receiver<(Box<Copy>, Done)>,
+    work: Work,
+    /// When it left (ms).
+    started: f64,
+    /// Each step's command as the toolbar names it, and the step computing (from 1).
+    labels: Vec<String>,
+    now: Arc<AtomicUsize>,
+    /// The person stopped it, or its turn went: the copy goes back to how it was before it.
+    stopped: bool,
+}
+
+impl Away {
+    /// What the chip and the running card say: the command computing, and in a batch which step
+    /// it is (`3/21 · Extrude`).
+    fn shown(&self) -> String {
+        let total = self.labels.len();
+        let now = self.now.load(Ordering::Relaxed).clamp(1, total.max(1));
+        let label = self.labels.get(now - 1).cloned().unwrap_or_default();
+        if total > 1 { format!("{now}/{total} · {label}") } else { label }
+    }
 }
 
 /// The preview of the conversation's design: one at a time.
 pub(crate) struct Preview {
-    pub(crate) copy: Copy,
+    slot: Slot,
     pub(crate) phase: Phase,
     /// Ties the card in the conversation to this preview.
     pub(crate) id: u64,
+    /// The app's wait for a worker (`None`: no threads, everything runs here).
+    wait: Option<Duration>,
+    /// Requests for the copy behind the one computing, in order.
+    queued: VecDeque<ControlRequest>,
+    /// What the overlay draws while the copy is away: its placed model, for its change count.
+    shown: Option<(u64, Arc<ModelState>)>,
+    /// The copy's steps so far, in words (for the running card, also while the copy is away).
+    pub(crate) words: Vec<String>,
+    /// How many steps Accept would replay.
+    pub(crate) steps: usize,
+    /// Time spent computing on the copy (ms).
+    pub(crate) busy_ms: f64,
+    /// The turn ended while the copy was away: the card is made once it is back.
+    end_due: bool,
 }
 
 /// What became of a reviewed turn.
@@ -115,16 +199,12 @@ impl Copy {
             start,
             start_doc: session.doc.clone(),
             steps: Vec::new(),
+            unworded: Vec::new(),
             words: Vec::new(),
             after: None,
             changes: 0,
             busy_ms: 0.0,
         }
-    }
-
-    /// The commands Accept replays.
-    pub(crate) fn steps(&self) -> &[(String, Value)] {
-        &self.steps
     }
 
     /// The copy's placed model, worked out once per change.
@@ -135,11 +215,99 @@ impl Copy {
         self.after.clone()
     }
 
-    fn record(&mut self, id: &str, params: &Value, result: Option<&Value>, units: summary::Units) {
+    fn record(&mut self, id: &str, params: &Value, result: Option<&Value>) {
         self.steps.push((id.to_string(), params.clone()));
-        self.words.push(summary::step(id, params, result, units).unwrap_or_else(|| id.to_string()));
+        self.unworded.push(result.cloned());
         self.after = None;
         self.changes += 1;
+    }
+
+    /// Put the steps recorded since last time in words.
+    fn word(&mut self, units: summary::Units) {
+        let start = self.words.len();
+        for (i, result) in std::mem::take(&mut self.unworded).into_iter().enumerate() {
+            let Some((id, params)) = self.steps.get(start + i) else { break };
+            self.words.push(summary::step(id, params, result.as_ref(), units).unwrap_or_else(|| id.clone()));
+        }
+    }
+
+    /// The copy as it is, to go back to if the request about to run is stopped. Not an engine
+    /// checkpoint: those are the agent's own (`edit.checkpoint`), and taking or dropping one here
+    /// would use theirs up.
+    fn save(&self) -> Saved {
+        let s = &self.session;
+        Saved {
+            at: solidcraft_engine::Snapshot {
+                label: String::new(),
+                doc: s.doc.clone(),
+                active_sketch: s.active_sketch,
+                pending_moves: s.pending_moves.clone(),
+                visibility: s.visibility.clone(),
+            },
+            undo: s.undo.clone(),
+            redo: s.redo.clone(),
+            revision: s.revision,
+            steps: self.steps.len(),
+            changes: self.changes,
+        }
+    }
+
+    /// Back to `saved`: as if the request after it never ran (its revision too, so the agent's
+    /// stamp from before it still holds).
+    fn restore(&mut self, saved: Saved) {
+        let s = &mut self.session;
+        let moved = !Arc::ptr_eq(&s.doc, &saved.at.doc) || s.active_sketch != saved.at.active_sketch || s.pending_moves != saved.at.pending_moves;
+        s.doc = saved.at.doc;
+        s.active_sketch = saved.at.active_sketch;
+        s.pending_moves = saved.at.pending_moves;
+        s.visibility = saved.at.visibility;
+        s.undo = saved.undo;
+        s.redo = saved.redo;
+        s.selection.clear();
+        if moved {
+            s.refresh();
+        }
+        s.revision = saved.revision;
+        self.steps.truncate(saved.steps);
+        self.unworded.truncate(saved.steps.saturating_sub(self.words.len()));
+        self.words.truncate(saved.steps);
+        self.after = None;
+        self.changes = saved.changes;
+    }
+}
+
+/// The copy before a request ([`Copy::save`]).
+struct Saved {
+    at: solidcraft_engine::Snapshot,
+    undo: Vec<solidcraft_engine::Snapshot>,
+    redo: Vec<solidcraft_engine::Snapshot>,
+    revision: u64,
+    steps: usize,
+    changes: u64,
+}
+
+impl Preview {
+    fn here(&self) -> Option<&Copy> {
+        match &self.slot {
+            Slot::Here(copy) => Some(copy.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// Copy what the window shows of the copy (words, counts, the overlay's model).
+    fn mirror(&mut self, units: summary::Units) {
+        let Slot::Here(copy) = &mut self.slot else { return };
+        copy.word(units);
+        self.words = copy.words.clone();
+        self.steps = copy.steps.len();
+        self.busy_ms = copy.busy_ms;
+        // Worked out with the copy, on its worker. Not there (the copy went back to before a
+        // stopped request): what was drawn before that request still shows the copy.
+        if copy.steps.is_empty() {
+            self.shown = None;
+        } else if let Some(after) = copy.after.clone() {
+            self.shown = Some((copy.changes, after));
+        }
     }
 }
 
@@ -176,27 +344,24 @@ pub(crate) fn refusal() -> Value {
     json!({"ok": false, "error": "not available while your changes are previewed on a copy of the design: the user accepts or rejects them when you finish; send the design changes only"})
 }
 
-fn execute(session: &mut Session, id: &str, params: Value) -> Result<Value, String> {
-    session.execute(id, &params).map_err(|e| e.to_string())
-}
-
 /// A change command (one that the gate counts as a change), as Accept replays it.
 fn changes_the_design(id: &str, params: &Value) -> bool {
     matches!(gate::command(id, params, usize::MAX), gate::Verdict::Run { change: true })
 }
 
-/// Run one of the agent's requests on the copy and answer it as the window would have.
-pub(crate) fn answer(copy: &mut Copy, req: &ControlRequest, units: summary::Units) -> Value {
+/// Run one of the agent's requests (`method`, `params`) on the copy and answer it as the window
+/// would have. `now`: the step computing, counted from 1.
+fn answer(copy: &mut Copy, method: &str, params: &Value, now: &AtomicUsize) -> Value {
     let started = crate::now_ms();
-    let reply = answer_inner(copy, req, units);
+    let reply = answer_inner(copy, method, params, now);
     copy.busy_ms += crate::now_ms() - started;
     reply
 }
 
-fn answer_inner(copy: &mut Copy, req: &ControlRequest, units: summary::Units) -> Value {
+fn answer_inner(copy: &mut Copy, method: &str, params: &Value, now: &AtomicUsize) -> Value {
     // The stale-edit guard holds on the copy as it does on the design: a write that names the
     // revision it read runs only on that revision of the copy.
-    let expected = match crate::execution_guard::parse_expected_document(&req.params) {
+    let expected = match crate::execution_guard::parse_expected_document(params) {
         Ok(expected) => expected,
         Err(error) => return crate::execution_guard::refusal_json(&error),
     };
@@ -210,11 +375,11 @@ fn answer_inner(copy: &mut Copy, req: &ControlRequest, units: summary::Units) ->
             return crate::execution_guard::refusal_json(&error);
         }
     }
-    let level = match crate::control::request_param_check(&req.method, &req.params) {
+    let level = match crate::control::request_param_check(method, params) {
         Ok(level) => level,
         Err(e) => return json!({"ok": false, "error": e}),
     };
-    let mut p = req.params.clone();
+    let mut p = params.clone();
     if let Some(o) = p.as_object_mut() {
         for key in ["allow_paths", "design_folders", "param_check", "expectedDocument"] {
             o.remove(key);
@@ -224,7 +389,7 @@ fn answer_inner(copy: &mut Copy, req: &ControlRequest, units: summary::Units) ->
     if let Some(level) = level {
         copy.session.param_check = level;
     }
-    let mut reply = run(copy, &req.method, &p, units);
+    let mut reply = run(copy, method, &p, now);
     copy.session.param_check = own;
     if let (Some(level), Some(o)) = (level, reply.as_object_mut()) {
         o.insert("param_check".into(), json!(level.name()));
@@ -246,15 +411,31 @@ fn err(e: impl std::fmt::Display) -> Value {
     json!({"ok": false, "error": e.to_string()})
 }
 
-fn run(copy: &mut Copy, method: &str, p: &Value, units: summary::Units) -> Value {
+/// A batch's steps run on the copy, counting each as it starts.
+struct Counting<'a> {
+    session: &'a mut Session,
+    now: &'a AtomicUsize,
+}
+
+fn execute_counting(c: &mut Counting<'_>, id: &str, params: Value) -> Result<Value, String> {
+    c.now.fetch_add(1, Ordering::Relaxed);
+    c.session.execute(id, &params).map_err(|e| e.to_string())
+}
+
+fn execute_history(c: &mut Counting<'_>, id: &str, params: Value) -> Result<Value, String> {
+    c.session.execute(id, &params).map_err(|e| e.to_string())
+}
+
+fn run(copy: &mut Copy, method: &str, p: &Value, now: &AtomicUsize) -> Value {
     match method {
         "engine.execute" | "command" => {
             let Some(id) = crate::control::execute_command(p) else { return err("missing `command`") };
             let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
+            now.store(1, Ordering::Relaxed);
             match copy.session.execute(id, &params) {
                 Ok(v) => {
                     if changes_the_design(id, &params) {
-                        copy.record(id, &params, Some(&v), units);
+                        copy.record(id, &params, Some(&v));
                     }
                     ok(v)
                 }
@@ -272,11 +453,11 @@ fn run(copy: &mut Copy, method: &str, p: &Value, units: summary::Units) -> Value
                 return ok(refusal.reply(steps.len()));
             }
             let reply = solidcraft_engine::batch::run_document_steps(
-                &mut copy.session,
+                &mut Counting { session: &mut copy.session, now },
                 steps,
                 p,
-                execute,
-                execute,
+                execute_counting,
+                execute_history,
                 solidcraft_engine::batch::CheckpointPolicy::Required,
             );
             // What stayed on the copy: every step, none (rolled back), or the steps before the
@@ -291,7 +472,7 @@ fn run(copy: &mut Copy, method: &str, p: &Value, units: summary::Units) -> Value
                 let Some(id) = crate::control::batch_step_command(step) else { continue };
                 let params = step.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
                 if changes_the_design(id, &params) {
-                    copy.record(id, &params, results.get(i), units);
+                    copy.record(id, &params, results.get(i));
                 }
             }
             ok(reply)
@@ -304,9 +485,254 @@ fn run(copy: &mut Copy, method: &str, p: &Value, units: summary::Units) -> Value
     }
 }
 
+/// What a worker is asked to do with the copy.
+enum Ask {
+    Request { method: String, params: Value },
+    Card { before: Option<Arc<ModelState>> },
+}
+
+/// Do `ask` with the copy (on a worker, or here without threads). A panic in the engine is an
+/// error reply: the copy always comes back.
+fn compute(copy: &mut Copy, ask: Ask, now: &AtomicUsize) -> Done {
+    match ask {
+        Ask::Request { method, params } => {
+            let saved = Box::new(copy.save());
+            let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| answer(copy, &method, &params, now)))
+                .unwrap_or_else(|_| err(format!("`{method}` failed on the copy of the design")));
+            // The overlay's model, worked out here rather than on the window thread.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| copy.after()));
+            Done::Reply(reply, saved)
+        }
+        Ask::Card { before } => {
+            let after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| copy.after())).ok().flatten();
+            let lists = match (before, after) {
+                (Some(b), Some(a)) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body_changes(&b, &a))).unwrap_or_default(),
+                _ => Default::default(),
+            };
+            Done::Card(lists)
+        }
+    }
+}
+
+/// The toolbar's name for each step of a request for the copy.
+fn labels(method: &str, params: &Value) -> Vec<String> {
+    let name = |id: &str| solidcraft_engine::find_command(id).map_or_else(|| id.to_string(), |c| crate::i18n::tr_label(c.label).to_string());
+    match method {
+        "engine.batch" => {
+            params.get("commands").and_then(Value::as_array).map_or(&[][..], Vec::as_slice).iter().filter_map(crate::control::batch_step_command).map(name).collect()
+        }
+        "engine.execute" | "command" => crate::control::execute_command(params).map(name).into_iter().collect(),
+        _ => vec![method.to_string()],
+    }
+}
+
+/// What became of a copy sent away.
+enum Sent {
+    /// Done already (within the app's wait, or here without threads).
+    Back(Box<(Box<Copy>, Done, Work)>),
+    /// Computing on a worker.
+    Away,
+    /// The copy was not here, or its worker ended without it.
+    Lost,
+}
+
+/// Send the copy away to do `ask`: on a worker when the app has threads, here otherwise.
+fn send_away(preview: &mut Preview, work: Work, ask: Ask, labels: Vec<String>) -> Sent {
+    let Slot::Here(mut copy) = std::mem::replace(&mut preview.slot, Slot::Lost) else {
+        refuse_lost(work);
+        return Sent::Lost;
+    };
+    let now = Arc::new(AtomicUsize::new(0));
+    let Some(wait) = preview.wait else {
+        let done = compute(&mut copy, ask, &now);
+        return Sent::Back(Box::new((copy, done, work)));
+    };
+    // The worker starts before the copy goes to it, so a refused thread leaves the copy here.
+    let (give, take) = std::sync::mpsc::channel::<(Box<Copy>, Ask)>();
+    let (tx, done) = std::sync::mpsc::channel();
+    let counting = now.clone();
+    let worker = std::thread::Builder::new().name("agent-preview".into()).spawn(move || {
+        if let Ok((mut copy, ask)) = take.recv() {
+            let done = compute(&mut copy, ask, &counting);
+            let _ = tx.send((copy, done));
+        }
+    });
+    if worker.is_err() {
+        let done = compute(&mut copy, ask, &now);
+        return Sent::Back(Box::new((copy, done, work)));
+    }
+    if let Err(std::sync::mpsc::SendError((mut copy, ask))) = give.send((copy, ask)) {
+        let done = compute(&mut copy, ask, &now);
+        return Sent::Back(Box::new((copy, done, work)));
+    }
+    let away = Away { done, work, started: crate::now_ms(), labels, now, stopped: false };
+    if !wait.is_zero() {
+        match away.done.recv_timeout(wait) {
+            Ok((copy, done)) => return Sent::Back(Box::new((copy, done, away.work))),
+            Err(RecvTimeoutError::Disconnected) => {
+                refuse_lost(away.work);
+                return Sent::Lost;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+    preview.slot = Slot::Away(away);
+    Sent::Away
+}
+
+/// The copy is gone (its worker ended without it): the request it computed is answered with an
+/// error; the slot stays [`Slot::Lost`], so the turn's later requests are refused and its preview
+/// is dropped when it ends.
+fn refuse_lost(work: Work) {
+    if let Work::Request(req) = work {
+        let _ = req.reply.send(err("the copy of the design was lost while it computed; nothing was applied"));
+    }
+}
+
+/// After the copy was lost: the requests waiting for it are refused, and once the turn has ended
+/// the preview goes, saying so, rather than waiting for a card that cannot come.
+fn lost(app: &mut SolveApp) {
+    let Some(preview) = app.agent_chat.preview.as_mut() else { return };
+    preview.slot = Slot::Lost;
+    for req in preview.queued.drain(..) {
+        let _ = req.reply.send(err("the copy of the design was lost; nothing more can be previewed in this message"));
+    }
+    if preview.phase != Phase::Running {
+        app.agent_chat.preview = None;
+        app.agent_chat.notice(tr("ui.agent_chat_review_lost").to_string(), true);
+    }
+}
+
+/// Run one of the agent's requests for the copy, now or after the one computing.
+pub(crate) fn hand_over(app: &mut SolveApp, req: ControlRequest) {
+    let Some(preview) = app.agent_chat.preview.as_mut() else { return };
+    match &preview.slot {
+        Slot::Lost => {
+            let _ = req.reply.send(err("the copy of the design was lost; nothing more can be previewed in this message"));
+        }
+        Slot::Away(_) => preview.queued.push_back(req),
+        Slot::Here(_) => start_request(app, req),
+    }
+}
+
+fn start_request(app: &mut SolveApp, req: ControlRequest) {
+    if req.refuse_cancelled_chat() {
+        return;
+    }
+    let Some(preview) = app.agent_chat.preview.as_mut() else { return };
+    req.started.store(true, Ordering::Relaxed);
+    let labels = labels(&req.method, &req.params);
+    let ask = Ask::Request { method: req.method.clone(), params: req.params.clone() };
+    match send_away(preview, Work::Request(req), ask, labels) {
+        Sent::Back(back) => {
+            let (copy, done, work) = *back;
+            come_back(app, copy, done, work, false);
+        }
+        Sent::Away => {}
+        Sent::Lost => lost(app),
+    }
+}
+
+/// The copy is back with what it did: put it here, answer the request (or make the card), and go
+/// on with what waited for it.
+fn come_back(app: &mut SolveApp, copy: Box<Copy>, done: Done, work: Work, stopped: bool) {
+    let units = summary::Units { units: &app.session.doc.units, decimals: app.preferences.length_decimals };
+    let Some(preview) = app.agent_chat.preview.as_mut() else { return };
+    preview.slot = Slot::Here(copy);
+    match (work, done) {
+        (Work::Request(req), Done::Reply(reply, saved)) => {
+            // Stopped, or its turn went: the copy goes back to how it was, the reply was given.
+            let gone = stopped || crate::control::chat_turn_cancelled(req.chat_turn.as_deref());
+            if gone {
+                if let Slot::Here(copy) = &mut preview.slot {
+                    copy.restore(*saved);
+                }
+                if !stopped {
+                    let _ = req.refuse_cancelled_chat();
+                }
+            } else {
+                let _ = req.reply.send(reply);
+            }
+            preview.mirror(units);
+        }
+        (Work::Card, Done::Card((made, changed, removed))) => {
+            preview.mirror(units);
+            preview.phase = Phase::Review;
+            let id = preview.id;
+            let words: Vec<String> = preview.words.iter().take(MAX_WORDS).cloned().collect();
+            let more = preview.words.len().saturating_sub(words.len());
+            app.agent_chat.push(Item::Review(Card { id, words, more, made, changed, removed, outcome: Outcome::Waiting }));
+            return;
+        }
+        _ => {}
+    }
+    go_on(app);
+}
+
+/// The copy is here: the next waiting request starts, or the card once the turn has ended.
+fn go_on(app: &mut SolveApp) {
+    let Some(preview) = app.agent_chat.preview.as_mut() else { return };
+    if !matches!(preview.slot, Slot::Here(_)) {
+        return;
+    }
+    if let Some(req) = preview.queued.pop_front() {
+        start_request(app, req);
+    } else if preview.end_due {
+        preview.end_due = false;
+        let before = app.session.world_state().ok();
+        sum_up(app, before);
+    }
+}
+
+/// Each frame: take the copy back from its worker once it is done.
+pub(crate) fn poll(app: &mut SolveApp, ctx: &egui::Context) {
+    let Some(preview) = app.agent_chat.preview.as_mut() else { return };
+    let Slot::Away(away) = &preview.slot else { return };
+    match away.done.try_recv() {
+        Err(TryRecvError::Empty) => {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        Ok((copy, done)) => {
+            let Slot::Away(away) = std::mem::replace(&mut preview.slot, Slot::Lost) else { return };
+            come_back(app, copy, done, away.work, away.stopped);
+            ctx.request_repaint();
+        }
+        Err(TryRecvError::Disconnected) => {
+            let Slot::Away(away) = std::mem::replace(&mut preview.slot, Slot::Lost) else { return };
+            // A stopped request was answered already.
+            if !away.stopped {
+                refuse_lost(away.work);
+            }
+            lost(app);
+        }
+    }
+}
+
+/// Since when the copy has been computing (ms), and what, for the view's agent chip.
+pub(crate) fn computing(chat: &super::AgentChat) -> Option<(f64, String)> {
+    match &chat.preview.as_ref()?.slot {
+        Slot::Away(away) if !away.stopped && matches!(away.work, Work::Request(_)) => Some((away.started, away.shown())),
+        _ => None,
+    }
+}
+
+/// Stop the agent's request computing on the copy: it is answered as stopped now, and the copy
+/// goes back to how it was before it once its worker is done. `false`: nothing computes.
+pub(crate) fn stop(chat: &mut super::AgentChat) -> bool {
+    let Some(Slot::Away(away)) = chat.preview.as_mut().map(|p| &mut p.slot) else { return false };
+    if away.stopped {
+        return false;
+    }
+    let Work::Request(req) = &away.work else { return false };
+    away.stopped = true;
+    let label = away.shown();
+    let _ = req.reply.send(crate::control::stopped_command_response(&req.method, &req.params, req.guarded.is_some(), &label));
+    true
+}
+
 /// The bodies a turn made, changed and removed: placed bodies by name, compared by their shared
 /// shape (a body the turn left alone is the very same body), with their volumes for the card.
-pub fn body_changes(before: &ModelState, after: &ModelState) -> (Vec<BodyChange>, Vec<BodyChange>, Vec<BodyChange>) {
+pub fn body_changes(before: &ModelState, after: &ModelState) -> Lists {
     let volume = |b: &solidcraft_engine::doc::ModelBody| b.body.volume_at(VOLUME_TOL);
     let (mut made, mut changed, mut removed) = (Vec::new(), Vec::new(), Vec::new());
     for a in &after.bodies {
@@ -342,37 +768,87 @@ pub(crate) fn begin(app: &mut SolveApp) {
     }
     chat.next_preview += 1;
     let id = chat.next_preview;
-    chat.preview = Some(Preview { copy: Copy::of(&mut app.session), phase: Phase::Running, id });
+    chat.preview = Some(Preview {
+        slot: Slot::Here(Box::new(Copy::of(&mut app.session))),
+        phase: Phase::Running,
+        id,
+        wait: app.apply_off_thread,
+        queued: VecDeque::new(),
+        shown: None,
+        words: Vec::new(),
+        steps: 0,
+        busy_ms: 0.0,
+        end_due: false,
+    });
 }
 
-/// The turn ended: a copy it changed waits for the user on a card; an unchanged one goes.
-pub(crate) fn end(chat: &mut super::AgentChat, session: &mut Session) {
+/// The turn ended: a copy it changed waits for the user on a card (made by [`settle`], once the
+/// copy is here); an unchanged one goes.
+pub(crate) fn end(chat: &mut super::AgentChat) {
     let Some(preview) = chat.preview.as_mut().filter(|p| p.phase == Phase::Running) else { return };
-    if preview.copy.steps.is_empty() {
-        chat.preview = None;
+    match &preview.slot {
+        Slot::Lost => {
+            chat.preview = None;
+            chat.notice(tr("ui.agent_chat_review_lost").to_string(), true);
+            return;
+        }
+        Slot::Away(_) => {
+            preview.phase = Phase::Summing;
+            preview.end_due = true;
+            return;
+        }
+        Slot::Here(copy) if copy.steps.is_empty() && preview.queued.is_empty() => {
+            chat.preview = None;
+            return;
+        }
+        Slot::Here(_) => {}
+    }
+    preview.phase = Phase::Summing;
+    preview.end_due = true;
+}
+
+/// The turn's card: its lists are worked out with the copy (on a worker), then it waits.
+fn sum_up(app: &mut SolveApp, before: Option<Arc<ModelState>>) {
+    let Some(preview) = app.agent_chat.preview.as_mut() else { return };
+    if preview.here().is_some_and(|c| c.steps.is_empty()) {
+        app.agent_chat.preview = None;
         return;
     }
-    preview.phase = Phase::Review;
-    let id = preview.id;
-    let before = session.world_state().ok();
-    let after = preview.copy.after();
-    let (made, changed, removed) = match (before, after) {
-        (Some(b), Some(a)) => body_changes(&b, &a),
-        _ => Default::default(),
-    };
-    let words: Vec<String> = preview.copy.words.iter().take(MAX_WORDS).cloned().collect();
-    let more = preview.copy.words.len().saturating_sub(words.len());
-    chat.push(Item::Review(Card { id, words, more, made, changed, removed, outcome: Outcome::Waiting }));
+    let labels = vec![tr("ui.agent_chat_review_title").to_string()];
+    match send_away(preview, Work::Card, Ask::Card { before }, labels) {
+        Sent::Back(back) => {
+            let (copy, done, work) = *back;
+            come_back(app, copy, done, work, false);
+        }
+        Sent::Away => {}
+        Sent::Lost => lost(app),
+    }
 }
 
-/// A preview waits for Accept or Reject.
+/// After a turn ended: the card is made once the copy is here. Called each frame and right after
+/// the turn's end.
+pub(crate) fn settle(app: &mut SolveApp) {
+    if app.agent_chat.preview.as_ref().is_some_and(|p| p.phase == Phase::Summing && p.end_due && matches!(p.slot, Slot::Here(_))) {
+        go_on(app);
+    }
+}
+
+/// A preview waits for Accept or Reject (or its card is being made).
 pub(crate) fn waiting(chat: &super::AgentChat) -> bool {
-    chat.preview.as_ref().is_some_and(|p| p.phase == Phase::Review)
+    chat.preview.as_ref().is_some_and(|p| p.phase != Phase::Running)
 }
 
 /// The running turn's changes go to a copy.
 pub(crate) fn running(chat: &super::AgentChat) -> bool {
     chat.preview.as_ref().is_some_and(|p| p.phase == Phase::Running)
+}
+
+/// The running card: the steps so far and what computes now. `None`: no turn runs on a copy, or
+/// it has not changed it yet.
+pub(crate) fn progress(chat: &super::AgentChat) -> Option<(Vec<String>, Option<(f64, String)>)> {
+    let preview = chat.preview.as_ref().filter(|p| p.phase != Phase::Review)?;
+    let computing = computing(chat);
+    (preview.steps > 0 || computing.is_some()).then(|| (preview.words.clone(), computing))
 }
 
 fn set_outcome(chat: &mut super::AgentChat, id: u64, outcome: Outcome) {
@@ -388,16 +864,16 @@ fn set_outcome(chat: &mut super::AgentChat, id: u64, outcome: Outcome) {
 /// Accept: replay the turn's steps on the open design as one undo step, unless the design changed
 /// since the preview began. `Err`: why nothing changed.
 pub fn accept(app: &mut SolveApp, id: u64) -> Result<(), String> {
-    let Some(preview) = app.agent_chat.preview.as_ref().filter(|p| p.id == id && p.phase == Phase::Review) else {
+    let Some(copy) = app.agent_chat.preview.as_ref().filter(|p| p.id == id && p.phase == Phase::Review).and_then(Preview::here) else {
         return Err(tr("ui.agent_chat_review_gone").to_string());
     };
-    if app.session.document_stamp() != preview.copy.start {
+    if app.session.document_stamp() != copy.start {
         let why = tr("ui.agent_chat_review_stale").to_string();
         app.agent_chat.notice(why.clone(), true);
         return Err(why);
     }
-    let steps = preview.copy.steps.clone();
-    let start_doc = preview.copy.start_doc.clone();
+    let steps = copy.steps.clone();
+    let start_doc = copy.start_doc.clone();
     let start_undo = app.session.undo.len();
     let label = app.agent_chat.items.iter().rev().find_map(|i| match i {
         Item::User { text, .. } => Some(text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(48).collect::<String>()),
@@ -438,28 +914,33 @@ pub fn reject(app: &mut SolveApp, id: u64) {
     chat.review_note = Some(REJECTED_NOTE.to_string());
 }
 
-/// Drop a preview without a word to the agent (New chat: its session starts over).
+/// Drop a preview without a word to the agent (New chat: its session starts over). A copy away on
+/// a worker is left to finish unseen; requests waiting for it are refused.
 pub(crate) fn forget(chat: &mut super::AgentChat) {
-    if let Some(id) = chat.preview.take().map(|p| p.id) {
-        set_outcome(chat, id, Outcome::Rejected);
+    if let Some(preview) = chat.preview.take() {
+        for req in preview.queued {
+            let _ = req.reply.send(refusal());
+        }
+        if let Slot::Away(Away { work: Work::Request(req), stopped: false, .. }) = preview.slot {
+            let _ = req.reply.send(refusal());
+        }
+        set_outcome(chat, preview.id, Outcome::Rejected);
     }
     chat.review_note = None;
 }
 
 /// What the view draws over the design while a turn's changes are previewed: a key that changes
-/// whenever the drawing would, the open design's placed model, and the copy's.
+/// whenever the drawing would, the open design's placed model, and the copy's (as last worked
+/// out: while the copy computes, the overlay stays as it was).
 pub(crate) fn overlay(app: &mut SolveApp) -> Option<(u64, Arc<ModelState>, Arc<ModelState>)> {
     let revision = app.session.revision;
     let uid = app.session.uid;
-    let preview = app.agent_chat.preview.as_mut()?;
-    if preview.copy.steps.is_empty() {
-        return None;
-    }
-    let after = preview.copy.after()?;
+    let preview = app.agent_chat.preview.as_ref()?;
+    let (changes, after) = preview.shown.clone()?;
     let key = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        ("agent_chat_preview", preview.id, preview.copy.changes, revision, uid).hash(&mut h);
+        ("agent_chat_preview", preview.id, changes, revision, uid).hash(&mut h);
         h.finish()
     };
     let before = app.session.world_state().ok()?;

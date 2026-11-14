@@ -15599,7 +15599,7 @@ fn accept_gives_the_same_step_as_running_the_steps_directly() {
     let requests = [("engine.batch", batch.clone()), ("engine.execute", cylinder.clone()), ("engine.execute", parameter.clone())];
     let replies = finish_previewed(&mut app, &tx, &script, &requests);
     assert!(replies.iter().all(|r| r["ok"] == true), "{replies:?}");
-    assert_eq!(app.agent_chat.preview.as_ref().map(|p| p.copy.steps().len()), Some(4));
+    assert_eq!(app.agent_chat.preview.as_ref().map(|p| p.steps), Some(4));
     let id = review_card(&app).id;
     review::accept(&mut app, id).unwrap();
 
@@ -15683,7 +15683,7 @@ fn a_previewed_turn_refuses_files_and_keeps_the_guard_on_the_copy() {
     assert!(replies[1]["documentStamp"].is_object(), "{}", replies[1]);
     assert_eq!(replies[2]["errorDetails"]["code"], "STALE_DOCUMENT", "the copy moved on: {}", replies[2]);
     assert_eq!(replies[3]["result"]["rolled_back"], true, "{}", replies[3]);
-    assert_eq!(app.agent_chat.preview.as_ref().map(|p| p.copy.steps().len()), Some(1), "only the guarded box stays to replay");
+    assert_eq!(app.agent_chat.preview.as_ref().map(|p| p.steps), Some(1), "only the guarded box stays to replay");
     let card = review_card(&app);
     assert_eq!(card.made.len(), 1, "{card:?}");
     review::accept(&mut app, card.id).unwrap();
@@ -15790,4 +15790,311 @@ fn preview_cost_on_a_big_part() {
         count * count,
         card.changed.iter().map(|b| (&b.name, b.before, b.after)).collect::<Vec<_>>(),
     );
+}
+
+/// Frames until `rx` has the reply (at most 60 s), as the window runs them.
+fn frames_until(app: &mut SolveApp, rx: &Receiver<Value>) -> Value {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        frame(app);
+        if let Ok(reply) = rx.try_recv() {
+            return reply;
+        }
+        assert!(std::time::Instant::now() < until, "no reply within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// With threads, the copy computes on a worker: the window's frame returns at once, the view's
+/// agent chip and the running card say what computes, the design is untouched meanwhile, and the
+/// card and Accept work as without threads.
+#[test]
+fn a_previewed_turn_computes_off_the_window_thread() {
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    app.apply_off_thread = Some(std::time::Duration::ZERO);
+    let stamp = app.session.document_stamp();
+    // The preview took the app's wait when the turn began: start the turn again with threads.
+    review::forget(&mut app.agent_chat);
+    review::begin(&mut app);
+    let first = ask(&tx, "engine.execute", boxed(0.0));
+    let second = ask(&tx, "engine.execute", boxed(20.0));
+    frame(&mut app);
+    let (_, what) = app.agent_computing().expect("the view's chip says the copy computes");
+    assert!(!what.is_empty());
+    let (words, computing) = review::progress(&app.agent_chat).expect("the running card shows");
+    assert!(words.is_empty() && computing.is_some(), "{words:?}");
+    assert_eq!(app.session.document_stamp(), stamp, "the design is untouched while the copy computes");
+    assert_eq!(frames_until(&mut app, &first)["ok"], true);
+    assert_eq!(frames_until(&mut app, &second)["ok"], true, "the request behind it ran next");
+    assert_eq!(app.agent_chat.preview.as_ref().map(|p| p.steps), Some(2));
+    ended(&script, "");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !app.agent_chat.items.iter().any(|i| matches!(i, Item::Review(_))) {
+        frame(&mut app);
+        assert!(std::time::Instant::now() < until, "no card within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let card = review_card(&app);
+    assert_eq!((card.words.len(), card.made.len()), (2, 2), "{card:?}");
+    assert!(app.agent_computing().is_none());
+    assert_eq!(app.session.document_stamp(), stamp);
+    review::accept(&mut app, card.id).unwrap();
+    assert_eq!(body_count(&app.session), 2);
+}
+
+/// Stop on the view's chip answers the request computing on the copy as stopped, and the copy goes
+/// back to how it was before it: nothing of it is previewed or replayed.
+#[test]
+fn stop_puts_the_copy_back_as_it_was_before_the_request() {
+    let (mut app, tx, script, _ctx) = previewed_turn("a box, then stop");
+    app.apply_off_thread = Some(std::time::Duration::ZERO);
+    review::forget(&mut app.agent_chat);
+    review::begin(&mut app);
+    let kept = ask(&tx, "engine.execute", boxed(0.0));
+    frame(&mut app);
+    assert_eq!(frames_until(&mut app, &kept)["ok"], true);
+    let stopped = ask(&tx, "engine.batch", json!({"commands": [boxed(20.0), boxed(40.0)]}));
+    frame(&mut app);
+    assert!(app.agent_computing().is_some(), "the batch computes on the copy");
+    app.stop_agent_command();
+    let reply = stopped.try_recv().expect("answered at once");
+    assert_eq!(reply["stopped"], true, "{reply}");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while review::computing(&app.agent_chat).is_some() || app.agent_chat.preview.as_ref().is_some_and(|p| p.steps != 1) {
+        frame(&mut app);
+        assert!(std::time::Instant::now() < until, "the copy did not come back within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    ended(&script, "");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !app.agent_chat.items.iter().any(|i| matches!(i, Item::Review(_))) {
+        frame(&mut app);
+        assert!(std::time::Instant::now() < until, "no card within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let card = review_card(&app);
+    assert_eq!((card.words.len(), card.made.len()), (1, 1), "only the box before Stop: {card:?}");
+    review::accept(&mut app, card.id).unwrap();
+    assert_eq!(body_count(&app.session), 1);
+}
+
+/// Measures what the window thread spends while a turn's steps compute on the copy off it, on the
+/// plate of `preview_cost_on_a_big_part`: the longest frame, how many frames ran, and the time to
+/// the replies, the overlay and the card. Ignored: it prints numbers rather than checking them
+/// (`cargo test -p solidcraft-ui-egui --lib preview_cost_off -- --ignored --nocapture`).
+#[test]
+#[ignore = "measurement"]
+fn preview_cost_off_the_window_thread() {
+    let ms = |since: std::time::Instant| since.elapsed().as_secs_f64() * 1000.0;
+    let (count, spacing) = (20, 20);
+    let (mut app, script, ctx) = app_with_script();
+    app.session.execute("solid.box", &json!({"length": 420, "width": 420, "height": 10, "body_name": "Plate"})).unwrap();
+    app.session
+        .execute("solid.cylinder", &json!({"radius": 3, "height": 12, "base": [10, 10, -1], "operation": "cut", "targets": ["Plate"], "name": "Hole"}))
+        .unwrap();
+    app.session
+        .execute(
+            "solid.pattern.rectangular",
+            &json!({"features": ["Hole"], "dir1": [1, 0, 0], "count1": count, "spacing1": spacing, "dir2": [0, 1, 0], "count2": count, "spacing2": spacing}),
+        )
+        .unwrap();
+    let _ = app.session.world_state();
+    app.apply_off_thread = Some(crate::dialogs::APPLY_AT_ONCE);
+    app.preferences.agent_chat_preview = true;
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    send(&mut app, &ctx, "a boss and a bore".into());
+    let turn = [
+        json!({"command": "solid.box", "params": {"length": 60, "width": 40, "height": 15, "corner": [180, 190, 10], "operation": "join", "targets": ["Plate"]}}),
+        json!({"command": "solid.cylinder", "params": {"radius": 12, "height": 40, "base": [210, 210, -5], "operation": "cut", "targets": ["Plate"]}}),
+    ];
+    // One frame as the window runs it: the chat, the control queue, the preview overlay.
+    let mut times: Vec<f64> = Vec::new();
+    let mut run_frame = |app: &mut SolveApp| {
+        let t = std::time::Instant::now();
+        frame(app);
+        crate::preview::update(app, &ctx);
+        times.push(ms(t));
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    };
+    let t = std::time::Instant::now();
+    let replies: Vec<_> = turn.iter().map(|step| ask(&tx, "engine.execute", step.clone())).collect();
+    let mut answered = Vec::new();
+    while answered.len() < replies.len() {
+        run_frame(&mut app);
+        while let Some(reply) = replies.get(answered.len()).and_then(|r| r.try_recv().ok()) {
+            answered.push(reply);
+        }
+    }
+    let steps_ms = ms(t);
+    assert!(answered.iter().all(|r| r["ok"] == true), "{answered:?}");
+    while app.preview.building() || !app.preview.active {
+        run_frame(&mut app);
+    }
+    let overlay_ms = ms(t);
+    ended(&script, "");
+    while !app.agent_chat.items.iter().any(|i| matches!(i, Item::Review(_))) {
+        run_frame(&mut app);
+    }
+    let card_ms = ms(t);
+    let card = review_card(&app);
+    let t = std::time::Instant::now();
+    review::accept(&mut app, card.id).unwrap();
+    let accept_ms = ms(t);
+    let frames = times.len();
+    let over_16 = times.iter().filter(|t| **t > 16.0).count();
+    times.sort_by(|a, b| b.total_cmp(a));
+    let median = times.get(frames / 2).copied().unwrap_or(0.0);
+    let longest: Vec<String> = times.iter().take(5).map(|t| format!("{t:.1}")).collect();
+    println!(
+        "preview off the window thread: plate 420 x 420 x 10 mm with {} holes\n\
+         - 2 steps answered after {steps_ms:.0} ms; overlay drawn after {overlay_ms:.0} ms; card after {card_ms:.0} ms\n\
+         - {frames} frames meanwhile (sleeping 16 ms between frames): median {median:.2} ms, {over_16} over 16 ms, the five longest {} ms\n\
+         - Accept: {accept_ms:.2} ms; card {:?}",
+        count * count,
+        longest.join(", "),
+        card.changed.iter().map(|b| (&b.name, b.before, b.after)).collect::<Vec<_>>(),
+    );
+}
+
+// ---- Ask on the model (the "Cursor for CAD" spec, feature 3) ----
+
+/// Ask Here sends exactly the selection with the message: the same prompt and the same chips as a
+/// message sent with Attach selection ticked, and none of what was picked for the next message.
+#[test]
+fn ask_here_sends_exactly_the_selection_as_attach_selection_would() {
+    let (mut app, script, ctx) = app_with_script();
+    app.session.selection = box_selection(&mut app);
+    let selected = context::describe_selection(&mut app.session);
+    assert_eq!(selected.items.len(), 4);
+    // Something picked for the next message stays for it: Ask Here carries the selection only.
+    app.agent_chat.picked_context.items.push(context::Entry { kind: context::Kind::Other, label: "Picked plane".into(), detail: "a plane".into() });
+    ask_here::open(&mut app).unwrap();
+    assert!(app.agent_chat.ask_box.open);
+    ask_here::submit(&mut app, &ctx, "round this").unwrap();
+    assert!(!app.agent_chat.ask_box.open, "the box closes once sent");
+    assert!(app.agent_chat.open, "the conversation opens for the answer");
+    let asked = script.calls().pop().expect("a prompt");
+    let Some(Item::User { text, context: asked_context, .. }) = app.agent_chat.items.last().cloned() else { panic!("a sent message") };
+    assert_eq!(text, "round this");
+    assert_eq!(asked_context, selected, "exactly the selected items");
+    assert!(!asked.contains("Picked plane"), "{asked}");
+    assert_eq!(app.agent_chat.picked_context.items.len(), 1, "the pick waits for the next message");
+    ended(&script, "");
+    poll(&mut app, &ctx);
+
+    app.agent_chat.picked_context = Context::default();
+    app.agent_chat.attach_selection = true;
+    send(&mut app, &ctx, "round this".into());
+    let attached = script.calls().pop().expect("a prompt");
+    assert_eq!(asked, attached, "as a message with Attach selection ticked");
+    let Some(Item::User { context: attached_context, .. }) = app.agent_chat.items.last().cloned() else { panic!("a sent message") };
+    assert_eq!(asked_context, attached_context);
+}
+
+/// With nothing selected, Ask Here does not open and sends nothing; an empty question sends
+/// nothing either.
+#[test]
+fn ask_here_needs_a_selection_and_a_question() {
+    let (mut app, script, ctx) = app_with_script();
+    assert!(ask_here::open(&mut app).is_err());
+    assert!(!app.agent_chat.ask_box.open);
+    assert!(ask_here::submit(&mut app, &ctx, "what is this?").is_err());
+    app.session.selection = box_selection(&mut app);
+    assert!(ask_here::submit(&mut app, &ctx, "   ").is_err());
+    assert!(script.prompts().is_empty(), "nothing was sent");
+}
+
+/// With Preview the agent's changes on, the question's turn runs on a copy: its answer comes back
+/// as a preview card.
+#[test]
+fn ask_here_with_previews_on_runs_the_turn_on_a_copy() {
+    let (mut app, _script, ctx) = app_with_script();
+    app.preferences.agent_chat_preview = true;
+    app.session.selection = box_selection(&mut app);
+    ask_here::submit(&mut app, &ctx, "make this face 2 mm thicker").unwrap();
+    assert!(review::running(&app.agent_chat), "the turn runs on a copy");
+}
+
+/// Ask Here's key is Ctrl+K, which no other command takes by default.
+#[test]
+fn ask_here_is_on_ctrl_k_and_nothing_else_is() {
+    let (app, _script, _ctx) = app_with_script();
+    assert_eq!(crate::keymap::effective(&app, "ui.ask_here").as_deref(), Some("Ctrl+K"));
+    assert_eq!(crate::keymap::commands_for(&app, "Ctrl+K"), ["ui.ask_here"]);
+}
+
+/// The agent's own checkpoints on the copy stay its own: taking the copy's save point for Stop
+/// uses none of them up, so a checkpoint made in one request restores in a later one.
+#[test]
+fn the_agents_checkpoints_on_the_copy_survive_between_requests() {
+    let (mut app, tx, script, _ctx) = previewed_turn("checkpoint, box, back");
+    let made = ask(&tx, "engine.execute", json!({"command": "edit.checkpoint", "params": {}}));
+    frame(&mut app);
+    let made = made.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    let id = made["result"]["checkpoint"].as_u64().unwrap_or_else(|| panic!("a checkpoint id: {made}"));
+    let boxed_reply = ask(&tx, "engine.execute", boxed(0.0));
+    frame(&mut app);
+    assert_eq!(boxed_reply.recv_timeout(std::time::Duration::from_secs(30)).unwrap()["ok"], true);
+    let restored = ask(&tx, "engine.execute", json!({"command": "edit.restore_checkpoint", "params": {"checkpoint": id}}));
+    frame(&mut app);
+    let restored = restored.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    assert_eq!(restored["ok"], true, "{restored}");
+    ended(&script, "");
+}
+
+/// Stopping the turn's first change puts the copy back exactly as the turn began: the agent's
+/// retry with the stamp it read before the turn is not refused as stale.
+#[test]
+fn after_stopping_the_first_change_the_pre_turn_stamp_still_holds() {
+    let (mut app, tx, _script, _ctx) = previewed_turn("a box, stopped, then again");
+    app.apply_off_thread = Some(std::time::Duration::ZERO);
+    review::forget(&mut app.agent_chat);
+    review::begin(&mut app);
+    let stamp = app.session.document_stamp();
+    let guarded = |x: f64| {
+        let mut p = boxed(x);
+        p["expectedDocument"] = json!({"documentId": stamp.document_id, "revision": stamp.revision.to_string()});
+        p
+    };
+    let stopped = ask(&tx, "engine.execute", guarded(0.0));
+    frame(&mut app);
+    app.stop_agent_command();
+    assert_eq!(stopped.try_recv().expect("answered at once")["stopped"], true);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while review::computing(&app.agent_chat).is_some() || app.agent_chat.preview.as_ref().is_some_and(|p| matches!(p.phase, review::Phase::Running) && p.steps != 0) {
+        frame(&mut app);
+        assert!(std::time::Instant::now() < until, "the copy did not come back within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let retried = ask(&tx, "engine.execute", guarded(0.0));
+    let reply = frames_until(&mut app, &retried);
+    assert_eq!(reply["ok"], true, "the pre-turn stamp holds on the copy put back: {reply}");
+}
+
+/// Ask Here sends the question and the selection only: no picture of the view, whatever Attach
+/// view says. While a card waits for Accept or Reject it sends nothing and the box stays open with
+/// the words.
+#[test]
+fn ask_here_sends_no_view_picture_and_waits_for_the_card() {
+    let (mut app, script, ctx) = app_with_script();
+    app.session.selection = box_selection(&mut app);
+    app.agent_chat.attach_view = true;
+    app.agent_chat.images = true;
+    ask_here::open(&mut app).unwrap();
+    ask_here::submit(&mut app, &ctx, "what is this?").unwrap();
+    let Some(Item::User { image, files, .. }) = app.agent_chat.items.last().cloned() else { panic!("a sent message") };
+    assert!(!image && files.is_empty(), "the question and the selection only");
+    ended(&script, "");
+    poll(&mut app, &ctx);
+
+    let (mut app, tx, script, ctx) = previewed_turn("a box");
+    let _ = finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    assert!(review::waiting(&app.agent_chat), "a card waits");
+    app.session.selection = box_selection(&mut app);
+    let prompts = script.prompts().len();
+    ask_here::open(&mut app).unwrap();
+    assert!(ask_here::submit(&mut app, &ctx, "and round it").is_err());
+    assert!(app.agent_chat.ask_box.open, "the box stays open");
+    assert_eq!(script.prompts().len(), prompts, "nothing was sent");
 }
