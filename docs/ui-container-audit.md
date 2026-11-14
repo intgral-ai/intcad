@@ -40,6 +40,7 @@ windows use the shared composition, including its header and fixed outer frame.
 | Sketch options | `sketch_palette` → `Panel` | Adaptive palette surface, preserving transparency |
 | Application bar, workspace and ribbon | `toolbar`, `shell` | Chrome hosts; adaptive card geometry comes from the shared policy |
 | Status bar | `status_bar` | Application-bar surface along the window's bottom edge; flat and full width in both layouts, allocated before History and the viewport and counted as covered by the shell |
+| Right rail and its panel | `right_rail` | Application-bar surface along the window's right edge for the rail, a panel surface on the same edge for the open item's panel; both are allocated after the status bar and before the workspace in either layout, so the view and everything anchored to it stand to their left |
 | Render settings | `render_workspace` | Panel host; existing right dock retained |
 | Preferences, managers, About, update/install/recovery/crash/issue prompts | `Window`, `Confirm` | System windows and modal sheets retain modality; these are not workspace sidebars |
 | BOM, Messages, mouse gestures, 3D mouse calibration | respective modules → `Window::show_body` | Shared header, tokenised frame and bounded body; native egui title bars/resize highlights and legacy report/width helpers removed |

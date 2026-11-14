@@ -176,6 +176,12 @@ view.
   constrained with its degrees of freedom, fully constrained, constraints conflict) and what is
   being edited (Editing Sketch1, or Editing Extrude1 while that feature's dialog is open). While
   it is on, the sketch's state no longer shows in the view's top-left corner.
+- **Right rail** (Preferences › Interface › **Right rail** turns it off). A narrow rail along
+  the window's right edge with four items, each a small drawing with its name: **Files** for
+  what is in the design's project, and under a rule **Review**, **Simulation** and
+  **Autocomplete**. Click an item to open its panel beside the rail, click it again to close
+  the panel; one panel is open at a time. Drag the panel's left edge to make it wider. The
+  open item and the width are remembered. The panels have nothing to list yet and say so.
 - **Command search (S).** Click the ribbon search field or press S to open the search popup
   below it. Results group commands by their ribbon path and show matching features and user
   parameters from this design. With an empty query, recent commands appear first, followed by

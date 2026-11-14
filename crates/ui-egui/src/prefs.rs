@@ -1330,6 +1330,14 @@ preference_settings! {
     /// A thin bar along the window's bottom edge: what is being edited, the open sketch's state
     /// and the design's units (#7243). Off by default.
     status_bar: bool = false, PAGE_LAYOUT;
+    /// A rail along the window's right edge with Files, then Review, Simulation and Autocomplete;
+    /// an item opens its panel beside the rail. Off: no rail, as before it was added.
+    right_rail: bool = true, PAGE_LAYOUT;
+    /// The rail item whose panel is open (`files`, `review`, `simulation` or `autocomplete`);
+    /// empty, or anything else, for none.
+    right_rail_open: String = String::new();
+    /// That panel's width, which the user drags at its left edge.
+    right_rail_width: f32 = crate::right_rail::DEFAULT_PANEL;
     /// The selection's length, area or distance in the view's bottom right corner (#7000). Off by
     /// default.
     quick_measure: bool = false, PAGE_GRAPHICS;
@@ -6145,6 +6153,7 @@ mod tests {
             ("viewport_background", json!([255, 255, 255]), PAGE_APPEARANCE),
             ("view_confirm_corner", json!(true), PAGE_LAYOUT),
             ("status_bar", json!(true), PAGE_LAYOUT),
+            ("right_rail", json!(false), PAGE_LAYOUT),
             ("browser_eye_left", json!(true), PAGE_LAYOUT),
             ("browser_components_open", json!(true), PAGE_LAYOUT),
             ("browser_rows_start_closed", json!(true), PAGE_LAYOUT),

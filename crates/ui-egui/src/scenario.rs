@@ -197,6 +197,10 @@ impl Harness {
             cam_mark: None,
         };
         WIDTHS.with(|m| m.borrow_mut().clear());
+        // The suite clicks and measures in the window without the right rail, which takes its
+        // width from the view and the ribbon. It stays on that window, which is also the one the
+        // `right_rail` preference keeps; the rail's own tests turn the rail on.
+        h.app.preferences.right_rail = false;
         h.install();
         h.ctx.enable_accesskit();
         h.frames(3);

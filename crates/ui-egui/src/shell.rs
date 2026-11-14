@@ -117,6 +117,11 @@ pub(crate) struct State {
     pub dialog_column: Option<Rect>,
     /// The status bar along the window's bottom edge, while it is shown (#7243).
     pub status_bar: Option<Rect>,
+    /// The right rail with its open panel, when they are drawn. The view ends where they begin.
+    pub right_rail: Option<Rect>,
+    /// The rail's open panel with the strip its left edge is dragged by, which reaches into the
+    /// view: a press there widens the panel and must not start a gesture in the view as well.
+    pub right_rail_panel: Option<Rect>,
 }
 
 /// Register the actual card, so fitting and pointer shielding use the same rectangle.
@@ -175,6 +180,7 @@ fn occluding_rects(app: &SolveApp, fitting: bool) -> Vec<Rect> {
     rects.extend(app.viewport.dialog_rect.filter(|_| app.dialog.is_some() || app.tree.redefine.is_some()));
     rects.extend(crate::view_confirm::rect(app));
     rects.extend(app.shell.status_bar.filter(|_| crate::status_bar::shown(app)));
+    rects.extend(app.shell.right_rail_panel.filter(|_| crate::right_rail::shown(app)));
     rects.retain(|r| r.is_finite() && r.is_positive());
     rects
 }

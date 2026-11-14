@@ -280,6 +280,7 @@ pub(super) fn layout(app: &mut SolveApp, ui: &mut egui::Ui) {
                             }
                         }
                         layout_check(ui, app.tr("prefs.status_bar"), app.tr("prefs.status_bar_note"), &mut app.preferences.status_bar, "status_bar");
+                        layout_check(ui, app.tr("prefs.right_rail"), app.tr("prefs.right_rail_note"), &mut app.preferences.right_rail, "right_rail");
                     });
                     ui_kit::LayoutPreview {
                         compact: app.ui.layout == crate::shell::LayoutMode::Docked,
