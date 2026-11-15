@@ -434,7 +434,7 @@ mod tests {
     use solidcraft_dfm_rules::second_gate::{
         COMPARISON_QUANTUM_MM, GeometryMismatch, GeometryTolerance, HoleWallFact, MeasuredHole, MeasuredSheet, compare,
     };
-    use solidcraft_dfm_rules::{Confirmation, EdgeKind as RuleEdgeKind, Facts as RuleFacts, Layer, Limit, Requirement};
+    use solidcraft_dfm_rules::{Confirmation, EdgeKind as RuleEdgeKind, FactFamily, Facts as RuleFacts, Layer, Limit, Requirement};
     use solidcraft_doc::sheet::{AngleDisplay, ReliefShape, SheetBody, SheetFlange};
     use solidcraft_geom::PlaneGeom;
     use std::f64::consts::{FRAC_PI_2, PI};
