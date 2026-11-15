@@ -7,7 +7,7 @@
 //! tests; production desktop builds do not compile it into the panel path.
 #![cfg_attr(all(not(target_arch = "wasm32"), not(test)), allow(dead_code))]
 
-use crate::fonts::RichTextExt as _;
+use crate::ui_kit::type_face::RichTextExt as _;
 use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::{Container, Edge, Surface};
 use egui::{Align, Align2, Color32, Id, Layout, Rect, RichText, Sense, Stroke, pos2, vec2};
@@ -534,7 +534,7 @@ pub const NEW_CHAT_SHORTCUT: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::L);
 
 /// Clear the chat, asking first when something would be lost.
-pub(super) fn request_new_chat(app: &mut SolveApp) {
+pub(crate) fn request_new_chat(app: &mut SolveApp) {
     if new_chat_needs_confirm(app) {
         app.agent_chat.confirm_new = true;
     } else {
@@ -760,7 +760,7 @@ fn unavailable(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
 }
 
-fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
+pub(super) fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
     // Where the host has a web view, all of the panel is the page's: it draws the bar, the
     // conversation and the message box.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1667,7 +1667,7 @@ fn copy_message_menu(ui: &egui::Ui, response: &egui::Response, n: usize, text: &
         .frame(ui_kit::Menu::frame())
         .open_memory(if opened { Some(egui::SetOpenCommand::Bool(true)) } else { None })
         .show(|ui| {
-            ui_kit::Menu::show(ui, crate::context_menu::LIST_W, |ui| {
+            ui_kit::Menu::show(ui, crate::ui_kit::LIST_W, |ui| {
                 let item = ui_kit::MenuItem::new("copy_message", tr("ui.agent_chat_copy_message"), "copy");
                 let row = item.show(ui);
                 crate::scenario::publish_handle(&format!("agent_chat:copy_menu:{n}"), row.rect.center());

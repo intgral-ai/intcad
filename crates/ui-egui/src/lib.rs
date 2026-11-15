@@ -366,7 +366,9 @@ use serde_json::{Value, json};
 use solidcraft_engine::Session;
 use solidcraft_viewport::{Camera, CameraAnim, StandardView};
 
-pub(crate) use control::ControlRequest;
+/// The app's own control request (the guarded admission and the reply channel); the shared
+/// `solidcraft_control` request converts into it where the control crate hands one over.
+pub use control::ControlRequest;
 
 /// How close (radians) the camera must be to a standard axis view for the #2682 mode
 /// (`auto_ortho_faces`) to snap the projection to orthographic. One degree: exact axis views
@@ -3478,7 +3480,7 @@ impl SolveApp {
                 }
             }
         }
-        control::publish_design(self, &control::DOCUMENT_WATCH);
+        control::publish_design(self, &control::DESIGN_WATCH);
     }
 
     /// The frame's input before the app reads it: synthetic events, then what is typed while a
@@ -3633,7 +3635,7 @@ impl SolveApp {
         if self.file_picker_busy() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
         }
-        control::publish_design(self, &control::DOCUMENT_WATCH);
+        control::publish_design(self, &control::DESIGN_WATCH);
         self.frame_ms = now_ms() - t0;
         frame_watch::end(self);
         render_workspace::displayed::finish(self, ui.ctx());

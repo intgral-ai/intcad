@@ -34,9 +34,7 @@ static TOKEN_FILES: std::sync::Mutex<Vec<(std::path::PathBuf, String)>> = std::s
 
 /// A new random token: 32 bytes from the operating system, as hex.
 fn new_token() -> Option<String> {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).ok()?;
-    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    solidcraft_control::server::new_token()
 }
 
 /// Remove this launch's token files and discovery file (at exit), leaving any that another

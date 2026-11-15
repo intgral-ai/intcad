@@ -488,7 +488,9 @@ fn finish(app: &mut SolveApp, ctx: &egui::Context) {
 }
 
 /// The pointer's colour: a violet no part of the UI uses.
-use crate::icons::pointer::agent;
+fn agent() -> egui::Color32 {
+    egui::Color32::from_rgb(148, 103, 232)
+}
 
 /// Draw the pointer, its "Agent" tag and the click ripples over everything.
 pub fn paint(app: &SolveApp, ctx: &egui::Context) {
@@ -501,7 +503,7 @@ pub fn paint(app: &SolveApp, ctx: &egui::Context) {
         let k = ((app.now - t0) / 0.6).clamp(0.0, 1.0) as f32;
         painter.circle_stroke(*at, 6.0 + 22.0 * k, Stroke::new(3.0 * (1.0 - k) + 0.5, agent().gamma_multiply(1.0 - k)));
     }
-    crate::icons::pointer::paint(&painter, p);
+    crate::ui_kit::icons::glyphs::pointer(&painter, p);
     if let Some((_, label)) = app.agent.job.as_ref().and_then(|job| job.stops.front()).filter(|(_, label)| !label.is_empty()) {
         use crate::ui_kit::{Container, Surface};
         let t = crate::theme::Tokens::get();

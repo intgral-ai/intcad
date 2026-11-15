@@ -66,7 +66,8 @@ use crate::i18n::{format as trf, tr};
 use crate::{ControlRequest, SolveApp};
 use backend::{ChatBackend, Event, PermissionOption, PromptPart, ToolStatus};
 
-pub(crate) use panel::{left_inset, owns_keyboard_input, tool_space};
+mod pills;
+pub(crate) use panel::{left_inset, owns_keyboard_input, request_new_chat, tool_space};
 pub use panel::{show, tip as panel_tip, toggle, toggle_shortcut};
 
 /// Most entries kept in the conversation; older ones are dropped.
@@ -110,7 +111,7 @@ impl State {
             State::Failed => "failed",
         }
     }
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         tr(match self {
             State::Off => "ui.agent_chat_state_off",
             State::Starting => "ui.agent_chat_state_starting",
@@ -481,6 +482,9 @@ pub struct AgentChat {
     /// Where the chat was drawn last frame (the panel, or its folded strip), for drops; `None`
     /// when it isn't drawn.
     pub(crate) drop_rect: Option<egui::Rect>,
+    /// The shared panel host placed the chat's own window this frame (upstream's host): the
+    /// legacy card keeps no placement of its own then.
+    pub(crate) window_placed: bool,
     /// The command the running agent was started with.
     argv: Vec<String>,
     /// The agent picked for this conversation (the header's switcher); `None`: the default.
@@ -598,6 +602,14 @@ impl AgentChat {
         self.keyboard_owned = false;
         self.dock_space = None;
         self.drop_rect = None;
+    }
+
+    /// The endpoint `id` lost its permission (or was removed): a conversation running on it ends
+    /// the way closing the design's tab does, and any listing it filled is forgotten.
+    pub(crate) fn disconnect_endpoint(&mut self, session: &mut solidcraft_engine::Session, id: &str) {
+        if self.running_id == id {
+            self.disconnect_document(session, false);
+        }
     }
 
     pub(crate) fn disconnect_document(&mut self, session: &mut solidcraft_engine::Session, wait: bool) {
@@ -1571,7 +1583,7 @@ pub fn selected_count(app: &mut SolveApp) -> usize {
 /// happens while another tool or dialog is open.
 pub fn start_pick(app: &mut SolveApp) {
     if app.dialog.is_none() {
-        app.dialog = Some(crate::dialogs::Dialog::chat_context(&app.agent_chat.picked));
+        app.dialog = Some(crate::dialogs::Dialog::chat_context());
     }
 }
 
@@ -3055,6 +3067,30 @@ pub fn status(app: &SolveApp) -> Value {
         );
     }
     state
+}
+
+/// The design item under the pointer on a context chip: Intcad's panel highlights none (its
+/// chips are plain text), so nothing is added to the highlighted set.
+pub(crate) fn hovered_chip(_app: &SolveApp) -> Option<solidcraft_engine::Sel> {
+    None
+}
+
+/// The shared panel host draws the Assistant's slot: the legacy card's rectangles are not used
+/// this frame, so a later pop re-places its own window.
+pub(crate) fn prepare_shared(app: &mut SolveApp, _ctx: &egui::Context) {
+    app.agent_chat.panel_rect = None;
+    app.agent_chat.drop_rect = None;
+}
+
+/// The shared slot finished this frame: nothing to hand back (the panel owns no rect there).
+pub(crate) fn finish_shared(_app: &mut SolveApp, _ctx: &egui::Context) {}
+
+/// The Assistant inside the shared panel slot: its conversation and composer, drawn in `ui`.
+pub(crate) fn shared_content(app: &mut SolveApp, ui: &mut egui::Ui, _flow: solidcraft_engine::panels::Flow) {
+    if shown(app) {
+        let left = app.preferences.agent_chat_side == "left";
+        panel::body(app, ui, left);
+    }
 }
 
 #[cfg(test)]

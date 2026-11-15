@@ -592,13 +592,12 @@ pub fn call_tool_with(b: &mut dyn Backend, name: &str, args: &Value, opts: crate
     if !opts.compact || !takes_verbose(name) || args.get("verbose").is_some() {
         return call_tool(b, name, args);
     }
-    match args {
-        Value::Object(mut object) => {
-            object.insert("verbose".into(), Value::Bool(false));
-            call_tool(b, name, &Value::Object(object))
-        }
-        _ => call_tool(b, name, args),
+    if let Value::Object(object) = args {
+        let mut object = object.clone();
+        object.insert("verbose".into(), Value::Bool(false));
+        return call_tool(b, name, &Value::Object(object));
     }
+    call_tool(b, name, args)
 }
 
 pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Value {
@@ -1657,7 +1656,7 @@ fn batch_run(b: &mut dyn Backend, a: &Map<String, Value>) -> (Value, bool) {
     if b.in_process()
         && let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, b.param_check(), &[])
     {
-        let mut reply = refusal.reply(steps.len());
+        let mut reply = refusal.reply(steps.len(), rollback);
         if let Some(o) = reply.as_object_mut() {
             o.insert("ok".into(), Value::Bool(false));
             o.insert("applied".into(), json!([]));

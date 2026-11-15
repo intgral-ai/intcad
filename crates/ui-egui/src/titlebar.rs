@@ -3,8 +3,15 @@
 //! Linux without OS decorations ([`SolveApp::custom_titlebar`]) the application bar is the title
 //! bar, and on macOS it runs under the traffic lights ([`SolveApp::integrated_titlebar`]).
 
+use crate::ui_kit::BackingTooltipExt as _;
+use crate::ui_kit::icons::glyphs::paint_glyph;
 use crate::window_chrome::WindowAction;
-pub use crate::window_chrome::{Caption, dpi_scaled_size, resize_border_px, resize_hit, resize_zones, toggle_maximize};
+pub use crate::window_chrome::{
+    BUTTON_WIDTH, CAPTIONS, Caption, WIDTH, caption_id, dpi_scaled_size, maximized, resize_border_px, resize_hit, resize_zones,
+    toggle_maximize,
+};
+use egui::{Color32, Id, PointerButton, Rect, Sense, Stroke, Ui, ViewportCommand, pos2, vec2};
+use solidcraft_theme::Tokens;
 
 use crate::SolveApp;
 
@@ -72,55 +79,17 @@ pub fn caption_buttons(app: &mut SolveApp, ui: &mut Ui, bar: Rect) {
     let _ = window_action(app, &ui.ctx().clone(), action);
 }
 
-/// The resize border in physical pixels at `scale` (1.0 = 96 DPI): Windows' default, scaled and
-/// rounded, never less than a pixel.
-pub fn resize_border_px(scale: f32) -> f32 {
-    let s = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
-    (RESIZE_BORDER_AT_96_DPI * s).round().max(1.0)
-}
-
-/// The side of a corner zone for an edge `edge` wide: twice the edge, so a corner is easy to hit.
-pub fn corner_size(edge: f32) -> f32 {
-    2.0 * edge
-}
-
-/// The edge and corner zones of a window with rect `w`, edges `edge` wide: (zone, direction,
-/// cursor). Corners come last so they win where they overlap the edges.
-pub fn zones(w: Rect, edge: f32) -> [(Rect, ResizeDirection, CursorIcon); 8] {
-    use ResizeDirection::*;
-    let (e, c) = (edge, corner_size(edge));
-    [
-        (Rect::from_min_max(w.left_top(), pos2(w.right(), w.top() + e)), North, CursorIcon::ResizeVertical),
-        (Rect::from_min_max(pos2(w.left(), w.bottom() - e), w.right_bottom()), South, CursorIcon::ResizeVertical),
-        (Rect::from_min_max(w.left_top(), pos2(w.left() + e, w.bottom())), West, CursorIcon::ResizeHorizontal),
-        (Rect::from_min_max(pos2(w.right() - e, w.top()), w.right_bottom()), East, CursorIcon::ResizeHorizontal),
-        (Rect::from_min_size(w.left_top(), vec2(c, c)), NorthWest, CursorIcon::ResizeNwSe),
-        (Rect::from_min_size(w.right_top() - vec2(c, 0.0), vec2(c, c)), NorthEast, CursorIcon::ResizeNeSw),
-        (Rect::from_min_size(w.left_bottom() - vec2(0.0, c), vec2(c, c)), SouthWest, CursorIcon::ResizeNeSw),
-        (Rect::from_min_size(w.right_bottom() - vec2(c, c), vec2(c, c)), SouthEast, CursorIcon::ResizeNwSe),
-    ]
-}
-
-/// The resize direction at `p` in a window with rect `w` and edges `edge` wide, `None` away
-/// from the edges and outside the window. A point is in the window when `min <= p < max` (pixel
-/// rects: the right and bottom pixels are at `max - 1`). Corners win over edges.
-pub fn resize_hit(w: Rect, p: Pos2, edge: f32) -> Option<ResizeDirection> {
-    if !(w.is_positive() && edge > 0.0 && p.x >= w.left() && p.x < w.right() && p.y >= w.top() && p.y < w.bottom()) {
-        return None;
+/// Run a title-bar action (the control channel's `ui.window`, a caption button): closing asks
+/// about unsaved designs first, and the window closes once they are answered.
+pub(crate) fn run(app: &mut SolveApp, ctx: &egui::Context, action: WindowAction) {
+    if action == WindowAction::Close {
+        // Unsaved designs are asked about first; the window closes once they are answered.
+        crate::documents::request_quit(app);
+        if !app.quit_requested {
+            return;
+        }
     }
-    zones(w, edge).into_iter().rev().find(|(r, ..)| p.x >= r.left() && p.x < r.right() && p.y >= r.top() && p.y < r.bottom()).map(|(_, d, _)| d)
-}
-
-/// The window's new physical size when it moves from `old_dpi` to `new_dpi` (Windows'
-/// `WM_GETDPISCALEDSIZE`): the same logical size, rounded as winit rounds the size it then
-/// applies, so the rect the OS suggests mid-move is exactly the rect the window gets.
-pub fn dpi_scaled_size(size: (i32, i32), old_dpi: u32, new_dpi: u32) -> Option<(i32, i32)> {
-    if old_dpi == 0 || new_dpi == 0 || size.0 <= 0 || size.1 <= 0 {
-        return None;
-    }
-    let (old, new) = (f64::from(old_dpi) / 96.0, f64::from(new_dpi) / 96.0);
-    let scale = |v: i32| (f64::from(v) / old * new).round().clamp(1.0, f64::from(i32::MAX)) as i32;
-    Some((scale(size.0), scale(size.1)))
+    action.send(ctx);
 }
 
 /// The window's rect and how wide the resize zones along its edges are, in points. `None` while
@@ -137,22 +106,6 @@ fn resize_edge(ctx: &egui::Context) -> Option<(Rect, f32)> {
 /// cover, since it takes every press on it and the zones under it would resize nothing.
 pub fn inside_resize_zones(ctx: &egui::Context) -> Rect {
     resize_edge(ctx).map_or_else(|| ctx.content_rect(), |(w, edge)| w.shrink(edge))
-}
-
-/// Invisible resize zones along the window's edges, above everything else; a press in one
-/// starts an OS resize in that direction. None while the window is maximized or fullscreen.
-pub fn resize_zones(ui: &mut Ui) {
-    let ctx = ui.ctx().clone();
-    let Some((w, edge)) = resize_edge(&ctx) else { return };
-    let layer = LayerId::new(Order::Foreground, Id::new("titlebar-resize"));
-    let zui = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(w));
-    for (i, (r, dir, cursor)) in zones(w, edge).into_iter().enumerate() {
-        let resp = zui.interact(r, Id::new(("titlebar-resize", i)), Sense::drag()).on_hover_cursor(cursor);
-        if resp.drag_started_by(PointerButton::Primary) {
-            ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
-        }
-    }
-    action.send(ctx);
 }
 
 #[cfg(test)]

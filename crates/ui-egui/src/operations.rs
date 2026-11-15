@@ -105,7 +105,6 @@ enum Cancel {
     /// A save being written: it stops unless the file is already being replaced.
     Save,
     /// The request held behind the agent's command that has this [`ControlRequest::serial`].
-    AgentQueued(u64),
     /// The summary row standing for the waiting requests past [`MAX_WAITING_SHOWN`].
     AgentMore,
 }
@@ -249,18 +248,10 @@ pub fn current(app: &SolveApp) -> Vec<Row> {
     for (n, (id, _, serial)) in app.deferred_queue.iter().enumerate() {
         rows.push(Row { queued: true, cancel: Some(Cancel::HistoryQueued(n)), ..Row::new(format!("history:{serial}"), command_name(id)) });
     }
-    if app.agent_computing().is_some() {
-        let steps = app.agent_steps();
-        let label = steps.as_ref().map(|s| s.current()).or_else(|| app.agent_computing().map(|(_, label)| label)).unwrap_or_default();
-        // A batch counts its steps; one command, the features it evaluates.
-        let steps = steps.and_then(|s| if s.counts().1 > 1 { Some(s.counts()) } else { evaluation_steps(&s.progress) });
-        rows.push(Row { steps, cancel: Some(Cancel::Agent), agent: true, next: app.agent_next(), ..Row::new("agent".into(), label) });
-    }
-    // Each design change waiting behind it is an operation of its own, named by its place in the
-    // queue (1 runs next).
-    for (place, (serial, name)) in app.agent_held().into_iter().enumerate() {
-        let label = numbered(place + 1, &name);
-        rows.push(Row { queued: true, agent: true, cancel: Some(Cancel::AgentQueued(serial)), ..Row::new(format!("{HELD}{serial}"), label) });
+    if let Some((_, label)) = app.agent_computing() {
+        // The agent's command computes on its worker; its step count shows in the Assistant's chip
+        // ("3/21 · Extrude"), which names the step too, so the row carries the command alone.
+        rows.push(Row { cancel: Some(Cancel::Agent), agent: true, ..Row::new("agent".into(), label) });
     }
     rows
 }
@@ -341,7 +332,6 @@ pub fn cancel(app: &mut SolveApp, key: &str) -> Result<(), String> {
             }
             return Ok(());
         }
-        Cancel::AgentQueued(serial) => app.cancel_held(serial),
         // Taken above: it is no row of `current`.
         Cancel::AgentMore => return Ok(()),
     }

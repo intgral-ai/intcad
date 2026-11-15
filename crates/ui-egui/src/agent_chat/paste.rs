@@ -11,8 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::AgentChat;
-use super::panel::PanelAction;
+use super::SolveApp;
 
 /// A picture on the clipboard: RGBA rows, as the system gives them.
 #[derive(Clone, Debug, PartialEq)]
@@ -108,10 +107,10 @@ fn uri_path(rest: &str) -> Option<PathBuf> {
 /// How long after a text paste the V key coming up still belongs to it.
 const SAME_PASTE_SECS: f64 = 1.5;
 
-/// The paste shortcut for the focused text box this frame: what to attach, if the paste is files
-/// or a picture. Call before the box is drawn: a paste that is files is taken out of the input, so
-/// the box doesn't type their names.
-pub fn handle(chat: &mut AgentChat, ui: &egui::Ui) -> Option<PanelAction> {
+/// The paste shortcut for the focused text box this frame: files or a picture on the clipboard
+/// attach to the chat as they would from the + menu. Call before the box is drawn: a paste that
+/// is files is taken out of the input, so the box doesn't type their names.
+pub fn handle(app: &mut SolveApp, ui: &egui::Ui) {
     let now = ui.input(|i| i.time);
     let (text, released) = ui.input(|i| {
         let text = i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None });
@@ -121,28 +120,27 @@ pub fn handle(chat: &mut AgentChat, ui: &egui::Ui) -> Option<PanelAction> {
         });
         (text, released)
     });
+    let chat = &mut app.agent_chat;
     let after_text = chat.text_pasted_at.is_some_and(|at| (0.0..SAME_PASTE_SECS).contains(&(now - at)));
     if text.is_none() && !(released && !after_text) {
         if released {
             chat.text_pasted_at = None;
         }
-        return None;
+        return;
     }
     let paste = decide(text.as_deref(), &mut System);
-    if text.is_some() {
-        chat.text_pasted_at = if matches!(paste, Paste::Text) { Some(now) } else { None };
-    } else {
-        chat.text_pasted_at = None;
-    }
+    chat.text_pasted_at = if text.is_some() && matches!(paste, Paste::Text) { Some(now) } else { None };
     match paste {
-        Paste::Text | Paste::Nothing => None,
+        Paste::Text | Paste::Nothing => {}
         Paste::Files(paths) => {
             if text.is_some() {
                 ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
             }
-            Some(PanelAction::AttachDropped(paths))
+            super::attach_dropped(app, paths.into_iter());
         }
-        Paste::Picture(p) => Some(PanelAction::AttachPicture(p)),
+        Paste::Picture(p) => {
+            let _ = super::attach_rgba(app, p.width, p.height, &p.rgba);
+        }
     }
 }
 

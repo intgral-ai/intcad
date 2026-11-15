@@ -2,7 +2,9 @@
 //! The message machinery (lookup, labels, substitution, the language choice) is the shared
 //! `solidcraft_ui_text` crate; [`install`] hands it these catalogs at startup.
 
-use solidcraft_ui_text::{Catalog, Locale};
+use solidcraft_ui_text::Catalog;
+/// The message machinery the app's code calls directly (the shared crate owns it).
+pub use solidcraft_ui_text::{Locale, format, language, scope, tr, tr_label};
 
 static ENGLISH: Catalog = Catalog::new("en", "English", include_str!(concat!(env!("OUT_DIR"), "/locales/en.json")));
 static ARABIC: Catalog = Catalog::new("ar", "العربية", include_str!(concat!(env!("OUT_DIR"), "/locales/ar.json")));

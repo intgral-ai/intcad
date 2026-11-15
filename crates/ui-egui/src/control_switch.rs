@@ -8,7 +8,7 @@
 
 use std::sync::mpsc::Receiver;
 
-use solidcraft_control::ControlRequest;
+use crate::control::ControlRequest;
 use solidcraft_control::auth::Listen;
 
 use crate::SolveApp;

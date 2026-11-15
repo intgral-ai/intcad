@@ -455,7 +455,7 @@ pub(crate) fn run(app: &mut SolveApp) -> Result<(), String> {
         "path": dialog.plugin.path, "approval": dialog.plugin.approval, "entry": dialog.entry, "params": params}});
     let (req, reply) = solidcraft_control::ControlRequest::new("engine.execute", request);
     let ticket = req.ticket.clone();
-    app.control_held.push_back(req);
+    app.control_held.push_back(req.into());
     if let Some(dialog) = app.plugin_menu.dialog.as_mut() {
         dialog.running = Some(Running { reply, ticket });
         dialog.error = None;

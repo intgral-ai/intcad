@@ -1026,9 +1026,6 @@ preference_settings! {
         render_browser_side: String = "left".into();
         render_browser_width: f32 = 266.0;
         browser_collapsed: bool = false;
-        agent_chat_side: String = "right".into();
-        agent_chat_width: f32 = 380.0;
-        agent_chat_minimized: bool = false;
     }
     /// Units of new designs.
     default_units: String = "mm".into(), PAGE_DESIGN;

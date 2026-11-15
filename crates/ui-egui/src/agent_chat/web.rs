@@ -494,7 +494,7 @@ pub fn state(app: &mut SolveApp) -> String {
         "missing": missing,
         "confirmNew": chat.confirm_new,
         "left": app.preferences.agent_chat_side == "left",
-        "dark": crate::theme::is_dark(),
+        "dark": solidcraft_theme::is_dark(),
         "strings": strings,
     })
     .to_string()
