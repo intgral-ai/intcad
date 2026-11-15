@@ -69,6 +69,7 @@ export type Item =
   | { kind: 'permission'; index: number; heading: string; answered: string | null; options: PermissionOption[] }
   | { kind: 'approval'; id: number; title: string; answer: boolean | null }
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
+  | { kind: 'review'; index: number; review: number; steps: string[]; more: number; made: { name: string; volume: number }[]; changed: { name: string; before: number; after: number }[]; removed: { name: string; volume: number }[]; outcome: string }
   | { kind: 'notice'; text: string; error: boolean };
 
 export interface AssistantState {
@@ -135,7 +136,9 @@ export type StringKey =
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
   | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'revalidate' | 'dropHint' | 'removeChip'
   | 'openPicture' | 'selectedNow'
-  | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel';
+  | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel'
+  | 'reviewTitle' | 'reviewAccept' | 'reviewReject' | 'reviewMade' | 'reviewChanged' | 'reviewRemoved'
+  | 'reviewAccepted' | 'reviewRejected' | 'reviewMore';
 
 export type Strings = Record<StringKey, string>;
 
@@ -181,6 +184,7 @@ export type Action =
   | { type: 'side'; left: boolean }
   | { type: 'surface'; color: string }
   | { type: 'copy'; text: string }
+  | { type: 'review'; id: number; accept: boolean }
   | { type: 'open_link'; url: string };
 
 declare global {

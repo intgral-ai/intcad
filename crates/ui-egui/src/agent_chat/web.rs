@@ -452,6 +452,15 @@ pub fn state(app: &mut SolveApp) -> String {
         ("withNext", "ui.agent_chat_web_with_next"),
         ("latest", "ui.agent_chat_web_latest"),
         ("turnLabel", "ui.agent_chat_web_turn"),
+        ("reviewTitle", "ui.agent_chat_review_title"),
+        ("reviewAccept", "ui.agent_chat_review_accept"),
+        ("reviewReject", "ui.agent_chat_review_reject"),
+        ("reviewMade", "ui.agent_chat_review_made"),
+        ("reviewChanged", "ui.agent_chat_review_changed"),
+        ("reviewRemoved", "ui.agent_chat_review_removed"),
+        ("reviewAccepted", "ui.agent_chat_review_accepted"),
+        ("reviewRejected", "ui.agent_chat_review_rejected"),
+        ("reviewMore", "ui.agent_chat_review_more_steps"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), Value::from(tr(key))))
@@ -617,6 +626,14 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
                 Some(Value::Bool(allow)) => approve(app, id, *allow),
                 Some(Value::String(always)) if always == "always" => approve_always(app, id),
                 _ => return Err("approve: allow must be true, false or \"always\"".into()),
+            }
+        }
+        "review" => {
+            let id = action.get("id").and_then(Value::as_u64).ok_or("review: no id")?;
+            match action.get("accept").and_then(Value::as_bool) {
+                Some(true) => super::review::accept(app, id)?,
+                Some(false) => super::review::reject(app, id),
+                None => return Err("review: accept must be true or false".into()),
             }
         }
         "permission" => {
