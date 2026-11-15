@@ -207,3 +207,24 @@ Restored `enabled = true` afterwards.
 **Stale accept.** Preview 2 waiting with runs 18; then `solid.cylinder` created Body3
 (revision moved) and Accept was refused: `The design changed since the preview, so these
 changes can't be applied. Reject them and ask the agent again.` — runs 18 -> **18**.
+
+## Final #142 head b0b312ae0 (re-cut), desktop key chain
+
+Wrapper `/nix/store/q30f6g0pjid3p633ssacf46lv1ngvc56-solidcraft-0.1.0`, fresh app, control
+46696, only Hole Tier opened (asynchronous open, no project command).
+
+- Project `ci.toml` `enabled = true`; page placed in the panel (515x1203 at 747,145), so the
+  INT-1472 fix is in this head.
+- The page shows the review card: `Proposed changes`, `Box 20 × 20 × 20 mm → Cube20`,
+  `Made Cube20`, `Accept` / `Reject` (`evidence/pil305-v2-preview-card.png`).
+- Preview waiting: runs 18 -> 18.
+- Accept: 18 -> **19**, exactly one new run `run-1beae2b62b3c4809-f25a45fe2df23e14`, outcome
+  `current`, modelVersion `sha256:c0353c20…` (the model after the accepted edit). This is the
+  chain that used to run zero checks after an asynchronous open, on a head that is the PR's own.
+- Switch off (`project.ci_set {"enabled": false}`), preview round with
+  `再加一个 22 mm × 22 mm × 22 mm 的方块`, accept: runs 19 -> **19** while the model did change
+  (Body1 bbox max x 190 -> 217, z 20 -> 22). Switch restored to `true`.
+- Instance closed.
+
+Earlier counts on the same code (tree identical except EXEMPT): direct multi-step round 1,
+preview 0, accept 1, reject 0, duplicate accept 0, stale accept 0.
