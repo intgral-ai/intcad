@@ -133,13 +133,15 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         request_new_chat(app);
     }
     if !app.agent_chat.open {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.agent_chat.seen_open = false;
+        }
         return;
     }
-    // Look for installed agents the first time the panel opens (in the background).
+    // Look for installed agents each time the panel opens (in the background).
     #[cfg(not(target_arch = "wasm32"))]
-    if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
-        refresh(app, &ctx);
-    }
+    look_on_open(app, &ctx);
     if Container::for_layout(app.ui.layout, Surface::Panel).floating() {
         floating(app, ui);
         show_drop_hint(app, &ctx);

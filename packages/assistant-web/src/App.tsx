@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import type { AssistantState, ContextChip, ContextGroups, Item, PermissionOption, PictureRef, QueuedMessage, Strings } from './host';
+import type { AssistantState, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings } from './host';
 import { pictureUrl, post } from './host';
 import { Activity, ActivityContent, ActivityHeadline, ActivityTrigger } from '@/ds/components/ai/activity';
 import type { TaskListItem } from '@/ds/components/ai/task-list';
@@ -860,14 +860,23 @@ function stateBadge(state: AssistantState) {
   }
 }
 
+/** What the agent menu lists though it cannot be picked: the basic agents not found. */
+function notReadyOf(state: AssistantState) {
+  return state.missing.filter(agent => agent.basic);
+}
+
+/** What is known of an agent, at the end of its row in the menu. */
+const ROW_HINT = 'ml-auto inline-block pl-4 whitespace-nowrap text-muted-foreground first-letter:uppercase';
+
 /** The panel's own bar: the agent and what it runs with, its state, and the panel's controls. */
-function AssistantBar({ state }: { state: AssistantState }) {
+function AssistantBar({ state, onSetup }: { state: AssistantState; onSetup: (id: string) => void }) {
   const { strings } = state;
   const agent = state.agents.find(entry => entry.id === state.agent);
   const name = agent?.name ?? (state.detecting ? strings.detecting : strings.noneFound);
   const badge = stateBadge(state);
   // The agent's own settings; its model is picked beside the message box.
   const settings = (state.config ?? []).filter(option => option.category !== 'model');
+  const notReady = notReadyOf(state);
   return (
     <ChatShell.Bar>
       <ChatShell.Column className="flex-row items-center justify-between gap-2 py-2">
@@ -877,14 +886,43 @@ function AssistantBar({ state }: { state: AssistantState }) {
               <span className="truncate">{name}</span>
               <ChevronDown />
             </DropdownMenu.Trigger>
-            <DropdownMenu.Content align="start">
+            {/* As tall as the panel has room for: the rows under the agents are not left to a scroll. */}
+            <DropdownMenu.Content align="start" className="max-h-[var(--available-height)]">
+              {/* The agents to pick, each with what is known of it without starting it. */}
               {state.agents.length > 0 && (
-                <DropdownMenu.RadioOptions
-                  options={state.agents.map(entry => ({ value: entry.id, label: entry.name }))}
+                <DropdownMenu.RadioGroup
                   value={state.agent ?? ''}
-                  onValueChange={id => post({ type: 'agent', id })}
-                  closeOnSelect
-                />
+                  onValueChange={(id: unknown) => {
+                    if (typeof id === 'string' && state.agents.some(entry => entry.id === id)) post({ type: 'agent', id });
+                  }}
+                >
+                  {state.agents.map(entry => (
+                    <DropdownMenu.RadioItem key={entry.id} value={entry.id} closeOnClick>
+                      <span className="flex min-w-0 flex-1 items-center">
+                        <span className="truncate">{entry.name}</span>
+                        {entry.hint && <span className={ROW_HINT}>{entry.hint}</span>}
+                      </span>
+                      {/* The room the picked row's check mark takes, so the words line up. */}
+                      {entry.id !== state.agent && <span aria-hidden className="size-icon-sm shrink-0" />}
+                    </DropdownMenu.RadioItem>
+                  ))}
+                </DropdownMenu.RadioGroup>
+              )}
+              {/* Not agents to pick: a row says what is missing, and opens how to add it. */}
+              {notReady.length > 0 && (
+                <>
+                  {state.agents.length > 0 && <DropdownMenu.Separator />}
+                  <DropdownMenu.Label>{strings.notReady}</DropdownMenu.Label>
+                  {notReady.map(entry => (
+                    <DropdownMenu.Item key={entry.id} onClick={() => onSetup(entry.id)}>
+                      <span className="flex min-w-0 flex-1 items-center">
+                        <span className="truncate">{entry.name}</span>
+                        <span className={ROW_HINT}>{strings.notSetUp}</span>
+                      </span>
+                      <span aria-hidden className="size-icon-sm shrink-0" />
+                    </DropdownMenu.Item>
+                  ))}
+                </>
               )}
               {(state.modes.length > 0 || settings.length > 0) && <DropdownMenu.Separator />}
               {state.modes.length > 0 && (
@@ -994,6 +1032,33 @@ function SignIn({ state }: { state: AssistantState }) {
   );
 }
 
+/** A basic agent that is not found: what to do, the line that sets it up, and Refresh. */
+function AdapterSetup({ agent, strings, onClose }: { agent: MissingAgent; strings: Strings; onClose: () => void }) {
+  return (
+    // Capped as the other parts by the message box are: a long path scrolls in its own place, and in
+    // a short panel the card scrolls, so the message box under it is never pushed out of the panel.
+    <Notice variant="info" title={agent.name} className="max-h-[calc(100dvh-12rem)] overflow-y-auto bg-card">
+      <div className="flex max-h-[30dvh] min-w-0 shrink-0 flex-col gap-2 overflow-y-auto">
+        <Notice.Message>{agent.body}</Notice.Message>
+      </div>
+      <div className="flex min-w-0 flex-col gap-3 pt-2">
+        <div className="flex min-w-0 items-start gap-2">
+          <ToolCallOutput text={agent.install} />
+          <CopyButton content={agent.install} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" size="sm" variant="primary" onClick={() => post({ type: 'refresh' })}>
+            {strings.refresh}
+          </Button>
+          <Button type="button" size="sm" onClick={onClose}>
+            {strings.close}
+          </Button>
+        </div>
+      </div>
+    </Notice>
+  );
+}
+
 /** Nothing said yet: the Assistant's name, or how to get an agent when there is none. */
 function Welcome({ state }: { state: AssistantState }) {
   const { strings } = state;
@@ -1042,8 +1107,11 @@ const COLUMN = 'px-1 md:px-1';
 
 export function App({ state }: { state: AssistantState | null }) {
   const turns = useMemo(() => turnsOf(state?.items ?? []), [state?.items]);
+  // The agent whose missing adapter is being explained; the card goes once Refresh finds it.
+  const [setup, setSetup] = useState<string | null>(null);
   if (!state) return null;
   const { strings } = state;
+  const explained = notReadyOf(state).find(agent => agent.id === setup);
   const busy = state.state === 'busy';
   const plan = turns.at(-1)?.plan;
   const tasks: TaskListItem[] = (plan ?? []).map((step, index) => ({
@@ -1055,7 +1123,7 @@ export function App({ state }: { state: AssistantState | null }) {
   return (
     <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
       <ChatShell className="h-full" style={ROOM} scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}>
-        <AssistantBar state={state} />
+        <AssistantBar state={state} onSetup={setSetup} />
         <ChatShell.Stage>
           <ChatShell.Viewport>
             <ChatShell.Content>
@@ -1120,6 +1188,8 @@ export function App({ state }: { state: AssistantState | null }) {
                     <Notice.Message>{strings.dropHint}</Notice.Message>
                   </Notice>
                 )}
+                {/* By the message box, so it is in sight wherever the conversation is scrolled to. */}
+                {explained && <AdapterSetup agent={explained} strings={strings} onClose={() => setSetup(null)} />}
                 {tasks.length > 0 && <TaskList defaultOpen={busy} hideWhenComplete={false} scrollActiveIntoView={false} tasks={tasks} />}
                 <Queue state={state} />
                 <ComposerStatus role="status" aria-live="polite">

@@ -32,7 +32,8 @@ pub struct Known {
     pub reports_version: bool,
 }
 
-/// The agents shown in the picker. The first one found is the default.
+/// The agents shown in the picker, in the order the default is looked for
+/// ([`super::agents::default_of`]).
 pub const KNOWN: &[Known] = &[
     Known {
         id: "claude",
@@ -159,7 +160,28 @@ pub const KNOWN: &[Known] = &[
         retired: false,
         reports_version: true,
     },
+    // Checked on 2026-11-13 with a real ACP `initialize` on macOS, with the command line the ACP
+    // registry lists for it: Kimi Code 0.27.0, as its maker's installer put it there, answered
+    // with protocol version 1. Older copies were not tried. Its login file is not looked at: the
+    // program says in ACP whether it needs a sign-in.
+    Known {
+        id: "kimi",
+        name: "Kimi Code",
+        programs: &["kimi"],
+        args: &["acp"],
+        install: "see moonshotai.github.io/kimi-code (installer script)",
+        credentials: None,
+        config_dir_var: None,
+        key_vars: &[],
+        retired: false,
+        reports_version: true,
+    },
 ];
+
+/// The agents the picker always lists, found or not, each with whether it is installed and the
+/// step that is missing when it is not. Each was connected to from this app with a real ACP
+/// `initialize`. The other known agents are listed once they are found.
+pub const BASIC: &[&str] = &["claude", "codex", "opencode", "kimi"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Login {
@@ -190,6 +212,8 @@ pub struct Missing {
     pub id: &'static str,
     pub name: &'static str,
     pub install: &'static str,
+    /// One of [`BASIC`]: the picker lists it although it is not installed.
+    pub basic: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -264,9 +288,10 @@ fn home() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
-/// PATH, then the usual places npm, Homebrew, nvm, Volta, bun, pipx and Grok put commands, and on
-/// Windows Node's own install folders: a launcher can start SolidCraft with a PATH that lacks
-/// them, and an npm agent's `.cmd` shim then can't find `node` (#9297).
+/// PATH, then the usual places npm, Homebrew, nvm, Volta, bun, pipx and Grok put commands, the
+/// folders the installers of Kimi Code and OpenCode use, and on Windows Node's own install
+/// folders: a launcher can start SolidCraft with a PATH that lacks them, and an npm agent's
+/// `.cmd` shim then can't find `node` (#9297).
 pub fn search_dirs() -> Vec<PathBuf> {
     search_dirs_in(&|name| std::env::var_os(name), cfg!(windows))
 }
@@ -278,7 +303,18 @@ fn search_dirs_in(var: &dyn Fn(&str) -> Option<OsString>, windows: bool) -> Vec<
         dirs.push(if windows { prefix.clone() } else { prefix.join("bin") });
     }
     if let Some(h) = var(if windows { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).filter(|p| p.is_absolute()) {
-        for d in [".local/bin", ".npm-global/bin", ".npm-packages/bin", ".volta/bin", ".bun/bin", ".cargo/bin", ".grok/bin", "bin"] {
+        for d in [
+            ".local/bin",
+            ".npm-global/bin",
+            ".npm-packages/bin",
+            ".volta/bin",
+            ".bun/bin",
+            ".cargo/bin",
+            ".grok/bin",
+            ".kimi-code/bin",
+            ".opencode/bin",
+            "bin",
+        ] {
             dirs.push(h.join(d));
         }
         // nvm: every installed Node version's bin.
@@ -519,7 +555,7 @@ fn detect_in(dirs: &[PathBuf], home: Option<&Path>, limit: Duration) -> Detectio
     for k in KNOWN {
         let Some(path) = k.programs.iter().find_map(|p| find_in(p, dirs)) else {
             if !k.retired {
-                d.missing.push(Missing { id: k.id, name: k.name, install: k.install });
+                d.missing.push(Missing { id: k.id, name: k.name, install: k.install, basic: BASIC.contains(&k.id) });
             }
             continue;
         };
@@ -927,6 +963,23 @@ mod tests {
         assert_eq!(found.version.as_deref(), Some("3.0.4"));
         assert_eq!(found.problem, None);
         assert!(!installed.missing.iter().any(|agent| agent.id == "vibe"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The picker's fixed list names agents this app knows how to start, none of them retired, and
+    /// on a computer with none of them each is missing and marked as one the picker still lists.
+    #[test]
+    fn the_basic_agents_are_known_and_listed_while_missing() {
+        for id in BASIC {
+            let known = KNOWN.iter().find(|known| known.id == *id);
+            assert!(known.is_some_and(|known| !known.retired), "{id}");
+        }
+        let root = std::env::temp_dir().join(format!("sc-agent-basic-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let none = detect_in(std::slice::from_ref(&root), None, PROBE_LIMIT);
+        let basic: Vec<&str> = none.missing.iter().filter(|agent| agent.basic).map(|agent| agent.id).collect();
+        assert_eq!(basic, BASIC);
+        assert!(none.missing.iter().any(|agent| !agent.basic), "the other known agents are missing too, and not listed");
         std::fs::remove_dir_all(root).unwrap();
     }
 
