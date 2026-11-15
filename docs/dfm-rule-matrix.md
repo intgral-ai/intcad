@@ -89,7 +89,76 @@ Current highest level per family:
   acceptance must be repeated on an integration branch after #126/#135/#137 merge, and
   the exact integration SHA recorded.
 
-## 5. First samples
+## 5. Observed baseline (2026-11-15)
+
+Probe on `origin/coord/pil-291-candidate2` `fbd3b1aba`: a 40 x 25 x 1.5 base with one
+10 mm high 90° edge flange, no factory/generic data selected, `dfm.check` through the
+real ValidationPort worker. The written report had one row per catalogue rule and
+finding. States:
+
+- `app.flat_no_overlap`: passed.
+- Hole rules, `sm.hole_spacing`, `sm.gate_bends_found`, `sm.gate_sheet_thickness`:
+  checked (no numeric decision without data).
+- `sm.inside_radius`, `sm.max_bend_length`, `sm.bend_radius_consistent`,
+  `sm.gate_profile_coverage`: unsupported for lack of an applicable number
+  (`NO_SHOP_NUMBER` / coverage), not for lack of facts.
+- The 12 gap rules plus every countersink rule: unsupported with
+  `RULE_NOT_IMPLEMENTED`.
+- `sm.tolerance_across_bends`: unsupported (`CRITICAL_NOT_DECLARED`), which is the
+  correct answer for a project with no declaration, but there is no way to declare one.
+
+Reproduction: the `dfm::service_tests` end-to-end pattern, with a second
+`sheet.flange` call `{"type":"edge","edges":[[40,12.5,1.5]],"height":10}`.
+
+Rule-layer checks on `f10952b77`: `cargo test -p solidcraft-dfm-rules` -> 248 passed;
+`cargo test -p solidcraft-doc --lib sheet_dfm` -> 13 passed; the same doc/engine checks
+on the integration candidate also pass. This confirms the rule layer, not the App
+measurement for the 12 rules.
+
+## 6. Planned acceptance variants
+
+Every row starts from the same small family of saved native designs. "Change" is the one
+dimension the user edits; the expected result is what the new report must show. A
+confirmed TEST-ONLY factory row is used wherever the rule needs a number, so the state
+is `failed` rather than `advisory`; one generic-data check per family confirms the
+advisory policy separately.
+
+| Rule | Design | Change | Expected report change |
+|---|---|---|---|
+| `sm.gate_input_solid` | any non-sheet solid | none | sheet rules `unsupported` with the input reason; no fake pass |
+| `sm.gate_sheet_thickness` | 1.5 mm sheet | declare 2.0 mm in the project | thickness gate `failed`; dependent numeric rules `unsupported`; geometry facts unchanged |
+| `sm.gate_bends_found` | flat 40 x 25 plate | none | one flat finding; bend rules not run |
+| `sm.gate_profile_coverage` | 1.5 mm sheet | no data -> TEST-ONLY data | numeric rules move from no-number `unsupported` to their own state |
+| `sm.inside_radius` | L-bracket, R1.5 | R1.5 -> R0.5 with min 1.0 | `failed` with measured 0.5 |
+| `sm.min_flange` | L-bracket, 10 mm height | height 10 -> 5 (leg 7 -> 2) | `failed`/`advisory`, measured reach 2 |
+| `sm.hole_min_diameter` | plate + Ø3 hole | Ø3 -> Ø2 with 3.5 min | `failed`, measured 2 |
+| `sm.max_bend_length` | L-bracket, 40 mm bend | add a 100 mm bend / max 80 | `failed`, measured 100 |
+| `sm.hole_to_bend` | plate + one bend + hole | move hole 10 -> 2 mm from tangent | `failed`, measured 2 |
+| `sm.bend_relief_present` | two adjacent flanges | remove/withhold the relief | `advisory`/`failed` naming the end |
+| `sm.hole_to_edge` | plate + hole | move hole 10 -> 1 mm from edge | `failed`, measured 1 |
+| `sm.min_web_parallel_bends` | U-channel, 100 mm web | base width 100 -> 3 with min 5 | `failed`, measured 3 |
+| `sm.u_channel_ratio` | U-channel, 10 mm flanges | base width 100 -> 40 with max 0.2 | `failed`, measured 0.25 |
+| `sm.tolerance_across_bends` | plate + two holes across one bend | declare ±0.05 with shop 0.1 | `failed`/`advisory` for the declared dimension |
+| `sm.countersink_depth` | countersunk sheet | change cs width/angle | measured depth crosses the min |
+| `sm.countersink_to_edge` | countersunk sheet | move rim near an edge | `failed`, measured rim gap |
+| `sm.countersink_to_bend` | countersunk sheet with a bend | move rim near the bend | `failed`, measured gap |
+| `sm.hole_spacing` | plate + two Ø3 holes | centre distance 10 -> 5 | `failed`, wall 2 |
+| `sm.bend_radius_consistent` | two flanges, R1.5 then R2.5 | add the second flange after changing the rule | `failed` naming the pair |
+| `sm.bend_relief_width` | relief notch | relief width 3 -> 1 with min 2 | `failed`, measured 1 |
+| `sm.bend_relief_depth` | relief notch | relief depth 2 -> 0.5 with min 1 | `failed`, measured 0.5 |
+| `sm.countersink_land` | countersunk sheet | make the rim close to the hole | `failed`, measured land |
+| `sm.countersink_angle` | countersunk sheet | 90° -> 120° with shop 90° | `failed`/no applicable shop row, never a silent pass |
+| `app.flat_no_overlap` | flanged sheet with a 20 mm² overlap | shorten the base/flange until the regions overlap | `failed`, measured 20 mm², region pair and anchor |
+
+## 7. Shared TEST-ONLY data
+
+`examples/dfm/test-only-full-catalogue-shop.json` is one importable factory profile
+with a confirmed TEST-ONLY row for every rule that needs a number, so a run can reach
+the rule logic instead of stopping at `NO_SHOP_NUMBER`. It is invented data, not a
+factory's table: no third-party text or values. It parses through
+`solidcraft_dfm_rules::Profile` (`cargo run -p solidcraft-dfm-rules --example check`).
+
+## 8. First samples
 
 The first production chain to close is `sm.min_flange` on a saved native L-bracket:
 one 90° bend on a rectangular base with a known flange leg. It exercises the new
