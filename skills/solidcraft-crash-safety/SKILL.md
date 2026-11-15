@@ -24,7 +24,7 @@ People trust SolidCraft with their designs. This outranks feature work.
 
 ## When someone says the app crashed
 The desktop app writes every panic and every unclean exit to a local crash folder, with the design and the commands that reproduce it (`solidcraft_engine::crash`, `docs/crash-reports.md`). Look there first:
-- `solidcraft-cli crashes`, `solidcraft-cli crashes show <id>`, `solidcraft-cli crashes replay <id>`
+- `intcad-cli crashes`, `intcad-cli crashes show <id>`, `intcad-cli crashes replay <id>`
 - the `diagnostics.crash_reports` command, or the MCP `crash_reports` tool
 
 Crashes and data loss are taken as issues even while kernel work is paused (CONTRIBUTING.md, "Kernel work is paused").

@@ -4479,7 +4479,7 @@
   "ui.agent_chat_new": "Neuer Chat",
   "ui.agent_chat_new_confirm": "Neuen Chat starten? Der aktuelle wird geleert.",
   "ui.agent_chat_next_picture": "Nächstes Bild",
-  "ui.agent_chat_no_cli": "solidcraft-cli wurde neben der App nicht gefunden, daher kann der Agent das Design nicht erreichen.",
+  "ui.agent_chat_no_cli": "intcad-cli wurde neben der App nicht gefunden, daher kann der Agent das Design nicht erreichen.",
   "ui.agent_chat_no_control": "Der Endpunkt des Agenten-Chats ist nicht gestartet, daher kann der Agent das Design nicht erreichen.",
   "ui.agent_chat_no_images": "Dieser Agent nimmt keine Bilder an",
   "ui.agent_chat_no_picture": "In der Zwischenablage befindet sich kein Bild",

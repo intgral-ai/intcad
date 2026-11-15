@@ -514,9 +514,9 @@ mod tests {
         p.agent_permissions.insert("codex".into(), Mode::Ask);
         assert_eq!(mode_for(&p, "codex"), Mode::Ask);
         assert_eq!(mode_for(&p, "claude"), Mode::Edits);
-        remember(&mut p, "claude", "mcp__solidcraft__save");
-        remember(&mut p, "claude", "mcp__solidcraft__save");
-        assert!(always_allowed(&p, "claude", "mcp__solidcraft__save") && !always_allowed(&p, "codex", "mcp__solidcraft__save"));
+        remember(&mut p, "claude", "mcp__intcad__save");
+        remember(&mut p, "claude", "mcp__intcad__save");
+        assert!(always_allowed(&p, "claude", "mcp__intcad__save") && !always_allowed(&p, "codex", "mcp__intcad__save"));
         assert_eq!(p.agent_always_allow["claude"].len(), 1);
         p.agents.push(AgentConfig { id: "api-1".into(), ..Default::default() });
         assert_eq!(new_id(&p, "api"), "api-2");

@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 /// The Linux app id (Flatpak, desktop entry, AppStream, Wayland `app_id`).
-pub const APP_ID: &str = "io.tangencylabs.solidcraft";
+pub const APP_ID: &str = "ai.intgral.intcad";
 /// The app id of releases before 0.8 (compatibility shim, docs/compatibility.md). eframe kept
 /// the window state under it, so it is also the old settings key.
 pub const LEGACY_APP_ID: &str = "ai.storyteller.solvecraft";
@@ -106,14 +106,14 @@ mod tests {
     #[test]
     fn flatpak_twins_map_our_sandbox_data_to_the_old_app_ids() {
         let home = Path::new("/home/u");
-        let ours = home.join(".var/app/io.tangencylabs.solidcraft/data/solidcraft");
+        let ours = home.join(".var/app/ai.intgral.intcad/data/solidcraft");
         let id = std::ffi::OsStr::new(APP_ID);
         assert_eq!(
             flatpak_twins(&ours, id, home),
             [home.join(".var/app/ai.storyteller.solidcraft/data/solidcraft"), home.join(".var/app/ai.storyteller.solvecraft/data/solidcraft")]
         );
         // Outside our sandbox folder, or in another app's sandbox, there is nothing to map.
-        assert!(flatpak_twins(&home.join(".local/share/solidcraft"), id, home).is_empty());
+        assert!(flatpak_twins(&home.join(".local/share/intcad"), id, home).is_empty());
         assert!(flatpak_twins(&ours, std::ffi::OsStr::new("org.example.Other"), home).is_empty());
     }
 

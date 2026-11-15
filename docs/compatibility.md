@@ -1,9 +1,13 @@
 # Compatibility with the SolveCraft and SolidCraft names
 
-This repository displays the product as **Intcad**, an Intgral fork. Internal identifiers
-remain `solidcraft` so designs, scripts, settings and packages keep working: crate and binary
-names, `.sc` and the `solidcraft/N` tag, `SOLIDCRAFT_*` variables, settings folders, app IDs and
-the MCP server. The upstream project keeps the SolidCraft name and logo.
+This repository's product is **Intcad**, an Intgral fork. On a user's machine Intcad has an
+identity of its own, so an install of it is not an install of upstream SolidCraft under another
+label: the app ID, the macOS bundle, the Windows installer identity, the package and release file
+names, the settings and data folders, the programs (`intcad`, `intcad-cli`) and the MCP server
+entry are Intcad's ([Intcad's identity](#intcads-identity)). Names inside the code remain
+`solidcraft` so designs, scripts and merges from upstream keep working: crate and Cargo package
+names, `.sc` and the `solidcraft/N` tag and `SOLIDCRAFT_*` variables. The upstream project keeps
+the SolidCraft name and logo.
 
 SolidCraft was first called SolveCraft, and builds up to 0.4 kept that name in their
 identifiers after the displayed name changed. 0.5.0 renamed the binaries, release assets and
@@ -73,15 +77,21 @@ neither → unset).
 
 ## 4. Settings, preferences, autosave and recovery folders
 
-New folders use the SolidCraft name:
+New folders use the Intcad name:
 
 | | Linux | macOS | Windows |
 |---|---|---|---|
-| Preferences, graphics settings | `~/.local/share/solidcraft` | `~/Library/Application Support/SolidCraft` | `%APPDATA%\SolidCraft\data` |
-| Recovery (autosave) | `…/solidcraft/recovery` | `…/SolidCraft/recovery` | `%LOCALAPPDATA%\SolidCraft\recovery` |
+| Preferences, graphics settings | `~/.local/share/intcad` | `~/Library/Application Support/Intcad` | `%APPDATA%\Intcad\data` |
+| Recovery (autosave) | `…/intcad/recovery` | `…/Intcad/recovery` | `%LOCALAPPDATA%\Intcad\recovery` |
 
-On first launch, if the new folder doesn't exist but the old one (`solvecraft` / `SolveCraft`)
-does, it is **copied** to the new location; the old folder is never deleted or changed. The
+On first launch, if the new folder doesn't exist but the pre-rename one (`solvecraft` /
+`SolveCraft`) does, it is **copied** to the new location; the old folder is never deleted or
+changed. The `solidcraft` / `SolidCraft` folder is not a source. It may be there only because
+upstream SolidCraft is installed, and Intcad starts clean beside it: upstream's settings,
+autosaves and control tokens are neither copied nor offered for recovery (tests
+`first_launch_leaves_an_upstream_solidcraft_folder_alone`,
+`an_upstream_solidcraft_autosave_is_not_adopted`). Builds of Intcad from before it had folders
+of its own used that folder too; their settings are not carried over. The
 window and UI state that eframe kept under `ai.storyteller.solvecraft` is copied the same way.
 Autosaves copied from the old folder (`<id>.solvecraft`) are listed and recovered like new ones.
 The preferences key in eframe's storage is `solidcraft.prefs`; `solvecraft.prefs` is read when
@@ -100,33 +110,67 @@ old folder intact), `first_launch_adopts_the_previous_release_settings`,
 
 ## 5. `solvecraft-cli` alias
 
-A tiny `solvecraft-cli` binary (`apps/solidcraft-cli/src/alias.rs`) ships in every package for
-at least one release (since 0.5.0). It prints a one-line deprecation note to stderr and runs the
-`solidcraft-cli` next to it with the same arguments, stdin/stdout and exit code, so scripts
-and MCP client configs that call `solvecraft-cli` keep working. Test: `apps/solidcraft-cli/tests/legacy_alias.rs` (forwards `--version` and the exit status;
-the note goes to stderr only, so stdout stays clean for MCP).
+Upstream ships a `solvecraft-cli` that forwards to its CLI. Intcad does not: the name is
+upstream's, Intcad was never published under it, and two packages cannot both install
+`/usr/bin/solvecraft-cli`. The alias binary and its test are gone from this repository.
 
-There is no alias for the desktop binary: launchers, file associations and Start-menu entries
-installed by the packages point at `solidcraft`.
+Intcad's own programs have no alias for the names they had in 0.1.0 (`solidcraft`,
+`solidcraft-cli`) either: those are upstream's names.
 
 ## 6. MCP
 
-`serverInfo.name` is now `solidcraft`. The name a client shows is chosen by the user when the
-server is added, so an existing setup such as
+`serverInfo.name` is `intcad`, and `intcad-cli mcp setup` writes the entries `intcad` and
+`intcad-live`. It reads and changes only those two. An entry named `solidcraft` is upstream's or
+the user's and stays as it is (test `an_upstream_solidcraft_entry_is_left_alone` in
+`crates/engine/src/agent_setup.rs`). New setups use:
 
 ```sh
-claude mcp add solvecraft -- solvecraft-cli mcp
+claude mcp add intcad -- intcad-cli mcp
 ```
 
-keeps working (through the alias above). New setups use:
+Resources are listed as `solidcraft://design` and `solidcraft://commands`; the old
+`solvecraft://` URIs still read (`crates/mcp/src/server.rs`, test
+`legacy_design_files_and_resource_uris`).
 
-```sh
-claude mcp add solidcraft -- solidcraft-cli mcp
-```
+## Intcad's identity
 
-Switch before the alias is removed. Resources are listed as `solidcraft://design` and
-`solidcraft://commands`; the old `solvecraft://` URIs still read (`crates/mcp/src/server.rs`,
-test `legacy_design_files_and_resource_uris`).
+Intcad's own names, set once, in the version after 0.1.0. `scripts/identity_to_intcad.py` applies
+the mechanical part and can be run again after a merge from upstream. Intcad 0.1.0 was published
+under upstream's names, so an install of it is treated like an upstream one: not replaced, and
+nothing is read from its folders.
+
+| What | Intcad | Why it is not upstream's |
+|---|---|---|
+| App ID (Flatpak, desktop entry, AppStream, MIME and icon file names, Wayland `app_id` / X11 class, Arch package, macOS bundle ID and document type) | `ai.intgral.intcad` (the CLI's signing identifier is `ai.intgral.intcad.cli`) | Upstream's `io.tangencylabs.solidcraft` belongs to upstream. Sharing it made the two apps one app to the desktop, to macOS privacy permissions and to a code signature. |
+| macOS bundle | `Intcad.app` | Dragging it to Applications no longer replaces an upstream `SolidCraft.app`. |
+| MSI `UpgradeCode`, install folder, registry key, ProgIDs | Intcad's own `UpgradeCode`; `Program Files\Intcad`; `HKLM\Software\Intcad`; `Intcad.Design`, `Intcad.Model` | With upstream's `UpgradeCode` each product's installer removed the other. The `UpgradeCode` is now fixed for Intcad: never change it again. |
+| deb / rpm package | `intcad` | Its own entry in the package database (`/var/lib/dpkg/info/intcad.list` is how the update check recognises a deb install). |
+| Release files | `intcad-<version>-<platform>…`, and `Intcad-<version>-windows-x64.exe` | The update check and the download page pick files by these names. |
+| Settings, recovery and cache folders | `Intcad` / `intcad` (section 4); nothing is taken from a `SolidCraft` folder | Two products no longer write one `graphics.json` and one recovery folder. |
+| Programs | `intcad` and `intcad-cli` (`intcad.exe`, `intcad-cli.exe`, `Intcad.app/Contents/MacOS/Intcad`) | Both products' Linux packages installed `/usr/bin/solidcraft` and `/usr/bin/solidcraft-cli`, and both Windows installers put a `solidcraft-cli.exe` on `PATH`. |
+| Folders the Linux packages install | `/usr/lib/intcad`, `/usr/share/doc/intcad` | The same paths in two packages. |
+| deb / rpm relations | none to `solidcraft` or `solvecraft` | `Replaces`, `Conflicts` and `Provides: solvecraft` made installing Intcad remove upstream's earlier package. |
+| MCP server entry | `intcad`, `intcad-live`; `serverInfo.name` is `intcad` (section 6) | `mcp setup` rewrote the entry upstream's setup writes. |
+| Snap | `intcad`, with the commands `intcad` and `intcad.cli` | A snap name belongs to one product. |
+
+Two things keep working for what was published under the earlier names:
+
+- An AppImage looks in the latest release for its `.zsync` under the name it was published with.
+  Each release carries the same `.zsync` under `solidcraft-…` and `solvecraft-…` as well
+  (`packaging/linux/package.sh`), so the build before this change still finds its update.
+- `packaging/web-channels.sh` takes each release's web zip under the name that release gave it,
+  and checks it against that release's `SHA256SUMS.txt` under the same name, so stable can come
+  from an old tag while the release candidate comes from a new one
+  (`packaging/tests/web_channels_test.py`).
+
+Intcad does not present itself as the successor of upstream's app: `io.tangencylabs.solidcraft`
+is not added to the AppStream `<replaces>`, `X-Flatpak-RenamedFrom` or the Flatpak rebase list,
+and settings kept in a Flatpak sandbox under that ID are not read. The older IDs listed below
+are upstream's own history and are left as upstream wrote them.
+
+Unchanged, and still shared with upstream by design: the design format (`.sc`, `solidcraft/N`,
+`application/x-solidcraft`), `SOLIDCRAFT_*` variables, crate and Cargo package names
+(`-p solidcraft`, `-p solidcraft-cli`) and the `solidcraft://` resource URIs.
 
 ## Package IDs
 

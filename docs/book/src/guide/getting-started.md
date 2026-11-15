@@ -1,6 +1,6 @@
 # Getting started
 
-The desktop executable is `solidcraft`, the CLI is `solidcraft-cli`, and designs are saved as
+The desktop executable is `intcad`, the CLI is `intcad-cli`, and designs are saved as
 `.sc` (`.solidcraft` designs from earlier releases still open, and Save keeps their name). Designs, settings and setups from builds released under the previous product name keep
 working (see the [compatibility notes](https://github.com/tangency-labs/solidcraft/blob/main/docs/compatibility.md)).
 
@@ -16,13 +16,13 @@ git clone https://github.com/tangency-labs/solidcraft && cd solidcraft
 cargo run --release -p solidcraft -- --sample   # opens with a sample part
 ```
 
-`solidcraft part.step` opens a STEP, IGES, 3MF, STL or OBJ file as a new design, and
-`solidcraft design.sc` opens a saved design. Windows builds cross-compile from Linux with
+`intcad part.step` opens a STEP, IGES, 3MF, STL or OBJ file as a new design, and
+`intcad design.sc` opens a saved design. Windows builds cross-compile from Linux with
 `cargo xwin build --release --target x86_64-pc-windows-msvc -p solidcraft`.
 
 ### macOS
 
-Open the release `.dmg` and drag `SolidCraft.app` onto Applications.
+Open the release `.dmg` and drag `Intcad.app` onto Applications.
 
 The release `.dmg` is signed with a Developer ID and notarized by Apple, and the app and the disk
 image carry the notarization ticket, so macOS opens SolidCraft normally, even offline.
@@ -34,7 +34,7 @@ message about SolidCraft, click **Open Anyway** and confirm: the app opens norma
 From a terminal, remove the quarantine flag instead:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/SolidCraft.app
+xattr -dr com.apple.quarantine /Applications/Intcad.app
 ```
 
 When updating from a build released under the previous product name, follow the
@@ -43,11 +43,11 @@ When updating from a build released under the previous product name, follow the
 ### Linux AppImage
 
 The first time you open the AppImage it adds a menu entry and icons under `~/.local/share`
-(`applications/io.tangencylabs.solidcraft.desktop`, `icons/hicolor`), so the desktop shows the
+(`applications/ai.intgral.intcad.desktop`, `icons/hicolor`), so the desktop shows the
 right name and icon. It adds nothing if [appimaged](https://github.com/probonopd/go-appimage)
 already made an entry for the file, or if a launcher such as Gear Lever or AppImageLauncher
 started it (and removes the entry SolidCraft added before). To
-turn it off for good, create an empty file `~/.local/share/solidcraft/no-desktop-integration`, or
+turn it off for good, create an empty file `~/.local/share/intcad/no-desktop-integration`, or
 start the AppImage with `SOLIDCRAFT_NO_DESKTOP_INTEGRATION=1`.
 
 If the AppImage doesn't start and prints a FUSE message followed by `execv error: No such file
@@ -64,8 +64,8 @@ to the same user installation:
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak remote-add --user --if-not-exists solidcraft https://docs.solidcraft.io/flatpak/solidcraft.flatpakrepo
-flatpak install --user solidcraft io.tangencylabs.solidcraft
-flatpak run io.tangencylabs.solidcraft
+flatpak install --user solidcraft ai.intgral.intcad
+flatpak run ai.intgral.intcad
 ```
 
 A SolidCraft remote added before the project moved to `docs.solidcraft.io` (from
@@ -76,7 +76,7 @@ A SolidCraft remote added before the project moved to `docs.solidcraft.io` (from
 Earlier releases used the application IDs `ai.storyteller.solidcraft` and, up to 0.7,
 `ai.storyteller.solvecraft`. If you installed one of those from the SolidCraft remote,
 `flatpak update --user` reports it as end-of-life and offers to replace it with
-`io.tangencylabs.solidcraft`; accept, and your settings and autosaves move with it. If you
+`ai.intgral.intcad`; accept, and your settings and autosaves move with it. If you
 installed a `.flatpak` bundle, install the new bundle, launch it once (it copies your settings),
 then run `flatpak uninstall --user ai.storyteller.solidcraft` (or `ai.storyteller.solvecraft`; see the
 [compatibility notes](https://github.com/tangency-labs/solidcraft/blob/main/docs/compatibility.md#linux-app-id)).
@@ -84,8 +84,8 @@ then run `flatpak uninstall --user ai.storyteller.solidcraft` (or `ai.storytelle
 Alternatively, download the release's `.flatpak` file for your architecture and run
 `flatpak install --user ./solidcraft-VERSION-linux-ARCH.flatpak`. The bundle supplies the
 Flathub runtime repository address; installation still needs internet access to fetch any
-missing runtime. Launch with `flatpak run io.tangencylabs.solidcraft`, rather than looking for
-a host `solidcraft` binary. Files chosen through Open/Save use the desktop file-chooser portal;
+missing runtime. Launch with `flatpak run ai.intgral.intcad`, rather than looking for
+a host `intcad` binary. Files chosen through Open/Save use the desktop file-chooser portal;
 command-line paths outside Documents may need a specific additional filesystem permission.
 
 ### Linux Snap
@@ -93,9 +93,9 @@ command-line paths outside Documents may need a specific additional filesystem p
 On Ubuntu and other distributions with snapd:
 
 ```sh
-sudo snap install solidcraft
-solidcraft                # or open SolidCraft from the app menu
-solidcraft.cli --version  # the CLI, for scripts and `solidcraft.cli mcp`
+sudo snap install intcad
+intcad                # or open Intcad from the app menu
+intcad.cli --version  # the CLI, for scripts and `intcad.cli mcp`
 ```
 
 The snap can open designs in your home folder (not hidden folders) and, through the file
@@ -267,7 +267,7 @@ joystick instead of the mouse wheel. Delete the file to undo it.
 
 ## CLI
 
-`solidcraft-cli` runs the same commands without a window:
+`intcad-cli` runs the same commands without a window:
 
 ```sh
 cargo run --release -p solidcraft-cli -- commands                       # every command, as JSON
@@ -290,13 +290,13 @@ A script is a list of commands:
 ]}
 ```
 
-![The bracket example, rendered by solidcraft-cli snapshot](../generated/bracket.png)
+![The bracket example, rendered by intcad-cli snapshot](../generated/bracket.png)
 
-`snapshot` looks at the model from the iso view. `--view NAME` takes another standard view (`front`, `back`, `top`, `bottom`, `left`, `right`) or the name of a view saved in the design with `view.save`. `--camera JSON` takes any camera, as the MCP `screenshot` tool does (its conventions are in [the MCP page](mcp.md#camera-and-close-up-recipe)). A script that applies a view itself with `view.apply` sets the camera too. The ground grid lies on Z 0, so it cuts through a part that straddles it: `--no-grid` leaves it out of the picture, and `--no-axes` the origin's axes. The picture is drawn on the GPU with the viewport's own pipelines, so it shows what the window would (a surface analysis such as `inspect.zebra` included); a machine without a GPU uses a software one (Mesa's lavapipe on Linux, WARP on Windows), and with neither (a Mac without usable Metal, a Linux box without Mesa's Vulkan) the CPU rasterizer draws it, without surface analysis colours, and the reply's `renderer` says `cpu` with a warning. `SOLIDCRAFT_GPU=auto|hardware|software|cpu` chooses (`hardware` and `software` fail rather than fall to the CPU), and `solidcraft-cli gpu` lists the adapters and the tier a snapshot would use.
+`snapshot` looks at the model from the iso view. `--view NAME` takes another standard view (`front`, `back`, `top`, `bottom`, `left`, `right`) or the name of a view saved in the design with `view.save`. `--camera JSON` takes any camera, as the MCP `screenshot` tool does (its conventions are in [the MCP page](mcp.md#camera-and-close-up-recipe)). A script that applies a view itself with `view.apply` sets the camera too. The ground grid lies on Z 0, so it cuts through a part that straddles it: `--no-grid` leaves it out of the picture, and `--no-axes` the origin's axes. The picture is drawn on the GPU with the viewport's own pipelines, so it shows what the window would (a surface analysis such as `inspect.zebra` included); a machine without a GPU uses a software one (Mesa's lavapipe on Linux, WARP on Windows), and with neither (a Mac without usable Metal, a Linux box without Mesa's Vulkan) the CPU rasterizer draws it, without surface analysis colours, and the reply's `renderer` says `cpu` with a warning. `SOLIDCRAFT_GPU=auto|hardware|software|cpu` chooses (`hardware` and `software` fail rather than fall to the CPU), and `intcad-cli gpu` lists the adapters and the tier a snapshot would use.
 
 ```sh
-solidcraft-cli snapshot part.sc --out photo.png --view Photo
-solidcraft-cli snapshot part.sc --out close-up.png --no-grid --no-axes --camera '{"target": [30, -20, 0], "yaw": 0.6, "pitch": 0.25, "distance": 60}'
+intcad-cli snapshot part.sc --out photo.png --view Photo
+intcad-cli snapshot part.sc --out close-up.png --no-grid --no-axes --camera '{"target": [30, -20, 0], "yaw": 0.6, "pitch": 0.25, "distance": 60}'
 ```
 
 ### Seeing what a cut or a join is about to do
@@ -317,9 +317,9 @@ the other side, `XY`, `XZ` or `YZ` for a plane through the origin, or the comman
 
 ```sh
 # The pin the cut would remove, inside the plate it stops 6 mm short of.
-solidcraft-cli snapshot plate.sc --out preview.png --tool Pin
-solidcraft-cli snapshot plate.sc --out cut.png --tool Pin --section z=12
-solidcraft-cli snapshot plate.sc --out glass.png --body "Plate:opacity=0.25" --body "Pin:color=#1a7f4b"
+intcad-cli snapshot plate.sc --out preview.png --tool Pin
+intcad-cli snapshot plate.sc --out cut.png --tool Pin --section z=12
+intcad-cli snapshot plate.sc --out glass.png --body "Plate:opacity=0.25" --body "Pin:color=#1a7f4b"
 ```
 
 A body drawn see-through is drawn see-through everywhere a picture is drawn, not only here:
@@ -389,12 +389,11 @@ and Z is up.
 
 ## Name and compatibility
 
-SolidCraft was renamed from an earlier working name. Since 0.5.0 everything uses the new
-name: the `solidcraft` and `solidcraft-cli` programs, `.solidcraft` designs (`.sc` since then), `SOLIDCRAFT_*`
-environment variables, settings folders and the `solidcraft` MCP server. Upgrading keeps
-working: designs, settings, recovery files, environment variables and CLI/MCP setups from
-earlier builds carry over. Every compatibility shim is listed in the
-[compatibility notes](https://github.com/tangency-labs/solidcraft/blob/main/docs/compatibility.md).
+Intcad is built on SolidCraft. What it installs carries its own name: the `intcad` and
+`intcad-cli` programs, the packages, the settings folders and the `intcad` MCP server. The
+design format is SolidCraft's: `.sc` designs, and `.solidcraft` ones from earlier releases,
+open as before, and `SOLIDCRAFT_*` environment variables keep their names. What is kept and
+why is in `docs/compatibility.md` in the repository.
 
 Use the SolidCraft documentation and web-app URLs. GitHub redirects links to the renamed
 repository; old-name Pages and Flatpak URLs are not maintained as permanent aliases.

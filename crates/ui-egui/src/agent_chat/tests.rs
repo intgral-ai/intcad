@@ -8670,10 +8670,10 @@ fn a_title_that_mentions_solidcraft_goes_through_the_users_mode() {
     app.agent_chat.running_id = "codex".into();
     let opts = || vec![PermissionOption { id: "allow".into(), name: "Allow".into(), kind: "allow_once".into() }];
     let titles = [
-        ("run solidcraft-cli; ls", Some("execute")),
-        ("run solidcraft-cli; ls", None),
-        ("Edit ~/.local/share/solidcraft/agent-chat/work/notes.txt", Some("edit")),
-        ("mcp__solidcraft__batch", Some("other")),
+        ("run intcad-cli; ls", Some("execute")),
+        ("run intcad-cli; ls", None),
+        ("Edit ~/.local/share/intcad/agent-chat/work/notes.txt", Some("edit")),
+        ("mcp__intcad__batch", Some("other")),
         ("mcp__intcad-app__batch", Some("execute")),
     ];
     for mode in [agents::Mode::Ask, agents::Mode::Edits] {
@@ -12917,7 +12917,7 @@ fn unknown_or_malformed_tool_calls_keep_their_title_and_never_panic() {
         Some(r#"{"bodies": [{"bbox": {"min": [1], "max": "x"}}]}"#),
         Some(r#"{"created_bodies": [1, null, "B"]}"#),
     ];
-    for tool in ["execute", "batch", "measure", "save", "export", "open", "new_design", "set_parameter", "mcp__solidcraft__batch"] {
+    for tool in ["execute", "batch", "measure", "save", "export", "open", "new_design", "set_parameter", "mcp__intcad__batch"] {
         for input in &hostile {
             for output in outputs {
                 for done in [true, false] {

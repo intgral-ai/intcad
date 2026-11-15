@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Repackage a SolidCraft Linux tarball as a single-file Flatpak bundle:
 #
-#   $DIST/solidcraft-<version>-linux-<arch>.flatpak
+#   $DIST/intcad-<version>-linux-<arch>.flatpak
 #
 # Usage: packaging/linux/flatpak-bundle.sh [--no-test] [TARBALL]
 #
-# TARBALL defaults to $DIST/solidcraft-<version>-linux-<arch>.tar.gz from package.sh. The bundle
+# TARBALL defaults to $DIST/intcad-<version>-linux-<arch>.tar.gz from package.sh. The bundle
 # is built for the host architecture (x86_64 or aarch64), which must match the tarball's.
 # Needs flatpak, flatpak-builder and the SVG pixbuf loader (librsvg2-common) for the host's
 # `appstreamcli compose`; the GNOME 51 runtime and SDK named in the manifest are installed
@@ -13,7 +13,7 @@
 # and the desktop creates/measures a box and opens the Assistant's page on headless X11 and
 # Wayland. The desktop check also needs python3, dbus-x11, xvfb, xauth and weston; no screenshots
 # are produced.
-# Manifest: packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml.
+# Manifest: packaging/linux/flatpak/ai.intgral.intcad.bundle.yml.
 # Adapted from PhotoCraft's (storytold/photocraft, Apache-2.0; see ATTRIBUTION.md).
 set -euo pipefail
 # shellcheck source=../env.sh
@@ -38,7 +38,7 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-BASENAME="solidcraft-$VERSION-linux-$ARCH"
+BASENAME="intcad-$VERSION-linux-$ARCH"
 TARBALL="${TARBALL:-$DIST/$BASENAME.tar.gz}"
 [ -f "$TARBALL" ] || { echo "error: $TARBALL not found (run packaging/linux/package.sh --formats tar first)" >&2; exit 1; }
 for tool in flatpak flatpak-builder; do
@@ -51,7 +51,7 @@ WORK="$CARGO_TARGET_DIR/flatpak-bundle"
 rm -rf "$WORK"
 mkdir -p "$WORK/stage"
 tar -xzf "$TARBALL" -C "$WORK/stage" --strip-components=1
-[ -x "$WORK/stage/bin/solidcraft" ] || { echo "error: $TARBALL has no bin/solidcraft" >&2; exit 1; }
+[ -x "$WORK/stage/bin/intcad" ] || { echo "error: $TARBALL has no bin/intcad" >&2; exit 1; }
 cp "$HERE/flatpak/$APP_ID.bundle.yml" "$WORK/$APP_ID.yml"
 
 flatpak remote-add --user --if-not-exists flathub "$FLATHUB"
@@ -67,8 +67,8 @@ echo "wrote $OUT"
 if [ "$TEST" = 1 ]; then
   flatpak install --user -y --noninteractive --reinstall "$OUT"
   flatpak info --user "$APP_ID"
-  flatpak run --command=solidcraft-cli "$APP_ID" --version
-  flatpak run --command=sh "$APP_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/mime/packages /app/share/icons/hicolor/256x256/apps /app/share/doc/solidcraft'
+  flatpak run --command=intcad-cli "$APP_ID" --version
+  flatpak run --command=sh "$APP_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/mime/packages /app/share/icons/hicolor/256x256/apps /app/share/doc/intcad'
   python3 "$HERE/flatpak-smoke.py" --backend both
 fi
 echo "==> done"

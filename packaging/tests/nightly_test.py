@@ -159,9 +159,9 @@ class ForkWorkflowSafety(unittest.TestCase):
         self.assertRegex(text, r"unshare -n[^\n]*snap-smoke\.py")
         self.assertNotRegex(text, r"(?m)^\s*python3 packaging/linux/snap-smoke\.py")
         self.assertIn("ip link set lo up", text)
-        self.assertIn("solidcraft.cli --version", text)
+        self.assertIn("intcad.cli --version", text)
         # Flatpak's existing sandbox denies network; keep its real desktop smoke.
-        manifest = (ROOT / "packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml").read_text()
+        manifest = (ROOT / "packaging/linux/flatpak/ai.intgral.intcad.bundle.yml").read_text()
         self.assertNotRegex(manifest, r"(?m)^\s+- --share=network\s*$")
         self.assertIn("packaging/linux/flatpak-bundle.sh", text)
         # The installed checks start the desktop app: each takes the network away from it.

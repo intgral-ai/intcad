@@ -56,7 +56,7 @@ class NativeContentDecision(unittest.TestCase):
     def test_runtime_markers_fail_the_native_declaration(self):
         descriptors = {"release-linux-x86_64": build("release-linux-x86_64", [("solidcraft.tar.gz", DG)])}
         contents = {"release-linux-x86_64": report("release-linux-x86_64", [("solidcraft.tar.gz", DG)],
-                                                   markers=("usr/lib/solidcraft/mastra/runtime/node",))}
+                                                   markers=("usr/lib/intcad/mastra/runtime/node",))}
         problems = content.problems(SHA, descriptors, contents)
         self.assertTrue(problems)
         self.assertIn("mastra", problems[0])
@@ -110,13 +110,13 @@ class NativeContentDecision(unittest.TestCase):
 
     def test_a_derived_package_may_alias_the_source_by_digest(self):
         descriptors = {
-            "release-linux-x86_64": build("release-linux-x86_64", [("solidcraft-0.1.0-beta.1-linux-x86_64.tar.gz", DG)]),
-            "release-arch-x86_64": build("release-arch-x86_64", [("solidcraft-0.1.0-beta.1-linux-x86_64.pkg.tar.zst", DG2)]),
+            "release-linux-x86_64": build("release-linux-x86_64", [("intcad-0.1.0-beta.1-linux-x86_64.tar.gz", DG)]),
+            "release-arch-x86_64": build("release-arch-x86_64", [("intcad-0.1.0-beta.1-linux-x86_64.pkg.tar.zst", DG2)]),
         }
         contents = {
-            "release-linux-x86_64": report("release-linux-x86_64", [("solidcraft-0.1.0-beta.1-linux-x86_64.tar.gz", DG)]),
+            "release-linux-x86_64": report("release-linux-x86_64", [("intcad-0.1.0-beta.1-linux-x86_64.tar.gz", DG)]),
             "release-arch-x86_64": report("release-arch-x86_64", [], derived="release-linux-x86_64",
-                                          source_name="solidcraft-0.1.0beta.1-linux-x86_64.tar.gz", source_sha=DG),
+                                          source_name="intcad-0.1.0beta.1-linux-x86_64.tar.gz", source_sha=DG),
         }
         self.assertEqual(content.problems(SHA, descriptors, contents), [])
         contents["release-arch-x86_64"]["sourceSha256"] = DG2

@@ -19,19 +19,19 @@ document remains the reference implementation today.
 
 ```sh
 # Headless: an in-process design session, no window (screenshots are drawn on the GPU).
-solidcraft-cli mcp
+intcad-cli mcp
 
 # Headless, starting from a design file or a command script.
-solidcraft-cli mcp --in part.sc
+intcad-cli mcp --in part.sc
 
 # Bridged to the running app, so you can watch the agent model. The app's control channel is
 # on by default (see below), so no flag is needed on either side:
-solidcraft &
-solidcraft-cli mcp          # finds the running app; headless when none runs (--headless forces that)
+intcad &
+intcad-cli mcp          # finds the running app; headless when none runs (--headless forces that)
 
 # A fixed port, or a second app: name it.
-solidcraft --control 7878 &
-solidcraft-cli mcp --connect 127.0.0.1:7878
+intcad --control 7878 &
+intcad-cli mcp --connect 127.0.0.1:7878
 ```
 
 ### The app listens by default
@@ -41,7 +41,7 @@ when that one is taken), unless Preferences > Assistant > "Let AI agents connect
 channel / MCP)" is off; the setting takes effect at the next start. It is reachable from this
 computer only, and every connection must show the token made fresh for that launch, readable only
 by your user account ([control-protocol.md](control-protocol.md#token)). The app writes the port to
-`control/current.port` in the same folder as its token file; `solidcraft-cli mcp` with no
+`control/current.port` in the same folder as its token file; `intcad-cli mcp` with no
 arguments reads it. `--control PORT` and `SOLIDCRAFT_CONTROL_PORT` still choose the port and apply
 even when the setting is off. With the setting off and no flag, the app listens on nothing.
 
@@ -57,7 +57,7 @@ A bridged server starts even when no app listens on that port yet, so an MCP cli
 launches it before the app (or after the app was closed) keeps its tools. The server's
 instructions then say the app was not running, and every tool call answers with an error that
 starts `no SolidCraft app is listening at HOST:PORT` and says how to start it
-(`solidcraft --control PORT`). The first call after the app starts connects to it, reading that
+(`intcad --control PORT`). The first call after the app starts connects to it, reading that
 launch's token. When the app quits or crashes mid-session, the next call says the same; a call
 that was running when it went away says the app did not answer and may have quit or crashed,
 after running the call or not, so inspect the design before sending a change again.
@@ -136,13 +136,13 @@ A hard link inside an allowed folder can't be told apart from an ordinary file, 
 to a file elsewhere is reachable through it; don't keep such links in a folder you allow.
 
 ```sh
-solidcraft-cli mcp --allow-path ~/designs --allow-path ~/exports
-solidcraft-cli mcp --allow-any-path   # no limit (the behaviour before this option existed)
+intcad-cli mcp --allow-path ~/designs --allow-path ~/exports
+intcad-cli mcp --allow-any-path   # no limit (the behaviour before this option existed)
 ```
 
 When a `save` (or any other call) is refused with `… outside the folders this agent may use …`,
 add the folder to the server's `args` in your MCP client's configuration (the `mcpServers`
-entries below, or what `solidcraft-cli mcp setup` wrote), for example
+entries below, or what `intcad-cli mcp setup` wrote), for example
 `"args": ["mcp", "--allow-path", "/Users/NAME/Documents/Designs"]`, and restart the client.
 An agent should ask you to do that rather than save through the app's control port, which
 knows nothing of these folders.
@@ -167,18 +167,18 @@ not read-only, `destructiveHint` and `openWorldHint` are true.
 
 ### Client configuration
 
-`solidcraft-cli` is on `PATH` after every package install: the Windows installer adds its folder, the deb, rpm and FreeBSD packages install it in `/usr/bin`, the Homebrew cask links it, the AppImage writes a small `solidcraft-cli` launcher into `~/.local/bin` on its first run, and the macOS app links it into `/opt/homebrew/bin` or `/usr/local/bin` when it starts (Help > Install solidcraft-cli command does it with an administrator prompt when those are not writable). Two packages keep it out of `PATH` by design: Snap exposes it as `solidcraft.cli`, and Flatpak runs it as `flatpak run --command=solidcraft-cli io.tangencylabs.solidcraft`; use those as the client's `command` (with `mcp` as the arguments).
+`intcad-cli` is on `PATH` after every package install: the Windows installer adds its folder, the deb, rpm and FreeBSD packages install it in `/usr/bin`, the Homebrew cask links it, the AppImage writes a small `intcad-cli` launcher into `~/.local/bin` on its first run, and the macOS app links it into `/opt/homebrew/bin` or `/usr/local/bin` when it starts (Help > Install intcad-cli command does it with an administrator prompt when those are not writable). Two packages keep it out of `PATH` by design: Snap exposes it as `intcad.cli`, and Flatpak runs it as `flatpak run --command=intcad-cli ai.intgral.intcad`; use those as the client's `command` (with `mcp` as the arguments).
 
 The quickest way: **Help > Connect AI assistants…** in the app, or
 
 ```sh
-solidcraft-cli mcp setup            # every client found on this computer
-solidcraft-cli mcp setup --dry-run  # show what it would write, change nothing
-solidcraft-cli mcp setup --client opencode --live
+intcad-cli mcp setup            # every client found on this computer
+intcad-cli mcp setup --dry-run  # show what it would write, change nothing
+intcad-cli mcp setup --client opencode --live
 ```
 
-(`mcp install` is the same.) It adds a `solidcraft` server, using the full path of the
-`solidcraft-cli` that runs it, so nothing has to be on `PATH`. A client counts as installed when its
+(`mcp install` is the same.) It adds a `intcad` server, using the full path of the
+`intcad-cli` that runs it, so nothing has to be on `PATH`. A client counts as installed when its
 configuration folder exists, and no client program is started. Supported:
 
 | `--client` | Configuration file |
@@ -194,16 +194,16 @@ configuration folder exists, and no client program is started. Supported:
 | `zed` | Zed's `settings.json` (`context_servers`) |
 | `vscode` | VS Code's user `mcp.json` |
 
-Only the `solidcraft` entries change; everything else in the file (other servers, comments, order)
+Only the `intcad` entries change; everything else in the file (other servers, comments, order)
 stays as it was. Updates replace the file atomically and keep the previous version as `<name>.bak`.
 A failed write leaves the configuration intact. A file that does not parse is left alone.
 Setup also checks for changes since it read the file and refuses a stale edit. This check narrows
 the race with another program writing its settings; it cannot exclude a write after the check.
 After an update moves the program, running setup again only refreshes the path of an entry it wrote.
-An entry you changed (extra arguments, another program) is left as you have it. `--live` also adds `solidcraft-live`, which bridges to the open app (port
+An entry you changed (extra arguments, another program) is left as you have it. `--live` also adds `intcad-live`, which bridges to the open app (port
 7878, see below). Restart the client afterwards.
 
-SolidCraft also does this by itself: when the app starts it adds the `solidcraft` entry to each
+SolidCraft also does this by itself: when the app starts it adds the `intcad` entry to each
 installed client (and refreshes its path after an update), and says once which clients it
 connected. It never touches an entry you changed. **Settings > Assistant > Make SolidCraft
 available to AI apps on this computer** turns it off, which removes the entries it added. Runs
@@ -214,61 +214,61 @@ To configure a client by hand instead, these are the entries. OpenCode (`opencod
 ```json
 {
   "mcp": {
-    "solidcraft": { "type": "local", "command": ["/path/to/solidcraft-cli", "mcp"], "enabled": true }
+    "intcad": { "type": "local", "command": ["/path/to/intcad-cli", "mcp"], "enabled": true }
   }
 }
 ```
 
-Claude Code (project `.mcp.json`, or `claude mcp add solidcraft -- solidcraft-cli mcp`; a setup
+Claude Code (project `.mcp.json`, or `claude mcp add intcad -- intcad-cli mcp`; a setup
 added under the previous name keeps working, see the [compatibility notes](https://github.com/bherbruck/solidcraft/blob/main/docs/compatibility.md#mcp)):
 
 ```json
 {
   "mcpServers": {
-    "solidcraft": { "command": "solidcraft-cli", "args": ["mcp"] }
+    "intcad": { "command": "intcad-cli", "args": ["mcp"] }
   }
 }
 ```
 
-If a terminal doesn't find `solidcraft-cli` (older Windows installers don't put its folder on
+If a terminal doesn't find `intcad-cli` (older Windows installers don't put its folder on
 `PATH`; see below for where it is), give its full path (by default
-`C:\Program Files\SolidCraft\solidcraft-cli.exe`):
-`claude mcp add solidcraft -- "C:\Program Files\SolidCraft\solidcraft-cli.exe" mcp`.
+`C:\Program Files\Intcad\intcad-cli.exe`):
+`claude mcp add intcad -- "C:\Program Files\Intcad\intcad-cli.exe" mcp`.
 
 Claude Desktop (`claude_desktop_config.json`), bridged to a running app:
 
 ```json
 {
   "mcpServers": {
-    "solidcraft": { "command": "/path/to/solidcraft-cli", "args": ["mcp", "--connect", "127.0.0.1:7878"] }
+    "intcad": { "command": "/path/to/intcad-cli", "args": ["mcp", "--connect", "127.0.0.1:7878"] }
   }
 }
 ```
 
-On Windows the installer puts `solidcraft-cli.exe` next to `solidcraft.exe` in
-`C:\Program Files\SolidCraft` (the portable zip has both too). Give the full path, with each
-backslash doubled in JSON. This configuration declares two servers: `solidcraft` models
-headless (no window; steadier for timings), `solidcraft-live` drives the app you have open, so
+On Windows the installer puts `intcad-cli.exe` next to `intcad.exe` in
+`C:\Program Files\Intcad` (the portable zip has both too). Give the full path, with each
+backslash doubled in JSON. This configuration declares two servers: `intcad` models
+headless (no window; steadier for timings), `intcad-live` drives the app you have open, so
 you can watch the agent model. `--allow-path` names a folder where the agent may save and
 export; it must already exist.
 
 ```json
 {
   "mcpServers": {
-    "solidcraft": {
-      "command": "C:\\Program Files\\SolidCraft\\solidcraft-cli.exe",
+    "intcad": {
+      "command": "C:\\Program Files\\Intcad\\intcad-cli.exe",
       "args": ["mcp", "--allow-path", "C:\\Users\\NAME\\SolidCraft-Agent"]
     },
-    "solidcraft-live": {
-      "command": "C:\\Program Files\\SolidCraft\\solidcraft-cli.exe",
+    "intcad-live": {
+      "command": "C:\\Program Files\\Intcad\\intcad-cli.exe",
       "args": ["mcp", "--connect", "127.0.0.1:7878", "--allow-path", "C:\\Users\\NAME\\SolidCraft-Agent"]
     }
   }
 }
 ```
 
-Start the app with its control channel for `solidcraft-live`, from PowerShell:
-`& "C:\Program Files\SolidCraft\solidcraft.exe" --control 7878`, or once for every launch:
+Start the app with its control channel for `intcad-live`, from PowerShell:
+`& "C:\Program Files\Intcad\intcad.exe" --control 7878`, or once for every launch:
 `setx SOLIDCRAFT_CONTROL_PORT 7878`.
 
 Open `claude_desktop_config.json` with Claude Desktop's **Settings > Developer > Edit Config**
@@ -323,7 +323,7 @@ builds it.
 | `body_topology` | `body`, `faces?` (`all`, `cylinders`; default `all`) | Edges (index, midpoint, length, ends) and faces (index, name, area, centroid, normal, `point`, and for a cylindrical face its `cylinder`: `origin`, `axis`, `radius`). An edge midpoint is the `[x,y,z]` that picks that edge for fillet and chamfer. A face's `point` lies on it and picks it (its centroid may not: that of a face with a hole is in the hole); a face's `name` picks it for the commands that take faces (`face.delete`, `solid.shell`, `solid.draft`, `solid.offset_face`, `solid.split_face`, `solid.replace_face`, and `face` of `sheet.convert`). `faces: "cylinders"` replies `cylinders` instead of `edges` and `faces`: one entry per cylinder, `{radius, origin, axis, extent, names}`, the halves the kernel splits a cylinder into merged (same radius, same axis line; `origin` and `axis` as the first half's `cylinder` gives them), `extent` the `[min, max]` distance along `axis` from `origin` that the body's points on the cylinder span (the faces' `point`s and the ends of the edges lying on it; left out when none were found), and `names` the merged faces' names, any of which picks the face. Enough to check where every hole and boss is, in a few lines instead of the whole topology. |
 | `set_parameter` | `name`, `value` or `expression` (number or expression), `unit?`, `comment?` | Create or change a user parameter and recompute. `expression` is another name for `value` (the one `parameters.change` uses): give one of them, or both only when they agree; neither, or two that differ, is an error. Reports `recomputed` (features rebuilt), `restored` (features whose earlier result for the same inputs was reused, e.g. a value set back) and features that now fail. An expression `new_name = expression` renames the parameter as it sets it; in any other tool's expression parameter it adds the user parameter `new_name` and the input uses it (`defined`, `definitions` in the reply). |
 | `check_parameters` | `set: {name: value}` (a number or an expression each, as `set_parameter`'s `value`), `report?` (`measure`, `cylinders`, `errors`; default all three) | Try parameter values without keeping them: one `edit.checkpoint`, every value set in one `parameters.change {changes}` (one rebuild; an app without `changes` gets one change per name), the reports read, then `edit.restore_checkpoint`, so the design, its parameters and its undo history are exactly as before. The reply has `values` (each parameter's value with the tried expressions in), `recomputed`, `measure` (volume, bbox, bodies and faces per body, as the `measure` tool reports them), `errors` and `warnings` (the features that fail or warn: `{feature, name, error}`) with `parameter_errors` (the parameters that don't evaluate), `cylinders` (every cylindrical face of every body as `{body, radius, origin, axis, faces, name, area}`; the halves a kernel splits one cylinder into are one entry, `origin` is the axis point closest to the world origin and `axis` points so that its first non-zero component is positive) and `restored: true`. A name the design has no parameter of, a value that is not a number or a string, an expression that does not evaluate or an unknown report item is an error, and nothing changes. If the checkpoint cannot be restored the call is an error with `restored: false`, `restore_error` and a note that the tried values are still in the design: set them back before saving. Replaces the loop `set_parameter`, `measure`, `body_topology`, `set_parameter` back, which cost every agent session three to five calls and up to 16 s of rebuilds. Not a `batch` step. |
-| `screenshot` | `view?` (iso, top, front, back, bottom, left, right, home, fit, or a named view saved with `view.save`), `camera?` (`{target, yaw, pitch, distance, fov?}`, as `view.apply`), `path?`, `width?`, `height?`, `source?` (window, model), `grid?`, `axes?` | A PNG image content block. Headless: a render with the viewport's pipelines on a headless GPU device (see `solidcraft-cli gpu`; with no adapter, the CPU rasterizer, without analysis colours), fitted to the model, or from the named view or camera; the reply's `renderer` says which (`gpu`, `gpu-software`, `cpu`, with a `warning` for `cpu`). Bridged: the app window (default) or a model render with the app's camera; a named view or camera moves the app's viewport there first (`execute` `view.apply` does the same without a screenshot). `grid: false` and `axes: false` leave the ground grid (it lies on Z 0 and cuts through a part that straddles it) and the origin's axes out of a model render; axes hidden with `browser.visibility` stay out whatever `axes` says. Bridged, a screenshot that gives `grid` or `axes` is a model render, which follows the app's Grid and Origin switches for what it does not give; `source: "window"` with either is an error. A window that is minimised or on another macOS Space presents no frame: with no `source` the reply is a model render and says so (`fallback`); `source: "window"` is an error saying why, at once. Agents that don't need the app's chrome can ask for `source: "model"`. |
+| `screenshot` | `view?` (iso, top, front, back, bottom, left, right, home, fit, or a named view saved with `view.save`), `camera?` (`{target, yaw, pitch, distance, fov?}`, as `view.apply`), `path?`, `width?`, `height?`, `source?` (window, model), `grid?`, `axes?` | A PNG image content block. Headless: a render with the viewport's pipelines on a headless GPU device (see `intcad-cli gpu`; with no adapter, the CPU rasterizer, without analysis colours), fitted to the model, or from the named view or camera; the reply's `renderer` says which (`gpu`, `gpu-software`, `cpu`, with a `warning` for `cpu`). Bridged: the app window (default) or a model render with the app's camera; a named view or camera moves the app's viewport there first (`execute` `view.apply` does the same without a screenshot). `grid: false` and `axes: false` leave the ground grid (it lies on Z 0 and cuts through a part that straddles it) and the origin's axes out of a model render; axes hidden with `browser.visibility` stay out whatever `axes` says. Bridged, a screenshot that gives `grid` or `axes` is a model render, which follows the app's Grid and Origin switches for what it does not give; `source: "window"` with either is an error. A window that is minimised or on another macOS Space presents no frame: with no `source` the reply is a model render and says so (`fallback`); `source: "window"` is an error saying why, at once. Agents that don't need the app's chrome can ask for `source: "model"`. |
 | `compare_picture` | `reference`, `view?`, `camera?`, `bodies?`, `crop_px?`, `crop_fraction?`, `part_fills_crop?`, `fit?` (width, height, both; default width), `rows?` | Compare the model's outline with the part in a reference picture (a PNG or JPEG inside the server's folders, read through the same path rules as `screenshot`). The compare is outline only: holes are not compared — both the picture's and the model's holes are filled. The model's outline is `inspect.silhouette` seen from `view` (default front) or `camera`; the picture's part is found by growing the background in from the border through small colour steps, filling holes and keeping the largest piece, so a backdrop's shading stays background and labels on a board drop out; a part touching the border, a white part on a light grey backdrop, and a part on a transparent background all separate. `crop_px` (`[x, y, w, h]` in pixels) or `crop_fraction` (the same as fractions 0..1) takes one view off a board; with `part_fills_crop: true` the crop box is the part itself and no background search runs, for a crop that tightly frames the part; `fit` names the dimension the one uniform scale comes from, never stretched per axis (`both` scales by width and reports `aspect_mismatch`). Returns an image content block (the overlay PNG: model red, picture blue) and text: `overlap` (0..1) and the model's top, bottom, left and right edges against the picture's in mm at nine stations, positive where the model reaches past the picture, null where a station misses one of the two. As a `batch` step it runs `inspect.compare_picture` without the overlay. |
 | `export` | `path`, `format?` (step, 3mf, 3mf-tagged, stl, stla, obj, urdf), `bodies?`, `mesh_prefix?`, `effort?`, `velocity?` | STEP, 3MF or mesh export; URDF writes the whole assembly with its meshes next to it (`docs/urdf.md`). |
 | `undo`, `redo` | — | Undo / redo one change. |
@@ -537,11 +537,11 @@ the batch added to the undo history.)
 
 ## Camera and close-up recipe
 
-The `camera` of `screenshot` (the object `view.apply`, `view.save` and `solidcraft-cli snapshot --camera` take too) is an orbit camera, `{target, yaw, pitch, distance, fov?}`, in millimetres and **radians**. Unlike the `angle` of `solid.move`, a bare number is not degrees here. The eye is at `target + distance * (-sin(yaw) * cos(pitch), -cos(yaw) * cos(pitch), sin(pitch))`, looking at `target` with Z up on the screen. So `yaw: 0, pitch: 0` is the front view: the eye at -Y, looking along +Y, with +X to the right. A yaw of π/2 looks from -X, π from +Y and -π/2 from +X. The pitch is the elevation angle up from the XY plane, and π/2 looks straight down with +X to the right and +Y up; `view.apply` refuses a pitch past ±π/2. A positive `roll` turns the picture clockwise. The app's View angles readout (`view.angle_readout`) shows the same yaw, pitch and roll in degrees. `fov` is the vertical field of view in radians. `0`, or no `fov`, is an orthographic view whose visible half-height is 0.4 × `distance`; with a perspective `fov` the half-height at the target is `distance * tan(fov / 2)`. `inspect.section` removes what lies on the side its normal points to: it keeps the points `p` with `n · p < d`, where `d = n · origin` (`flip: true` keeps the other side). To look into the cut, put the eye on the removed side.
+The `camera` of `screenshot` (the object `view.apply`, `view.save` and `intcad-cli snapshot --camera` take too) is an orbit camera, `{target, yaw, pitch, distance, fov?}`, in millimetres and **radians**. Unlike the `angle` of `solid.move`, a bare number is not degrees here. The eye is at `target + distance * (-sin(yaw) * cos(pitch), -cos(yaw) * cos(pitch), sin(pitch))`, looking at `target` with Z up on the screen. So `yaw: 0, pitch: 0` is the front view: the eye at -Y, looking along +Y, with +X to the right. A yaw of π/2 looks from -X, π from +Y and -π/2 from +X. The pitch is the elevation angle up from the XY plane, and π/2 looks straight down with +X to the right and +Y up; `view.apply` refuses a pitch past ±π/2. A positive `roll` turns the picture clockwise. The app's View angles readout (`view.angle_readout`) shows the same yaw, pitch and roll in degrees. `fov` is the vertical field of view in radians. `0`, or no `fov`, is an orthographic view whose visible half-height is 0.4 × `distance`; with a perspective `fov` the half-height at the target is `distance * tan(fov / 2)`. `inspect.section` removes what lies on the side its normal points to: it keeps the points `p` with `n · p < d`, where `d = n · origin` (`flip: true` keeps the other side). To look into the cut, put the eye on the removed side.
 
 To look closely at one part of a large model, such as a STEP assembly, work in a headless session. These steps change only the open design in memory:
 
-1. Open the model with `solidcraft-cli mcp --in assembly.step` (or the `open` tool, which also takes `up` and `names`, see step 4 and [STEP import](step-import.md)). `inspect_design` lists the bodies with their names and bounding boxes.
+1. Open the model with `intcad-cli mcp --in assembly.step` (or the `open` tool, which also takes `up` and `names`, see step 4 and [STEP import](step-import.md)). `inspect_design` lists the bodies with their names and bounding boxes.
 2. Remove what is in the way with `solid.remove`, e.g. `{"bodies": ["Cover"]}`.
 3. Cut the region out of the rest with `solid.box`, e.g. `{"corner": [40, 0, -45], "length": 20, "width": 50, "height": 45, "operation": "intersect", "targets": ["Housing", "Plate"]}`. Each listed body is trimmed to the box, and one that lies wholly outside the box is removed. The box itself is not kept.
 4. If the model lies on its back (many STEP files have +Y up), open it with `up: "y"` (the `open` tool, `doc.open`, `file.insert_step`), which turns the file's bodies a quarter turn about X (Y becomes Z). One already open is stood Z up with `solid.move`, listing every body you keep, e.g. `{"bodies": ["Housing", "Plate"], "axis": [1, 0, 0], "angle": 90}`. It turns the bodies about the world origin, and a bare angle is in degrees. A turn of +90° about X takes +Y to +Z.
@@ -568,8 +568,8 @@ engine's reply directly, without an additional design-inspection request.
 
 ## Demo: an enclosure built over MCP
 
-`examples/demo/enclosure_mcp.py` is a small MCP client. It drives a running app (`solidcraft
---control PORT`) through `solidcraft-cli mcp --connect` and builds an electronics enclosure one
+`examples/demo/enclosure_mcp.py` is a small MCP client. It drives a running app (`intcad
+--control PORT`) through `intcad-cli mcp --connect` and builds an electronics enclosure one
 `execute` call at a time (`enclosure_steps.json`): a rounded box, shelled open at the top, a
 USB port cut through a side wall, four screw bosses, and then a change of the `width`
 parameter that the timeline rebuilds. `examples/demo/record.sh` records the run with ffmpeg,

@@ -266,7 +266,7 @@ evidence description, and clear the fixture before checking real capabilities.
 
 | Launch | What listens |
 |---|---|
-| `solidcraft --control PORT`, or `SOLIDCRAFT_CONTROL_PORT=PORT` | exactly `127.0.0.1:PORT` (the flag wins over the variable), whatever the setting |
+| `intcad --control PORT`, or `SOLIDCRAFT_CONTROL_PORT=PORT` | exactly `127.0.0.1:PORT` (the flag wins over the variable), whatever the setting |
 | neither, and Preferences > Assistant > "Let AI agents connect (control channel / MCP)" on (the default) | the default port **27878**, or the next free one up to 27893 when it is taken (a second window, another program) |
 | neither, and the setting off | nothing |
 
@@ -281,7 +281,7 @@ Each app that opens its channel writes the port to a discovery file beside the t
 `control/current.port` (same folders and permissions as below), and removes it at exit if no later
 app has replaced it: it names another port, or another app now holds that port's token file (two
 Flatpak windows, each with its own loopback, can listen on the same port number). It holds only
-the port, never the token. `solidcraft-cli mcp` with no
+the port, never the token. `intcad-cli mcp` with no
 arguments reads it, checks that something listens there and bridges to that app; with no app
 running, or with `--headless`, it runs a session of its own. `--connect HOST:PORT` and the
 other arguments still decide first. With several windows open, the most recently started one is
@@ -301,9 +301,9 @@ launch and writes it, as one line of hex, to a file only the user can read:
 
 | System | Token file |
 |---|---|
-| Linux | `$XDG_DATA_HOME/solidcraft/control/PORT.token` (`~/.local/share/solidcraft/control/PORT.token`) |
-| macOS | `~/Library/Application Support/SolidCraft/control/PORT.token` |
-| Windows | `%LOCALAPPDATA%\SolidCraft\control\PORT.token` |
+| Linux | `$XDG_DATA_HOME/intcad/control/PORT.token` (`~/.local/share/intcad/control/PORT.token`) |
+| macOS | `~/Library/Application Support/Intcad/control/PORT.token` |
+| Windows | `%LOCALAPPDATA%\Intcad\control\PORT.token` |
 
 On Unix the folder is `0700` and the file `0600`; on Windows the file's inherited permissions are
 replaced by a single entry for the user. `SOLIDCRAFT_CONTROL_DIR` moves the folder. If Windows
@@ -316,7 +316,7 @@ printed to stderr at start-up. Beside it, `<port>.pid` holds the app's process i
 its start time).
 
 An app that is force-quit can't remove its files, so a later client may send that launch's token.
-When the app refuses it, `solidcraft-cli mcp` names the token file it read and when it was
+When the app refuses it, `intcad-cli mcp` names the token file it read and when it was
 written, and says the file is stale when the process in `<port>.pid` has exited. Delete the file
 or restart Intcad. On Windows, an app or client started from inside an MSIX-packaged app (and
 the tools it launches) has its AppData redirected: it writes and reads
@@ -330,7 +330,7 @@ anything. Tokens are compared in constant time. A connection that hasn't sent th
 within five seconds is closed without a reply, and blank lines don't extend the time. So connect
 when you have something to send; once authenticated, a connection may stay idle.
 
-`solidcraft-cli mcp --connect 127.0.0.1:PORT` reads the token file for that port by itself
+`intcad-cli mcp --connect 127.0.0.1:PORT` reads the token file for that port by itself
 (`--token T` or `SOLIDCRAFT_CONTROL_TOKEN` give one explicitly). For a test harness, or a
 sandboxed package whose data folder the client can't see, start the app with
 `SOLIDCRAFT_CONTROL_TOKEN` set to at least 32 hex characters (for example
@@ -338,7 +338,7 @@ sandboxed package whose data folder the client can't see, start the app with
 written. A one-line client in Python:
 
 ```python
-token = (Path.home() / ".local/share/solidcraft/control/7878.token").read_text().strip()
+token = (Path.home() / ".local/share/intcad/control/7878.token").read_text().strip()
 sock.sendall((json.dumps({"id": 1, "method": "ui.inspect", "params": {}, "token": token}) + "\n").encode())
 ```
 
@@ -596,7 +596,7 @@ a claim that its bundle or TypeScript consumer has been delivered.
 | `document.import` | `text`: a design's JSON; `name?`: the name it takes | `{name, features, errors, revision}`: replaces the active design with `text`, timeline and parameters as saved; it opens saved, with a new `document_id` and nothing to undo. It does not ask about unsaved changes in the design it replaces: that is the caller's to decide. A text that does not read changes nothing. Waits behind a file loading or a design change, and evaluates on the window thread in the frame it runs |
 | `document.saved` | `revision`: as `document.export` gave it | `{revision, dirty}`: the host saved the design at that revision, so it counts as saved from there. Refused when the design has changed since |
 
-Commands never open dialogs when run this way. `solidcraft-cli commands` prints the same registry.
+Commands never open dialogs when run this way. `intcad-cli commands` prints the same registry.
 
 `document.export`, `document.import` and `document.saved` are control methods, not commands: they
 act on the app's open design rather than on an engine session, and they are not among the methods
@@ -800,7 +800,7 @@ no box selection.
 | `ui.key` | `key` (egui key name, `Enter`, `Escape`…), `cmd?`, `ctrl?`, `shift?`, `alt?`, `pressed?` | By default, press and release, then release modifiers. With `pressed: true` or `false`, send only that edge; modifiers remain as given. `cmd` retains the legacy primary-modifier alias unless `ctrl` is explicit: `cmd:true, ctrl:false` sends physical Command, and both true sends Control+Command. `ui.move` can change modifiers between edges. |
 | `ui.text` | `text` | typed text |
 | `ui.screenshot` | `path?` | PNG of the window (needs a presented frame: a minimised or fully covered window answers at once with `hidden: true` and an error; use `ui.render`) |
-| `ui.render` | `path`, `width?`, `height?`, `grid?`, `axes?` | Render of the model with the current camera (no window needed), drawn on the app's GPU device with the viewport's pipelines (the reply's `renderer`: `gpu`, or `gpu-software` on a software adapter), in the window's theme (light or dark; `solidcraft-cli snapshot` keeps the light colours); cut by the section the viewport shows (`inspect.section`, an open Section Analysis dialog's preview, a sketch's Slice), with the cut face capped. The ground grid and the origin's axes are drawn as the window shows them (`ui.set` `showGrid` and `showOrigin`, `hiddenOrigin`); `grid` and `axes` (booleans) say otherwise for this render |
+| `ui.render` | `path`, `width?`, `height?`, `grid?`, `axes?` | Render of the model with the current camera (no window needed), drawn on the app's GPU device with the viewport's pipelines (the reply's `renderer`: `gpu`, or `gpu-software` on a software adapter), in the window's theme (light or dark; `intcad-cli snapshot` keeps the light colours); cut by the section the viewport shows (`inspect.section`, an open Section Analysis dialog's preview, a sketch's Slice), with the cut face capped. The ground grid and the origin's axes are drawn as the window shows them (`ui.set` `showGrid` and `showOrigin`, `hiddenOrigin`); `grid` and `axes` (booleans) say otherwise for this render |
 | `ui.confirm` | `accept?`: bool | answers the Delete confirmation (shown when a delete takes other features with it or makes some fail); without `accept`, what it lists |
 | `ui.messages` | `clear?`: `true` (empty the list), `open?`: bool (show or hide the Messages window) | every status message of this run, oldest first (the last 200; a message repeated in a row is one entry with a `count`): `messages` `[{text, error, at, count}]` (`at` in ms since the Unix epoch), and whether the window is `open` (#2763) |
 | `ui.documents` | `action?`: `new`, `switch`, `close`, `quit`; `index?`; `force?` (close without asking); `answer?`: `save`, `dont_save`, `cancel` (answers "save changes?"); `open_elsewhere?`: `read_only`, `anyway`, `cancel` (answers "open elsewhere" for the first Open waiting); `changed_on_disk?`: `save_copy`, `overwrite`, `cancel` (answers "changed on disk" before a Save) | the open designs (tabs): names, unsaved flags, the active one, a pending "save changes?" prompt, whether a quit is asking, whether the active design is `read_only`, the Opens waiting for "open elsewhere" (`open_elsewhere`) and a waiting "changed on disk" (`changed_on_disk`) |
@@ -1038,7 +1038,7 @@ document edits, undo steps or a success-log entry per movement.
 
 ## MCP
 
-`solidcraft-cli mcp --connect 127.0.0.1:PORT` bridges an MCP client (an AI agent) to this
+`intcad-cli mcp --connect 127.0.0.1:PORT` bridges an MCP client (an AI agent) to this
 channel; see [mcp.md](mcp.md).
 
 ## Example

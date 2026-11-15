@@ -2,7 +2,7 @@
 //! filling the disk (docs/crash-reports.md).
 //!
 //! - **Panics** are caught by a hook. One inside a command becomes a report with the design as
-//!   it was before the command and the command itself, so `solidcraft-cli run replay.json --in
+//!   it was before the command and the command itself, so `intcad-cli run replay.json --in
 //!   design.sc` reproduces it. Panics the third-party kernel raises (and
 //!   `solidcraft_kernel::guard` turns into errors) are reported the same way, marked recovered.
 //! - **Crashes no hook sees** (an abort, a stack overflow, a segfault, the process being killed)
@@ -1071,8 +1071,8 @@ fn write_report(state: &State, kind: &str, p: Option<&Panic>, extra: Extra) -> O
             }
         }
         let reproduce = match (files.contains_key("replay"), files.contains_key("design")) {
-            (true, true) => Some(format!("solidcraft-cli crashes replay {id}")),
-            (true, false) => Some(format!("solidcraft-cli crashes replay {id}  (starts from a new design)")),
+            (true, true) => Some(format!("intcad-cli crashes replay {id}")),
+            (true, false) => Some(format!("intcad-cli crashes replay {id}  (starts from a new design)")),
             _ => None,
         };
         let environment = state.environment.lock().map(|e| e.clone()).unwrap_or_default();

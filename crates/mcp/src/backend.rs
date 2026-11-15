@@ -181,7 +181,7 @@ fn outcome(v: &Value) -> Result<Value, String> {
 }
 
 /// A running Intcad app reached through its loopback control port
-/// (`solidcraft --control PORT`).
+/// (`intcad --control PORT`).
 pub struct Remote {
     addr: String,
     port: u16,
@@ -318,12 +318,12 @@ impl Remote {
         let (addr, port) = (&self.addr, self.port);
         if e.kind() == std::io::ErrorKind::NotConnected {
             format!(
-                "{NOT_RUNNING} {addr} ({e}): it is not running, or it quit. Start it with `solidcraft --control {port}` \
+                "{NOT_RUNNING} {addr} ({e}): it is not running, or it quit. Start it with `intcad --control {port}` \
                  (or ask the user to); the next call connects to it"
             )
         } else {
             format!(
-                "the Intcad app at {addr} did not answer ({e}): it may have quit or crashed during this call, after                  running it or not. Inspect the design before sending a change again; if the app quit, start it with                  `solidcraft --control {port}`"
+                "the Intcad app at {addr} did not answer ({e}): it may have quit or crashed during this call, after                  running it or not. Inspect the design before sending a change again; if the app quit, start it with                  `intcad --control {port}`"
             )
         }
     }
@@ -928,7 +928,7 @@ impl Backend for Remote {
             // Still "connected to the Intcad app": the skills tell bridged from headless by it.
             format!(
                 "connected to the Intcad app at {} once it runs (the user watches the viewport). It was not running \
-                 when this server started; until it is (`solidcraft --control {}`), tool calls say so",
+                 when this server started; until it is (`intcad --control {}`), tool calls say so",
                 self.addr, self.port
             )
         }
@@ -1077,7 +1077,7 @@ impl Headless {
                 // A path outside the agent's folders is refused before anything is drawn.
                 solidcraft_engine::io::vfs::check(path).map_err(|e| format!("{path}: {e}"))?;
                 let scene = solidcraft_engine::view::scene_with_guides(s, &cam, s.section, guides).map_err(|e| e.to_string())?;
-                // Drawn on the GPU by the renderer the host installed (`solidcraft-cli mcp`).
+                // Drawn on the GPU by the renderer the host installed (`intcad-cli mcp`).
                 let png = solidcraft_engine::capture::png(&scene, &cam, w, h)?;
                 solidcraft_engine::io::vfs::write(path, &png.bytes).map_err(|e| format!("{path}: {e}"))?;
                 Ok(json!({
@@ -1177,7 +1177,7 @@ impl Backend for Headless {
     }
 }
 
-/// `solidcraft-cli mcp` with no `--connect`: a headless session while no app runs, which gives
+/// `intcad-cli mcp` with no `--connect`: a headless session while no app runs, which gives
 /// way to the app the moment one is found, as long as the session has no work of its own yet.
 /// Once it has, it stays headless (the work is not carried over) and every tool result says so.
 pub struct Auto {

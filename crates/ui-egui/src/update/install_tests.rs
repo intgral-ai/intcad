@@ -25,22 +25,18 @@ fn hex(bytes: &[u8]) -> String {
 #[test]
 fn checksum_lists_are_read() {
     let h = "a".repeat(64);
-    let sums = format!(
-        "{h}  solidcraft-linux-x86_64.AppImage\n{}  *solidcraft-windows-x64.msi\nnot a line\n{}  short.txt\n",
-        "B".repeat(64),
-        "c".repeat(10)
-    );
-    assert_eq!(expected_sha256(&sums, "solidcraft-linux-x86_64.AppImage"), Some(h));
-    assert_eq!(expected_sha256(&sums, "solidcraft-windows-x64.msi"), Some("b".repeat(64)), "binary-mode marker and upper case");
+    let sums = format!("{h}  intcad-linux-x86_64.AppImage\n{}  *intcad-windows-x64.msi\nnot a line\n{}  short.txt\n", "B".repeat(64), "c".repeat(10));
+    assert_eq!(expected_sha256(&sums, "intcad-linux-x86_64.AppImage"), Some(h));
+    assert_eq!(expected_sha256(&sums, "intcad-windows-x64.msi"), Some("b".repeat(64)), "binary-mode marker and upper case");
     assert_eq!(expected_sha256(&sums, "short.txt"), None, "not a SHA-256");
-    assert_eq!(expected_sha256(&sums, "solidcraft-linux-x86_64"), None);
+    assert_eq!(expected_sha256(&sums, "intcad-linux-x86_64"), None);
 }
 
 #[test]
 fn signatures_must_match_the_key_the_list_and_the_release() {
     assert_eq!(verify_signature(SIGNED_SUMS.as_bytes(), SIGNATURE, TEST_KEY, "v9.9.9"), Ok(()));
     assert!(verify_signature(SIGNED_SUMS.as_bytes(), SIGNATURE, TEST_KEY, "v9.9.8").is_err(), "an older release's signed list");
-    assert!(verify_signature(b"bbbb  solidcraft-linux-x86_64.AppImage\n", SIGNATURE, TEST_KEY, "v9.9.9").is_err(), "a changed list");
+    assert!(verify_signature(b"bbbb  intcad-linux-x86_64.AppImage\n", SIGNATURE, TEST_KEY, "v9.9.9").is_err(), "a changed list");
     let other = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
     assert!(verify_signature(SIGNED_SUMS.as_bytes(), SIGNATURE, other, "v9.9.9").is_err(), "another key");
     assert!(verify_signature(SIGNED_SUMS.as_bytes(), "garbage", TEST_KEY, "v9.9.9").is_err());
@@ -48,7 +44,7 @@ fn signatures_must_match_the_key_the_list_and_the_release() {
 
 #[test]
 fn methods_per_installation() {
-    let exe = Path::new("/x/solidcraft.exe");
+    let exe = Path::new("/x/intcad.exe");
     assert_eq!(method(&InstallKind::AppImage("/a/S.AppImage".into()), Some(exe)), Some(Method::AppImage("/a/S.AppImage".into())));
     assert_eq!(method(&InstallKind::WindowsMsi, Some(exe)), Some(Method::Msi));
     assert_eq!(method(&InstallKind::WindowsPortable, Some(exe)), Some(Method::PortableZip(exe.into())));
@@ -109,7 +105,7 @@ fn an_appimage_is_replaced_only_when_it_verifies() {
     let target = dir.join("SolidCraft.AppImage");
     std::fs::write(&target, b"old version").unwrap();
     let new = b"new version".to_vec();
-    let name = "solidcraft-linux-x86_64.AppImage";
+    let name = "intcad-linux-x86_64.AppImage";
     let kind = InstallKind::AppImage(target.clone());
     let m = Method::AppImage(target.clone());
     let r = release_with(&[(name, new.len()), (SUMS, 100)]);
@@ -182,28 +178,28 @@ fn an_appimage_is_replaced_only_when_it_verifies() {
 #[test]
 fn the_portable_zip_swaps_both_executables() {
     let dir = scratch("portable");
-    let exe = dir.join("solidcraft.exe");
+    let exe = dir.join("intcad.exe");
     std::fs::write(&exe, b"old app").unwrap();
-    std::fs::write(dir.join("solidcraft-cli.exe"), b"old cli").unwrap();
+    std::fs::write(dir.join("intcad-cli.exe"), b"old cli").unwrap();
     let mut zip_bytes = Vec::new();
     {
         let mut z = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
         let o = zip::write::SimpleFileOptions::default();
-        z.add_directory("solidcraft-9.9.9-windows-x64-portable/", o).unwrap();
-        for (n, b) in [("solidcraft.exe", &b"new app"[..]), ("solidcraft-cli.exe", b"new cli"), ("README.md", b"readme")] {
-            z.start_file(format!("solidcraft-9.9.9-windows-x64-portable/{n}"), o).unwrap();
+        z.add_directory("intcad-9.9.9-windows-x64-portable/", o).unwrap();
+        for (n, b) in [("intcad.exe", &b"new app"[..]), ("intcad-cli.exe", b"new cli"), ("README.md", b"readme")] {
+            z.start_file(format!("intcad-9.9.9-windows-x64-portable/{n}"), o).unwrap();
             z.write_all(b).unwrap();
         }
         z.finish().unwrap();
     }
-    let name = "solidcraft-windows-x64-portable.zip";
+    let name = "intcad-windows-x64-portable.zip";
     let r = release_with(&[(name, zip_bytes.len()), (SUMS, 100)]);
     let n = net(vec![(name.into(), zip_bytes.clone()), (SUMS.into(), format!("{}  {name}\n", hex(&zip_bytes)).into_bytes())]);
     let out =
         run(&r, &InstallKind::WindowsPortable, &Method::PortableZip(exe.clone()), "x86_64", &n, &dir.join("staging"), &Progress::default()).unwrap();
     assert_eq!(out, Outcome::Restart(exe.clone()));
     assert_eq!(std::fs::read(&exe).unwrap(), b"new app");
-    assert_eq!(std::fs::read(dir.join("solidcraft-cli.exe")).unwrap(), b"new cli");
+    assert_eq!(std::fs::read(dir.join("intcad-cli.exe")).unwrap(), b"new cli");
     assert!(!dir.join("staging").join(name).exists(), "the zip is removed");
     // A zip without the app is refused and changes nothing.
     std::fs::write(dir.join("empty.zip"), {
@@ -215,16 +211,16 @@ fn the_portable_zip_swaps_both_executables() {
     assert!(apply(&Method::PortableZip(exe.clone()), &dir.join("empty.zip")).is_err());
     assert_eq!(std::fs::read(&exe).unwrap(), b"new app");
     // The moved-aside executable of an update goes at the next start.
-    std::fs::write(dir.join("solidcraft.exe.old"), b"x").unwrap();
+    std::fs::write(dir.join("intcad.exe.old"), b"x").unwrap();
     clean_up_after_update(Some(&exe));
-    assert!(!dir.join("solidcraft.exe.old").exists());
+    assert!(!dir.join("intcad.exe.old").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn installers_and_disk_images_are_handed_over() {
     let dir = scratch("msi");
-    let pkg = dir.join("solidcraft-windows-x64.msi");
+    let pkg = dir.join("intcad-windows-x64.msi");
     std::fs::write(&pkg, b"msi").unwrap();
     assert_eq!(
         apply(&Method::Msi, &pkg).unwrap(),
@@ -237,13 +233,13 @@ fn installers_and_disk_images_are_handed_over() {
 #[test]
 fn windows_installer_is_followed_by_the_new_version() {
     let args = vec!["/i".to_string(), r"C:\Users\a b\Temp\solidcraft-update\x.msi".to_string(), "/passive".to_string()];
-    let (program, out) = relaunch_after(Path::new("msiexec"), &args, Path::new(r"C:\Program Files\SolidCraft\it's.exe"));
+    let (program, out) = relaunch_after(Path::new("msiexec"), &args, Path::new(r"C:\Program Files\Intcad\it's.exe"));
     assert_eq!(program, PathBuf::from("powershell"));
     assert_eq!(
         out.last().unwrap(),
         &concat!(
             r#"Start-Process -FilePath 'msiexec' -ArgumentList '/i','"C:\Users\a b\Temp\solidcraft-update\x.msi"','/passive' -Wait; "#,
-            r"Start-Process -FilePath 'C:\Program Files\SolidCraft\it''s.exe'"
+            r"Start-Process -FilePath 'C:\Program Files\Intcad\it''s.exe'"
         )
     );
     assert!(out.iter().any(|a| a == "-Command"));
@@ -252,24 +248,24 @@ fn windows_installer_is_followed_by_the_new_version() {
 #[test]
 fn an_updated_appimage_takes_the_release_file_name() {
     let new = |p: &str| release_named(Path::new(p), "v0.17.0", "x86_64");
-    assert_eq!(new("/a/solidcraft-0.16.2-linux-x86_64.AppImage"), Path::new("/a/solidcraft-0.17.0-linux-x86_64.AppImage"));
-    assert_eq!(new("/a/solvecraft-0.9.0-linux-x86_64.AppImage"), Path::new("/a/solidcraft-0.17.0-linux-x86_64.AppImage"));
+    assert_eq!(new("/a/intcad-0.16.2-linux-x86_64.AppImage"), Path::new("/a/intcad-0.17.0-linux-x86_64.AppImage"));
+    assert_eq!(new("/a/solvecraft-0.9.0-linux-x86_64.AppImage"), Path::new("/a/intcad-0.17.0-linux-x86_64.AppImage"));
     assert_eq!(new("/a/SolidCraft.AppImage"), Path::new("/a/SolidCraft.AppImage"), "a name the user chose");
-    assert_eq!(new("/a/solidcraft-linux-x86_64.AppImage"), Path::new("/a/solidcraft-linux-x86_64.AppImage"), "no version in it");
-    assert_eq!(new("/a/solidcraft-0.16.2-linux-x86_64.AppImage.bak"), Path::new("/a/solidcraft-0.16.2-linux-x86_64.AppImage.bak"));
+    assert_eq!(new("/a/intcad-linux-x86_64.AppImage"), Path::new("/a/intcad-linux-x86_64.AppImage"), "no version in it");
+    assert_eq!(new("/a/intcad-0.16.2-linux-x86_64.AppImage.bak"), Path::new("/a/intcad-0.16.2-linux-x86_64.AppImage.bak"));
 
     // End to end: the old versioned file is gone, the new one has the release's name and works.
     let dir = scratch("appimage-name");
-    let old = dir.join("solidcraft-9.9.8-linux-x86_64.AppImage");
+    let old = dir.join("intcad-9.9.8-linux-x86_64.AppImage");
     std::fs::write(&old, b"old version").unwrap();
-    let name = "solidcraft-linux-x86_64.AppImage";
+    let name = "intcad-linux-x86_64.AppImage";
     let content = b"new version".to_vec();
     let r = release_with(&[(name, content.len()), (SUMS, 100)]);
     let sums = format!("{}  {name}\n", hex(&content));
     let n = net(vec![(name.into(), content.clone()), (SUMS.into(), sums.into_bytes())]);
     let kind = InstallKind::AppImage(old.clone());
     let out = run(&r, &kind, &Method::AppImage(old.clone()), "x86_64", &n, &dir, &Progress::default()).unwrap();
-    let want = dir.join("solidcraft-9.9.9-linux-x86_64.AppImage");
+    let want = dir.join("intcad-9.9.9-linux-x86_64.AppImage");
     assert_eq!(out, Outcome::Restart(want.clone()));
     assert_eq!(std::fs::read(&want).unwrap(), content);
     assert!(!old.exists());
@@ -281,7 +277,7 @@ fn an_updated_appimage_takes_the_release_file_name() {
 fn installation_refreshes_the_release_and_verifies_the_final_package() {
     let dir = scratch("refresh");
     let target = dir.join("SolidCraft.AppImage");
-    let name = "solidcraft-linux-x86_64.AppImage";
+    let name = "intcad-linux-x86_64.AppImage";
     let shown = release_with(&[(name, 3), (SUMS, 100)]);
     let base = "https://github.com/intgral-ai/intcad/releases/download/v10.0.0/";
     let feed = serde_json::json!({

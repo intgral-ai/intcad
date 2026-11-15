@@ -1,4 +1,4 @@
-//! A sample design (used by `solidcraft --sample` and demos): a parametric plate with rounded
+//! A sample design (used by `intcad --sample` and demos): a parametric plate with rounded
 //! corners, two holes and a boss.
 
 use serde_json::{Value, json};

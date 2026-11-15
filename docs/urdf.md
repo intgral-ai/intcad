@@ -8,7 +8,7 @@ chain of them, that moves the parts the way SolidCraft does.
 - **Desktop:** **File → Export URDF…**
 - **Commands:** `file.export {"path": "robot.urdf"}` (or `"format": "urdf"`)
 - **MCP:** the `export` tool with a `.urdf` path or `format: "urdf"`
-- **CLI:** `solidcraft-cli run script.json --out robot.urdf`
+- **CLI:** `intcad-cli run script.json --out robot.urdf`
 
 URDF always exports the whole assembly, so `bodies` is refused.
 

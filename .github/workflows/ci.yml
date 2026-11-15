@@ -664,7 +664,7 @@ jobs:
           key: oracle
           save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
       - run: cargo build -p solidcraft-cli --profile ci --locked
-      - run: cargo run --locked --package xtask -- oracle --cli target/ci/solidcraft-cli
+      - run: cargo run --locked --package xtask -- oracle --cli target/ci/intcad-cli
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -728,9 +728,9 @@ jobs:
           cargo test -p solidcraft --profile ci --locked -- native_frame::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: cargo build -p solidcraft --profile ci --locked
-      - run: tools/windows-startup-smoke.ps1 -Exe target/ci/solidcraft.exe
-      - run: tools/windows-resize-smoke.ps1 -Exe target/ci/solidcraft.exe
-      - run: tools/windows-assistant-smoke.ps1 -Exe target/ci/solidcraft.exe -Evidence assistant-smoke
+      - run: tools/windows-startup-smoke.ps1 -Exe target/ci/intcad.exe
+      - run: tools/windows-resize-smoke.ps1 -Exe target/ci/intcad.exe
+      - run: tools/windows-assistant-smoke.ps1 -Exe target/ci/intcad.exe -Evidence assistant-smoke
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

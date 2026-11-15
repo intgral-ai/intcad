@@ -1,5 +1,5 @@
 # Registry commands with no kernel rig case (`cargo xtask kernel-cases --coverage`). Every other
-# command of `solidcraft-cli commands` (planned ones aside) must be run by some recipe.json under
+# command of `intcad-cli commands` (planned ones aside) must be run by some recipe.json under
 # tests/kernel-cases/. One line a command: `<id>  <why it has no case>`; `#` starts a comment.
 # Each section is sorted, with no id twice.
 #

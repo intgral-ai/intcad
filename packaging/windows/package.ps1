@@ -4,13 +4,12 @@
 
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
-    solidcraft-<version>-windows-<arch>.msi            per-machine installer (WiX v5)
-    solidcraft-<version>-windows-<arch>-portable.zip   solidcraft.exe + solidcraft-cli.exe + licences
-                                                       (+ the solvecraft-cli.exe compatibility alias)
-    SolidCraft-<version>-windows-<arch>.exe            the app alone (x64 only: a plain download)
+    intcad-<version>-windows-<arch>.msi            per-machine installer (WiX v5)
+    intcad-<version>-windows-<arch>-portable.zip   intcad.exe + intcad-cli.exe + licences
+    Intcad-<version>-windows-<arch>.exe            the app alone (x64 only: a plain download)
 
   The binaries link the C runtime statically (+crt-static), so nothing else needs installing.
-  The icon comes from $env:SOLIDCRAFT_ICONS (solidcraft.ico, made by `solidcraft-cli icon`), or
+  The icon comes from $env:SOLIDCRAFT_ICONS (solidcraft.ico, made by `intcad-cli icon`), or
   is drawn by the CLI just built when this machine can run it.
 
   Signing happens outside this script (the release workflow sends files to SignPath), so the work
@@ -89,19 +88,17 @@ function Get-PeHeader([string] $Path) {
   return @{ Machine = [BitConverter]::ToUInt16($bytes, $pe + 4); Subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C) }
 }
 $Machine = switch ($Arch) { 'x64' { 0x8664 } 'x86' { 0x14C } 'arm64' { 0xAA64 } }
-# solvecraft-cli.exe: the old CLI name, forwarding to solidcraft-cli.exe (compatibility shim,
-# docs/compatibility.md). Built by `-p solidcraft-cli` with the CLI.
-foreach ($check in @(@('solidcraft.exe', 2), @('solidcraft-cli.exe', 3), @('solvecraft-cli.exe', 3))) {
+foreach ($check in @(@('intcad.exe', 2), @('intcad-cli.exe', 3))) {
   $h = Get-PeHeader (Join-Path $CheckDir $check[0])
   if ($h.Machine -ne $Machine) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
   if ($h.Subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $($h.Subsystem), expected $($check[1])" }
   Write-Output "ok $($check[0]): $Arch, PE subsystem $($h.Subsystem)"
 }
-& (Join-Path $PSScriptRoot 'check-icon.ps1') -Path (Join-Path $CheckDir 'solidcraft.exe')
+& (Join-Path $PSScriptRoot 'check-icon.ps1') -Path (Join-Path $CheckDir 'intcad.exe')
 if ($Phase -ne 'package') {
   Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-  Copy-Item (Join-Path $Bin 'solidcraft.exe'), (Join-Path $Bin 'solidcraft-cli.exe'), (Join-Path $Bin 'solvecraft-cli.exe') $Stage
+  Copy-Item (Join-Path $Bin 'intcad.exe'), (Join-Path $Bin 'intcad-cli.exe') $Stage
   foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Stage }
   # The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
   # which the app carries built in as well (Help > About > Licences).
@@ -129,7 +126,7 @@ $Icon = if ($env:SOLIDCRAFT_ICONS) { Join-Path $env:SOLIDCRAFT_ICONS 'solidcraft
 if (-not (Test-Path $Icon)) { throw "Missing package icon: $Icon" }
 
 # ---- MSI ---------------------------------------------------------------------------------------
-$Msi = Join-Path $Dist "solidcraft-$Version-windows-$Arch.msi"
+$Msi = Join-Path $Dist "intcad-$Version-windows-$Arch.msi"
 $HasMastra = if ($WithMastra -and (Test-Path (Join-Path $Stage 'mastra\runtime.json'))) { 1 } else { 0 }
 Invoke-Native 'wix build' {
   wix build (Join-Path $Root 'assets/platforms/windows/solidcraft.wxs') -arch $Arch `
@@ -145,7 +142,7 @@ Invoke-Native 'MSI shortcut icon validation (ICE50)' {
 Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
 
 # ---- portable zip ------------------------------------------------------------------------------
-$Portable = Join-Path $TargetDir "windows-package\solidcraft-$Version-windows-$Arch-portable"
+$Portable = Join-Path $TargetDir "windows-package\intcad-$Version-windows-$Arch-portable"
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
@@ -153,21 +150,21 @@ foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PA
 Copy-Item (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt') $Portable
 Copy-Item (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt') $Portable
 if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
-$Zip = Join-Path $Dist "solidcraft-$Version-windows-$Arch-portable.zip"
+$Zip = Join-Path $Dist "intcad-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip
 
 # ---- the app as a plain download (x64) ---------------------------------------------------------
 $Outputs = @($Msi, $Zip)
 if ($Arch -eq 'x64') {
-  $Exe = Join-Path $Dist "SolidCraft-$Version-windows-$Arch.exe"
-  Copy-Item (Join-Path $Stage 'solidcraft.exe') $Exe
+  $Exe = Join-Path $Dist "Intcad-$Version-windows-$Arch.exe"
+  Copy-Item (Join-Path $Stage 'intcad.exe') $Exe
   $Outputs += $Exe
 }
 
 if ($CanRun) {
-  Invoke-Native 'solidcraft-cli --version' { & (Join-Path $Stage 'solidcraft-cli.exe') --version }
+  Invoke-Native 'intcad-cli --version' { & (Join-Path $Stage 'intcad-cli.exe') --version }
 } else {
-  Write-Output "skipping solidcraft-cli --version: an $Arch build doesn't run on this $HostArch machine"
+  Write-Output "skipping intcad-cli --version: an $Arch build doesn't run on this $HostArch machine"
 }
 Get-Item $Outputs | Format-Table Name, Length

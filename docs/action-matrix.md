@@ -110,7 +110,7 @@ lists which still fail; skip `action_matrix_` to leave out the matrix itself).
 
 - `corpus/*`: the old design files of [`apps/solidcraft-cli/tests/corpus`](../apps/solidcraft-cli/tests/corpus/).
 - `examples/*`, `regressions/*`: the scripts in [`examples/`](../examples/).
-- `oracle/*`: the 76 reference recipes, rebuilt (`solidcraft-cli recipe`).
+- `oracle/*`: the 76 reference recipes, rebuilt (`intcad-cli recipe`).
 - `demo/enclosure_steps`: the electronics enclosure built over MCP;
   `demo/pi-case`: the Raspberry Pi 4 case of the 0.6 README demo, built through the desktop UI
   and saved by `examples/demo/enclosure_ui_mcp.py --story pi-0.6 --save`;

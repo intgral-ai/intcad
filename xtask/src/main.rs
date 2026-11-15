@@ -49,19 +49,19 @@ commands:
                   en.json under cmd.<command id> so only the translations are left to do
   oracle [--cli BIN]
                   replay the reference tests (tests/oracle/*/recipe.json), compare with each
-                  case's expected.json and write docs/oracle.md (--cli: a solidcraft-cli
+                  case's expected.json and write docs/oracle.md (--cli: an intcad-cli
                   already built, instead of cargo run --release)
   kernel-cases [--area AREA] [--cli BIN] [--timeout S] [--jobs N] [--out DIR] [--known-failing FILE] [--validation MODE] [--coverage] [--export DIR]
                   the kernel regression rig: run every case in tests/kernel-cases/<area>/<id>/ on
                   solidcore (one process each, killed after --timeout, default 180 s), grade it against
                   the case's own answer and write docs/kernel-cases.md; DIR (default
                   target/kernel-cases) gets results.json and dumps/<area>-<case>/, the inputs of
-                  each failing kernel call (--cli: a solidcraft-cli already built);
+                  each failing kernel call (--cli: an intcad-cli already built);
                   --known-failing FILE: a regression gate instead of the report: fails on a case
                   that fails and FILE does not list, and on a listed case that passes
                   (tests/kernel-cases/<area>/KNOWN_FAILING, CI's Kernel rig workflow)
                   --validation MODE: when the kernel's full check runs on the cases' features:
-                  each_step, each_feature (the default) or off (solidcraft-cli kernel-cases
+                  each_step, each_feature (the default) or off (intcad-cli kernel-cases
                   --validation=MODE); with --ladder too
                   --ladder [--record REASON | --gate]: the complexity ladder instead
                   (tests/kernel-cases/ladder/ladder.json, tiers in order), graded and compared
@@ -329,7 +329,7 @@ fn cmd_oracle(cli: Option<&str>) -> Result<(), String> {
     for c in &cases {
         cmd.arg(c.strip_prefix(root()).unwrap_or(c));
     }
-    let out = cmd.output().map_err(|e| format!("solidcraft-cli: {e}"))?;
+    let out = cmd.output().map_err(|e| format!("intcad-cli: {e}"))?;
     let results: serde_json::Value =
         serde_json::from_slice(&out.stdout).map_err(|e| format!("oracle JSON: {e}\n{}", String::from_utf8_lossy(&out.stderr)))?;
     let list = results.as_array().cloned().unwrap_or_default();

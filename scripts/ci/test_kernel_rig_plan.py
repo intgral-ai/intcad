@@ -241,7 +241,7 @@ sys.exit(1 if mode == 'failed' else 0)
             "args=sys.argv[1:]\n"
             "if args not in (['build','--release','--locked','-p','solidcraft-cli'], ['build','--locked','-p','xtask']): sys.exit('unexpected cargo args')\n"
             "base=Path('target/rig'); (base/'release').mkdir(parents=True,exist_ok=True); (base/'debug').mkdir(parents=True,exist_ok=True)\n"
-            "for path,body in ((base/'release/solidcraft-cli', '#!/bin/sh\\nexit 0\\n'), (base/'debug/xtask', " + repr(runner) + ")):\n"
+            "for path,body in ((base/'release/intcad-cli', '#!/bin/sh\\nexit 0\\n'), (base/'debug/xtask', " + repr(runner) + ")):\n"
             "    path.write_text(body); path.chmod(0o755)\n")
         cargo.chmod(0o755)
         self.env["PATH"] = str(self.tools) + os.pathsep + os.environ["PATH"]

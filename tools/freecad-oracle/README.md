@@ -54,4 +54,4 @@ script; it needs no display.
 
 The values were produced with FreeCAD 1.1.4. A different FreeCAD version may differ in the last
 digits; regenerate only when a recipe changes, and check the new values against SolidCraft
-(`solidcraft-cli oracle`) before committing them.
+(`intcad-cli oracle`) before committing them.
