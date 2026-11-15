@@ -54,6 +54,7 @@ pub const DOCUMENTED: &[&str] = &[
     "contact.enable_all",
     "contact.enable_sets",
     "contact.list",
+    "dfm.check",
     "document.inspect",
     "document.units",
     "edit.checkpoint",

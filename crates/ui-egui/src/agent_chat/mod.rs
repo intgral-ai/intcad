@@ -2586,6 +2586,12 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         settings::poll_listing(app, ctx);
         connect_at_start(app, ctx);
     }
+    // The page only exists in a desktop host's web view.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        web::adopt_model_check(app);
+        web::poll_running_checks(app);
+    }
     pump_tools(app);
     // One place decides what automatic checks see: the live model and whether the window still
     // has work in flight. A person's edit or undo only makes the old report stale; it starts

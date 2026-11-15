@@ -226,6 +226,7 @@ rect_rounded	false
 redo	false
 refold	false
 rename	false
+render_check	false
 render_image	false
 render_scene	false
 reorder	false
@@ -281,6 +282,7 @@ star	false
 status_error	false
 status_pin	false
 status_recovery	false
+stop	false
 style	false
 style_hidden_edges	false
 style_shaded	false
