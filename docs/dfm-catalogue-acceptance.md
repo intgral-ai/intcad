@@ -51,13 +51,14 @@ SOLIDCRAFT_DFM_SAMPLE=mixed_radii SOLIDCRAFT_DFM_SECOND_RADIUS=1 \
 
 | Sample | Geometry, built by commands | Target rules | State with the default values |
 |---|---|---|---|
-| `l_bracket` | 60 × 40 base, one 90° edge flange, one hole on each flat | `sm.tolerance_across_bends`, `sm.inside_radius`, `sm.max_bend_length`, `sm.min_flange` | tolerance `failed` at 0.1 mm (0.3 passes); inside radius `passed` 1.0 vs 0.5; max bend length `passed` 60 vs 500; min flange `failed` 7 vs 8 |
+| `l_bracket` | 60 × 40 base, one 90° edge flange, one hole on each flat | `sm.tolerance_across_bends`, `sm.inside_radius`, `sm.max_bend_length`, `sm.hole_to_bend`, `sm.min_flange` | tolerance `failed` at 0.1 mm (0.3 passes); inside radius `passed` 1.0 vs 0.5; max bend length `passed` 60 vs 500; hole-to-bend `passed`; min flange `failed` 7 vs 8 |
 | `u_channel` | 60 × 40 base, left and right edges turn up the same way | `sm.min_web_parallel_bends`, `sm.u_channel_ratio` | web `passed` 54 vs 5; U ratio `passed` 7 vs 10.8 (0.2 × 54) |
 | `no_relief` | two flanges meeting at a base corner, relief width and depth 0 | `sm.bend_relief_present` | `failed` / `RELIEF_NO_MARGIN` |
+| `relief_small` | the same corner with a 1 mm rectangular corner relief, 0.5 mm deep | `sm.bend_relief_present`, `sm.bend_relief_width`, `sm.bend_relief_depth` | presence `passed`; width/depth stay `checked`: the corner relief is an outline cut, not a notch hole the facts read |
 | `plate` | flat 60 × 40 plate, Ø2 hole and a Ø2 hole whose wall is 1 mm from the outline | `sm.hole_min_diameter`, `sm.hole_to_edge`, `sm.hole_spacing` | diameter `failed` 2 vs 3; edge `failed` 1 vs 3; spacing `passed` |
 | `plate_mixed` | flat plate with a Ø5 hole and a 12 × 12 non-circular opening | `sm.hole_min_diameter` (coverage) | `unsupported`; `notChecked` names the non-circular opening |
 | `spacing` | flat plate with two Ø3 holes 4 mm apart | `sm.hole_spacing` | `failed` 1 vs 4; at 10 mm apart, `passed` |
-| `countersink` | native 2 mm sheet, Ø4 through hole with a Ø6 × 90° countersink | `sm.countersink_depth` | `failed` 1.0 vs 0.75; at Ø4.5 countersink, `passed` 0.25 |
+| `countersink` | native 2 mm sheet, Ø4 through hole with a Ø6 × 90° countersink | all five `sm.countersink_*` rules | depth `failed` 1.0 vs 0.75 (Ø4.5 countersink passes at 0.25); edge `passed` 17; land `passed` 1.0; angle `passed` 90°; to-bend `checked` (no bend) |
 | `mixed_radii` | two edge flanges with R1 and R3 | `sm.bend_radius_consistent` | `failed` / `BEND_RADII_MIXED`; with both R1, `passed` |
 
 `unsupported` is a real result, not a skipped test: the rule row is present, the finding keeps its
@@ -128,6 +129,11 @@ the report's hole list; it never builds a `SheetBody` by hand.
   converted body reads as a pocket. The countersink sample therefore starts as a native sheet.
 - `sm.bend_radius_consistent` is a whole-part result: it names the mixture of radii but has no
   single anchor to select. The harness records that as an explicit exception, not a pass.
+- `sm.bend_relief_width` and `sm.bend_relief_depth` read notches as holes in the flat material.
+  The corner relief a normal `sheet.flange` command cuts is part of the outline, so the worker
+  report stays `checked` for `relief_small`; the measured-notch path is covered at the adapter
+  level (a real `SheetBody` with a 3 × 5 mm notch, hand values 3 and 5). A follow-up that reads an
+  outline notch closes this without changing the rule.
 - The harness runs the engine + validation worker in a test process. It does not open the desktop
   window or capture L5 evidence (the finding shown in the UI and the object selected).
 - `app.flat_no_overlap` keeps PIL-306's evidence boundary: the 20 mm² failing sample is a real
