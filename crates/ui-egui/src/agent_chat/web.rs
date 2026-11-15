@@ -910,6 +910,40 @@ fn sync_dfm_marks(app: &mut SolveApp, card: &crate::dfm_chat::Card) {
     app.viewport.load_dfm_run(&run, freshness);
 }
 
+/// While a check row says running, refresh it from the saved report on each frame; the page's
+/// poll action is not the only driver (a host-sent shortcut starts the row itself).
+pub(crate) fn poll_running_checks(app: &mut SolveApp) {
+    let running = app.agent_chat.items.iter().rev().any(|item| {
+        matches!(item, Item::Tool { kind, status: Some(backend::ToolStatus::InProgress), .. } if kind == "dfm.check")
+    });
+    if running {
+        poll_check(app);
+    }
+}
+
+/// A model tool call to `dfm.check` arrives as a plain tool row with no command kind. Recognise
+/// its reply (project id and sheet count), make it a check row and fill it from the saved report.
+pub(crate) fn adopt_model_check(app: &mut SolveApp) {
+    let found = app.agent_chat.items.iter().rev().find_map(|item| match item {
+        Item::Tool { id, kind, output: Some(output), .. } if kind.is_empty() => {
+            let value: Value = serde_json::from_str(output).ok()?;
+            (value.get("projectId").is_some() && value.get("sheets").is_some()).then(|| id.clone())
+        }
+        _ => None,
+    });
+    let Some(id) = found else { return };
+    for item in app.agent_chat.items.iter_mut().rev() {
+        if let Item::Tool { id: shown, kind, status, .. } = item
+            && *shown == id
+        {
+            *kind = "dfm.check".into();
+            *status = Some(backend::ToolStatus::Completed);
+            break;
+        }
+    }
+    poll_check(app);
+}
+
 fn set_check_item(app: &mut SolveApp, id: &str, card: crate::dfm_chat::Card) {
     let status = match card.status.as_str() {
         "running" => backend::ToolStatus::InProgress,
@@ -1032,6 +1066,38 @@ mod tests {
             .expect("the row keeps its card");
         assert!(output.contains("\"counts\""), "{output}");
         assert!(output.contains("\"failed\""), "{output}");
+    }
+
+    /// A model's `dfm.check` tool row is plain (no command kind): the host turns it into the
+    /// check card, so the model path and the button show the same report.
+    #[test]
+    fn a_model_check_row_becomes_the_card() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.agent_chat.push(Item::Tool {
+            id: "call-1".into(),
+            title: "execute: dfm.check".into(),
+            kind: String::new(),
+            status: Some(backend::ToolStatus::Completed),
+            input: None,
+            output: Some(r#"{"projectId":"p","projectName":"Hole Tier","sheets":2}"#.into()),
+        });
+        adopt_model_check(&mut app);
+        let row = app
+            .agent_chat
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                Item::Tool { id, kind, status, .. } if id == "call-1" => Some((kind.clone(), *status)),
+                _ => None,
+            })
+            .expect("the adopted row");
+        assert_eq!(row.0, "dfm.check");
+        assert!(
+            matches!(row.1, Some(backend::ToolStatus::Completed | backend::ToolStatus::Failed)),
+            "the row stops saying running: {:?}",
+            row.1
+        );
     }
 
     /// A queued run reads as running, and a failed or replaced run keeps its state and reason.
