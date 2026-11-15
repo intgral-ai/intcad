@@ -22,7 +22,19 @@ use solidcraft_engine::dfm::service;
 
 /// The samples this harness drives. A later slice that lands a fact family keeps the sample and
 /// changes its expectation in [`expectations`], never the rule's number.
-const SAMPLE_IDS: &[&str] = &["l_bracket", "u_channel", "no_relief", "relief_small", "plate", "plate_mixed", "spacing", "countersink", "mixed_radii"];
+const SAMPLE_IDS: &[&str] = &[
+    "l_bracket",
+    "u_channel",
+    "no_relief",
+    "relief_small",
+    "plate",
+    "plate_mixed",
+    "spacing",
+    "countersink",
+    "mixed_radii",
+    "long_bend",
+    "hole_bend",
+];
 
 /// The sheet rule every sample uses: 2 mm, K 0.5, 1 mm inside radius. With it a 10 mm flange has
 /// a 7 mm leg past the bend and a 4 mm flange only 1 mm, so one number changes a flange result.
@@ -38,7 +50,7 @@ fn sheet_rule_sizes(s: &mut Session, relief_width_mm: f64, relief_depth_mm: f64)
             "name": "Acceptance",
             "thickness": "2 mm",
             "k_factor": "0.5",
-            "bend_radius": "1 mm",
+            "bend_radius": format!("{} mm", env_number("SOLIDCRAFT_DFM_BEND_RADIUS", 1.0)),
             "relief_width": format!("{relief_width_mm} mm"),
             "relief_depth": format!("{relief_depth_mm} mm"),
             "active": true,
@@ -49,6 +61,7 @@ fn sheet_rule_sizes(s: &mut Session, relief_width_mm: f64, relief_depth_mm: f64)
 /// The rule used by the corner-relief sample: a rectangular 1 mm corner cut, so the sheet model
 /// records both the shape and the size the fact layer needs.
 fn sheet_rule_corner(s: &mut Session) {
+    let size = env_number("SOLIDCRAFT_DFM_RELIEF_SIZE", 1.0);
     exec(
         s,
         "sheet.manage_rules",
@@ -57,9 +70,9 @@ fn sheet_rule_corner(s: &mut Session) {
             "thickness": "2 mm",
             "k_factor": "0.5",
             "bend_radius": "1 mm",
-            "relief_width": "0.5 mm",
-            "relief_depth": "0.5 mm",
-            "corner_relief": "1 mm",
+            "relief_width": format!("{} mm", size / 2.0),
+            "relief_depth": format!("{} mm", size / 2.0),
+            "corner_relief": format!("{size} mm"),
             "corner_relief_shape": "rectangular",
             "active": true,
         }),
@@ -172,9 +185,24 @@ fn build(id: &str, cfg: Config) -> Built {
                     "edges": [[30, 0, 2], [60, 20, 2]],
                     "height": cfg.flange_leg_mm,
                     "corner_relief_shape": "rectangular",
-                    "corner_relief": "1 mm",
+                    "corner_relief": format!("{} mm", env_number("SOLIDCRAFT_DFM_RELIEF_SIZE", 1.0)),
                 }),
             );
+            None
+        }
+        "long_bend" => {
+            // A 600 mm bend line against the TEST-ONLY 500 mm upper row.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 600.0, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[300, 0, 2]], "height": 10}));
+            None
+        }
+        "hole_bend" => {
+            // A hole 1.5 mm from the bend tangent, below the TEST-ONLY 2.5 mm row.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[30, 0, 2]], "height": 10}));
+            exec(&mut s, "solid.hole", json!({"position": [30, 6, 2], "diameter": 3}));
             None
         }
         "plate_mixed" => {
@@ -202,10 +230,12 @@ fn build(id: &str, cfg: Config) -> Built {
             // in a 2 mm sheet and leaves a 1 mm land.
             sheet_rule(&mut s, 4.0);
             base(&mut s, 60.0, 40.0);
+            let (sx, sy, sa) =
+                (env_number("SOLIDCRAFT_DFM_SINK_X", 50.0), env_number("SOLIDCRAFT_DFM_SINK_Y", 30.0), env_number("SOLIDCRAFT_DFM_SINK_ANGLE", 90.0));
             exec(
                 &mut s,
                 "solid.hole",
-                json!({"position": [30, 20, 2], "diameter": 4, "type": "countersink", "cs_diameter": cfg.cs_diameter_mm, "cs_angle": 90}),
+                json!({"position": [sx, sy, 2], "diameter": 4, "type": "countersink", "cs_diameter": cfg.cs_diameter_mm, "cs_angle": sa}),
             );
             None
         }
@@ -265,6 +295,11 @@ struct Expectation {
 /// fact families arrive; the rule thresholds themselves are never relaxed.
 fn expectations(id: &str, cfg: Config) -> Vec<Expectation> {
     let leg = cfg.flange_leg_mm - 3.0;
+    let radius = env_number("SOLIDCRAFT_DFM_BEND_RADIUS", 1.0);
+    let relief_size = env_number("SOLIDCRAFT_DFM_RELIEF_SIZE", 1.0);
+    let (sink_x, sink_y, sink_angle) =
+        (env_number("SOLIDCRAFT_DFM_SINK_X", 50.0), env_number("SOLIDCRAFT_DFM_SINK_Y", 30.0), env_number("SOLIDCRAFT_DFM_SINK_ANGLE", 90.0));
+    let rim = cfg.cs_diameter_mm / 2.0;
     // The two bend zones take a 3 mm allowance each at these test-rule values.
     let web = cfg.base_width_mm - 6.0;
     let wall = cfg.hole_gap_mm - 3.0;
@@ -278,7 +313,13 @@ fn expectations(id: &str, cfg: Config) -> Vec<Expectation> {
                 measured_mm: Some(cfg.tolerance_mm),
                 code: (cfg.tolerance_mm < 0.2).then_some("TOLERANCE_TIGHTER_THAN_SHOP"),
             },
-            Expectation { rule: "sm.inside_radius", state: "passed", finding_state: "passed", measured_mm: None, code: None },
+            Expectation {
+                rule: "sm.inside_radius",
+                state: if radius < 0.5 { "failed" } else { "passed" },
+                finding_state: if radius < 0.5 { "failed" } else { "passed" },
+                measured_mm: (radius < 0.5).then_some(radius),
+                code: None,
+            },
             Expectation { rule: "sm.max_bend_length", state: "passed", finding_state: "passed", measured_mm: None, code: None },
             Expectation { rule: "sm.hole_to_bend", state: "passed", finding_state: "passed", measured_mm: None, code: None },
             // The 8 mm shop floor: a 10 mm height gives a 7 mm leg and fails; 14 mm gives 11 mm.
@@ -286,7 +327,7 @@ fn expectations(id: &str, cfg: Config) -> Vec<Expectation> {
                 rule: "sm.min_flange",
                 state: if leg < 8.0 { "failed" } else { "passed" },
                 finding_state: if leg < 8.0 { "failed" } else { "passed" },
-                measured_mm: (leg < 8.0).then_some(leg),
+                measured_mm: (leg < 8.0 && (radius - 1.0).abs() < 1e-9).then_some(leg),
                 code: (leg < 8.0).then_some("FLANGE_BELOW_LIMIT"),
             },
         ],
@@ -325,19 +366,23 @@ fn expectations(id: &str, cfg: Config) -> Vec<Expectation> {
             // end; the TEST-ONLY shop rows are 2 mm and 1 mm, so both fail.
             Expectation {
                 rule: "sm.bend_relief_width",
-                state: "failed",
-                finding_state: "failed",
-                measured_mm: Some(1.0),
-                code: Some("RELIEF_WIDTH_BELOW_LIMIT"),
+                state: if relief_size < 2.0 { "failed" } else { "passed" },
+                finding_state: if relief_size < 2.0 { "failed" } else { "passed" },
+                measured_mm: (relief_size < 2.0).then_some(relief_size),
+                code: (relief_size < 2.0).then_some("RELIEF_WIDTH_BELOW_LIMIT"),
             },
             Expectation {
                 rule: "sm.bend_relief_depth",
-                state: "failed",
-                finding_state: "failed",
-                measured_mm: Some(0.5),
-                code: Some("RELIEF_DEPTH_BELOW_LIMIT"),
+                state: if relief_size / 2.0 < 1.0 { "failed" } else { "passed" },
+                finding_state: if relief_size / 2.0 < 1.0 { "failed" } else { "passed" },
+                measured_mm: (relief_size / 2.0 < 1.0).then_some(relief_size / 2.0),
+                code: (relief_size / 2.0 < 1.0).then_some("RELIEF_DEPTH_BELOW_LIMIT"),
             },
         ],
+        "long_bend" => {
+            vec![Expectation { rule: "sm.max_bend_length", state: "failed", finding_state: "failed", measured_mm: Some(600.0), code: None }]
+        }
+        "hole_bend" => vec![Expectation { rule: "sm.hole_to_bend", state: "failed", finding_state: "failed", measured_mm: None, code: None }],
         "plate_mixed" => vec![Expectation {
             rule: "sm.hole_min_diameter",
             // A non-circular opening is present, so the hole rule says it cannot answer rather
@@ -366,9 +411,32 @@ fn expectations(id: &str, cfg: Config) -> Vec<Expectation> {
                     measured_mm: Some(depth),
                     code: (depth > 0.75).then_some("COUNTERSINK_DEPTH_ABOVE_LIMIT"),
                 },
-                Expectation { rule: "sm.countersink_to_edge", state: "passed", finding_state: "passed", measured_mm: Some(17.0), code: None },
-                Expectation { rule: "sm.countersink_land", state: "passed", finding_state: "passed", measured_mm: Some(1.0), code: None },
-                Expectation { rule: "sm.countersink_angle", state: "passed", finding_state: "passed", measured_mm: Some(90.0), code: None },
+                {
+                    let edge = sink_x.min(60.0 - sink_x).min(sink_y).min(40.0 - sink_y) - rim;
+                    Expectation {
+                        rule: "sm.countersink_to_edge",
+                        state: if edge < 3.0 { "failed" } else { "passed" },
+                        finding_state: if edge < 3.0 { "failed" } else { "passed" },
+                        measured_mm: Some(edge),
+                        code: None,
+                    }
+                },
+                Expectation {
+                    rule: "sm.countersink_land",
+                    state: if 4.0 - rim < 0.5 { "failed" } else { "passed" },
+                    finding_state: if 4.0 - rim < 0.5 { "failed" } else { "passed" },
+                    measured_mm: Some(4.0 - rim),
+                    code: None,
+                },
+                Expectation {
+                    rule: "sm.countersink_angle",
+                    state: if (sink_angle - 90.0).abs() > 1.0 { "unsupported" } else { "passed" },
+                    finding_state: if (sink_angle - 90.0).abs() > 1.0 { "unsupported" } else { "passed" },
+                    measured_mm: None,
+                    code: None,
+                },
+                // This native sample's countersink report has no bend gaps (the rule is
+                // `checked`); the adapter-level tests carry the pass/fail bend evidence.
                 Expectation { rule: "sm.countersink_to_bend", state: "checked", finding_state: "checked", measured_mm: None, code: None },
             ]
         }

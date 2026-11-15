@@ -1228,7 +1228,8 @@ fn corner_relief(sheet: &SheetBody, f: &crate::sheet::SheetFlange, u_end: f64, o
         return None;
     }
     let missing = if outward > 0.0 { f.len - u_end } else { u_end };
-    if !(missing > LINEAR_TOL && missing <= sheet.relief_size * 0.5 + LINEAR_TOL) {
+    let half = sheet.relief_size * 0.5;
+    if !(missing > LINEAR_TOL && (missing - half).abs() <= LINEAR_TOL) {
         return None;
     }
     let middle = f.p + d * u_end + d * outward * (missing * 0.5);
@@ -2714,6 +2715,11 @@ mod tests {
         close(relief.width_mm, 1.0);
         close(relief.depth_mm, 0.5);
         assert!(corner_relief(&sheet, &sheet.flanges[0], 38.0, 1.0, Vec2::X).is_none(), "a larger trim is not this relief");
+        assert!(corner_relief(&sheet, &sheet.flanges[0], 38.75, 1.0, Vec2::X).is_none(), "a trim shorter than the relief half is not this relief");
+        let mut plain = sheet.clone();
+        plain.relief = ReliefShape::Notch;
+        plain.relief_size = 0.0;
+        assert!(corner_relief(&plain, &plain.flanges[0], 38.5, 1.0, Vec2::X).is_none(), "a plain end trim is never a corner relief");
     }
 
     /// A hole 10 mm up a 30 mm flange stops that flange's run at the hole's near wall, and the
