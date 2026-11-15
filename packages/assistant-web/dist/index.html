@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Agent output is untrusted: nothing loads from outside the app, and nothing is sent out. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' openskyfall-assistant:; style-src 'self' openskyfall-assistant: 'unsafe-inline'; font-src 'self' openskyfall-assistant:; img-src 'self' openskyfall-assistant: data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Assistant</title>
+    <script type="module" crossorigin src="./assistant.js"></script>
+    <link rel="stylesheet" crossorigin href="./style.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

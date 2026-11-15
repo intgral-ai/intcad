@@ -1,0 +1,57 @@
+[
+ {
+  "note": "#31: hidden origin planes stay unpickable in the normal viewport. Create Sketch temporarily reveals them for its plane pick (#2581)."
+ },
+ {
+  "call": "engine.execute",
+  "params": {
+   "command": "solid.box",
+   "params": {
+    "corner": [
+     6,
+     -15,
+     0
+    ],
+    "length": 4,
+    "width": 4,
+    "height": 4
+   }
+  }
+ },
+ {
+  "call": "engine.execute",
+  "params": {
+   "command": "solid.box",
+   "params": {
+    "corner": [
+     -15,
+     10,
+     -5
+    ],
+    "length": 3,
+    "width": 3,
+    "height": 3
+   }
+  }
+ },
+ {
+  "call": "ui.view",
+  "params": {
+   "view": "fit"
+  }
+ },
+ {
+  "call": "ui.view",
+  "params": {
+   "view": "iso"
+  }
+ },
+ {"call": "ui.camera", "params": {"target": [0, 0, 0], "distance": 110}},
+ {"call": "ui.set", "params": {"showOrigin": false}},
+ {"click": {"world": [0, 5, 5]}},
+ {"expect": {"selection": 0}},
+ {"start": "sketch.create"},
+ {"click": {"world": [0, 5, 5]}},
+ {"expect": {"sketching": true}},
+ {"start": "sketch.finish"}
+]

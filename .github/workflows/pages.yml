@@ -1,0 +1,74 @@
+# The documentation site on GitHub Pages: the book (docs/book) at https://docs.solidcraft.io/
+# and the web app. Fork build/offline checks only; no deployment or inherited release downloads.
+name: Pages
+
+on:
+  pull_request:
+    paths: ["docs/**", "apps/solidcraft-web/**", "packaging/web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  MDBOOK_VERSION: v0.5.4
+  TRUNK_VERSION: v0.21.14
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: Install mdbook and trunk
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar -xz -C "$HOME/.local/bin"
+          curl -sSL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install a software Vulkan driver (lavapipe)
+        # The book's pictures are `solidcraft-cli snapshot`s, drawn on the GPU; the runner has none.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+      - name: Build the book
+        env:
+          SOLIDCRAFT_GPU: software
+        run: cargo xtask book
+      - name: Build the web app
+        working-directory: apps/solidcraft-web
+        run: trunk build --release --public-url ./
+      - name: Test the web app offline and across an update (headless Chrome)
+        run: cargo xtask web-offline-test --site dist/web
+      - name: Assemble the site
+        run: |
+          mkdir -p site
+          cp -r target/book/. site/
+          bash docs/book/seo.sh site  # canonical links, robots.txt, sitemap.xml
+      - name: Include only this checkout's web app
+        run: mkdir -p site/app-edge && cp -r dist/web/. site/app-edge/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: site-build-${{ github.sha }}
+          path: site
+          if-no-files-found: error
+
+  deploy:
+    name: Pages deployment disabled (not release evidence)
+    if: ${{ false && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo 'BLOCKED - Pages domains, transfer destinations and deployment require separate approval'

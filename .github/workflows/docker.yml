@@ -1,0 +1,71 @@
+# The web app as a container image on GitHub's container registry, for self-hosting
+# (packaging/docker; the book's "Self-hosting with Docker"):
+#
+#   ghcr.io/<owner>/solidcraft-web:latest   the latest published release
+#   ghcr.io/<owner>/solidcraft-web:0.14.0   a release (also 0.14); pre-releases get only their version
+#   ghcr.io/<owner>/solidcraft-web:edge     main
+#
+# For linux/amd64 and linux/arm64. The site is built here, as Pages and Release build it, and
+# passed to the Dockerfile as its `site` stage. Pull requests that touch the image build and
+# smoke-test it without publishing. Registry publication is quarantined in this fork.
+name: Docker
+
+on:
+  pull_request:
+    paths: ["packaging/docker/**", ".github/workflows/docker.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  TRUNK_VERSION: v0.21.14
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: docker-web
+          save-if: false
+      - name: Install trunk
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build the web app
+        working-directory: apps/solidcraft-web
+        run: trunk build --release
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          build-contexts: site=dist/web
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: solidcraft-web:test
+      - name: Smoke test
+        run: bash packaging/docker/smoke-test.sh solidcraft-web:test
+
+  publish:
+    name: Registry publication disabled (not release evidence)
+    if: ${{ false && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo 'BLOCKED - registry ownership and publication require separate approval'

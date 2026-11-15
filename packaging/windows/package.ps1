@@ -1,0 +1,198 @@
+<#
+.SYNOPSIS
+  Build and package SolidCraft for Windows.
+
+.DESCRIPTION
+  Produces, in $env:DIST (default: dist/release):
+    solidcraft-<version>-windows-<arch>.msi            per-machine installer (WiX v5)
+    solidcraft-<version>-windows-<arch>-portable.zip   solidcraft.exe + solidcraft-cli.exe + licences
+                                                       (+ the solvecraft-cli.exe compatibility alias)
+    SolidCraft-<version>-windows-<arch>.exe            the app alone (x64 only: a plain download)
+
+  The binaries link the C runtime statically (+crt-static), so nothing else needs installing.
+  The icon comes from $env:SOLIDCRAFT_ICONS (solidcraft.ico, made by `solidcraft-cli icon`), or
+  is drawn by the CLI just built when this machine can run it.
+
+  Signing happens outside this script (the release workflow sends files to SignPath), so the work
+  can be split in two phases with signing in between:
+    -Phase stage     build, check, and copy the three .exe files to the staging folder, then stop
+    -Phase package   make the MSI, portable zip and plain .exe from the staging folder as it is
+                     now (holding the signed .exe files), without building again
+  -Phase all (the default) does both, unsigned, as before.
+
+  Needs: Rust (MSVC toolchain + the target) and WiX v5:
+    dotnet tool install --global wix --version 5.0.2
+    wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+
+  Adapted from PhotoCraft's packaging (storytold/photocraft, Apache-2.0; see ATTRIBUTION.md).
+
+.EXAMPLE
+  pwsh packaging/windows/package.ps1 -Arch x64
+  pwsh packaging/windows/package.ps1 -Arch x64 -WithMastra   # opt-in; fails closed until #15 approves
+  pwsh packaging/windows/package.ps1 -Arch arm64     # cross-compiled; needs the MSVC ARM64 build tools
+  pwsh packaging/windows/package.ps1 -Arch x64 -Phase stage     # then sign target/windows-package/x64/*.exe
+  pwsh packaging/windows/package.ps1 -Arch x64 -Phase package
+#>
+param(
+  [ValidateSet('x64', 'x86', 'arm64')] [string] $Arch = 'x64',
+  [switch] $SkipBuild,
+  [ValidateSet('all', 'stage', 'package')] [string] $Phase = 'all',
+  [switch] $WithMastra
+)
+$ErrorActionPreference = 'Stop'
+$Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if ($env:SOLIDCRAFT_WITH_MASTRA -eq '1') { $WithMastra = $true }
+
+function Invoke-Native([string] $What, [scriptblock] $Block) {
+  Write-Output "==> $What"
+  & $Block
+  if ($LASTEXITCODE -ne 0) { throw "$What failed with exit code $LASTEXITCODE" }
+}
+
+# The version lives in one place: [workspace.package] version in the root Cargo.toml.
+$Version = $env:SOLIDCRAFT_VERSION
+if (-not $Version) {
+  $inPkg = $false
+  foreach ($line in Get-Content (Join-Path $Root 'Cargo.toml')) {
+    if ($line -match '^\s*\[') { $inPkg = ($line.Trim() -eq '[workspace.package]'); continue }
+    if ($inPkg -and $line -match '^\s*version\s*=\s*"([^"]+)"') { $Version = $Matches[1]; break }
+  }
+}
+if (-not $Version) { throw 'could not read [workspace.package] version from Cargo.toml' }
+# MSI ProductVersion is numeric (major.minor.build); pre-release tags are dropped there.
+$MsiVersion = ($Version -split '-')[0]
+
+$Target = switch ($Arch) { 'x64' { 'x86_64-pc-windows-msvc' } 'x86' { 'i686-pc-windows-msvc' } 'arm64' { 'aarch64-pc-windows-msvc' } }
+$Dist = if ($env:DIST) { $env:DIST } else { Join-Path $Root 'dist\release' }
+$TargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $Root 'target' }
+New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+
+Write-Output "SolidCraft $Version for Windows $Arch ($Target)"
+
+if (-not $SkipBuild -and $Phase -ne 'package') {
+  # Static CRT: no VC++ redistributable needed. Scoped to the target so host build scripts and
+  # proc-macros are unaffected.
+  $flagVar = 'CARGO_TARGET_' + ($Target.ToUpper() -replace '-', '_') + '_RUSTFLAGS'
+  [Environment]::SetEnvironmentVariable($flagVar, '-C target-feature=+crt-static')
+  # Two invocations: cargo unifies features per invocation, and the app's eframe turns on wgpu's
+  # GL backend, which would link opengl32.dll into the CLI too (see the import check below).
+  Invoke-Native "cargo build app ($Target)" { cargo build --release --locked -p solidcraft --target $Target }
+  Invoke-Native "cargo build CLI ($Target)" { cargo build --release --locked -p solidcraft-cli --target $Target }
+}
+$Bin = Join-Path $TargetDir "$Target\release"
+$Stage = Join-Path $TargetDir "windows-package\$Arch"
+# -Phase package checks the staged (by then signed) copies; the other phases check the build.
+$CheckDir = if ($Phase -eq 'package') { $Stage } else { $Bin }
+
+# Check both binaries' PE headers: Machine must match -Arch; Subsystem 2 = GUI (the app opens no
+# console window), 3 = console (the CLI's output reaches the terminal).
+function Get-PeHeader([string] $Path) {
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+  return @{ Machine = [BitConverter]::ToUInt16($bytes, $pe + 4); Subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C) }
+}
+$Machine = switch ($Arch) { 'x64' { 0x8664 } 'x86' { 0x14C } 'arm64' { 0xAA64 } }
+# solvecraft-cli.exe: the old CLI name, forwarding to solidcraft-cli.exe (compatibility shim,
+# docs/compatibility.md). Built by `-p solidcraft-cli` with the CLI.
+foreach ($check in @(@('solidcraft.exe', 2), @('solidcraft-cli.exe', 3), @('solvecraft-cli.exe', 3))) {
+  $h = Get-PeHeader (Join-Path $CheckDir $check[0])
+  if ($h.Machine -ne $Machine) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
+  if ($h.Subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $($h.Subsystem), expected $($check[1])" }
+  Write-Output "ok $($check[0]): $Arch, PE subsystem $($h.Subsystem)"
+}
+& (Join-Path $PSScriptRoot 'check-icon.ps1') -Path (Join-Path $CheckDir 'solidcraft.exe')
+
+# The CLI must not import opengl32.dll: Windows Server Core has none, and the loader then refuses
+# to start the CLI at all (0xC0000135, no output; #14971). The app keeps GL and may import it.
+function Get-DllImports([string] $Path) {
+  $objdump = Get-Command llvm-objdump -ErrorAction SilentlyContinue
+  if ($objdump) {
+    return & $objdump.Source -p $Path | Select-String '^\s*DLL Name:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+  }
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+  $vs = if (Test-Path $vswhere) { & $vswhere -latest -products * -property installationPath }
+  $dumpbin = if ($vs) { Get-ChildItem (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') -ErrorAction SilentlyContinue | Select-Object -Last 1 }
+  if (-not $dumpbin) { throw 'cannot check the CLI imports: neither llvm-objdump nor dumpbin was found' }
+  return & $dumpbin.FullName /nologo /dependents $Path | Select-String '^\s+(\S+\.dll)\s*$' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+}
+foreach ($exe in 'solidcraft-cli.exe', 'solvecraft-cli.exe') {
+  $imports = @(Get-DllImports (Join-Path $CheckDir $exe))
+  if ($imports.Count -eq 0) { throw "could not read the DLL imports of $exe" }
+  if ($imports -contains 'opengl32.dll') {
+    throw "$exe imports opengl32.dll, so it will not start on Windows Server Core (0xC0000135). wgpu's GL backend (feature `"gles`") reached the CLI: build it in its own cargo invocation, without the app."
+  }
+  Write-Output "ok ${exe}: no opengl32.dll import ($($imports.Count) DLLs)"
+}
+if ($Phase -ne 'package') {
+  Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+  Copy-Item (Join-Path $Bin 'solidcraft.exe'), (Join-Path $Bin 'solidcraft-cli.exe'), (Join-Path $Bin 'solvecraft-cli.exe') $Stage
+  foreach ($f in 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Stage }
+  # The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
+  # which the app carries built in as well (Help > About > Licences).
+  Copy-Item (Join-Path $Root 'packages\assistant-web\THIRD-PARTY-NOTICES.txt') (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt')
+  # GTK/WebKitGTK (Linux), WebView2 (Windows) and WKWebView (macOS) licence texts, including
+  # the LGPL text; also built into Help > About > Licences.
+  Copy-Item (Join-Path $Root 'packaging\notices\WEB-VIEW-PLATFORM-NOTICES.txt') (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt')
+  # Application-relative Mastra runtime. Bundling is opt-in because the artifact is still
+  # unapproved (DQ-7, #15). 1.0 supports Windows x86_64 MSVC only; ordinary packaging keeps the
+  # previous release behavior and the WXS harvests an empty folder.
+  if ($WithMastra) {
+    if ($Arch -ne 'x64') { throw "the built-in Mastra workflow does not ship for Windows $Arch in 1.0; drop -WithMastra" }
+    Invoke-Native 'stage Mastra runtime' { & (Join-Path $PSScriptRoot '..\mastra\stage.ps1') -Target $Target -Dest (Join-Path $Stage 'mastra') }
+  } else {
+    New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'mastra') | Out-Null
+    Write-Output 'the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)'
+  }
+}
+if ($Phase -eq 'stage') {
+  Write-Output "staged for signing: $Stage"
+  exit 0
+}
+
+$Icon = if ($env:SOLIDCRAFT_ICONS) { Join-Path $env:SOLIDCRAFT_ICONS 'solidcraft.ico' } else { Join-Path $Root 'assets/icons/app/windows/exports/solidcraft.ico' }
+if (-not (Test-Path $Icon)) { throw "Missing package icon: $Icon" }
+
+# ---- MSI ---------------------------------------------------------------------------------------
+$Msi = Join-Path $Dist "solidcraft-$Version-windows-$Arch.msi"
+$HasMastra = if ($WithMastra -and (Test-Path (Join-Path $Stage 'mastra\runtime.json'))) { 1 } else { 0 }
+Invoke-Native 'wix build' {
+  wix build (Join-Path $Root 'assets/platforms/windows/solidcraft.wxs') -arch $Arch `
+    -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
+    -culture en-US -loc (Join-Path $Root 'assets/platforms/windows/solidcraft.en-us.wxl') `
+    -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$Icon" -d "HasMastra=$HasMastra" `
+    -o $Msi
+}
+Invoke-Native 'MSI shortcut icon validation (ICE50)' {
+  wix msi validate $Msi -ice ICE50 -intermediateFolder (Join-Path $Stage 'msi-validation')
+}
+# wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
+Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
+
+# ---- portable zip ------------------------------------------------------------------------------
+$Portable = Join-Path $TargetDir "windows-package\solidcraft-$Version-windows-$Arch-portable"
+Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $Portable | Out-Null
+Copy-Item (Join-Path $Stage '*.exe') $Portable
+foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Portable }
+Copy-Item (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt') $Portable
+Copy-Item (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt') $Portable
+if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
+$Zip = Join-Path $Dist "solidcraft-$Version-windows-$Arch-portable.zip"
+Remove-Item -Force $Zip -ErrorAction SilentlyContinue
+Compress-Archive -Path $Portable -DestinationPath $Zip
+
+# ---- the app as a plain download (x64) ---------------------------------------------------------
+$Outputs = @($Msi, $Zip)
+if ($Arch -eq 'x64') {
+  $Exe = Join-Path $Dist "SolidCraft-$Version-windows-$Arch.exe"
+  Copy-Item (Join-Path $Stage 'solidcraft.exe') $Exe
+  $Outputs += $Exe
+}
+
+if ($CanRun) {
+  Invoke-Native 'solidcraft-cli --version' { & (Join-Path $Stage 'solidcraft-cli.exe') --version }
+} else {
+  Write-Output "skipping solidcraft-cli --version: an $Arch build doesn't run on this $HostArch machine"
+}
+Get-Item $Outputs | Format-Table Name, Length

@@ -1,0 +1,195 @@
+#!/bin/sh
+# SolidCraft AppImage entry point (packaging/linux/AppRun; installed by package.sh).
+# Adapted from PhotoCraft's AppRun (storytold/photocraft, Apache-2.0; see ATTRIBUTION.md).
+#
+# On Wayland the compositor resolves a window's dock icon by taking the window's
+# app_id (io.tangencylabs.solidcraft) and looking up an installed .desktop file.
+# An AppImage installs nothing, so every AppImage run would otherwise show the
+# generic "Wayland" icon. Best-effort desktop integration: on first run
+# (and whenever the AppImage's path changes) install the .desktop entry and the
+# hicolor icons into $XDG_DATA_HOME, refresh the icon cache, point Icon= at the
+# installed PNG (panels that skip the theme cache still show the mark; #10673),
+# then launch. Every failure here must leave the launch untouched. Opt out with
+# SOLIDCRAFT_NO_DESKTOP_INTEGRATION=1 (the pre-rename SOLVECRAFT_NO_DESKTOP_INTEGRATION
+# still works: compatibility shim, docs/compatibility.md), or for good with an empty
+# file $XDG_DATA_HOME/solidcraft/no-desktop-integration. Nothing is installed either
+# when appimaged (go-appimage) already made an entry for this AppImage, or when a
+# launcher that manages AppImages (Gear Lever, AppImageLauncher) started it: it sets
+# DESKTOPINTEGRATION and owns the menu entry.
+#
+# The same step puts `solidcraft-cli` on PATH: a small wrapper script in ~/.local/bin that starts this
+# AppImage in command-line mode (SOLIDCRAFT_APPIMAGE_CLI=1 makes AppRun run the bundled
+# solidcraft-cli), so MCP clients and shells find it by name. It is rewritten when the AppImage
+# moves, and a file there that this script did not write is never touched. The same opt-outs apply.
+
+set -u
+
+APPDIR="$(dirname "$(readlink -f "$0")")"
+DESK_ID=io.tangencylabs.solidcraft
+CLI_MARKER="# solidcraft-cli wrapper written by the SolidCraft AppImage"
+# Compatibility shim (docs/compatibility.md): the desktop ids of earlier releases (0.8 until the
+# move to Tangency Labs, and before 0.8).
+OLD_DESK_IDS="ai.storyteller.solidcraft ai.storyteller.solvecraft"
+
+# The wrapper in ~/.local/bin: $1 is the AppImage's path, $2 the home folder.
+install_cli() {
+  bin="${XDG_BIN_HOME:-$2/.local/bin}"
+  wrapper="$bin/solidcraft-cli"
+  # Anything there that is not our wrapper (a file, a link, a directory) is the user's.
+  if [ -e "$wrapper" ] || [ -L "$wrapper" ]; then
+    [ -f "$wrapper" ] && [ ! -L "$wrapper" ] && grep -qF "$CLI_MARKER" "$wrapper" 2>/dev/null || return 0
+  fi
+  mkdir -p "$bin" 2>/dev/null || return 0
+  tmp="$bin/.solidcraft-cli.tmp.$$"
+  printf '#!/bin/sh\n%s\nSOLIDCRAFT_APPIMAGE_CLI=1 exec "%s" "$@"\n' "$CLI_MARKER" "$1" >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  chmod 755 "$tmp" 2>/dev/null
+  if cmp -s "$tmp" "$wrapper" 2>/dev/null; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$wrapper" 2>/dev/null || rm -f "$tmp"
+  fi
+}
+
+integrate() {
+  case "${SOLIDCRAFT_NO_DESKTOP_INTEGRATION:-${SOLVECRAFT_NO_DESKTOP_INTEGRATION:-}}" in
+    1 | true | yes) return 0 ;;
+  esac
+  # The AppImage runtime exports $APPIMAGE; without it (an extracted AppDir) there
+  # is no path to register and nothing to do.
+  appimage="${APPIMAGE:-}"
+  [ -n "$appimage" ] && [ -f "$appimage" ] || return 0
+  appimage="$(readlink -f "$appimage")" || return 0
+  # Exec= is parsed by the desktop: a path holding a quote, backquote, dollar, backslash,
+  # percent or a line break would need escaping (or could add lines), so skip integration.
+  case "$appimage" in
+    *[\"\`\$\\%]* | *'
+'*) return 0 ;;
+  esac
+  home="${HOME:-}"
+  [ -n "$home" ] || return 0
+  data="${XDG_DATA_HOME:-$home/.local/share}"
+  [ -e "$data/solidcraft/no-desktop-integration" ] && return 0
+  install_cli "$appimage" "$home"
+  src_desktop="$APPDIR/usr/share/applications/$DESK_ID.desktop"
+  [ -f "$src_desktop" ] || return 0
+
+  apps="$data/applications"
+  # Gear Lever and AppImageLauncher write their own entry and start the AppImage with
+  # DESKTOPINTEGRATION set; treat that like appimaged: no entry from here, and drop the one
+  # this script wrote earlier (it would otherwise come back after the launcher's is removed).
+  if [ -n "${DESKTOPINTEGRATION:-}" ]; then
+    mine="$apps/$DESK_ID.desktop"
+    if [ -f "$mine" ] && grep -q '^Exec="' "$mine"; then
+      rm -f "$mine"
+      command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1
+    fi
+    return 0
+  fi
+  # appimaged integrates AppImages itself (appimagekit_<hash>-<name>.desktop, Exec= this file):
+  # a second entry from here would show the app twice, so drop an entry this script wrote earlier
+  # (only one it wrote: it points Exec at a path in quotes) and leave the rest to appimaged.
+  for other in "$apps"/appimagekit_*.desktop; do
+    if ! { [ -f "$other" ] && grep -qF "$appimage" "$other" 2>/dev/null; }; then
+      continue
+    fi
+    mine="$apps/$DESK_ID.desktop"
+    if [ -f "$mine" ] && grep -q '^Exec="' "$mine"; then
+      rm -f "$mine"
+      command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1
+    fi
+    return 0
+  done
+
+  # Icons first: the desktop entry's Icon= points at the installed 256×256 PNG so panels
+  # that skip the theme cache still show the mark (#10673: Mint Cinnamon AppImage taskbar).
+  src_icons="$APPDIR/usr/share/icons/hicolor"
+  icons="$data/icons/hicolor"
+  if [ -d "$src_icons" ]; then
+    (cd "$src_icons" && find . -type f) | while IFS= read -r rel; do
+      mkdir -p "$icons/$(dirname "$rel")" 2>/dev/null || continue
+      if ! cmp -s "$src_icons/$rel" "$icons/$rel"; then
+        cp "$src_icons/$rel" "$icons/$rel" 2>/dev/null || true
+      fi
+    done
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+      gtk-update-icon-cache -q -t -f "$icons" 2>/dev/null || true
+    elif command -v update-icon-caches >/dev/null 2>&1; then
+      update-icon-caches "$icons" 2>/dev/null || true
+    fi
+  fi
+
+  # Rewrite Exec to this AppImage (the binary is not on the host PATH), drop TryExec
+  # (which would hide the entry), and point Icon at the installed PNG when we have one.
+  mkdir -p "$apps" 2>/dev/null || return 0
+  tmp="$apps/.$DESK_ID.tmp.$$"
+  esc="$(printf '%s' "$appimage" | sed 's/[\\&|]/\\&/g')"
+  icon_png="$icons/256x256/apps/$DESK_ID.png"
+  if [ -f "$icon_png" ]; then
+    icon_esc="$(printf '%s' "$icon_png" | sed 's/[\\&|]/\\&/g')"
+    icon_sed="s|^Icon=.*|Icon=$icon_esc|"
+  else
+    icon_sed='s|^Icon=.*|Icon='"$DESK_ID"'|'
+  fi
+  if sed -e "s|^Exec=.*|Exec=\"$esc\" %F|" -e '/^TryExec=/d' -e "$icon_sed" "$src_desktop" 2>/dev/null >"$tmp"; then
+    if cmp -s "$tmp" "$apps/$DESK_ID.desktop"; then
+      rm -f "$tmp"
+    else
+      if mv -f "$tmp" "$apps/$DESK_ID.desktop" 2>/dev/null; then
+        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1
+      else
+        rm -f "$tmp"
+      fi
+    fi
+  else
+    rm -f "$tmp"
+    return 0
+  fi
+
+  # An entry and icons that an earlier AppImage installed under an old id would show a second
+  # menu entry; remove them (only an entry this script wrote: it points Exec at a path).
+  for old_id in $OLD_DESK_IDS; do
+    old="$apps/$old_id.desktop"
+    if [ -f "$old" ] && grep -q "^Icon=$old_id\$" "$old" && grep -q '^Exec="' "$old"; then
+      rm -f "$old" "$data"/icons/hicolor/*/apps/"$old_id".png 2>/dev/null
+      command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1
+    fi
+  done
+}
+
+# The app links the system's GTK 3 and WebKitGTK 4.1 (the Assistant's interface is a web view),
+# and an AppImage brings neither. Without them the dynamic loader stops the app with one terse
+# line about the first library it misses, which nobody sees when the AppImage was started from
+# a file manager. So say which libraries are missing and which package has them, on the terminal
+# and, where the desktop has a tool for it, in a dialog. The app is started all the same: the
+# loader's own message is not lost, and a wrong guess here costs nothing.
+missing_libraries() {
+  command -v ldd >/dev/null 2>&1 || return 0
+  missing="$(ldd "$APPDIR/usr/bin/solidcraft" 2>/dev/null | awk '/not found/ { print $1 }' | sort -u | tr '\n' ' ')"
+  missing="${missing% }"
+  [ -n "$missing" ] || return 0
+  text="Intcad cannot start: this system lacks $missing.
+It needs the system's WebKitGTK 4.1 (with GTK 3). Install it with:
+  Debian, Ubuntu:  sudo apt install libwebkit2gtk-4.1-0
+  Fedora:          sudo dnf install webkit2gtk4.1
+  Arch:            sudo pacman -S webkit2gtk-4.1
+  openSUSE:        sudo zypper install libwebkit2gtk-4_1-0"
+  printf '%s\n' "$text" >&2
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --error --title=Intcad --text="$text" >/dev/null 2>&1 &
+  elif command -v kdialog >/dev/null 2>&1; then
+    kdialog --title Intcad --error "$text" >/dev/null 2>&1 &
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send Intcad "$text" >/dev/null 2>&1 || true
+  fi
+}
+
+# Started through the wrapper `integrate` installs: the command-line tool, with no integration.
+if [ "${SOLIDCRAFT_APPIMAGE_CLI:-}" = 1 ]; then
+  unset SOLIDCRAFT_APPIMAGE_CLI
+  exec "$APPDIR/usr/bin/solidcraft-cli" "$@"
+fi
+
+missing_libraries
+integrate
+exec "$APPDIR/usr/bin/solidcraft" "$@"

@@ -1,0 +1,546 @@
+{
+  "case": {
+    "id": "catalog.relief",
+    "kind": "below"
+  },
+  "expected": [
+    {
+      "error_code": null,
+      "measured": {
+        "unit": "mm3",
+        "value": 2576.7146
+      },
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.gate_input_solid"
+      ],
+      "status": "pass"
+    },
+    {
+      "error_code": null,
+      "measured": {
+        "unit": "mm",
+        "value": 1.5
+      },
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.gate_sheet_thickness"
+      ],
+      "status": "pass"
+    },
+    {
+      "error_code": null,
+      "measured": {
+        "unit": "bends",
+        "value": 1.0
+      },
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.gate_bends_found"
+      ],
+      "status": "pass"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": "PROFILE_NOT_GIVEN",
+      "requirement": null,
+      "rules": [
+        "sm.gate_profile_coverage"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": "NO_SHOP_NUMBER",
+      "requirement": null,
+      "rules": [
+        "sm.inside_radius",
+        "sm.min_flange",
+        "sm.max_bend_length",
+        "sm.bend_radius_consistent"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.hole_min_diameter",
+        "sm.hole_to_edge"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.hole_to_bend"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": "RELIEF_NO_MARGIN",
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.bend_relief_present"
+      ],
+      "status": "needs_review"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.min_web_parallel_bends"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.u_channel_ratio"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": "CRITICAL_FEATURE_NOT_FOUND",
+      "requirement": null,
+      "rules": [
+        "sm.tolerance_across_bends"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.countersink_depth",
+        "sm.countersink_to_edge",
+        "sm.countersink_to_bend",
+        "sm.countersink_land",
+        "sm.countersink_angle"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.hole_spacing"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.bend_relief_width"
+      ],
+      "status": "not_applicable"
+    },
+    {
+      "error_code": null,
+      "measured": null,
+      "reason_code": null,
+      "requirement": null,
+      "rules": [
+        "sm.bend_relief_depth"
+      ],
+      "status": "not_applicable"
+    }
+  ],
+  "header": "no factory: 0 of 19 rules ran on public values. None can pass.",
+  "input": {
+    "critical": [
+      {
+        "fromMm": {
+          "x": 8.5,
+          "y": 12.5,
+          "z": 0.75
+        },
+        "name": "L holes",
+        "toMm": {
+          "x": 0.75,
+          "y": 12.5,
+          "z": 20.0
+        },
+        "toleranceMm": 0.2
+      }
+    ],
+    "declared": {
+      "material": "5052-H32",
+      "process": "press brake",
+      "thicknessMm": 1.5
+    },
+    "facts": {
+      "analyzer_valid": true,
+      "area_mm2": 3738.290907695692,
+      "bop_valid": true,
+      "faces": 12,
+      "holes": [],
+      "other_openings": 0,
+      "paired_mm": 1.5,
+      "paired_rays": 260,
+      "plate_gap_mm": null,
+      "rays_failed": false,
+      "recognition": {
+        "bends": [
+          {
+            "angle_deg": 90.0,
+            "crossed": false,
+            "flats": [
+              1,
+              9
+            ],
+            "inside_radius_mm": 3.0,
+            "length_mm": 20.0,
+            "longest_mm": [
+              40.0,
+              30.0
+            ],
+            "no_margin": [
+              [
+                4.5,
+                5.0,
+                0.0
+              ]
+            ],
+            "reliefs": [],
+            "runs_mm": [
+              [
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0,
+                40.0
+              ],
+              [
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0,
+                30.0
+              ]
+            ],
+            "unrelieved": [],
+            "x_mm": 1.3180194846605358,
+            "y_mm": 15.0,
+            "z_mm": 1.3180194846605358
+          }
+        ],
+        "cone_faces": 0,
+        "cones": 0,
+        "countersinks": 0,
+        "form_faces": 0,
+        "forms": 0,
+        "hems": 0,
+        "joined": true,
+        "sharp_joins": 0,
+        "unknown_faces": 0,
+        "webs": []
+      },
+      "shells_closed": true,
+      "size_mm": [
+        44.5,
+        25.0,
+        34.5
+      ],
+      "triangle_faces": 0,
+      "unknown_faces": 0,
+      "volume_mm3": 2576.7145867644335
+    },
+    "generic": {
+      "format": 1,
+      "layer": "generic",
+      "name": "generic",
+      "requirements": [
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.hole_min_diameter",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "t": 0.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.hole_to_edge",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "t": 1.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "r": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.hole_to_bend",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "r": 1.0,
+            "t": 2.5
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "max",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_depth",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "t": 0.7
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "d": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_to_edge",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "d": -0.5,
+            "t": 4
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "d": "mm",
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_to_bend",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "d": -0.5,
+            "t": 3
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "t": "mm"
+          },
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.hole_spacing",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "t": 2
+          }
+        },
+        {
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {},
+          "limit": "min",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_land",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "mm": 0.5
+          }
+        },
+        {
+          "angles_deg": [
+            82,
+            90,
+            100,
+            120
+          ],
+          "applies": {
+            "material": [],
+            "process": [],
+            "thickness_mm": null
+          },
+          "exceptions": [],
+          "inputs": {
+            "deg": "deg"
+          },
+          "limit": "max",
+          "measuring_line": "TEST-ONLY: the quantity this rule measures.",
+          "method": "TEST-ONLY: an invented migration fixture.",
+          "rights": "TEST-ONLY: no third-party text or data.",
+          "rule": "sm.countersink_angle",
+          "source": "TEST-ONLY: invented for the migration baseline.",
+          "validation_samples": [],
+          "value": {
+            "deg": 1
+          }
+        }
+      ],
+      "version": "2026-11-13"
+    },
+    "model": {
+      "body": "TEST-ONLY",
+      "modelVersion": "intdfm:7ecb3ff39b25816fc1d787c91ac07752fb7bf00f",
+      "source": "intdfm"
+    },
+    "overrides": [],
+    "shop": null
+  },
+  "inputGate": {
+    "error_code": null,
+    "feature": {
+      "description": "whole part",
+      "kind": "part"
+    },
+    "finding_id": "",
+    "label": "",
+    "location": {
+      "mm": null,
+      "text": "whole part"
+    },
+    "measured": {
+      "unit": "mm3",
+      "value": 2576.7145867644335
+    },
+    "message": "The file holds one closed solid, valid under BRepCheck_Analyzer and BRepAlgoAPI_Check. Length unit in the file: millimetre. This only says the file can be read.",
+    "mode": "gate",
+    "needs": [],
+    "reason_code": null,
+    "requirement": null,
+    "rules": [
+      "sm.gate_input_solid"
+    ],
+    "status": "pass"
+  }
+}

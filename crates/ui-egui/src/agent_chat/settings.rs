@@ -1,0 +1,2386 @@
+//! Settings → AI: the master switch, the agents (found and added, each with Test, Default and,
+//! for added ones, Remove), permissions (global and per agent, and the "always allow" answers),
+//! and the panel. Plus the Add agent dialog: an installed ACP agent, a custom command, or an
+//! endpoint (OpenAI-compatible or Anthropic-compatible, whose key goes to the system keychain).
+
+use super::agents::{self, AgentConfig, Execution, Kind, Mode, Protocol};
+use super::backend::TestError;
+use super::*;
+use crate::ui_kit;
+use crate::ui_kit::BackingTooltipExt as _;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AddKind {
+    #[default]
+    Installed,
+    Custom,
+    Api,
+}
+
+/// The Add agent dialog's fields.
+#[derive(Default)]
+pub struct AddState {
+    pub kind: AddKind,
+    pub name: String,
+    pub command: String,
+    pub installed: usize,
+    pub preset: usize,
+    pub protocol: Protocol,
+    pub base_url: String,
+    pub model: String,
+    pub key: String,
+    /// Seconds one model request may take.
+    pub request_timeout_s: u64,
+    /// Optional reasoning effort sent as `reasoning_effort`; empty sends nothing.
+    pub reasoning_effort: String,
+    pub error: Option<String>,
+    /// Editing this added agent (its id) instead of adding a new one.
+    pub editing: Option<String>,
+    /// Editing an endpoint whose key is in the keychain: an empty key field keeps it.
+    pub saved_key: bool,
+    test: Option<Test>,
+    /// The endpoint the model picker lists: what the fields said when they were last left.
+    listing: Option<ListingKey>,
+    /// The fields were left, or the picker opened: take what they say now.
+    list_again: bool,
+}
+
+/// A connection test running or done.
+pub enum Test {
+    Running(std::sync::mpsc::Receiver<Result<String, TestError>>),
+    Done(Result<String, TestError>),
+}
+
+impl Test {
+    fn poll(&mut self) -> Option<bool> {
+        if let Test::Running(rx) = self
+            && let Ok(r) = rx.try_recv()
+        {
+            let login = match &r {
+                Ok(_) => Some(true),
+                Err(TestError::AuthRequired) => Some(false),
+                Err(TestError::Other(_)) => None,
+            };
+            *self = Test::Done(r);
+            return login;
+        }
+        None
+    }
+}
+
+pub(super) fn poll_tests(chat: &mut AgentChat) {
+    for (id, test) in &mut chat.settings.tests {
+        if let Some(signed_in) = test.poll() {
+            chat.login_results.insert(id.clone(), signed_in);
+        }
+    }
+}
+
+/// Settings state that isn't preferences: the dialog and the tests.
+#[derive(Default)]
+pub struct State {
+    pub add: Option<AddState>,
+    pub tests: std::collections::HashMap<String, Test>,
+    #[cfg(not(target_arch = "wasm32"))]
+    capabilities: std::collections::HashMap<(String, String), Option<bool>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    checking: Option<CapabilityCheck>,
+    /// Endpoints' models as they were last listed here, or why they could not be.
+    endpoint_models: std::collections::HashMap<ListingKey, Result<Vec<acp::ModelInfo>, String>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    listing: Option<ModelListing>,
+    /// An agent card's picker asked for this listing (with the agent whose key goes along).
+    #[cfg(not(target_arch = "wasm32"))]
+    card_listing: Option<(ListingKey, String)>,
+}
+
+/// What an endpoint's models are listed by: its protocol, its base URL, and whether a key goes along.
+type ListingKey = (Protocol, String, bool);
+
+/// Most endpoints' listings kept.
+const ENDPOINT_LISTINGS_CAP: usize = 128;
+
+/// The listing of `base_url`, if that is an address. A key goes along only where it may be sent.
+fn listing_key(protocol: Protocol, base_url: &str, with_key: bool) -> Option<ListingKey> {
+    let url = agents::normalize_url(base_url).ok().filter(|url| url.len() <= 4096)?;
+    let with_key = with_key && agents::key_safe_for(&url);
+    Some((protocol, url, with_key))
+}
+
+/// The models listed for `key`, and the note for under them: still listing, or why it could not.
+fn listed_for<'a>(
+    listings: &'a std::collections::HashMap<ListingKey, Result<Vec<acp::ModelInfo>, String>>,
+    key: Option<&ListingKey>,
+) -> (&'a [acp::ModelInfo], Option<String>) {
+    match key.and_then(|key| listings.get(key)) {
+        Some(Ok(models)) if models.is_empty() => (&[], Some(tr("ui.agent_chat_models_none").to_string())),
+        Some(Ok(models)) => (models, None),
+        Some(Err(error)) => (&[], Some(trf("ui.agent_chat_models_failed", &[("error", error)]))),
+        None => (&[], key.map(|_| tr("ui.agent_chat_models_listing").to_string())),
+    }
+}
+
+/// Whether a listing is worth asking for again: it failed, or it listed nothing.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn listing_wants_retry(listing: Option<&Result<Vec<acp::ModelInfo>, String>>) -> bool {
+    match listing {
+        Some(Err(_)) => true,
+        Some(Ok(models)) => models.is_empty(),
+        None => false,
+    }
+}
+
+/// `models` as a model picker's rows: the id chooses, the endpoint's name for it is searched too.
+fn model_choices<'a>(models: &'a [acp::ModelInfo], rows: &'a [(String, Option<String>, String)]) -> Vec<ui_kit::SearchChoice<'a>> {
+    models.iter().zip(rows).map(|(m, (label, group, tip))| ui_kit::SearchChoice { value: &m.id, label, tip, group: group.as_deref() }).collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ModelListing {
+    key: ListingKey,
+    rx: std::sync::mpsc::Receiver<Result<Vec<acp::ModelInfo>, String>>,
+}
+
+/// List an endpoint's models in the background, one listing at a time; a finished one stays until
+/// it is asked for again. `secret` runs on that thread too: a keychain may take its time to answer.
+#[cfg(not(target_arch = "wasm32"))]
+fn start_listing(
+    app: &mut SolveApp,
+    ctx: &egui::Context,
+    key: ListingKey,
+    connection: Option<(Arc<host_ai::HostAi>, host_ai::ConnectionBinding)>,
+    secret: impl FnOnce() -> Result<Option<String>, String> + Send + 'static,
+) {
+    let state = &mut app.agent_chat.settings;
+    if state.listing.is_some() || state.endpoint_models.contains_key(&key) {
+        return;
+    }
+    if state.endpoint_models.len() >= ENDPOINT_LISTINGS_CAP {
+        state.endpoint_models.clear();
+    }
+    let Some(http) = app.services.agent_http.clone() else {
+        state.endpoint_models.insert(key, Err(tr("ui.ai_no_http").to_string()));
+        return;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (protocol, url) = (key.0, key.1.clone());
+    let language = crate::i18n::language();
+    let wake = ctx.clone();
+    let spawned = std::thread::Builder::new().name("endpoint-models".into()).spawn(move || {
+        let _language = crate::i18n::scope(language);
+        let list = match connection {
+            Some((host, binding)) => host.list_models(&binding).map_err(|error| error.message()),
+            None => secret().and_then(|secret| match protocol {
+                Protocol::OpenAi => super::api_client::model_list(&http, &url, secret.as_deref()),
+                Protocol::Anthropic => super::api_client::anthropic_model_list(&http, &url, secret.as_deref()),
+            }),
+        };
+        let _ = tx.send(list);
+        wake.request_repaint();
+    });
+    match spawned {
+        Ok(_) => state.listing = Some(ModelListing { key, rx }),
+        Err(e) => {
+            state.endpoint_models.insert(key, Err(e.to_string()));
+        }
+    }
+}
+
+/// Take in a finished listing, and start the one an agent card asked for.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn poll_listing(app: &mut SolveApp, ctx: &egui::Context) {
+    use std::sync::mpsc::TryRecvError;
+    let state = &mut app.agent_chat.settings;
+    if let Some(listing) = &state.listing {
+        let result = match listing.rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Disconnected) => Err(tr("ui.ai_no_answer").to_string()),
+            Err(TryRecvError::Empty) => return,
+        };
+        state.endpoint_models.insert(listing.key.clone(), result);
+        state.listing = None;
+    }
+    let Some((key, agent)) = state.card_listing.take() else { return };
+    let model = app.preferences.agents.iter().find(|c| c.id == agent).map(|c| c.model.as_str()).unwrap_or("");
+    match direct_host_ai(app).and_then(|host| host.bind(&agent, model).map(|binding| (host, binding))) {
+        Ok(connection) => start_listing(app, ctx, key, Some(connection), || Ok(None)),
+        Err(error) => {
+            app.agent_chat.settings.endpoint_models.insert(key, Err(error.message()));
+        }
+    }
+}
+
+/// The Add dialog's listing, of what its fields said when last left, never of a half-typed address.
+#[cfg(not(target_arch = "wasm32"))]
+fn list_for_dialog(app: &mut SolveApp, ctx: &egui::Context) {
+    let state = &mut app.agent_chat.settings;
+    let Some(s) = state.add.as_mut().filter(|s| s.kind == AddKind::Api) else { return };
+    let typed = Some(s.key.trim().to_string()).filter(|typed| !typed.is_empty());
+    // Editing an agent whose key is kept: the listing goes with that key, read on its thread.
+    let stored = s.editing.clone().filter(|_| s.saved_key && typed.is_none());
+    if std::mem::take(&mut s.list_again) {
+        s.listing = listing_key(s.protocol, &s.base_url, typed.is_some() || stored.is_some());
+        // Asked again: what failed may work now, with another key or the server back up.
+        if let Some(key) = &s.listing
+            && listing_wants_retry(state.endpoint_models.get(key))
+        {
+            state.endpoint_models.remove(key);
+        }
+    }
+    let Some(key) = s.listing.clone() else { return };
+    if state.listing.is_some() || state.endpoint_models.contains_key(&key) {
+        return;
+    }
+    let typed = typed.filter(|_| key.2);
+    let stored = stored.filter(|_| key.2).and_then(|agent| app.services.secrets.clone().map(|secrets| (secrets, agent)));
+    start_listing(app, ctx, key, None, move || match stored {
+        Some((secrets, agent)) => secrets
+            .get(&agent)
+            .map_err(|_| tr("ui.host_ai_key_unavailable").to_string())?
+            .filter(|key| !key.trim().is_empty())
+            .map(Some)
+            .ok_or_else(|| tr("ui.ai_http_key").to_string()),
+        None => Ok(typed),
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CapabilityCheck {
+    key: (String, String),
+    rx: std::sync::mpsc::Receiver<Option<bool>>,
+}
+
+/// Poll one bounded background probe at a time. Failures are cached too.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn poll_capabilities(app: &mut SolveApp, ctx: &egui::Context) {
+    use std::sync::mpsc::TryRecvError;
+    let state = &mut app.agent_chat.settings;
+    if let Some(check) = &state.checking {
+        let result = match check.rx.try_recv() {
+            Ok(value) => Some(value),
+            Err(TryRecvError::Disconnected) => Some(None),
+            Err(TryRecvError::Empty) => None,
+        };
+        if let Some(value) = result {
+            if state.capabilities.len() >= 128 {
+                state.capabilities.clear();
+            }
+            state.capabilities.insert(check.key.clone(), value);
+            state.checking = None;
+        }
+    }
+    if state.checking.is_some() {
+        return;
+    }
+    let Some((key, known)) = capability_selection(app) else { return };
+    if app.agent_chat.settings.capabilities.contains_key(&key) {
+        return;
+    }
+    let Some(http) = app.services.agent_http.clone() else { return };
+    if app.agent_chat.settings.capabilities.len() >= 128 {
+        app.agent_chat.settings.capabilities.clear();
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let query = key.clone();
+    let wake = ctx.clone();
+    if std::thread::Builder::new()
+        .name("model-capabilities".into())
+        .spawn(move || {
+            let _ = tx.send(discover::ollama_tools(&http, &query.0, &query.1, known));
+            wake.request_repaint();
+        })
+        .is_ok()
+    {
+        app.agent_chat.settings.checking = Some(CapabilityCheck { key, rx });
+    } else {
+        app.agent_chat.settings.capabilities.insert(key, None);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn capability_selection(app: &SolveApp) -> Option<((String, String), bool)> {
+    let entry = agents::current(app)?;
+    if entry.kind != Kind::Api {
+        return None;
+    }
+    let model = if app.agent_chat.backend.is_none() || app.agent_chat.model.is_empty() { entry.model } else { app.agent_chat.model.clone() };
+    if model.is_empty() || model.len() > 4096 || entry.base_url.len() > 4096 {
+        return None;
+    }
+    let known = app.preferences.agents.iter().any(|a| a.id == entry.id && (a.ollama || a.name.eq_ignore_ascii_case("Ollama")));
+    Some(((entry.base_url, model), known))
+}
+
+/// The same advisory text is used by the panel and the control channel.
+pub(super) fn model_warning(app: &SolveApp) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((key, _)) = capability_selection(app) {
+        return capability_warning(&key.1, app.agent_chat.settings.capabilities.get(&key).copied().flatten());
+    }
+    let _ = app;
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn capability_warning(model: &str, tools: Option<bool>) -> Option<String> {
+    (tools == Some(false)).then(|| trf("ui.agent_chat_model_no_tools", &[("model", model)]))
+}
+
+/// Open the Add agent dialog.
+pub fn open_add(app: &mut SolveApp) {
+    let preset = agents::OPENAI_PRESETS.first();
+    app.agent_chat.settings.add = Some(AddState {
+        base_url: preset.map(|p| p.base_url.to_string()).unwrap_or_default(),
+        name: preset.map(|p| p.name.to_string()).unwrap_or_default(),
+        request_timeout_s: agents::DEFAULT_REQUEST_TIMEOUT_S,
+        list_again: true,
+        ..Default::default()
+    });
+}
+
+/// Open the agent dialog on an agent you added, filled with what it holds. The key is never read
+/// back: its field stays empty, and saving with it empty keeps the stored key. Returns false when
+/// `id` is not an added agent (found agents have nothing of yours to edit).
+pub fn open_edit(app: &mut SolveApp, id: &str) -> bool {
+    let Some(c) = app.preferences.agents.iter().find(|c| c.id == id) else { return false };
+    let mut s = AddState {
+        name: c.name.clone(),
+        request_timeout_s: c.request_timeout_s.clamp(agents::MIN_REQUEST_TIMEOUT_S, agents::MAX_REQUEST_TIMEOUT_S),
+        reasoning_effort: c.reasoning_effort.clone(),
+        editing: Some(c.id.clone()),
+        list_again: true,
+        ..Default::default()
+    };
+    if c.kind.is_api() {
+        let protocol = if c.kind == Kind::Anthropic { Protocol::Anthropic } else { Protocol::OpenAi };
+        let presets = agents::presets(protocol);
+        // The Ollama preset stays chosen even if its URL was changed, as `ollama` records.
+        let preset = if protocol == Protocol::OpenAi && c.ollama {
+            Some(0)
+        } else {
+            presets.iter().position(|p| agents::normalize_url(p.base_url).ok().as_deref() == Some(c.base_url.as_str()))
+        };
+        s.kind = AddKind::Api;
+        s.protocol = protocol;
+        s.preset = preset.unwrap_or(presets.len());
+        s.base_url = c.base_url.clone();
+        s.model = c.model.clone();
+        s.saved_key = c.key;
+    } else {
+        s.kind = AddKind::Custom;
+        s.command = c.command.clone();
+    }
+    app.agent_chat.settings.add = Some(s);
+    true
+}
+
+/// Take `index` from the protocol's presets, or make the URL empty for a custom endpoint.
+pub(super) fn choose_preset(s: &mut AddState, protocol: Protocol, index: usize) {
+    s.protocol = protocol;
+    s.preset = index;
+    if let Some(preset) = agents::presets(protocol).get(index) {
+        s.base_url = preset.base_url.to_string();
+        s.name = preset.name.to_string();
+    } else {
+        s.base_url.clear();
+    }
+    s.error = None;
+    s.test = None;
+    s.list_again = true;
+}
+
+/// Run a connection test in the background (it starts the agent briefly, or asks the endpoint
+/// for its models).
+#[cfg(not(target_arch = "wasm32"))]
+fn start_test(app: &SolveApp, e: &agents::Entry, secret: impl FnOnce() -> Result<Option<String>, String> + Send + 'static) -> Test {
+    let (tx, rx) = std::sync::mpsc::channel();
+    match e.kind {
+        Kind::Acp => {
+            let argv = e.argv.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(super::acp_client::test_agent(&argv, &working_dir()));
+            });
+        }
+        Kind::Api | Kind::Anthropic if e.id.is_empty() => {
+            // Explicit unsaved dialog test. Its edited URL/key are not a saved connection binding.
+            let Some(http) = app.services.agent_http.clone() else { return Test::Done(Err(TestError::Other(tr("ui.ai_no_http").to_string()))) };
+            let (kind, url, model) = (e.kind, e.base_url.clone(), e.model.clone());
+            std::thread::spawn(move || {
+                let result = secret().and_then(|key| match kind {
+                    Kind::Anthropic => super::api_client::test_anthropic_endpoint(&http, &url, key.as_deref(), &model),
+                    _ => super::api_client::test_endpoint(&http, &url, key.as_deref(), &model),
+                });
+                let _ = tx.send(result.map_err(TestError::Other));
+            });
+        }
+        Kind::Api | Kind::Anthropic => {
+            let (host, binding) = match direct_host_ai(app).and_then(|host| host.bind(&e.id, &e.model).map(|binding| (host, binding))) {
+                Ok(connection) => connection,
+                Err(error) => return Test::Done(Err(TestError::Other(error.message()))),
+            };
+            std::thread::spawn(move || {
+                let _ = tx.send(host.test_connection(&binding).map_err(|error| TestError::Other(error.message())));
+            });
+        }
+    }
+    Test::Running(rx)
+}
+
+/// An endpoint's request timeout field: seconds, 30 s to an hour.
+fn timeout_field(ui: &mut egui::Ui, secs: &mut u64, handle: &str) -> bool {
+    let r = ui_kit::number_field(ui, secs, agents::MIN_REQUEST_TIMEOUT_S..=agents::MAX_REQUEST_TIMEOUT_S, 5.0, "")
+        .backing_on_hover_text(tr("ui.ai_request_timeout_hint"));
+    r.widget_info(|| {
+        let mut info = egui::WidgetInfo::drag_value(ui.is_enabled(), *secs as f64);
+        info.label = Some(tr("prefs.assistant_seconds_aria").to_owned());
+        info
+    });
+    ui.label(tr("prefs.assistant_seconds"));
+    crate::scenario::publish_target(handle, r.rect);
+    r.changed()
+}
+
+/// The free-text reasoning effort field with its hover hint; true when the text changed.
+fn effort_field(ui: &mut egui::Ui, effort: &mut String, handle: &str) -> bool {
+    let response = ui_kit::cell_editor(ui, ui.id().with("ai_reasoning_effort"), effort, tr("ui.ai_reasoning_effort_field_hint"), false)
+        .backing_on_hover_text(tr("ui.ai_reasoning_effort_hint"));
+    crate::scenario::publish_target(handle, response.rect);
+    response.changed()
+}
+
+fn test_line(ui: &mut egui::Ui, test: &Option<&Test>) {
+    match test {
+        Some(Test::Running(_)) => {
+            ui_kit::text(ui, tr("ui.ai_testing"), ui_kit::Text::Note("testing"));
+        }
+        Some(Test::Done(Ok(message))) => {
+            ui_kit::text(ui, message, ui_kit::Text::Report("test_ok", false));
+        }
+        Some(Test::Done(Err(error))) => {
+            ui_kit::text(ui, error.message(), ui_kit::Text::Report("test_error", true));
+        }
+        None => {}
+    }
+}
+
+/// The Assistant page of Settings. Copy stays close to its control; full security details
+/// remain accessible on hover, and high-risk permissions always retain a visible warning.
+pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::settings_page(ui, |ui| {
+        ui_kit::settings_heading(ui, tr("prefs.assistant"), tr("ai.prefs.intro"));
+        ui_kit::settings_section(ui, "assistant_availability", tr("ai.prefs.availability"), |ui| {
+            ui.horizontal(|ui| {
+                let response = ui_kit::checkbox(ui, tr("ui.ai_show_features"), &mut app.preferences.ai_features)
+                    .backing_on_hover_text(tr("ui.ai_show_features_note"));
+                crate::scenario::publish_handle("prefs:ai_features", response.rect.center());
+                ui_kit::help_icon(ui, tr("ui.ai_show_features_note"));
+            });
+            ui.add_enabled_ui(app.preferences.ai_features && !cfg!(target_arch = "wasm32"), |ui| {
+                let response = ui_kit::checkbox(ui, tr("ui.ai_toolbar_button"), &mut app.preferences.ai_toolbar_button)
+                    .backing_on_hover_text(tr("ui.ai_toolbar_button_note"));
+                crate::scenario::publish_handle("prefs:ai_toolbar_button", response.rect.center());
+            });
+            if cfg!(target_arch = "wasm32") {
+                ui_kit::text(ui, tr("ui.agent_chat_desktop_only"), ui_kit::Text::Hint("desktop"));
+            }
+        });
+        ui.add_enabled_ui(app.preferences.ai_features && !cfg!(target_arch = "wasm32"), |ui| {
+            permissions_section(app, ui);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let browsing = !crate::ui_kit::settings_search::querying(ui) || app.prefs_window.section == crate::prefs::PAGE_ASSISTANT;
+                if app.preferences.ai_features && browsing && app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
+                    refresh(app, &ui.ctx().clone());
+                }
+                agents_section(app, ui);
+            }
+            instructions_section(app, ui);
+            panel_section(app, ui);
+            connecting_section(app, ui);
+        });
+        ui.add_enabled_ui(app.preferences.ai_features, |ui| pointer_section(app, ui));
+    });
+}
+
+/// The execution choice is separate from the agent/model pickers: it decides who answers, not
+/// which connection or key is used. Direct keeps the behaviour of older preferences. It stays
+/// inside the Connecting section so the page's section rhythm does not move for it.
+pub(crate) fn runtime_command_missing(app: &SolveApp) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        !crate::agent_chat::packaged_runtime::installed() && app.preferences.mastra_runtime_command.trim().is_empty()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        app.preferences.mastra_runtime_command.trim().is_empty()
+    }
+}
+
+fn execution_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui.separator();
+    ui_kit::text(ui, tr("ui.mastra_execution"), ui_kit::Text::Hint("execution_heading"));
+    let mut selected = Execution::ALL.iter().position(|choice| *choice == app.preferences.chat_execution).unwrap_or(0);
+    let options = [tr("ui.mastra_execution_direct"), tr("ui.mastra_execution_workflow")];
+    if ui_kit::segmented(ui, &mut selected, &options, ui_kit::Segments { intrinsic: true, ..Default::default() })
+        && let Some(choice) = Execution::ALL.get(selected)
+    {
+        app.preferences.chat_execution = *choice;
+    }
+    ui_kit::text(ui, tr("ui.mastra_execution_note"), ui_kit::Text::Hint("execution"));
+    if app.preferences.chat_execution == Execution::Mastra {
+        ui_kit::text_row(ui, tr("ui.mastra_workflow"), &mut app.preferences.mastra_workflow_id, "modeling");
+        ui_kit::text_row(ui, tr("ui.mastra_runtime_command"), &mut app.preferences.mastra_runtime_command, tr("ui.mastra_runtime_hint"));
+        if runtime_command_missing(app) {
+            ui_kit::text(ui, tr("ui.mastra_runtime_missing"), ui_kit::Text::Hint("runtime"));
+        }
+    }
+}
+
+fn connecting_section(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::settings_section(ui, "assistant_connecting", tr("prefs.assistant_connecting"), |ui| {
+        for (label, help, handle, value) in [
+            ("ai.prefs.allow_control", "ai.prefs.allow_control_note", "agent_control", &mut app.preferences.agent_control),
+            ("ai.prefs.connect_apps", "ai.prefs.connect_apps_note", "connect_ai_apps", &mut app.preferences.connect_ai_apps),
+            ("ai.prefs.background_commands", "ui.agent_off_thread_note", "agent_off_thread", &mut app.preferences.agent_off_thread),
+            ("ai.prefs.connect_at_start", "ai.prefs.connect_at_start_note", "agent_connect_at_start", &mut app.preferences.agent_connect_at_start),
+            ("ai.prefs.open_at_start", "ai.prefs.open_at_start_note", "agent_chat_open_at_start", &mut app.preferences.agent_chat_open_at_start),
+            ("ai.prefs.direct_streaming", "ai.prefs.direct_streaming_note", "agent_direct_streaming", &mut app.preferences.agent_direct_streaming),
+        ] {
+            ui.horizontal(|ui| {
+                let response = ui_kit::checkbox(ui, tr(label), value).backing_on_hover_text(tr(help));
+                crate::scenario::publish_handle(&format!("prefs:{handle}"), response.rect.center());
+                ui_kit::help_icon(ui, tr(help));
+            });
+        }
+        execution_controls(app, ui);
+    });
+}
+
+/// Custom instructions (#8220): text every new chat's system note carries.
+fn instructions_section(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::settings_section(ui, "instructions", tr("ai.prefs.instructions"), |ui| {
+        let id = egui::Id::new("prefs_agent_instructions");
+        let text = &mut app.preferences.agent_instructions;
+        let response = ui_kit::text_area(ui, tr("ai.prefs.instructions"), id, text, 6, acp::INSTRUCTIONS_LIMIT);
+        if response.has_focus() {
+            // Typed text belongs to the field, not to Preferences search.
+            crate::ui_kit::settings_search::note_key_sink(ui.ctx());
+        }
+        crate::scenario::publish_target("prefs:agent_instructions", response.rect);
+        ui_kit::text(ui, tr("ai.prefs.instructions_note"), ui_kit::Text::Hint("instructions"));
+    });
+}
+
+fn permissions_section(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::settings_section(ui, "permissions", tr("ui.ai_permissions"), |ui| {
+        let mut selected = Mode::ALL.iter().position(|mode| *mode == app.preferences.ai_permissions).unwrap_or(0);
+        let all_help = format!("{}\n\n{}", tr("prefs.assistant_use_care"), tr("ui.ai_mode_all_note"));
+        let choices = [
+            ui_kit::SettingsChoice {
+                icon: None,
+                key: "prefs:ai_mode:ask",
+                title: tr("ai.prefs.permission_ask"),
+                summary: tr("ai.prefs.permission_ask_summary"),
+                detail: tr("ui.ai_mode_ask_note"),
+            },
+            ui_kit::SettingsChoice {
+                icon: None,
+                key: "prefs:ai_mode:edits",
+                title: tr("ai.prefs.permission_edits"),
+                summary: tr("ai.prefs.permission_edits_summary"),
+                detail: tr("ui.ai_mode_edits_note"),
+            },
+            ui_kit::SettingsChoice {
+                icon: Some("warning"),
+                key: "prefs:ai_mode:all",
+                title: tr("ai.prefs.permission_all"),
+                summary: tr("ai.prefs.permission_all_summary"),
+                detail: &all_help,
+            },
+        ];
+        if ui_kit::settings_choices(ui, &choices, &mut selected)
+            && let Some(mode) = Mode::ALL.get(selected)
+        {
+            app.preferences.ai_permissions = *mode;
+        }
+        if app.preferences.ai_permissions == Mode::All {
+            ui_kit::text(ui, tr("ui.ai_mode_all_warning"), ui_kit::Text::Report("permissions_warning", true));
+        }
+        ui_kit::text(ui, tr("ui.ai_modes_scope"), ui_kit::Text::Hint("permissions_scope"));
+        let remembered: Vec<_> = app
+            .preferences
+            .agent_always_allow
+            .iter()
+            .filter(|(_, tools)| !tools.is_empty())
+            .map(|(agent, tools)| (agent.clone(), tools.clone()))
+            .collect();
+        ui_kit::section_count(ui, "always_allowed", tr("ui.ai_always_allowed"), false, Some(remembered.len()), |ui| {
+            if remembered.is_empty() {
+                ui_kit::text(ui, tr("ai.prefs.no_saved_approvals"), ui_kit::Text::Hint("none"))
+                    .backing_on_hover_text(tr("ui.ai_always_allowed_none"));
+            }
+            let names: std::collections::HashMap<_, _> = agents::entries(app).into_iter().map(|entry| (entry.id, entry.name)).collect();
+            for (agent, tools) in remembered {
+                let t = crate::theme::Tokens::get();
+                ui_kit::settings_block(ui, names.get(&agent).unwrap_or(&agent), t.space_24 * 6.0 + t.space_6, |ui| {
+                    ui.horizontal(|ui| {
+                        let reset = ui_kit::button(ui, tr("ui.ai_reset"), ui_kit::Button::Small);
+                        crate::scenario::publish_target(&format!("prefs:ai_approvals_reset:{agent}"), reset.rect);
+                        if reset.clicked() {
+                            app.preferences.agent_always_allow.remove(&agent);
+                        }
+                        ui_kit::settings_short_note(ui, &tools.join(", "));
+                    });
+                });
+            }
+        });
+    });
+}
+
+fn panel_section(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let t = crate::theme::Tokens::get();
+    ui_kit::settings_section(ui, "panel", tr("ui.ai_panel"), |ui| {
+        let label_width = [tr("ui.agent_chat_side"), tr("ui.agent_chat_turn_limit")]
+            .iter()
+            .map(|label| ui_kit::ContentWidth::label(ui, label) + t.space_4)
+            .fold(0.0, f32::max);
+        ui_kit::settings_form(ui, label_width, |ui| {
+            ui_kit::row(ui, tr("ui.agent_chat_side"), |ui| {
+                // The Assistant stays in the app's window: there is no window of its own to pick.
+                let p = &mut app.preferences;
+                let mut selected = usize::from(p.agent_chat_side != "left");
+                let options = [tr("ui.agent_chat_left"), tr("ui.agent_chat_right")];
+                if ui_kit::segmented(ui, &mut selected, &options, ui_kit::Segments { intrinsic: true, ..Default::default() }) {
+                    p.agent_chat_side = if selected == 0 { "left" } else { "right" }.into();
+                }
+            });
+            // What is selected goes with each message unless this is off (the composer's own
+            // Attach selection is this same setting).
+            ui_kit::row(ui, "", |ui| {
+                let response = ui_kit::checkbox(ui, tr("ui.agent_chat_attach_selection"), &mut app.preferences.agent_chat_attach_selection)
+                    .backing_on_hover_text(tr("ui.agent_chat_attach_selection_tip"));
+                crate::scenario::publish_handle("prefs:agent_chat_attach_selection", response.rect.center());
+                ui_kit::help_icon(ui, tr("ui.agent_chat_attach_selection_tip"));
+            });
+            ui_kit::row(ui, tr("ui.agent_chat_turn_limit"), |ui| {
+                let p = &mut app.preferences;
+                let previous = usize::from(p.agent_chat_turn_limit != 0);
+                let mut limit = previous;
+                let options = [tr("ui.agent_chat_turn_unlimited"), tr("prefs.assistant_limited")];
+                crate::ui_kit::settings_search::note_current(ui, &options.join(" "));
+                let dropdown_width = ui_kit::ContentWidth::dropdown(ui, &options);
+                let response =
+                    ui_kit::settings_control_width(ui, dropdown_width, |ui| ui_kit::dropdown(ui, "assistant_turn_limit", &mut limit, &options));
+                let query = crate::ui_kit::settings_search::query(ui);
+                if let Some(option) = options
+                    .iter()
+                    .find(|option| option.to_lowercase() == query)
+                    .or_else(|| options.iter().find(|option| crate::ui_kit::settings_search::texts_hit(ui, &[*option])))
+                {
+                    crate::ui_kit::settings_search::remember(ui, option, response.rect);
+                }
+                for option in options {
+                    crate::ui_kit::settings_search::follow(ui, option, response.rect);
+                }
+                crate::scenario::publish_target("prefs:agent_chat_turn_limit:mode", response.rect);
+                if limit != previous {
+                    p.agent_chat_turn_limit = if limit == 0 { 0 } else { gate::SEEDED_TURN_LIMIT };
+                }
+                if limit != 0 {
+                    let response =
+                        ui_kit::settings_number(ui, &mut p.agent_chat_turn_limit, 1..=200, 1.0).backing_on_hover_text(tr("ai.prefs.turn_limit_hint"));
+                    response.widget_info(|| {
+                        let mut info = egui::WidgetInfo::drag_value(ui.is_enabled(), f64::from(p.agent_chat_turn_limit));
+                        info.label = Some(tr("prefs.assistant_limit").to_owned());
+                        info
+                    });
+                    crate::scenario::publish_target("prefs:agent_chat_turn_limit:value", response.rect);
+                }
+            });
+        });
+        ui_kit::text(ui, tr("ai.prefs.privacy_note"), ui_kit::Text::Hint("privacy_note"));
+    });
+}
+
+fn pointer_section(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::settings_section(ui, "agent_pointer", tr("ui.agent_cursor"), |ui| {
+        ui_kit::settings_pair(
+            ui,
+            |ui| {
+                let response = ui_kit::checkbox(ui, tr("ai.prefs.show_pointer"), &mut app.ui.agent_cursor.show)
+                    .backing_on_hover_text(crate::i18n::tr_label("Show the pointer an AI agent moves (#35)"));
+                crate::scenario::publish_target("prefs:agent_pointer_show", response.rect);
+                ui.add_enabled_ui(app.ui.agent_cursor.show, |ui| {
+                    let speed_label_width = ui_kit::ContentWidth::label(ui, tr("ai.prefs.pointer_speed")) + crate::theme::Tokens::get().space_4;
+                    ui_kit::settings_form(ui, speed_label_width, |ui| {
+                        ui_kit::row(ui, tr("ai.prefs.pointer_speed"), |ui| {
+                            let name = tr("prefs.assistant_pointer_speed");
+                            crate::ui_kit::settings_search::note_current(ui, name);
+                            let response =
+                                ui_kit::named_control(ui, name, |ui| crate::agent_cursor::speed_slider(ui, &mut app.ui.agent_cursor.speed));
+                            crate::scenario::publish_target("prefs:agent_pointer_speed", response.rect);
+                            let value = match app.ui.agent_cursor.speed {
+                                crate::agent_cursor::Speed::Times(value) => value,
+                                crate::agent_cursor::Speed::Instant => 5.5,
+                            };
+                            response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), value, name));
+                            // The visible row owns Speed and its legacy Motion speed alias. The
+                            // native editor's name owns queries that only match Pointer speed.
+                            if !crate::ui_kit::settings_search::texts_hit(ui, &[tr("ai.prefs.pointer_speed")]) {
+                                crate::ui_kit::settings_search::remember(ui, name, response.rect);
+                            }
+                            for label in [tr("ai.prefs.pointer_speed"), name] {
+                                crate::ui_kit::settings_search::follow(ui, label, response.rect);
+                            }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        let response = ui_kit::checkbox(ui, tr("ai.prefs.follow_camera"), &mut app.ui.agent_cursor.follow_camera)
+                            .backing_on_hover_text(tr("prefs.assistant_follow_help"));
+                        crate::scenario::publish_target("prefs:agent_pointer_follow", response.rect);
+                        ui_kit::help_icon(ui, tr("prefs.assistant_follow_help"));
+                    });
+                });
+                (app.ui.agent_cursor.show, app.ui.agent_cursor.speed.label(), app.ui.agent_cursor.follow_camera)
+            },
+            |ui, (visible, speed, follow)| ui_kit::settings_pointer_preview(ui, visible, crate::i18n::tr_label(&speed), follow),
+        );
+    });
+}
+
+/// The agents: found and added, with Test, Default, a permission override and Remove.
+#[cfg(not(target_arch = "wasm32"))]
+fn agents_section(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let all = agents::entries(app);
+    let d = &app.preferences.agent_default;
+    let default = if all.iter().any(|e| &e.id == d) { Some(d.clone()) } else { all.first().map(|e| e.id.clone()) };
+    let mut remove: Option<String> = None;
+    let mut test: Option<agents::Entry> = None;
+    let mut edit: Option<String> = None;
+    let mut retimed: Option<(String, u64)> = None;
+    let mut reeffort: Option<(String, String)> = None;
+    let mut picked_model: Option<(String, ui_kit::Picked)> = None;
+    let t = crate::theme::Tokens::get();
+    ui_kit::settings_section_count(ui, "agents", tr("ui.ai_agents"), Some(&all.len().to_string()), |ui| {
+        if app.agent_chat.detecting.is_some() {
+            ui_kit::text(ui, tr("ui.agent_chat_detecting"), ui_kit::Text::Hint("detecting"));
+        } else if all.is_empty() {
+            if std::env::var_os("FLATPAK_ID").is_some() {
+                super::panel::no_agents(ui);
+            } else {
+                ui_kit::empty_box(ui, "assistant_agents", tr("ai.prefs.no_agents"));
+            }
+        }
+        for entry in &all {
+            ui.push_id(&entry.id, |ui| {
+                let detail = entry.detail();
+                let gate = crate::ui_kit::settings_search::block_gate(ui, &entry.name, Some(&format!("{} {detail}", entry.id)));
+                let before = crate::ui_kit::settings_search::hits(ui);
+                let mut paint = |ui: &mut egui::Ui| {
+                    let card = ui_kit::settings_card(ui, |ui| {
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            crate::ui_kit::settings_search::visible(ui, &[&entry.name, &entry.id, &detail]);
+                            ui.label(egui::RichText::new(&entry.name).strong().size(t.font_label).color(t.form_ink));
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(ui.available_width(), t.control_height),
+                                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                                |ui| {
+                                    let is_default = default.as_deref() == Some(entry.id.as_str());
+                                    let choice = ui_kit::button(
+                                        ui,
+                                        tr(if is_default { "ui.ai_default" } else { "ai.prefs.make_default" }),
+                                        if is_default { ui_kit::Button::SmallSelected } else { ui_kit::Button::Small },
+                                    );
+                                    crate::scenario::publish_target(&format!("dialog:list:{}", entry.id), choice.rect);
+                                    if choice.clicked() {
+                                        app.preferences.agent_default = entry.id.clone();
+                                    }
+                                    let test_button = ui_kit::button(ui, tr("ui.ai_test"), ui_kit::Button::Small);
+                                    crate::scenario::publish_handle(&format!("prefs:ai_test:{}", entry.id), test_button.rect.center());
+                                    let tip = match entry.kind {
+                                        Kind::Acp => "ui.ai_test_acp_tip",
+                                        Kind::Api => "ui.ai_test_api_tip",
+                                        Kind::Anthropic => "ui.ai_test_anthropic_tip",
+                                    };
+                                    if test_button.backing_on_hover_text(tr(tip)).clicked() {
+                                        test = Some(entry.clone());
+                                    }
+                                    if !entry.found {
+                                        let edit_button = ui_kit::button(ui, tr("ui.ai_edit"), ui_kit::Button::Small);
+                                        crate::scenario::publish_handle(&format!("prefs:ai_edit:{}", entry.id), edit_button.rect.center());
+                                        if edit_button.backing_on_hover_text(tr("ui.ai_edit_tip")).clicked() {
+                                            edit = Some(entry.id.clone());
+                                        }
+                                    }
+                                    if !entry.found {
+                                        let button = ui_kit::button(ui, tr("ui.ai_remove"), ui_kit::Button::Ghost);
+                                        crate::scenario::publish_target(&format!("prefs:ai_remove:{}", entry.id), button.rect);
+                                        if button.clicked() {
+                                            remove = Some(entry.id.clone());
+                                        }
+                                    }
+                                    match entry.login {
+                                        "login_found" => ui_kit::settings_badge(ui, tr("ui.agent_chat_login_found"), false),
+                                        "signed_in" => ui_kit::settings_badge(ui, tr("ui.agent_chat_signed_in"), false),
+                                        "key" => ui_kit::settings_badge(ui, tr("ui.agent_chat_key_in_env"), false),
+                                        "signed_out" => ui_kit::settings_badge(ui, tr("ui.agent_chat_not_signed_in"), true),
+                                        _ => {}
+                                    }
+                                    if !entry.found {
+                                        ui_kit::settings_badge(ui, tr("ui.ai_added"), false);
+                                    }
+                                },
+                            );
+                            ui_kit::settings_short_note(ui, &detail).backing_on_hover_text(&entry.id);
+                            // Wide enough for an endpoint's "Request timeout" or "Reasoning effort" too,
+                            // so all rows line up.
+                            let label_w = [tr("ui.ai_permissions"), tr("ui.ai_request_timeout"), tr("ui.ai_reasoning_effort")]
+                                .iter()
+                                .map(|label| ui_kit::ContentWidth::label(ui, label) + t.space_4)
+                                .fold(0.0, f32::max);
+                            ui_kit::settings_form(ui, label_w, |ui| {
+                                ui_kit::row(ui, tr("ui.ai_permissions"), |ui| {
+                                    let current = app.preferences.agent_permissions.get(&entry.id).copied();
+                                    let shown = current.map_or_else(|| tr("ui.ai_mode_global").to_owned(), |mode| mode.label().to_owned());
+                                    let mut pick: Option<Option<Mode>> = None;
+                                    let options: Vec<_> = std::iter::once(tr("ui.ai_mode_global")).chain(Mode::ALL.map(Mode::label)).collect();
+                                    crate::ui_kit::settings_search::note_current(ui, &options.join(" "));
+                                    let response = ui_kit::settings_control_width(ui, t.space_24 * 9.0 + t.space_4, |ui| {
+                                        ui_kit::dropdown_menu(ui, ("sc_ai_mode", &entry.id), &shown, |ui| {
+                                            if ui_kit::list_picker(ui, "global", tr("ui.ai_mode_global"), current.is_none()).clicked() {
+                                                pick = Some(None);
+                                            }
+                                            for mode in Mode::ALL {
+                                                if ui_kit::list_picker(ui, mode.id(), mode.label(), current == Some(mode)).clicked() {
+                                                    pick = Some(Some(mode));
+                                                }
+                                            }
+                                        })
+                                    });
+                                    let query = crate::ui_kit::settings_search::query(ui);
+                                    if let Some(option) = options
+                                        .iter()
+                                        .find(|option| option.to_lowercase() == query)
+                                        .or_else(|| options.iter().find(|option| crate::ui_kit::settings_search::texts_hit(ui, &[*option])))
+                                    {
+                                        crate::ui_kit::settings_search::remember(ui, option, response.rect);
+                                    }
+                                    for option in options {
+                                        crate::ui_kit::settings_search::follow(ui, option, response.rect);
+                                    }
+                                    match pick {
+                                        Some(Some(mode)) => {
+                                            app.preferences.agent_permissions.insert(entry.id.clone(), mode);
+                                        }
+                                        Some(None) => {
+                                            app.preferences.agent_permissions.remove(&entry.id);
+                                        }
+                                        None => {}
+                                    }
+                                });
+                            });
+                            if entry.kind == Kind::Api
+                                && let Some(c) = app.preferences.agents.iter_mut().find(|c| c.id == entry.id)
+                            {
+                                ui_kit::settings_form(ui, label_w, |ui| {
+                                    ui_kit::row(ui, tr("ui.ai_request_timeout"), |ui| {
+                                        let mut secs = entry.request_timeout_s;
+                                        if timeout_field(ui, &mut secs, &format!("prefs:ai_timeout:{}", entry.id)) {
+                                            c.request_timeout_s = secs;
+                                            retimed = Some((entry.id.clone(), secs));
+                                        }
+                                    });
+                                    ui_kit::row(ui, tr("ui.ai_reasoning_effort"), |ui| {
+                                        let mut effort = c.reasoning_effort.clone();
+                                        if effort_field(ui, &mut effort, &format!("prefs:ai_reasoning:{}", entry.id)) {
+                                            let effort = agents::reasoning_effort(&effort);
+                                            c.reasoning_effort = effort.clone();
+                                            reeffort = Some((entry.id.clone(), effort));
+                                        }
+                                    });
+                                });
+                            }
+                            if app.preferences.agent_permissions.get(&entry.id) == Some(&Mode::All) {
+                                ui_kit::text(ui, tr("ai.prefs.override_all_warning"), ui_kit::Text::Report("agent_permissions_warning", true))
+                                    .backing_on_hover_text(tr("ui.ai_mode_all_warning"));
+                            }
+                            test_line(ui, &app.agent_chat.settings.tests.get(&entry.id));
+                        });
+                        if let Some(protocol) = entry.kind.protocol() {
+                            ui_kit::row(ui, tr("ui.ai_model"), |ui| {
+                                let chat = &mut app.agent_chat;
+                                let running = chat.running_id == entry.id && chat.backend.is_some();
+                                let key = listing_key(protocol, &entry.base_url, entry.key);
+                                let (models, note) = if running {
+                                    (chat.models.as_slice(), chat.models_note.clone())
+                                } else if let Some(models) = chat.models_cache.get(&entry.base_url).filter(|models| !models.is_empty()) {
+                                    (models.as_slice(), None)
+                                } else {
+                                    listed_for(&chat.settings.endpoint_models, key.as_ref())
+                                };
+                                let listed = !models.is_empty();
+                                let rows = super::model_rows(models);
+                                let choices = model_choices(models, &rows);
+                                let id = format!("sc_ai_model:{}", entry.id);
+                                let handles = format!("prefs:ai_model:{}", entry.id);
+                                let picker = ui_kit::search_picker(
+                                    ui,
+                                    ui_kit::SearchPicker {
+                                        id: &id,
+                                        handles: &handles,
+                                        current: &entry.model,
+                                        current_value: &entry.model,
+                                        hint: tr("ui.agent_chat_model_search"),
+                                        choices: &choices,
+                                        custom: true,
+                                        note: note.as_deref(),
+                                        open_group: None,
+                                        enabled: true,
+                                    },
+                                );
+                                // Nobody is asked until the picker opens: not for looking at this page.
+                                if picker.response.clicked()
+                                    && !running
+                                    && !listed
+                                    && let Some(key) = key
+                                {
+                                    // Asked again: what failed may work now.
+                                    if listing_wants_retry(chat.settings.endpoint_models.get(&key)) {
+                                        chat.settings.endpoint_models.remove(&key);
+                                    }
+                                    chat.settings.card_listing = Some((key, entry.id.clone()));
+                                }
+                                if let Some(pick) = picker.inner {
+                                    picked_model = Some((entry.id.clone(), pick));
+                                }
+                            });
+                        }
+                    });
+                    crate::scenario::publish_rect(&format!("prefs:ai_card:{}", entry.id), card.response.rect);
+                    let metadata = [&entry.name, &entry.id, &detail];
+                    if let Some(text) = metadata.iter().find(|text| crate::ui_kit::settings_search::texts_hit(ui, &[*text])) {
+                        crate::ui_kit::settings_search::remember(ui, text, card.response.rect);
+                    }
+                    for text in metadata {
+                        crate::ui_kit::settings_search::follow(ui, text, card.response.rect);
+                    }
+                };
+                let show = gate.as_ref().is_none_or(|gate| gate.show);
+                if show {
+                    paint(ui);
+                } else {
+                    crate::ui_kit::settings_search::run_hidden(ui, &entry.id, |ui| {
+                        paint(ui);
+                    });
+                }
+                if let Some(gate) = gate {
+                    crate::ui_kit::settings_search::block_finish(ui, &gate, show, before);
+                }
+            });
+        }
+        ui.horizontal_wrapped(|ui| {
+            let button = ui_kit::icon_label_button(ui, tr("ui.ai_add_agent"), "plus", true, false);
+            crate::scenario::publish_handle("prefs:ai_add", button.rect.center());
+            if button.clicked() {
+                open_add(app);
+            }
+            if ui_kit::button(ui, tr("ui.agent_chat_refresh"), ui_kit::Button::Enabled(app.agent_chat.detecting.is_none())).clicked() {
+                refresh(app, &ui.ctx().clone());
+            }
+        });
+    });
+    if let Some(e) = test {
+        let started = start_test(app, &e, || Ok(None));
+        app.agent_chat.settings.tests.insert(e.id.clone(), started);
+    }
+    if let Some(id) = edit {
+        open_edit(app, &id);
+    }
+    if let Some((id, pick)) = picked_model {
+        if app.agent_chat.running_id == id && app.agent_chat.backend.is_some() {
+            match pick {
+                ui_kit::Picked::Listed(model) => set_model(app, &model),
+                ui_kit::Picked::Custom(model) => {
+                    set_custom_model(app, &model);
+                }
+            }
+        } else {
+            let (ui_kit::Picked::Listed(model) | ui_kit::Picked::Custom(model)) = pick;
+            let model = model.trim();
+            if model_id_valid(model) {
+                if let Some(c) = app.preferences.agents.iter_mut().find(|c| c.id == id) {
+                    c.model = model.to_string();
+                }
+                app.preferences.agent_models.insert(id, model.to_string());
+            }
+        }
+    }
+    // The running conversation uses a new timeout from its next request on.
+    if let Some((id, secs)) = retimed
+        && app.agent_chat.running_id == id
+        && let Some(b) = app.agent_chat.backend.as_mut()
+    {
+        b.set_request_timeout(secs);
+    }
+    // A new reasoning effort likewise takes effect from the next request on.
+    if let Some((id, effort)) = reeffort
+        && app.agent_chat.running_id == id
+        && let Some(b) = app.agent_chat.backend.as_mut()
+    {
+        b.set_reasoning_effort(&effort);
+    }
+    if let Some(id) = remove {
+        app.agent_chat.login_results.remove(&id);
+        app.agent_chat.settings.tests.remove(&id);
+        app.preferences.agents.retain(|a| a.id != id);
+        app.preferences.agent_permissions.remove(&id);
+        app.preferences.agent_always_allow.remove(&id);
+        if let Some(s) = &app.services.secrets
+            && s.delete(&id).is_err()
+        {
+            app.agent_chat.notice(tr("ui.host_ai_key_unavailable"), true);
+        }
+        if app.agent_chat.agent_id.as_deref() == Some(id.as_str()) {
+            app.agent_chat.agent_id = None;
+        }
+        // A removed agent is not missed at the next start: the default connects instead.
+        if app.preferences.agent_last == id {
+            app.preferences.agent_last.clear();
+        }
+    }
+    if app.agent_chat.settings.tests.values().any(|t| matches!(t, Test::Running(_))) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Err(error) = sync_ai_connections(app) {
+        ai_sync_failed(app, error);
+    }
+}
+
+/// The Add agent dialog (drawn every frame while it is open).
+pub fn dialog(app: &mut SolveApp, ctx: &egui::Context) {
+    if app.agent_chat.settings.add.is_none() {
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let found: Vec<agents::Entry> = agents::entries(app).into_iter().filter(|e| e.found).collect();
+    #[cfg(target_arch = "wasm32")]
+    let found: Vec<agents::Entry> = Vec::new();
+    let has_keychain = app.services.secrets.is_some();
+    let mut open = true;
+    let mut add = false;
+    let mut test = false;
+    // Editing keeps the agent's kind: the kind switch is for adding only.
+    let editing = app.agent_chat.settings.add.as_ref().is_some_and(|s| s.editing.is_some());
+    let (title, ok) = if editing { ("ui.ai_edit_agent_title", "ui.ai_save") } else { ("ui.ai_add_agent_title", "ui.ai_add") };
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_ai_add"), "settings", tr(title))
+        .cards(2.0)
+        .fields()
+        .actions(tr(ok), "Cancel", None)
+        .show(ctx, true, |ui| {
+            let Some(s) = app.agent_chat.settings.add.as_mut() else { return };
+            if let Some(test) = s.test.as_mut() {
+                let _ = test.poll();
+            }
+            let kinds = [(AddKind::Installed, "ui.ai_add_installed"), (AddKind::Custom, "ui.ai_add_custom"), (AddKind::Api, "ui.ai_add_endpoint")];
+            if !editing {
+                ui_kit::row(ui, tr("ui.ai_kind"), |ui| {
+                    let mut selected = kinds.iter().position(|(k, _)| *k == s.kind).unwrap_or(0);
+                    let labels = kinds.map(|(_, key)| tr(key));
+                    if ui_kit::segmented(ui, &mut selected, &labels, ui_kit::Segments { compact: true, ..Default::default() })
+                        && let Some((kind, _)) = kinds.get(selected)
+                    {
+                        s.kind = *kind;
+                        s.error = None;
+                        s.test = None;
+                    }
+                    for (_, key) in kinds {
+                        if let Some(at) = crate::scenario::handle_at(&format!("dialog:{}:{}", tr("ui.ai_kind"), tr(key))) {
+                            crate::scenario::publish_handle(&format!("ai_add:{key}"), at);
+                        }
+                    }
+                });
+            }
+            match s.kind {
+                AddKind::Installed => {
+                    ui_kit::row(ui, tr("ui.agent_chat_pick"), |ui| {
+                        if found.is_empty() {
+                            ui_kit::text(ui, tr("ui.agent_chat_none_found_short"), ui_kit::Text::Inline);
+                        } else {
+                            let sel = found.get(s.installed).map(|e| e.name.clone()).unwrap_or_default();
+                            ui_kit::dropdown_menu(ui, "sc_ai_add_installed", &sel, |ui| {
+                                for (i, e) in found.iter().enumerate() {
+                                    if ui_kit::list_picker(ui, &e.id, &format!("{}  {}", e.name, e.detail()), s.installed == i).clicked() {
+                                        s.installed = i;
+                                        s.command = e.argv.iter().map(|a| super::panel::quote(a)).collect::<Vec<_>>().join(" ");
+                                        s.name = format!("{} ({})", e.name, tr("ui.ai_copy_suffix"));
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    if s.command.is_empty()
+                        && let Some(e) = found.get(s.installed)
+                    {
+                        s.command = e.argv.iter().map(|a| super::panel::quote(a)).collect::<Vec<_>>().join(" ");
+                        s.name = format!("{} ({})", e.name, tr("ui.ai_copy_suffix"));
+                    }
+                    ui_kit::row(ui, tr("ui.ai_name"), |ui| {
+                        ui_kit::text_field(ui, &mut s.name, "");
+                    });
+                    ui_kit::row(ui, tr("ui.agent_chat_command"), |ui| {
+                        ui_kit::text_field(ui, &mut s.command, "");
+                    });
+                    ui_kit::text(ui, tr("ui.ai_add_installed_note"), ui_kit::Text::Note("installed"));
+                }
+                AddKind::Custom => {
+                    ui_kit::row(ui, tr("ui.ai_name"), |ui| {
+                        ui_kit::text_field(ui, &mut s.name, tr("ui.ai_name_hint"));
+                    });
+                    ui_kit::row(ui, tr("ui.agent_chat_command"), |ui| {
+                        ui_kit::text_field(ui, &mut s.command, tr("ui.ai_command_hint"));
+                    });
+                    ui_kit::text(ui, tr("ui.agent_chat_custom_hint"), ui_kit::Text::Note("custom"));
+                }
+                AddKind::Api => {
+                    ui_kit::row(ui, tr("ui.ai_protocol"), |ui| {
+                        let mut selected = if s.protocol == Protocol::Anthropic { 1 } else { 0 };
+                        let labels = [tr("ui.ai_add_api"), tr("ui.ai_add_anthropic")];
+                        if ui_kit::segmented(ui, &mut selected, &labels, ui_kit::Segments { compact: true, ..Default::default() })
+                            && let Some(protocol) = [Protocol::OpenAi, Protocol::Anthropic].get(selected)
+                        {
+                            choose_preset(s, *protocol, 0);
+                        }
+                        for (name, key) in [("openai", "ui.ai_add_api"), ("anthropic", "ui.ai_add_anthropic")] {
+                            if let Some(at) = crate::scenario::handle_at(&format!("dialog:{}:{}", tr("ui.ai_protocol"), tr(key))) {
+                                crate::scenario::publish_handle(&format!("ai_add:protocol:{name}"), at);
+                            }
+                        }
+                    });
+                    let choices: Vec<&str> =
+                        agents::presets(s.protocol).iter().map(|p| p.name).chain(std::iter::once(tr("ui.ai_custom_url"))).collect();
+                    ui_kit::row(ui, tr("ui.ai_preset"), |ui| {
+                        let picker = ui_kit::dropdown_menu(ui, "sc_ai_add_preset", choices.get(s.preset).copied().unwrap_or_default(), |ui| {
+                            for (index, preset) in choices.iter().enumerate() {
+                                let response = ui_kit::list_picker(ui, preset, preset, s.preset == index);
+                                crate::scenario::publish_handle(&format!("ai_add:preset:{preset}"), response.rect.center());
+                                if response.clicked() {
+                                    choose_preset(s, s.protocol, index);
+                                }
+                            }
+                        });
+                        crate::scenario::publish_handle("ai_add:preset", picker.rect.center());
+                    });
+                    ui_kit::row(ui, tr("ui.ai_name"), |ui| {
+                        ui_kit::text_field(ui, &mut s.name, "");
+                    });
+                    ui_kit::row(ui, tr("ui.ai_base_url"), |ui| {
+                        s.list_again |=
+                            ui_kit::cell_editor(ui, egui::Id::new("sc_ai_add_url"), &mut s.base_url, tr("ui.ai_url_hint"), false).lost_focus();
+                    });
+                    ui_kit::row(ui, tr("ui.ai_model"), |ui| {
+                        let (models, note) = listed_for(&app.agent_chat.settings.endpoint_models, s.listing.as_ref());
+                        let rows = super::model_rows(models);
+                        let choices = model_choices(models, &rows);
+                        let current = if s.model.is_empty() { tr("ui.agent_chat_choose_model") } else { s.model.as_str() };
+                        let picker = ui_kit::search_picker(
+                            ui,
+                            ui_kit::SearchPicker {
+                                id: "sc_ai_add_model",
+                                handles: "ai_add:model",
+                                current,
+                                current_value: &s.model,
+                                hint: tr("ui.agent_chat_model_search"),
+                                choices: &choices,
+                                custom: true,
+                                note: note.as_deref(),
+                                open_group: None,
+                                enabled: true,
+                            },
+                        );
+                        s.list_again |= picker.response.clicked();
+                        if let Some(ui_kit::Picked::Listed(model) | ui_kit::Picked::Custom(model)) = picker.inner {
+                            s.model = model;
+                            s.error = None;
+                        }
+                    });
+                    ui_kit::row(ui, tr("ui.ai_request_timeout"), |ui| {
+                        timeout_field(ui, &mut s.request_timeout_s, "ai_add:request_timeout");
+                    });
+                    ui_kit::row(ui, tr("ui.ai_reasoning_effort"), |ui| {
+                        effort_field(ui, &mut s.reasoning_effort, "ai_add:reasoning_effort");
+                    });
+                    ui_kit::row(ui, tr("ui.ai_key"), |ui| {
+                        ui.add_enabled_ui(has_keychain, |ui| {
+                            let hint = tr(if s.saved_key { "ui.ai_key_keep_hint" } else { "ui.ai_key_hint" });
+                            let r = ui_kit::password_field(ui, egui::Id::new("sc_ai_add_key"), &mut s.key, hint);
+                            crate::scenario::publish_target("ai_add:key", r.rect);
+                            s.list_again |= r.lost_focus();
+                        });
+                    });
+                    ui_kit::text(ui, tr(if has_keychain { "ui.ai_key_note" } else { "ui.ai_no_keychain" }), ui_kit::Text::Note("keychain"));
+                    if ui_kit::button(ui, tr("ui.ai_test"), ui_kit::Button::Normal).clicked() {
+                        test = true;
+                    }
+                    test_line(ui, &s.test.as_ref());
+                }
+            }
+            if let Some(e) = &s.error {
+                ui_kit::text(ui, e, ui_kit::Text::Report("add_error", true));
+            }
+        });
+    if let Some(rect) = crate::scenario::rect_of("dialog:ok") {
+        crate::scenario::publish_handle("ai_add:add", rect.center());
+    }
+    add |= action == ui_kit::Action::Ok;
+    open &= !closed && action != ui_kit::Action::Cancel;
+    #[cfg(not(target_arch = "wasm32"))]
+    list_for_dialog(app, ctx);
+    if test {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(s) = app.agent_chat.settings.add.as_ref() {
+            let url = agents::normalize_url(&s.base_url);
+            let e = agents::Entry {
+                id: String::new(),
+                name: s.name.clone(),
+                kind: s.protocol.kind(),
+                argv: Vec::new(),
+                version: None,
+                login: "",
+                found: false,
+                base_url: url.clone().unwrap_or_default(),
+                model: s.model.trim().to_string(),
+                key: false,
+                request_timeout_s: s.request_timeout_s,
+                reasoning_effort: agents::reasoning_effort(&s.reasoning_effort),
+                problem: None,
+                install: "",
+            };
+            // Editing with the key field left empty tests with the stored key, which is only ever
+            // sent where a saved key may go (HTTPS or this computer).
+            let key = Some(s.key.trim().to_string()).filter(|k| !k.is_empty());
+            let stored = s
+                .editing
+                .clone()
+                .filter(|_| key.is_none() && s.saved_key && url.as_deref().is_ok_and(agents::key_safe_for))
+                .and_then(|id| app.services.secrets.clone().map(|store| (store, id)));
+            let result = match url {
+                Ok(_) => start_test(app, &e, move || match stored {
+                    Some((store, id)) => store
+                        .get(&id)
+                        .map_err(|_| tr("ui.host_ai_key_unavailable").to_string())?
+                        .filter(|key| !key.trim().is_empty())
+                        .map(Some)
+                        .ok_or_else(|| tr("ui.ai_http_key").to_string()),
+                    None => Ok(key),
+                }),
+                Err(err) => Test::Done(Err(TestError::Other(err))),
+            };
+            if let Some(s) = app.agent_chat.settings.add.as_mut() {
+                s.test = Some(result);
+            }
+        }
+    }
+    if add {
+        match add_agent(app) {
+            Ok(()) => open = false,
+            Err(e) => {
+                if let Some(s) = app.agent_chat.settings.add.as_mut() {
+                    s.error = Some(e);
+                }
+            }
+        }
+    }
+    if !open {
+        app.agent_chat.settings.add = None;
+    }
+    if app.agent_chat.settings.add.as_ref().is_some_and(|s| matches!(s.test, Some(Test::Running(_)))) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
+}
+
+/// Add what the dialog holds, or save it over the agent being edited; its key goes to the keychain.
+fn add_agent(app: &mut SolveApp) -> Result<(), String> {
+    let Some(s) = app.agent_chat.settings.add.as_ref() else { return Ok(()) };
+    // The agent being edited must still be there (it may have been removed meanwhile).
+    let editing = match &s.editing {
+        Some(id) => Some(app.preferences.agents.iter().position(|c| &c.id == id).ok_or_else(|| tr("ui.ai_edit_gone").to_string())?),
+        None => None,
+    };
+    let name = s.name.trim().chars().take(80).collect::<String>();
+    let mut c = AgentConfig { name, ..Default::default() };
+    let mut key: Option<String> = None;
+    match s.kind {
+        AddKind::Installed | AddKind::Custom => {
+            let cmd = s.command.trim();
+            if acp::split_command(cmd).is_empty() {
+                return Err(tr("ui.ai_need_command").to_string());
+            }
+            c.kind = Kind::Acp;
+            c.command = cmd.chars().take(4096).collect();
+            c.id = agents::new_id(&app.preferences, "custom");
+        }
+        AddKind::Api => {
+            c.kind = s.protocol.kind();
+            c.ollama = s.protocol == Protocol::OpenAi && s.preset == 0;
+            c.base_url = agents::normalize_url(&s.base_url)?;
+            c.model = s.model.trim().to_string();
+            c.request_timeout_s = s.request_timeout_s.clamp(agents::MIN_REQUEST_TIMEOUT_S, agents::MAX_REQUEST_TIMEOUT_S);
+            c.reasoning_effort = agents::reasoning_effort(&s.reasoning_effort);
+            if c.model.is_empty() {
+                return Err(tr("ui.ai_need_model").to_string());
+            }
+            key = Some(s.key.trim().to_string()).filter(|k| !k.is_empty());
+            // Editing with the key field left empty keeps the stored key.
+            let kept = key.is_none() && editing.is_some() && s.saved_key;
+            if (key.is_some() || kept) && !agents::key_safe_for(&c.base_url) {
+                return Err(tr("ui.ai_key_needs_https").to_string());
+            }
+            c.key = kept;
+            c.id = agents::new_id(&app.preferences, c.kind.id());
+        }
+    }
+    if let Some(id) = &s.editing {
+        c.id = id.clone();
+    }
+    if c.name.is_empty() {
+        c.name = c.id.clone();
+    }
+    if let Some(k) = key {
+        let Some(store) = &app.services.secrets else { return Err(tr("ui.ai_no_keychain").to_string()) };
+        store.set(&c.id, &k).map_err(|_| tr("ui.host_ai_key_unavailable").to_string())?;
+        c.key = true;
+    }
+    let Some(at) = editing else {
+        app.preferences.agents.push(c);
+        #[cfg(not(target_arch = "wasm32"))]
+        sync_ai_connections(app).map_err(|error| error.message())?;
+        return Ok(());
+    };
+    match app.preferences.agents.get_mut(at) {
+        None => return Err(tr("ui.ai_edit_gone").to_string()),
+        Some(old) => {
+            // An endpoint edited into a program (or one whose key was dropped) leaves no key behind.
+            if old.key
+                && !c.key
+                && let Some(store) = &app.services.secrets
+            {
+                store.delete(&c.id).map_err(|_| tr("ui.host_ai_key_unavailable").to_string())?;
+            }
+            *old = c;
+            let id = old.id.clone();
+            let secs = old.request_timeout_s;
+            let effort = old.reasoning_effort.clone();
+            // A new command, endpoint or key has not been tested or signed in yet.
+            app.agent_chat.settings.tests.remove(&id);
+            app.agent_chat.login_results.remove(&id);
+            // The running conversation takes a new timeout from its next request on; the rest
+            // applies the next time the agent connects.
+            if app.agent_chat.running_id == id
+                && let Some(b) = app.agent_chat.backend.as_mut()
+            {
+                b.set_request_timeout(secs);
+                b.set_reasoning_effort(&effort);
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    sync_ai_connections(app).map_err(|error| error.message())?;
+    Ok(())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod card_tests {
+    use super::super::backend::Secrets;
+    use super::*;
+    use crate::scenario::{self, Harness};
+    use serde_json::json;
+
+    #[test]
+    fn direct_chat_and_host_ai_observe_current_original_secret() {
+        use super::super::host_ai::*;
+        use super::super::tests::direct_integration as d;
+        use std::sync::{Arc, Mutex};
+        let keys = Arc::new(d::Keys::default());
+        keys.set("task8-original", d::KEY_A).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::<backend::HttpRequest>::new()));
+        let log = Arc::clone(&requests);
+        let http: backend::HttpFn = Arc::new(move |r| {
+            log.lock().unwrap().push(r.clone());
+            Ok((200, if r.method == "GET" { br#"{"data":[]}"#.to_vec() } else { d::answer().to_string().into_bytes() }))
+        });
+        let (mut app, ctx) = d::app(http, Arc::clone(&keys));
+        // No test-only catalog: this is populated by load_prefs and used by connect.
+        let binding = app.services.agent_ai.connections().bind("task8-original", "chosen").unwrap();
+        d::connected(&mut app, &ctx);
+        let host = d::host(&app);
+        d::turn(&mut app, &ctx);
+        assert!(open_edit(&mut app, "task8-original"));
+        app.agent_chat.settings.add.as_mut().unwrap().key = d::KEY_B.into();
+        add_agent(&mut app).unwrap();
+        app.agent_chat.settings.add = None;
+        host.generate(&binding, &d::context(&host, "rotated"), d::request("task8-original")).unwrap();
+        d::turn(&mut app, &ctx);
+        let authorization: Vec<String> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .map(|r| r.headers.iter().find(|(n, _)| n == "Authorization").unwrap().1.clone())
+            .collect();
+        assert_eq!(authorization, [format!("Bearer {}", d::KEY_A), format!("Bearer {}", d::KEY_B), format!("Bearer {}", d::KEY_B)]);
+        keys.delete("task8-original").unwrap();
+        let posts = authorization.len();
+        d::turn(&mut app, &ctx);
+        assert_eq!(
+            host.generate(&binding, &d::context(&host, "deleted"), d::request("task8-original")).unwrap_err().code(),
+            AiErrorCode::AuthRequired
+        );
+        assert_eq!(requests.lock().unwrap().iter().filter(|r| r.method == "POST").count(), posts);
+        // Original UI removal path removes both the original store entry and catalog entry.
+        let mut h = Harness::new();
+        h.app = app;
+        h.app.home.open = false;
+        h.app.agent_chat.detection = Some(Default::default());
+        h.call("ui.resize", json!({"width":1600,"height":1400}));
+        h.call("ui.prefs", json!({"open":"Assistant"}));
+        h.frames(4);
+        reveal_card_action(&mut h, "prefs:ai_remove:task8-original").unwrap();
+        h.step(&json!({"click":{"handle":"prefs:ai_remove:task8-original"}})).unwrap();
+        assert_eq!(h.app.services.agent_ai.connections().bind("task8-original", "chosen").unwrap_err().code(), AiErrorCode::ConnectionChanged);
+        assert!(keys.get("task8-original").unwrap().is_none());
+    }
+
+    #[test]
+    fn direct_chat_and_host_ai_observe_current_original_secret_on_go_compatibility_attempts() {
+        use super::super::tests::direct_integration as d;
+        use std::sync::{Arc, Mutex};
+        let keys = Arc::new(d::Keys::default());
+        keys.set("task8-original", d::KEY_A).unwrap();
+        let (entered, arrival) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let wait = Mutex::new(Some(wait));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&requests);
+        let http: backend::HttpFn = Arc::new(move |r| {
+            if r.method == "GET" {
+                return Ok((200, br#"{"data":[]}"#.to_vec()));
+            }
+            log.lock().unwrap().push(r.clone());
+            if let Some(wait) = wait.lock().unwrap().take() {
+                entered.send(()).unwrap();
+                wait.recv_timeout(d::GUARD).unwrap();
+                return Ok((400, br#"{"error":{"message":"does not support this protocol"}}"#.to_vec()));
+            }
+            Ok((200, d::answer().to_string().into_bytes()))
+        });
+        let (mut app, ctx) = d::app(http, keys);
+        app.preferences.agents[0].base_url = "https://opencode.ai/inference/go/v1".into();
+        app.preferences.agents[0].model = "muse-spark-1.3-contributor".into();
+        d::connected(&mut app, &ctx);
+        send(&mut app, &ctx, "explicit fallback".into());
+        arrival.recv_timeout(d::GUARD).unwrap();
+        assert!(open_edit(&mut app, "task8-original"));
+        app.agent_chat.settings.add.as_mut().unwrap().key = d::KEY_B.into();
+        add_agent(&mut app).unwrap();
+        app.agent_chat.settings.add = None;
+        release.send(()).unwrap();
+        d::until(&mut app, &ctx, |a| a.agent_chat.state() != super::super::State::Busy);
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].url.ends_with("/responses"));
+        assert!(requests[1].url.ends_with("/chat/completions"));
+        let keys: Vec<_> = requests.iter().map(|r| r.headers.iter().find(|(n, _)| n == "Authorization").unwrap().1.as_str()).collect();
+        assert_eq!(keys, [format!("Bearer {}", d::KEY_A), format!("Bearer {}", d::KEY_B)]);
+        assert!(format!("{:?}", app.agent_chat.items).contains("current answer"));
+    }
+
+    #[test]
+    fn host_ai_error_projection_and_preferences_are_secret_free() {
+        use super::super::host_ai::*;
+        use super::super::tests::direct_integration as d;
+        use std::sync::Arc;
+        let keys = Arc::new(d::Keys::default());
+        keys.set("task8-original", d::KEY_A).unwrap();
+        let http: backend::HttpFn = Arc::new(|r| {
+            if r.method == "GET" {
+                return Ok((200, br#"{"data":[]}"#.to_vec()));
+            }
+            // Actual HTTP boundary echoes the *current* Authorization key in a success body.
+            let key = r.headers.iter().find(|(n, _)| n == "Authorization").unwrap().1.trim_start_matches("Bearer ");
+            Ok((200, json!({"choices":[{"message":{"role":"assistant","content":key},"finish_reason":"stop"}]}).to_string().into_bytes()))
+        });
+        let (mut app, ctx) = d::app(http, Arc::clone(&keys));
+        d::connected(&mut app, &ctx);
+        let host = d::host(&app);
+        let binding = app.services.agent_ai.connections().bind("task8-original", "chosen").unwrap();
+        let mut errors = String::new();
+        for (turn, key) in [("a", d::KEY_A), ("b", d::KEY_B)] {
+            assert!(open_edit(&mut app, "task8-original"));
+            app.agent_chat.settings.add.as_mut().unwrap().key = key.into();
+            add_agent(&mut app).unwrap();
+            app.agent_chat.settings.add = None;
+            d::turn(&mut app, &ctx);
+            let error = host.generate(&binding, &d::context(&host, turn), d::request("task8-original")).unwrap_err();
+            assert_eq!(error.code(), AiErrorCode::MalformedResponse);
+            errors.push_str(&format!("{error:?} {} {:?}", error.message(), error.details()));
+        }
+        let status = control(&mut app, &ctx, &json!({})).unwrap();
+        let projection = format!("{} {:?} {status} {errors} {binding:?}", app.prefs(), app.agent_chat.items);
+        for secret in [d::KEY_A, d::KEY_B] {
+            assert!(!projection.contains(secret));
+        }
+        assert!(!app.agent_chat.items.iter().any(|i| matches!(i, Item::Agent { .. })));
+    }
+
+    /// The fixed Preferences window scrolls even on a tall desktop. Use actual wheel input
+    /// before clicking a card action whose published geometry may be outside the viewport.
+    fn reveal_card_action(h: &mut Harness, handle: &str) -> Result<(), String> {
+        for _ in 0..32 {
+            let at = scenario::handle_at(handle).ok_or_else(|| format!("{handle}: the real card action is not published"))?;
+            let body = scenario::rect_of("prefs:page_body").ok_or("Preferences has no scroll viewport")?;
+            if body.contains(at) {
+                return Ok(());
+            }
+            h.call("ui.scroll", json!({"x":body.center().x,"y":body.center().y,"delta":if at.y < body.top() {100} else {-100}}));
+            h.frames(30);
+        }
+        Err(format!("{handle} could not be scrolled into the Preferences viewport"))
+    }
+
+    #[test]
+    fn assistant_production_heading_and_sections_use_page_metrics() {
+        for theme in ["light", "dark"] {
+            let mut h = Harness::new();
+            h.app.home.open = false;
+            h.app.preferences.ai_features = false;
+            h.app.agent_chat.detection = Some(Default::default());
+            h.call("ui.resize", json!({"width":1600,"height":4000}));
+            h.call("ui.prefs", json!({"open":"Assistant","theme":theme}));
+            h.frames(4);
+            let warning = scenario::rect_of("prefs:ai_mode:all:icon").unwrap();
+            assert!(scenario::rect_of("prefs:ai_mode:all").unwrap().contains_rect(warning));
+            let heading = scenario::rect_of("prefs:page_heading").unwrap();
+            let body = scenario::rect_of("prefs:page_body").unwrap();
+            assert!(body.contains_rect(heading));
+            let mut page_font = false;
+            let mut scope_visible = false;
+            let mut privacy_visible = false;
+            for _ in 0..24 {
+                for shape in &h.shapes {
+                    crate::test_support::each_shape(&shape.shape, &mut |shape| {
+                        if let egui::Shape::Text(text) = shape {
+                            scope_visible |= text.galley.job.text == tr("ui.ai_modes_scope");
+                            privacy_visible |= text.galley.job.text == tr("ai.prefs.privacy_note");
+                            page_font |= text.galley.job.text == "Assistant"
+                                && text
+                                    .galley
+                                    .job
+                                    .sections
+                                    .iter()
+                                    .all(|section| section.format.font_id.size == crate::theme::Tokens::get().font_page_heading);
+                        }
+                    });
+                }
+                if scope_visible && privacy_visible {
+                    break;
+                }
+                h.call("ui.scroll", json!({"x":body.center().x,"y":body.center().y,"delta":-160}));
+                h.frames(30);
+            }
+            assert!(page_font, "the production heading uses the page font");
+            assert!(scope_visible, "the full localized permission scope remains visible without hovering, including with AI off");
+            assert!(privacy_visible, "the localized privacy note remains visible without hovering, including with AI off");
+            let mut previous: Option<f32> = None;
+            for key in ["assistant_availability", "permissions", "agents", "instructions", "panel", "assistant_connecting", "agent_pointer"] {
+                let section = scenario::rect_of(&format!("prefs:section:{key}")).unwrap();
+                assert!((section.left() - body.left()).abs() <= 1.0 && (section.right() - body.right()).abs() <= 1.0);
+                assert!((section.height() - (crate::theme::Tokens::get().control_height + crate::theme::Tokens::get().space_2)).abs() <= 1.0);
+                if let Some(bottom) = previous {
+                    assert!((section.top() - bottom - 38.0).abs() <= 1.0, "{theme}: {key} retains the page section rhythm");
+                }
+                previous = Some(scenario::rect_of(&format!("prefs:section:{key}:body")).unwrap().bottom());
+            }
+        }
+    }
+
+    #[test]
+    fn pointer_speed_search_reveals_one_real_slider_in_all_enablement_states() {
+        use crate::ui_kit::settings_search::{nav, set_cursor};
+        for theme in ["light", "dark"] {
+            for (ai, show) in [(true, true), (true, false), (false, true), (false, false)] {
+                let mut h = Harness::new();
+                h.app.home.open = false;
+                h.app.agent_chat.detection = Some(Default::default());
+                h.app.preferences.ai_features = ai;
+                h.app.ui.agent_cursor.show = show;
+                h.app.ui.agent_cursor.speed = crate::agent_cursor::Speed::Times(3.5);
+                h.call("ui.resize", json!({"width":1600,"height":1400}));
+                h.call("ui.prefs", json!({"open":"General","theme":theme}));
+                for query in ["Speed", "Pointer speed", "Motion speed"] {
+                    h.app.prefs_window.filter = query.into();
+                    h.frames(6);
+                    let (_, _, hits) = nav(&h.ctx);
+                    let matches: Vec<_> = hits.iter().enumerate().filter(|(_, hit)| hit.page == crate::prefs::PAGE_ASSISTANT).collect();
+                    assert_eq!(matches.len(), 1, "{theme} AI={ai} show={show}: {query} owns one editor");
+                    set_cursor(&h.ctx, matches[0].0);
+                    h.frames(2);
+                    h.step(&json!({"key":"Enter"})).unwrap();
+                    h.frames(30);
+                    assert_eq!(h.app.prefs_window.section, crate::prefs::PAGE_ASSISTANT);
+                    assert!(h.app.prefs_window.filter.is_empty());
+                    let slider = scenario::rect_of("prefs:agent_pointer_speed").unwrap();
+                    assert_eq!(slider, scenario::rect_of("dialog:slider:Pointer speed").unwrap());
+                    let body = scenario::rect_of("dialog:page_body").unwrap();
+                    assert!(body.contains_rect(slider), "{query} reveals the editor inside the page");
+                    assert!(scenario::handle_at("prefs:revealed").unwrap().distance(slider.center()) <= 1.0, "{query} reveals the slider itself");
+                    let tree = h.output.accesskit_update.as_ref().unwrap();
+                    let sliders: Vec<_> = tree
+                        .nodes
+                        .iter()
+                        .filter(|(_, node)| node.role() == egui::accesskit::Role::Slider && node.label() == Some("Pointer speed"))
+                        .collect();
+                    assert_eq!(sliders.len(), 1);
+                    assert_eq!(sliders[0].1.is_disabled(), !(ai && show));
+                    assert_eq!(h.app.ui.agent_cursor.speed, crate::agent_cursor::Speed::Times(3.5));
+                    assert_eq!((h.app.preferences.ai_features, h.app.ui.agent_cursor.show), (ai, show));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_agent_metadata_has_one_card_target_and_keeps_fields_indexed() {
+        use crate::ui_kit::settings_search::{nav, set_cursor};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for theme in ["light", "dark"] {
+            let mut h = Harness::new();
+            h.app.home.open = false;
+            h.app.agent_chat.detection = Some(Default::default());
+            h.app.preferences.agent_connect_at_start = false;
+            h.app.preferences.agents = vec![
+                AgentConfig {
+                    id: "acp-current".into(),
+                    name: "Current fixture".into(),
+                    command: "solidcraft-fixture-agent --acp".into(),
+                    ..Default::default()
+                },
+                AgentConfig {
+                    id: "api-public".into(),
+                    name: "Public endpoint".into(),
+                    kind: Kind::Api,
+                    base_url: "https://example.com/v1".into(),
+                    model: "public-model".into(),
+                    reasoning_effort: "high".into(),
+                    ..Default::default()
+                },
+            ];
+            h.app.preferences.agent_default = "acp-current".into();
+            h.app.agent_chat.agent_id = Some("acp-current".into());
+            let calls = Arc::new(AtomicUsize::new(0));
+            let seen = calls.clone();
+            h.app.services.agent_http = Some(Arc::new(move |_| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Err("fixture must not be queried".into())
+            }));
+            h.call("ui.resize", json!({"width":1600,"height":1800}));
+            h.call("ui.prefs", json!({"open":"General","theme":theme}));
+            for query in ["public", "api-public", "public-model"] {
+                h.app.prefs_window.filter = query.into();
+                h.frames(6);
+                let (_, _, hits) = nav(&h.ctx);
+                let matches: Vec<_> = hits.iter().enumerate().filter(|(_, hit)| hit.page == crate::prefs::PAGE_ASSISTANT).collect();
+                assert_eq!(matches.len(), 1, "{query}: overlapping name/id/detail own one card stop");
+                set_cursor(&h.ctx, matches[0].0);
+                h.frames(2);
+                h.step(&json!({"key":"Enter"})).unwrap();
+                h.frames(30);
+                assert_eq!(h.app.prefs_window.section, crate::prefs::PAGE_ASSISTANT);
+                assert!(h.app.prefs_window.filter.is_empty());
+                let card = scenario::rect_of("prefs:ai_card:api-public").unwrap();
+                assert!(scenario::rect_of("dialog:page_body").unwrap().contains_rect(card));
+                assert!(scenario::handle_at("prefs:revealed").unwrap().distance(card.center()) <= 1.0, "{query} reveals the same complete card");
+            }
+            for (query, handle) in [("Request timeout", "prefs:ai_timeout:api-public"), ("Reasoning effort", "prefs:ai_reasoning:api-public")] {
+                h.app.prefs_window.filter = query.into();
+                h.frames(6);
+                let (_, _, hits) = nav(&h.ctx);
+                let matches: Vec<_> =
+                    hits.iter().enumerate().filter(|(_, hit)| hit.page == crate::prefs::PAGE_ASSISTANT && hit.label == query).collect();
+                assert_eq!(matches.len(), 1, "{query} keeps its independent setting target");
+                set_cursor(&h.ctx, matches[0].0);
+                h.frames(2);
+                h.step(&json!({"key":"Enter"})).unwrap();
+                h.frames(30);
+                assert!(h.app.prefs_window.filter.is_empty());
+                assert!(scenario::rect_of("dialog:page_body").unwrap().contains_rect(scenario::rect_of(handle).unwrap()));
+            }
+            h.app.prefs_window.filter = "Permissions".into();
+            h.frames(6);
+            let (_, _, hits) = nav(&h.ctx);
+            assert!(
+                hits.iter().filter(|hit| hit.page == crate::prefs::PAGE_ASSISTANT && hit.label == "Permissions").count() >= 2,
+                "real per-agent Permissions remain independently indexed"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "ACP-current/API-noncurrent search never probes or tests an endpoint");
+        }
+    }
+
+    #[test]
+    fn assistant_off_keeps_dependent_controls_disabled_and_cancel_restores_the_pointer() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.agent_chat.detection = Some(Default::default());
+        h.app.ui.agent_cursor.speed = crate::agent_cursor::Speed::Times(3.5);
+        h.call("ui.resize", json!({"width":1600,"height":1800}));
+        h.call("ui.prefs", json!({"open":"Assistant"}));
+        h.app.preferences.ai_features = false;
+        h.app.ui.agent_cursor.speed = crate::agent_cursor::Speed::Instant;
+        h.frames(4);
+        let tree = h.output.accesskit_update.as_ref().unwrap();
+        for label in [
+            tr("ui.ai_toolbar_button"),
+            tr("ai.prefs.allow_control"),
+            tr("ai.prefs.connect_apps"),
+            tr("ai.prefs.background_commands"),
+            tr("ai.prefs.connect_at_start"),
+            tr("ai.prefs.open_at_start"),
+            tr("ai.prefs.show_pointer"),
+            tr("ai.prefs.follow_camera"),
+        ] {
+            let nodes: Vec<_> =
+                tree.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::CheckBox && node.label() == Some(label)).collect();
+            assert_eq!(nodes.len(), 1, "{label} is retained exactly once");
+            assert!(nodes[0].1.is_disabled(), "{label} dims when AI is off");
+        }
+        assert!(tree.nodes.iter().any(|(_, node)| node.label() == Some(tr("ui.ai_show_features")) && !node.is_disabled()));
+        assert!(h.app.agent_chat.detecting.is_none() && h.app.agent_chat.backend.is_none());
+        h.step(&json!({"click":{"handle":"prefs:cancel"}})).unwrap();
+        assert!(h.app.preferences.ai_features);
+        assert_eq!(h.app.ui.agent_cursor.speed, crate::agent_cursor::Speed::Times(3.5));
+    }
+
+    #[test]
+    fn assistant_limit_dropdown_preserves_values_and_seeds_only_on_transition() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.agent_chat.detection = Some(Default::default());
+        h.app.preferences.agent_chat_turn_limit = 37;
+        h.call("ui.resize", json!({"width":1600,"height":1400}));
+        h.call("ui.prefs", json!({"open":"Assistant"}));
+        h.app.prefs_window.filter = tr("ui.agent_chat_turn_limit").into();
+        h.frames(4);
+        for limit in [1, 37, 199, 200] {
+            h.app.preferences.agent_chat_turn_limit = limit;
+            h.frames(3);
+            assert_eq!(h.app.preferences.agent_chat_turn_limit, limit, "rendering preserves every supported value");
+        }
+        h.step(&json!({"click":{"handle":"prefs:agent_chat_turn_limit:mode"}})).unwrap();
+        h.step(&json!({"click":{"handle":format!("dialog:{}:{}", tr("ui.agent_chat_turn_limit"), tr("ui.agent_chat_turn_unlimited"))}})).unwrap();
+        assert_eq!(h.app.preferences.agent_chat_turn_limit, 0);
+        h.step(&json!({"click":{"handle":"prefs:agent_chat_turn_limit:mode"}})).unwrap();
+        h.step(&json!({"click":{"handle":format!("dialog:{}:{}", tr("ui.agent_chat_turn_limit"), tr("prefs.assistant_limited"))}})).unwrap();
+        assert_eq!(h.app.preferences.agent_chat_turn_limit, gate::SEEDED_TURN_LIMIT);
+        h.step(&json!({"click":{"handle":"prefs:cancel"}})).unwrap();
+        assert_eq!(h.app.preferences.agent_chat_turn_limit, 37);
+    }
+
+    #[test]
+    fn agent_card_reads_the_key_only_for_test_and_removal_clears_remembered_state() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        #[derive(Default)]
+        struct Keys {
+            values: MemoryKeys,
+            reads: AtomicUsize,
+        }
+        impl Secrets for Keys {
+            fn get(&self, id: &str) -> Result<Option<String>, String> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                self.values.get(id)
+            }
+            fn set(&self, id: &str, secret: &str) -> Result<(), String> {
+                self.values.set(id, secret)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.values.delete(id)
+            }
+        }
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.agent_chat.detection = Some(Default::default());
+        let keys = Arc::new(Keys::default());
+        keys.set("api-public", "render-fixture-key").unwrap();
+        h.app.services.secrets = Some(keys.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        h.app.services.agent_http = Some(Arc::new(move |_| {
+            let _ = tx.send(());
+            Ok((200, br#"{"data":[{"id":"public-model"}]}"#.to_vec()))
+        }));
+        // An ACP default keeps the API fixture noncurrent; baseline capability polling is unchanged.
+        h.app.preferences.agents = vec![
+            AgentConfig {
+                id: "acp-public".into(),
+                name: "Public ACP".into(),
+                command: "solidcraft-fixture-agent --acp".into(),
+                ..Default::default()
+            },
+            AgentConfig {
+                id: "api-public".into(),
+                name: "Public endpoint".into(),
+                kind: Kind::Api,
+                base_url: "https://example.com/v1".into(),
+                model: "public-model".into(),
+                key: true,
+                ..Default::default()
+            },
+        ];
+        h.app.preferences.agent_default = "acp-public".into();
+        h.app.preferences.agent_last = "api-public".into();
+        h.app.preferences.agent_permissions.insert("api-public".into(), Mode::Ask);
+        h.app.preferences.agent_always_allow.insert("api-public".into(), vec!["view.fit".into()]);
+        h.call("ui.resize", json!({"width":1600,"height":1400}));
+        h.call("ui.prefs", json!({"open":"Assistant"}));
+        h.app.prefs_window.filter = "Public endpoint".into();
+        h.frames(4);
+        assert_eq!(keys.reads.load(Ordering::SeqCst), 0, "rendering never retrieves a stored key");
+        assert!(rx.try_recv().is_err(), "a noncurrent card does not probe or test its endpoint");
+        assert!(h.widget("render-fixture-key").is_none());
+        h.step(&json!({"click":{"handle":"prefs:ai_test:api-public"}})).unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(keys.reads.load(Ordering::SeqCst), 1, "only the explicit Test action retrieves the key");
+        h.step(&json!({"click":{"handle":"prefs:ai_remove:api-public"}})).unwrap();
+        assert!(!h.app.preferences.agents.iter().any(|agent| agent.id == "api-public"));
+        assert!(!h.app.preferences.agent_permissions.contains_key("api-public"));
+        assert!(!h.app.preferences.agent_always_allow.contains_key("api-public"));
+        assert!(!h.app.agent_chat.settings.tests.contains_key("api-public"));
+        assert!(!h.app.agent_chat.login_results.contains_key("api-public"));
+        assert!(h.app.preferences.agent_last.is_empty());
+        assert_eq!(keys.values.get("api-public").unwrap(), None);
+    }
+
+    #[test]
+    fn cached_model_warning_follows_endpoint_model_and_agent_selection() {
+        let mut h = Harness::new();
+        h.app.agent_chat.detection = Some(Default::default());
+        h.app.preferences.agents.push(AgentConfig {
+            id: "local".into(),
+            kind: Kind::Api,
+            base_url: "http://localhost:11434/v1".into(),
+            model: "chat:4b".into(),
+            ..Default::default()
+        });
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use std::time::{Duration, Instant};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let ui_thread = std::thread::current().id();
+        h.app.services.agent_http = Some(Arc::new(move |request| {
+            assert_ne!(std::thread::current().id(), ui_thread);
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok((200, if request.method == "GET" { br#"{"version":"0.0"}"#.to_vec() } else { br#"{"capabilities":["completion"]}"#.to_vec() }))
+        }));
+        poll_capabilities(&mut h.app, &h.ctx);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while h.app.agent_chat.settings.checking.is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+            poll_capabilities(&mut h.app, &h.ctx);
+        }
+        assert!(h.app.agent_chat.settings.checking.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        poll_capabilities(&mut h.app, &h.ctx);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "cached selections do not probe again");
+        assert_eq!(status(&h.app)["modelWarning"], capability_warning("chat:4b", Some(false)).unwrap());
+        h.app.preferences.agents[0].model = "tools:8b".into();
+        assert!(status(&h.app)["modelWarning"].is_null());
+        h.app.preferences.agents[0].model = "chat:4b".into();
+        h.app.preferences.agents[0].base_url = "http://localhost:1234/v1".into();
+        assert!(status(&h.app)["modelWarning"].is_null());
+        h.app.preferences.agents[0].base_url = "http://localhost:11434/v1".into();
+        h.app.preferences.agents[0].kind = Kind::Acp;
+        assert!(status(&h.app)["modelWarning"].is_null());
+    }
+
+    #[test]
+    fn model_warning_only_for_explicitly_missing_tools() {
+        assert_eq!(
+            capability_warning("local:4b", Some(false)).as_deref(),
+            Some("local:4b can't use Intcad's tools, so it can only chat. Pick a model with tool support.")
+        );
+        assert_eq!(capability_warning("local:4b", Some(true)), None);
+        assert_eq!(capability_warning("local:4b", None), None);
+    }
+
+    #[test]
+    fn add_agent_card_retains_kind_handles_draft_and_validation() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.ai_features = true;
+        h.app.agent_chat.detection = Some(Default::default());
+        open_add(&mut h.app);
+        h.frames(4);
+        h.step(&json!({"click":{"handle":"ai_add:ui.ai_add_custom"}})).unwrap();
+        assert_eq!(h.app.agent_chat.settings.add.as_ref().unwrap().kind, AddKind::Custom);
+        h.step(&json!({"click":{"handle":"ai_add:add"}})).unwrap();
+        assert!(h.app.agent_chat.settings.add.as_ref().unwrap().error.is_some());
+        let add = h.app.agent_chat.settings.add.as_mut().unwrap();
+        add.name = "Local fixture".into();
+        add.command = "solidcraft-fixture-agent --acp".into();
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"ai_add:add"}})).unwrap();
+        assert!(h.app.agent_chat.settings.add.is_none());
+        assert!(h.app.preferences.agents.iter().any(|e| e.name == "Local fixture"));
+        open_add(&mut h.app);
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"ai_add:ui.ai_add_endpoint"}})).unwrap();
+        assert!(scenario::handle_at("ai_add:key").is_some());
+        assert!(h.app.services.secrets.is_none(), "this fixture has no keychain");
+        h.step(&json!({"click":{"handle":"ai_add:protocol:anthropic"}})).unwrap();
+        {
+            let add = h.app.agent_chat.settings.add.as_ref().unwrap();
+            assert_eq!(add.protocol, Protocol::Anthropic);
+            assert_eq!(add.base_url, "https://api.anthropic.com/v1");
+            assert_eq!(add.name, "Anthropic");
+        }
+        h.app.agent_chat.settings.add.as_mut().unwrap().model = "claude-opus-5-5".into();
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"ai_add:add"}})).unwrap();
+        assert!(h.app.agent_chat.settings.add.is_none());
+        let saved = h.app.preferences.agents.last().unwrap();
+        assert_eq!(saved.kind, Kind::Anthropic);
+        assert_eq!(saved.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(saved.model, "claude-opus-5-5");
+    }
+
+    /// A keychain in memory, for tests.
+    #[derive(Default)]
+    struct MemoryKeys(std::sync::Mutex<std::collections::HashMap<String, String>>);
+
+    impl Secrets for MemoryKeys {
+        fn get(&self, id: &str) -> Result<Option<String>, String> {
+            Ok(self.0.lock().map_err(|e| e.to_string())?.get(id).cloned())
+        }
+        fn set(&self, id: &str, secret: &str) -> Result<(), String> {
+            self.0.lock().map_err(|e| e.to_string())?.insert(id.into(), secret.into());
+            Ok(())
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.0.lock().map_err(|e| e.to_string())?.remove(id);
+            Ok(())
+        }
+    }
+
+    /// Edit on an added agent reopens the dialog filled in; Save changes it in place, keeping its
+    /// id, its permission override and its always-allowed tools (#9619).
+    #[test]
+    fn edit_reopens_an_added_agent_and_saves_it_in_place() {
+        let mut h = Harness::new();
+        h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+        h.app.home.open = false;
+        h.app.preferences.ai_features = true;
+        h.app.agent_chat.detection = Some(Default::default());
+        h.app.preferences.agents.push(AgentConfig {
+            id: "custom-1".into(),
+            name: "Mine".into(),
+            command: "my-agent --acp".into(),
+            ..Default::default()
+        });
+        h.app.preferences.agent_permissions.insert("custom-1".into(), Mode::Edits);
+        h.app.preferences.agent_always_allow.insert("custom-1".into(), vec!["read".into()]);
+        h.call("ui.prefs", json!({"open": "AI"}));
+        h.frames(4);
+        reveal_card_action(&mut h, "prefs:ai_edit:custom-1").unwrap();
+        let edit = scenario::handle_at("prefs:ai_edit:custom-1").expect("an added agent has Edit");
+        h.call("ui.click", json!({"x": edit.x, "y": edit.y}));
+        h.frames(4);
+        {
+            let s = h.app.agent_chat.settings.add.as_ref().expect("Edit opened the dialog");
+            assert_eq!(s.editing.as_deref(), Some("custom-1"));
+            assert_eq!(s.kind, AddKind::Custom);
+            assert_eq!((s.name.as_str(), s.command.as_str()), ("Mine", "my-agent --acp"));
+        }
+        assert!(scenario::handle_at("ai_add:ui.ai_add_custom").is_none(), "editing keeps the agent's kind");
+        let s = h.app.agent_chat.settings.add.as_mut().unwrap();
+        s.name = "Mine, verbose".into();
+        s.command = "my-agent --acp --verbose".into();
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"ai_add:add"}})).unwrap();
+        assert!(h.app.agent_chat.settings.add.is_none(), "Save closed the dialog");
+        assert_eq!(h.app.preferences.agents.len(), 1, "saved in place, not added");
+        let saved = &h.app.preferences.agents[0];
+        assert_eq!((saved.id.as_str(), saved.name.as_str(), saved.command.as_str()), ("custom-1", "Mine, verbose", "my-agent --acp --verbose"));
+        assert_eq!(h.app.preferences.agent_permissions.get("custom-1"), Some(&Mode::Edits));
+        assert!(h.app.preferences.agent_always_allow.contains_key("custom-1"));
+        // An empty command is refused as when adding.
+        assert!(open_edit(&mut h.app, "custom-1"));
+        h.app.agent_chat.settings.add.as_mut().unwrap().command = "  ".into();
+        assert_eq!(add_agent(&mut h.app), Err(tr("ui.ai_need_command").to_string()));
+        assert_eq!(h.app.preferences.agents[0].command, "my-agent --acp --verbose");
+    }
+
+    /// Editing an endpoint never shows its stored key: an empty key field keeps it, a new one
+    /// replaces it, and a kept key still only goes to HTTPS or this computer (#9619).
+    #[test]
+    fn edit_keeps_or_replaces_a_stored_key_without_showing_it() {
+        let mut h = Harness::new();
+        let keys = std::sync::Arc::new(MemoryKeys::default());
+        h.app.services.secrets = Some(keys.clone());
+        keys.set("api-1", "test-key-1").unwrap();
+        h.app.preferences.agents.push(AgentConfig {
+            id: "api-1".into(),
+            name: "OpenAI".into(),
+            kind: Kind::Api,
+            base_url: "https://api.openai.com/v1".into(),
+            model: "model-a".into(),
+            key: true,
+            request_timeout_s: 600,
+            reasoning_effort: "high".into(),
+            ..Default::default()
+        });
+        assert!(open_edit(&mut h.app, "api-1"));
+        {
+            let s = h.app.agent_chat.settings.add.as_ref().unwrap();
+            assert!(s.key.is_empty(), "the stored key is never read back into the dialog");
+            assert!(s.saved_key);
+            assert_eq!((s.kind, s.protocol), (AddKind::Api, Protocol::OpenAi));
+            assert_eq!(agents::presets(Protocol::OpenAi).get(s.preset).map(|p| p.name), Some("OpenAI"));
+            assert_eq!((s.base_url.as_str(), s.model.as_str(), s.request_timeout_s), ("https://api.openai.com/v1", "model-a", 600));
+            assert_eq!(s.reasoning_effort, "high", "the chosen effort comes back into the dialog");
+        }
+        h.app.agent_chat.settings.add.as_mut().unwrap().model = "model-b".into();
+        add_agent(&mut h.app).unwrap();
+        let saved = &h.app.preferences.agents[0];
+        assert_eq!((saved.id.as_str(), saved.model.as_str(), saved.key, saved.request_timeout_s), ("api-1", "model-b", true, 600));
+        assert_eq!(saved.reasoning_effort, "high", "the effort survives an edit");
+        assert_eq!(keys.get("api-1").unwrap().as_deref(), Some("test-key-1"), "an empty field keeps the key");
+        // A kept key does not go to a plain-HTTP address elsewhere.
+        assert!(open_edit(&mut h.app, "api-1"));
+        h.app.agent_chat.settings.add.as_mut().unwrap().base_url = "http://example.com/v1".into();
+        assert_eq!(add_agent(&mut h.app), Err(tr("ui.ai_key_needs_https").to_string()));
+        assert_eq!(h.app.preferences.agents[0].base_url, "https://api.openai.com/v1");
+        // A new key replaces the stored one.
+        assert!(open_edit(&mut h.app, "api-1"));
+        h.app.agent_chat.settings.add.as_mut().unwrap().key = "test-key-2".into();
+        add_agent(&mut h.app).unwrap();
+        assert_eq!(keys.get("api-1").unwrap().as_deref(), Some("test-key-2"));
+        assert_eq!(h.app.preferences.agents.len(), 1);
+        // Custom URLs and the Ollama preset come back as they were chosen.
+        h.app.preferences.agents.push(AgentConfig {
+            id: "api-2".into(),
+            kind: Kind::Api,
+            base_url: "http://192.168.1.20:11434/v1".into(),
+            model: "m".into(),
+            ollama: true,
+            ..Default::default()
+        });
+        h.app.preferences.agents.push(AgentConfig {
+            id: "anthropic-1".into(),
+            kind: Kind::Anthropic,
+            base_url: "https://example.com/anthropic/v1".into(),
+            model: "m".into(),
+            ..Default::default()
+        });
+        assert!(open_edit(&mut h.app, "api-2"));
+        assert_eq!(h.app.agent_chat.settings.add.as_ref().map(|s| (s.preset, s.saved_key)), Some((0, false)));
+        add_agent(&mut h.app).unwrap();
+        assert!(h.app.preferences.agents.iter().any(|c| c.id == "api-2" && c.ollama && c.base_url == "http://192.168.1.20:11434/v1"));
+        assert!(open_edit(&mut h.app, "anthropic-1"));
+        let s = h.app.agent_chat.settings.add.as_ref().unwrap();
+        assert_eq!((s.protocol, s.preset), (Protocol::Anthropic, agents::ANTHROPIC_PRESETS.len()), "a custom URL");
+        add_agent(&mut h.app).unwrap();
+        assert!(h.app.preferences.agents.iter().any(|c| c.id == "anthropic-1" && c.kind == Kind::Anthropic));
+        assert_eq!(h.app.preferences.agents.len(), 3);
+    }
+
+    /// Only added agents can be edited, and an agent removed while its dialog is open is not
+    /// brought back by Save; the control channel opens the same dialog (#9619).
+    #[test]
+    fn edit_only_for_added_agents_and_not_after_removal() {
+        let mut h = Harness::new();
+        assert!(!open_edit(&mut h.app, "claude"), "a found agent has nothing of yours to edit");
+        assert!(h.app.agent_chat.settings.add.is_none());
+        h.app.preferences.agents.push(AgentConfig { id: "custom-1".into(), command: "a --acp".into(), ..Default::default() });
+        let err = control(&mut h.app, &h.ctx, &json!({"edit_dialog": "nope"})).unwrap_err();
+        assert!(err.contains("nope"), "{err}");
+        control(&mut h.app, &h.ctx, &json!({"edit_dialog": "custom-1"})).unwrap();
+        assert_eq!(h.app.agent_chat.settings.add.as_ref().and_then(|s| s.editing.as_deref()), Some("custom-1"));
+        h.app.preferences.agents.clear();
+        assert_eq!(add_agent(&mut h.app), Err(tr("ui.ai_edit_gone").to_string()));
+        assert!(h.app.preferences.agents.is_empty());
+    }
+
+    /// An `agent_http` that may not be called on the window's thread: it answers `/models` as
+    /// OpenRouter does, or 401 for an address with `refused` in it, and records what it was asked.
+    fn listing_http(h: &mut Harness) -> std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>> {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let ui_thread = std::thread::current().id();
+        h.app.services.agent_http = Some(std::sync::Arc::new(move |request: &super::super::backend::HttpRequest| {
+            assert_ne!(std::thread::current().id(), ui_thread);
+            // The running agent's capability check goes through here too.
+            if request.url.ends_with("/models")
+                && let Ok(mut log) = log.lock()
+            {
+                log.push((request.url.clone(), request.headers.iter().any(|(name, _)| name == "Authorization")));
+            }
+            if request.url.contains("refused") {
+                return Ok((401, br#"{"error":{"message":"no such key"}}"#.to_vec()));
+            }
+            if request.url.contains("/page/") {
+                return Ok((200, b"<!doctype html><html><body>Control UI</body></html>".to_vec()));
+            }
+            if request.url.contains("/empty/") {
+                return Ok((200, br#"{"data":[]}"#.to_vec()));
+            }
+            Ok((200, json!({"data": [{"id": "vendor/big", "name": "Vendor: Big"}, {"id": "vendor/small"}]}).to_string().into_bytes()))
+        }));
+        seen
+    }
+
+    /// A web page where the models should be, or a list with nothing in it, says so under the
+    /// picker, and is asked for again the next time.
+    #[test]
+    fn a_listing_that_is_no_list_or_lists_nothing_says_so_and_is_asked_again() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.ai_features = true;
+        h.app.agent_chat.detection = Some(Default::default());
+        let seen = listing_http(&mut h);
+        let requests = || seen.lock().unwrap().len();
+        open_add(&mut h.app);
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"ai_add:ui.ai_add_endpoint"}})).unwrap();
+        list_settled(&mut h);
+        assert_eq!(requests(), 1);
+        let note = |h: &Harness| {
+            let add = h.app.agent_chat.settings.add.as_ref().unwrap();
+            listed_for(&h.app.agent_chat.settings.endpoint_models, add.listing.as_ref()).1.unwrap_or_default()
+        };
+        // What the dialog's listing holds for the fields as they are (the words are the language's).
+        let listing = |h: &Harness| {
+            let add = h.app.agent_chat.settings.add.as_ref().unwrap();
+            add.listing.as_ref().and_then(|key| h.app.agent_chat.settings.endpoint_models.get(key)).cloned()
+        };
+        let ask = |h: &mut Harness, url: &str| {
+            let add = h.app.agent_chat.settings.add.as_mut().unwrap();
+            add.base_url = url.into();
+            add.list_again = true;
+            list_settled(h);
+        };
+        ask(&mut h, "http://localhost:18789/page/v1");
+        assert_eq!(requests(), 2);
+        assert!(matches!(listing(&h), Some(Err(_))), "a page where the list should be is an error: {:?}", listing(&h));
+        assert!(!note(&h).is_empty(), "and the picker says so");
+        ask(&mut h, "http://localhost:18789/page/v1");
+        assert_eq!(requests(), 3, "a page where the list should be is asked for again");
+        ask(&mut h, "http://localhost:18789/empty/v1");
+        assert_eq!(requests(), 4);
+        assert!(matches!(listing(&h), Some(Ok(models)) if models.is_empty()), "{:?}", listing(&h));
+        assert!(!note(&h).is_empty(), "an empty list is said so too");
+        ask(&mut h, "http://localhost:18789/empty/v1");
+        assert_eq!(requests(), 5, "an empty list is asked for again");
+        ask(&mut h, "http://localhost:11434/v1");
+        assert_eq!(requests(), 5, "a list that had models is kept");
+        assert_eq!(note(&h), "");
+    }
+
+    /// Editing an endpoint whose key is kept lists its models at once, with that key from the
+    /// keychain (never shown).
+    #[test]
+    fn editing_an_endpoint_lists_with_its_stored_key() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.ai_features = true;
+        h.app.agent_chat.detection = Some(Default::default());
+        let keys = std::sync::Arc::new(MemoryKeys::default());
+        h.app.services.secrets = Some(keys.clone());
+        keys.set("api-1", "test-key-1").unwrap();
+        let seen = listing_http(&mut h);
+        let requests = || seen.lock().unwrap().clone();
+        h.app.preferences.agents.push(AgentConfig {
+            id: "api-1".into(),
+            name: "Endpoint".into(),
+            kind: Kind::Api,
+            base_url: "https://openrouter.ai/api/v1".into(),
+            model: "vendor/big".into(),
+            key: true,
+            ..Default::default()
+        });
+        h.call("ui.prefs", json!({"open": "AI"}));
+        h.frames(3);
+        assert!(open_edit(&mut h.app, "api-1"));
+        list_settled(&mut h);
+        assert_eq!(requests(), [("https://openrouter.ai/api/v1/models".to_string(), true)], "listed on opening, with the kept key");
+        assert!(h.app.agent_chat.settings.add.as_ref().unwrap().key.is_empty(), "the kept key stays out of the field");
+    }
+
+    fn list_settled(h: &mut Harness) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        h.frames(2);
+        while (h.app.agent_chat.settings.listing.is_some() || h.app.agent_chat.settings.card_listing.is_some())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            h.frames(1);
+        }
+        assert!(h.app.agent_chat.settings.listing.is_none());
+        h.frames(2);
+    }
+
+    /// The dialog lists an endpoint's models off the window's thread, once per endpoint and key, of
+    /// what the fields say when they are left and not while they are typed in; a key goes only
+    /// where it may. A row and a typed model both fill the field, and Add takes either.
+    #[test]
+    fn the_add_dialog_lists_an_endpoints_models_once_and_takes_a_row_or_a_typed_model() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.ai_features = true;
+        h.app.agent_chat.detection = Some(Default::default());
+        let seen = listing_http(&mut h);
+        let requests = || seen.lock().unwrap().clone();
+        open_add(&mut h.app);
+        h.frames(3);
+        assert!(requests().is_empty(), "no endpoint chosen yet");
+        h.step(&json!({"click":{"handle":"ai_add:ui.ai_add_endpoint"}})).unwrap();
+        list_settled(&mut h);
+        assert_eq!(requests(), [("http://localhost:11434/v1/models".to_string(), false)]);
+        h.frames(5);
+        assert_eq!(requests().len(), 1, "once");
+
+        h.step(&json!({"click":{"handle":"ai_add:preset"}})).unwrap();
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"ai_add:preset:OpenRouter"}})).unwrap();
+        list_settled(&mut h);
+        assert_eq!(requests().last().cloned(), Some(("https://openrouter.ai/api/v1/models".to_string(), false)));
+
+        // Typed in: no request until the field is left, which here the flag stands for.
+        let add = h.app.agent_chat.settings.add.as_mut().unwrap();
+        add.base_url = "http://10.0.0.2:1234/v1".into();
+        add.key = "not-a-real-key".into();
+        h.frames(5);
+        assert_eq!(requests().len(), 2, "not while it is typed");
+        h.app.agent_chat.settings.add.as_mut().unwrap().list_again = true;
+        list_settled(&mut h);
+        assert_eq!(
+            requests().last().cloned(),
+            Some(("http://10.0.0.2:1234/v1/models".to_string(), false)),
+            "no key over plain http to another computer"
+        );
+        let add = h.app.agent_chat.settings.add.as_mut().unwrap();
+        add.base_url = "https://openrouter.ai/api/v1".into();
+        add.list_again = true;
+        list_settled(&mut h);
+        assert_eq!(requests().last().cloned(), Some(("https://openrouter.ai/api/v1/models".to_string(), true)), "with a key is another listing");
+
+        // A row and a typed model.
+        assert!(scenario::handle_at("ai_add:model").is_some());
+        h.step(&json!({"click":{"handle":"ai_add:model"}})).unwrap();
+        h.frames(3);
+        assert!(scenario::handle_at("ai_add:model:search").is_some());
+        assert!(scenario::handle_at("ai_add:model:group:Vendor").is_some(), "an endpoint's vendors are the groups");
+        h.step(&json!({"click":{"handle":"ai_add:model:vendor/big"}})).unwrap();
+        h.frames(3);
+        assert_eq!(h.app.agent_chat.settings.add.as_ref().unwrap().model, "vendor/big");
+        h.step(&json!({"click":{"handle":"ai_add:model"}})).unwrap();
+        h.frames(3);
+        h.step(&json!({"text":"vendor/own:free"})).unwrap();
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"ai_add:model:custom"}})).unwrap();
+        h.frames(3);
+        assert_eq!(h.app.agent_chat.settings.add.as_ref().unwrap().model, "vendor/own:free");
+        assert_eq!(requests().len(), 4, "opening the picker asks nobody again");
+
+        // A refusal shows in the popup, and opening it again asks again.
+        let add = h.app.agent_chat.settings.add.as_mut().unwrap();
+        add.base_url = "https://refused.example/v1".into();
+        add.key.clear();
+        add.list_again = true;
+        list_settled(&mut h);
+        h.step(&json!({"click":{"handle":"ai_add:model"}})).unwrap();
+        list_settled(&mut h);
+        assert_eq!(requests().len(), 6, "asked again on opening");
+        let listing = h.app.agent_chat.settings.add.as_ref().unwrap().listing.clone();
+        let (models, note) = listed_for(&h.app.agent_chat.settings.endpoint_models, listing.as_ref());
+        assert!(models.is_empty());
+        assert!(
+            note.as_deref().is_some_and(|note| note.contains("HTTP 401: ") && !note.contains("no such key")),
+            "a safe status, not the provider's body: {note:?}"
+        );
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.frames(3);
+        let add = h.app.agent_chat.settings.add.as_mut().unwrap();
+        add.base_url = "https://openrouter.ai/api/v1".into();
+        h.step(&json!({"click":{"handle":"ai_add:add"}})).unwrap();
+        assert!(h.app.agent_chat.settings.add.is_none());
+        assert_eq!(h.app.preferences.agents.last().map(|a| a.model.as_str()), Some("vendor/own:free"));
+    }
+
+    /// The keychain answers on the listing's thread, not on the window's.
+    struct KeyOffTheWindow(std::thread::ThreadId);
+    impl super::super::backend::Secrets for KeyOffTheWindow {
+        fn get(&self, _: &str) -> Result<Option<String>, String> {
+            assert_ne!(std::thread::current().id(), self.0);
+            Ok(Some("not-a-real-key".into()))
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// An endpoint's card has a model row. The page asks nobody; opening the picker lists, with the
+    /// agent's key from the keychain, and a row or a typed model becomes an idle agent's model.
+    #[test]
+    fn the_card_lists_when_its_picker_opens_and_changes_an_idle_endpoints_model() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.ai_features = true;
+        h.app.agent_chat.detection = Some(Default::default());
+        h.app.services.secrets = Some(std::sync::Arc::new(KeyOffTheWindow(std::thread::current().id())));
+        let seen = listing_http(&mut h);
+        h.app.preferences.agents.push(AgentConfig {
+            id: "api-1".into(),
+            name: "Endpoint".into(),
+            kind: Kind::Api,
+            base_url: "http://localhost:1/v1".into(),
+            model: "local".into(),
+            key: true,
+            ..Default::default()
+        });
+        h.step(&json!({"call":"ui.prefs","params":{"open":"AI"}})).unwrap();
+        h.frames(4);
+        reveal_card_action(&mut h, "prefs:ai_model:api-1").unwrap();
+        assert!(scenario::handle_at("prefs:ai_model:api-1").is_some());
+        assert!(seen.lock().unwrap().is_empty(), "looking at the page asks nobody");
+
+        h.step(&json!({"click":{"handle":"prefs:ai_model:api-1"}})).unwrap();
+        list_settled(&mut h);
+        assert_eq!(*seen.lock().unwrap(), [("http://localhost:1/v1/models".to_string(), true)]);
+        h.step(&json!({"click":{"handle":"prefs:ai_model:api-1:vendor/big"}})).unwrap();
+        h.frames(3);
+        let model = |h: &Harness| h.app.preferences.agents.iter().find(|a| a.id == "api-1").map(|a| a.model.clone());
+        assert_eq!(model(&h).as_deref(), Some("vendor/big"));
+        assert_eq!(h.app.preferences.agent_models.get("api-1").map(String::as_str), Some("vendor/big"));
+
+        h.step(&json!({"click":{"handle":"prefs:ai_model:api-1"}})).unwrap();
+        h.frames(3);
+        h.step(&json!({"text":"  vendor/own "})).unwrap();
+        h.frames(3);
+        assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new("sc_ai_model:api-1").with("search"))), "the box keeps the focus over Preferences");
+        h.step(&json!({"click":{"handle":"prefs:ai_model:api-1:custom"}})).unwrap();
+        h.frames(3);
+        assert_eq!(model(&h).as_deref(), Some("vendor/own"));
+        assert_eq!(h.app.preferences.agent_models.get("api-1").map(String::as_str), Some("vendor/own"));
+        assert_eq!(seen.lock().unwrap().len(), 1, "listed once");
+    }
+}

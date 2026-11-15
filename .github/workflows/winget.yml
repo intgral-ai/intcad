@@ -1,0 +1,15 @@
+name: WinGet publication quarantined
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    name: WinGet submission disabled (not release evidence)
+    if: ${{ false && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo 'BLOCKED - bherbruck.SolidCraft and upstream store submissions are not approved for this fork'

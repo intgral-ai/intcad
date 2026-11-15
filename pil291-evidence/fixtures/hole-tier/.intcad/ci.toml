@@ -1,0 +1,14 @@
+# Checks: whether they run by themselves, and which data they use.
+schema_version = 1
+enabled = true
+on_manual_edit = "stale"
+
+[data]
+kind = "factory"
+name = "PIL-291 two-tier test shop"
+version = "1.0.0-test"
+sha256 = "d182cd8f41a549c5b2303fd82a402e89f580e002ab87ca2f44170f014f32d883"
+file = ".intcad/data/d182cd8f-pil-291-two-tier-test-shop-1.0.0-test.json"
+
+[checks]
+skip = []

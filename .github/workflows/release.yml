@@ -1,0 +1,644 @@
+# Build/check only. No publisher, signing credentials, draft switch, release
+# branch trigger or nightly invocation. Publication needs separate review.
+name: Package builds (nonpublishing)
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      beta_three_platforms:
+        description: "Build only the Beta Linux x86_64, macOS universal and Windows x64 packages"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Release packages bind a real reviewed revision; source/Nix builds use the unbound sentinel.
+  SOLIDCRAFT_RELEASE: "1"
+  # The Mastra runtime remains unapproved (DQ-7/#15). Ordinary release packaging must keep its
+  # previous contents; bundling the workflow is opt-in and needs an explicit owner decision on the
+  # release default (DQ-7/DQ-4) plus approved artifacts for every target.
+  SOLIDCRAFT_WITH_MASTRA: "0"
+  # The native release path. `package_contents.py` must still prove from the built
+  # installer bytes that no Mastra runtime, Node sidecar or old runtime dependency
+  # was bundled before the gate can mark #14/#15 not applicable.
+  SOLIDCRAFT_DISTRIBUTION: "native"
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      date: ${{ steps.v.outputs.date }}
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: v
+        name: Resolve checkout version (never a publication decision)
+        run: |
+          . packaging/env.sh
+          if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'; then
+            echo '::error::Cargo.toml needs a SemVer version'
+            exit 1
+          fi
+          { echo "version=$VERSION"; echo "date=$(date -u +%Y-%m-%d)"; } >>"$GITHUB_OUTPUT"
+
+  icons:
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - *checkout
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-icons
+          save-if: false
+      - run: cargo build --release --locked -p solidcraft-cli
+      - run: |
+          . packaging/env.sh
+          make_icons target/release/solidcraft-cli icons
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: icons-${{ github.sha }}
+          path: icons
+          if-no-files-found: error
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: version
+    # Preserve the existing glibc >= 2.35 packaging baseline.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04, deb: amd64 }
+          - { arch: aarch64, runner: ubuntu-22.04-arm, deb: arm64 }
+    env:
+      SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      NFPM_VERSION: 2.47.0
+      PACKAGE_ID: release-linux-${{ matrix.arch }}
+      PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+    steps:
+      - *checkout
+      - run: scripts/ci/build-jobs.sh
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends desktop-file-utils appstream zsync rpm
+          # The Assistant's web view links the system's GTK and WebKitGTK (apps/solidcraft, wry).
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-linux-${{ matrix.arch }}
+          save-if: false
+      - name: Build and package (AppImage, deb, rpm, tar.gz)
+        run: packaging/linux/package.sh
+      - name: Check the packages (no desktop launch)
+        run: |
+          dpkg-deb --info dist/release/*.deb
+          dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/solidcraft$|usr/bin/solidcraft-cli$|metainfo|applications|THIRD-PARTY-LICENSES.txt'
+          # The notices of the Assistant's page go with every package that carries the page.
+          dpkg-deb --contents dist/release/*.deb | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
+          rpm -qlp dist/release/*.rpm | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
+          tar -tzf dist/release/*.tar.gz | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
+          dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/solvecraft-cli$'
+          dpkg-deb --field dist/release/*.deb Replaces Conflicts Provides | grep -F solvecraft
+          rpm -qip dist/release/*.rpm
+          rpm -qlp dist/release/*.rpm | grep -E '/usr/bin/solidcraft$|THIRD-PARTY-LICENSES.txt'
+          tar -tzf dist/release/*.tar.gz | grep -E '/bin/solidcraft$|THIRD-PARTY-LICENSES.txt'
+          ldd target/release/solidcraft
+          # This runner has the web view's libraries (it built against them), so an AppImage
+          # that starts here says nothing about a user's machine: the next step covers that.
+          for appimage in dist/release/*.AppImage; do
+            chmod +x "$appimage"
+            APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --version
+            "$appimage" --appimage-updateinformation | grep -F 'gh-releases-zsync|'
+            test -s "$appimage.zsync"
+          done
+          ls dist/release/solvecraft-*-linux-*.AppImage.zsync
+      # Each package on bare systems, with nothing but what it declares, then started there with
+      # the Assistant opened (packaging/linux/installed-check.sh). The tarball has the same
+      # program files as the AppImage and no launcher of its own; it is not installed here.
+      - name: Install the packages on bare systems and open the Assistant
+        env:
+          EVIDENCE: ${{ runner.temp }}/installed-check
+        run: |
+          deb=(dist/release/solidcraft-*.deb)
+          rpm=(dist/release/solidcraft-*.rpm)
+          appimage=(dist/release/solidcraft-*.AppImage)
+          packaging/linux/installed-check.sh ubuntu:22.04 "${deb[0]}" x11
+          packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" x11
+          packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" wayland
+          packaging/linux/installed-check.sh debian:13 "${deb[0]}" x11
+          packaging/linux/installed-check.sh fedora:44 "${rpm[0]}" x11
+          packaging/linux/installed-check.sh ubuntu:24.04 "${appimage[0]}" x11
+      - name: Keep the installed checks' logs and pictures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installed-check-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/installed-check
+          if-no-files-found: warn
+      # Shared *build metadata* only: this is neither #15 inventory nor installed
+      # acceptance. Null contractDigest explicitly blocks the release gate.
+      - &package-evidence
+        name: Bind package bytes to this checkout and contract manifest
+        shell: python {0}
+        run: |
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if sha != os.environ['GITHUB_SHA']:
+              raise SystemExit('package sourceRevision mismatch')
+          if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--']).returncode != 0:
+              raise SystemExit('dirty tracked package source; rebuild from the immutable checkout')
+          directory = Path('dist/release')
+          files = sorted(p for p in directory.iterdir()
+                         if p.is_file() and p.name not in ('build.json', 'contents.json'))
+          if not files:
+              raise SystemExit('no built package artifacts')
+          def digest(path):
+              result = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b''):
+                      result.update(block)
+              return result.hexdigest()
+          manifest = Path('schema/mastra-runtime/v1/manifest.json')
+          # The contract is a committed source input. `git show` gives the exact
+          # blob on every runner; a Windows checkout may otherwise convert its
+          # line endings and produce a different digest from Linux/macOS.
+          try:
+              contract = subprocess.check_output(['git', 'show', 'HEAD:' + manifest.as_posix()])
+              contract_digest = 'sha256:' + hashlib.sha256(contract).hexdigest()
+          except subprocess.CalledProcessError:
+              contract_digest = None
+          data = dict(version=1, packageId=os.environ['PACKAGE_ID'], sourceRevision=sha,
+                      target=os.environ['PACKAGE_TARGET'], contractDigest=contract_digest,
+                      artifacts=[dict(name=p.name, sha256=digest(p)) for p in files])
+          (directory / 'build.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+
+          # The runtime requirement is decided from the package bytes themselves.
+          # Flatpak/Arch/Snap reuse the inspected Linux tarball in dist/linux.
+          package_id = os.environ['PACKAGE_ID']
+          command = [sys.executable, 'scripts/ci/package_contents.py',
+                     '--package-id', package_id, '--source-revision', sha,
+                     '--distribution', os.environ.get('SOLIDCRAFT_DISTRIBUTION', 'native'),
+                     '--out', str(directory / 'contents.json')]
+          if package_id.startswith(('release-flatpak-', 'release-arch-', 'release-snap-')):
+              arch = package_id.rsplit('-', 1)[-1]
+              sources = sorted(Path('dist/linux').glob('solidcraft-*-linux-' + arch + '.tar.gz'))
+              if len(sources) != 1:
+                  raise SystemExit('derived package needs exactly one source Linux tarball')
+              command += ['--derived-from', 'release-linux-' + arch, '--source-artifact', str(sources[0])]
+          else:
+              command += [str(p) for p in files]
+          subprocess.run(command, check=True)
+      - &upload-package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.PACKAGE_ID }}
+          path: dist/release/*
+          if-no-files-found: error
+      - &upload-evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-evidence-${{ env.PACKAGE_ID }}
+          path: |
+            dist/release/build.json
+            dist/release/contents.json
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak ${{ matrix.arch }}
+    needs: [version, linux]
+    if: inputs.beta_three_platforms != true
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    env:
+      SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PACKAGE_ID: release-flatpak-${{ matrix.arch }}
+      PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      # aarch64's runtime GL under Xvfb needs the software driver; x86_64 passes without it.
+      SOLIDCRAFT_SMOKE_SOFTWARE_GL: ${{ matrix.arch == 'aarch64' && '1' || '0' }}
+    steps:
+      - *checkout
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/linux
+      - name: Install flatpak-builder and smoke tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common xvfb xauth weston xwayland dbus-x11
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build and smoke-test the Flatpak in its network-denying sandbox
+        # The existing manifest grants no network. Its desktop smoke stays inside
+        # that sandbox; never add a host network override to make it pass.
+        run: packaging/linux/flatpak-bundle.sh "dist/linux/solidcraft-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.tar.gz"
+      - *package-evidence
+      - *upload-package
+      - *upload-evidence
+
+  arch:
+    name: Arch Linux ${{ matrix.arch }}
+    needs: [version, linux]
+    if: inputs.beta_three_platforms != true
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PACKAGE_ID: release-arch-${{ matrix.arch }}
+      PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+    steps:
+      - *checkout
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/linux
+      - name: Install libarchive (bsdtar) for .PKGINFO/.MTREE
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libarchive-tools
+      - id: pkgver
+        name: Arch version
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # Arch pkgver allows no hyphen. The arch-package action derives its version from
+          # the tarball name with ^([A-Za-z0-9_-]+)-([0-9]+\.[0-9]+\.[0-9]+[^-_]*)-linux-...$,
+          # so a prerelease such as 0.1.0-beta.1 must be handed over as 0.1.0beta.1 or the
+          # action falls back to 0.0.0. The alias goes to dist/arch, so dist/linux keeps the
+          # one inspected Linux tarball the package-evidence step requires.
+          pkgver="${VERSION//-/}"
+          echo "pkgver=$pkgver" >>"$GITHUB_OUTPUT"
+          # The action derives the package version from the tarball name, but the evidence
+          # step requires exactly one source tarball in dist/linux. Hand the action an alias
+          # in dist/arch so the inspected Linux artifact stays the only dist/linux tarball.
+          mkdir -p dist/arch
+          cp "dist/linux/solidcraft-$VERSION-linux-$ARCH.tar.gz" "dist/arch/solidcraft-$pkgver-linux-$ARCH.tar.gz"
+      - uses: storytold/craft-common-actions/actions/arch-package@fa5ef18780cf5e7d5d3b8de068de56cffc83cac5 # main
+        with:
+          tarball: dist/arch/solidcraft-${{ steps.pkgver.outputs.pkgver }}-linux-${{ matrix.arch }}.tar.gz
+          arch: ${{ matrix.arch }}
+      - name: The package under the checkout version
+        if: steps.pkgver.outputs.pkgver != env.VERSION
+        env:
+          ARCH: ${{ matrix.arch }}
+          PKGVER: ${{ steps.pkgver.outputs.pkgver }}
+        run: sudo mv "dist/release/solidcraft-$PKGVER-linux-$ARCH.pkg.tar.zst" "dist/release/solidcraft-$VERSION-linux-$ARCH.pkg.tar.zst"
+      # The arch-package action writes a fixed depends list with no input for more. The app
+      # links libgtk-3.so.0 and libwebkit2gtk-4.1.so.0 directly, so the package must declare
+      # Arch's gtk3 and webkit2gtk-4.1 or a clean install will not start. Rewrite .PKGINFO
+      # (package files and .MTREE are untouched) and then fail unless both are there.
+      - name: Declare the Assistant's runtime libraries
+        env:
+          PKG: dist/release/solidcraft-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+        run: packaging/linux/arch-depends.sh "$PKG" gtk3 webkit2gtk-4.1
+      - name: Check the package
+        env:
+          PKG: dist/release/solidcraft-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+        run: |
+          tar --zstd -tf "$PKG" | grep -E '^usr/bin/solidcraft$|^usr/bin/solidcraft-cli$|^usr/share/applications/io\.tangencylabs\.solidcraft\.desktop$'
+          info="$(mktemp)"
+          tar --zstd -xOf "$PKG" .PKGINFO >"$info"
+          grep -E '^(pkgname|pkgver|arch) = ' "$info"
+          grep -qx 'pkgname = io.tangencylabs.solidcraft' "$info"
+          grep -qx 'depend = gtk3' "$info"
+          grep -qx 'depend = webkit2gtk-4.1' "$info"
+          rm -f "$info"
+      - *package-evidence
+      - *upload-package
+      - *upload-evidence
+
+  snap:
+    name: Snap ${{ matrix.arch }}
+    needs: [version, linux]
+    if: inputs.beta_three_platforms != true
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    env:
+      SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PACKAGE_ID: release-snap-${{ matrix.arch }}
+      PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+    steps:
+      - *checkout
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/linux
+      - name: Install snapcraft
+        run: |
+          # The store can reset a snapd download; retry the same install a few times.
+          for attempt in 1 2 3; do
+            if sudo snap install snapcraft --classic; then exit 0; fi
+            sleep $((attempt * 10))
+          done
+          exit 1
+      - name: Build the snap
+        run: |
+          sudo --preserve-env=SOLIDCRAFT_VERSION,SOLIDCRAFT_BUILD_DATE env "PATH=$PATH" \
+            packaging/linux/snap-pack.sh --destructive-mode "dist/linux/solidcraft-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.tar.gz"
+          sudo chown -R "$(id -u):$(id -g)" dist target
+      - name: Install and check the package
+        run: |
+          snap_file="dist/release/solidcraft-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.snap"
+          sudo snap install --dangerous "$snap_file"
+          snap info --verbose "$snap_file" | head -n 12
+          snap connections solidcraft
+          solidcraft.cli --version
+          # The gnome extension on core24 is gnome-46-2404. Its content snap stage-packages
+          # libwebkit2gtk-4.1-0 and its SDK supplies GTK 3, so a clean install gets the
+          # Assistant's two libraries without duplicating them in this snap. Check the
+          # mounted content and its connection; the app itself is not started here.
+          snap connections solidcraft | grep -F 'gnome-46-2404'
+          for lib in libgtk-3.so.0 libwebkit2gtk-4.1.so.0; do
+            if [ -z "$(find -L /snap/gnome-46-2404/current -name "$lib" -print -quit)" ]; then
+              echo "::error::the gnome-46-2404 content snap does not provide $lib"
+              exit 1
+            fi
+          done
+          echo 'Snap Assistant desktop smoke NOT run in the normal step: a strict snap uses the host network, and release policy forbids starting a network-enabled desktop. The gnome extension supplies GTK 3 and WebKitGTK 4.1 (checked above).' >>"$GITHUB_STEP_SUMMARY"
+      - name: Open the Assistant on a network-isolated desktop
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth iproute2
+          mkdir -p "$RUNNER_TEMP/snap-offline"
+          set +e
+          runner=$(id -un)
+          uid=$(id -u)
+          work=$(pwd)
+          temp=$RUNNER_TEMP
+          sudo unshare -n -- bash -c "ip link set lo up; test \"\$(ip -o link | wc -l)\" -eq 1; exec su $runner -s /bin/bash -c 'cd $work && HOME=$HOME XDG_RUNTIME_DIR=/run/user/$uid python3 packaging/linux/snap-smoke.py --backend x11 --out $temp/snap-offline'" 2>&1 | tee "$RUNNER_TEMP/snap-offline/smoke.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -eq 0 ]; then
+            echo 'Snap offline desktop smoke PASS (network namespace, loopback only).' >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Snap offline desktop smoke FAILED; see snap-offline-evidence. A strict snap may be moved back to the host network namespace by snapd.' >>"$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+      - name: Keep the offline smoke evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snap-offline-evidence-${{ matrix.arch }}
+          path: ${{ runner.temp }}/snap-offline
+          if-no-files-found: warn
+      - *package-evidence
+      - *upload-package
+      - *upload-evidence
+
+  freebsd:
+    name: FreeBSD x86_64
+    needs: version
+    if: inputs.beta_three_platforms != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PACKAGE_ID: release-freebsd-x86_64
+      PACKAGE_TARGET: x86_64-unknown-freebsd
+    steps:
+      - *checkout
+      - name: Build and package in a FreeBSD VM (tar.gz)
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "14.3"
+          usesh: true
+          cpu: 4
+          mem: 12288
+          envs: "SOLIDCRAFT_VERSION SOLIDCRAFT_BUILD_DATE"
+          prepare: |
+            pkg install -y bash git curl pkgconf libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          run: |
+            set -e
+            . "$HOME/.cargo/env"
+            git config --global --add safe.directory "$PWD"
+            export CARGO_TARGET_DIR=/var/tmp/solidcraft-target CARGO_BUILD_JOBS=4
+            bash packaging/freebsd/package.sh
+            tar -tzf dist/release/solidcraft-*-freebsd-x86_64.tar.gz \
+              | grep -E '/bin/solidcraft$|/bin/solidcraft-cli$|/share/applications/io\.tangencylabs\.solidcraft\.desktop$|/share/doc/solidcraft/THIRD-PARTY-LICENSES\.txt$'
+      - *package-evidence
+      - *upload-package
+      - *upload-evidence
+
+  macos-build:
+    name: macOS build ${{ matrix.arch }}
+    needs: version
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, target: aarch64-apple-darwin }
+          - { arch: x86_64, target: x86_64-apple-darwin }
+    env:
+      SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+    steps:
+      - *checkout
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-macos-${{ matrix.arch }}
+          save-if: false
+      - name: Build
+        run: packaging/macos/package.sh --build-only ${{ matrix.target }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-bin-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            target/${{ matrix.target }}/release/solidcraft
+            target/${{ matrix.target }}/release/solidcraft-cli
+            target/${{ matrix.target }}/release/solvecraft-cli
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal (ad-hoc only)
+    needs: [version, macos-build]
+    runs-on: macos-15
+    env:
+      SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PACKAGE_ID: release-macos
+      PACKAGE_TARGET: universal-apple-darwin
+    steps:
+      - *checkout
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-bin-aarch64-${{ github.sha }}
+          path: target/aarch64-apple-darwin/release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-bin-x86_64-${{ github.sha }}
+          path: target/x86_64-apple-darwin/release
+      - name: Join, package and mount-check (no credential signing)
+        run: |
+          chmod +x target/*-apple-darwin/release/solidcraft target/*-apple-darwin/release/solidcraft-cli target/*-apple-darwin/release/solvecraft-cli
+          packaging/macos/package.sh --arch universal --skip-build
+      # The app as a user gets it: copied out of the disk image, started, the Assistant opened
+      # (packaging/assistant-check.py). The app is started without the network, in a sandbox
+      # that leaves only this machine's own address (packaging/macos/no-network.sb). This
+      # runner downloads nothing through a browser, so the image carries no quarantine mark
+      # and Gatekeeper is not asked: an ad-hoc signature does not pass it on a user's Mac, and
+      # this step says nothing about that.
+      - name: Copy the app out of the disk image and open the Assistant
+        # The script checks the embedded page, inventory and notices inside the installed copy,
+        # verifies the local signature, proves the no-network profile works, and opens the
+        # Assistant in both halves of the universal app where the runner can run them.
+        run: |
+          packaging/macos/installed-check.sh \
+            "$(find dist/release -maxdepth 1 -name '*.dmg' -print -quit)" \
+            "$RUNNER_TEMP/installed-check"
+      - name: Keep the installed check's log and pictures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installed-check-macos
+          path: ${{ runner.temp }}/installed-check
+          if-no-files-found: warn
+      - *package-evidence
+      - *upload-package
+      - *upload-evidence
+
+  windows:
+    name: Windows ${{ matrix.arch }} (unsigned)
+    needs: [version, icons]
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, target: x86_64-pc-windows-msvc }
+          - { arch: x86, target: i686-pc-windows-msvc }
+          - { arch: arm64, target: aarch64-pc-windows-msvc }
+    env:
+      SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      PACKAGE_ID: release-windows-${{ matrix.arch }}
+      PACKAGE_TARGET: ${{ matrix.target }}
+    steps:
+      - *checkout
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: icons-${{ github.sha }}
+          path: icons
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-windows-${{ matrix.arch }}
+          save-if: false
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+      - name: Build and check package (msi, portable zip; CLI on runnable architectures)
+        shell: pwsh
+        env:
+          SOLIDCRAFT_ICONS: ${{ github.workspace }}/icons
+        run: ./packaging/windows/package.ps1 -Arch ${{ matrix.arch }}
+      # The MSI installed for the machine, the Assistant opened in the installed app, the MSI
+      # removed again (packaging/windows/installed-check.ps1). An arm64 build does not run on
+      # this x64 runner, so its MSI is built and not installed. The 32-bit MSI is installed and
+      # removed, but its app is not started (the script and docs/releasing.md say why).
+      - name: Install the MSI and open the Assistant in the installed app
+        if: matrix.arch != 'arm64'
+        shell: pwsh
+        run: ./packaging/windows/installed-check.ps1 -Arch ${{ matrix.arch }} -Evidence "$env:RUNNER_TEMP/installed-check"
+      - name: Keep the installed check's logs and pictures
+        if: always() && matrix.arch != 'arm64'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installed-check-windows-${{ matrix.arch }}
+          path: ${{ runner.temp }}/installed-check
+          if-no-files-found: warn
+      - *package-evidence
+      - *upload-package
+      - *upload-evidence
+
+  web:
+    name: Web (wasm)
+    needs: version
+    if: inputs.beta_three_platforms != true
+    runs-on: ubuntu-24.04
+    env:
+      SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      TRUNK_VERSION: 0.21.14
+      PACKAGE_ID: release-web
+      PACKAGE_TARGET: wasm32-unknown-unknown
+    steps:
+      - *checkout
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-web
+          save-if: false
+      - name: Install trunk
+        run: |
+          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.cargo/bin" trunk
+      - name: Build and zip
+        run: packaging/web/package.sh
+      - *package-evidence
+      - *upload-package
+      - *upload-evidence
+
+  package-builds:
+    name: All nonpublishing package builds
+    needs: [version, icons, linux, flatpak, arch, snap, freebsd, macos-build, macos, windows, web]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every build and check (not runtime release acceptance)
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          expected = {'version', 'icons', 'linux', 'flatpak', 'arch', 'snap', 'freebsd', 'macos-build', 'macos', 'windows', 'web'}
+          bad = [job for job in sorted(expected) if needs.get(job, {}).get('result') != 'success']
+          for job in bad:
+              print('FAIL: ' + job + ': missing/failed/cancelled/skipped package build')
+          sys.exit(1 if bad else 0)
+          PY

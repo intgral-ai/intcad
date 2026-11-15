@@ -1,0 +1,12 @@
+; A sandbox profile for packaging/assistant-check.py on macOS: everything the app normally may
+; do, except the network. Only this machine's own address stays open (the control channel
+; listens on 127.0.0.1), and local sockets (the system's services). docs/releasing.md: a package
+; check never starts a release build of the desktop app with the network open.
+(version 1)
+(allow default)
+(deny network*)
+(allow network-bind (local ip "localhost:*"))
+(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:*"))
+(allow network* (remote unix-socket))
+(allow network* (local unix-socket))

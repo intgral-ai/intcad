@@ -1,0 +1,87 @@
+# Verify, without publishing, that the vendored kernel under `solidcore/` has a mirror commit that
+# is a fast-forward of tangency-labs/solidcore.
+#
+# `solidcore` is the SolidCore kernel, vendored with `git subtree`, so the history under
+# `solidcore/` is SolidCore's. Upstream's workflow pushes those commits back to
+# tangency-labs/solidcore. IntCAD does not publish to an external repository: this fork only
+# fetches the public upstream (read-only, no deploy key) and checks the same fast-forward rule
+# locally with scripts/ci/solidcore-mirror.sh, so a divergence is reported instead of pushed.
+#
+# The script mirrors incrementally: one mirror commit per new main commit that changes solidcore/,
+# each with exactly that commit's solidcore/ tree, its author, dates and message, and a
+# `solidcraft: <sha>` trailer. It stops on divergence or when a mirror commit would not be the
+# kernel alone. Nothing here has write access anywhere.
+name: Verify SolidCore mirror
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: solidcore-mirror-verify
+  cancel-in-progress: false
+
+env:
+  # The directory in this repository that is the whole of SolidCore.
+  PREFIX: solidcore
+  # Public, read-only: no deploy key, no SSH identity.
+  SOLIDCORE_URL: https://github.com/tangency-labs/solidcore.git
+  SOLIDCORE_BRANCH: main
+
+jobs:
+  # Upstream's `mirror` job pushed the result; that step and the SOLIDCORE_DEPLOY_KEY secret are
+  # dropped here (external publication is not permitted for this fork).
+  verify:
+    name: Verify the mirror is a fast-forward (dry run)
+    runs-on: ubuntu-24.04
+    # Incremental: seconds per run.
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The whole history: the mirror walks main's ancestry since the last mirrored commit, which a
+      # shallow clone would not have.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Read-only fetch of the public upstream tip, so the ancestry test compares against what
+      # SolidCore has. No credential is used or needed.
+      - name: Fetch SolidCore
+        id: check
+        run: |
+          set -euo pipefail
+
+          if ! git fetch --no-tags "$SOLIDCORE_URL" "$SOLIDCORE_BRANCH"; then
+            echo "::error::Could not fetch $SOLIDCORE_URL $SOLIDCORE_BRANCH."
+            exit 1
+          fi
+          REMOTE=$(git rev-parse FETCH_HEAD)
+
+          # Mirror commits for main's solidcore/ commits since the last run, built incrementally on
+          # SolidCore's tip (never `git subtree split`). The script fails on divergence or anything
+          # that is not a fast-forward of SolidCore's tip.
+          bash scripts/ci/solidcore-mirror.sh "$REMOTE" HEAD > "$RUNNER_TEMP/mirror.out"
+          cat "$RUNNER_TEMP/mirror.out"
+          STATE=$(sed -n 's/^state=//p' "$RUNNER_TEMP/mirror.out")
+          SPLIT=$(sed -n 's/^tip=//p' "$RUNNER_TEMP/mirror.out")
+          COUNT=$(sed -n 's/^count=//p' "$RUNNER_TEMP/mirror.out")
+
+          {
+            echo "### Verify the SolidCore mirror (no push)"
+            echo
+            echo "| | commit |"
+            echo "| --- | --- |"
+            echo "| this repository's \`$PREFIX\` mirror ($COUNT new) | \`$SPLIT\` |"
+            echo "| solidcore \`$SOLIDCORE_BRANCH\` (upstream) | \`$REMOTE\` |"
+            echo
+            case "$STATE" in
+              in-sync) echo "**In sync.** Nothing to mirror." ;;
+              fast-forward) echo "**Fast-forwardable.** Upstream would need a push, which this fork does not do." ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"

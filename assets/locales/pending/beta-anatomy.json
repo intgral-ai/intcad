@@ -1,0 +1,32 @@
+{
+  "en": {
+    "ui.agent_chat_object_other_document": "Target unavailable: this answer belongs to another document.",
+    "ui.agent_chat_object_stale": "Target unavailable: the design changed after this answer. Ask Anatomy again for the current revision.",
+    "ui.agent_chat_object_unavailable": "Target unavailable: the object no longer exists in this design."
+  },
+  "ar": {
+    "ui.agent_chat_object_other_document": "الهدف غير متاح: هذه الإجابة تخص مستنداً آخر.",
+    "ui.agent_chat_object_stale": "الهدف غير متاح: تغيّر التصميم بعد هذه الإجابة. اطلب تشريحاً مرة أخرى للمراجعة الحالية.",
+    "ui.agent_chat_object_unavailable": "الهدف غير متاح: لم يعد الكائن موجوداً في هذا التصميم."
+  },
+  "he": {
+    "ui.agent_chat_object_other_document": "היעד אינו זמין: התשובה הזו שייכת למסמך אחר.",
+    "ui.agent_chat_object_stale": "היעד אינו זמין: העיצוב השתנה אחרי התשובה הזו. בקש אנטומיה שוב עבור הגרסה הנוכחית.",
+    "ui.agent_chat_object_unavailable": "היעד אינו זמין: האובייקט כבר אינו קיים בעיצוב הזה."
+  },
+  "ja": {
+    "ui.agent_chat_object_other_document": "対象を利用できません: この回答は別のドキュメントのものです。",
+    "ui.agent_chat_object_stale": "対象を利用できません: この回答の後に設計が変わりました。現在のリビジョンでもう一度アナトミーを実行してください。",
+    "ui.agent_chat_object_unavailable": "対象を利用できません: この設計にそのオブジェクトはもうありません。"
+  },
+  "vi": {
+    "ui.agent_chat_object_other_document": "Không thể chọn đối tượng: câu trả lời này thuộc tài liệu khác.",
+    "ui.agent_chat_object_stale": "Không thể chọn đối tượng: thiết kế đã thay đổi sau câu trả lời này. Hãy chạy lại Giải phẫu cho bản sửa đổi hiện tại.",
+    "ui.agent_chat_object_unavailable": "Không thể chọn đối tượng: đối tượng không còn trong thiết kế này."
+  },
+  "zh": {
+    "ui.agent_chat_object_other_document": "无法定位目标：此答案属于另一个文档。",
+    "ui.agent_chat_object_stale": "无法定位目标：此答案之后设计已更改。请针对当前修订版重新运行结构说明。",
+    "ui.agent_chat_object_unavailable": "无法定位目标：此设计中已不存在该对象。"
+  }
+}

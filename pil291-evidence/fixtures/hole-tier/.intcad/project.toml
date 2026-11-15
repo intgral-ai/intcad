@@ -1,0 +1,8 @@
+# This project's identity and defaults. Edits are read on the next open.
+schema_version = 1
+id = "af242da7-f1f8-46ab-97eb-e567758e9a34"
+name = "Hole Tier"
+process = "sheet-metal"
+material = "5052-H32"
+# thickness_mm = 2.0
+designs = ["Hole Tier.sc"]

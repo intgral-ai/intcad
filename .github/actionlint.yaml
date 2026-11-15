@@ -1,0 +1,7 @@
+self-hosted-runner:
+  labels:
+    - self-hosted-fast
+    - self-hosted-light
+    # Fork CI uses versioned GitHub-hosted labels. These entries only teach
+    # actionlint about optional self-hosted labels; they establish no access.
+    # No workflow currently relies on an external or Blacksmith runner label.

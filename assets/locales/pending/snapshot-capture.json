@@ -1,0 +1,20 @@
+{
+  "en": {
+    "cmd.document_snapshot_capture": "Capture Snapshot"
+  },
+  "ar": {
+    "cmd.document_snapshot_capture": "التقاط لقطة"
+  },
+  "he": {
+    "cmd.document_snapshot_capture": "לכידת תמונת מצב"
+  },
+  "ja": {
+    "cmd.document_snapshot_capture": "スナップショットを取得"
+  },
+  "vi": {
+    "cmd.document_snapshot_capture": "Chụp ảnh nhanh"
+  },
+  "zh": {
+    "cmd.document_snapshot_capture": "捕获快照"
+  }
+}

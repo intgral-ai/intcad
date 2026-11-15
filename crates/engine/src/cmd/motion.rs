@@ -1,0 +1,1570 @@
+//! Contact Sets, Motion Study and Exploded views.
+
+use solidcraft_geom::prelude::*;
+use std::cell::Cell;
+use std::collections::BTreeSet;
+
+use serde_json::{Value, json};
+use solidcore_record::Vec3;
+use solidcraft_doc::Mat;
+use solidcraft_doc::joints::{self, JointKind};
+use solidcraft_doc::motion::{ContactSet, ExplodedView, MotionStudy, StudyKey};
+use solidcraft_geom::{Aabb3, Bvh};
+use solidcraft_kernel::Body;
+
+use super::CommandSpec;
+use super::joints::{cannot_move, effective_values, joint_id, occurrence_id, place_holding, value};
+use crate::params::{bad, bool_, str_, vec3};
+use crate::schema::motion::{
+    ContactCheck, ContactCollision, ContactCreateParams, ContactEditParams, ContactEnableParams, ContactNoParams, ContactSetChange,
+    ContactSetCreated, ContactSetEdited, ContactSetInfo, ContactSets, ContactSwitch, ExplodeCreateParams, ExplodeCreated, ExplodeDeleteParams,
+    ExplodeDeleted, ExplodeListParams, ExplodeMoveInfo, ExplodeShowParams, ExplodeShown, ExplodeViews, ExplodedViewInfo, FindLimitsParams,
+    FindLimitsResult, MotionListParams, MotionStudies, MotionStudyDeleteParams, MotionStudyDeleted, MotionStudyInfo, MotionStudyKeyInfo,
+    MotionStudyParams, MotionStudySaved,
+};
+use crate::schema::motion_animation::{AnimationExported, ExportAnimationParams};
+use crate::schema::motion_play::{
+    DriveReport, ExportParams, PartPose, PlayParams, Pose, StudyExport, StudyExported, StudyPlayed, StudySample, UnmovedJoint,
+};
+use crate::schema::motion_trace::{EditTraceParams, KeepTraceParams, MotionTraceEdited, MotionTraceKept, MotionTraced, TraceParams, TraceRun};
+use crate::schema::{TypedContract, output_schema_for};
+use crate::{EngineError, Result, Session};
+
+const FIND_LIMITS_CONTRACT: TypedContract<FindLimitsParams> = TypedContract::new();
+const TRACE_CONTRACT: TypedContract<TraceParams> = TypedContract::new();
+const KEEP_TRACE_CONTRACT: TypedContract<KeepTraceParams> = TypedContract::new();
+const EDIT_TRACE_CONTRACT: TypedContract<EditTraceParams> = TypedContract::new();
+
+#[path = "motion_analysis.rs"]
+mod analysis;
+pub(crate) use analysis::part_place;
+#[path = "motion_animation.rs"]
+mod animation;
+#[path = "motion_trace.rs"]
+pub(crate) mod associative;
+#[path = "contact_sweep.rs"]
+pub(crate) mod contact_sweep;
+#[path = "motion_sweep.rs"]
+mod sweep;
+
+macro_rules! trace_doc {
+    () => {
+        "occurrence: id|name, or an occurrence path [ids] (an instance inside sub-assemblies); point: [x,y,z] world point on it, where it is placed now; study: id|name, or joint: id|name with from and \
+         to (degrees for angles, mm for distances, or expressions) and index? (which value, default 0); samples? (2…500, default \
+         the study's steps + 1, or 100) - the point's path as the study plays or the joint is driven, closed loops following"
+    };
+}
+
+const CONTACT_ENABLE_CONTRACT: TypedContract<ContactEnableParams> = TypedContract::new();
+const CONTACT_NONE_CONTRACT: TypedContract<ContactNoParams> = TypedContract::new();
+const CONTACT_CREATE_CONTRACT: TypedContract<ContactCreateParams> = TypedContract::new();
+const CONTACT_EDIT_CONTRACT: TypedContract<ContactEditParams> = TypedContract::new();
+const STUDY_CONTRACT: TypedContract<MotionStudyParams> = TypedContract::new();
+const STUDY_DELETE_CONTRACT: TypedContract<MotionStudyDeleteParams> = TypedContract::new();
+const STUDY_LIST_CONTRACT: TypedContract<MotionListParams> = TypedContract::new();
+const EXPLODE_CREATE_CONTRACT: TypedContract<ExplodeCreateParams> = TypedContract::new();
+const EXPLODE_SHOW_CONTRACT: TypedContract<ExplodeShowParams> = TypedContract::new();
+const EXPLODE_LIST_CONTRACT: TypedContract<ExplodeListParams> = TypedContract::new();
+const EXPLODE_DELETE_CONTRACT: TypedContract<ExplodeDeleteParams> = TypedContract::new();
+const PLAY_CONTRACT: TypedContract<PlayParams> = TypedContract::new();
+const EXPORT_CONTRACT: TypedContract<ExportParams> = TypedContract::new();
+const EXPORT_ANIMATION_CONTRACT: TypedContract<ExportAnimationParams> = TypedContract::new();
+
+pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec::new("contact.enable_sets", "Enable Contact Sets", crate::checked!("contact.enable_sets", enable_sets))
+        .at("SOLID", "ASSEMBLE")
+        .icon("contact_sets")
+        .contract(&CONTACT_ENABLE_CONTRACT)
+        .output(output_schema_for::<ContactSwitch>)
+        .params(
+            "enabled?: bool (default true) — driving joints and motion studies stop where bodies in one contact set would pass through each other",
+        ),
+    CommandSpec::new("contact.enable_all", "Enable All Contact", crate::checked!("contact.enable_all", enable_all))
+        .at("SOLID", "ASSEMBLE")
+        .icon("contact_all")
+        .contract(&CONTACT_NONE_CONTRACT)
+        .output(output_schema_for::<ContactSwitch>)
+        .params("every occurrence takes part in contact (one set of all)"),
+    CommandSpec::new("contact.disable_all", "Disable Contact", crate::checked!("contact.disable_all", disable_all))
+        .at("SOLID", "ASSEMBLE")
+        .icon("contact_off")
+        .contract(&CONTACT_NONE_CONTRACT)
+        .output(output_schema_for::<ContactSwitch>)
+        .params("contact off"),
+    CommandSpec::new("contact.create", "New Contact Set", crate::checked!("contact.create", new_set))
+        .at("SOLID", "ASSEMBLE")
+        .icon("contact_new")
+        .contract(&CONTACT_CREATE_CONTRACT)
+        .output(output_schema_for::<ContactSetCreated>)
+        .params("occurrences: [ids or names] (two or more); name?"),
+    CommandSpec::new("contact.edit", "Edit Contact Set", crate::checked!("contact.edit", edit_set))
+        .icon("edit")
+        .contract(&CONTACT_EDIT_CONTRACT)
+        .output(output_schema_for::<ContactSetEdited>)
+        .params("set: id|name; occurrences?; name?; suppressed?: bool; delete?: bool"),
+    CommandSpec::new("contact.list", "List Contact Sets", crate::checked!("contact.list", list_sets))
+        .icon("list")
+        .noundo()
+        .doc_only()
+        .contract(&CONTACT_NONE_CONTRACT)
+        .output(output_schema_for::<ContactSets>)
+        .params("→ sets, enabled, all"),
+    CommandSpec::new("contact.check", "Check Contact", crate::checked!("contact.check", check))
+        .icon("interference")
+        .noundo()
+        .contract(&CONTACT_NONE_CONTRACT)
+        .output(output_schema_for::<ContactCheck>)
+        .params("→ pairs in contact sets that pass through each other now"),
+    CommandSpec::new("motion.study", "Motion Study", crate::checked!("motion.study", study))
+        .at("SOLID", "ASSEMBLE")
+        .icon("play")
+        .contract(&STUDY_CONTRACT)
+        .output(output_schema_for::<MotionStudySaved>)
+        .params(
+            "name?; study? (edit an existing one); steps? (timeline length, default 100); keys: [{joint, index?, points: [[step, value], …]}] \
+         (values: degrees for angles, mm for distances, or expressions)",
+        ),
+    CommandSpec::new("motion.play", "Play Motion Study", crate::checked!("motion.play", play))
+        .icon("play")
+        .contract(&PLAY_CONTRACT)
+        .output(output_schema_for::<StudyPlayed>)
+        .params(
+            "study: id|name; step (0…steps) — sets the joints to the study's values there (contact sets stop them); quiet?: bool \
+         (positions of only the occurrences that moved) → values: [{joint, values: [{name, value, unit}]}], positions, moved: whether \
+         any occurrence moved, unmoved: [{joint, name, reason}] (keyed joints that can move nothing, such as a chain joined to \
+         nothing grounded)",
+        ),
+    CommandSpec::new("motion.export", "Export Motion Study", crate::checked!("motion.export", export))
+        .icon("export")
+        .noundo()
+        .contract(&EXPORT_CONTRACT)
+        .output(output_schema_for::<StudyExported>)
+        .params("study; samples? (default steps + 1); path? (.json or .csv) → occurrence positions per step (the design is not changed)"),
+    CommandSpec::new("motion.export_animation", "Export Motion Animation", crate::checked!("motion.export_animation", animation::export))
+        .icon("export")
+        .noundo()
+        .contract(&EXPORT_ANIMATION_CONTRACT)
+        .output(output_schema_for::<AnimationExported>)
+        .params(
+            "study: id|name, or joint: id|name with from and to (degrees for angles, mm for distances, or expressions) and index?, or \
+         view: id|name (an exploded view, coming apart from the assembled placement) with back? (default false; true: back together \
+         too, exploded at the middle frame of an odd count); path: a .gif file, or a folder for PNG frames (frame-0001.png, \
+         frame-0002.png, …); samples? (frames, 2…1000; default the study's steps + 1, 100 for a joint, 41 for a view or 81 with \
+         back); width?, height? (16…4096 pixels, default 800 × 500); camera?: {target, yaw, pitch, roll?, distance, fov?, up?} \
+         (ui.camera's reply; fields left out keep the default view: view.apply's camera, or the home view framing the model, for a \
+         view both assembled and exploded); fps? (1…50, default 20); grid?, axes? (default true: the ground grid and the origin's \
+         axes) - draws the study as it plays, the joint as it is driven or the view as it explodes, with the headless renderer → \
+         path, format, frames, width, height, fps (GIF), bytes, renderer, stopped_at, stopped_by_loop, stopped_by_contact (the \
+         design is not changed, nor its placements)",
+        ),
+    CommandSpec::new("motion.trace", "Motion Trace", crate::checked!("motion.trace", trace))
+        .at("SOLID", "ASSEMBLE")
+        .icon("trace")
+        .noundo()
+        .contract(&TRACE_CONTRACT)
+        .output(output_schema_for::<MotionTraced>)
+        .params(concat!(
+            trace_doc!(),
+            " → points: [[x,y,z]…] world positions, samples (taken), stopped_at (the sample where the motion stopped short; the trace \
+         ends there), stopped_by_loop, stopped_by_contact (the design is not changed)"
+        )),
+    CommandSpec::new("motion.trace.keep", "Keep Motion Trace", crate::checked!("motion.trace.keep", keep_trace))
+        .icon("trace")
+        .contract(&KEEP_TRACE_CONTRACT)
+        .output(output_schema_for::<MotionTraceKept>)
+        .params(concat!(
+            trace_doc!(),
+            "; name? (default Motion TraceN); auto_update?: bool (default true); point_ref?: joint origin snap - keeps the trace as a \
+         root 3D sketch spline. Associative curves follow mechanism and driving-input edits; false keeps a fixed curve. \
+         point_ref retains a geometry snap; otherwise point is retained in component coordinates → sketch, name, curves, points"
+        )),
+    CommandSpec::new("motion.trace.edit", "Edit Motion Trace", crate::checked!("motion.trace.edit", associative::edit))
+        .icon("trace")
+        .contract(&EDIT_TRACE_CONTRACT)
+        .output(output_schema_for::<MotionTraceEdited>)
+        .params(
+            "sketch: id|name; joint? with from and to, or study?; index?; samples? (2…500); auto_update?: false to detach. \
+         Edits a saved associative trace's driving conditions in one undo step",
+        ),
+    CommandSpec::new("motion.plot", "Plot Motion Study", crate::checked!("motion.plot", analysis::plot))
+        .contract(&TypedContract::<crate::schema::motion_analysis::PlotParams>::new())
+        .output(output_schema_for::<crate::schema::motion_analysis::MotionPlot>)
+        .icon("graph")
+        .noundo()
+        .params(analysis::PLOT_DOC),
+    CommandSpec::new("motion.interference", "Motion Interference", crate::checked!("motion.interference", analysis::interference))
+        .contract(&TypedContract::<crate::schema::motion_analysis::InterferenceParams>::new())
+        .output(output_schema_for::<crate::schema::motion_analysis::MotionInterference>)
+        .icon("interference")
+        .noundo()
+        .params(analysis::INTERFERENCE_DOC),
+    CommandSpec::new("joint.sweep", "Sweep Joint", crate::checked!("joint.sweep", sweep::sweep))
+        .icon("interference")
+        .contract(&TypedContract::<crate::schema::joint_sweep::SweepParams>::new())
+        .output(output_schema_for::<crate::schema::joint_sweep::SweepResult>)
+        .params(sweep::SWEEP_DOC),
+    CommandSpec::new("joint.find_limits", "Find Joint Limits", crate::checked!("joint.find_limits", sweep::find_limits))
+        .icon("interference")
+        .noundo()
+        .contract(&FIND_LIMITS_CONTRACT)
+        .output(output_schema_for::<FindLimitsResult>)
+        .params(sweep::FIND_LIMITS_DOC),
+    CommandSpec::new("motion.list", "List Motion Studies", crate::checked!("motion.list", list_studies))
+        .icon("list")
+        .noundo()
+        .contract(&STUDY_LIST_CONTRACT)
+        .output(output_schema_for::<MotionStudies>),
+    CommandSpec::new("motion.delete", "Delete Motion Study", crate::checked!("motion.delete", delete_study))
+        .icon("delete")
+        .contract(&STUDY_DELETE_CONTRACT)
+        .output(output_schema_for::<MotionStudyDeleted>)
+        .params("study"),
+    CommandSpec::new("explode.create", "Exploded View", crate::checked!("explode.create", explode_create))
+        .at("SOLID", "ASSEMBLE")
+        .icon("explode")
+        .enabled(has_parts_to_explode)
+        .contract(&EXPLODE_CREATE_CONTRACT)
+        .output(output_schema_for::<ExplodeCreated>)
+        .params(
+            "name?; scale? (automatic: each occurrence pushed away from the assembly's centre by scale × its offset, default 1); \
+             moves?: [{occurrence, translate: [x,y,z]}] (instead of automatic)",
+        ),
+    CommandSpec::new("explode.show", "Show Exploded View", crate::checked!("explode.show", explode_show))
+        .icon("explode")
+        .noundo()
+        .contract(&EXPLODE_SHOW_CONTRACT)
+        .output(output_schema_for::<ExplodeShown>)
+        .params("view: id|name (or none: back to the assembled placement) — shown only; the design keeps its placements"),
+    CommandSpec::new("explode.list", "List Exploded Views", crate::checked!("explode.list", explode_list))
+        .icon("list")
+        .noundo()
+        .contract(&EXPLODE_LIST_CONTRACT)
+        .output(output_schema_for::<ExplodeViews>),
+    CommandSpec::new("explode.delete", "Delete Exploded View", crate::checked!("explode.delete", explode_delete))
+        .icon("delete")
+        .contract(&EXPLODE_DELETE_CONTRACT)
+        .output(output_schema_for::<ExplodeDeleted>)
+        .params("view"),
+];
+
+const MAX_ITEMS: usize = 10_000;
+
+/// `prefix` and the first number from 1 that no name in `taken` has: a default name never repeats
+/// one in use, after a delete either, as joints' and the app's dialogs' default names (#9738).
+fn free_name<'a>(prefix: &str, taken: impl Iterator<Item = &'a str>) -> String {
+    let taken: BTreeSet<&str> = taken.collect();
+    let n = (1..=taken.len() + 1).find(|n| !taken.contains(format!("{prefix}{n}").as_str())).unwrap_or(1);
+    format!("{prefix}{n}")
+}
+
+fn occurrences(s: &Session, p: &Value, cmd: &str) -> Result<Vec<u64>> {
+    let list = p.get("occurrences").and_then(Value::as_array).ok_or_else(|| bad(cmd, "`occurrences` must list occurrences"))?;
+    if list.len() > MAX_ITEMS {
+        return Err(bad(cmd, "too many occurrences"));
+    }
+    let mut out = Vec::new();
+    for v in list {
+        let id = occurrence_id(s, Some(v), cmd)?;
+        if id == 0 {
+            return Err(bad(cmd, "the root is not an occurrence"));
+        }
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
+// ---- Contact ----
+
+/// The placed bodies of the design, each with the occurrences it sits in.
+fn placed(s: &Session) -> Vec<(Vec<u64>, Body)> {
+    let st = s.model.state();
+    let mut out = Vec::new();
+    for (comp, path, m) in s.doc.placements() {
+        if comp == 0 {
+            continue;
+        }
+        for b in st.bodies.iter().filter(|b| s.doc.model_body_component(b) == comp && !b.body.is_mesh()) {
+            // Moving a body into another component preserves its world placement using an
+            // offset from its authoring frame. Contact and explode centres must use that
+            // same offset as display and physical properties.
+            let frame = s.doc.model_body_offset(b).map(|offset| solidcraft_doc::mat_mul(&m, offset)).unwrap_or(m);
+            if let Ok(t) = solidcraft_kernel::transform_matrix(&b.body, frame) {
+                out.push((path.clone(), t));
+            }
+        }
+    }
+    out
+}
+
+/// Pairs of bodies in one active contact set that pass through each other: (occurrence names).
+pub fn collisions(s: &Session) -> Vec<(String, String, f64)> {
+    let a = &s.doc.assembly;
+    if !a.contact_enabled {
+        return Vec::new();
+    }
+    let sets: Vec<Vec<u64>> = if a.contact_all {
+        vec![s.doc.occurrences.iter().map(|o| o.id).collect()]
+    } else {
+        a.contact_sets.iter().filter(|c| !c.suppressed).map(|c| c.occurrences.clone()).collect()
+    };
+    let bodies = placed(s);
+    let name = |id: u64| s.doc.occurrences.iter().find(|o| o.id == id).map(|o| o.name.clone()).unwrap_or_default();
+    let mut out = Vec::new();
+    for set in &sets {
+        // The member of the set each body belongs to (its innermost occurrence in the set).
+        let tagged: Vec<(u64, &Body)> = bodies.iter().filter_map(|(path, b)| path.iter().rev().find(|o| set.contains(o)).map(|o| (*o, b))).collect();
+        for (i, (oa, ba)) in tagged.iter().enumerate() {
+            for (ob, bb) in tagged.iter().skip(i + 1) {
+                if oa == ob {
+                    continue;
+                }
+                if let Some(v) = overlap(ba, bb) {
+                    out.push((name(*oa), name(*ob), v));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// How deep one body reaches into the other, when more than a touch (`None`: apart or
+/// touching). Points of each tessellation (vertices, edge midpoints, triangle centres) are
+/// tested against the other closed mesh: inside by ray parity, and deeper than the tolerance.
+/// Edges are tested for crossing the other's surface too: plates crossing face to face have
+/// no sample point inside (#3323).
+fn overlap(a: &Body, b: &Body) -> Option<f64> {
+    let (ma, mb) = (
+        a.mesh(&solidcraft_kernel::MeshTolerance::chord((a.size() * 1e-3).max(1e-3))).ok()?,
+        b.mesh(&solidcraft_kernel::MeshTolerance::chord((b.size() * 1e-3).max(1e-3))).ok()?,
+    );
+    mesh_overlap(&ma, &mb, 1e-4 * a.size().max(b.size()).max(1.0))
+}
+
+fn mesh_overlap(ma: &solidcraft_geom::Mesh, mb: &solidcraft_geom::Mesh, tol: f64) -> Option<f64> {
+    let (ba, bb) = (ma.bounds(), mb.bounds());
+    if ba.max.x < bb.min.x + tol
+        || bb.max.x < ba.min.x + tol
+        || ba.max.y < bb.min.y + tol
+        || bb.max.y < ba.min.y + tol
+        || ba.max.z < bb.min.z + tol
+        || bb.max.z < ba.min.z + tol
+    {
+        return None;
+    }
+    let depth = deepest(ma, mb, tol).max(deepest(mb, ma, tol));
+    (depth > tol).then_some(depth)
+}
+
+fn tris(m: &solidcraft_geom::Mesh) -> Vec<[Vec3; 3]> {
+    m.triangles.iter().filter_map(|t| m.tri(t)).collect()
+}
+
+/// The deepest any sample point of `a` lies inside `b` (0 if none). `b`'s triangles are indexed
+/// once ([`Surface`]), so each point and edge looks only at the triangles near it.
+fn deepest(a: &solidcraft_geom::Mesh, b: &solidcraft_geom::Mesh, tol: f64) -> f64 {
+    let sb = Surface::new(tris(b));
+    let bx = b.bounds();
+    let mut pts: Vec<Vec3> = a.positions.clone();
+    let mut edges: Vec<(Vec3, Vec3)> = Vec::new();
+    for [p, q, r] in tris(a) {
+        pts.extend([(p + q) * 0.5, (q + r) * 0.5, (r + p) * 0.5, (p + q + r) * (1.0 / 3.0)]);
+        edges.extend([(p, q), (q, r), (r, p)]);
+    }
+    let mut best = 0.0f64;
+    for p in pts.into_iter().take(200_000) {
+        if p.x < bx.min.x - tol
+            || p.x > bx.max.x + tol
+            || p.y < bx.min.y - tol
+            || p.y > bx.max.y + tol
+            || p.z < bx.min.z - tol
+            || p.z > bx.max.z + tol
+        {
+            continue;
+        }
+        let d = sb.distance(p, tol.max(best));
+        if d > tol.max(best) && sb.inside(p) {
+            best = d;
+        }
+    }
+    for (p, q) in edges.into_iter().take(200_000) {
+        best = best.max(crossing(p, q, &sb, bx, tol));
+    }
+    best
+}
+
+/// Where the edge `p`→`q` of one mesh reaches through the surface `sb` of the other: the
+/// depth, or 0 when it misses, only touches, or grazes (the middle of the chord it cuts must
+/// lie inside, deeper than `tol`, as elsewhere in the check). Two plates crossing each other's
+/// faces put no vertex, mid-edge or triangle centre of either inside the other — the chord an
+/// edge cuts is how that crossing is seen (#3323).
+fn crossing(p: Vec3, q: Vec3, sb: &Surface, bx: Aabb3, tol: f64) -> f64 {
+    if p.x.max(q.x) < bx.min.x - tol
+        || p.x.min(q.x) > bx.max.x + tol
+        || p.y.max(q.y) < bx.min.y - tol
+        || p.y.min(q.y) > bx.max.y + tol
+        || p.z.max(q.z) < bx.min.z - tol
+        || p.z.min(q.z) > bx.max.z + tol
+    {
+        return 0.0;
+    }
+    let d = q - p;
+    let len2 = d.dot(d);
+    if len2 <= 0.0 {
+        return 0.0;
+    }
+    // Where the edge crosses the surface, along the edge. A crossing at a vertex or along an
+    // edge shared by two triangles is found twice (or more); merges of neighbours leave the
+    // entry and exit of each chord as one pair each.
+    let mut hits: Vec<f64> = sb.segment_hits(p, q).into_iter().map(|h| (h - p).dot(d) / len2).collect();
+    if hits.len() < 2 {
+        return 0.0;
+    }
+    hits.sort_by(|x, y| x.total_cmp(y));
+    hits.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
+    let mut best = 0.0;
+    for pair in hits.chunks(2) {
+        if pair.len() < 2 {
+            break;
+        }
+        let m = p + d * ((pair[0] + pair[1]) * 0.5);
+        let deep = sb.distance(m, tol.max(best));
+        if deep > tol.max(best) && sb.inside(m) {
+            best = deep;
+        }
+    }
+    best
+}
+
+/// A closed mesh's triangles under a bounding volume hierarchy, for [`deepest`]: the distance
+/// from a point, ray parity and the hits of a segment, answered as a scan of every triangle
+/// would answer them (the same values, from the same per-triangle tests) while testing only
+/// the triangles near the query.
+///
+/// Each triangle's box is grown by half its longest edge and a millionth of the mesh's
+/// coordinate scale, and a segment's box by half its length. A triangle is left out of a query
+/// only when the query misses its grown box, which is far more than the rounding of the
+/// per-triangle tests can move an answer: they are solved with a condition bounded by their
+/// own thresholds and by the shape test below. Triangles that bound fails for (a vertex that is
+/// not finite, a sliver whose area is all but 0, or a plane all but parallel to `inside`'s ray)
+/// are tested by every query instead.
+struct Surface {
+    tris: Vec<[Vec3; 3]>,
+    tree: Bvh,
+    /// Triangles every query tests, ascending.
+    loose: Vec<u32>,
+}
+
+/// The fixed skew direction of [`inside`]'s ray.
+// Fixed ray coordinates, not an approximation used to compute Euler's constant.
+#[allow(clippy::approx_constant)]
+const RAY: Vec3 = Vec3::new(0.577_215_664_9, 0.327_118_441_9, 0.751_891_438_7);
+
+impl Surface {
+    fn new(tris: Vec<[Vec3; 3]>) -> Surface {
+        let scale = tris.iter().flatten().filter(|v| v.is_finite()).fold(0.0f64, |m, v| m.max(v.x.abs()).max(v.y.abs()).max(v.z.abs()));
+        let mut loose = Vec::new();
+        let boxes: Vec<Aabb3> = tris
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let [a, b, c] = *t;
+                let (ab, ac, bc) = (b - a, c - a, c - b);
+                let (l2, m2, n2) = (ab.dot(ab), ac.dot(ac), bc.dot(bc));
+                let cr = ab.cross(ac);
+                let area2 = cr.dot(cr);
+                let sum = l2 + m2 + n2;
+                let det = ab.dot(RAY.cross(ac));
+                let ill =
+                    !t.iter().all(|v| v.is_finite()) || !(area2 >= 1e-10 * sum * sum) || !(det.abs() >= 1e-6 * l2.sqrt() * m2.sqrt() * RAY.len());
+                if ill {
+                    loose.push(i as u32);
+                    return Aabb3::EMPTY;
+                }
+                let mut bx = Aabb3::EMPTY;
+                for v in t {
+                    bx.add(*v);
+                }
+                bx.inflated(0.5 * l2.max(m2).max(n2).sqrt() + 1e-6 * scale)
+            })
+            .collect();
+        Surface { tree: Bvh::new(&boxes), tris, loose }
+    }
+
+    /// Calls `f` with every triangle `enter` lets through, as the hierarchy's boxes do, and every
+    /// loose one.
+    fn each(&self, mut enter: impl FnMut(&Aabb3) -> bool, mut f: impl FnMut(&[Vec3; 3])) {
+        for &i in &self.loose {
+            if let Some(t) = self.tris.get(i as usize) {
+                f(t);
+            }
+        }
+        self.tree.visit(&mut enter, |i| {
+            if let Some(t) = self.tris.get(i as usize) {
+                f(t);
+            }
+        });
+    }
+
+    /// The distance from `p` to the nearest triangle (`f64::MAX` for none), as the minimum over
+    /// every triangle. Once one is found within `enough`, some distance within it is returned
+    /// instead: the caller only asks whether the nearest lies beyond `enough`.
+    fn distance(&self, p: Vec3, enough: f64) -> f64 {
+        let best = Cell::new(f64::MAX);
+        self.each(|bx| best.get() > enough && box_gap(bx, p) <= best.get(), |[a, b, c]| best.set(best.get().min(closest(p, *a, *b, *c).dist(p))));
+        best.get()
+    }
+
+    /// Whether `p` is inside, by the parity of the triangles [`inside`]'s ray crosses.
+    fn inside(&self, p: Vec3) -> bool {
+        let mut n = 0usize;
+        self.each(
+            |bx| ray_meets(p, RAY, bx),
+            |t| {
+                if ray_crosses(p, t) {
+                    n += 1;
+                }
+            },
+        );
+        n % 2 == 1
+    }
+
+    /// Where the segment `p`→`q` meets the triangles ([`contact_sweep::segment_hits_triangle`]),
+    /// in no particular order.
+    fn segment_hits(&self, p: Vec3, q: Vec3) -> Vec<Vec3> {
+        let mut around = Aabb3::EMPTY;
+        around.add(p);
+        around.add(q);
+        let around = around.inflated(0.5 * p.dist(q) + 1e-6 * p.x.abs().max(p.y.abs()).max(p.z.abs()).max(q.x.abs()).max(q.y.abs()).max(q.z.abs()));
+        let mut hits = Vec::new();
+        self.each(
+            |bx| bx.meets(&around),
+            |t| {
+                if let Some(h) = contact_sweep::segment_hits_triangle(p, q, t) {
+                    hits.push(h);
+                }
+            },
+        );
+        hits
+    }
+}
+
+/// The distance from `p` to box `bx` (0 inside it).
+fn box_gap(bx: &Aabb3, p: Vec3) -> f64 {
+    let axis = |lo: f64, hi: f64, v: f64| (lo - v).max(v - hi).max(0.0);
+    let (x, y, z) = (axis(bx.min.x, bx.max.x, p.x), axis(bx.min.y, bx.max.y, p.y), axis(bx.min.z, bx.max.z, p.z));
+    (x * x + y * y + z * z).sqrt()
+}
+
+/// Whether the ray from `o` along `d` meets box `bx` (sides included).
+fn ray_meets(o: Vec3, d: Vec3, bx: &Aabb3) -> bool {
+    let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
+    for (o, d, lo, hi) in [(o.x, d.x, bx.min.x, bx.max.x), (o.y, d.y, bx.min.y, bx.max.y), (o.z, d.z, bx.min.z, bx.max.z)] {
+        if d == 0.0 {
+            if o < lo || o > hi {
+                return false;
+            }
+            continue;
+        }
+        let (a, b) = ((lo - o) / d, (hi - o) / d);
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        t0 = t0.max(a);
+        t1 = t1.min(b);
+        if !(t0 <= t1) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Ray parity along a skew direction (no axis-aligned edge hits).
+fn inside(p: Vec3, tris: &[[Vec3; 3]]) -> bool {
+    tris.iter().filter(|t| ray_crosses(p, t)).count() % 2 == 1
+}
+
+/// Whether the ray from `p` along [`RAY`] crosses triangle `t` (one that lies all but along
+/// the ray never does).
+fn ray_crosses(p: Vec3, t: &[Vec3; 3]) -> bool {
+    let [a, b, c] = t;
+    let (e1, e2) = (*b - *a, *c - *a);
+    let h = RAY.cross(e2);
+    let det = e1.dot(h);
+    if det.abs() < 1e-14 {
+        return false;
+    }
+    let f = 1.0 / det;
+    let sv = p - *a;
+    let u = f * sv.dot(h);
+    if !(0.0..=1.0).contains(&u) {
+        return false;
+    }
+    let q = sv.cross(e1);
+    let v = f * RAY.dot(q);
+    if v < 0.0 || u + v > 1.0 {
+        return false;
+    }
+    f * e2.dot(q) > 0.0
+}
+
+/// The point of triangle abc nearest p.
+fn closest(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let den = va + vb + vc;
+    if den.abs() < 1e-300 {
+        return a;
+    }
+    a + ab * (vb / den) + ac * (vc / den)
+}
+
+/// Set joint values, stopping short where contact sets would collide or a closed loop could no
+/// longer close: the values are moved from where they are toward `want` as far as they go. The
+/// `given` values (joint, index) are driven; in a closed loop the others follow. Returns the
+/// answer and the last solve.
+pub(super) fn drive_with_contact(s: &mut Session, want: &[(u64, Vec<f64>)], given: &BTreeSet<(u64, usize)>) -> Result<(Value, joints::Solution)> {
+    drive_with_contact_within(s, want, given, false)
+}
+
+/// [`drive_with_contact`], which with `stop_at_budget` stops at the last placement checked clear
+/// where a contact check runs out of samples or work, rather than failing (#5963):
+/// `stopped_by_budget` {budget, fraction}.
+fn drive_with_contact_within(
+    s: &mut Session,
+    want: &[(u64, Vec<f64>)],
+    given: &BTreeSet<(u64, usize)>,
+    stop_at_budget: bool,
+) -> Result<(Value, joints::Solution)> {
+    let baseline = s.doc.clone();
+    let start: Vec<(u64, Vec<f64>)> =
+        want.iter().map(|(id, _)| (*id, s.doc.assembly.joints.iter().find(|j| j.id == *id).map(|j| j.values.clone()).unwrap_or_default())).collect();
+    // Closed loops follow the driven values from where they start.
+    let held: joints::Held = given
+        .iter()
+        .filter(|&&(id, i)| want.iter().any(|(w, q)| *w == id && i < q.len()))
+        .map(|&(id, i)| {
+            // A value the file leaves out is 0, as the solver reads it.
+            let from = start.iter().find(|(s, _)| *s == id).and_then(|(_, q)| q.get(i).copied());
+            ((id, i), from.unwrap_or(0.0))
+        })
+        .collect();
+    let set = |s: &mut Session, t: f64| {
+        // Trial order must not affect free anchors or linked joint placements.
+        s.doc = baseline.clone();
+        let doc = s.doc_mut();
+        for ((id, a), (_, b)) in start.iter().zip(want) {
+            if let Some(j) = doc.assembly.joints.iter_mut().find(|j| j.id == *id) {
+                let mut q: Vec<f64> = b.iter().enumerate().map(|(i, bv)| a.get(i).copied().unwrap_or(0.0) * (1.0 - t) + bv * t).collect();
+                joints::clamp(j, &mut q);
+                j.values = q;
+            }
+        }
+        place_holding(s, &held)
+    };
+    // Loops already open at the start stay as they are; a loop the motion opens stops it.
+    let open_at_start: BTreeSet<u64> = set(s, 0.0).conflicts.iter().map(|c| c.0).collect();
+    let opened = |sol: &joints::Solution| sol.conflicts.iter().find(|c| !open_at_start.contains(&c.0)).map(|c| c.1.clone());
+    let cache = if s.doc.assembly.contact_enabled { Some(contact_sweep::ContactGeometry::new(s)?) } else { None };
+    let mut sol;
+    let mut stopped = None;
+    let mut ran: Option<&'static str> = None;
+    let mut budget_lo: Option<f64> = None;
+    if let Some(cache) = cache.filter(|cache| cache.has_pairs()) {
+        let mut end = s.scratch();
+        set(&mut end, 1.0);
+        // With `stop_at_budget`, the samples the budgets allow are taken (at the spacing the
+        // motion needs), and a check that runs out stops the drive at the last clear one.
+        let (samples, allowed) = if stop_at_budget {
+            let (required, allowed) = cache.samples_within(s, &end)?;
+            (required, allowed.min(required))
+        } else {
+            let n = cache.samples(s, &end)?;
+            (n, n)
+        };
+        let samples = samples.max(1);
+        let mut intersections = 0;
+        set(s, 0.0);
+        let overlaps = |s: &Session, intersections: &mut usize, all: bool, ran: &mut Option<&'static str>| match cache.overlaps(s, intersections, all)
+        {
+            Err(e) if stop_at_budget && contact_sweep::ran_out(&e).is_some() => {
+                *ran = contact_sweep::ran_out(&e);
+                Ok(None)
+            }
+            r => r.map(Some),
+        };
+        // Keep the existing recovery behaviour: an initially overlapping assembly may move
+        // out of its invalid placement. Sweeps constrain motions that start collision-free.
+        if overlaps(s, &mut intersections, false, &mut ran)?.is_some_and(|o| o.is_empty()) {
+            let mut lo = 0.0;
+            let mut bracket = None;
+            for sample in 1..=samples {
+                let hi = sample as f64 / samples as f64;
+                if sample > allowed {
+                    ran = Some(if samples > allowed && allowed < contact_sweep::MAX_SAMPLES { "work" } else { "samples" });
+                    break;
+                }
+                set(s, hi);
+                let Some(hits) = overlaps(s, &mut intersections, true, &mut ran)? else { break };
+                if !hits.is_empty() {
+                    bracket = Some((lo, hi, hits));
+                    break;
+                }
+                lo = hi;
+            }
+            if ran.is_some() {
+                budget_lo = Some(lo);
+            }
+            // Where the bodies found passing into each other first touch, closed in on from the
+            // clear side (conservative advancement): from a clear placement, a move in which no
+            // point of a pair goes further than the pair's gap keeps it clear. Only clear
+            // placements are measured, so no intersection is asked to tell touching bodies from
+            // overlapping ones within its tolerance.
+            if let Some((lo, hi, hits)) = bracket {
+                let touch = 1e-9 * cache.scale();
+                let mut t = lo;
+                set(s, t);
+                for _ in 0..MAX_ADVANCES {
+                    let gap = cache.gap(s, &hits)?;
+                    if gap <= touch {
+                        break;
+                    }
+                    let from = cache.frames(s)?;
+                    // The furthest step whose move stays within the gap: guessed from the move to
+                    // `hi` (nearly proportional over a sample), then halved until it does.
+                    set(s, hi);
+                    let whole = cache.pair_travel(&from, s, &hits)?;
+                    let mut step = if whole > 0.0 { (hi - t) * (0.5 * gap / whole).min(1.0) } else { hi - t };
+                    let mut next = None;
+                    for _ in 0..64 {
+                        set(s, t + step);
+                        if cache.pair_travel(&from, s, &hits)? < gap {
+                            next = Some(t + step);
+                            break;
+                        }
+                        step *= 0.5;
+                    }
+                    match next {
+                        Some(n) if n > t => t = n,
+                        _ => break,
+                    }
+                    set(s, t);
+                }
+                let lo = t;
+                sol = set(s, lo);
+                let (a, b) = hits.first().map(|h| (h.a.clone(), h.b.clone())).unwrap_or_default();
+                stopped = Some(json!({"a": a, "b": b, "fraction": lo}));
+            } else if let Some(lo) = budget_lo {
+                sol = set(s, lo);
+            } else {
+                sol = set(s, 1.0);
+            }
+        } else if ran.is_some() {
+            // The check at the start ran out: nothing past it is known clear.
+            budget_lo = Some(0.0);
+            sol = set(s, 0.0);
+        } else {
+            sol = set(s, 1.0);
+        }
+    } else {
+        sol = set(s, 1.0);
+    }
+    let mut stopped_by_loop = None;
+    if let Some(mut name) = opened(&sol) {
+        // The furthest the loops still close, short of where contact stopped; the joint named is
+        // the one whose loop opens first.
+        let (mut lo, mut hi) = (0.0, stopped.as_ref().and_then(|v| v["fraction"].as_f64()).or(budget_lo).unwrap_or(1.0));
+        for _ in 0..14 {
+            let mid = (lo + hi) / 2.0;
+            match opened(&set(s, mid)) {
+                None => lo = mid,
+                Some(n) => (hi, name) = (mid, n),
+            }
+        }
+        sol = set(s, lo);
+        stopped = None;
+        budget_lo = None;
+        stopped_by_loop = Some(json!({"joint": name, "fraction": lo}));
+    }
+    let values: Vec<Value> = want.iter().map(|(id, _)| json!({"joint": id, "values": effective_values(s, *id)})).collect();
+    let mut out = json!({"values": values, "stopped_by_contact": stopped, "stopped_by_loop": stopped_by_loop, "conflicts": sol.conflicts.len()});
+    if let (Some(fraction), Some(budget)) = (budget_lo, ran) {
+        out["stopped_by_budget"] = json!({"budget": budget, "fraction": fraction});
+    }
+    Ok((out, sol))
+}
+
+/// Most steps a joint drive takes closing in on a contact. Each moves the pair by up to half its
+/// gap; past the last, the drive stops at the last clear placement, short of the touch.
+const MAX_ADVANCES: usize = 200;
+
+/// Drive one joint (joint.drive), honouring contact sets.
+pub fn drive_joint(s: &mut Session, id: u64, q: Vec<f64>, given: usize, stop_at_budget: bool) -> Result<Value> {
+    let given = (0..given.min(q.len())).map(|i| (id, i)).collect();
+    Ok(drive_with_contact_within(s, &[(id, q)], &given, stop_at_budget)?.0)
+}
+
+/// Drive exactly one coordinate, letting the other values follow loops and preserving expressions.
+pub fn drive_joint_index(s: &mut Session, id: u64, q: Vec<f64>, index: usize, stop_at_budget: bool) -> Result<Value> {
+    Ok(drive_with_contact_within(s, &[(id, q)], &[(id, index)].into_iter().collect(), stop_at_budget)?.0)
+}
+
+/// A command's reply as JSON: the contact and motion study commands build their replies from the
+/// types their output schemas describe, so the two can't drift apart.
+fn typed_reply(cmd: &str, reply: impl serde::Serialize) -> Result<Value> {
+    serde_json::to_value(reply).map_err(|e| bad(cmd, e.to_string()))
+}
+
+fn enable_sets(s: &mut Session, p: &Value) -> Result<Value> {
+    let enabled = bool_(p, "enabled").unwrap_or(true);
+    s.doc_mut().assembly.contact_enabled = enabled;
+    typed_reply("contact.enable_sets", ContactSwitch { enabled, all: None, param_warnings: Vec::new() })
+}
+
+fn enable_all(s: &mut Session, _p: &Value) -> Result<Value> {
+    let a = &mut s.doc_mut().assembly;
+    a.contact_enabled = true;
+    a.contact_all = true;
+    typed_reply("contact.enable_all", ContactSwitch { enabled: true, all: Some(true), param_warnings: Vec::new() })
+}
+
+fn disable_all(s: &mut Session, _p: &Value) -> Result<Value> {
+    let a = &mut s.doc_mut().assembly;
+    a.contact_enabled = false;
+    a.contact_all = false;
+    typed_reply("contact.disable_all", ContactSwitch { enabled: false, all: None, param_warnings: Vec::new() })
+}
+
+fn new_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "contact.create";
+    let occ = occurrences(s, p, cmd)?;
+    if occ.len() < 2 {
+        return Err(bad(cmd, "a contact set needs two or more occurrences"));
+    }
+    if s.doc.assembly.contact_sets.len() >= MAX_ITEMS {
+        return Err(bad(cmd, "too many contact sets"));
+    }
+    let id = s.doc_mut().allocate_id()?;
+    let name =
+        str_(p, "name").map(str::to_string).unwrap_or_else(|| free_name("Contact Set", s.doc.assembly.contact_sets.iter().map(|c| c.name.as_str())));
+    let a = &mut s.doc_mut().assembly;
+    a.contact_sets.push(ContactSet { id, name: name.clone(), occurrences: occ, suppressed: false });
+    a.contact_enabled = true;
+    typed_reply(cmd, ContactSetCreated { set: id, name, param_warnings: Vec::new() })
+}
+
+fn set_index(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
+    let key = match p.get("set") {
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::String(x)) => x.clone(),
+        _ => return Err(bad(cmd, "`set` must be an id or a name")),
+    };
+    s.doc
+        .assembly
+        .contact_sets
+        .iter()
+        .position(|c| c.id.to_string() == key || c.name == key)
+        .ok_or_else(|| bad(cmd, format!("no contact set `{key}`")))
+}
+
+fn edit_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "contact.edit";
+    let i = set_index(s, p, cmd)?;
+    if bool_(p, "delete").unwrap_or(false) {
+        s.doc_mut().assembly.contact_sets.remove(i);
+        return typed_reply(cmd, ContactSetEdited { change: ContactSetChange::Deleted { deleted: true }, param_warnings: Vec::new() });
+    }
+    let occ = if p.get("occurrences").is_some() { Some(occurrences(s, p, cmd)?) } else { None };
+    if occ.as_ref().is_some_and(|o| o.len() < 2) {
+        return Err(bad(cmd, "a contact set needs two or more occurrences"));
+    }
+    let Some(c) = s.doc_mut().assembly.contact_sets.get_mut(i) else { return Err(bad(cmd, "set")) };
+    if let Some(o) = occ {
+        c.occurrences = o;
+    }
+    if let Some(n) = str_(p, "name").filter(|n| !n.trim().is_empty()) {
+        c.name = n.to_string();
+    }
+    if let Some(x) = bool_(p, "suppressed") {
+        c.suppressed = x;
+    }
+    let set = c.id;
+    typed_reply(cmd, ContactSetEdited { change: ContactSetChange::Changed { set }, param_warnings: Vec::new() })
+}
+
+fn list_sets(s: &mut Session, _p: &Value) -> Result<Value> {
+    let a = &s.doc.assembly;
+    let sets = a.contact_sets.iter().map(ContactSetInfo::from).collect();
+    typed_reply("contact.list", ContactSets { enabled: a.contact_enabled, all: a.contact_all, sets, param_warnings: Vec::new() })
+}
+
+fn check(s: &mut Session, _p: &Value) -> Result<Value> {
+    let collisions = collisions(s).into_iter().map(|(a, b, depth_mm)| ContactCollision { a, b, depth_mm }).collect();
+    typed_reply("contact.check", ContactCheck { collisions, param_warnings: Vec::new() })
+}
+
+// ---- Motion studies ----
+
+fn study_index(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
+    // A number is an id first, text a name first: a study may be named like another's id.
+    let (key, id_first) = match p.get("study") {
+        Some(Value::Number(n)) => (n.to_string(), true),
+        Some(Value::String(x)) => (x.clone(), false),
+        _ => return Err(bad(cmd, "`study` must be an id or a name")),
+    };
+    let studies = &s.doc.assembly.studies;
+    let (by_id, by_name) = (studies.iter().position(|m| m.id.to_string() == key), studies.iter().position(|m| m.name == key));
+    if id_first { by_id.or(by_name) } else { by_name.or(by_id) }.ok_or_else(|| bad(cmd, format!("no motion study `{key}`")))
+}
+
+fn study(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "motion.study";
+    let existing = if p.get("study").is_some() { Some(study_index(s, p, cmd)?) } else { None };
+    let steps = match p.get("steps") {
+        Some(v) => {
+            let n = v.as_f64().filter(|n| n.is_finite() && *n >= 1.0 && *n <= 100_000.0).ok_or_else(|| bad(cmd, "`steps` must be 1…100000"))?;
+            Some(n.round() as u32)
+        }
+        None => None,
+    };
+    let mut keys = Vec::new();
+    if let Some(list) = p.get("keys") {
+        let list = list.as_array().ok_or_else(|| bad(cmd, "`keys` must be a list"))?;
+        if list.len() > 1000 {
+            return Err(bad(cmd, "too many keys"));
+        }
+        for k in list {
+            let joint = joint_id(s, k.get("joint"), cmd)?;
+            let kind = s.doc.assembly.joints.iter().find(|j| j.id == joint).map(|j| j.kind).unwrap_or(JointKind::Rigid);
+            let index = k.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if index >= kind.dofs().len() {
+                return Err(bad(cmd, format!("joint {joint} has no moving value {index}")));
+            }
+            let pts = k.get("points").and_then(Value::as_array).ok_or_else(|| bad(cmd, "each key needs `points`: [[step, value], …]"))?;
+            if pts.is_empty() || pts.len() > 10_000 {
+                return Err(bad(cmd, "a key needs 1…10000 points"));
+            }
+            let mut points = Vec::new();
+            for pt in pts {
+                let (Some(st), Some(v)) = (pt.get(0).and_then(Value::as_f64).filter(|x| x.is_finite() && x.abs() < 1e9), pt.get(1)) else {
+                    return Err(bad(cmd, "points are [step, value]"));
+                };
+                points.push((st, value(s, v, kind.is_angle(index), cmd)?));
+            }
+            points.sort_by(|a, b| a.0.total_cmp(&b.0));
+            keys.push(StudyKey { joint, index, points });
+        }
+    }
+    let doc = s.doc_mut();
+    let id = match existing {
+        Some(i) => doc.assembly.studies.get(i).ok_or_else(|| bad(cmd, "no such motion study"))?.id,
+        None => doc.allocate_id()?,
+    };
+    let count = doc.assembly.studies.len();
+    let a = &mut doc.assembly;
+    let out = match existing.and_then(|i| a.studies.get_mut(i)) {
+        Some(m) => {
+            if let Some(n) = steps {
+                m.steps = n;
+            }
+            if p.get("keys").is_some() {
+                m.keys = keys;
+            }
+            if let Some(n) = str_(p, "name").filter(|n| !n.trim().is_empty()) {
+                m.name = n.to_string();
+            }
+            m.clone()
+        }
+        None => {
+            if count >= MAX_ITEMS {
+                return Err(bad(cmd, "too many motion studies"));
+            }
+            let m = MotionStudy {
+                id,
+                name: str_(p, "name").map(str::to_string).unwrap_or_else(|| free_name("Motion Study", a.studies.iter().map(|m| m.name.as_str()))),
+                steps: steps.unwrap_or(100),
+                keys,
+            };
+            a.studies.push(m.clone());
+            m
+        }
+    };
+    typed_reply(cmd, MotionStudySaved { study: out.id, name: out.name, steps: out.steps, keys: out.keys.len(), param_warnings: Vec::new() })
+}
+
+/// Joint values of a study at a step: (joint, full value vector).
+fn values_at(s: &Session, m: &MotionStudy, step: f64) -> Vec<(u64, Vec<f64>)> {
+    let mut out: Vec<(u64, Vec<f64>)> = Vec::new();
+    for k in &m.keys {
+        let Some(v) = k.value_at(step) else { continue };
+        let pos = match out.iter().position(|(j, _)| *j == k.joint) {
+            Some(i) => i,
+            None => {
+                let cur = s.doc.assembly.joints.iter().find(|j| j.id == k.joint).map(|j| j.values.clone()).unwrap_or_default();
+                out.push((k.joint, cur));
+                out.len() - 1
+            }
+        };
+        if let Some((_, q)) = out.get_mut(pos) {
+            if q.len() <= k.index {
+                q.resize(k.index + 1, 0.0);
+            }
+            if let Some(x) = q.get_mut(k.index) {
+                *x = v;
+            }
+        }
+    }
+    out
+}
+
+/// The values a study keys: (joint, index).
+fn keyed(m: &MotionStudy) -> BTreeSet<(u64, usize)> {
+    m.keys.iter().map(|k| (k.joint, k.index)).collect()
+}
+
+/// Where each occurrence is: (name, world transform).
+pub(super) fn positions(s: &Session) -> Vec<(String, Mat)> {
+    s.doc.occurrences.iter().map(|o| (o.name.clone(), joints::occurrence_world(&s.doc, o.id))).collect()
+}
+
+/// The occurrences placed differently `after` than `before` ([`positions`] of one design, so in
+/// the same order even where two share a name).
+pub(super) fn moved<'a>(before: &'a [(String, Mat)], after: &'a [(String, Mat)]) -> impl Iterator<Item = &'a (String, Mat)> {
+    after.iter().zip(before).filter(|((_, a), (_, b))| a.iter().flatten().zip(b.iter().flatten()).any(|(x, y)| (x - y).abs() > 1e-9)).map(|(a, _)| a)
+}
+
+/// Where occurrence `name` is placed by `m`: its origin and axes.
+fn part_pose(name: &str, m: &Mat) -> PartPose {
+    let row = |i: usize| m.get(i).map_or([0.0; 3], |r| [r[0], r[1], r[2]]);
+    PartPose { occurrence: name.to_string(), pose: Pose { origin: row(3), x: row(0), y: row(1), z: row(2) } }
+}
+
+/// `drive_with_contact`'s report, typed. Its other callers read it as JSON, so it stays JSON there.
+fn drive_report(cmd: &str, out: Value) -> Result<DriveReport> {
+    serde_json::from_value(out).map_err(|e| bad(cmd, e.to_string()))
+}
+
+fn play(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "motion.play";
+    let i = study_index(s, p, cmd)?;
+    let m = s.doc.assembly.studies.get(i).cloned().ok_or_else(|| bad(cmd, "study"))?;
+    let step = p.get("step").and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(|| bad(cmd, "`step` must be a number"))?;
+    let want = values_at(s, &m, step.clamp(0.0, f64::from(m.steps)));
+    let before = positions(s);
+    let (out, sol) = drive_with_contact(s, &want, &keyed(&m))?;
+    let drive = drive_report(cmd, out)?;
+    let after = positions(s);
+    let moved: Vec<&(String, Mat)> = moved(&before, &after).collect();
+    let any_moved = !moved.is_empty();
+    let shown: Vec<&(String, Mat)> = if bool_(p, "quiet").unwrap_or(false) { moved } else { after.iter().collect() };
+    let positions = shown.iter().map(|(n, t)| part_pose(n, t)).collect();
+    let joints: BTreeSet<u64> = m.keys.iter().map(|k| k.joint).collect();
+    let unmoved = joints
+        .iter()
+        .filter_map(|id| {
+            let (reason, _) = cannot_move(s, &sol, *id)?;
+            let name = s.doc.assembly.joints.iter().find(|j| j.id == *id).map(|j| j.name.clone());
+            Some(UnmovedJoint { joint: *id, name, reason })
+        })
+        .collect();
+    typed_reply(cmd, StudyPlayed { drive, moved: any_moved, positions, unmoved, param_warnings: Vec::new() })
+}
+
+fn export(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "motion.export";
+    let i = study_index(s, p, cmd)?;
+    let m = s.doc.assembly.studies.get(i).cloned().ok_or_else(|| bad(cmd, "study"))?;
+    let samples = match p.get("samples") {
+        Some(v) => v.as_f64().filter(|n| n.is_finite() && *n >= 2.0 && *n <= 10_000.0).ok_or_else(|| bad(cmd, "`samples` must be 2…10000"))? as usize,
+        None => (m.steps as usize + 1).min(10_000),
+    };
+    // On a copy: the design stays as it is.
+    let mut t = s.scratch();
+    let mut rows = Vec::new();
+    for k in 0..samples {
+        let step = f64::from(m.steps) * k as f64 / (samples - 1) as f64;
+        let want = values_at(&t, &m, step);
+        let (r, _) = drive_with_contact(&mut t, &want, &keyed(&m))?;
+        let r = drive_report(cmd, r)?;
+        rows.push(StudySample {
+            step,
+            stopped_by_contact: r.stopped_by_contact,
+            stopped_by_loop: r.stopped_by_loop,
+            positions: positions(&t).iter().map(|(n, x)| part_pose(n, x)).collect(),
+        });
+    }
+    if let Some(path) = str_(p, "path").filter(|x| !x.trim().is_empty() && x.len() < 4096) {
+        let count = rows.len();
+        let text = if path.to_ascii_lowercase().ends_with(".csv") {
+            let mut c = String::from("step,occurrence,x,y,z,xx,xy,xz,yx,yy,yz,zx,zy,zz\n");
+            for r in &rows {
+                for at in &r.positions {
+                    let [o, x, y, z] = [at.pose.origin, at.pose.x, at.pose.y, at.pose.z];
+                    // The step as JSON writes it (`0.0`, not `0`), as the file always had it.
+                    c += &format!(
+                        "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                        Value::from(r.step),
+                        solidcraft_doc::csv::field(&at.occurrence),
+                        o[0],
+                        o[1],
+                        o[2],
+                        x[0],
+                        x[1],
+                        x[2],
+                        y[0],
+                        y[1],
+                        y[2],
+                        z[0],
+                        z[1],
+                        z[2]
+                    );
+                }
+            }
+            c
+        } else {
+            // Through a `Value`, whose keys are sorted, so the file reads as it always did.
+            let samples = StudyExport::Samples { study: m.name, steps: m.steps, samples: rows };
+            serde_json::to_value(&samples).and_then(|v| serde_json::to_string_pretty(&v)).unwrap_or_default()
+        };
+        solidcraft_io::vfs::check(path).map_err(|e| EngineError::Other(e.to_string()))?;
+        solidcraft_io::write_atomic(std::path::Path::new(path), text.as_bytes(), false).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        return typed_reply(
+            cmd,
+            StudyExported { export: StudyExport::Written { path: path.to_string(), samples: count }, param_warnings: Vec::new() },
+        );
+    }
+    typed_reply(cmd, StudyExported { export: StudyExport::Samples { study: m.name, steps: m.steps, samples: rows }, param_warnings: Vec::new() })
+}
+
+/// Most samples of a motion trace: each is a solve, and a kept trace keeps every one as a fit
+/// point of its spline.
+const MAX_TRACE: usize = solidcraft_sketch::MAX_FIT_POINTS;
+
+/// The joint values a trace drives to at sample `k` of `n`.
+type Plan = Box<dyn Fn(&Session, usize, usize) -> Vec<(u64, Vec<f64>)>>;
+
+/// The point `p` names (`occurrence` and `point`): the occurrence path placing it and the point
+/// in that placement's frame. The occurrence is an occurrence path through nested sub-assemblies
+/// (one instance of each), or an occurrence at its first placement (none: the root). The point
+/// is a world point where the parts are placed (moves only shown are left out).
+fn traced_point(s: &Session, p: &Value, cmd: &str) -> Result<(Vec<u64>, Vec3)> {
+    let path: Vec<u64> = match p.get("occurrence") {
+        Some(Value::Array(ids)) if ids.len() <= 64 => {
+            ids.iter().map(|v| v.as_u64().ok_or_else(|| bad(cmd, "an occurrence path lists occurrence ids"))).collect::<Result<_>>()?
+        }
+        Some(Value::Array(_)) => return Err(bad(cmd, "an occurrence path has at most 64 ids")),
+        v => {
+            let occ = occurrence_id(s, v, cmd)?;
+            match s.doc.occurrences.iter().find(|o| o.id == occ) {
+                Some(o) => s.doc.first_path(o.parent).into_iter().chain([o.id]).collect(),
+                None => Vec::new(),
+            }
+        }
+    };
+    let at = p.get("point").and_then(vec3).filter(|v| v.len() < 1e7).ok_or_else(|| bad(cmd, "`point` must be [x, y, z], a world point"))?;
+    let mut t = s.scratch();
+    t.pending_moves.clear();
+    let local = solidcraft_doc::mat_inverse(&path_world(&t, &path, cmd)?)
+        .map(|m| solidcraft_doc::apply_point(&m, at))
+        .ok_or_else(|| bad(cmd, "the occurrence's placement is not invertible"))?;
+    Ok((path, local))
+}
+
+/// The world placement of an occurrence path (empty: the root).
+fn path_world(t: &Session, path: &[u64], cmd: &str) -> Result<Mat> {
+    if path.is_empty() { Ok(solidcraft_doc::IDENTITY) } else { t.occurrence_placement(path).map(|o| o.world).map_err(|e| bad(cmd, e.to_string())) }
+}
+
+/// Where a point of an occurrence goes as a study plays or a joint is driven: its world
+/// positions, sampled on a copy (the design is not changed). Each sample is driven from the one
+/// before, so closed loops follow on their branch and contact sets stop them; the trace ends at
+/// the sample where the motion stops short. Returns the points and the answer without them.
+fn sample_trace(s: &Session, p: &Value, cmd: &str) -> Result<(Vec<Vec3>, TraceRun)> {
+    let (path, local) = traced_point(s, p, cmd)?;
+    let mut t = s.scratch();
+    // Traced from where the parts are placed: moves only shown (an exploded view, a move not
+    // captured yet) are not where the joints are solved.
+    t.pending_moves.clear();
+    let world = |t: &Session| path_world(t, &path, cmd);
+    let (default, given, plan) = motion_plan(s, p, cmd)?;
+    let n = sample_count(p, default.min(MAX_TRACE), MAX_TRACE, cmd)?;
+    let mut points = Vec::new();
+    let mut stop = (None, Value::Null, Value::Null);
+    for k in 0..n {
+        let want = plan(&t, k, n);
+        let (r, _) = drive_with_contact(&mut t, &want, &given)?;
+        points.push(solidcraft_doc::apply_point(&world(&t)?, local));
+        if r["stopped_by_loop"].is_object() || r["stopped_by_contact"].is_object() {
+            stop = (Some(k), r["stopped_by_loop"].clone(), r["stopped_by_contact"].clone());
+            break;
+        }
+    }
+    let name = s.doc.occurrences.iter().find(|o| Some(&o.id) == path.last()).map_or_else(|| "root".to_string(), |o| o.name.clone());
+    let stopped_by_loop = serde_json::from_value(stop.1).map_err(|e| bad(cmd, e.to_string()))?;
+    let stopped_by_contact = serde_json::from_value(stop.2).map_err(|e| bad(cmd, e.to_string()))?;
+    let run = TraceRun { occurrence: name, samples: points.len(), stopped_at: stop.0, stopped_by_loop, stopped_by_contact };
+    Ok((points, run))
+}
+
+/// `samples`, 2…`max`, or `default` without it.
+fn sample_count(p: &Value, default: usize, max: usize, cmd: &str) -> Result<usize> {
+    match p.get("samples") {
+        Some(v) => v
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 2.0 && *n <= max as f64)
+            .map(|n| n.round() as usize)
+            .ok_or_else(|| bad(cmd, format!("`samples` must be 2…{max}"))),
+        None => Ok(default.max(2)),
+    }
+}
+
+/// The motion a trace or an animation samples: a study played from start to end, or one joint
+/// value driven from `from` to `to`. Returns the default sample count (the study's steps + 1, or
+/// 100), the values driven and what they are at sample `k` of `n`.
+fn motion_plan(s: &Session, p: &Value, cmd: &str) -> Result<(usize, BTreeSet<(u64, usize)>, Plan)> {
+    Ok(match (p.get("study"), p.get("joint")) {
+        (Some(_), Some(_)) => return Err(bad(cmd, "give `study` or `joint`, not both")),
+        (Some(_), None) => {
+            let m = s.doc.assembly.studies.get(study_index(s, p, cmd)?).cloned().ok_or_else(|| bad(cmd, "study"))?;
+            let n = (m.steps as usize).saturating_add(1);
+            (n, keyed(&m), Box::new(move |t, k, n| values_at(t, &m, f64::from(m.steps) * k as f64 / (n - 1) as f64)))
+        }
+        (None, Some(j)) => {
+            let id = joint_id(s, Some(j), cmd)?;
+            let kind = s.doc.assembly.joints.iter().find(|j| j.id == id).map(|j| j.kind).ok_or_else(|| bad(cmd, "joint"))?;
+            let dofs = kind.dofs().len();
+            if dofs == 0 {
+                return Err(bad(cmd, "a rigid joint does not move"));
+            }
+            let index = match p.get("index") {
+                None => 0,
+                Some(v) => v
+                    .as_u64()
+                    .and_then(|i| usize::try_from(i).ok())
+                    .filter(|i| *i < dofs)
+                    .ok_or_else(|| bad(cmd, format!("`index` must be below {dofs}, the joint's value count")))?,
+            };
+            let end = |key: &str| match p.get(key) {
+                Some(v) => value(s, v, kind.is_angle(index), cmd),
+                None => Err(bad(cmd, format!("give `from` and `to`: the joint's values the motion runs between (no `{key}`)"))),
+            };
+            let (from, to) = (end("from")?, end("to")?);
+            let plan: Plan = Box::new(move |t, k, n| {
+                let mut q = t.doc.assembly.joints.iter().find(|j| j.id == id).map(|j| j.values.clone()).unwrap_or_default();
+                q.resize(q.len().max(dofs), 0.0);
+                if let Some(x) = q.get_mut(index) {
+                    *x = from + (to - from) * k as f64 / (n - 1) as f64;
+                }
+                vec![(id, q)]
+            });
+            (100, BTreeSet::from([(id, index)]), plan)
+        }
+        (None, None) => return Err(bad(cmd, "give a `study`, or a `joint` with `from` and `to`")),
+    })
+}
+
+fn trace(s: &mut Session, p: &Value) -> Result<Value> {
+    let (points, run) = sample_trace(s, p, "motion.trace")?;
+    let points = points.iter().map(|v| [v.x, v.y, v.z]).collect();
+    typed_reply("motion.trace", MotionTraced { run, points, param_warnings: Vec::new() })
+}
+
+/// The trace as a 3D sketch spline, in one undo step: a new sketch of the root component (the
+/// world, which no joint moves) with 3D Sketch on and the spline through the trace's points.
+fn keep_trace(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "motion.trace.keep";
+    let source = if bool_(p, "auto_update") != Some(false) { Some(associative::source(s, p, cmd)?) } else { None };
+    let (mut points, run) = sample_trace(s, p, cmd)?;
+    finish_trace(&mut points);
+    if points.len() < 2 {
+        return Err(bad(cmd, "the point does not move: there is no trace to keep"));
+    }
+    keep_sampled_trace(s, p, cmd, points, run, source)
+}
+
+fn finish_trace(points: &mut Vec<Vec3>) {
+    // Where the motion stood still (at a limit or a stop), one fit point.
+    points.dedup_by(|a, b| a.dist(*b) < 1e-6);
+    // A full cycle comes back to where it started (to the loop solver's tolerance): the spline
+    // closes there, smoothly, through the start itself (and a sample that would double it goes).
+    if points.len() > 3
+        && let (Some(&first), Some(&last)) = (points.first(), points.last())
+        && first.dist(last) < 1e-4
+    {
+        points.pop();
+        if points.last().is_some_and(|p| p.dist(first) < 1e-6) {
+            points.pop();
+        }
+        points.push(first);
+    }
+}
+
+fn keep_sampled_trace(
+    s: &mut Session,
+    p: &Value,
+    cmd: &str,
+    points: Vec<Vec3>,
+    run: TraceRun,
+    source: Option<solidcraft_doc::motion::MotionTrace>,
+) -> Result<Value> {
+    let name = match str_(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => n.to_string(),
+        None => (1..=s.doc.features.len() + 1).map(|k| format!("Motion Trace{k}")).find(|n| s.doc.find_feature(n).is_none()).unwrap_or_default(),
+    };
+    let pts: Vec<Value> = points.iter().map(|v| json!([v.x, v.y, v.z])).collect();
+    // Made in the root, whatever is being edited, which is then as it was (also on an error).
+    let before = (s.active_sketch, s.active_component, s.active_occurrence_path.take());
+    s.active_component = 0;
+    let made = (|| {
+        let run = |s: &mut Session, id: &str, q: Value| super::find_command(id).ok_or_else(|| bad(cmd, id.to_string()))?.run_nested(s, &q);
+        let made = run(s, "sketch.create", json!({"plane": "XY", "project_edges": false, "name": name}))?;
+        let sketch = made.get("sketch").cloned().unwrap_or(Value::Null);
+        run(s, "sketch.options", json!({"sketch": sketch, "sketch_3d": true}))?;
+        let spline = run(s, "sketch.spline3d", json!({"sketch": sketch, "points": pts}))?;
+        Ok::<_, EngineError>((made, spline))
+    })();
+    (s.active_sketch, s.active_component, s.active_occurrence_path) = before;
+    s.revision += 1;
+    let (made, spline) = made?;
+    let sketch = made.get("sketch").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "trace sketch is missing"))?;
+    let name = made.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+    let curves: Vec<String> =
+        spline.get("curves").and_then(Value::as_array).map(|c| c.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+    if let Some(mut source) = source {
+        source.sketch = sketch;
+        source.wire = curves.first().cloned().ok_or_else(|| bad(cmd, "trace curve is missing"))?;
+        associative::remember(s, &source);
+        s.doc_mut().assembly.traces.push(source);
+    }
+    typed_reply(cmd, MotionTraceKept { run, sketch, name, curves, points: points.len(), param_warnings: Vec::new() })
+}
+
+fn list_studies(s: &mut Session, _p: &Value) -> Result<Value> {
+    let studies = s.doc.assembly.studies.iter().map(|m| study_info(s, m)).collect();
+    typed_reply("motion.list", MotionStudies { studies, traces: associative::list(s), param_warnings: Vec::new() })
+}
+
+/// A study as `motion.list` gives it: key values in the units `motion.study` takes — degrees
+/// for angles, mm for distances, like `joint.list`'s values — each key with its joint's name,
+/// so a listed study can be fed back to `motion.study` unchanged.
+fn study_info(s: &Session, m: &MotionStudy) -> MotionStudyInfo {
+    let keys = m
+        .keys
+        .iter()
+        .map(|k| {
+            let joint = s.doc.assembly.joints.iter().find(|j| j.id == k.joint);
+            let angle = joint.is_some_and(|j| j.kind.is_angle(k.index));
+            MotionStudyKeyInfo {
+                joint: k.joint,
+                joint_name: joint.map(|j| j.name.clone()).unwrap_or_else(|| k.joint.to_string()),
+                index: k.index,
+                unit: if angle { "deg" } else { "mm" }.into(),
+                points: k.points.iter().map(|(step, v)| [*step, if angle { v.to_degrees() } else { *v }]).collect(),
+            }
+        })
+        .collect();
+    MotionStudyInfo { id: m.id, name: m.name.clone(), steps: m.steps, keys }
+}
+
+fn delete_study(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "motion.delete";
+    let i = study_index(s, p, cmd)?;
+    let m = s.doc_mut().assembly.studies.remove(i);
+    typed_reply(cmd, MotionStudyDeleted { deleted: m.name, param_warnings: Vec::new() })
+}
+
+// ---- Exploded views ----
+
+/// Why Exploded View is greyed out: it pulls components apart, so a design of plain bodies, or
+/// with a single component, has nothing to separate (#9142).
+const EXPLODE_NEEDS_COMPONENTS: &str =
+    "Exploded View pulls components apart, so the design needs two or more of them (New Component, Insert Design or Create Components from Bodies)";
+
+/// Exploded View is offered once the design has two or more occurrences to move apart (#9142).
+fn has_parts_to_explode(s: &Session) -> std::result::Result<(), String> {
+    if s.doc.occurrences.len() >= 2 { Ok(()) } else { Err(EXPLODE_NEEDS_COMPONENTS.into()) }
+}
+
+fn view_index(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
+    let key = match p.get("view") {
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::String(x)) => x.clone(),
+        _ => return Err(bad(cmd, "`view` must be an id or a name")),
+    };
+    s.doc.assembly.exploded.iter().position(|e| e.id.to_string() == key || e.name == key).ok_or_else(|| bad(cmd, format!("no exploded view `{key}`")))
+}
+
+/// World centre of each top-level occurrence's bodies.
+fn centres(s: &Session) -> Vec<(u64, Vec3)> {
+    let bodies = placed(s);
+    let mut out = Vec::new();
+    for o in s.doc.occurrences.iter().filter(|o| o.parent == 0) {
+        let mut bounds = Aabb3::EMPTY;
+        for (_, b) in bodies.iter().filter(|(path, _)| path.first() == Some(&o.id)) {
+            if let Ok(bb) = b.exact_bounds() {
+                bounds = bounds.union(&bb);
+            }
+        }
+        if !bounds.is_empty() {
+            out.push((o.id, bounds.center()));
+        }
+    }
+    out
+}
+
+fn explode_create(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "explode.create";
+    let moves: Vec<(u64, Vec3)> = match p.get("moves") {
+        Some(Value::Array(list)) => {
+            if list.len() > MAX_ITEMS {
+                return Err(bad(cmd, "too many moves"));
+            }
+            list.iter()
+                .map(|m| {
+                    let o = occurrence_id(s, m.get("occurrence"), cmd)?;
+                    let t = m
+                        .get("translate")
+                        .and_then(vec3)
+                        .filter(|v| v.len() < 1e7)
+                        .ok_or_else(|| bad(cmd, "each move needs `translate`: [x, y, z]"))?;
+                    Ok((o, t))
+                })
+                .collect::<Result<_>>()?
+        }
+        Some(_) => return Err(bad(cmd, "`moves` must be a list")),
+        None => {
+            let scale = match p.get("scale") {
+                Some(v) => v.as_f64().filter(|x| x.is_finite() && x.abs() <= 100.0).ok_or_else(|| bad(cmd, "`scale` must be a number up to 100"))?,
+                None => 1.0,
+            };
+            let c = centres(s);
+            if c.len() < 2 {
+                return Err(bad(cmd, "an exploded view needs two or more occurrences"));
+            }
+            let mid = c.iter().fold(Vec3::ZERO, |a, (_, p)| a + *p) * (1.0 / c.len() as f64);
+            c.iter().map(|(o, p)| (*o, (*p - mid) * scale)).collect()
+        }
+    };
+    if s.doc.assembly.exploded.len() >= MAX_ITEMS {
+        return Err(bad(cmd, "too many exploded views"));
+    }
+    let id = s.doc_mut().allocate_id()?;
+    let name =
+        str_(p, "name").map(str::to_string).unwrap_or_else(|| free_name("Exploded View", s.doc.assembly.exploded.iter().map(|v| v.name.as_str())));
+    s.doc_mut().assembly.exploded.push(ExplodedView { id, name: name.clone(), moves: moves.clone() });
+    let moves = moves.iter().map(ExplodeMoveInfo::from).collect();
+    typed_reply(cmd, ExplodeCreated { view: id, name, moves, param_warnings: Vec::new() })
+}
+
+fn explode_show(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "explode.show";
+    if p.get("view").is_none_or(|v| v.is_null() || v.as_str().is_some_and(|x| x.eq_ignore_ascii_case("none"))) {
+        s.pending_moves.clear();
+        s.exploded.clear();
+        s.revision += 1;
+        return typed_reply(cmd, ExplodeShown { view: None, name: None, param_warnings: Vec::new() });
+    }
+    let i = view_index(s, p, cmd)?;
+    let v = s.doc.assembly.exploded.get(i).cloned().ok_or_else(|| bad(cmd, "view"))?;
+    let moves = exploded_at(&explode_moves(s, &v), 1.0);
+    if !moves.values().all(solidcraft_doc::is_placement) {
+        return Err(bad(cmd, format!("exploded view `{}` moves an occurrence out of range", v.name)));
+    }
+    // Shown only: `exploded` marks these as the view's, so the design's placements leave them out.
+    s.exploded.clone_from(&moves);
+    s.pending_moves = moves;
+    s.revision += 1;
+    typed_reply(cmd, ExplodeShown { view: Some(v.id), name: Some(v.name), param_warnings: Vec::new() })
+}
+
+/// Whether the pending moves are an exploded view shown (`explode.show`), which places the
+/// occurrences only while it is shown: not a move to capture or save (#9736).
+pub(crate) fn shows_exploded_view(s: &Session) -> bool {
+    s.doc.assembly.exploded.iter().any(|v| exploded_at(&explode_moves(s, v), 1.0) == s.pending_moves)
+}
+
+/// What exploded view `v` moves: (occurrence, its placement, the translation the view adds). Moves
+/// of occurrences no longer in the design, not finite, or under a parent placed by a singular
+/// matrix (a hostile design file), are left out;
+/// a later move of one occurrence replaces an earlier one.
+///
+/// The view stores world translations, and an occurrence's placement is relative to its parent
+/// component, so each translation is turned into the parent's frame: a part inside a turned
+/// component moves the way the view gives, not along the component's axes (#13939). A component
+/// placed more than once shares its parts' placements, so there a part moves the way given in
+/// the component's first placement ([`solidcraft_doc::joints::occurrence_world`]).
+fn explode_moves(s: &Session, v: &ExplodedView) -> Vec<(u64, Mat, Vec3)> {
+    let placed: std::collections::BTreeMap<u64, (Mat, u64)> = s.doc.occurrences.iter().map(|o| (o.id, (o.transform, o.parent))).collect();
+    v.moves
+        .iter()
+        .filter(|(_, t)| t.len() < 1e7)
+        .filter_map(|(o, t)| {
+            let (transform, parent) = *placed.get(o)?;
+            let Some(frame) = (parent != 0).then(|| s.doc.occurrence_of(parent)).flatten() else {
+                return Some((*o, transform, *t));
+            };
+            let to_parent = solidcraft_doc::mat_inverse(&solidcraft_doc::joints::occurrence_world(&s.doc, frame.id))?;
+            Some((*o, transform, solidcraft_doc::apply_vector(&to_parent, *t)))
+        })
+        .collect()
+}
+
+/// The pending moves that show `moves` `amount` of the way out: 0 assembled, 1 exploded.
+fn exploded_at(moves: &[(u64, Mat, Vec3)], amount: f64) -> std::collections::BTreeMap<u64, Mat> {
+    let mut out = std::collections::BTreeMap::new();
+    for (o, m, t) in moves {
+        let mut m = *m;
+        if let Some(r) = m.get_mut(3) {
+            r[0] += t.x * amount;
+            r[1] += t.y * amount;
+            r[2] += t.z * amount;
+        }
+        out.insert(*o, m);
+    }
+    out
+}
+
+fn explode_list(s: &mut Session, _p: &Value) -> Result<Value> {
+    let views = s.doc.assembly.exploded.iter().map(ExplodedViewInfo::from).collect();
+    typed_reply("explode.list", ExplodeViews { views, param_warnings: Vec::new() })
+}
+
+fn explode_delete(s: &mut Session, p: &Value) -> Result<Value> {
+    let i = view_index(s, p, "explode.delete")?;
+    let v = s.doc_mut().assembly.exploded.remove(i);
+    typed_reply("explode.delete", ExplodeDeleted { deleted: v.name, param_warnings: Vec::new() })
+}
+
+/// World position of a point of an occurrence (tests).
+#[cfg(test)]
+pub fn world_point(s: &Session, occurrence: u64, p: Vec3) -> Vec3 {
+    solidcraft_doc::apply_point(&joints::occurrence_world(&s.doc, occurrence), p)
+}
+
+#[cfg(test)]
+#[path = "motion_tests.rs"]
+mod tests;

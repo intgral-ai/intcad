@@ -1,0 +1,20 @@
+[package]
+name = "solidcraft-geom"
+description = "SolidCraft geometry foundation: vectors, planes, frames, meshes and their measures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+solidcore = { workspace = true }
+solidcore-record = { workspace = true }
+solidcore-ops = { workspace = true }
+solidcore-tess = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

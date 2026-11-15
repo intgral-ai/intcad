@@ -1,0 +1,15 @@
+name: Flatpak Pages publication quarantined
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Flatpak Pages publication disabled (not release evidence)
+    if: ${{ false && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo 'BLOCKED - no Pages dispatch, publication credentials or approved destination'

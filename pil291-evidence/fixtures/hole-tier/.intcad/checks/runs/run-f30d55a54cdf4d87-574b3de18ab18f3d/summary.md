@@ -1,0 +1,78 @@
+# DFM check
+
+Run: `run-f30d55a54cdf4d87-574b3de18ab18f3d`
+Project: `af242da7-f1f8-46ab-97eb-e567758e9a34`
+Model: `sha256:74986e001ce9e777c25c7f71702b1a0b2f540e1c4c8f563cfa46466e7caf7bc3`
+Configuration digest: `2eda2417b83903b9dd84328e5bd3a1ec8415d7c333899d3d59a60a112d4de1e9`
+
+Passed: 3 | Checked: 6 | Advisory: 0 | Failed: 20 | Unsupported: 16 | Not applicable: 0 | Not run: 0
+
+Result: check failed: 20 finding(s) break a confirmed requirement.
+
+## Findings
+
+- `sheet-1/F1` `checked` (Body1)
+- `sheet-1/F2` `checked` (Body1), measured 2.000 mm
+- `sheet-1/F3` `checked` (Body1)
+- `sheet-1/F4` `unsupported` (Body1), code `COVERAGE_NO_REQUIREMENT`
+- `sheet-1/F5` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F6` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F7` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F8` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F9` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F10` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F11` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F12` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F13` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F14` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F15` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F16` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F17` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F18` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F19` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F20` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F21` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F22` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F23` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F24` `failed` (Body1), measured 3.000 mm, required 3.500 mm (factory confirmed), code `HOLE_DIAMETER_BELOW_LIMIT`
+- `sheet-1/F25` `passed` (Body1), measured 5.000 mm, required 5.000 mm (factory confirmed)
+- `sheet-1/F26` `unsupported` (Body1), code `CRITICAL_NOT_DECLARED`
+- `sheet-1/F27` `unsupported` (Body1), code `RULE_NOT_IMPLEMENTED`
+- `sheet-1/F28` `unsupported` (Body1), code `RULE_NOT_IMPLEMENTED`
+- `sheet-1/F29` `unsupported` (Body1), code `RULE_NOT_IMPLEMENTED`
+- `sheet-1/F30` `unsupported` (Body1), code `NO_SHOP_NUMBER`
+- `sheet-1/F31` `unsupported` (Body1), code `RULE_NOT_IMPLEMENTED`
+- `sheet-1/F32` `unsupported` (Body1), code `RULE_NOT_IMPLEMENTED`
+- `sheet-2/F1` `checked` (Body2)
+- `sheet-2/F2` `checked` (Body2), measured 1.200 mm
+- `sheet-2/F3` `checked` (Body2)
+- `sheet-2/F4` `unsupported` (Body2), code `COVERAGE_NO_REQUIREMENT`
+- `sheet-2/F5` `passed` (Body2), measured 3.000 mm, required 2.000 mm (factory confirmed)
+- `sheet-2/F6` `passed` (Body2), measured 5.000 mm, required 3.000 mm (factory confirmed)
+- `sheet-2/F7` `unsupported` (Body2), code `CRITICAL_NOT_DECLARED`
+- `sheet-2/F8` `unsupported` (Body2), code `RULE_NOT_IMPLEMENTED`
+- `sheet-2/F9` `unsupported` (Body2), code `RULE_NOT_IMPLEMENTED`
+- `sheet-2/F10` `unsupported` (Body2), code `RULE_NOT_IMPLEMENTED`
+- `sheet-2/F11` `unsupported` (Body2), code `NO_SHOP_NUMBER`
+- `sheet-2/F12` `unsupported` (Body2), code `RULE_NOT_IMPLEMENTED`
+- `sheet-2/F13` `unsupported` (Body2), code `RULE_NOT_IMPLEMENTED`
+
+## Not checked
+
+- Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked.
+- Sheet 1 (`Body1`): the App did not measure bend runs, relief ends, relief sizes, webs, countersinks.
+- Sheet 1 (`Body1`): sm.tolerance_across_bends was not verified.
+- Sheet 1 (`Body1`): sm.countersink_depth was not verified.
+- Sheet 1 (`Body1`): sm.countersink_to_edge was not verified.
+- Sheet 1 (`Body1`): sm.countersink_to_bend was not verified.
+- Sheet 1 (`Body1`): sm.hole_spacing was not verified.
+- Sheet 1 (`Body1`): sm.countersink_land was not verified.
+- Sheet 1 (`Body1`): sm.countersink_angle was not verified.
+- Sheet 2 (`Body2`): the App did not measure bend runs, relief ends, relief sizes, webs, countersinks.
+- Sheet 2 (`Body2`): sm.tolerance_across_bends was not verified.
+- Sheet 2 (`Body2`): sm.countersink_depth was not verified.
+- Sheet 2 (`Body2`): sm.countersink_to_edge was not verified.
+- Sheet 2 (`Body2`): sm.countersink_to_bend was not verified.
+- Sheet 2 (`Body2`): sm.hole_spacing was not verified.
+- Sheet 2 (`Body2`): sm.countersink_land was not verified.
+- Sheet 2 (`Body2`): sm.countersink_angle was not verified.

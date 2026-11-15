@@ -1,0 +1,120 @@
+# Quick static checks for the release pipeline (seconds, no Rust build): workflow syntax, the
+# packaging shell and PowerShell scripts, and the Linux desktop/AppStream/Flatpak metadata.
+# A second job builds the Assistant's page again from the pinned Mastra commit (a minute or two,
+# no Rust build either) and compares it with the build that is checked in.
+# Adapted from PhotoCraft's (storytold/photocraft, Apache-2.0; see ATTRIBUTION.md).
+name: Packaging lint
+
+on:
+  push:
+    branches: [main, develop]
+    paths: [".github/workflows/**", "packaging/**", "assets/**", "packages/assistant-web/**"]
+  pull_request:
+    paths: [".github/workflows/**", "packaging/**", "assets/platforms/**", "packages/assistant-web/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck desktop-file-utils appstream libxml2-utils python3-yaml jq
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" actionlint
+      - name: actionlint
+        run: '"$RUNNER_TEMP/actionlint" -color'
+      - name: shellcheck
+        run: shellcheck packaging/*.sh packaging/*/*.sh packaging/linux/AppRun
+      - name: Historical nightly helper and fork publication quarantine regression
+        run: python3 packaging/tests/nightly_test.py
+      - name: Source-bound release evidence regression
+        run: python3 -I scripts/ci/test_gate.py
+      - name: Windows executable icon validation regression
+        run: python3 packaging/tests/windows_icon_test.py
+      - name: AppImage CLI wrapper regression
+        run: python3 packaging/tests/apprun_test.py
+      - name: Flatpak desktop smoke validation regression
+        run: python3 packaging/tests/flatpak_test.py
+      - name: Mastra packaged-runtime gate regression
+        run: python3 packaging/tests/mastra_runtime_test.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Mastra source-build revision regression
+        run: packaging/tests/mastra_revision.sh
+      - name: PowerShell
+        shell: pwsh
+        run: |
+          foreach ($f in Get-ChildItem -Path packaging -Recurse -Filter *.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { Write-Output "::error file=$($f.Name)::$_" }; exit 1 }
+            Write-Output "ok $($f.Name)"
+          }
+      - name: XML, desktop entry, AppStream, Flatpak manifest
+        run: |
+          xmllint --noout assets/platforms/windows/solidcraft.wxs assets/platforms/windows/solidcraft.en-us.wxl assets/platforms/macos/*.plist* assets/platforms/linux/*.xml*
+          desktop-file-validate assets/platforms/linux/io.tangencylabs.solidcraft.desktop
+          # The window's X11 class is its app id; the old ids stay only as the rename shims.
+          grep -qx 'StartupWMClass=io.tangencylabs.solidcraft' assets/platforms/linux/io.tangencylabs.solidcraft.desktop
+          grep -q '<id>ai.storyteller.solidcraft</id>' assets/platforms/linux/io.tangencylabs.solidcraft.metainfo.xml.in
+          grep -q '<id>ai.storyteller.solvecraft</id>' assets/platforms/linux/io.tangencylabs.solidcraft.metainfo.xml.in
+          grep -qx 'X-Flatpak-RenamedFrom=ai.storyteller.solidcraft.desktop;ai.storyteller.solvecraft.desktop;' assets/platforms/linux/io.tangencylabs.solidcraft.desktop
+          grep -qF -e '--end-of-life-rebase=' packaging/flatpak-site.sh
+          sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' assets/platforms/linux/io.tangencylabs.solidcraft.metainfo.xml.in >"$RUNNER_TEMP/io.tangencylabs.solidcraft.metainfo.xml"
+          appstreamcli validate --no-net --explain "$RUNNER_TEMP/io.tangencylabs.solidcraft.metainfo.xml"
+          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml')); assert m['id'] == 'io.tangencylabs.solidcraft' and m['command'] == 'solidcraft'"
+          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/snap/snapcraft.yaml')); assert m['name'] == 'solidcraft' and m['confinement'] == 'strict' and m['apps']['solidcraft']['command'] == 'usr/bin/solidcraft'"
+          python3 -m py_compile packaging/linux/snap-smoke.py
+
+  # The Assistant's page (packages/assistant-web/dist) is a build output that is checked in, so
+  # that the app builds without Node. This job builds it again from a fresh clone of the pinned
+  # Mastra commit and fails unless the result is what is checked in, byte for byte: the page,
+  # the list of what went into it and its third-party notices (packages/assistant-web/README.md).
+  # The build itself refuses Mastra's enterprise-licensed `ee/` files and unreviewed licences.
+  assistant-page:
+    name: Assistant page (rebuilt from the pinned Mastra commit)
+    runs-on: ubuntu-24.04
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22.23.4"
+      - name: Clone Mastra at the pinned commit and install its packages
+        run: |
+          pin() { python3 -c 'import json, sys; print(json.load(open("packages/assistant-web/mastra.json"))[sys.argv[1]])' "$1"; }
+          repository="$(pin repository)"
+          commit="$(pin commit)"
+          package="$(pin package)"
+          git init -q "$RUNNER_TEMP/mastra"
+          git -C "$RUNNER_TEMP/mastra" fetch -q --depth 1 "$repository" "$commit"
+          git -C "$RUNNER_TEMP/mastra" checkout -q FETCH_HEAD
+          cd "$RUNNER_TEMP/mastra"
+          # pnpm in the version Mastra's package.json names; Mastra's lockfile decides every version.
+          corepack enable
+          pnpm install --frozen-lockfile --filter "./$package..."
+      - name: Build the page again and compare with what is checked in
+        run: node packages/assistant-web/tools/build.mjs --mastra "$RUNNER_TEMP/mastra" --check --keep "$RUNNER_TEMP/assistant-web-build"
+      - name: Keep the fresh build when it differs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: assistant-web-build
+          path: ${{ runner.temp }}/assistant-web-build
+          if-no-files-found: ignore

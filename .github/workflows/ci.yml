@@ -1,0 +1,819 @@
+# One immutable applicability plan, real execution receipts, and an always-reported ci.
+# Pull requests run a bounded deterministic test/repository lane; integration,
+# scheduled, full and release runs execute the complete suite. The nightly entry
+# point is native-baseline.yml, which calls this workflow with validation_mode=full.
+# Standard-runner capacity is NOT established by these labels. Keep resource reports
+# and partition with matching listing/run evidence if actual measurements require it.
+name: CI
+
+on:
+  pull_request:
+    # ready_for_review starts the fixed-candidate release gate; the direct
+    # affected lane is for preparation commits and is not duplicated there.
+    types: [opened, synchronize, reopened]
+    branches: [develop, main]
+  merge_group:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      validation_mode:
+        description: "affected or full (full includes heavy and randomized properties)"
+        type: string
+        default: affected
+      release_required:
+        description: "Require real runtime, provenance and installed-package consumers"
+        type: boolean
+        default: false
+      cross_compile:
+        description: "Also check RISC-V"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      concurrency_namespace:
+        type: string
+        default: reusable
+      validation_mode:
+        type: string
+        default: affected
+      release_required:
+        type: boolean
+        default: false
+      cross_compile:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Reusable workflows inherit the caller's event/ref. Keep their cancellation
+  # domain separate from direct CI, and separate each caller workflow too.
+  group: ci-${{ inputs.concurrency_namespace || 'direct' }}-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target
+  CARGO_INCREMENTAL: "0"
+  ACTION_MATRIX_JOBS: "2"
+
+jobs:
+  changes:
+    name: Select checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      plan: ${{ steps.select.outputs.plan }}
+      full: ${{ steps.select.outputs.full }}
+      windows: ${{ steps.select.outputs.windows }}
+      deps: ${{ steps.select.outputs.deps }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - id: select
+        env:
+          VALIDATION_MODE: ${{ inputs.validation_mode || 'affected' }}
+          RELEASE_REQUIRED: ${{ inputs.release_required || false }}
+        run: python3 -I scripts/ci/main_merge.py select --mode "$VALIDATION_MODE" --release-required "$RELEASE_REQUIRED" --out selection/plan.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: selection-plan
+          path: selection/
+          if-no-files-found: error
+          retention-days: 7
+
+  repo:
+    name: Format and repository checks
+    needs: changes
+    runs-on: ubuntu-24.04
+    # Bounded pull-request policy/format checks; the complete repository evidence
+    # (owning xtask tests, packaging suites) runs in full mode. The web-offline
+    # harness has its own job and budget below.
+    # The fast lane measured 14-20 minutes on the 2-vCPU runner; keep headroom.
+    timeout-minutes: ${{ fromJSON(needs.changes.outputs.plan || '{}').scope == 'full' && 90 || 30 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: repo-checks
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      # Pull requests: fmt/assets/icons/licences/layers/ui-containers/lists/i18n/mesh/skills,
+      # format-pending, test_affected.py/test_gate.py/test_main_merge.py,
+      # test_kernel_rig_plan.py and every existing bot suite.
+      # Full mode adds the owning xtask binary tests and packaging suites.
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job repo --out evidence/repo
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-repo
+          path: evidence/
+          if-no-files-found: error
+
+  web-offline:
+    name: Web app offline use and updates
+    needs: changes
+    # Selected for full/release validation and for the web app, packaging/web,
+    # the Pages caller and the xtask harness modules. It is not folded into the
+    # repository checks: the Chrome harness bounds each launch at 240 s (with
+    # one retry) and needs its own budget. The previously measured job took
+    # under 3 minutes on the hosted runner; 30 minutes keeps ample headroom.
+    # Keep that budget: do not retry the whole job or raise it to hide a
+    # known harness timing bug.
+    if: fromJSON(needs.changes.outputs.plan || '{}').jobs.web-offline.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      # ubuntu-24.04 hosted images ship Google Chrome; the harness fails when
+      # it cannot find a browser instead of skipping the check.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: web-offline
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job web-offline --out evidence/web-offline
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-web-offline
+          path: evidence/
+          if-no-files-found: error
+
+  pr-policy:
+    name: Required branch admission
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.pr-policy.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job pr-policy --out evidence/pr-policy
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-pr-policy
+          path: evidence/
+          if-no-files-found: error
+
+  artifact-policy:
+    name: Mastra artifact policy
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.artifact-policy.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: artifact-policy
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job artifact-policy --out evidence/artifact-policy
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-artifact-policy
+          path: evidence/
+          if-no-files-found: error
+
+  clippy:
+    name: Native Linux Clippy
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/ci/build-jobs.sh
+      - name: Native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: native-clippy
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - env:
+          PLAN: ${{ needs.changes.outputs.plan }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, subprocess
+          p = json.loads(os.environ['PLAN'])
+          scope = ['--workspace'] if p['rustFull'] else [a for n in p['rustPackages'] for a in ('-p', n)]
+          if not scope:
+              raise SystemExit('empty selected Clippy scope')
+          subprocess.run(['cargo', 'clippy', *scope, '--all-targets', '--profile', 'ci', '--locked', '--', '-D', 'warnings'], check=True)
+          PY
+
+  contract-rust:
+    name: Mastra contract (Rust)
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.contract-rust.decision == 'run'
+    runs-on: ubuntu-24.04
+    # Measured 27m16s cold at 41628f6a5 (mostly test-binary compilation); a
+    # loaded standard runner can exceed the old 30-minute cap before the filter
+    # run starts, so allow the same headroom as the other full test jobs.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - run: scripts/ci/build-jobs.sh
+      - name: Native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: contract-rust
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job contract-rust --out evidence/contract-rust
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-contract-rust
+          path: evidence/
+          if-no-files-found: error
+
+  runtime:
+    name: Mastra runtime (Node)
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.runtime.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      # engine-strict=true: Node 24 is rejected; use the admitted Node/npm pair.
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22.23.4"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm install -g npm@11.19.0
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job runtime --out evidence/runtime
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-runtime
+          path: evidence/
+          if-no-files-found: error
+
+  contract-ts:
+    name: Mastra contract (TypeScript)
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.contract-ts.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22.23.4"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm install -g npm@11.19.0
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job contract-ts --out evidence/contract-ts
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-contract-ts
+          path: evidence/
+          if-no-files-found: error
+
+  integration:
+    name: Host/runtime integration
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.integration.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22.23.4"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm install -g npm@11.19.0
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job integration --out evidence/integration
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-integration
+          path: evidence/
+          if-no-files-found: error
+
+  packages:
+    name: Packaging regressions
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.packages.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job packages --out evidence/packages
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-packages
+          path: evidence/
+          if-no-files-found: error
+
+  rust:
+    name: Native Linux selected regression gate
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
+    runs-on: ubuntu-24.04
+    # Pull requests: directly affected packages plus the xtask smoke owner, half
+    # partition (bounded 30 min). Full/nightly: the complete workspace suite.
+    timeout-minutes: ${{ fromJSON(needs.changes.outputs.plan || '{}').scope == 'full' && 240 || 30 }}
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - name: Free unused runner SDKs
+        run: bash scripts/ci/free-disk.sh
+      - name: Software Vulkan and native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: native-tests
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      - name: Measure selected execution (including GPU paths and full-mode properties)
+        run: |
+          mkdir -p evidence/rust
+          { echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"; uname -a; free -h; df -h .; } > evidence/rust/resources-before.txt
+          /usr/bin/time -v -o evidence/rust/resources-time.txt python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job rust --out evidence/rust
+      - name: Final resource sample
+        if: always()
+        run: df -h . > evidence/rust/resources-after.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-rust
+          path: evidence/
+          if-no-files-found: error
+
+  wasm:
+    name: Compile WebAssembly
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan).jobs.wasm.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: wasm
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job wasm --out evidence/wasm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-wasm
+          path: evidence/
+          if-no-files-found: error
+
+  # No #5 bundle, #15 verifier CLI or #7 runtime is present on this branch.
+  # Their Task 1 decisions/obligations are evaluated by ci, not successful stub jobs.
+  # A present/required but unwired owner consumer fails for missing job/receipt.
+  # Activate exact counted owner adapters only after the actual handoff is integrated.
+
+  dependency-advisories:
+    name: Dependency advisories
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-deny --version 0.20.2 --locked
+      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: cargo deny --locked check --warn unmaintained advisories bans sources
+      - if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: cargo deny --locked check --warn unmaintained advisories
+
+  build-tests:
+    name: Build full-baseline archive
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free unused runner SDKs
+        run: bash scripts/ci/free-disk.sh
+      - run: scripts/ci/build-jobs.sh
+      - name: Native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: native-tests
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest archive --workspace --cargo-profile ci --locked --archive-file tests.tar.zst
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nextest-archive
+          path: tests.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  property-tests:
+    name: Full baseline randomized properties (raw, many cases)
+    needs: build-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PROPTEST_CASES: "32"
+      ATOMIC_SEEDS: "0..8"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nextest-archive
+      - name: Raw properties (unknown failures remain failures)
+        run: |
+          cargo nextest list --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --ignore-default-filter -E 'binary(boolean_props) | binary(atomic_commands)' --message-format json > selection.json
+          set +e
+          cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --ignore-default-filter -E 'binary(boolean_props) | binary(atomic_commands)' --test-threads 2
+          raw=$?
+          set -e
+          echo "raw nextest exit: $raw (the known-failing grader below decides)"
+          cargo xtask known-failing --junit target/nextest/ci/junit.xml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: full-baseline-properties
+          path: |
+            selection.json
+            target/nextest/ci/junit.xml
+          if-no-files-found: error
+
+  action-matrix:
+    name: Action matrix (${{ matrix.shard }}/16)
+    needs: build-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nextest-archive
+      - name: Run one shard of the matrix
+        timeout-minutes: 240
+        env:
+          SHARD: ${{ matrix.shard }}
+          OUT: ${{ github.workspace }}/action-matrix
+          ACTION_MATRIX_ACTION_TIMEOUT: "1800"
+        run: |
+          mkdir -p "$OUT"
+          export ACTION_MATRIX_SHARD="$SHARD/16" ACTION_MATRIX_RESULTS="$OUT/results-$SHARD.json" ACTION_MATRIX_TIMINGS="$OUT/timings-$SHARD.jsonl" ACTION_MATRIX_WORKDIR="$OUT/raw-$SHARD"
+          cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_shard)' --test-threads 2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: action-matrix-${{ matrix.shard }}
+          path: action-matrix
+          if-no-files-found: error
+          retention-days: 14
+
+  action-matrix-determinism:
+    name: Action matrix determinism
+    needs: build-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      ACTION_MATRIX_ACTION_TIMEOUT: "1800"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nextest-archive
+      - run: cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_determinism)' --test-threads 2
+
+  doc-tests:
+    name: Doc tests
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/ci/build-jobs.sh
+      - name: Native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: doc-tests
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - run: cargo test --workspace --profile ci --locked --doc
+
+  oracle:
+    name: Reference tests
+    needs: changes
+    if: needs.changes.outputs.full == 'true' && fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/ci/build-jobs.sh
+      - name: Software Vulkan and native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 libasound2-dev libudev-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: oracle
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - run: cargo build -p solidcraft-cli --profile ci --locked
+      - run: cargo run --locked --package xtask -- oracle --cli target/ci/solidcraft-cli
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: oracle-report
+          path: docs/oracle.md
+
+  windows-fxc:
+    name: Windows D3D12 FXC shaders
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      WGPU_BACKEND: dx12
+      WGPU_DX12_COMPILER: fxc
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Record actual runner image
+        run: '"ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Out-File runner-image.txt'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-fxc
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      # Serialize WARP device creation; keep the actual shader/capture tests.
+      - run: cargo test -p solidcraft-gpu --profile ci --locked -- --test-threads=1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: platform-windows-fxc
+          path: runner-image.txt
+          if-no-files-found: error
+
+  windows-startup:
+    name: Windows app startup
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Record actual runner image
+        run: '"ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Out-File runner-image.txt'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-startup
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - name: Backend order and probing on Windows
+        run: |
+          cargo test -p solidcraft --profile ci --locked -- startup::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p solidcraft --profile ci --locked -- native_crash::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p solidcraft --profile ci --locked -- native_frame::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run: cargo build -p solidcraft --profile ci --locked
+      - run: tools/windows-startup-smoke.ps1 -Exe target/ci/solidcraft.exe
+      - run: tools/windows-resize-smoke.ps1 -Exe target/ci/solidcraft.exe
+      - run: tools/windows-assistant-smoke.ps1 -Exe target/ci/solidcraft.exe -Evidence assistant-smoke
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: platform-windows-startup
+          path: |
+            runner-image.txt
+            assistant-smoke/
+          if-no-files-found: error
+
+  riscv64-gates:
+    name: Compile RISC-V (manual)
+    if: inputs.cross_compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out craft-fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+          persist-credentials: false
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64gc-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: riscv64
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo sed -i '/^Architectures:/d; /^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          sudo tee /etc/apt/sources.list.d/riscv64.sources >/dev/null <<'EOF'
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: noble noble-updates noble-backports noble-security
+          Components: main restricted universe multiverse
+          Architectures: riscv64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo dpkg --add-architecture riscv64
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libasound2-dev:riscv64 libxkbcommon-dev:riscv64 libwayland-dev:riscv64 libx11-dev:riscv64 libxrandr-dev:riscv64 libxi-dev:riscv64 libgl1-mesa-dev:riscv64 libgtk-3-dev:riscv64 libwebkit2gtk-4.1-dev:riscv64
+      - name: Cargo check on RISC-V
+        env:
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
+          PKG_CONFIG_SYSROOT_DIR: /
+          PKG_CONFIG_PATH: /usr/lib/riscv64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: 1
+        run: |
+          export CRAFT_FONTS_DIR="$PWD/craft-fonts"
+          cargo check --all-targets --locked --target riscv64gc-unknown-linux-gnu
+
+  ci:
+    name: ci
+    needs: [changes, repo, web-offline, pr-policy, artifact-policy, clippy, contract-rust, runtime, contract-ts, integration, packages, rust, wasm, dependency-advisories, build-tests, property-tests, action-matrix, action-matrix-determinism, doc-tests, oracle, windows-fxc, windows-startup, riscv64-gates]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: always()
+        with:
+          pattern: evidence-*
+          path: receipts
+          merge-multiple: true
+      - name: Verify Task 2 against actual Actions results and exact uploaded plan bytes
+        if: always()
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRE_RISCV: ${{ inputs.cross_compile || false }}
+        run: |
+          printf '%s\n' "$NEEDS" > needs.json
+          set -o pipefail
+          python3 -I scripts/ci/main_merge.py aggregate --plan selection/plan.json --needs needs.json --receipts receipts | tee -a "$GITHUB_STEP_SUMMARY"
