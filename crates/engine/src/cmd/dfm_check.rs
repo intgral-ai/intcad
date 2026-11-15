@@ -23,7 +23,7 @@ const INSPECT_CONTRACT: TypedContract<InspectDfmParams> = TypedContract::new();
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("dfm.check", "Run DFM Check", crate::checked!("dfm.check", check))
         .at("INSPECT", "CHECK")
-        .icon("check")
+        .icon("render_check")
         .noundo()
         .contract(&CHECK_CONTRACT)
         .output(crate::schema::output_schema_for::<DfmCheckReply>)
@@ -39,13 +39,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(crate::schema::output_schema_for::<DfmCancelReply>)
         .params("→ cancelled: true when a check was running; its record becomes cancelled and the previous complete report stays latest"),
     CommandSpec::new("dfm.status", "DFM Check Status", crate::checked!("dfm.status", status))
-        .icon("info")
+        .icon("status_pin")
         .noundo()
         .contract(&STATUS_CONTRACT)
         .output(crate::schema::output_schema_for::<DfmStatusReply>)
         .params("→ running, activeRun, lastRun, lastOutcome, lastReason, error"),
     CommandSpec::new("inspect.dfm", "DFM Report", crate::checked!("inspect.dfm", inspect))
-        .icon("check")
+        .icon("render_check")
         .noundo()
         .contract(&INSPECT_CONTRACT)
         .output(crate::schema::output_schema_for::<InspectDfmReply>)

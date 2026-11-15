@@ -1419,7 +1419,9 @@ pub(crate) fn refresh_dfm_auto(app: &mut SolveApp) {
 }
 
 /// Submit a decided trigger through the engine's background DFM service. This is the one host
-/// entry: the Run DFM command and the automatic checks both come through here.
+/// entry: the Run DFM command and the automatic checks both come through here. The service is a
+/// desktop host: the browser build has no background thread and submits nothing.
+#[cfg(not(target_arch = "wasm32"))]
 fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
     match solidcraft_engine::dfm::service::start(&mut app.session) {
         Ok(_) => true,
@@ -1428,6 +1430,11 @@ fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
             false
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn submit_dfm(_app: &mut SolveApp, _trigger: dfm_runtime::Trigger) -> bool {
+    false
 }
 
 /// The host's Run DFM entry: no AI connection is needed. Returns whether a run was submitted.
@@ -1441,17 +1448,31 @@ pub(crate) fn run_dfm(app: &mut SolveApp) -> bool {
 }
 
 /// Cancel the live check (the result, if it still commits, can never take `latest` back).
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 pub(crate) fn cancel_dfm(app: &mut SolveApp) -> bool {
     let _ = app;
     solidcraft_engine::dfm::service::cancel()
 }
 
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+pub(crate) fn cancel_dfm(_app: &mut SolveApp) -> bool {
+    false
+}
+
 /// The live check's `(run_id, document_id)`, if one is running.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 pub(crate) fn running_dfm(app: &SolveApp) -> Option<String> {
     let _ = app;
     solidcraft_engine::dfm::service::status().active_run
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+pub(crate) fn running_dfm(_app: &SolveApp) -> Option<String> {
+    None
 }
 
 /// PIL-300's accept path calls this after `review::accept` applied the preview and committed it.
@@ -2576,6 +2597,7 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
             submit_dfm(app, trigger);
         }
         // A person's edit makes the old report stale and stops its check; it starts nothing.
+        #[cfg(not(target_arch = "wasm32"))]
         solidcraft_engine::dfm::service::cancel_if_stale(&mut app.session);
     }
     if !app.agent_chat.held.is_empty() || app.agent_chat.state() == State::Busy {
