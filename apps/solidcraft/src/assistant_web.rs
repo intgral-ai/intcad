@@ -245,7 +245,7 @@ fn new_window(before: &[u32], after: &[u32]) -> Option<u32> {
 }
 
 /// Where the view is in the window and at what size its page is drawn, as last given to it.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct Placed {
     rect: egui::Rect,
     zoom: f32,
@@ -262,6 +262,11 @@ pub struct AssistantWeb {
     /// The pictures the page was last told of.
     pictures: Pictures,
     placed: Option<Placed>,
+    /// The place the panel gave the view most recently. The correction after GTK maps the view
+    /// reads this, never the place it was made with: the window may have been tiled to another
+    /// size by then, and putting the view back on the old place leaves the panel empty.
+    #[cfg(target_os = "linux")]
+    latest: Rc<Cell<Option<Placed>>>,
     /// The colour last put behind the page, where the view is not seen through.
     backed: Option<egui::Color32>,
     shown: bool,
@@ -476,6 +481,8 @@ impl AssistantWeb {
             return;
         };
         let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point() };
+        #[cfg(target_os = "linux")]
+        self.latest.set(Some(at));
         let backing = web::backing(solve, ctx);
         if self.view.is_none() && !self.create(ctx, frame, at, backing) {
             // No web view on this machine: the panel says why and offers Retry; it does not draw
@@ -634,7 +641,8 @@ impl AssistantWeb {
         let mut gtk_window = None;
         #[cfg(target_os = "linux")]
         let built: Result<wry::WebView, String> = {
-            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build_embedded_gtk(builder, frame, at, &mut gtk_window)));
+            let latest = self.latest.clone();
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build_embedded_gtk(builder, frame, at, latest, &mut gtk_window)));
             match built {
                 Ok(result) => result,
                 Err(_) => Err("could not be created in this window".into()),
@@ -781,10 +789,11 @@ fn build_embedded_gtk(
     builder: wry::WebViewBuilder<'_>,
     frame: &eframe::Frame,
     at: Placed,
+    latest: Rc<Cell<Option<Placed>>>,
     slot: &mut Option<gtk::Window>,
 ) -> Result<wry::WebView, String> {
     use gtk::glib::Cast as _;
-    use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt};
+    use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt, WidgetExtManual};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use wry::WebViewBuilderExtUnix;
     let parent = match frame.window_handle().map_err(|error| error.to_string())?.as_raw() {
@@ -808,6 +817,21 @@ fn build_embedded_gtk(
         .and_then(|window| window.downcast::<gdkx11::X11Window>().ok())
         .map(|window| window.xid() as u32)
         .ok_or_else(|| "the GTK window has no X11 window".to_string())?;
+    {
+        // A window that is mapped again (the Assistant hidden and shown, or the window system
+        // replaying it) is put back on the panel after GTK has finished mapping it.
+        let mapped = window.clone();
+        let map_latest = latest.clone();
+        window.connect_map_event(move |_, _| {
+            let mapped = mapped.clone();
+            let map_latest = map_latest.clone();
+            gtk::glib::timeout_add_local(std::time::Duration::ZERO, move || {
+                place_gtk(&mapped, delayed_place(map_latest.get(), at));
+                gtk::glib::ControlFlow::Break
+            });
+            gtk::glib::Propagation::Proceed
+        });
+    }
     if let Ok((connection, _)) = x11rb::connect(None) {
         use x11rb::protocol::xproto::ConnectionExt;
         connection.reparent_window(child, parent, 0, 0).map_err(|error| error.to_string())?;
@@ -822,21 +846,31 @@ fn build_embedded_gtk(
     window.resize(wanted.width.max(1), wanted.height.max(1));
     place_gtk(&window, at);
     // GTK may set a toplevel's position as it maps it; put the child back on its panel once
-    // more after the map has gone through.
+    // more after the map has gone through. The panel's place may have changed since the view
+    // was made (the compositor tiles the new window), so read the latest place here.
     let placed = window.clone();
+    let captured = at;
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
-        place_gtk(&placed, at);
+        place_gtk(&placed, delayed_place(latest.get(), captured));
         gtk::glib::ControlFlow::Break
     });
     *slot = Some(window);
     Ok(view)
 }
 
+/// The place a delayed correction puts the view on: where the panel is now, not where it was
+/// when the view was made. A window the compositor has tiled since then has a different panel,
+/// and the old place can lie outside it or over another part of the app.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn delayed_place(latest: Option<Placed>, captured: Placed) -> Placed {
+    latest.unwrap_or(captured)
+}
+
 /// The embedded page's place in the app's window, in the window's pixels.
 #[cfg(target_os = "linux")]
 fn place_gtk(window: &gtk::Window, at: Placed) {
     use gtk::glib::Cast as _;
-    use gtk::prelude::WidgetExt;
+    use gtk::prelude::{GtkWindowExt, WidgetExt};
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt};
     let Some(xid) = window.window().and_then(|window| window.downcast::<gdkx11::X11Window>().ok()).map(|window| window.xid() as u32) else {
@@ -845,6 +879,14 @@ fn place_gtk(window: &gtk::Window, at: Placed) {
     let rect = bounds_in_pixels(at.rect, at.pixels_per_point);
     let position = rect.position.to_logical::<i32>(1.0);
     let size = rect.size.to_logical::<u32>(1.0);
+    // GTK keeps its own idea of where its toplevel is and how big it is, and puts it there when
+    // it maps the window. Keep that idea on the panel too, in GTK's points, so a later map or
+    // resize does not put the page back on the size and place it was made with.
+    let scale = f64::from(window.scale_factor().max(1));
+    let logical = rect.position.to_logical::<f64>(scale);
+    let logical_size = rect.size.to_logical::<f64>(scale);
+    window.move_(logical.x.round() as i32, logical.y.round() as i32);
+    window.resize(logical_size.width.round().max(1.0) as i32, logical_size.height.round().max(1.0) as i32);
     if let Ok((connection, _)) = x11rb::connect(None) {
         let _ = connection
             .configure_window(xid, &ConfigureWindowAux::new().x(position.x).y(position.y).width(size.width.max(1)).height(size.height.max(1)));
@@ -1031,6 +1073,17 @@ mod tests {
             assert!(folder.is_absolute(), "{folder:?}");
             assert!(folder.ends_with("assistant-web-view"), "{folder:?}");
         }
+    }
+
+    /// The correction after the view is mapped follows the panel's latest place. A cold start
+    /// can tile the window after the view is made, so reusing the place captured at creation
+    /// leaves the page outside the panel (INT-1472).
+    #[test]
+    fn the_delayed_placement_uses_the_panels_latest_place() {
+        let made = Placed { rect: egui::Rect::from_min_max(egui::pos2(1221.0, 165.8), egui::pos2(1591.0, 944.8)), zoom: 1.0, pixels_per_point: 1.25 };
+        let tiled = Placed { rect: egui::Rect::from_min_max(egui::pos2(638.6, 165.8), egui::pos2(1008.6, 1062.4)), zoom: 1.0, pixels_per_point: 2.0 };
+        assert_eq!(delayed_place(Some(tiled), made), tiled, "the window was tiled after the view was made");
+        assert_eq!(delayed_place(None, made), made, "before the host recorded a place, the made one stands");
     }
 
     /// The view's X11 window is the one that appeared in the app's window as the view was made.
