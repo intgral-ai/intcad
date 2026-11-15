@@ -48,6 +48,7 @@ SKIP_FILES = {
     "docs/compatibility.md",              # the history of the ids; its Intcad section is written by hand
     "docs/beta-evidence.md",              # dated records of candidates that were built under the old names
     "docs/fork-governance.md",            # a dated inventory of what the repository held
+    ".github/workflows/verify-beta-installers.yml",  # checks a prerelease already published, under the names it has
 }
 SKIP_DIRS = ("vendor/",)
 
@@ -126,7 +127,10 @@ EXACT = {
     "crates/gpu/src/concurrent.rs": [('ends_with(r"SolidCraft\\dxcompiler.dll")', 'ends_with(r"Intcad\\dxcompiler.dll")')],
     "examples/demo/enclosure_mcp.py": [('Path(os.environ["LOCALAPPDATA"]) / "SolidCraft" / "control"', 'Path(os.environ["LOCALAPPDATA"]) / "Intcad" / "control"')],
     "scripts/blur-evidence.ps1": [('Join-Path $env:LOCALAPPDATA "SolidCraft/control/$Port.token"', 'Join-Path $env:LOCALAPPDATA "Intcad/control/$Port.token"')],
-    "docs/book/src/guide/troubleshooting.md": [("thumbnails in `$XDG_CACHE_HOME/SolidCraft` or `/tmp/SolidCraft`", "thumbnails in `$XDG_CACHE_HOME/Intcad` or `/tmp/Intcad`")],
+    "docs/book/src/guide/troubleshooting.md": [
+        ("thumbnails in `$XDG_CACHE_HOME/SolidCraft` or `/tmp/SolidCraft`", "thumbnails in `$XDG_CACHE_HOME/Intcad` or `/tmp/Intcad`"),
+        (f"`~/.var/app/{NEW_ID}/data/solidcraft`", f"`~/.var/app/{NEW_ID}/data/intcad`"),
+    ],
     # The guide's table of how the update check recognises each kind of install.
     "docs/book/src/guide/updates.md": [("dpkg knows `solidcraft`", "dpkg knows `intcad`")],
     # The AppImage's opt-out marker sits in the app's data folder.

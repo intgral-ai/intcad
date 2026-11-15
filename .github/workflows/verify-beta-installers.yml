@@ -70,7 +70,7 @@ jobs:
               Get-Content $log
               throw "msiexec exited $($process.ExitCode)"
           }
-          $dir = 'C:\Program Files\Intcad'
+          $dir = 'C:\Program Files\SolidCraft'
           if (-not (Test-Path $dir)) { throw "install directory missing: $dir" }
           Get-ChildItem $dir | Format-Table Name, Length
           $app = Join-Path $dir 'solidcraft.exe'
