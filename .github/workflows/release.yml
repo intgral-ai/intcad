@@ -120,8 +120,12 @@ jobs:
           rpm -qlp dist/release/*.rpm | grep -F 'doc/intcad/ASSISTANT-THIRD-PARTY-NOTICES.txt'
           tar -tzf dist/release/*.tar.gz | grep -F 'doc/intcad/ASSISTANT-THIRD-PARTY-NOTICES.txt'
           # Intcad's package takes nothing over from upstream's: not its old CLI name, not its package names.
-          ! dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/(solvecraft|solidcraft)'
-          ! dpkg-deb --field dist/release/*.deb Replaces Conflicts Provides | grep -E 'solvecraft|solidcraft'
+          if dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/(solvecraft|solidcraft)'; then
+            echo "error: the deb installs a program under one of upstream's names" >&2; exit 1
+          fi
+          if dpkg-deb --field dist/release/*.deb Replaces Conflicts Provides | grep -E 'solvecraft|solidcraft'; then
+            echo "error: the deb names an upstream package in Replaces, Conflicts or Provides" >&2; exit 1
+          fi
           rpm -qip dist/release/*.rpm
           rpm -qlp dist/release/*.rpm | grep -E '/usr/bin/intcad$|THIRD-PARTY-LICENSES.txt'
           tar -tzf dist/release/*.tar.gz | grep -E '/bin/intcad$|THIRD-PARTY-LICENSES.txt'
