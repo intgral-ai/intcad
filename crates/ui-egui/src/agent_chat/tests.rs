@@ -9535,7 +9535,7 @@ fn leaving_a_tab_refuses_admitted_commands_animations_and_screenshots() {
         // Capture a request already waiting for a frame, as well as a queued command.
         let screenshot = app.control_held.pop_back().unwrap();
         app.run_control(&ctx, screenshot);
-        assert_eq!(app.pending_shots.len(), 1);
+        assert_eq!(app.shots.pending.len(), 1);
         if animate {
             app.drain_control(&ctx);
             assert!(app.agent.busy(), "the command is waiting on cursor animation");
@@ -9551,8 +9551,8 @@ fn leaving_a_tab_refuses_admitted_commands_animations_and_screenshots() {
             assert!(response["error"].as_str().is_some_and(|e| e.contains("document tab was left")));
         }
         assert!(Arc::ptr_eq(&app.session.doc, &other));
-        assert!(app.session.undo.is_empty() && app.pending_shots.is_empty());
-        assert!(app.queued_shots.is_empty(), "a cancelled screenshot must not capture the incoming tab");
+        assert!(app.session.undo.is_empty() && app.shots.pending.is_empty());
+        assert!(app.shots.queued.is_empty(), "a cancelled screenshot must not capture the incoming tab");
         crate::documents::switch(&mut app, 0);
         assert!(app.session.doc.features.is_empty() && app.session.undo.is_empty());
         // Adopting into a blank tab replaces the document and clears its old conversation.
@@ -10083,7 +10083,7 @@ fn custom_instructions_reach_the_system_note_of_each_new_session() {
     h.step(&json!({"text": "M3"})).unwrap();
     h.frames(2);
     assert_eq!(h.app.preferences.agent_instructions, "M3", "typed text lands in the field");
-    assert!(h.app.prefs_window.filter.is_empty(), "Preferences search does not take the typing");
+    assert!(h.app.prefs_window.shell.filter.is_empty(), "Preferences search does not take the typing");
     let long = "x".repeat(acp::INSTRUCTIONS_LIMIT + 5);
     assert_eq!(
         h.call("ui.agent_chat", json!({"instructions": long}))["result"]["instructions"].as_str().map(str::len),
@@ -13446,7 +13446,8 @@ mod mastra_backend_tests {
     #[test]
     fn mastra_prompt_parts_use_the_same_selection_context_as_the_direct_backends() {
         let (mut app, ctx, log, _) = app();
-        let picked = Context { items: vec![Entry { kind: ContextKind::Body, label: "Body 1".into(), detail: String::new() }], omitted: 0 };
+        let entry = Entry { kind: ContextKind::Body, label: "Body 1".into(), detail: String::new(), sels: Vec::new(), names: Vec::new(), group: 0, attached: false };
+        let picked = Context { items: vec![entry], omitted: 0, groups: Vec::new() };
         let expected = context::with_context("make a plate", &picked);
         app.agent_chat.picked_context = picked;
         let native = app.session.document_stamp();
@@ -15593,8 +15594,8 @@ fn the_web_page_is_told_the_queue_the_pictures_and_the_names_an_answer_selects()
     h.frames(3);
     let refs = object_ref::collect(&mut h.app.session);
     let labels: Vec<String> = refs.iter().map(|reference| reference.label.clone()).collect();
-    let entry = |kind, label: String| context::Entry { kind, detail: format!("{label}, in detail"), label };
-    let mut with = Context { items: (0..8).map(|n| entry(context::Kind::Body, format!("Body {n}"))).collect(), omitted: 3 };
+    let entry = |kind, label: String| context::Entry { kind, detail: format!("{label}, in detail"), label, sels: Vec::new(), names: Vec::new(), group: 0, attached: false };
+    let mut with = Context { items: (0..8).map(|n| entry(context::Kind::Body, format!("Body {n}"))).collect(), omitted: 3, groups: Vec::new() };
     with.items.push(entry(context::Kind::Feature, "Extrude 1".into()));
     let (red, blue) = (test_png([200, 30, 30, 255], 8), test_png([30, 30, 200, 255], 8));
     h.app.agent_chat.items = vec![
@@ -15707,8 +15708,8 @@ fn the_web_page_edits_the_queue_and_selects_only_what_it_names_rightly() {
     assert_eq!(h.app.agent_chat.pending.iter().map(|message| message.text.as_str()).collect::<Vec<_>>(), ["second, reworded"]);
 
     // What is picked for the next message: a chip by its place and its label.
-    let entry = |label: &str| context::Entry { kind: context::Kind::Body, label: label.into(), detail: String::new() };
-    h.app.agent_chat.picked_context = Context { items: vec![entry("Cover"), entry("Base")], omitted: 0 };
+    let entry = |label: &str| context::Entry { kind: context::Kind::Body, label: label.into(), detail: String::new(), sels: Vec::new(), names: Vec::new(), group: 0, attached: false };
+    h.app.agent_chat.picked_context = Context { items: vec![entry("Cover"), entry("Base")], omitted: 0, groups: Vec::new() };
     assert!(act(&mut h, json!({"type": "remove_picked", "index": 0, "label": "Base"})).is_err());
     act(&mut h, json!({"type": "remove_picked", "index": 0, "label": "Cover"})).expect("the chip at that place");
     assert_eq!(h.app.agent_chat.picked_context.items, vec![entry("Base")]);

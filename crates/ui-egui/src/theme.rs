@@ -10,7 +10,7 @@ use solidcraft_theme::{
     AccentRamp, Custom, Environment, Fade, PublishedTab, Surfaces, TabAccent, is_dark, set_custom, set_published, viewport_dark, vision,
 };
 // The token contract stays reachable as `crate::theme::Tokens`, which this crate's UI code uses.
-pub use solidcraft_theme::Tokens;
+pub use solidcraft_theme::{Tokens, apply, set_dark};
 
 #[derive(Clone)]
 struct PreparedTheme {
@@ -309,21 +309,22 @@ mod tests {
     use super::*;
     use solidcraft_theme::{ColorVision, apply, composite, contrast_ratio, set_dark, set_viewport_background, set_viewport_dark, set_vision};
 
-    /// A theme with scroll bars of its own sets them when it is applied, and applying a theme
-    /// without them puts egui's standard ones back.
+    /// A custom theme is published when it is applied, and clearing it puts the built-in
+    /// palette's style back: the margins every kit control draws with follow the tokens.
     #[test]
-    fn a_themes_own_scroll_bars_are_applied_and_the_standard_ones_restored() {
+    fn a_custom_theme_is_applied_and_clearing_it_restores_the_built_in_style() {
         let ctx = egui::Context::default();
-        let (dark, custom) = (is_dark(), CUSTOM.get());
-        let bar = Scrollbar { width: 4.0, opacity: 0.2, hover_width: 6.0, hover_opacity: 0.4 };
-        set_dark(true);
-        set_custom(Some(Custom { dark: true, tokens: Tokens { scrollbar: Some(bar), ..Tokens::dark() } }));
+        let dark = is_dark();
+        set_dark(false);
         apply(&ctx);
-        assert_eq!(ctx.global_style().spacing.scroll, bar.style());
+        let built_in = ctx.global_style().spacing.item_spacing;
+        let tokens = Tokens { space_6: 99.0, ..Tokens::dark() };
+        assert!(set_custom(Some(Custom { dark: true, tokens })));
+        apply(&ctx);
+        assert_eq!(ctx.global_style().spacing.item_spacing.x, 99.0, "the custom palette's spacing");
         set_custom(None);
         apply(&ctx);
-        assert_eq!(ctx.global_style().spacing.scroll, egui::style::ScrollStyle::default());
-        set_custom(custom);
+        assert_eq!(ctx.global_style().spacing.item_spacing, built_in, "the built-in palette is back");
         set_dark(dark);
     }
 

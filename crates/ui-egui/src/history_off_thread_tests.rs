@@ -1158,17 +1158,17 @@ fn stopping_an_agent_command_applies_nothing_and_goes_on() {
     assert_eq!(h.app.session.doc.features.len(), features + 1, "only the boss");
 }
 
-/// A control request for the app, where its reply lands, and its ticket (what its connection
-/// cancels with `control.cancel`).
-fn ask_ticket(
+/// A control request whose agent chat turn has ended (the person left the conversation): what
+/// the Assistant sends as the tab changes, answered cancelled instead of run.
+fn ask_ended_turn(
     tx: &std::sync::mpsc::Sender<crate::ControlRequest>,
     method: &str,
     params: serde_json::Value,
-) -> (std::sync::mpsc::Receiver<serde_json::Value>, std::sync::Arc<crate::control_job::Ticket>) {
-    let (req, reply) = crate::ControlRequest::new(method, params);
-    let ticket = req.ticket.clone();
+) -> std::sync::mpsc::Receiver<serde_json::Value> {
+    let (mut req, reply) = crate::ControlRequest::new(method, params);
+    req.chat_turn = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
     tx.send(req).unwrap();
-    (reply, ticket)
+    reply
 }
 
 fn boss_step() -> serde_json::Value {
@@ -1180,19 +1180,19 @@ fn boss_step() -> serde_json::Value {
 /// the requests behind it go on.
 #[test]
 fn cancelling_an_agent_command_while_it_computes_applies_nothing() {
-    use crate::control_job::Cancel;
     let (mut h, tx) = agent_harness();
     let features = h.app.session.doc.features.len();
     let undo = h.app.session.undo.len();
-    let (hole, ticket) = ask_ticket(&tx, "engine.execute", second_hole());
+    let hole = ask(&tx, "engine.execute", second_hole());
     let boss = ask(&tx, "engine.execute", boss_step());
     h.frames(1);
     assert!(h.app.agent_computing().is_some());
-    assert_eq!(ticket.cancel(), Cancel::Stopped { writes_file: false });
-    assert_eq!(ticket.cancel(), Cancel::Already, "once");
+    // The operations row's X (Stop) ends the computing command; a second press has nothing to stop.
+    crate::operations::cancel(&mut h.app, "agent").unwrap();
+    assert!(crate::operations::cancel(&mut h.app, "agent").is_err(), "nothing is running any more");
     let r = reply_to(&mut h, &hole);
     assert!(r["ok"] == false && r["stopped"] == true, "{r}");
-    assert!(r["error"].as_str().is_some_and(|e| e.contains("control.cancel") && e.contains("nothing was applied")), "{r}");
+    assert!(r["error"].as_str().is_some_and(|e| e.contains("stopped") && e.contains("nothing was applied")), "{r}");
     let r = reply_to(&mut h, &boss);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.session.doc.features.len(), features + 1, "only the boss");
@@ -1200,31 +1200,29 @@ fn cancelling_an_agent_command_while_it_computes_applies_nothing() {
     assert!(h.app.agent_computing().is_none());
 }
 
-/// A request still waiting its turn behind one that computes is removed when its client cancels
-/// it: answered as cancelled, never run. One that already ran can't be cancelled.
+/// A queued request whose agent chat turn ended (the person left the conversation) is removed
+/// before it runs: answered as cancelled, never applied. The command ahead of it still runs.
 #[test]
-fn a_queued_agent_request_cancelled_never_runs() {
-    use crate::control_job::Cancel;
+fn a_queued_agent_request_whose_turn_ended_never_runs() {
     let (mut h, tx) = agent_harness();
     let features = h.app.session.doc.features.len();
     let hole = ask(&tx, "engine.execute", second_hole());
-    let (boss, ticket) = ask_ticket(&tx, "engine.execute", boss_step());
+    let boss = ask_ended_turn(&tx, "engine.execute", boss_step());
     h.frames(1);
     assert!(h.app.agent_computing().is_some() && boss.try_recv().is_err(), "the boss waits its turn");
-    assert_eq!(ticket.cancel(), Cancel::Removed);
     let r = reply_to(&mut h, &hole);
     assert_eq!(r["ok"], true, "{r}");
     let r = reply_to(&mut h, &boss);
-    assert!(r["ok"] == false && r["cancelled"] == true, "{r}");
-    assert!(r["error"].as_str().is_some_and(|e| e.starts_with("cancelled:") && e.contains("nothing was applied")), "{r}");
+    assert!(r["ok"] == false, "{r}");
+    assert!(r["error"].as_str().is_some_and(|e| e.contains("turn ended") && e.contains("document tab")), "{r}");
     until_settled(&mut h);
     assert_eq!(h.app.session.doc.features.len(), features + 1, "only the hole");
-    // With the preference off it runs on the window thread at once: done, it can't be cancelled.
+    // With the preference off it runs on the window thread at once: once done, nothing stops it.
     h.app.preferences.agent_off_thread = false;
-    let (boss, ticket) = ask_ticket(&tx, "engine.execute", boss_step());
+    let boss = ask(&tx, "engine.execute", boss_step());
     h.frames(1);
     assert!(boss.try_recv().is_ok_and(|r| r["ok"] == true));
-    assert_eq!(ticket.cancel(), Cancel::Running);
+    assert!(crate::operations::cancel(&mut h.app, "agent").is_err(), "it already ran");
     assert_eq!(h.app.session.doc.features.len(), features + 2);
 }
 
@@ -1232,15 +1230,15 @@ fn a_queued_agent_request_cancelled_never_runs() {
 /// runs: nothing applied, and the pointer is free for the next request.
 #[test]
 fn cancelling_a_design_change_the_agent_cursor_acts_out_applies_nothing() {
-    use crate::control_job::Cancel;
     let (mut h, tx) = agent_harness();
     h.app.ui.agent_cursor.show = true;
     h.frames(2);
     let features = h.app.session.doc.features.len();
-    let (hole, ticket) = ask_ticket(&tx, "engine.execute", second_hole());
+    let hole = ask(&tx, "engine.execute", second_hole());
     h.frames(1);
     assert!(h.app.agent.busy(), "the pointer acts it out");
-    assert_eq!(ticket.cancel(), Cancel::Stopped { writes_file: false });
+    // The same Stop the operations row's X sends, while the pointer acts the change out.
+    crate::operations::cancel(&mut h.app, "agent").unwrap();
     let r = reply_to(&mut h, &hole);
     assert!(r["ok"] == false && r["stopped"] == true, "{r}");
     assert!(!h.app.agent.busy());
@@ -1667,9 +1665,7 @@ fn a_computing_batch_is_a_row_of_the_operations_panel_that_stops_it() {
     assert_eq!(row.steps.map(|(_, total)| total), Some(3), "{row:?}");
     assert!(row.cancellable());
     assert!(crate::scenario::rect_of("agent:chip").is_none(), "no chip besides the row");
-    let steps = h.app.agent_steps().expect("its steps");
     crate::operations::cancel(&mut h.app, "agent").unwrap();
-    assert!(steps.progress.is_cancelled(), "its computation stops, not left to compute unseen");
     let reply = reply_to(&mut h, &batch);
     assert_eq!((reply["ok"].clone(), reply["stopped"].clone()), (json!(false), json!(true)), "{reply}");
     h.frames(2);
@@ -1842,13 +1838,12 @@ fn cancelling_a_plugin_worker_answers_stopped_without_adopting_its_result() {
     h.app.apply_gate = Some(std::sync::Arc::new(std::sync::Mutex::new(gate)));
     let before = h.app.session.doc.to_json();
     let history = (h.app.session.undo.len(), h.app.session.redo.len());
-    let (reply, ticket) =
-        ask_ticket(&tx, "engine.execute", json!({"command":"plugin.run","params":{"path":path,"approval":inspected["approval"],"entry":"make"}}));
+    let reply = ask(&tx, "engine.execute", json!({"command":"plugin.run","params":{"path":path,"approval":inspected["approval"],"entry":"make"}}));
     h.frames(1);
-    assert_eq!(ticket.cancel(), crate::control_job::Cancel::Stopped { writes_file: true });
+    h.app.stop_agent_command();
     let response = reply_to(&mut h, &reply);
     assert_eq!((response["ok"].clone(), response["stopped"].clone()), (json!(false), json!(true)), "{response}");
-    assert!(response["error"].as_str().unwrap().contains("file may still be written"), "{response}");
+    assert!(response["error"].as_str().unwrap().contains("nothing was applied"), "{response}");
     release.send(()).unwrap();
     h.frames(2);
     assert_eq!(h.app.session.doc.to_json(), before);
@@ -1936,7 +1931,7 @@ fn plugin_inspections_reject_another_session_and_older_results() {
 
 #[test]
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn stopping_a_plugin_at_the_window_warns_about_possible_file_writes() {
+fn stopping_a_plugin_at_the_window_answers_stopped_and_adopts_nothing() {
     let (mut h, tx) = agent_harness();
     let root = plugin_package_for_worker_test("stop-warning");
     let path = root.join("sample");
@@ -1948,7 +1943,7 @@ fn stopping_a_plugin_at_the_window_warns_about_possible_file_writes() {
     h.app.stop_agent_command();
     let response = reply.try_recv().unwrap();
     assert_eq!(response["stopped"], true);
-    assert!(response["error"].as_str().unwrap().contains("file may still be written"), "{response}");
+    assert!(response["error"].as_str().unwrap().contains("nothing was applied"), "{response}");
     release.send(()).unwrap();
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1960,20 +1955,14 @@ fn cancelled_plugin_display_warmup_leaves_parallel_body_meshes_cold() {
         session.execute("solid.box", &json!({"length":1,"width":1,"height":1,"corner":[i*3,0,0]})).unwrap();
     }
     let prepared = session.scratch().compute_commands(&[], None).unwrap();
+    session.accept_commands(prepared).unwrap();
     let progress = std::sync::Arc::new(solidcraft_engine::doc::progress::Progress::default());
-    let worker_progress = progress.clone();
-    let (release, gate) = std::sync::mpsc::channel();
-    let worker = std::thread::spawn(move || {
-        gate.recv().unwrap();
-        crate::control_job::warm_plugin_display(&prepared, solidcraft_engine::doc::display_quality::DisplayQuality::Normal, &worker_progress)
-            .unwrap();
-        prepared
-    });
     progress.cancel();
-    release.send(()).unwrap();
-    session.accept_commands(worker.join().unwrap()).unwrap();
+    // A stop already set starts no display worker (the engine's own warm-up takes it as `go_on`).
+    let state = session.world_state().unwrap();
+    state.warm_display_at(solidcraft_engine::doc::display_quality::DisplayQuality::Normal, || !progress.is_cancelled());
     assert_eq!(session.model.state().bodies.len(), 17);
-    assert!(session.model.state().bodies.iter().all(|body| body.cached_mesh().is_none()), "a stop must reach the parallel display workers");
+    assert!(session.model.state().bodies.iter().all(|body| body.cached_mesh().is_none()), "a stop must leave the parallel display workers cold");
 }
 
 #[test]

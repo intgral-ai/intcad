@@ -1619,7 +1619,7 @@ mod card_tests {
                 h.call("ui.resize", json!({"width":1600,"height":1400}));
                 h.call("ui.prefs", json!({"open":"General","theme":theme}));
                 for query in ["Speed", "Pointer speed", "Motion speed"] {
-                    h.app.prefs_window.filter = query.into();
+                    h.app.prefs_window.shell.filter = query.into();
                     h.frames(6);
                     let (_, _, hits) = nav(&h.ctx);
                     let matches: Vec<_> = hits.iter().enumerate().filter(|(_, hit)| hit.page == crate::prefs::PAGE_ASSISTANT).collect();
@@ -1628,8 +1628,8 @@ mod card_tests {
                     h.frames(2);
                     h.step(&json!({"key":"Enter"})).unwrap();
                     h.frames(30);
-                    assert_eq!(h.app.prefs_window.section, crate::prefs::PAGE_ASSISTANT);
-                    assert!(h.app.prefs_window.filter.is_empty());
+                    assert_eq!(h.app.prefs_window.shell.section, crate::prefs::PAGE_ASSISTANT);
+                    assert!(h.app.prefs_window.shell.filter.is_empty());
                     let slider = scenario::rect_of("prefs:agent_pointer_speed").unwrap();
                     assert_eq!(slider, scenario::rect_of("dialog:slider:Pointer speed").unwrap());
                     let body = scenario::rect_of("dialog:page_body").unwrap();
@@ -1690,7 +1690,7 @@ mod card_tests {
             h.call("ui.resize", json!({"width":1600,"height":1800}));
             h.call("ui.prefs", json!({"open":"General","theme":theme}));
             for query in ["public", "api-public", "public-model"] {
-                h.app.prefs_window.filter = query.into();
+                h.app.prefs_window.shell.filter = query.into();
                 h.frames(6);
                 let (_, _, hits) = nav(&h.ctx);
                 let matches: Vec<_> = hits.iter().enumerate().filter(|(_, hit)| hit.page == crate::prefs::PAGE_ASSISTANT).collect();
@@ -1699,14 +1699,14 @@ mod card_tests {
                 h.frames(2);
                 h.step(&json!({"key":"Enter"})).unwrap();
                 h.frames(30);
-                assert_eq!(h.app.prefs_window.section, crate::prefs::PAGE_ASSISTANT);
-                assert!(h.app.prefs_window.filter.is_empty());
+                assert_eq!(h.app.prefs_window.shell.section, crate::prefs::PAGE_ASSISTANT);
+                assert!(h.app.prefs_window.shell.filter.is_empty());
                 let card = scenario::rect_of("prefs:ai_card:api-public").unwrap();
                 assert!(scenario::rect_of("dialog:page_body").unwrap().contains_rect(card));
                 assert!(scenario::handle_at("prefs:revealed").unwrap().distance(card.center()) <= 1.0, "{query} reveals the same complete card");
             }
             for (query, handle) in [("Request timeout", "prefs:ai_timeout:api-public"), ("Reasoning effort", "prefs:ai_reasoning:api-public")] {
-                h.app.prefs_window.filter = query.into();
+                h.app.prefs_window.shell.filter = query.into();
                 h.frames(6);
                 let (_, _, hits) = nav(&h.ctx);
                 let matches: Vec<_> =
@@ -1716,10 +1716,10 @@ mod card_tests {
                 h.frames(2);
                 h.step(&json!({"key":"Enter"})).unwrap();
                 h.frames(30);
-                assert!(h.app.prefs_window.filter.is_empty());
+                assert!(h.app.prefs_window.shell.filter.is_empty());
                 assert!(scenario::rect_of("dialog:page_body").unwrap().contains_rect(scenario::rect_of(handle).unwrap()));
             }
-            h.app.prefs_window.filter = "Permissions".into();
+            h.app.prefs_window.shell.filter = "Permissions".into();
             h.frames(6);
             let (_, _, hits) = nav(&h.ctx);
             assert!(
@@ -1772,7 +1772,7 @@ mod card_tests {
         h.app.preferences.agent_chat_turn_limit = 37;
         h.call("ui.resize", json!({"width":1600,"height":1400}));
         h.call("ui.prefs", json!({"open":"Assistant"}));
-        h.app.prefs_window.filter = tr("ui.agent_chat_turn_limit").into();
+        h.app.prefs_window.shell.filter = tr("ui.agent_chat_turn_limit").into();
         h.frames(4);
         for limit in [1, 37, 199, 200] {
             h.app.preferences.agent_chat_turn_limit = limit;
@@ -1847,7 +1847,7 @@ mod card_tests {
         h.app.preferences.agent_always_allow.insert("api-public".into(), vec!["view.fit".into()]);
         h.call("ui.resize", json!({"width":1600,"height":1400}));
         h.call("ui.prefs", json!({"open":"Assistant"}));
-        h.app.prefs_window.filter = "Public endpoint".into();
+        h.app.prefs_window.shell.filter = "Public endpoint".into();
         h.frames(4);
         assert_eq!(keys.reads.load(Ordering::SeqCst), 0, "rendering never retrieves a stored key");
         assert!(rx.try_recv().is_err(), "a noncurrent card does not probe or test its endpoint");

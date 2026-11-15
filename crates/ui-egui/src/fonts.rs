@@ -994,6 +994,8 @@ mod tests {
     use super::*;
     use crate::ui_kit::type_face::{RichTextExt as _, SYMBOL_FALLBACK, bold, medium, semibold};
     use egui::{FontId, RichText};
+    /// The stand-in faces the font tests build collections from.
+    use solidcraft_look::fonts::{PLEX_MONO, PLEX_SANS};
 
     /// `SOLIDCRAFT_FONT_DIRS` wins and may list several folders; `CRAFT_FONTS_DIR` is the fallback.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1545,9 +1547,9 @@ mod tests {
 
     #[test]
     fn one_face_of_a_collection_reads_as_a_font_of_its_own() {
-        let both = collection(&[PLEX_SANS, PLEX_MONO]);
+        let both = collection(&[look::PLEX_SANS, PLEX_MONO]);
         assert_eq!(ttf_parser::fonts_in_collection(&both), Some(2));
-        assert_eq!([family(&both, 0), family(&both, 1)], [family(PLEX_SANS, 0), family(PLEX_MONO, 0)], "the stand-in collection reads");
+        assert_eq!([family(&both, 0), family(&both, 1)], [family(look::PLEX_SANS, 0), family(look::PLEX_MONO, 0)], "the stand-in collection reads");
         for (index, whole) in [(0, PLEX_SANS), (1, PLEX_MONO)] {
             let alone = face_of_collection(&both, index).unwrap();
             assert!(ttf_parser::fonts_in_collection(&alone).is_none(), "face {index} is a plain font file");
@@ -1564,7 +1566,7 @@ mod tests {
         }
         // Hostile or mistaken input is refused, never read past.
         assert!(face_of_collection(&both, 2).is_none(), "a face the collection does not have");
-        assert!(face_of_collection(PLEX_SANS, 0).is_none(), "a plain font is not a collection");
+        assert!(face_of_collection(look::PLEX_SANS, 0).is_none(), "a plain font is not a collection");
         assert!(face_of_collection(b"ttcf", 0).is_none());
         for cut in [13, 40, both.len() / 2, both.len() - 1] {
             assert!(face_of_collection(&both[..cut], 1).is_none(), "cut at {cut}");
@@ -1583,7 +1585,7 @@ mod tests {
             assert!(!names_simplified_chinese(family), "{family}");
         }
         // No face of these names simplified Chinese: the bytes come back as they went in.
-        let both = collection(&[PLEX_SANS, PLEX_MONO]);
+        let both = collection(&[look::PLEX_SANS, PLEX_MONO]);
         assert_eq!(simplified_chinese_face(both.clone()), both);
         assert_eq!(simplified_chinese_face(PLEX_SANS.to_vec()), PLEX_SANS);
         assert_eq!(simplified_chinese_face(b"not a font".to_vec()), b"not a font");
