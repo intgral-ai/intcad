@@ -26,8 +26,8 @@ Hard rules; reasons: CONTRIBUTING.md, "Rules that aren't negotiable".
 
 ## Assets: the most serious rule
 - No commercial CAD imagery, fonts or artwork; never commit its screenshots. Every asset is original/openly licensed with an ATTRIBUTION.md row (`cargo xtask assets`).
-- Original SVG masters: `assets/icons/ui/design/svg/`; compilation: `crates/ui-egui/src/icon_svg.rs`.
-- Before icon or media edits, read `assets/AGENTS.md` and its icon guides; use canonical bases and finished references; `cargo xtask icons` validates.
+- Original SVG masters: `crates/look/icons/design/svg/`; compilation: `crates/look/build.rs` and `crates/look/src/icons.rs`.
+- Before icon or media edits, read `assets/AGENTS.md` and `crates/look/icons/AGENTS.md`; use canonical bases and finished references; `cargo xtask icons` validates.
 
 ## The name
 - Displayed name: **Intcad**. Internal identifiers stay `solidcraft`: crates, binaries, `.sc`, `solidcraft/N`, `SOLIDCRAFT_*`, settings, app IDs and MCP.

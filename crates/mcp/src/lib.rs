@@ -11,6 +11,7 @@
 
 mod backend;
 mod document_guard;
+mod options;
 mod server;
 mod skill_reference;
 mod tools;
@@ -18,8 +19,9 @@ mod tools;
 pub use backend::{Auto, Backend, Headless, Remote};
 pub use document_guard::{GuardedCallError, GuardedReply};
 pub use document_guard::{decode_guarded_reply, validate_request as validate_guarded_request};
+pub use options::{COMPACT_ENV, COMPACT_FLAG, Options};
 pub use server::{PROTOCOL_VERSION, SUPPORTED_VERSIONS, Server};
-pub use tools::{call_tool, tool_definitions};
+pub use tools::{call_tool, call_tool_with, tool_definitions, tool_definitions_with};
 
 use std::path::PathBuf;
 

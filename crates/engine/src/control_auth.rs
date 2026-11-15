@@ -1,9 +1,7 @@
-//! The control channel's per-launch token (docs/control-protocol.md). `solidcraft --control PORT`
-//! makes a random token, writes it to a file only the user can read
-//! ([`token_path`]) and refuses every connection whose first request doesn't carry it, so other
-//! users on the same machine (loopback is shared, on Windows across remote-desktop sessions too)
-//! can't drive the app. Clients find it with [`client_token`]. Next to it, `<port>.pid` names
-//! the process that wrote it, so a client refused with a leftover token can say the file is stale.
+//! Intcad's control channel identity: its token file, the launch's port and the shared token
+//! files' [`App`] (`solidcraft_control::auth`), docs/control-protocol.md.
+
+use solidcraft_control::auth::App;
 
 use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::path::{Path, PathBuf};
@@ -16,6 +14,12 @@ pub const MIN_TOKEN_LEN: usize = 32;
 /// Below the ephemeral ranges of Linux (32768+) and Windows/macOS (49152+), so the system never
 /// hands it to an outgoing connection.
 pub const DEFAULT_PORT: u16 = 27878;
+
+/// Intcad's control channel identity for the shared token files (`solidcraft_control::auth::App`):
+/// its name, data folder, `SOLIDCRAFT_` environment and default port. The token files, listener and
+/// client token below stay here, so the app's own channel is unchanged; shared pieces that take an
+/// [`App`] read the same identity from it.
+pub const APP: App = App { name: "Intcad", data_dir: crate::recovery::data_dir, env: solidcraft_geom::env::var_os, utc: crate::crash::utc, default_port: DEFAULT_PORT };
 
 /// Ports tried from [`DEFAULT_PORT`] upward when it is taken (a second window, another program).
 pub const PORT_TRIES: u16 = 16;

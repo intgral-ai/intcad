@@ -30,7 +30,7 @@
       # `xvfb-run` on a machine with no display at all.
       runtimeLibs =
         pkgs:
-        pkgs.lib.optionals pkgs.stdenv.isLinux (
+        pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
           (with pkgs; [
             wayland
             libxkbcommon
@@ -62,8 +62,8 @@
         );
       # macOS needs none of the above: winit talks to AppKit, wgpu renders through Metal, and the
       # OS ships its GPU drivers, so the darwin package and shells skip the wrapper and paths.
-      driverLibDir = pkgs: if pkgs.stdenv.isLinux then "/run/opengl-driver/lib" else "";
-      driverShareDir = pkgs: if pkgs.stdenv.isLinux then "/run/opengl-driver/share" else "";
+      driverLibDir = pkgs: if pkgs.stdenv.hostPlatform.isLinux then "/run/opengl-driver/lib" else "";
+      driverShareDir = pkgs: if pkgs.stdenv.hostPlatform.isLinux then "/run/opengl-driver/share" else "";
       libraryPath =
         pkgs:
         if pkgs.stdenv.isLinux then
@@ -72,14 +72,14 @@
           "";
 
       shellHook = pkgs: ''
-        ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+        ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           if [ ! -d ${driverLibDir pkgs} ]; then
             echo "SolidCraft: ${driverLibDir pkgs} is missing — on NixOS enable hardware.graphics; on other distributions use a matching nixGL driver wrapper." >&2
           fi
         ''}
         command -v cc >/dev/null || echo "solidcraft: no C linker on PATH, cargo cannot link — use nix develop .#rust" >&2
         echo "solidcraft: cargo run --release -p solidcraft -- --sample"
-        ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+        ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           export XDG_DATA_DIRS="${driverShareDir pkgs}:''${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
         ''}
       '';
@@ -132,14 +132,10 @@
             version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
             src = self;
 
-            # The kernel's geometry record is a pinned Git dependency; importCargoLock needs the
-            # exact source hash to build without network. The revisions match Cargo.toml.
+            # The kernel (solidcore and solidcore-record) is vendored at solidcore/ and
+            # referenced as a path dependency, so importCargoLock needs no source hashes.
             cargoLock = {
               lockFile = ./Cargo.lock;
-              outputHashes = {
-                "solidcore-1.0.1" = "sha256-SziXzxkQXY29PBOG7Ct3W8dex4RUWfAEczFUakB0k50=";
-                "solidcore-record-0.1.0" = "sha256-5LUUk4lmC3igIXyHnmJEXj17je0gEH9AoB0iTd5z0A0=";
-              };
             };
             # The CLI draws the same packaging icons as the other Linux distributions.
             cargoBuildFlags = [

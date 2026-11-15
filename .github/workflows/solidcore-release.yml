@@ -1,0 +1,44 @@
+# Package the vendored SolidCore kernel's `solidcore` crate and verify it, without publishing.
+#
+# Upstream's workflow publishes to crates.io when a `solidcore-v<version>` tag is pushed and reads
+# the CRATES_IO_TOKEN secret. IntCAD does not publish to external registries: the tag trigger, the
+# `crates-io` environment, the token and the real `cargo publish` are dropped here. A maintainer
+# runs this by hand for `cargo test`/`cargo check`/`cargo package` and a `--dry-run` publish only;
+# `solidcore/` is the source of truth and is built exactly as it is vendored.
+#
+# This workflow is build-only. Upstream's `publish` job is dropped; its checks live on in `package`.
+name: Package SolidCore (dry run)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: solidcore-package
+  cancel-in-progress: false
+
+jobs:
+  # Upstream's `publish` job: same tests and dry run, no environment, no token, no upload.
+  package:
+    name: Test and package (no publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: solidcore
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Toolchain (solidcore/rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo test -p solidcore --locked
+      - run: rustup target add wasm32-unknown-unknown && cargo check -p solidcore --locked --target wasm32-unknown-unknown
+      # The packaging check, never an upload: cargo writes the .crate into target/package.
+      - name: Package
+        run: cargo package -p solidcore --locked
+      - name: Publish (dry run)
+        run: cargo publish -p solidcore --locked --dry-run

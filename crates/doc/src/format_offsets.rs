@@ -399,7 +399,9 @@ mod tests {
             damaged["features"][1]["profiles"]["associations"] = associations;
             assert!(validate_raw(&damaged).is_err());
             damaged["format"] = json!(crate::format::format_string(crate::format::FORMAT + 1));
-            assert!(crate::format::read(&damaged.to_string()).unwrap_err().to_string().contains("newer Intcad"));
+            // The newer number is refused before this build judges the offsets it holds.
+            let error = crate::format::read(&damaged.to_string()).unwrap_err().to_string();
+            assert!(error.contains("saved by a newer Intcad") && !error.contains("free-form offset metadata"), "{error}");
         }
         // Absent metadata preserves the historical one-to-one chain representation.
         let mut legacy = fixture();
@@ -463,6 +465,7 @@ mod tests {
                             distance2: None,
                             start_offset: None,
                             through_all: false,
+                            second_follows_first: false,
                             taper: None,
                             corner: Default::default(),
                             to: None,

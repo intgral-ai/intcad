@@ -2724,7 +2724,7 @@ mod tests {
         let mut s = Session::default();
         s.execute("solid.box", &json!({"length": 40, "width": 30, "height": 20, "corner": [10, -15, -10]})).unwrap();
         let mut app = SolveApp::new(s, Services::default());
-        app.cam.set_view(solidcraft_engine::render::StandardView::Front);
+        app.cam.set_view(solidcraft_viewport::StandardView::Front);
         let dir = std::env::temp_dir().join(format!("solidcraft-render-guides-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("shot.png");

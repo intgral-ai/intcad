@@ -7960,7 +7960,7 @@ fn mastra_values_native_stamp_adapter_has_no_numeric_loss() {
     }
 }
 
-fn transcript_clipboard_harness(layout: crate::shell::LayoutMode) -> crate::scenario::Harness {
+fn transcript_clipboard_harness(layout: crate::ui_kit::LayoutMode) -> crate::scenario::Harness {
     let mut h = narrow_chat();
     h.app.ui.layout = layout;
     h.app.preferences.agent_chat_width = 500.0;
@@ -7995,7 +7995,7 @@ fn transcript_click(h: &mut crate::scenario::Harness, pos: egui::Pos2) {
 
 #[test]
 fn transcript_copy_and_cut_do_not_touch_the_cad_clipboard() {
-    for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
+    for layout in [crate::ui_kit::LayoutMode::Docked, crate::ui_kit::LayoutMode::Floating] {
         let mut h = transcript_clipboard_harness(layout);
         let at = transcript_text_position(&h);
         transcript_click(&mut h, at);
@@ -8016,7 +8016,7 @@ fn transcript_copy_and_cut_do_not_touch_the_cad_clipboard() {
 
 #[test]
 fn transcript_paste_does_not_insert_a_previously_copied_body() {
-    for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
+    for layout in [crate::ui_kit::LayoutMode::Docked, crate::ui_kit::LayoutMode::Floating] {
         let mut h = transcript_clipboard_harness(layout);
         h.frame_with(vec![egui::Event::Copy]);
         assert!(!h.app.copied_bodies.is_empty(), "prime the real CAD clipboard");
@@ -8036,7 +8036,7 @@ fn transcript_paste_does_not_insert_a_previously_copied_body() {
 
 #[test]
 fn transcript_key_events_do_not_run_cad_shortcuts() {
-    for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
+    for layout in [crate::ui_kit::LayoutMode::Docked, crate::ui_kit::LayoutMode::Floating] {
         let mut h = transcript_clipboard_harness(layout);
         let at = transcript_text_position(&h);
         transcript_click(&mut h, at);
@@ -8065,7 +8065,7 @@ fn transcript_key_events_do_not_run_cad_shortcuts() {
 #[test]
 fn transcript_shortcut_ownership_ends_when_the_panel_is_hidden() {
     for hidden in ["closed", "minimized", "disabled"] {
-        let mut h = transcript_clipboard_harness(crate::shell::LayoutMode::Floating);
+        let mut h = transcript_clipboard_harness(crate::ui_kit::LayoutMode::Floating);
         h.frame_with(vec![egui::Event::Copy]);
         let at = transcript_text_position(&h);
         transcript_click(&mut h, at);
@@ -11577,7 +11577,7 @@ fn a_press_at_the_edge_without_a_drag_towards_it_scrolls_nothing() {
 /// at the panel's edge or is cut off at the other one.
 #[test]
 fn the_agent_list_keeps_the_panels_side_margin() {
-    use crate::shell::LayoutMode;
+    use crate::ui_kit::LayoutMode;
     for layout in [LayoutMode::Docked, LayoutMode::Floating] {
         let mut h = narrow_chat();
         h.app.ui.layout = layout;
@@ -13001,7 +13001,7 @@ fn the_composer_hint_stays_on_one_row_at_the_narrowest_width() {
 #[test]
 fn tool_room_beside_the_docked_assistant_survives_an_inside_out_view() {
     let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
-    app.ui.layout = crate::shell::LayoutMode::Floating;
+    app.ui.layout = crate::ui_kit::LayoutMode::Floating;
     app.preferences.ai_features = true;
     app.agent_chat.open = true;
     app.agent_chat.panel_rect = Some(egui::Rect::from_min_max(egui::pos2(100.0, 40.0), egui::pos2(150.0, 600.0)));
@@ -15861,7 +15861,7 @@ fn with_the_web_view_the_assistant_stays_inside_the_apps_window() {
 #[test]
 fn the_floating_panel_keeps_its_drag_strip_and_the_page_is_told_the_selection() {
     let mut h = app_with_cover_and_base();
-    h.app.ui.layout = crate::shell::LayoutMode::Floating;
+    h.app.ui.layout = crate::ui_kit::LayoutMode::Floating;
     h.call("ui.agent_chat", json!({"open": true}));
     web::set_host(&mut h.app, true);
     h.frames(4);
@@ -15894,7 +15894,7 @@ fn the_floating_panel_keeps_its_drag_strip_and_the_page_is_told_the_selection() 
     assert_eq!(state["attachSelection"], true, "and written into each message, unless that is turned off");
 
     // Docked, the panel meets the window's edge: square, and all of its room is the page's.
-    h.app.ui.layout = crate::shell::LayoutMode::Docked;
+    h.app.ui.layout = crate::ui_kit::LayoutMode::Docked;
     h.frames(4);
     assert_eq!(told(&mut h)["radius"].as_f64(), Some(0.0));
 }
