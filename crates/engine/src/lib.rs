@@ -19,6 +19,7 @@ pub mod cosmetic_threads;
 pub mod crash;
 pub mod dfm;
 pub mod easyprint;
+pub mod factory_data;
 pub mod frames;
 pub mod fuzz;
 pub mod licences;

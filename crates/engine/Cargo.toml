@@ -49,6 +49,7 @@ solidcraft-profile = { workspace = true }
 image = { workspace = true, features = ["jpeg"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 toml_edit = "0.25"
 toml = { workspace = true }
 schemars = { workspace = true }

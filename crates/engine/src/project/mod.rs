@@ -17,6 +17,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+pub mod freeze;
+pub use freeze::{FrozenDataRef, FrozenProject};
+
 /// The layout this build reads and writes.
 pub const SCHEMA_VERSION: u32 = 1;
 /// The folder that marks a project.
@@ -146,6 +149,9 @@ pub struct Checks {
 pub struct Override {
     pub rule: String,
     pub limit: OverrideLimit,
+    /// The number the project replaces, as the data it came from spelled it.
+    #[serde(default)]
+    pub old: BTreeMap<String, f64>,
     pub value: BTreeMap<String, f64>,
     pub reason: String,
     pub by: String,
@@ -222,6 +228,74 @@ impl Project {
             None => Ok(None),
             Some(root) => Self::open(&root).map(Some),
         }
+    }
+
+    /// Change the project defaults; `None` keeps a value and `Some(None)` clears the thickness.
+    pub fn update_settings(
+        &mut self,
+        process: Option<String>,
+        material: Option<String>,
+        thickness: Option<Option<f64>>,
+        auto_check: Option<bool>,
+    ) -> Result<(), ProjectError> {
+        let mut manifest = self.manifest.clone();
+        let mut ci = self.ci.clone();
+        if let Some(process) = process {
+            manifest.process = process;
+        }
+        if let Some(material) = material {
+            manifest.material = material;
+        }
+        if let Some(thickness) = thickness {
+            manifest.thickness_mm = thickness;
+        }
+        if let Some(enabled) = auto_check {
+            ci.enabled = enabled;
+        }
+        validate_manifest(&manifest, &self.folder().join(MANIFEST))?;
+        validate_ci(&ci, &self.folder().join(CI))?;
+        self.write(&manifest, &ci)
+    }
+
+    /// Turn automatic checks on or off and choose the rules the project skips.
+    pub fn update_ci(&mut self, enabled: Option<bool>, skip: Option<Vec<String>>) -> Result<(), ProjectError> {
+        let mut ci = self.ci.clone();
+        if let Some(enabled) = enabled {
+            ci.enabled = enabled;
+        }
+        if let Some(skip) = skip {
+            ci.checks.skip = skip;
+        }
+        validate_ci(&ci, &self.folder().join(CI))?;
+        let manifest = self.manifest.clone();
+        self.write(&manifest, &ci)
+    }
+
+    /// Point the project at a selected data copy. `ci.toml` is written after the copy exists.
+    pub fn select_data(&mut self, data: DataRef) -> Result<(), ProjectError> {
+        let mut ci = self.ci.clone();
+        ci.data = data;
+        validate_ci(&ci, &self.folder().join(CI))?;
+        let manifest = self.manifest.clone();
+        self.write(&manifest, &ci)
+    }
+
+    /// Replace the project's overrides after validating each reason and signature.
+    pub fn set_overrides(&mut self, overrides: Vec<Override>) -> Result<(), ProjectError> {
+        let mut ci = self.ci.clone();
+        ci.overrides = overrides;
+        validate_ci(&ci, &self.folder().join(CI))?;
+        let manifest = self.manifest.clone();
+        self.write(&manifest, &ci)
+    }
+
+    fn write(&mut self, manifest: &ProjectManifest, ci: &CiConfig) -> Result<(), ProjectError> {
+        let folder = self.folder();
+        write_text_atomic(&folder.join(MANIFEST), &manifest_text(manifest))?;
+        write_text_atomic(&folder.join(CI), &ci_text(ci))?;
+        self.manifest = manifest.clone();
+        self.ci = ci.clone();
+        Ok(())
     }
 }
 
@@ -442,6 +516,8 @@ fn ci_text(ci: &CiConfig) -> String {
                 OverrideLimit::Max => "max",
             })
         ));
+        let old = rule.old.iter().map(|(name, number)| format!("{name} = {number}")).collect::<Vec<_>>().join(", ");
+        text.push_str(&format!("old = {{ {old} }}\n"));
         let value = rule.value.iter().map(|(name, number)| format!("{name} = {number}")).collect::<Vec<_>>().join(", ");
         text.push_str(&format!("value = {{ {value} }}\n"));
         text.push_str(&format!("reason = {}\n", toml_string(&rule.reason)));
@@ -531,6 +607,18 @@ fn write_text(path: &Path, text: &str) -> Result<(), ProjectError> {
     let mut file = fs::File::create(path).map_err(|error| ProjectError::io(path, &error))?;
     file.write_all(text.as_bytes()).map_err(|error| ProjectError::io(path, &error))?;
     file.sync_all().map_err(|error| ProjectError::io(path, &error))
+}
+
+/// Write beside the target and rename, so a reader sees the old file or the new one.
+fn write_text_atomic(path: &Path, text: &str) -> Result<(), ProjectError> {
+    let temporary = path.with_file_name(format!(".{}.tmp", std::process::id()));
+    write_text(&temporary, text)?;
+    if fs::rename(&temporary, path).is_err() {
+        // Windows refuses to rename over an existing file.
+        let _ = fs::remove_file(path);
+        fs::rename(&temporary, path).map_err(|error| ProjectError::io(path, &error))?;
+    }
+    Ok(())
 }
 
 /// Write the empty design a new project starts with. The design format is the host's own: this
