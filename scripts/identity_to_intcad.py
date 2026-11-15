@@ -100,8 +100,8 @@ EXACT = {
     "assets/platforms/windows/solidcraft.wxs": [
         ("  <!-- Never change the UpgradeCode: it is what lets a new MSI replace every earlier install,\n"
          "       including those from before the SolveCraft -> SolidCraft rename (docs/compatibility.md). -->\n",
-         "  <!-- Never change the UpgradeCode: it is what lets a new MSI replace every earlier Intcad\n"
-         "       install. It is Intcad's own, not upstream SolidCraft's, so neither product's installer\n"
+         "  <!-- Never change the UpgradeCode: it is what lets a new MSI replace every earlier install that\n"
+         "       carries it. It is Intcad's own, not upstream SolidCraft's, so neither product's installer\n"
          "       replaces the other (docs/compatibility.md). -->\n"),
         ('UpgradeCode="6A145FD6-D285-428D-AE84-A69570CDF4DB"', 'UpgradeCode="984E28EB-86EB-46BE-908D-738A48FE6432"'),
         ('<Directory Id="INSTALLFOLDER" Name="SolidCraft" />', '<Directory Id="INSTALLFOLDER" Name="Intcad" />'),
@@ -111,8 +111,16 @@ EXACT = {
          '<Component Id="SolidcraftLicences" Guid="2BC0E79E-2792-4849-B0BC-B8AB82D403EA">'),
     ],
     "packaging/linux/nfpm.yaml": [("\nname: solidcraft\n", "\nname: intcad\n")],
-    # Where the installed-files check looks for the MSI's install.
-    "packaging/windows/installed-check.ps1": [("$Dir = Join-Path $ProgramFiles 'SolidCraft'", "$Dir = Join-Path $ProgramFiles 'Intcad'")],
+    # Where the installed-files check looks for the MSI's install, and the UpgradeCode it insists
+    # on: the same one as in solidcraft.wxs above.
+    "packaging/windows/installed-check.ps1": [
+        ("$Dir = Join-Path $ProgramFiles 'SolidCraft'", "$Dir = Join-Path $ProgramFiles 'Intcad'"),
+        ("# Never change this: it is what lets a new MSI replace every earlier install, including those from\n"
+         "# before the SolveCraft -> SolidCraft rename (assets/platforms/windows/solidcraft.wxs).\n",
+         "# Never change this: it is what lets a new MSI replace every earlier install that carries it. It\n"
+         "# is Intcad's own, not upstream SolidCraft's (assets/platforms/windows/solidcraft.wxs).\n"),
+        ("$ExpectedUpgradeCode = '6A145FD6-D285-428D-AE84-A69570CDF4DB'", "$ExpectedUpgradeCode = '984E28EB-86EB-46BE-908D-738A48FE6432'"),
+    ],
     # Folder names that are spelled apart from the path in front of them.
     "crates/gpu/src/concurrent.rs": [('ends_with(r"SolidCraft\\dxcompiler.dll")', 'ends_with(r"Intcad\\dxcompiler.dll")')],
     "examples/demo/enclosure_mcp.py": [('Path(os.environ["LOCALAPPDATA"]) / "SolidCraft" / "control"', 'Path(os.environ["LOCALAPPDATA"]) / "Intcad" / "control"')],

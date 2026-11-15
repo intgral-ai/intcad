@@ -15,8 +15,8 @@
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <!-- Never change the UpgradeCode: it is what lets a new MSI replace every earlier Intcad
-       install. It is Intcad's own, not upstream SolidCraft's, so neither product's installer
+  <!-- Never change the UpgradeCode: it is what lets a new MSI replace every earlier install that
+       carries it. It is Intcad's own, not upstream SolidCraft's, so neither product's installer
        replaces the other (docs/compatibility.md). -->
   <Package
       Name="Intcad"

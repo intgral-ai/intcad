@@ -139,8 +139,10 @@ test `legacy_design_files_and_resource_uris`).
 
 ## Intcad's identity
 
-Intcad's own names, set once before its first public download. `scripts/identity_to_intcad.py`
-applies the mechanical part and can be run again after a merge from upstream.
+Intcad's own names, set once, in the version after 0.1.0. `scripts/identity_to_intcad.py` applies
+the mechanical part and can be run again after a merge from upstream. Intcad 0.1.0 was published
+under upstream's names, so an install of it is treated like an upstream one: not replaced, and
+nothing is read from its folders.
 
 | What | Intcad | Why it is not upstream's |
 |---|---|---|

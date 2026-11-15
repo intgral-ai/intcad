@@ -73,9 +73,9 @@ $EvidenceRoot = $Evidence
 . (Join-Path $PSScriptRoot 'webview2-runtime.ps1')
 $Evidence = $EvidenceRoot
 
-# Never change this: it is what lets a new MSI replace every earlier install, including those from
-# before the SolveCraft -> SolidCraft rename (assets/platforms/windows/solidcraft.wxs).
-$ExpectedUpgradeCode = '6A145FD6-D285-428D-AE84-A69570CDF4DB'
+# Never change this: it is what lets a new MSI replace every earlier install that carries it. It
+# is Intcad's own, not upstream SolidCraft's (assets/platforms/windows/solidcraft.wxs).
+$ExpectedUpgradeCode = '984E28EB-86EB-46BE-908D-738A48FE6432'
 
 $found = @(Get-ChildItem $Dist -Filter "intcad-*-windows-$Arch.msi")
 if ($found.Count -ne 1) { throw "expected one $Arch MSI in $Dist, found $($found.Count)" }
