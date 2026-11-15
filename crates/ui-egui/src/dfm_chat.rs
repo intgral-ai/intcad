@@ -271,10 +271,38 @@ pub fn run(app: &mut SolveApp) -> Card {
 
 /// Read the live run's report. A refusal is an error card, never a made-up result.
 pub fn refresh(app: &mut SolveApp) -> Card {
-    match app.run("inspect.dfm", json!({})) {
+    refresh_run(app, None)
+}
+
+/// Read one run's report: `run` names it, and `None` asks for the newest complete run. A report
+/// that cannot be read is an error card, never the newest report standing in for it.
+pub fn refresh_run(app: &mut SolveApp, run: Option<&str>) -> Card {
+    let params = match run {
+        Some(run) => json!({ "run": run }),
+        None => json!({}),
+    };
+    match app.run("inspect.dfm", params) {
         Ok(reply) => Card::from_inspect(&reply),
         Err(error) => Card::error(error),
     }
+}
+
+/// Give the viewport the same report a card shows, so a row and a mark address one finding.
+pub fn show_marks(app: &mut SolveApp, card: &Card) {
+    let value = json!({
+        "runId": card.run_id,
+        "candidateDigest": card.candidate_digest,
+        "findings": card.findings,
+    });
+    let Ok(run) = serde_json::from_value::<crate::dfm_overlay::RunFindings>(value) else { return };
+    let freshness = match card.freshness.as_str() {
+        "current" => crate::dfm_overlay::Freshness::Current,
+        "staleModel" => crate::dfm_overlay::Freshness::StaleModel,
+        "staleConfig" => crate::dfm_overlay::Freshness::StaleConfig,
+        "staleBoth" => crate::dfm_overlay::Freshness::StaleBoth,
+        _ => crate::dfm_overlay::Freshness::Unknown,
+    };
+    app.viewport.load_dfm_run(&run, freshness);
 }
 
 /// A message that asks for the check in words, so chat and the button share one entry.

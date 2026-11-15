@@ -119,7 +119,7 @@ export interface AssistantState {
   waiting: number;
   stopped: boolean;
   pending: QueuedMessage[];
-  attachments: { name: string; picture: string | null }[];
+  attachments: { name: string; picture: string | null; report: string | null }[];
   loading: string[];
   picked: ContextGroups;
   /** Files are being dragged over the panel. */

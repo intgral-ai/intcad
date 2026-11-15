@@ -181,7 +181,12 @@ view.
   what is in the design's project, and under a rule **Review**, **Simulation** and
   **Autocomplete**. Click an item to open its panel beside the rail, click it again to close
   the panel; one panel is open at a time. Drag the panel's left edge to make it wider. The
-  open item and the width are remembered. The panels have nothing to list yet and say so.
+  open item and the width are remembered. **Review** runs the sheet-metal DFM check from
+  **Run DFM check** without the Assistant: the report lists its run, its counts and every
+  finding with the measured and required value. Click a finding to locate it in the view; a
+  label picked in the view selects the same row. Drag the report card onto the Assistant to
+  ask about it, and the message reads that run even when a newer check has run since. The
+  other panels have nothing to list yet and say so.
 - **Command search (S).** Click the ribbon search field or press S to open the search popup
   below it. Results group commands by their ribbon path and show matching features and user
   parameters from this design. With an empty query, recent commands appear first, followed by

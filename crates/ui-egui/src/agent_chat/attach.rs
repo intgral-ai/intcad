@@ -101,6 +101,17 @@ pub enum Content {
     },
     /// A CAD file imported into the design as its own component.
     Imported,
+    /// One DFM check's report, attached from the Review panel: the run it came from and the
+    /// structured findings as the message states them. The run is read again when the message is
+    /// sent, so a newer check never replaces the one the person chose.
+    DfmReport {
+        run_id: String,
+        project_id: String,
+        model_version: String,
+        candidate_digest: String,
+        /// The report's `model_context` JSON, read when it was attached.
+        context: Arc<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,14 +129,53 @@ impl Attachment {
     pub fn imported(name: String) -> Self {
         Attachment { id: 0, name, content: Content::Imported, thumb: None }
     }
+
+    /// One DFM report, from the card the Review panel shows. The chip names the run.
+    pub fn dfm_report(card: &crate::dfm_chat::Card) -> Self {
+        let context = serde_json::to_string(&crate::dfm_chat::model_context(card)).unwrap_or_default();
+        let run = card.run_id.clone();
+        Attachment {
+            id: 0,
+            name: format!("{} {}", crate::i18n::tr("ui.dfm_review_attachment"), short_id(&run)),
+            content: Content::DfmReport {
+                run_id: run,
+                project_id: card.project_id.clone(),
+                model_version: card.model_version.clone(),
+                candidate_digest: card.candidate_digest.clone(),
+                context: Arc::new(context),
+            },
+            thumb: None,
+        }
+    }
+
+    /// Whether this is a DFM report rather than a file.
+    pub fn is_report(&self) -> bool {
+        matches!(self.content, Content::DfmReport { .. })
+    }
+
+    /// The run a report attachment names.
+    pub fn report_run(&self) -> Option<&str> {
+        match &self.content {
+            Content::DfmReport { run_id, .. } => Some(run_id.as_str()),
+            _ => None,
+        }
+    }
     pub fn is_picture(&self) -> bool {
         matches!(self.content, Content::Picture { .. })
     }
     /// The chip's mark for a file with no thumbnail: its extension, in capitals, cut to fit.
     pub fn mark(&self) -> String {
+        if self.is_report() {
+            return "DFM".to_string();
+        }
         let ext = Path::new(&self.name).extension().and_then(|e| e.to_str()).unwrap_or("");
         ext.chars().take(4).collect::<String>().to_uppercase()
     }
+}
+
+/// The first part of a run id, enough to tell two reports apart.
+fn short_id(run: &str) -> String {
+    run.chars().take(22).collect()
 }
 
 /// What a file is called to the agent, by its extension.
@@ -393,6 +443,25 @@ pub fn note(files: &[Attachment], pictures_sent: bool, documents_sent: bool, bud
                 );
             }
             Content::Imported => out += &format!("\n\n(I added `{}` to the design as a component of its own.)", f.name),
+            Content::DfmReport { run_id, project_id, model_version, context, .. } => {
+                let body = context.trim_end();
+                let len = body.chars().count();
+                let note = format!(
+                    "\n\nAttached DFM report, run `{run_id}` (project `{project_id}`, model `{model_version}`): the structured findings \
+                     with every measured and required value. Its rule names, feature kinds and numbers are the report's own."
+                );
+                out += &note;
+                if left == 0 {
+                    out += "\nThe report's findings are left out, the message is at its size limit.";
+                } else if len <= left {
+                    out += &format!("\n```json\n{body}\n```");
+                    left -= len;
+                } else {
+                    let kept: String = body.chars().take(left).collect();
+                    out += &format!("\n(cut: {} more characters left out)\n```json\n{kept}\n```", len - left);
+                    left = 0;
+                }
+            }
             Content::Picture { .. } => {}
         }
     }
@@ -419,6 +488,45 @@ pub fn parts(files: &[Attachment], pictures: bool, documents: bool) -> Vec<Promp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A DFM report goes into the message as the report's own structured findings, named by its
+    /// run, so the model answers from that run's measured and required values and not the newest.
+    #[test]
+    fn a_dfm_report_is_stated_in_the_message_with_its_run() {
+        let card = crate::dfm_chat::Card {
+            run_id: "run-a".into(),
+            project_id: "project-a".into(),
+            model_version: "model-a".into(),
+            candidate_digest: "candidate-a".into(),
+            status: "done".into(),
+            available: true,
+            findings: vec![crate::dfm_chat::Finding {
+                id: "sheet-1/F10".into(),
+                rules: vec!["sm.hole_min_diameter".into()],
+                state: "failed".into(),
+                measured: Some(crate::dfm_chat::Measure { value: 3.0, unit: "mm".into() }),
+                requirement: Some(crate::dfm_chat::Requirement {
+                    value: 3.5,
+                    unit: "mm".into(),
+                    layer: "factory".into(),
+                    source: "shop".into(),
+                    confirmed: None,
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let report = Attachment::dfm_report(&card);
+        assert!(report.is_report() && report.report_run() == Some("run-a"));
+        assert_eq!(report.mark(), "DFM");
+        let text = note(std::slice::from_ref(&report), true, true, 100_000);
+        assert!(text.contains("run `run-a`") && text.contains("project-a"), "{text}");
+        assert!(text.contains("sm.hole_min_diameter") && text.contains("3.0") && text.contains("3.5"), "{text}");
+        // The whole report fits the message, and a tight budget cuts it with a word about it.
+        assert!(!text.contains("cut:"), "100 KB holds one report");
+        let tight = note(std::slice::from_ref(&report), true, true, 40);
+        assert!(tight.contains("more characters left out"), "{tight}");
+    }
 
     fn dir(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("solidcraft-attach-{tag}-{}", std::process::id()));

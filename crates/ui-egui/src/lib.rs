@@ -35,6 +35,7 @@ pub mod delete;
 pub mod design_properties;
 pub mod dfm_chat;
 pub mod dfm_overlay;
+pub mod dfm_review;
 pub mod dialog_column;
 mod dialog_descriptor;
 pub mod dialogs;
@@ -787,6 +788,8 @@ pub struct SolveApp {
     pub project_settings: Option<project_settings::ProjectSettings>,
     /// The Assistant's DFM check card and the finding the viewport marks.
     pub dfm_chat: dfm_chat::State,
+    /// The Review panel's own check: its report, its running state and the card being dragged.
+    pub dfm_review: dfm_review::State,
     /// The folder the last project was made in, offered as the next one's location.
     pub(crate) last_project_folder: Option<String>,
     /// The 3D mouse: which device, its reading, and the calibration window.
@@ -966,6 +969,7 @@ impl SolveApp {
             new_project: None,
             project_settings: None,
             dfm_chat: dfm_chat::State::default(),
+            dfm_review: dfm_review::State::default(),
             last_project_folder: None,
             space_mouse: Default::default(),
             file_load: file_load::FileLoad::default(),
@@ -3213,6 +3217,10 @@ impl SolveApp {
         status_bar::show(self, ui);
         // Then the right rail, between the application bar and the status bar.
         right_rail::show(self, ui);
+        // The Review panel's own check, and a report dragged from it onto the Assistant.
+        dfm_review::poll(self, ui.ctx());
+        dfm_review::drag_hint(self, ui.ctx());
+        dfm_review::release(self, ui.ctx());
         let floating = render_workspace::active(self) || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
         timeline::follow_view_pick(self);
         render_ui::focus_shortcut(self, ui);

@@ -73,7 +73,7 @@ fn an_item_opens_its_panel_and_the_same_item_closes_it() {
         let panel = rect_of("rail:panel").unwrap();
         assert!((panel.right() - rail.left()).abs() <= 1.0, "{mode:?}: the panel stands beside the rail: {panel:?} {rail:?}");
         assert!((panel.width() - DEFAULT_PANEL).abs() <= 1.0, "{mode:?}: {panel:?}");
-        assert!(h.widget(Item::Review.empty()).is_some(), "{mode:?}: the panel says what it will list");
+        assert!(rect_of("review:run").is_some(), "{mode:?}: the Review panel offers its check");
         assert!(h.widget(Item::Files.empty()).is_none(), "{mode:?}: one panel at a time");
         let view = h.app.viewport.rect.unwrap();
         assert!(view.right() <= panel.left() + 1.0, "{mode:?}: the view ends at the panel: {view:?} {panel:?}");
@@ -86,7 +86,7 @@ fn an_item_opens_its_panel_and_the_same_item_closes_it() {
 
         click(&mut h, Item::Autocomplete);
         assert_eq!(open(&h.app), Some(Item::Autocomplete), "{mode:?}: another item replaces the panel");
-        assert!(h.widget(Item::Autocomplete.empty()).is_some() && h.widget(Item::Review.empty()).is_none(), "{mode:?}");
+        assert!(h.widget(Item::Autocomplete.empty()).is_some() && rect_of("review:run").is_none(), "{mode:?}");
 
         click(&mut h, Item::Autocomplete);
         assert_eq!(open(&h.app), None, "{mode:?}: the open item closes its panel");
@@ -356,7 +356,8 @@ fn the_names_fit_the_rail_in_every_language_and_right_to_left_lines_fit_the_pane
             let name = measure(item.name(), t.font_micro);
             assert!(name + t.space_12 * 2.0 <= MAX_WIDTH, "{language}: {:?} is {name} wide", item.name());
             assert!(name <= rail - t.space_12 * 2.0 + 1.0, "{language}: {:?} is {name} wide in a rail of {rail}", item.name());
-            if matches!(language, "ar" | "he") {
+            // Review's empty block is not drawn: its panel shows the check's entry and findings.
+            if matches!(language, "ar" | "he") && item != Item::Review {
                 let room = MIN_PANEL - t.space_16 * 2.0;
                 for (text, size) in [(item.empty(), t.font_label), (item.note(), t.font_small)] {
                     for line in text.lines() {
@@ -376,7 +377,9 @@ fn the_names_fit_the_rail_in_every_language_and_right_to_left_lines_fit_the_pane
 #[test]
 fn an_empty_panel_shows_one_centred_block() {
     let mut h = window(LayoutMode::Floating, 1400);
-    for item in Item::ALL {
+    // Review lists the DFM check's findings instead of an empty block: its own empty state is
+    // the check's entry, tested with the panel in `dfm_review_tests`.
+    for item in Item::ALL.into_iter().filter(|item| *item != Item::Review) {
         h.call("ui.prefs", json!({"right_rail_open": item.id()}));
         h.settle();
         let panel = rect_of("rail:panel").unwrap();
@@ -385,7 +388,7 @@ fn an_empty_panel_shows_one_centred_block() {
         let centre = f64::from(panel.center().x);
         assert!((x - centre).abs() <= 1.0 && (note_x - centre).abs() <= 1.0, "{item:?}: centred across the panel: {x} {note_x} {centre}");
         assert!(note_y > y && (y - f64::from(panel.center().y)).abs() < 60.0, "{item:?}: in the panel's middle: {y} {note_y} {panel:?}");
-        for other in Item::ALL.into_iter().filter(|other| *other != item) {
+        for other in Item::ALL.into_iter().filter(|other| *other != item && *other != Item::Review) {
             assert!(h.widget(other.empty()).is_none() && h.widget(other.note()).is_none(), "{item:?}: nothing of {other:?}");
         }
     }

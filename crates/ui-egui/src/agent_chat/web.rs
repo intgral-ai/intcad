@@ -503,6 +503,8 @@ pub fn state(app: &mut SolveApp) -> String {
                 attach::Content::Picture { bytes, .. } => Some(picture_key(bytes)),
                 _ => None,
             },
+            // A DFM report is not a file: the page draws it with its own mark and says which run.
+            "report": file.report_run(),
         })).collect::<Vec<_>>(),
         "loading": chat.loading.iter().map(|file| file.name.clone()).collect::<Vec<_>>(),
         "picked": context_json(&chat.picked_context),
@@ -931,20 +933,7 @@ fn selected_finding(app: &SolveApp) -> Option<(String, String)> {
 }
 
 fn sync_dfm_marks(app: &mut SolveApp, card: &crate::dfm_chat::Card) {
-    let value = json!({
-        "runId": card.run_id,
-        "candidateDigest": card.candidate_digest,
-        "findings": card.findings,
-    });
-    let Ok(run) = serde_json::from_value::<crate::dfm_overlay::RunFindings>(value) else { return };
-    let freshness = match card.freshness.as_str() {
-        "current" => crate::dfm_overlay::Freshness::Current,
-        "staleModel" => crate::dfm_overlay::Freshness::StaleModel,
-        "staleConfig" => crate::dfm_overlay::Freshness::StaleConfig,
-        "staleBoth" => crate::dfm_overlay::Freshness::StaleBoth,
-        _ => crate::dfm_overlay::Freshness::Unknown,
-    };
-    app.viewport.load_dfm_run(&run, freshness);
+    crate::dfm_chat::show_marks(app, card);
 }
 
 fn set_check_item(app: &mut SolveApp, id: &str, card: crate::dfm_chat::Card) {

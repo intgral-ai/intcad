@@ -1475,6 +1475,81 @@ pub(crate) fn running_dfm(_app: &SolveApp) -> Option<String> {
     None
 }
 
+/// What the live check's service reports, for the Review panel: whether it runs, the last run it
+/// finished, that run's outcome, and the last error. The browser build has no worker, so it is
+/// idle with nothing finished.
+pub(crate) struct DfmState {
+    pub running: bool,
+    pub last_run: Option<String>,
+    pub error: Option<String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dfm_state() -> DfmState {
+    let status = solidcraft_engine::dfm::service::status();
+    DfmState { running: status.running, last_run: status.last_run, error: status.error }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn dfm_state() -> DfmState {
+    DfmState { running: false, last_run: None, error: None }
+}
+
+/// The last finished check of this session, if one finished: what the Review panel shows its own
+/// run against, to tell a new report from the one that stood there before.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn last_dfm_run() -> Option<String> {
+    solidcraft_engine::dfm::service::status().last_run
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn last_dfm_run() -> Option<String> {
+    None
+}
+
+/// Put a ready attachment on the next message and open the Assistant, so the person sees the chip
+/// they dropped there. A full message is refused with its reason, as a dropped file is.
+pub(crate) fn attach_ready(app: &mut SolveApp, file: attach::Attachment) -> Result<(), String> {
+    if app.agent_chat.files() >= attach::MAX_FILES {
+        return Err(trf("ui.agent_chat_files_max", &[("max", &attach::MAX_FILES.to_string())]));
+    }
+    app.agent_chat.add_file(file);
+    app.agent_chat.open = true;
+    Ok(())
+}
+
+/// Say something in the conversation's own notices.
+pub(crate) fn notify(app: &mut SolveApp, text: impl Into<String>, error: bool) {
+    app.agent_chat.notice(text, error);
+}
+
+/// Read every attached DFM report again by the run it names, so a message states the report the
+/// person chose to send, not whichever check ran last. The report as it was attached stays the
+/// fallback when the project no longer holds that run; the person is told which reports came from
+/// the copy rather than from the project, and the newest report never stands in for one of them.
+fn resolve_reports(app: &mut SolveApp) -> Vec<String> {
+    let runs: Vec<String> = app.agent_chat.attachments.iter().filter_map(|file| file.report_run().map(str::to_string)).collect();
+    let mut warnings = Vec::new();
+    for run in runs {
+        let card = crate::dfm_chat::refresh_run(app, Some(&run));
+        if card.status == "error" || card.run_id != run || card.run_id.is_empty() {
+            warnings.push(trf("ui.dfm_review_send_unreadable", &[("run", &run)]));
+            continue;
+        }
+        let context = serde_json::to_string(&crate::dfm_chat::model_context(&card)).unwrap_or_default();
+        for file in app.agent_chat.attachments.iter_mut() {
+            if let attach::Content::DfmReport { run_id, model_version, candidate_digest, context: held, .. } = &mut file.content
+                && *run_id == run
+            {
+                *held = Arc::new(context.clone());
+                *model_version = card.model_version.clone();
+                *candidate_digest = card.candidate_digest.clone();
+            }
+        }
+    }
+    warnings
+}
+
 /// PIL-300's accept path calls this after `review::accept` applied the preview and committed it.
 ///
 /// This is the one adapter for the half of PIL-305 that waits for PIL-300 to merge. On develop
@@ -1726,6 +1801,12 @@ pub fn send(app: &mut SolveApp, ctx: &egui::Context, text: String) {
     // Files alone make a message.
     if text.trim().is_empty() && app.agent_chat.attachments.is_empty() {
         return;
+    }
+    // An attached DFM report is read at send time: the newest check never stands in for the run
+    // the person dropped in. A report the project no longer holds is sent from the copy taken
+    // when it was attached, and the person is told so.
+    for warning in resolve_reports(app) {
+        app.agent_chat.notice(warning, true);
     }
     let text = if text.trim().is_empty() { String::new() } else { text };
     let image = app.agent_chat.attach_view && app.agent_chat.images;
