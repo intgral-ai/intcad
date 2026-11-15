@@ -47,6 +47,8 @@ pub const FOLD_FIXED_OFF_SHEET: &str = "the fold's fixed point is not on the she
 
 /// The most bores one sheet keeps.
 const MAX_BORES: usize = 1000;
+/// The most countersinks one sheet keeps.
+const MAX_COUNTERSINKS: usize = 1000;
 
 fn flat_budget_error() -> DocError {
     DocError::Invalid("sheet metal flat geometry exceeds the bounded processing budget".into())
@@ -647,6 +649,10 @@ pub struct SheetBody {
     /// Derived from feature history; these records are not a document schema change.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pockets: Vec<SheetPocket>,
+    /// Conical countersinks drilled into a panel (see [`SheetCountersink`]), in flat
+    /// coordinates. Derived from feature history, like `pockets`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub countersinks: Vec<SheetCountersink>,
     /// Straight bores drilled into a panel along its plane (a hole into a rim), in flat
     /// coordinates, each kept inside its own panel's material so the folded part and its flat
     /// pattern both carry it (#560). Derived from feature history, like `pockets`.
@@ -721,6 +727,43 @@ pub struct SheetPocket {
     pub region: Region2,
     pub z0: f64,
     pub z1: f64,
+}
+
+/// A conical countersink drilled into one panel, in flat coordinates. Derived from feature
+/// history, like [`SheetPocket`]: it is not a document schema.
+///
+/// The cone starts at its rim on the entry skin, `major_radius` from the centre, and narrows to
+/// `hole_radius` at [`SheetCountersink::depth`], leaving [`SheetCountersink::land`] of straight
+/// wall to the far skin. The through hole it widens is a cut-out in [`SheetBody::holes`], so the
+/// cone is the only extra material record: the flat pattern, its DXF and the folded solid all
+/// describe the same part.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SheetCountersink {
+    /// The panel it enters: `None` for the base, `Some(i)` for flange `i`'s panel.
+    pub panel: Option<usize>,
+    /// Its centre in flat coordinates.
+    pub centre: Vec2,
+    /// The skin it enters, in flat coordinates: `t` for the top skin, `0` for the bottom one.
+    pub entry_z: f64,
+    /// The rim radius at the entry skin.
+    pub major_radius: f64,
+    /// The radius of the through hole it widens.
+    pub hole_radius: f64,
+    /// The included cone angle, in radians.
+    pub angle: f64,
+}
+
+impl SheetCountersink {
+    /// How far below the entry skin the cone narrows to the through hole's radius.
+    pub fn depth(&self) -> f64 {
+        let half = self.angle / 2.0;
+        if half > 0.0 && half < std::f64::consts::FRAC_PI_2 { (self.major_radius - self.hole_radius) / half.tan() } else { f64::NAN }
+    }
+
+    /// The straight wall left between the cone and the far skin, clamped at zero.
+    pub fn land(&self, thickness: f64) -> f64 {
+        (thickness - self.depth()).max(0.0)
+    }
 }
 
 /// A piece of the sheet: a panel (None = the base) or a flange's bend zone.
@@ -1828,6 +1871,7 @@ impl SheetBody {
         let body = kernel::sew_touching(&local.faces(&cells, 0.0, self.t, &mut work)?)?;
         let body = local.machine_pockets(body, &mut work)?;
         let body = local.machine_bores(body, &mut work)?;
+        let body = local.machine_countersinks(body, &mut work)?;
         self.place_local_solid(body)
     }
 
@@ -1846,6 +1890,7 @@ impl SheetBody {
         let mut work = FlatWork::new();
         let body = local.machine_pockets(body, &mut work)?;
         let body = local.machine_bores(body, &mut work)?;
+        let body = local.machine_countersinks(body, &mut work)?;
         self.place_local_solid(body)
     }
 
@@ -2016,6 +2061,130 @@ impl SheetBody {
         }
         self.bores.extend(found);
         Ok(true)
+    }
+
+    /// Record a conical countersink drilled square into one panel: the cone from `base` along
+    /// `axis` (into the material) at the entry skin, with rim `radius`, widening a through hole of
+    /// `hole_radius`, over the included `angle` in radians. Ok(false) when no panel takes it; an
+    /// error when the entry is not square to a panel or the rim leaves the material.
+    pub(crate) fn add_countersink(&mut self, base: Vec3, axis: Vec3, radius: f64, hole_radius: f64, angle: f64) -> Result<bool> {
+        let axis = axis.normalized().ok_or_else(|| DocError::Invalid("countersink axis".into()))?;
+        let finite = [base.x, base.y, base.z, radius, hole_radius, angle].iter().all(|v| v.is_finite());
+        if !(finite && radius > 0.0 && hole_radius > 0.0 && radius > hole_radius && angle > 0.0 && angle < std::f64::consts::PI) {
+            return Err(DocError::Invalid("invalid sheet countersink".into()));
+        }
+        if self.countersinks_full() {
+            return Err(flat_budget_error());
+        }
+        let mut work = FlatWork::new();
+        let mut found: Vec<SheetCountersink> = Vec::new();
+        for (pi, region) in self.panels() {
+            let w = self.world(if self.flat { None } else { pi });
+            let Some(inv) = mat_inverse(&w) else { continue };
+            let p = apply_point(&inv, base);
+            let a = apply_vector(&inv, axis);
+            // Square to the panel: the drill runs along the panel's own normal, either way.
+            if a.x.abs() > 1e-6 || a.y.abs() > 1e-6 || (a.z.abs() - 1.0).abs() > 1e-6 {
+                continue;
+            }
+            let (top, bottom) = ((p.z - self.t).abs() <= 1e-6 && a.z < 0.0, p.z.abs() <= 1e-6 && a.z > 0.0);
+            if !top && !bottom {
+                continue;
+            }
+            let centre = Vec2::new(p.x, p.y);
+            if !(centre.x.is_finite() && centre.y.is_finite()) {
+                continue;
+            }
+            let disk = Region2 { outer: Loop2::circle(centre, radius), holes: Vec::new() };
+            // The whole rim must lie in this panel's material, and clear of every bend zone.
+            let panel = fitted_region(&region)?;
+            let inside = material_boolean(std::slice::from_ref(&panel), std::slice::from_ref(&disk), kernel::BoolOp::Intersect, &mut work)?;
+            let held: f64 = inside.iter().map(Region2::area).sum();
+            if (held - std::f64::consts::PI * radius * radius).abs() > 1e-6 {
+                continue;
+            }
+            if !self.flat {
+                let mut in_zone = false;
+                for flange in &self.flanges {
+                    if flat_regions_overlap(&disk, &self.zone(flange), &mut work)? {
+                        in_zone = true;
+                        break;
+                    }
+                }
+                if in_zone {
+                    continue;
+                }
+            }
+            let record = SheetCountersink { panel: pi, centre, entry_z: if top { self.t } else { 0.0 }, major_radius: radius, hole_radius, angle };
+            if !found.contains(&record) {
+                found.push(record);
+            }
+        }
+        if found.len() > 1 {
+            return Err(DocError::Invalid("this countersink's rim is on more than one sheet panel; drill it into one flat panel".into()));
+        }
+        let Some(record) = found.pop() else { return Ok(false) };
+        if self.countersinks.len() >= MAX_COUNTERSINKS {
+            return Err(flat_budget_error());
+        }
+        if !self.countersinks.contains(&record) {
+            self.countersinks.push(record);
+        }
+        Ok(true)
+    }
+
+    /// Whether this sheet holds as many countersinks as it may.
+    fn countersinks_full(&self) -> bool {
+        self.countersinks.len() >= MAX_COUNTERSINKS
+    }
+
+    /// Replay the countersinks (see [`SheetCountersink`]) as conical cuts in a solid built in the
+    /// sheet's local frame.
+    fn machine_countersinks(&self, mut body: Body, work: &mut FlatWork) -> Result<Body> {
+        if self.countersinks.is_empty() {
+            return Ok(body);
+        }
+        if self.countersinks.len() > MAX_COUNTERSINKS {
+            return Err(flat_budget_error());
+        }
+        let panels: Vec<(Option<usize>, Vec<Region2>)> = self.material_panels(None, work)?.into_iter().map(|(pi, r)| (pi, vec![r])).collect();
+        for cs in &self.countersinks {
+            let finite = [cs.centre.x, cs.centre.y, cs.entry_z, cs.major_radius, cs.hole_radius, cs.angle].iter().all(|v| v.is_finite());
+            let half = cs.angle / 2.0;
+            if !(finite && cs.major_radius > 0.0 && cs.hole_radius > 0.0 && half > 0.0 && half < std::f64::consts::FRAC_PI_2) {
+                return Err(DocError::Invalid("invalid sheet countersink".into()));
+            }
+            // The hole feature's own cone: from the rim on the entry face down to just inside the
+            // bore's radius, so the two tools meet without a sliver between them.
+            let r_end = cs.hole_radius * 0.9;
+            let len = (cs.major_radius - r_end) / half.tan();
+            if !(len.is_finite() && len >= 0.0) {
+                return Err(DocError::Invalid("invalid sheet countersink".into()));
+            }
+            let up = if cs.entry_z >= self.t / 2.0 { Vec3::Z } else { Vec3::Z * -1.0 };
+            let origin = Vec3::new(cs.centre.x, cs.centre.y, cs.entry_z);
+            let plane = Plane::new(origin, Vec3::X, up).ok_or_else(|| DocError::Invalid("countersink axis".into()))?;
+            let top = 1.0;
+            let pts =
+                [Vec2::new(cs.major_radius, 0.0), Vec2::new(r_end, -len), Vec2::new(0.0, -len), Vec2::new(0.0, top), Vec2::new(cs.major_radius, top)];
+            let region = Region2 { outer: Loop2::polygon(&pts), holes: Vec::new() };
+            let Some(cone) = kernel::revolve(&plane, &[region], Vec2::ZERO, Vec2::Y, std::f64::consts::TAU)?.pop() else {
+                return Err(DocError::Invalid("countersink tool".into()));
+            };
+            // Keep the cut inside its own panel: the clipped cone cannot reach another panel.
+            let Some(regions) = panels.iter().find(|(pi, _)| *pi == cs.panel).map(|(_, regions)| regions) else { continue };
+            let cells = regions.iter().map(fitted_region).collect::<Result<Vec<_>>>()?;
+            if cells.is_empty() {
+                continue;
+            }
+            work.charge(100_000)?;
+            let slab = kernel::extrude_planar_regions(&Plane::XY, &cells, 0.0, self.t)?;
+            let Some(clipped) = kernel::boolean(&cone, &slab, kernel::BoolOp::Intersect)? else { continue };
+            let tool = if self.flat { clipped } else { kernel::transform_matrix(&clipped, self.world(cs.panel))? };
+            body = kernel::boolean(&body, &tool, kernel::BoolOp::Cut)?
+                .ok_or_else(|| DocError::Invalid("sheet countersink removes all sheet material".into()))?;
+        }
+        Ok(body)
     }
 
     fn machine_pockets(&self, mut body: Body, work: &mut FlatWork) -> Result<Body> {
@@ -5360,6 +5529,9 @@ impl SheetBody {
             b.base.x = -b.base.x;
             b.axis.x = -b.axis.x;
         }
+        for c in &mut self.countersinks {
+            c.centre.x = -c.centre.x;
+        }
         for p in &mut self.perforations {
             p.from_right = !p.from_right;
             for r in p.outline.iter_mut().flatten() {
@@ -5391,6 +5563,7 @@ pub fn base_flange(body: &str, rule: &str, rv: &RuleValues, plane: Plane, region
         flanges: Vec::new(),
         holes,
         pockets: Vec::new(),
+        countersinks: Vec::new(),
         bores: Vec::new(),
         perforations: Vec::new(),
         labels: Vec::new(),
@@ -5451,6 +5624,7 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
         flanges: Vec::new(),
         holes: Vec::new(),
         pockets: Vec::new(),
+        countersinks: Vec::new(),
         bores: Vec::new(),
         perforations: Vec::new(),
         labels: Vec::new(),

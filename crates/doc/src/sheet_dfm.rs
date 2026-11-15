@@ -61,6 +61,9 @@ use crate::{DocError, apply_point, mat_mul};
 /// Two circles are the same circle when their centres and radii agree to this in flat mm.
 const CIRCLE_TOL: f64 = 1e-9;
 
+/// A countersink record belongs to a hole when their flat centres and radii agree to this.
+const COUNTERSINK_MATCH_MM: f64 = 1e-6;
+
 /// A summary of a sheet-metal body for DFM rules. Serialized snake_case, like the sheet flat
 /// pattern JSON, so the engine can put it straight into evidence.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,6 +75,10 @@ pub struct SheetFacts {
     /// How many bores ([`SheetBody::bores`]) there are. They are not through holes, so they are
     /// not in `holes`; a rule that checks holes must say they were not checked.
     pub bores: usize,
+    /// How many countersinks ([`SheetBody::countersinks`]) the model records, whether or not one
+    /// sits on a round through hole. A counter that exceeds the holes carrying one
+    /// ([`HoleFact::countersink`]) is a countersink this version could not read, never "none".
+    pub countersinks: usize,
     /// One fact per bend, in flange order.
     pub bends: Vec<BendFact>,
     /// Non-circular cut-outs (plus through pockets): openings a hole rule never measured.
@@ -135,6 +142,35 @@ pub struct HoleFact {
     /// `edge_at_mm`, `edge_kind` and `edge_hole` are then unavailable and must not be used.
     /// (The flat `Option` alone cannot say this, because `None` also means the base panel.)
     pub flat_assigned: bool,
+    /// The conical countersink this round through hole carries, when the sheet model records one
+    /// on this hole's panel, centre and radius. `None` for a plain hole, a counterbore and a
+    /// countersink the recogniser could not read (see [`SheetFacts::countersinks`]).
+    #[serde(default)]
+    pub countersink: Option<CountersinkFact>,
+}
+
+/// A countersink measured from its rim.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CountersinkFact {
+    /// The rim diameter at the entry skin.
+    pub major_diameter_mm: f64,
+    /// How far below that skin the cone narrows to the through hole's radius.
+    pub depth_mm: f64,
+    /// The included cone angle, in degrees.
+    pub angle_deg: f64,
+    /// Straight wall left between the cone and the far skin, clamped at zero.
+    pub land_mm: f64,
+    /// Folded position of the rim's centre on the entry skin.
+    pub x_mm: f64,
+    pub y_mm: f64,
+    pub z_mm: f64,
+    /// Least material between the rim and a cut edge on the same panel (as [`HoleFact::edge_mm`],
+    /// measured from the rim).
+    pub edge_mm: Option<f64>,
+    pub edge_at_mm: Option<[f64; 3]>,
+    pub edge_kind: Option<EdgeKind>,
+    /// Distance from the rim to each adjacent bend's tangent line.
+    pub bend_gaps: Vec<BendGapFact>,
 }
 
 /// How close a hole comes to one tangent of one bend.
@@ -246,19 +282,75 @@ pub fn facts(sheet: &SheetBody) -> Result<SheetFacts, DocError> {
             bend_gaps,
             flat: panel_index,
             flat_assigned: assigned,
+            countersink: None,
         });
     }
     nearest_hole_walls(&mut holes);
+    attach_countersinks(sheet, &panels, &cands, &mut holes);
 
     Ok(SheetFacts {
         thickness_mm: sheet.t,
         holes,
         bores: sheet.bores.len(),
+        countersinks: sheet.countersinks.len(),
         bends,
         other_openings,
         flat: sheet.flanges.is_empty(),
         altered_by: sheet.altered_by.clone(),
     })
+}
+
+/// Fill each round through hole's countersink from the sheet model's derived records. A record
+/// that matches no round through hole is left unattached, so [`SheetFacts::countersinks`] counts
+/// it and the rule layer can report it as unread rather than as no countersink at all.
+fn attach_countersinks(sheet: &SheetBody, panels: &[(Option<usize>, Region2)], cands: &[Candidate], holes: &mut [HoleFact]) {
+    for record in &sheet.countersinks {
+        let panel = match record.panel {
+            Some(i) => Panel::Flange(i),
+            None => Panel::Base,
+        };
+        let depth = record.depth();
+        let land = record.land(sheet.t);
+        if !(record.centre.x.is_finite() && record.centre.y.is_finite() && record.major_radius.is_finite())
+            || !(record.hole_radius.is_finite() && record.angle.is_finite() && depth.is_finite() && land.is_finite())
+        {
+            continue;
+        }
+        let mut best: Option<(usize, f64)> = None;
+        for (index, cand) in cands.iter().enumerate() {
+            if cand.panel != panel {
+                continue;
+            }
+            let apart = cand.centre.dist(record.centre);
+            if !apart.is_finite() || apart > COUNTERSINK_MATCH_MM || (cand.radius - record.hole_radius).abs() > COUNTERSINK_MATCH_MM {
+                continue;
+            }
+            if best.is_none_or(|(_, nearest)| apart < nearest) {
+                best = Some((index, apart));
+            }
+        }
+        let Some((index, _)) = best else { continue };
+        let Some(hole) = holes.get_mut(index) else { continue };
+        if !hole.flat_assigned || !hole.square || hole.countersink.is_some() {
+            continue;
+        }
+        let at = world_at(sheet, record.panel, record.centre, record.entry_z);
+        let rim = Candidate { centre: record.centre, radius: record.major_radius, panel };
+        let edge = nearest_edge(sheet, panels, &rim);
+        hole.countersink = Some(CountersinkFact {
+            major_diameter_mm: record.major_radius * 2.0,
+            depth_mm: depth,
+            angle_deg: record.angle.to_degrees(),
+            land_mm: land,
+            x_mm: at.x,
+            y_mm: at.y,
+            z_mm: at.z,
+            edge_mm: edge.as_ref().map(|e| e.gap),
+            edge_at_mm: edge.as_ref().map(|e| [e.at.x, e.at.y, e.at.z]),
+            edge_kind: edge.as_ref().map(|e| e.kind),
+            bend_gaps: bend_gaps(sheet, panel, record.centre, record.major_radius),
+        });
+    }
 }
 
 /// Fill each hole's nearest other round-hole wall. Only holes on the same assigned panel are
@@ -319,7 +411,12 @@ enum Panel {
 
 /// The hole's axis at mid-depth, folded to world coordinates.
 fn world_point(sheet: &SheetBody, panel: Option<usize>, centre: Vec2) -> Vec3 {
-    apply_point(&sheet.world(panel), Vec3::new(centre.x, centre.y, sheet.t / 2.0))
+    world_at(sheet, panel, centre, sheet.t / 2.0)
+}
+
+/// A flat point on one panel at flat height `z`, folded to world coordinates.
+fn world_at(sheet: &SheetBody, panel: Option<usize>, centre: Vec2, z: f64) -> Vec3 {
+    apply_point(&sheet.world(panel), Vec3::new(centre.x, centre.y, z))
 }
 
 /// The base panel and every flange panel with material, as [`SheetBody::panels`] has them.
@@ -800,7 +897,7 @@ fn bend_fact(sheet: &SheetBody, i: usize, f: &crate::sheet::SheetFlange) -> Bend
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sheet::{AngleDisplay, ReliefShape, RuleValues, SheetFlange, base_flange};
+    use crate::sheet::{AngleDisplay, ReliefShape, RuleValues, SheetCountersink, SheetFlange, SheetPocket, base_flange};
     use solidcore_record::Plane;
     use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -1185,6 +1282,118 @@ mod tests {
         let at = hole.edge_at_mm.unwrap();
         close(at[0], 20.0);
         close(at[1], 25.0);
+    }
+
+    fn sink(centre: Vec2, entry_z: f64, major_radius: f64, hole_radius: f64) -> SheetCountersink {
+        SheetCountersink { panel: None, centre, entry_z, major_radius, hole_radius, angle: FRAC_PI_2 }
+    }
+
+    /// A 90° countersink of Ø4 on a Ø3 hole in a 1.5 mm plate: depth (2 - 1.5) / tan 45 = 0.5,
+    /// land 1.5 - 0.5 = 1.0, rim 10.5 mm from the long edge.
+    #[test]
+    fn countersink_facts_are_hand_computed() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        cut_round(&mut sheet, 20.0, 12.5, 1.5);
+        sheet.countersinks.push(sink(Vec2::new(20.0, 12.5), 1.5, 2.0, 1.5));
+
+        let measured = facts(&sheet).unwrap();
+        assert_eq!(measured.countersinks, 1);
+        assert_eq!(measured.holes.len(), 1);
+        let hole = &measured.holes[0];
+        assert!(hole.flat_assigned);
+        let sink = hole.countersink.as_ref().expect("the round hole carries its countersink");
+        close(sink.major_diameter_mm, 4.0);
+        close(sink.depth_mm, 0.5);
+        close(sink.land_mm, 1.0);
+        close(sink.angle_deg, 90.0);
+        // The rim's centre is on the entry skin, not at the hole's mid-depth.
+        close(sink.x_mm, 20.0);
+        close(sink.y_mm, 12.5);
+        close(sink.z_mm, 1.5);
+        // y = 0 is 12.5 - 2 = 10.5 away, measured from the rim rather than the hole wall.
+        close(sink.edge_mm.unwrap(), 10.5);
+        assert_eq!(sink.edge_kind, Some(EdgeKind::Outline));
+        assert!(sink.bend_gaps.is_empty());
+    }
+
+    /// A plain through hole has no countersink, and a counterbore is a pocket, not a cone.
+    #[test]
+    fn a_plain_hole_and_a_counterbore_are_not_countersinks() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        cut_round(&mut sheet, 20.0, 12.5, 1.5);
+        let plain = facts(&sheet).unwrap();
+        assert_eq!(plain.countersinks, 0);
+        assert!(plain.holes[0].countersink.is_none());
+
+        // A counterbore's floor is a pocket of the flat model; it is not a conical countersink.
+        sheet.pockets.push(SheetPocket { region: Region2 { outer: Loop2::circle(Vec2::new(20.0, 12.5), 3.0), holes: Vec::new() }, z0: 1.0, z1: 1.5 });
+        let counterbored = facts(&sheet).unwrap();
+        assert_eq!(counterbored.countersinks, 0);
+        assert!(counterbored.holes[0].countersink.is_none());
+    }
+
+    /// A countersink the model records but that no round through hole carries must be counted
+    /// (so the rule layer says it is unread) and never attached by guessing.
+    #[test]
+    fn a_countersink_off_a_round_hole_is_counted_but_not_attached() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        // A square cut-out where the countersink is: an opening, not a round hole.
+        sheet.holes.push(Region2 {
+            outer: Loop2::polygon(&[Vec2::new(18.0, 10.5), Vec2::new(22.0, 10.5), Vec2::new(22.0, 14.5), Vec2::new(18.0, 14.5)]),
+            holes: Vec::new(),
+        });
+        sheet.countersinks.push(sink(Vec2::new(20.0, 12.5), 1.5, 2.0, 1.5));
+
+        let measured = facts(&sheet).unwrap();
+        assert!(measured.holes.is_empty(), "a square is an opening, never a hole");
+        assert_eq!(measured.other_openings, 1);
+        assert_eq!(measured.countersinks, 1, "the countersink is still counted, so it cannot read as none");
+    }
+
+    /// A blind countersink is a countersink with no through hole; the far skin is left.
+    #[test]
+    fn a_blind_countersink_has_no_round_through_hole() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        // A blind bore is a partial pocket of the flat model, not a through hole.
+        sheet.pockets.push(SheetPocket { region: Region2 { outer: Loop2::circle(Vec2::new(20.0, 12.5), 1.5), holes: Vec::new() }, z0: 0.5, z1: 1.5 });
+        sheet.countersinks.push(sink(Vec2::new(20.0, 12.5), 1.5, 2.0, 1.5));
+
+        let measured = facts(&sheet).unwrap();
+        assert!(measured.holes.is_empty());
+        assert_eq!(measured.countersinks, 1);
+    }
+
+    /// A countersink's rim is measured against the bend and the cut edge, not the hole wall.
+    #[test]
+    fn a_countersink_beside_a_bend_keeps_the_rim_distance() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        sheet.flanges.push(SheetFlange {
+            parent: None,
+            p: Vec2::new(0.0, 25.0),
+            d: Vec2::X,
+            len: 40.0,
+            n: Vec2::Y,
+            angle: FRAC_PI_2,
+            radius: 1.5,
+            leg: 10.0,
+            ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
+            tear: (false, false),
+            shape: None,
+            exact: None,
+            zone_shape: None,
+            tag: String::new(),
+        });
+        cut_round(&mut sheet, 20.0, 15.0, 1.5);
+        sheet.countersinks.push(sink(Vec2::new(20.0, 15.0), 1.5, 2.0, 1.5));
+
+        let measured = facts(&sheet).unwrap();
+        let sink = measured.holes[0].countersink.as_ref().expect("a countersink on the base");
+        // y = 0 is 15 - 2 = 13; the bend tangent at y = 25 leaves 10 - 2 = 8.
+        close(sink.edge_mm.unwrap(), 13.0);
+        assert_eq!(sink.bend_gaps.len(), 1);
+        close(sink.bend_gaps[0].gap_mm, 8.0);
+        close(sink.bend_gaps[0].inside_radius_mm, 1.5);
     }
 
     /// A body a later feature altered still reports facts; the caller decides they are unusable.

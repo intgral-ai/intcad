@@ -1162,8 +1162,9 @@ fn sheet_join_one(
         let Some(fit) = found else { return Ok(None) };
         fits.push(fit);
     }
-    // Pockets, labels, bores and perforations keep their own outlines: not under a join yet.
-    if !sh.bores.is_empty() || !sh.perforations.is_empty() {
+    // Pockets, labels, countersinks, bores and perforations keep their own outlines: not under a
+    // join yet.
+    if !sh.countersinks.is_empty() || !sh.bores.is_empty() || !sh.perforations.is_empty() {
         return Ok(None);
     }
     let flats: Vec<Region2> = fits.iter().map(|(_, r)| r.clone()).collect();
@@ -1285,7 +1286,13 @@ pub(super) enum Drill {
 /// none of them. A box is a prism across its sheet. A drill square to some panels it meets and
 /// along others, or at an angle to one, has no exact place in the flat pattern and is refused.
 pub(super) fn sheet_drill(f: &Feature, st: &ModelState, prism: PrimitivePrism) -> Result<Option<Drill>> {
-    let PrimitivePrism::Cylinder { base, axis, radius, height } = prism else { return Ok(Some(Drill::Across)) };
+    let PrimitivePrism::Cylinder { base, axis, radius, height } = prism else {
+        // A countersink is not a prism: it is kept as its own derived record.
+        return Ok(match prism {
+            PrimitivePrism::Countersink { .. } => None,
+            _ => Some(Drill::Across),
+        });
+    };
     let mut squares = Vec::new();
     for sh in st.sheets.iter().filter(|sh| sheet_eligible(f, st, &[], sh)) {
         squares.extend(sh.drilled_panels(base, axis, radius, height)?.into_iter().map(|(_, square)| square));
@@ -1324,6 +1331,43 @@ pub(super) fn sheet_bore_cut(f: &Feature, st: &mut ModelState, prism: PrimitiveP
         #[cfg(test)]
         super::cost_tests::count(|c| c.cut += 1);
         match sh.add_bore(base, axis, radius, height) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => return Err(e),
+        }
+        let body = sh.solid()?;
+        plans.push((sh, body));
+    }
+    if plans.is_empty() {
+        return Ok(None);
+    }
+    let mut handled = Vec::new();
+    for (sh, body) in plans {
+        if let Some(mb) = st.bodies.iter_mut().find(|b| b.name == sh.body) {
+            replace_sheet_body(mb, body);
+        }
+        handled.push(sh.body.clone());
+        if let Some(slot) = st.sheets.iter_mut().find(|s| s.body == sh.body) {
+            *slot = sh;
+        }
+    }
+    Ok(Some(handled))
+}
+
+/// A conical countersink's drill, kept as a derived record of each panel it enters (see
+/// [`crate::sheet::SheetCountersink`]), so the sheet keeps its flat pattern. Returns the sheet
+/// bodies it machined; None when no sheet panel takes it.
+pub(super) fn sheet_countersink_cut(f: &Feature, st: &mut ModelState, prism: PrimitivePrism) -> Result<Option<Vec<String>>> {
+    let PrimitivePrism::Countersink { base, axis, radius, hole_radius, angle } = prism else { return Ok(None) };
+    let mut plans = Vec::new();
+    for original in &st.sheets {
+        if !sheet_eligible(f, st, &[], original) {
+            continue;
+        }
+        let mut sh = original.clone();
+        #[cfg(test)]
+        super::cost_tests::count(|c| c.cut += 1);
+        match sh.add_countersink(base, axis, radius, hole_radius, angle) {
             Ok(true) => {}
             Ok(false) => continue,
             Err(e) => return Err(e),
@@ -1479,6 +1523,9 @@ pub(super) enum PrimitivePrism {
     Box { lo: Vec3, hi: Vec3 },
     /// A cylinder: base centre, unit axis, radius and signed height.
     Cylinder { base: Vec3, axis: Vec3, radius: f64, height: f64 },
+    /// A conical countersink: its rim's centre on the entry skin, the unit axis into the
+    /// material, the rim radius, the through hole's radius and the included angle in radians.
+    Countersink { base: Vec3, axis: Vec3, radius: f64, hole_radius: f64, angle: f64 },
 }
 
 impl PrimitivePrism {
@@ -1513,6 +1560,8 @@ impl PrimitivePrism {
                 let plane = Plane::from_normal(base, axis)?;
                 Some((plane, Region2 { outer: Loop2::circle(Vec2::ZERO, radius), holes: vec![] }, (height.min(0.0), height.max(0.0))))
             }
+            // A countersink has no prism footprint: it is a cone, kept as a derived record.
+            PrimitivePrism::Countersink { .. } => None,
         }
     }
 }
