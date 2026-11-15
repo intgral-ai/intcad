@@ -38,7 +38,7 @@ def main():
 
     app = Path(args.app).resolve()
     source = Path(args.source).resolve()
-    exe = app / "Contents" / "MacOS" / "SolidCraft"
+    exe = app / "Contents" / "MacOS" / "Intcad"
     inventory = app / "Contents" / "Resources" / "Assistant" / "inventory.json"
     notices = app / "Contents" / "Resources" / "Licenses" / "ASSISTANT-THIRD-PARTY-NOTICES.txt"
 

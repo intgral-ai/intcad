@@ -175,6 +175,7 @@ PROGRAM_RULES = [
     (re.compile(r"\b((?:release|debug)/)solidcraft(?![\w/-]|\.\w)"), r"\1intcad"),
     (re.compile(r"((?:Try)?Exec=)solidcraft\b"), r"\1intcad"),
     (re.compile(r"\bMacOS/(?:SolidCraft|solidcraft)\b"), "MacOS/Intcad"),
+    (re.compile(r"(\"MacOS\" / )\"SolidCraft\""), r'\1"Intcad"'),  # the same path, built piece by piece
     (re.compile(r"(--bin[ =])solidcraft(?![\w-])"), r"\1intcad"),
     (re.compile(r"\bCARGO_BIN_EXE_solidcraft(?![\w-])"), "CARGO_BIN_EXE_intcad"),
     (re.compile(r"(?<![\w/.-])(?<!-p )(?<!--package )solidcraft (?=--[a-z])"), "intcad "),
