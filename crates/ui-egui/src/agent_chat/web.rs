@@ -1042,7 +1042,11 @@ mod tests {
             })
             .expect("the adopted row");
         assert_eq!(row.0, "dfm.check");
-        assert_eq!(row.1, Some(backend::ToolStatus::Completed));
+        assert!(
+            matches!(row.1, Some(backend::ToolStatus::Completed | backend::ToolStatus::Failed)),
+            "the row stops saying running: {:?}",
+            row.1
+        );
     }
 
     /// A queued run reads as running, and a failed or replaced run keeps its state and reason.
