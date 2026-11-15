@@ -139,7 +139,7 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
         holes: Some(holes.collect()),
         other_openings: measured.other_openings.saturating_add(measured.bores),
         unknown_faces: 0,
-        missing: vec![FactFamily::BendRuns, FactFamily::ReliefEnds, FactFamily::ReliefSizes, FactFamily::Webs, FactFamily::Countersinks],
+        missing: vec![FactFamily::Countersinks],
         recognition: Some(RuleRecognition {
             bends: measured
                 .bends
@@ -152,7 +152,33 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
                     y_mm: bend.y_mm,
                     z_mm: bend.z_mm,
                     flats: bend.flats.iter().map(|flat| Some(rule_side_flat(*flat))).collect(),
-                    ..Default::default()
+                    runs_mm: bend.runs_mm.clone(),
+                    longest_mm: bend.longest_mm.clone(),
+                    unrelieved: bend.unrelieved.iter().map(|point| point.to_vec()).collect(),
+                    no_margin: bend.no_margin.iter().map(|point| point.to_vec()).collect(),
+                    crossed: bend.crossed,
+                    reliefs: bend
+                        .reliefs
+                        .iter()
+                        .map(|relief| solidcraft_dfm_rules::ReliefFact {
+                            at_mm: relief.at_mm.to_vec(),
+                            width_mm: relief.width_mm,
+                            depth_mm: relief.depth_mm,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            webs: measured
+                .webs
+                .iter()
+                .map(|web| solidcraft_dfm_rules::WebFact {
+                    bends: web.bends.to_vec(),
+                    web_mm: web.web_mm,
+                    same_side: web.same_side,
+                    flanges_mm: web.flanges_mm.to_vec(),
+                    x_mm: web.x_mm,
+                    y_mm: web.y_mm,
+                    z_mm: web.z_mm,
                 })
                 .collect(),
             unknown_faces: 0,
@@ -606,6 +632,76 @@ mod tests {
         report.findings.iter().find(|finding| finding.rules.iter().any(|rule| rule == "sm.hole_spacing")).expect("a spacing result")
     }
 
+    fn finding<'a>(report: &'a Report, rule: &str) -> &'a solidcraft_dfm_rules::Finding {
+        report.findings.iter().find(|finding| finding.rules.iter().any(|name| name == rule)).expect("a result for the rule")
+    }
+
+    fn rectangle(width: f64, height: f64) -> Region2 {
+        Region2 {
+            outer: Loop2::polygon(&[Vec2::new(0.0, 0.0), Vec2::new(width, 0.0), Vec2::new(width, height), Vec2::new(0.0, height)]),
+            holes: Vec::new(),
+        }
+    }
+
+    /// An L-shaped base: y runs to 25 before x = 20 and to 35 after it, so the base carries on
+    /// across a bend's line where a 20 mm bend ends.
+    fn l_shaped_region() -> Region2 {
+        Region2 {
+            outer: Loop2::polygon(&[
+                Vec2::new(0.0, 0.0),
+                Vec2::new(40.0, 0.0),
+                Vec2::new(40.0, 35.0),
+                Vec2::new(20.0, 35.0),
+                Vec2::new(20.0, 25.0),
+                Vec2::new(0.0, 25.0),
+            ]),
+            holes: Vec::new(),
+        }
+    }
+
+    /// A 90° flange on the y = 25 edge of a 40 x 25 plate: 25 mm of base before the bend's line and
+    /// `leg` mm of flange past it.
+    fn l_bracket_with_a_leg(leg: f64) -> SheetBody {
+        let mut sheet = empty_sheet(rectangle(40.0, 25.0));
+        sheet.flanges.push(flange(None, Vec2::new(0.0, 25.0), Vec2::X, Vec2::Y, 40.0, 3.0, leg));
+        sheet
+    }
+
+    /// A TEST-ONLY shop row with the value the shared full-catalogue profile uses
+    /// (`examples/dfm/test-only-full-catalogue-shop.json`): factory-confirmed, so its answer
+    /// decides the App state.
+    fn shared_requirement(rule: &str, limit: Limit, values: &[(&str, f64)]) -> Requirement {
+        Requirement {
+            rule: rule.into(),
+            limit,
+            value: values.iter().map(|(name, value)| ((*name).to_string(), *value)).collect(),
+            inputs: BTreeMap::new(),
+            measuring_line: "TEST-ONLY: a number no factory supplied.".into(),
+            method: "TEST-ONLY".into(),
+            source: "TEST-ONLY".into(),
+            rights: "TEST-ONLY".into(),
+            applies: Default::default(),
+            exceptions: Vec::new(),
+            validation_samples: Vec::new(),
+            die: None,
+            bends: None,
+            angles_deg: None,
+            confirmation: Some(Confirmation::FactoryConfirmed),
+        }
+    }
+
+    fn shared_shop(rows: Vec<Requirement>) -> SheetCheckParameters {
+        let mut params = parameters(Vec::new());
+        params.shop = Some(Profile {
+            format: 1,
+            name: "TEST-ONLY full catalogue shop".into(),
+            version: "2026-11-15".into(),
+            layer: Layer::Factory,
+            requirements: rows,
+        });
+        params
+    }
+
     /// The base panel is `flat = None` in the App. The rule layer's `None` means unknown, so the
     /// adapter must give the base an explicit id and keep both holes on it.
     #[test]
@@ -993,5 +1089,138 @@ mod tests {
         let mut params = parameters(vec![requirement("sm.hole_min_diameter", 0.75, None)]);
         params.body = "Other".into();
         assert!(matches!(check_sheet(&sheet, params), Err(DfmError::Parameters(_))));
+    }
+
+    /// The measured flange runs reach the rule layer: a 4 mm leg on a 25 mm base is below the
+    /// shared TEST-ONLY 5 mm shop floor and 10 mm is above it, and the findings say 4 mm and 10 mm
+    /// rather than that the rule is unimplemented.
+    #[test]
+    fn the_production_adapter_measures_a_flange_run() {
+        let sheet = l_bracket_with_a_leg(4.0);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let rules = rule_facts(&facts);
+        assert!(!rules.missing.contains(&FactFamily::BendRuns), "the App measures bend runs now");
+        let bend = &rules.recognition.as_ref().expect("recognition").bends[0];
+        assert_eq!(bend.runs_mm.len(), 2);
+        assert_eq!(bend.runs_mm[1].len(), 20);
+        assert!((bend.longest_mm[0] - 25.0).abs() < 1e-9);
+        assert!((bend.longest_mm[1] - 4.0).abs() < 1e-9);
+        assert!(!bend.crossed);
+
+        let outcome = check_sheet(&sheet, shared_shop(vec![shared_requirement("sm.min_flange", Limit::Min, &[("mm", 5.0)])])).expect("check");
+        let short = finding(&outcome.report, "sm.min_flange");
+        assert_eq!(short.state, solidcraft_dfm_rules::AppState::Failed);
+        assert_eq!(short.error_code.as_deref(), Some("FLANGE_BELOW_LIMIT"));
+        assert!((short.measured_mm.expect("measured") - 4.0).abs() < 1e-9);
+        assert!(short.reason_code.is_none(), "the rule ran: {}", short.message);
+
+        let outcome = check_sheet(&l_bracket_with_a_leg(10.0), shared_shop(vec![shared_requirement("sm.min_flange", Limit::Min, &[("mm", 5.0)])]))
+            .expect("check");
+        let clear = finding(&outcome.report, "sm.min_flange");
+        assert_eq!(clear.state, solidcraft_dfm_rules::AppState::Passed);
+        assert!((clear.measured_mm.expect("measured") - 10.0).abs() < 1e-9);
+    }
+
+    /// A deep U channel 4 mm wide with 20 mm legs: the web between its two parallel bends is
+    /// measured tangent to tangent, and both web rules reach it.
+    #[test]
+    fn the_production_adapter_measures_a_web() {
+        let mut sheet = empty_sheet(rectangle(4.0, 25.0));
+        sheet.flanges.push(flange(None, Vec2::new(0.0, 0.0), Vec2::Y, Vec2::new(-1.0, 0.0), 25.0, 3.0, 20.0));
+        sheet.flanges.push(flange(None, Vec2::new(4.0, 0.0), Vec2::Y, Vec2::X, 25.0, 3.0, 20.0));
+
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let rules = rule_facts(&facts);
+        assert!(!rules.missing.contains(&FactFamily::Webs), "the App measures webs now");
+        let webs = &rules.recognition.as_ref().expect("recognition").webs;
+        assert_eq!(webs.len(), 1);
+        assert_eq!(webs[0].bends, vec![1, 2]);
+        assert!((webs[0].web_mm - 4.0).abs() < 1e-9);
+        assert!(webs[0].same_side);
+        assert!((webs[0].flanges_mm[0] - 20.0).abs() < 1e-9 && (webs[0].flanges_mm[1] - 20.0).abs() < 1e-9);
+
+        let outcome =
+            check_sheet(&sheet, shared_shop(vec![shared_requirement("sm.min_web_parallel_bends", Limit::Min, &[("mm", 5.0)])])).expect("check");
+        let narrow = finding(&outcome.report, "sm.min_web_parallel_bends");
+        assert_eq!(narrow.state, solidcraft_dfm_rules::AppState::Failed);
+        assert_eq!(narrow.error_code.as_deref(), Some("WEB_BELOW_LIMIT"));
+        assert!((narrow.measured_mm.expect("measured") - 4.0).abs() < 1e-9);
+
+        // The shared U row is an upper limit of 0.2 b: 0.2 x 4 = 0.8 mm against a 20 mm flange.
+        let outcome = check_sheet(&sheet, shared_shop(vec![shared_requirement("sm.u_channel_ratio", Limit::Max, &[("b", 0.2)])])).expect("check");
+        let tall = finding(&outcome.report, "sm.u_channel_ratio");
+        assert_eq!(tall.state, solidcraft_dfm_rules::AppState::Failed);
+        assert_eq!(tall.error_code.as_deref(), Some("U_FLANGE_ABOVE_LIMIT"));
+        assert!((tall.measured_mm.expect("measured") - 20.0).abs() < 1e-9);
+        assert!((tall.requirement.as_ref().expect("limit").value_mm - 0.8).abs() < 1e-9);
+    }
+
+    /// A bend end with the base carrying on across its line, and no notch: the production adapter
+    /// reports the end as unrelieved, which needs no shop number.
+    #[test]
+    fn the_production_adapter_reports_a_bend_with_no_relief() {
+        let mut sheet = empty_sheet(l_shaped_region());
+        sheet.flanges.push(flange(None, Vec2::new(0.0, 25.0), Vec2::X, Vec2::Y, 20.0, 3.0, 10.0));
+
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let rules = rule_facts(&facts);
+        assert!(!rules.missing.contains(&FactFamily::ReliefEnds), "the App measures bend ends now");
+        assert_eq!(rules.recognition.as_ref().expect("recognition").bends[0].unrelieved, vec![vec![20.0, 25.0, 0.75]]);
+
+        let outcome =
+            check_sheet(&sheet, shared_shop(vec![shared_requirement("sm.bend_relief_present", Limit::Min, &[("mm", 0.0)])])).expect("check");
+        let missing = finding(&outcome.report, "sm.bend_relief_present");
+        assert_eq!(missing.state, solidcraft_dfm_rules::AppState::Failed);
+        assert_eq!(missing.error_code.as_deref(), Some("RELIEF_MISSING"));
+        assert_eq!(missing.measured_mm, None, "presence only");
+        let at = missing.location.as_ref().expect("the end of the bend");
+        assert!((at.x_mm - 20.0).abs() < 1e-9 && (at.y_mm - 25.0).abs() < 1e-9);
+    }
+
+    /// A notch 1 mm wide and 0.5 mm deep at a bend end: both relief-size rules measure it from the
+    /// flat pattern and compare it with the shared TEST-ONLY 2 mm and 1 mm shop numbers.
+    #[test]
+    fn the_production_adapter_measures_a_relief_notch() {
+        let mut sheet = empty_sheet(l_shaped_region());
+        sheet.flanges.push(flange(None, Vec2::new(0.0, 25.0), Vec2::X, Vec2::Y, 20.0, 3.0, 10.0));
+        let notch = Loop2::polygon(&[Vec2::new(20.0, 24.5), Vec2::new(21.0, 24.5), Vec2::new(21.0, 30.0), Vec2::new(20.0, 30.0)]);
+        sheet.holes.push(Region2 { outer: notch, holes: Vec::new() });
+
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let rules = rule_facts(&facts);
+        assert!(!rules.missing.contains(&FactFamily::ReliefSizes), "the App measures notches now");
+        let reliefs = &rules.recognition.as_ref().expect("recognition").bends[0].reliefs;
+        assert_eq!(reliefs.len(), 1);
+        assert!((reliefs[0].width_mm - 1.0).abs() < 1e-9);
+        assert!((reliefs[0].depth_mm - 0.5).abs() < 1e-9);
+
+        let outcome = check_sheet(&sheet, shared_shop(vec![shared_requirement("sm.bend_relief_width", Limit::Min, &[("mm", 2.0)])])).expect("check");
+        let narrow = finding(&outcome.report, "sm.bend_relief_width");
+        assert_eq!(narrow.state, solidcraft_dfm_rules::AppState::Failed);
+        assert_eq!(narrow.error_code.as_deref(), Some("RELIEF_WIDTH_BELOW_LIMIT"));
+        assert!((narrow.measured_mm.expect("measured") - 1.0).abs() < 1e-9);
+
+        let outcome = check_sheet(&sheet, shared_shop(vec![shared_requirement("sm.bend_relief_depth", Limit::Min, &[("mm", 1.0)])])).expect("check");
+        let shallow = finding(&outcome.report, "sm.bend_relief_depth");
+        assert_eq!(shallow.state, solidcraft_dfm_rules::AppState::Failed);
+        assert_eq!(shallow.error_code.as_deref(), Some("RELIEF_DEPTH_BELOW_LIMIT"));
+        assert!((shallow.measured_mm.expect("measured") - 0.5).abs() < 1e-9);
+    }
+
+    /// A hole in the base cuts the flange's run: `sm.min_flange` says it did not measure that
+    /// flange rather than comparing the cut-short length.
+    #[test]
+    fn the_production_adapter_says_a_flange_crossed_a_cut() {
+        let mut sheet = l_bracket_with_a_leg(10.0);
+        // 4 mm from the bend's tangent, so the run to the far edge crosses it.
+        sheet.holes.push(circle(10.0, 12.5, 1.5));
+
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        assert!(facts.bends[0].crossed);
+        let outcome = check_sheet(&sheet, shared_shop(vec![shared_requirement("sm.min_flange", Limit::Min, &[("mm", 5.0)])])).expect("check");
+        let crossed = finding(&outcome.report, "sm.min_flange");
+        assert_eq!(crossed.state, solidcraft_dfm_rules::AppState::Unsupported);
+        assert_eq!(crossed.reason_code.as_deref(), Some("FLANGE_CROSSES_CUT"));
+        assert_eq!(crossed.measured_mm, None);
     }
 }
