@@ -109,8 +109,9 @@ The official Nix package was built from this integration branch and run on a sep
 display (`:98`, X11 window system, llvmpipe), so no other agent's desktop was used and no
 Cargo target was added to the project's disk budget.
 
-- Build: `nix build .#solidcraft` at head `b106ecfa4`; the Nix store path is
-  `/nix/store/7iz0dmmqkxhfkaraf2lv4z6rci0ada4b-solidcraft-0.1.0`.
+- Builds: `nix build .#solidcraft` at `b106ecfa4` for the tray/sink shots
+  (`/nix/store/7iz0dmmqkxhfkaraf2lv4z6rci0ada4b-solidcraft-0.1.0`) and at `e65b9bd94` for the
+  corner-relief shot (`/nix/store/1pg6cinzi61q6pvihclcc0mrvas6grfl-solidcraft-0.1.0`).
 - Run: `DISPLAY=:98` with `WINIT_UNIX_BACKEND=x11`, `GDK_BACKEND=x11`,
   `WEBKIT_DISABLE_COMPOSITING_MODE=1`, `WEBKIT_DISABLE_DMABUF_RENDERER=1`, a fresh
   `HOME`/XDG tree; control channel on a separate port.
