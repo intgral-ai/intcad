@@ -1049,6 +1049,9 @@ macro_rules! preference_settings {
 preference_settings! {
     /// Units of new designs.
     default_units: String = "mm".into(), PAGE_DESIGN;
+    /// A new design starts a project folder (name and location asked for); off keeps a design
+    /// file with no project beside it.
+    new_design_makes_project: bool = true, PAGE_DESIGN => check_tr("prefs.new_design_project.label");
     /// Mouse mapping: `fusion`, `solidworks` or `inventor`.
     nav: String = "fusion".into(), PAGE_NAVIGATION;
     /// Opt in to rotation through both poles with roll, without the Shift axis-snap spring.
