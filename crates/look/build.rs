@@ -1,5 +1,6 @@
-//! Compiles SolidCraft's look into tables: the icon masters, colour roles, accents and aliases
-//! (`icons/design`) and the built-in theme files (`themes`). Every path is inside this crate.
+//! Compiles Intcad's look into tables: the icon masters, colour roles, accents and aliases
+//! (`icons/design`) and the built-in theme files (`themes`), from the v0.1.0 tables (MIT OR
+//! Apache-2.0). Every path is inside this crate.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -13,9 +14,6 @@ fn main() {
     }
 }
 
-/// `icons/design`: the SVG masters, `palette.toml` (every colour role in light and dark,
-/// and the accents) and `aliases.toml`, compiled into `$OUT_DIR/icon_data.rs` for `icons.rs`.
-/// A missing hex, a role an accent does not know or an alias to a missing master fails the build.
 fn icon_data() -> Result<(), String> {
     use std::fmt::Write as _;
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|e| e.to_string())?;
@@ -104,7 +102,7 @@ fn icon_data() -> Result<(), String> {
             svgs.push(format!("({id:?}, {fam:?}, include_str!({:?}))", abs.display().to_string()));
         }
     }
-    let _ = writeln!(out, "pub const MASTERS: &[(&str, &str, &str)] = &[{}];", svgs.join(", "));
+    let _ = writeln!(out, "pub static MASTERS: &[(&str, &str, &str)] = &[{}];", svgs.join(", "));
     let aliases = table("aliases.toml")?;
     let mut al = Vec::new();
     if let Some(t) = aliases.get("alias").and_then(toml::Value::as_table) {
@@ -150,8 +148,6 @@ fn icon_data() -> Result<(), String> {
     std::fs::write(dest, out).map_err(|e| e.to_string())
 }
 
-/// Embed each theme without a shared registry. Only std is needed to collect the files;
-/// theme parsing and ordering use the same validation on native and web targets.
 fn builtin_themes() -> Result<(), String> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").map_err(|e| e.to_string())?;
     let dir = std::path::Path::new(&manifest).join("themes");
@@ -164,7 +160,7 @@ fn builtin_themes() -> Result<(), String> {
         }
     }
     files.sort_by(|a, b| a.file_stem().cmp(&b.file_stem()));
-    let mut out = String::from("/// The theme files shipped with SolidCraft.\npub const BUILTIN: &[(&str, &str)] = &[\n");
+    let mut out = String::from("/// The theme files shipped with Intcad.\npub const BUILTIN: &[(&str, &str)] = &[\n");
     for path in files {
         let id = path.file_stem().and_then(|s| s.to_str()).ok_or("theme file name is not UTF-8")?;
         let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
