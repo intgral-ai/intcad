@@ -46,6 +46,26 @@ fn sheet_rule_sizes(s: &mut Session, relief_width_mm: f64, relief_depth_mm: f64)
     );
 }
 
+/// The rule used by the corner-relief sample: a rectangular 1 mm corner cut, so the sheet model
+/// records both the shape and the size the fact layer needs.
+fn sheet_rule_corner(s: &mut Session) {
+    exec(
+        s,
+        "sheet.manage_rules",
+        json!({
+            "name": "AcceptanceCorner",
+            "thickness": "2 mm",
+            "k_factor": "0.5",
+            "bend_radius": "1 mm",
+            "relief_width": "0.5 mm",
+            "relief_depth": "0.5 mm",
+            "corner_relief": "1 mm",
+            "corner_relief_shape": "rectangular",
+            "active": true,
+        }),
+    );
+}
+
 fn base(s: &mut Session, width: f64, depth: f64) {
     exec(s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
     exec(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [width, depth]}));
@@ -141,8 +161,9 @@ fn build(id: &str, cfg: Config) -> Built {
             None
         }
         "relief_small" => {
-            // A corner notch 1 mm across and 0.5 mm deep, below the test shop's 2 mm and 1 mm.
-            sheet_rule_sizes(&mut s, 0.5, 0.5);
+            // A corner relief 1 mm across the corner, 0.5 mm into each bend end, below the test
+            // shop's 2 mm width and 1 mm depth.
+            sheet_rule_corner(&mut s);
             base(&mut s, 60.0, 40.0);
             exec(
                 &mut s,
@@ -300,11 +321,22 @@ fn expectations(id: &str, cfg: Config) -> Vec<Expectation> {
         ],
         "relief_small" => vec![
             Expectation { rule: "sm.bend_relief_present", state: "passed", finding_state: "passed", measured_mm: None, code: None },
-            // The corner relief is an outline cut, not a notch hole this version's facts read;
-            // the rows stay `checked` rather than inventing a size. The adapter-level tests carry
-            // the measured-notch evidence (see docs/dfm-catalogue-acceptance.md).
-            Expectation { rule: "sm.bend_relief_width", state: "checked", finding_state: "checked", measured_mm: None, code: None },
-            Expectation { rule: "sm.bend_relief_depth", state: "checked", finding_state: "checked", measured_mm: None, code: None },
+            // A rectangular 1 mm corner relief is 1 mm across the bend and 0.5 mm deep at each
+            // end; the TEST-ONLY shop rows are 2 mm and 1 mm, so both fail.
+            Expectation {
+                rule: "sm.bend_relief_width",
+                state: "failed",
+                finding_state: "failed",
+                measured_mm: Some(1.0),
+                code: Some("RELIEF_WIDTH_BELOW_LIMIT"),
+            },
+            Expectation {
+                rule: "sm.bend_relief_depth",
+                state: "failed",
+                finding_state: "failed",
+                measured_mm: Some(0.5),
+                code: Some("RELIEF_DEPTH_BELOW_LIMIT"),
+            },
         ],
         "plate_mixed" => vec![Expectation {
             rule: "sm.hole_min_diameter",

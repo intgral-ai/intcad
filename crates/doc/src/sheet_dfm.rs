@@ -78,7 +78,7 @@ use solidcraft_geom::Aabb2;
 use solidcraft_geom::LINEAR_TOL;
 use solidcraft_geom::prelude::*;
 
-use crate::sheet::SheetBody;
+use crate::sheet::{ReliefShape, SheetBody};
 use crate::{DocError, apply_point, mat_mul};
 use solidcraft_kernel as kernel;
 
@@ -1217,6 +1217,25 @@ fn material_run(flat: &Flat, pattern: &FlatPattern, origin: Vec2, dir: Vec2) -> 
 /// The notch that opens the bend's line at the end at `u_end`, if one is there: it is the void
 /// around that end along the bend's line, bounded by material on both sides, reaching into the
 /// parent flat.
+/// A corner relief at one end of a bend. The flat's zone span is the model's bend length less
+/// the relief's half size at an end (`SheetFlange::len` is the length before the relief trim), so
+/// a rectangular 1 mm corner relief reports 1 mm across the bend and 0.5 mm into its end. The
+/// trim is only read when `SheetBody::relief` says a round or rectangular relief was applied and
+/// the missing length is exactly that relief's half size; a legitimately shorter flange is left
+/// to the ordinary end checks.
+fn corner_relief(sheet: &SheetBody, f: &crate::sheet::SheetFlange, u_end: f64, outward: f64, d: Vec2) -> Option<ReliefFact> {
+    if !matches!(sheet.relief, ReliefShape::Round | ReliefShape::Rectangular) || !(sheet.relief_size > LINEAR_TOL) {
+        return None;
+    }
+    let missing = if outward > 0.0 { f.len - u_end } else { u_end };
+    if !(missing > LINEAR_TOL && missing <= sheet.relief_size * 0.5 + LINEAR_TOL) {
+        return None;
+    }
+    let middle = f.p + d * u_end + d * outward * (missing * 0.5);
+    let at = apply_point(&sheet.world(f.parent), Vec3::new(middle.x, middle.y, 0.0));
+    at.is_finite().then_some(ReliefFact { at_mm: [at.x, at.y, at.z], width_mm: missing * 2.0, depth_mm: missing })
+}
+
 fn notch_at(pattern: &FlatPattern, f: &crate::sheet::SheetFlange, u_end: f64, outward: f64, d: Vec2, n: Vec2) -> Option<Notch> {
     if !pattern.exact {
         return None;
@@ -1437,6 +1456,10 @@ fn bend_fact(sheet: &SheetBody, pattern: &FlatPattern, i: usize, f: &crate::shee
     let mut reliefs = Vec::new();
     for (u, outward) in [(span.0, -1.0), (span.1, 1.0)] {
         let end = f.p + d * u;
+        if let Some(relief) = corner_relief(sheet, f, u, outward, d) {
+            reliefs.push(relief);
+            continue;
+        }
         if let Some(notch) = notch_at(pattern, f, u, outward, d, n) {
             let middle = (notch.from + notch.to) * 0.5;
             let local = f.p + d * middle - n * (notch.depth * 0.5);
@@ -2675,6 +2698,22 @@ mod tests {
         assert!((relief[0].width_mm - 3.0).abs() < 1e-6, "{}", relief[0].width_mm);
         close(relief[0].depth_mm, 1.5);
         assert!(measured.bends[0].unrelieved.is_empty(), "the round notch frees the end");
+    }
+
+    /// A rectangular corner relief is a model value plus a flat trim: 1 mm across the corner is
+    /// 1 mm wide at each bend end and 0.5 mm deep into it.
+    #[test]
+    fn a_corner_relief_reports_its_width_and_depth() {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        add_flange(&mut sheet, None, Vec2::new(0.0, 25.0), Vec2::X, Vec2::Y, 39.0, 10.0);
+        sheet.relief = ReliefShape::Rectangular;
+        sheet.relief_size = 1.0;
+        // The model's bend length is 39; the corner relief trimmed the flat zone to 38.5, so the
+        // missing half is 0.5 mm: 1 mm across the bend, 0.5 mm deep.
+        let relief = corner_relief(&sheet, &sheet.flanges[0], 38.5, 1.0, Vec2::X).expect("a corner relief");
+        close(relief.width_mm, 1.0);
+        close(relief.depth_mm, 0.5);
+        assert!(corner_relief(&sheet, &sheet.flanges[0], 38.0, 1.0, Vec2::X).is_none(), "a larger trim is not this relief");
     }
 
     /// A hole 10 mm up a 30 mm flange stops that flange's run at the hole's near wall, and the
