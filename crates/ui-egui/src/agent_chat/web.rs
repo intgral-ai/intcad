@@ -916,7 +916,7 @@ fn set_check_item(app: &mut SolveApp, id: &str, card: crate::dfm_chat::Card) {
         "error" => backend::ToolStatus::Failed,
         _ => backend::ToolStatus::Completed,
     };
-    let output = serde_json::to_string(&card).unwrap_or_default();
+    let output = serde_json::to_string(&crate::dfm_chat::page(&card)).unwrap_or_default();
     sync_dfm_marks(app, &card);
     app.dfm_chat.card = Some(card);
     for item in app.agent_chat.items.iter_mut().rev() {
@@ -1003,6 +1003,35 @@ mod tests {
         assert_eq!(selected_finding(&app), Some(("run-1".to_string(), "sheet-1/F2".to_string())));
         // The row action refuses a finding that is not in the loaded run.
         assert!(act(&mut app, &egui::Context::default(), r#"{"type":"finding","runId":"run-1","id":"sheet-9/F9"}"#).is_err());
+    }
+
+    /// The card the page draws carries its counts: without them the page threw on
+    /// `card.counts.failed` and left the card body black.
+    #[test]
+    fn the_pages_card_carries_the_counts() {
+        let card = crate::dfm_chat::Card::from_inspect(&report());
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.agent_chat.push(Item::Tool {
+            id: "row".into(),
+            title: "DFM Check".into(),
+            kind: "dfm.check".into(),
+            status: Some(backend::ToolStatus::InProgress),
+            input: None,
+            output: None,
+        });
+        set_check_item(&mut app, "row", card);
+        let output = app
+            .agent_chat
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                Item::Tool { id, output: Some(output), .. } if id == "row" => Some(output.clone()),
+                _ => None,
+            })
+            .expect("the row keeps its card");
+        assert!(output.contains("\"counts\""), "{output}");
+        assert!(output.contains("\"failed\""), "{output}");
     }
 
     /// A queued run reads as running, and a failed or replaced run keeps its state and reason.
