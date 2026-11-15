@@ -15587,6 +15587,7 @@ fn the_web_page_may_only_ask_for_listed_actions_that_fit_the_chat() {
         json!({"no": "type"}),
         json!({"type": "send", "text": "   "}),
         json!({"type": "approve", "id": 7, "allow": true}),
+        json!({"type": "review", "id": 1, "accept": true}),
         json!({"type": "permission", "index": 0, "option": "once"}),
         json!({"type": "undo", "index": 0}),
         json!({"type": "permissions", "mode": "everything"}),
@@ -16098,4 +16099,719 @@ fn a_new_tab_shows_its_conversation_in_the_hosts_web_view() {
     crate::documents::switch(&mut h.app, 0);
     h.frames(3);
     assert!(h.app.agent_chat.web_host && crate::scenario::rect_of("agent_chat:web").is_some(), "and back in the first");
+}
+
+// ---- Preview, then accept or reject (the "Cursor for CAD" spec, feature 1) ----
+
+/// A scripted agent with Preview the agent's changes on, the chat's tool endpoint wired, and a
+/// message sent: the turn runs on a copy of the design.
+fn previewed_turn(text: &str) -> (SolveApp, Sender<ControlRequest>, Script, egui::Context) {
+    let (mut app, script, ctx) = app_with_script();
+    app.preferences.agent_chat_preview = true;
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    send(&mut app, &ctx, text.into());
+    assert!(review::running(&app.agent_chat), "the turn runs on a copy");
+    (app, tx, script, ctx)
+}
+
+/// Send the agent's requests, answer them, and end the turn.
+fn finish_previewed(app: &mut SolveApp, tx: &Sender<ControlRequest>, script: &Script, requests: &[(&str, Value)]) -> Vec<Value> {
+    let replies: Vec<_> = requests.iter().map(|(method, params)| ask(tx, method, params.clone())).collect();
+    frame(app);
+    let replies = replies.into_iter().map(|r| r.recv_timeout(std::time::Duration::from_secs(30)).unwrap()).collect();
+    ended(script, "");
+    frame(app);
+    replies
+}
+
+fn review_card(app: &SolveApp) -> review::Card {
+    app.agent_chat.items.iter().rev().find_map(|i| if let Item::Review(card) = i { Some(card.clone()) } else { None }).expect("a review card")
+}
+
+fn last_prompt(script: &Script) -> String {
+    script.calls().into_iter().rev().find_map(|c| c.strip_prefix("prompt: ").map(str::to_string)).unwrap_or_default()
+}
+
+fn body_count(session: &solidcraft_engine::Session) -> usize {
+    session.world_state().map_or(0, |w| w.bodies.len())
+}
+
+/// The design written as STEP, without the header line that carries the time it was written.
+fn step_text(session: &mut solidcraft_engine::Session, name: &str) -> String {
+    let dir = solidcraft_engine::io::vfs::temp_dir().join(format!("sc-agent-preview-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("part.step");
+    session.execute("file.export", &json!({"path": path.to_string_lossy()})).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    text.lines().filter(|l| !l.starts_with("FILE_NAME")).collect::<Vec<_>>().join("\n")
+}
+
+/// Off (the default), a turn changes the open design as before and no card asks anything.
+#[test]
+fn without_the_preference_a_turn_changes_the_design_as_before() {
+    let (mut app, tx) = app_in_a_turn();
+    assert!(!app.preferences.agent_chat_preview, "off by default");
+    assert!(app.agent_chat.preview.is_none());
+    let r = ask(&tx, "engine.execute", boxed(0.0));
+    frame(&mut app);
+    assert_eq!(r.recv_timeout(std::time::Duration::from_secs(30)).unwrap()["ok"], true);
+    assert_eq!(body_count(&app.session), 1);
+}
+
+/// During the turn and the review the open design's revision does not move; the card lists the
+/// steps and the bodies made with their volumes; the view draws the copy; Accept applies the
+/// turn as one undo step, and the agent's next message says it was accepted.
+#[test]
+fn a_previewed_turn_changes_a_copy_and_accept_applies_it_as_one_step() {
+    let (mut app, tx, script, ctx) = previewed_turn("two boxes");
+    let stamp = app.session.document_stamp();
+    let doc = app.session.doc.clone();
+    let depth = app.session.undo.len();
+    let replies = finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0)), ("engine.execute", boxed(20.0))]);
+    assert!(replies.iter().all(|r| r["ok"] == true), "{replies:?}");
+    assert!(replies[0]["result"]["created_bodies"].as_array().is_some_and(|b| b.len() == 1), "the agent gets the copy's reply: {}", replies[0]);
+    // The open design: not touched while the turn ran, nor while the card waits.
+    assert_eq!(app.session.document_stamp(), stamp);
+    assert!(Arc::ptr_eq(&app.session.doc, &doc));
+    assert_eq!(app.session.undo.len(), depth);
+    assert_eq!(body_count(&app.session), 0);
+    let card = review_card(&app);
+    assert_eq!(card.outcome, review::Outcome::Waiting);
+    assert_eq!(card.words.len(), 2, "{card:?}");
+    assert_eq!(card.made.len(), 2, "{card:?}");
+    assert!(card.changed.is_empty() && card.removed.is_empty(), "{card:?}");
+    for made in &card.made {
+        assert!(made.after.is_some_and(|v| (v - 1000.0).abs() < 1.0), "a 10 mm cube: {made:?}");
+    }
+    assert!(review::overlay(&mut app).is_some(), "the view draws the copy over the design");
+    // Another message waits for Accept or Reject.
+    let prompts = script.prompts().len();
+    send(&mut app, &ctx, "now a third".into());
+    assert_eq!(script.prompts().len(), prompts, "no message goes while the card waits");
+    review::accept(&mut app, card.id).unwrap();
+    assert_ne!(app.session.document_stamp(), stamp);
+    assert_eq!(body_count(&app.session), 2);
+    assert_eq!(app.session.undo.len(), depth + 1, "one undo step");
+    assert!(app.session.undo.last().is_some_and(|s| s.label.contains("two boxes")));
+    assert_eq!(review_card(&app).outcome, review::Outcome::Accepted);
+    assert!(app.agent_chat.preview.is_none() && review::overlay(&mut app).is_none());
+    let n = app.agent_chat.items.iter().rposition(|i| matches!(i, Item::Changes { steps: 2, .. })).expect("the applied changes undo as one");
+    undo_changes(&mut app, n);
+    assert!(Arc::ptr_eq(&app.session.doc, &doc), "Undo these changes goes back to the design before the message");
+    send(&mut app, &ctx, "thanks".into());
+    assert!(last_prompt(&script).contains("accepted the changes you proposed"), "{}", last_prompt(&script));
+}
+
+/// Accept writes the same STEP as running the turn's steps directly on the design.
+#[test]
+fn accept_gives_the_same_step_as_running_the_steps_directly() {
+    let batch = json!({"commands": [
+        {"command": "solid.box", "params": {"length": 30, "width": 20, "height": 10}},
+        {"command": "solid.box", "params": {"length": 10, "width": 10, "height": 30, "corner": [40, 0, 0]}},
+    ]});
+    let cylinder = json!({"command": "solid.cylinder", "params": {"radius": 4, "height": 12, "base": [0, 40, 0]}});
+    let parameter = json!({"command": "parameters.add", "params": {"name": "width", "expression": "12 mm"}});
+    let (mut app, tx, script, _ctx) = previewed_turn("a block, a post and a pin");
+    let requests = [("engine.batch", batch.clone()), ("engine.execute", cylinder.clone()), ("engine.execute", parameter.clone())];
+    let replies = finish_previewed(&mut app, &tx, &script, &requests);
+    assert!(replies.iter().all(|r| r["ok"] == true), "{replies:?}");
+    assert_eq!(app.agent_chat.preview.as_ref().map(|p| p.steps), Some(4));
+    let id = review_card(&app).id;
+    review::accept(&mut app, id).unwrap();
+
+    let mut direct = solidcraft_engine::Session::default();
+    for step in batch["commands"].as_array().unwrap() {
+        direct.execute(step["command"].as_str().unwrap(), &step["params"]).unwrap();
+    }
+    for step in [&cylinder, &parameter] {
+        direct.execute(step["command"].as_str().unwrap(), &step["params"]).unwrap();
+    }
+    let accepted = step_text(&mut app.session, "accepted");
+    assert!(accepted.contains("MANIFOLD_SOLID_BREP") || accepted.contains("ADVANCED_FACE"), "a STEP with solids");
+    assert_eq!(accepted, step_text(&mut direct, "direct"));
+    assert_eq!(app.session.doc.param("width").map(|p| p.expr.clone()), Some("12 mm".into()));
+}
+
+/// Reject leaves the design and its revision as they were, and the agent is told.
+#[test]
+fn reject_leaves_the_revision_as_it_was() {
+    let (mut app, tx, script, ctx) = previewed_turn("a box");
+    let stamp = app.session.document_stamp();
+    let doc = app.session.doc.clone();
+    let depth = app.session.undo.len();
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    review::reject(&mut app, id);
+    assert_eq!(app.session.document_stamp(), stamp);
+    assert!(Arc::ptr_eq(&app.session.doc, &doc));
+    assert_eq!(app.session.undo.len(), depth);
+    assert_eq!(review_card(&app).outcome, review::Outcome::Rejected);
+    assert!(app.agent_chat.preview.is_none() && review::overlay(&mut app).is_none());
+    send(&mut app, &ctx, "try again".into());
+    assert!(last_prompt(&script).contains("rejected the changes you proposed"), "{}", last_prompt(&script));
+}
+
+/// An edit of the user's during the review makes Accept refuse, and the design keeps that edit.
+#[test]
+fn accept_refuses_once_the_user_edited_the_design() {
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    app.run("parameters.add", json!({"name": "gap", "expression": "2 mm"})).unwrap();
+    let edited = app.session.document_stamp();
+    let error = review::accept(&mut app, id).unwrap_err();
+    assert!(error.to_lowercase().contains("the design changed since the preview"), "{error}");
+    assert_eq!(app.session.document_stamp(), edited, "nothing applied");
+    assert_eq!(body_count(&app.session), 0);
+    assert_eq!(review_card(&app).outcome, review::Outcome::Waiting, "Reject is still there");
+    // An edit during the turn counts the same.
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    app.run("parameters.add", json!({"name": "gap", "expression": "2 mm"})).unwrap();
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    assert!(review::accept(&mut app, id).is_err());
+}
+
+/// On the copy: files ask for nothing and are refused, a failed batch rolls the copy back and
+/// leaves nothing to replay, and the stale-edit guard holds against the copy's revisions.
+#[test]
+fn a_previewed_turn_refuses_files_and_keeps_the_guard_on_the_copy() {
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    let start = app.session.document_stamp();
+    let expected = json!({"documentId": start.document_id, "revision": start.revision.to_string()});
+    let mut guarded = boxed(0.0);
+    guarded["expectedDocument"] = expected;
+    let failing = json!({"commands": [
+        {"command": "solid.box", "params": {"length": 5, "width": 5, "height": 5}},
+        {"command": "solid.fillet", "params": {"edges": ["no-such-edge"], "radius": 1}},
+    ]});
+    let requests = [
+        ("engine.execute", json!({"command": "file.save", "params": {"path": "/tmp/a.solidcraft"}})),
+        ("engine.execute", guarded.clone()),
+        ("engine.execute", guarded),
+        ("engine.batch", failing),
+    ];
+    let replies = finish_previewed(&mut app, &tx, &script, &requests);
+    assert_eq!(replies[0]["ok"], false, "{}", replies[0]);
+    assert!(replies[0]["error"].as_str().is_some_and(|e| e.contains("previewed")), "{}", replies[0]);
+    assert!(app.agent_chat.held.is_empty(), "no Allow card for a file while previewing");
+    assert_eq!(replies[1]["ok"], true, "the first write names the copy's revision: {}", replies[1]);
+    assert!(replies[1]["documentStamp"].is_object(), "{}", replies[1]);
+    assert_eq!(replies[2]["errorDetails"]["code"], "STALE_DOCUMENT", "the copy moved on: {}", replies[2]);
+    assert_eq!(replies[3]["result"]["rolled_back"], true, "{}", replies[3]);
+    assert_eq!(app.agent_chat.preview.as_ref().map(|p| p.steps), Some(1), "only the guarded box stays to replay");
+    let card = review_card(&app);
+    assert_eq!(card.made.len(), 1, "{card:?}");
+    review::accept(&mut app, card.id).unwrap();
+    assert_eq!(body_count(&app.session), 1);
+}
+
+/// A turn that changed nothing leaves no card and no copy.
+#[test]
+fn a_previewed_turn_without_changes_leaves_no_card() {
+    let (mut app, tx, script, _ctx) = previewed_turn("what is this?");
+    finish_previewed(&mut app, &tx, &script, &[("document.inspect", json!({}))]);
+    assert!(app.agent_chat.preview.is_none());
+    assert!(!app.agent_chat.items.iter().any(|i| matches!(i, Item::Review(_))));
+}
+
+/// What a previewed turn costs on a big part: the copy's memory and the time its steps, the
+/// card, the overlay and Accept's replay take, next to the same steps run on the design directly.
+/// Prints its numbers; run by hand (Linux, it reads /proc/self/status):
+/// `cargo test -p solidcraft-ui-egui --lib -- --ignored --nocapture preview_cost_on_a_big_part`.
+#[test]
+#[ignore = "a measurement, run by hand"]
+fn preview_cost_on_a_big_part() {
+    fn rss_mb() -> f64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let kb = status.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.split_whitespace().next()?.parse::<f64>().ok());
+        kb.unwrap_or(f64::NAN) / 1024.0
+    }
+    let ms = |since: std::time::Instant| since.elapsed().as_secs_f64() * 1000.0;
+    let (count, spacing) = (20, 20);
+    let part = |s: &mut solidcraft_engine::Session| {
+        s.execute("solid.box", &json!({"length": 420, "width": 420, "height": 10, "body_name": "Plate"})).unwrap();
+        s.execute(
+            "solid.cylinder",
+            &json!({"radius": 3, "height": 12, "base": [10, 10, -1], "operation": "cut", "targets": ["Plate"], "name": "Hole"}),
+        )
+        .unwrap();
+        s.execute(
+            "solid.pattern.rectangular",
+            &json!({"features": ["Hole"], "dir1": [1, 0, 0], "count1": count, "spacing1": spacing, "dir2": [0, 1, 0], "count2": count, "spacing2": spacing}),
+        )
+        .unwrap();
+    };
+    let turn = [
+        (
+            "engine.execute",
+            json!({"command": "solid.box", "params": {"length": 60, "width": 40, "height": 15, "corner": [180, 190, 10], "operation": "join", "targets": ["Plate"]}}),
+        ),
+        (
+            "engine.execute",
+            json!({"command": "solid.cylinder", "params": {"radius": 12, "height": 40, "base": [210, 210, -5], "operation": "cut", "targets": ["Plate"]}}),
+        ),
+    ];
+
+    // The same steps on the design itself: what a turn costs without preview.
+    let mut direct = solidcraft_engine::Session::default();
+    part(&mut direct);
+    let faces = direct.world_state().map_or(0, |w| w.bodies.iter().map(|b| b.body.face_count()).sum::<usize>());
+    let t = std::time::Instant::now();
+    for (_, step) in &turn {
+        direct.execute(step["command"].as_str().unwrap(), &step["params"]).unwrap();
+    }
+    let direct_ms = ms(t);
+    drop(direct);
+
+    let (mut app, script, ctx) = app_with_script();
+    let t = std::time::Instant::now();
+    part(&mut app.session);
+    let build_ms = ms(t);
+    let _ = app.session.world_state();
+    crate::preview::update(&mut app, &ctx);
+    let rss_design = rss_mb();
+    app.preferences.agent_chat_preview = true;
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    let t = std::time::Instant::now();
+    send(&mut app, &ctx, "a boss and a bore".into());
+    let copy_ms = ms(t);
+    let rss_copy = rss_mb();
+    let t = std::time::Instant::now();
+    let replies: Vec<_> = turn.iter().map(|(method, params)| ask(&tx, method, params.clone())).collect();
+    frame(&mut app);
+    let replies: Vec<Value> = replies.into_iter().map(|r| r.recv_timeout(std::time::Duration::from_secs(600)).unwrap()).collect();
+    let copy_steps_ms = ms(t);
+    assert!(replies.iter().all(|r| r["ok"] == true), "{replies:?}");
+    let rss_steps = rss_mb();
+    let t = std::time::Instant::now();
+    crate::preview::update(&mut app, &ctx);
+    let overlay_ms = ms(t);
+    assert!(app.preview.active, "the overlay is up");
+    let rss_overlay = rss_mb();
+    let t = std::time::Instant::now();
+    ended(&script, "");
+    frame(&mut app);
+    let card_ms = ms(t);
+    let card = review_card(&app);
+    let t = std::time::Instant::now();
+    review::accept(&mut app, card.id).unwrap();
+    let accept_ms = ms(t);
+    let accepted_volume = app.session.world_state().ok().and_then(|w| w.body("Plate").and_then(|b| b.body.volume_at(0.05)));
+    assert!(
+        accepted_volume.zip(card.changed.first().and_then(|b| b.after)).is_some_and(|(v, w)| (v - w).abs() < 1e-6 * w),
+        "the design holds the previewed plate: {accepted_volume:?}"
+    );
+    crate::preview::update(&mut app, &ctx);
+    let rss_accepted = rss_mb();
+    println!(
+        "preview cost: plate 420 x 420 x 10 mm with {} holes, {faces} faces; built in {build_ms:.0} ms\n\
+         - same 2 steps run directly on the design: {direct_ms:.0} ms\n\
+         - copy made at turn start: {copy_ms:.1} ms, RSS {rss_design:.0} -> {rss_copy:.0} MB\n\
+         - 2 steps on the copy: {copy_steps_ms:.0} ms, RSS -> {rss_steps:.0} MB\n\
+         - overlay built (green/red): {overlay_ms:.0} ms, RSS -> {rss_overlay:.0} MB\n\
+         - turn end, card (body changes, volumes): {card_ms:.0} ms; card {:?}\n\
+         - Accept (replay on the design, one undo step): {accept_ms:.2} ms (the evaluations the copy made are reused), RSS after {rss_accepted:.0} MB; plate volume after Accept {accepted_volume:?} mm3",
+        count * count,
+        card.changed.iter().map(|b| (&b.name, b.before, b.after)).collect::<Vec<_>>(),
+    );
+}
+
+/// Frames until `rx` has the reply (at most 60 s), as the window runs them.
+fn frames_until(app: &mut SolveApp, rx: &Receiver<Value>) -> Value {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        frame(app);
+        if let Ok(reply) = rx.try_recv() {
+            return reply;
+        }
+        assert!(std::time::Instant::now() < until, "no reply within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// With threads, the copy computes on a worker: the window's frame returns at once, the view's
+/// agent chip and the running card say what computes, the design is untouched meanwhile, and the
+/// card and Accept work as without threads.
+#[test]
+fn a_previewed_turn_computes_off_the_window_thread() {
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    app.apply_off_thread = Some(std::time::Duration::ZERO);
+    let stamp = app.session.document_stamp();
+    // The preview took the app's wait when the turn began: start the turn again with threads.
+    review::forget(&mut app.agent_chat);
+    review::begin(&mut app);
+    let first = ask(&tx, "engine.execute", boxed(0.0));
+    let second = ask(&tx, "engine.execute", boxed(20.0));
+    frame(&mut app);
+    let (_, what) = app.agent_computing().expect("the view's chip says the copy computes");
+    assert!(!what.is_empty());
+    let (words, computing) = review::progress(&app.agent_chat).expect("the running card shows");
+    assert!(words.is_empty() && computing.is_some(), "{words:?}");
+    assert_eq!(app.session.document_stamp(), stamp, "the design is untouched while the copy computes");
+    assert_eq!(frames_until(&mut app, &first)["ok"], true);
+    assert_eq!(frames_until(&mut app, &second)["ok"], true, "the request behind it ran next");
+    assert_eq!(app.agent_chat.preview.as_ref().map(|p| p.steps), Some(2));
+    ended(&script, "");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !app.agent_chat.items.iter().any(|i| matches!(i, Item::Review(_))) {
+        frame(&mut app);
+        assert!(std::time::Instant::now() < until, "no card within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let card = review_card(&app);
+    assert_eq!((card.words.len(), card.made.len()), (2, 2), "{card:?}");
+    assert!(app.agent_computing().is_none());
+    assert_eq!(app.session.document_stamp(), stamp);
+    review::accept(&mut app, card.id).unwrap();
+    assert_eq!(body_count(&app.session), 2);
+}
+
+/// Stop on the view's chip answers the request computing on the copy as stopped, and the copy goes
+/// back to how it was before it: nothing of it is previewed or replayed.
+#[test]
+fn stop_puts_the_copy_back_as_it_was_before_the_request() {
+    let (mut app, tx, script, _ctx) = previewed_turn("a box, then stop");
+    app.apply_off_thread = Some(std::time::Duration::ZERO);
+    review::forget(&mut app.agent_chat);
+    review::begin(&mut app);
+    let kept = ask(&tx, "engine.execute", boxed(0.0));
+    frame(&mut app);
+    assert_eq!(frames_until(&mut app, &kept)["ok"], true);
+    let stopped = ask(&tx, "engine.batch", json!({"commands": [boxed(20.0), boxed(40.0)]}));
+    frame(&mut app);
+    assert!(app.agent_computing().is_some(), "the batch computes on the copy");
+    app.stop_agent_command();
+    let reply = stopped.try_recv().expect("answered at once");
+    assert_eq!(reply["stopped"], true, "{reply}");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while review::computing(&app.agent_chat).is_some() || app.agent_chat.preview.as_ref().is_some_and(|p| p.steps != 1) {
+        frame(&mut app);
+        assert!(std::time::Instant::now() < until, "the copy did not come back within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    ended(&script, "");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !app.agent_chat.items.iter().any(|i| matches!(i, Item::Review(_))) {
+        frame(&mut app);
+        assert!(std::time::Instant::now() < until, "no card within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let card = review_card(&app);
+    assert_eq!((card.words.len(), card.made.len()), (1, 1), "only the box before Stop: {card:?}");
+    review::accept(&mut app, card.id).unwrap();
+    assert_eq!(body_count(&app.session), 1);
+}
+
+/// Measures what the window thread spends while a turn's steps compute on the copy off it, on the
+/// plate of `preview_cost_on_a_big_part`: the longest frame, how many frames ran, and the time to
+/// the replies, the overlay and the card. Ignored: it prints numbers rather than checking them
+/// (`cargo test -p solidcraft-ui-egui --lib preview_cost_off -- --ignored --nocapture`).
+#[test]
+#[ignore = "measurement"]
+fn preview_cost_off_the_window_thread() {
+    let ms = |since: std::time::Instant| since.elapsed().as_secs_f64() * 1000.0;
+    let (count, spacing) = (20, 20);
+    let (mut app, script, ctx) = app_with_script();
+    app.session.execute("solid.box", &json!({"length": 420, "width": 420, "height": 10, "body_name": "Plate"})).unwrap();
+    app.session
+        .execute(
+            "solid.cylinder",
+            &json!({"radius": 3, "height": 12, "base": [10, 10, -1], "operation": "cut", "targets": ["Plate"], "name": "Hole"}),
+        )
+        .unwrap();
+    app.session
+        .execute(
+            "solid.pattern.rectangular",
+            &json!({"features": ["Hole"], "dir1": [1, 0, 0], "count1": count, "spacing1": spacing, "dir2": [0, 1, 0], "count2": count, "spacing2": spacing}),
+        )
+        .unwrap();
+    let _ = app.session.world_state();
+    app.apply_off_thread = Some(crate::dialogs::APPLY_AT_ONCE);
+    app.preferences.agent_chat_preview = true;
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    send(&mut app, &ctx, "a boss and a bore".into());
+    let turn = [
+        json!({"command": "solid.box", "params": {"length": 60, "width": 40, "height": 15, "corner": [180, 190, 10], "operation": "join", "targets": ["Plate"]}}),
+        json!({"command": "solid.cylinder", "params": {"radius": 12, "height": 40, "base": [210, 210, -5], "operation": "cut", "targets": ["Plate"]}}),
+    ];
+    // One frame as the window runs it: the chat, the control queue, the preview overlay.
+    let mut times: Vec<f64> = Vec::new();
+    let mut run_frame = |app: &mut SolveApp| {
+        let t = std::time::Instant::now();
+        frame(app);
+        crate::preview::update(app, &ctx);
+        times.push(ms(t));
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    };
+    let t = std::time::Instant::now();
+    let replies: Vec<_> = turn.iter().map(|step| ask(&tx, "engine.execute", step.clone())).collect();
+    let mut answered = Vec::new();
+    while answered.len() < replies.len() {
+        run_frame(&mut app);
+        while let Some(reply) = replies.get(answered.len()).and_then(|r| r.try_recv().ok()) {
+            answered.push(reply);
+        }
+    }
+    let steps_ms = ms(t);
+    assert!(answered.iter().all(|r| r["ok"] == true), "{answered:?}");
+    while app.preview.building() || !app.preview.active {
+        run_frame(&mut app);
+    }
+    let overlay_ms = ms(t);
+    ended(&script, "");
+    while !app.agent_chat.items.iter().any(|i| matches!(i, Item::Review(_))) {
+        run_frame(&mut app);
+    }
+    let card_ms = ms(t);
+    let card = review_card(&app);
+    let t = std::time::Instant::now();
+    review::accept(&mut app, card.id).unwrap();
+    let accept_ms = ms(t);
+    let frames = times.len();
+    let over_16 = times.iter().filter(|t| **t > 16.0).count();
+    times.sort_by(|a, b| b.total_cmp(a));
+    let median = times.get(frames / 2).copied().unwrap_or(0.0);
+    let longest: Vec<String> = times.iter().take(5).map(|t| format!("{t:.1}")).collect();
+    println!(
+        "preview off the window thread: plate 420 x 420 x 10 mm with {} holes\n\
+         - 2 steps answered after {steps_ms:.0} ms; overlay drawn after {overlay_ms:.0} ms; card after {card_ms:.0} ms\n\
+         - {frames} frames meanwhile (sleeping 16 ms between frames): median {median:.2} ms, {over_16} over 16 ms, the five longest {} ms\n\
+         - Accept: {accept_ms:.2} ms; card {:?}",
+        count * count,
+        longest.join(", "),
+        card.changed.iter().map(|b| (&b.name, b.before, b.after)).collect::<Vec<_>>(),
+    );
+}
+
+// ---- Ask on the model (the "Cursor for CAD" spec, feature 3) ----
+
+/// Ask Here sends exactly the selection with the message: the same prompt and the same chips as a
+/// message sent with Attach selection ticked, and none of what was picked for the next message.
+#[test]
+fn ask_here_sends_exactly_the_selection_as_attach_selection_would() {
+    let (mut app, script, ctx) = app_with_script();
+    app.session.selection = box_selection(&mut app);
+    let selected = context::describe_selection(&mut app.session);
+    assert_eq!(selected.items.len(), 4);
+    // Something picked for the next message stays for it: Ask Here carries the selection only.
+    app.agent_chat.picked_context.items.push(context::Entry { kind: context::Kind::Other, label: "Picked plane".into(), detail: "a plane".into() });
+    ask_here::open(&mut app).unwrap();
+    assert!(app.agent_chat.ask_box.open);
+    ask_here::submit(&mut app, &ctx, "round this").unwrap();
+    assert!(!app.agent_chat.ask_box.open, "the box closes once sent");
+    assert!(app.agent_chat.open, "the conversation opens for the answer");
+    let asked = script.calls().pop().expect("a prompt");
+    let Some(Item::User { text, context: asked_context, .. }) = app.agent_chat.items.last().cloned() else { panic!("a sent message") };
+    assert_eq!(text, "round this");
+    assert_eq!(asked_context, selected, "exactly the selected items");
+    assert!(!asked.contains("Picked plane"), "{asked}");
+    assert_eq!(app.agent_chat.picked_context.items.len(), 1, "the pick waits for the next message");
+    ended(&script, "");
+    poll(&mut app, &ctx);
+
+    app.agent_chat.picked_context = Context::default();
+    app.agent_chat.attach_selection = true;
+    send(&mut app, &ctx, "round this".into());
+    let attached = script.calls().pop().expect("a prompt");
+    assert_eq!(asked, attached, "as a message with Attach selection ticked");
+    let Some(Item::User { context: attached_context, .. }) = app.agent_chat.items.last().cloned() else { panic!("a sent message") };
+    assert_eq!(asked_context, attached_context);
+}
+
+/// With nothing selected, Ask Here does not open and sends nothing; an empty question sends
+/// nothing either.
+#[test]
+fn ask_here_needs_a_selection_and_a_question() {
+    let (mut app, script, ctx) = app_with_script();
+    assert!(ask_here::open(&mut app).is_err());
+    assert!(!app.agent_chat.ask_box.open);
+    assert!(ask_here::submit(&mut app, &ctx, "what is this?").is_err());
+    app.session.selection = box_selection(&mut app);
+    assert!(ask_here::submit(&mut app, &ctx, "   ").is_err());
+    assert!(script.prompts().is_empty(), "nothing was sent");
+}
+
+/// With Preview the agent's changes on, the question's turn runs on a copy: its answer comes back
+/// as a preview card.
+#[test]
+fn ask_here_with_previews_on_runs_the_turn_on_a_copy() {
+    let (mut app, _script, ctx) = app_with_script();
+    app.preferences.agent_chat_preview = true;
+    app.session.selection = box_selection(&mut app);
+    ask_here::submit(&mut app, &ctx, "make this face 2 mm thicker").unwrap();
+    assert!(review::running(&app.agent_chat), "the turn runs on a copy");
+}
+
+/// Ask Here's key is Ctrl+K, which no other command takes by default.
+#[test]
+fn ask_here_is_on_ctrl_k_and_nothing_else_is() {
+    let (app, _script, _ctx) = app_with_script();
+    assert_eq!(crate::keymap::effective(&app, "ui.ask_here").as_deref(), Some("Ctrl+K"));
+    assert_eq!(crate::keymap::commands_for(&app, "Ctrl+K"), ["ui.ask_here"]);
+}
+
+/// The agent's own checkpoints on the copy stay its own: taking the copy's save point for Stop
+/// uses none of them up, so a checkpoint made in one request restores in a later one.
+#[test]
+fn the_agents_checkpoints_on_the_copy_survive_between_requests() {
+    let (mut app, tx, script, _ctx) = previewed_turn("checkpoint, box, back");
+    let made = ask(&tx, "engine.execute", json!({"command": "edit.checkpoint", "params": {}}));
+    frame(&mut app);
+    let made = made.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    let id = made["result"]["checkpoint"].as_u64().unwrap_or_else(|| panic!("a checkpoint id: {made}"));
+    let boxed_reply = ask(&tx, "engine.execute", boxed(0.0));
+    frame(&mut app);
+    assert_eq!(boxed_reply.recv_timeout(std::time::Duration::from_secs(30)).unwrap()["ok"], true);
+    let restored = ask(&tx, "engine.execute", json!({"command": "edit.restore_checkpoint", "params": {"checkpoint": id}}));
+    frame(&mut app);
+    let restored = restored.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    assert_eq!(restored["ok"], true, "{restored}");
+    ended(&script, "");
+}
+
+/// Stopping the turn's first change puts the copy back exactly as the turn began: the agent's
+/// retry with the stamp it read before the turn is not refused as stale.
+#[test]
+fn after_stopping_the_first_change_the_pre_turn_stamp_still_holds() {
+    let (mut app, tx, _script, _ctx) = previewed_turn("a box, stopped, then again");
+    app.apply_off_thread = Some(std::time::Duration::ZERO);
+    review::forget(&mut app.agent_chat);
+    review::begin(&mut app);
+    let stamp = app.session.document_stamp();
+    let guarded = |x: f64| {
+        let mut p = boxed(x);
+        p["expectedDocument"] = json!({"documentId": stamp.document_id, "revision": stamp.revision.to_string()});
+        p
+    };
+    let stopped = ask(&tx, "engine.execute", guarded(0.0));
+    frame(&mut app);
+    app.stop_agent_command();
+    assert_eq!(stopped.try_recv().expect("answered at once")["stopped"], true);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while review::computing(&app.agent_chat).is_some()
+        || app.agent_chat.preview.as_ref().is_some_and(|p| matches!(p.phase, review::Phase::Running) && p.steps != 0)
+    {
+        frame(&mut app);
+        assert!(std::time::Instant::now() < until, "the copy did not come back within 60 s");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let retried = ask(&tx, "engine.execute", guarded(0.0));
+    let reply = frames_until(&mut app, &retried);
+    assert_eq!(reply["ok"], true, "the pre-turn stamp holds on the copy put back: {reply}");
+}
+
+/// Ask Here sends the question and the selection only: no picture of the view, whatever Attach
+/// view says. While a card waits for Accept or Reject it sends nothing and the box stays open with
+/// the words.
+#[test]
+fn ask_here_sends_no_view_picture_and_waits_for_the_card() {
+    let (mut app, script, ctx) = app_with_script();
+    app.session.selection = box_selection(&mut app);
+    app.agent_chat.attach_view = true;
+    app.agent_chat.images = true;
+    ask_here::open(&mut app).unwrap();
+    ask_here::submit(&mut app, &ctx, "what is this?").unwrap();
+    let Some(Item::User { image, files, .. }) = app.agent_chat.items.last().cloned() else { panic!("a sent message") };
+    assert!(!image && files.is_empty(), "the question and the selection only");
+    ended(&script, "");
+    poll(&mut app, &ctx);
+
+    let (mut app, tx, script, ctx) = previewed_turn("a box");
+    let _ = finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    assert!(review::waiting(&app.agent_chat), "a card waits");
+    app.session.selection = box_selection(&mut app);
+    let prompts = script.prompts().len();
+    ask_here::open(&mut app).unwrap();
+    assert!(ask_here::submit(&mut app, &ctx, "and round it").is_err());
+    assert!(app.agent_chat.ask_box.open, "the box stays open");
+    assert_eq!(script.prompts().len(), prompts, "nothing was sent");
+}
+
+/// PIL-305: the automatic check reads the project's `ci.toml` switch when it decides. A design
+/// opened from a project whose checks are on must run its check even when no project command has
+/// refreshed the switch yet (the open path adopts the session without `finish_command`).
+#[test]
+fn an_accepted_preview_reads_the_projects_check_switch() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-dfm-switch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let made = solidcraft_engine::project::create(&dir, "dfm-switch", "Part").unwrap();
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    app.session.path = Some(made.design.to_string_lossy().to_string());
+    assert!(!app.agent_chat.dfm.auto_enabled(), "nothing read the switch yet");
+    let before = app.agent_chat.dfm.fired;
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    review::accept(&mut app, id).unwrap();
+    assert!(app.agent_chat.dfm.auto_enabled(), "the project says checks run by themselves");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "so the accept runs one check");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Put the open design in a project whose checks run by themselves, and read its switch the way
+/// the project host does. Returns the project folder, removed when the test drops it.
+fn a_project_with_checks_on(app: &mut SolveApp) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("solidcraft-dfm-project-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let made = solidcraft_engine::project::create(&dir, "shop", "Part").unwrap();
+    app.session.path = Some(made.design.to_string_lossy().to_string());
+    crate::agent_chat::refresh_dfm_auto(app);
+    assert!(app.agent_chat.dfm.auto_enabled(), "the project's ci.toml says checks run by themselves");
+    dir
+}
+
+/// The page's Accept button posts `review`; the host turns it into the same accept the panel's
+/// button calls, so the page can finish a previewed turn.
+#[test]
+fn the_web_page_accepts_a_waiting_preview() {
+    let (mut app, tx, script, ctx) = previewed_turn("a box");
+    let _project = a_project_with_checks_on(&mut app);
+    let before = app.agent_chat.dfm.fired;
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).expect("the page may accept");
+    assert_eq!(review_card(&app).outcome, review::Outcome::Accepted);
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "and the accepted change runs one check");
+    assert!(
+        web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).is_err(),
+        "a second accept has nothing to accept"
+    );
+}
+
+/// PIL-305: accepting a preview submits exactly one check; a rejection or a stale accept submits
+/// none. The trigger is the same one direct commits use.
+#[test]
+fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none() {
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    let _project = a_project_with_checks_on(&mut app);
+    let before = app.agent_chat.dfm.fired;
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    review::accept(&mut app, id).unwrap();
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept commits and runs one check");
+
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    let _project = a_project_with_checks_on(&mut app);
+    let before = app.agent_chat.dfm.fired;
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    review::reject(&mut app, id);
+    assert_eq!(app.agent_chat.dfm.fired, before, "a rejection commits nothing and runs nothing");
+
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    let _project = a_project_with_checks_on(&mut app);
+    let before = app.agent_chat.dfm.fired;
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    app.run("solid.cylinder", json!({"radius": 2, "height": 5, "base": [100, 0, 0]})).unwrap();
+    assert!(review::accept(&mut app, id).is_err(), "the design moved since the preview");
+    assert_eq!(app.agent_chat.dfm.fired, before, "a stale accept runs nothing");
 }

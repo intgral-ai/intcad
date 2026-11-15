@@ -183,6 +183,96 @@ design from before the turn), relabelled "Agent chat: <message>". If the history
 the meantime the start is found by the design it holds; if it's gone, nothing is merged. The
 conversation shows the merged step with an Undo button while it's still the latest thing done.
 
+### Preview, then accept
+
+With Preferences → AI → **Preview the agent's changes before they apply** on (off by default),
+`agent_chat::review` starts each plain chat turn on `Session::scratch()` of the open design. The
+gate still decides every request; an admitted `engine.execute`, `engine.batch`, `document.inspect`
+or `document.revision` is answered on the copy instead of entering the window's queue, and every
+command the gate counts as a change is recorded. `engine.commands` and the `ui.*` methods go to
+the window as before. Files, new designs, `view.pick` and panel layout are refused on a copy. The
+stale-edit guard holds against the copy's own revisions. Until the copy changes, the open design's
+stamp from before the turn still matches it. The view draws the copy over the design with
+`preview::build_sided`: a new face that faces the old body's material (its exact shape decides) is
+in the cut colour, any other new face in the theme's success colour.
+
+The copy computes off the window thread. A request for it moves the copy to a worker
+(`review::send_away`), which runs it, works out the copy's placed model for the overlay and sends
+the copy back; requests that arrive meanwhile wait in order. Within the app's wait
+(`dialogs::APPLY_AT_ONCE`, 150 ms) a request is answered in the same frame. Otherwise the window
+keeps drawing the last overlay and the running card lists the steps so far and the one computing,
+with its time. The view's agent chip (`SolveApp::agent_computing`) shows the same step, and its
+Stop answers the request as stopped and, once the copy is back, puts it as it was before that
+request (design, history and revision, saved by `Copy::save`; not an engine checkpoint, so the
+agent's own `edit.checkpoint`s stay usable). The
+card's lists and the overlay's scene are worked out on workers too. Headless use and tests
+(`apply_off_thread` unset) run all of it at once.
+
+When the turn ends with changes, the card lists the steps (the tool-card summaries) and the placed
+bodies made, changed (`Body::same` false and a different volume or outline) and removed, with
+display-mesh volumes. **Accept** checks the open design's stamp against the one taken when the
+turn began ("the design changed since the preview" when they differ), replays the recorded
+commands with `SolveApp::run` under a checkpoint (any failure restores it), and merges them into
+one undo step as a turn without preview does. **Reject** drops the copy. The next prompt starts
+with a note saying which. A new message waits while a card does.
+
+**Open decision: replay or swap** (provisional: replay, 2026-11-13; for Tianwei and Huaiyuan to
+confirm). Replay keeps the stale-edit guard and the per-turn undo step on the code paths every
+turn already uses. On this branch Accept writes the same STEP as running the steps directly, line
+for line apart from the header's time stamp
+(`accept_gives_the_same_step_as_running_the_steps_directly`). Swapping the copy in
+(`Session::accept_computed`) would skip the second evaluation but needs its own undo snapshot and
+guard handling. The copy shares the evaluation cache, so replay mostly reuses what the copy
+computed.
+
+Measured on zhikun (debug-profile tests, run by hand): a 420 × 420 × 10 mm plate with a 20 × 20
+pattern of holes (406 faces), and a turn that joins a boss and cuts a bore.
+`preview_cost_on_a_big_part` runs everything on the test's thread, as headless use does:
+
+| | Time | Resident memory |
+|---|---|---|
+| The two steps run directly on the design | 21.1 s | |
+| Copy made at turn start | 0.3 ms | 204 → 206 MB |
+| The two steps on the copy | 20.2 s | → 219 MB |
+| Overlay built | 177 ms | → 222 MB |
+| Card (body changes, volumes) | 153 ms | |
+| Accept (replay, one undo step) | 0.43 ms | → 228 MB |
+
+`preview_cost_off_the_window_thread` runs the same turn as the app does (`APPLY_AT_ONCE`, a frame
+of chat, control queue and overlay every 16 ms). The two steps were answered after 20.4 s, the
+overlay was drawn after 20.6 s and the card after 20.7 s. Meanwhile 1,252 frames ran, with a median
+of 0.07 ms. Only three took over 16 ms, at 150 to 153 ms each: the app's wait (`APPLY_AT_ONCE`)
+before each of the two requests and the card goes to a worker. Before this change the window
+froze for the whole 20 s. Accept took 0.45 ms.
+
+Known gaps:
+
+- An evicted evaluation cache would make Accept compute the steps again, on the window thread.
+- Built-in skills don't preview. Anatomy is read-only, so it has nothing to preview. Text-to-CAD
+  binds its task to the open design (`task_runtime`): the check before and after each tool, the
+  snapshot it validates at the end of the turn and the validation report all read
+  `app.session`. Previewing it means binding that task to the copy while it is away on a worker,
+  then carrying the report over to the revision Accept makes. That is its own piece of work, left
+  for now.
+- `ui.render` shows the design without the overlay.
+- One card at a time: a new message waits until the user accepts or rejects.
+- Tried with the scripted test agent only, not with a real AI agent.
+
+### Ask on the model
+
+**Ask Here** (`ui.ask_here`, Ctrl+K by default, rebindable in Preferences › Keyboard Shortcuts;
+no other command takes Ctrl+K by default and the window handles no Ctrl+K of its own) opens a
+one-line box beside the pointer, where the pick was made, when something is selected
+(`agent_chat::ask_here`). Enter sends the text as a message of the conversation with exactly the
+selection attached (`context::describe_selection`), the same prompt and chips as a message sent
+with Attach selection ticked; anything picked for the next message, the files on it and Attach
+view wait for it. While a card waits for Accept or Reject the box stays open, saying so. Escape, or the
+selection going, closes the box. With previews on, the turn runs on a copy like any other, so its
+changes come back as a preview card. Over the control channel, `ui.agent_chat` takes
+`ask_here: true` (open the box) and `ask: "…"` (send with the selection). Not yet: the box shows
+no answer of its own (the answer is in the conversation, which opens), and it has not been tried
+with a real AI agent.
+
 ### Document ownership
 
 Each open design tab owns an `AgentChat`, including its transcript, backend session, agent
