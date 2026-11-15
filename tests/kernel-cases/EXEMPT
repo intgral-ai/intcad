@@ -53,6 +53,7 @@ component.replace_with_link       component links
 component.show_history            the History bar: which features it lists
 component.unlock                  component locking
 component.update_links            component links
+dfm.override                      a project's DFM number override, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
 diagnostics.crash_report          crash reports
 diagnostics.crash_reports         crash reports
 diagnostics.crash_reports.clear   crash reports
@@ -147,8 +148,11 @@ pointcloud.edit                   point clouds: points drawn, never a body
 pointcloud.insert                 point clouds: points drawn, never a body
 pointcloud.list                   point clouds: points drawn, never a body
 project.attach                    a project folder beside a saved design, not geometry: project::tests::attach_keeps_the_design_and_puts_the_project_beside_it
+project.ci_set                    project check settings, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
 project.create                    a project folder and its templates, not geometry: project::tests::a_created_project_reopens_with_the_same_identity_and_settings
+project.data_set                  a project's DFM data selection, not geometry: project::tests::a_copied_project_reads_its_own_data_copy_and_another_tier
 project.inspect                   reading a project folder, not geometry: cmd::project::attach_tests::attach_uses_the_open_designs_path_and_inspect_finds_the_project
+project.settings_set              project settings, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
 render.aging.describe             rendering: images, cameras, stages
 render.backends                   rendering: images, cameras, stages
 render.batch                      rendering: images, cameras, stages
