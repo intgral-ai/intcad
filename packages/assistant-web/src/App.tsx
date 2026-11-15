@@ -383,7 +383,7 @@ function CheckCardView({ item, strings }: { item: Of<'check'>; strings: Strings 
                   post({ type: 'finding', runId: card.runId, id: finding.id });
                 }}
               >
-                <Badge variant={finding.state === 'failed' ? 'destructive' : finding.state === 'advisory' ? 'warning' : 'default'}>
+                <Badge variant={finding.state === 'failed' ? 'destructive' : finding.state === 'advisory' ? 'warning' : 'neutral'}>
                   {finding.state}
                 </Badge>
                 <Txt variant="caption" className="min-w-0 truncate">
