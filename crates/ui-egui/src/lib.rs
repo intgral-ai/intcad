@@ -33,6 +33,7 @@ pub mod crash_ui;
 pub mod deferred;
 pub mod delete;
 pub mod design_properties;
+pub mod dfm_overlay;
 pub mod dialog_column;
 mod dialog_descriptor;
 pub mod dialogs;
