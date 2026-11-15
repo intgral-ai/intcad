@@ -1,0 +1,66 @@
+{
+  "en": {
+    "ui.agent_chat_not_ready": "Not ready yet",
+    "ui.agent_chat_not_set_up": "Not set up",
+    "ui.agent_chat_installed": "Installed",
+    "ui.agent_chat_does_not_start": "Does not start",
+    "ui.agent_chat_retired": "Retired by its maker",
+    "ui.agent_chat_install_body": "Intcad cannot start {agent} on this computer yet. Set it up as shown below (an npm line needs Node.js), then press Refresh:"
+  },
+  "ja": {
+    "ui.agent_chat_not_ready": "まだ使えません",
+    "ui.agent_chat_not_set_up": "未設定",
+    "ui.agent_chat_installed": "インストール済み",
+    "ui.agent_chat_does_not_start": "起動しません",
+    "ui.agent_chat_retired": "提供終了",
+    "ui.agent_chat_install_body": "このコンピューターでは、まだ {agent} を起動できません。以下のとおり準備してから（npm の行には Node.js が必要です）「再検索」を押してください:"
+  },
+  "zh": {
+    "ui.agent_chat_not_ready": "还不能用",
+    "ui.agent_chat_not_set_up": "尚未设置",
+    "ui.agent_chat_installed": "已安装",
+    "ui.agent_chat_does_not_start": "无法启动",
+    "ui.agent_chat_retired": "厂商已停用",
+    "ui.agent_chat_install_body": "这台电脑上还不能启动 {agent}。按下面的方式安装（npm 开头的命令需要先装 Node.js），然后点击刷新："
+  },
+  "ar": {
+    "ui.agent_chat_not_ready": "غير جاهز بعد",
+    "ui.agent_chat_not_set_up": "غير مُعدّ",
+    "ui.agent_chat_installed": "مثبّت",
+    "ui.agent_chat_does_not_start": "لا يبدأ",
+    "ui.agent_chat_retired": "أوقفه صانعه",
+    "ui.agent_chat_install_body": "لا يستطيع Intcad تشغيل {agent} على هذا الحاسوب بعد. جهّزه كما هو مبيّن أدناه (سطر npm يحتاج إلى Node.js)، ثم اضغط تحديث:"
+  },
+  "he": {
+    "ui.agent_chat_not_ready": "עדיין לא מוכן",
+    "ui.agent_chat_not_set_up": "לא הוגדר",
+    "ui.agent_chat_installed": "מותקן",
+    "ui.agent_chat_does_not_start": "לא מופעל",
+    "ui.agent_chat_retired": "הופסק על ידי היצרן",
+    "ui.agent_chat_install_body": "Intcad עדיין לא יכול להפעיל את {agent} במחשב הזה. יש להכין אותו כמוצג למטה (שורת npm דורשת Node.js) ואז ללחוץ על רענון:"
+  },
+  "vi": {
+    "ui.agent_chat_not_ready": "Chưa sẵn sàng",
+    "ui.agent_chat_not_set_up": "Chưa thiết lập",
+    "ui.agent_chat_installed": "Đã cài đặt",
+    "ui.agent_chat_does_not_start": "Không khởi động",
+    "ui.agent_chat_retired": "Đã ngừng cung cấp",
+    "ui.agent_chat_install_body": "Intcad chưa thể khởi động {agent} trên máy tính này. Hãy thiết lập như bên dưới (dòng npm cần Node.js), rồi nhấn Làm mới:"
+  },
+  "de": {
+    "ui.agent_chat_not_ready": "Noch nicht bereit",
+    "ui.agent_chat_not_set_up": "Nicht eingerichtet",
+    "ui.agent_chat_installed": "Installiert",
+    "ui.agent_chat_does_not_start": "Startet nicht",
+    "ui.agent_chat_retired": "Vom Hersteller eingestellt",
+    "ui.agent_chat_install_body": "Intcad kann {agent} auf diesem Computer noch nicht starten. Richten Sie es wie unten gezeigt ein (eine npm-Zeile benötigt Node.js) und klicken Sie dann auf Aktualisieren:"
+  },
+  "ko": {
+    "ui.agent_chat_not_ready": "아직 사용할 수 없음",
+    "ui.agent_chat_not_set_up": "설정되지 않음",
+    "ui.agent_chat_installed": "설치됨",
+    "ui.agent_chat_does_not_start": "시작되지 않음",
+    "ui.agent_chat_retired": "제공 종료됨",
+    "ui.agent_chat_install_body": "이 컴퓨터에서는 아직 {agent}을(를) 시작할 수 없습니다. 아래와 같이 설정한 뒤(npm 줄에는 Node.js가 필요합니다) 새로 고침을 누르세요:"
+  }
+}
