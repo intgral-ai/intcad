@@ -68,6 +68,9 @@ pub struct SheetCheckParameters {
     pub shop: Option<Profile>,
     #[serde(default)]
     pub overrides: Vec<Override>,
+    /// The project's declared critical hole-to-hole dimensions, frozen into this check.
+    #[serde(default)]
+    pub critical: Vec<solidcraft_dfm_rules::Critical>,
     #[serde(default)]
     pub model: ModelRef,
     /// The selector the App used, for the report: `native` or `converted <digest>`.
@@ -88,7 +91,7 @@ impl SheetCheckParameters {
                 body: self.model.body,
                 source: if self.model.source.is_empty() { self.source } else { self.model.source },
             },
-            critical: Vec::new(),
+            critical: self.critical,
         }
     }
 }
@@ -662,6 +665,7 @@ mod tests {
             generic: Profile { format: 1, name: "generic".into(), version: "TEST-ONLY".into(), layer: Layer::Generic, requirements: rows },
             shop: None,
             overrides: Vec::new(),
+            critical: Vec::new(),
             model: ModelRef { model_version: "doc-7".into(), body: "Plate".into(), source: "native".into() },
             source: "native".into(),
         }
@@ -677,6 +681,115 @@ mod tests {
             requirements: vec![requirement(rule, value, Some(Confirmation::FactoryConfirmed))],
         });
         params
+    }
+
+    /// A shop table for `sm.tolerance_across_bends`, one row per bend count, plus one declared
+    /// critical dimension when given.
+    fn tolerance_parameters(dimension: Option<solidcraft_dfm_rules::Critical>) -> SheetCheckParameters {
+        let mut params = parameters(Vec::new());
+        let row = |value: f64, low: i64, high: i64| {
+            let mut requirement = requirement("sm.tolerance_across_bends", value, Some(Confirmation::FactoryConfirmed));
+            requirement.limit = Limit::Min;
+            requirement.bends = Some(vec![Some(low), Some(high)]);
+            requirement
+        };
+        params.shop = Some(Profile {
+            format: 1,
+            name: "shop".into(),
+            version: "TEST-ONLY".into(),
+            layer: Layer::Factory,
+            requirements: vec![row(0.05, 0, 0), row(0.2, 1, 1), row(0.4, 2, 9)],
+        });
+        if let Some(dimension) = dimension {
+            params.critical.push(dimension);
+        }
+        params
+    }
+
+    fn point(at: (f64, f64, f64)) -> solidcraft_dfm_rules::Point3 {
+        solidcraft_dfm_rules::Point3 { x: at.0, y: at.1, z: at.2 }
+    }
+
+    fn tolerance_finding(report: &Report) -> &solidcraft_dfm_rules::Finding {
+        report.findings.iter().find(|finding| finding.rules.iter().any(|rule| rule == "sm.tolerance_across_bends")).expect("a tolerance result")
+    }
+
+    #[test]
+    fn no_declared_critical_dimension_says_it_was_not_declared() {
+        let sheet = u_holes_sheet(false);
+        let outcome = check_sheet(&sheet, tolerance_parameters(None)).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::NotVerified);
+        assert_eq!(finding.reason_code.as_deref(), Some("CRITICAL_NOT_DECLARED"));
+    }
+
+    #[test]
+    fn a_critical_point_far_from_a_hole_is_not_found() {
+        let sheet = u_holes_sheet(false);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let first = facts.holes.first().expect("a hole");
+        let dimension = solidcraft_dfm_rules::Critical {
+            name: "far".into(),
+            from_mm: point((1000.0, 1000.0, 0.0)),
+            to_mm: point((first.x_mm, first.y_mm, first.z_mm)),
+            tolerance_mm: 0.2,
+        };
+        let outcome = check_sheet(&sheet, tolerance_parameters(Some(dimension))).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::NotVerified);
+        assert_eq!(finding.reason_code.as_deref(), Some("CRITICAL_FEATURE_NOT_FOUND"));
+    }
+
+    #[test]
+    fn two_critical_points_on_the_same_hole_are_one_feature() {
+        let sheet = u_holes_sheet(false);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let first = facts.holes.first().expect("a hole");
+        let at = (first.x_mm, first.y_mm, first.z_mm);
+        let dimension = solidcraft_dfm_rules::Critical { name: "one hole".into(), from_mm: point(at), to_mm: point(at), tolerance_mm: 0.2 };
+        let outcome = check_sheet(&sheet, tolerance_parameters(Some(dimension))).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::NotVerified);
+        assert_eq!(finding.reason_code.as_deref(), Some("CRITICAL_SAME_FEATURE"));
+    }
+
+    #[test]
+    fn a_tolerance_tighter_than_the_shop_across_one_bend_needs_review() {
+        let sheet = u_holes_sheet(false);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        assert_eq!(facts.holes.len(), 2, "one hole on the base and one on a flange");
+        let from = facts.holes[0].clone();
+        let to = facts.holes[1].clone();
+        let dimension = solidcraft_dfm_rules::Critical {
+            name: "A to B".into(),
+            from_mm: point((from.x_mm, from.y_mm, from.z_mm)),
+            to_mm: point((to.x_mm, to.y_mm, to.z_mm)),
+            tolerance_mm: 0.1,
+        };
+        let outcome = check_sheet(&sheet, tolerance_parameters(Some(dimension))).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.state, solidcraft_dfm_rules::AppState::Failed, "{finding:?}");
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::NeedsReview);
+        assert_eq!(finding.error_code.as_deref(), Some("TOLERANCE_TIGHTER_THAN_SHOP"));
+        assert_eq!(finding.measured_mm, Some(0.1));
+        assert!(finding.message.contains("crosses 1 bend"), "{}", finding.message);
+    }
+
+    #[test]
+    fn a_tolerance_the_shop_holds_across_one_bend_passes() {
+        let sheet = u_holes_sheet(false);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let dimension = solidcraft_dfm_rules::Critical {
+            name: "A to B".into(),
+            from_mm: point((facts.holes[0].x_mm, facts.holes[0].y_mm, facts.holes[0].z_mm)),
+            to_mm: point((facts.holes[1].x_mm, facts.holes[1].y_mm, facts.holes[1].z_mm)),
+            tolerance_mm: 0.3,
+        };
+        let outcome = check_sheet(&sheet, tolerance_parameters(Some(dimension))).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::Pass);
+        assert_eq!(finding.measured_mm, Some(0.3));
+        assert_eq!(finding.requirement.as_ref().map(|requirement| requirement.value_mm), Some(0.2));
     }
 
     fn spacing_finding(report: &Report) -> &solidcraft_dfm_rules::Finding {

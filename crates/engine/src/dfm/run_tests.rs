@@ -95,6 +95,7 @@ fn parameters(sheet: &SheetBody, index: usize, declared_thickness: Option<f64>, 
         generic: Profile { format: 1, name: "generic".into(), version: "TEST-ONLY".into(), layer: Layer::Generic, requirements: rows },
         shop: None,
         overrides: Vec::new(),
+        critical: Vec::new(),
         model: ModelRef { model_version: "sha256:model".into(), body: sheet.body.clone(), source: "native".into() },
         source: "native".into(),
     }
@@ -114,6 +115,7 @@ fn run_input() -> RunInput {
         generic: Profile { format: 1, name: "generic".into(), version: "TEST-ONLY".into(), layer: Layer::Generic, requirements: Vec::new() },
         shop: None,
         overrides: Vec::new(),
+        critical: Vec::new(),
         source: "native".into(),
     }
 }
@@ -629,6 +631,24 @@ fn an_explicit_project_thickness_is_not_replaced_by_a_bodys_own() {
     let compiled = compile::compile(&run_input(), &sheets, "sha256:model-a").unwrap();
     assert_eq!(compiled.sheets[0].declared.thickness_mm, Some(1.5));
     assert_eq!(compiled.sheets[0].declared.thickness_from.as_deref(), Some("declared"));
+}
+
+#[test]
+fn compile_carries_the_frozen_critical_dimensions_into_each_sheet() {
+    let mut input = run_input();
+    input.critical = vec![crate::project::CriticalDimension {
+        name: "base to flange".into(),
+        from_mm: [30.0, 20.0, 1.0],
+        to_mm: [30.0, 2.0, 7.0],
+        tolerance_mm: 0.1,
+    }];
+    let sheets = vec![SheetRef { sheet: 0, body: "Bracket".into(), thickness_mm: Some(1.5), converted: false }];
+    let compiled = compile::compile(&input, &sheets, "sha256:model-a").unwrap();
+    let critical = &compiled.sheets[0].critical;
+    assert_eq!(critical.len(), 1);
+    assert_eq!(critical[0].name, "base to flange");
+    assert_eq!(critical[0].tolerance_mm, 0.1);
+    assert!((critical[0].from_mm.x - 30.0).abs() < 1e-12 && (critical[0].to_mm.z - 7.0).abs() < 1e-12);
 }
 
 #[test]

@@ -1,0 +1,182 @@
+{
+  "format": 1,
+  "name": "DFM critical acceptance shop",
+  "version": "1.0.0-test",
+  "layer": "factory",
+  "requirements": [
+    {
+      "rule": "sm.tolerance_across_bends",
+      "limit": "min",
+      "value": {
+        "mm": 0.05
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: the plus-or-minus a dimension on one flat holds.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "bends": [
+        0,
+        0
+      ],
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.tolerance_across_bends",
+      "limit": "min",
+      "value": {
+        "mm": 0.2
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: the plus-or-minus a dimension across one bend holds.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "bends": [
+        1,
+        1
+      ],
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.tolerance_across_bends",
+      "limit": "min",
+      "value": {
+        "mm": 0.4
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: the plus-or-minus a dimension across two to nine bends holds.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "bends": [
+        2,
+        9
+      ],
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.hole_min_diameter",
+      "limit": "min",
+      "value": {
+        "mm": 3.0
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: the smallest round through hole.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.hole_to_edge",
+      "limit": "min",
+      "value": {
+        "mm": 3.0
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: a hole wall to the nearest cut edge.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.hole_to_bend",
+      "limit": "min",
+      "value": {
+        "mm": 2.5
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: a hole wall to the nearest bend tangent.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.max_bend_length",
+      "limit": "max",
+      "value": {
+        "mm": 500.0
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: the longest bend line.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.inside_radius",
+      "limit": "min",
+      "value": {
+        "mm": 0.5
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: a bend's inside radius.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "confirmation": "factory_confirmed"
+    },
+    {
+      "rule": "sm.min_flange",
+      "limit": "min",
+      "value": {
+        "mm": 8.0
+      },
+      "inputs": {},
+      "measuring_line": "TEST-ONLY: a flange leg past its bend.",
+      "method": "TEST-ONLY, invented for the acceptance harness.",
+      "source": "TEST-ONLY",
+      "rights": "TEST-ONLY",
+      "applies": {
+        "process": [],
+        "material": [],
+        "thickness_mm": null
+      },
+      "confirmation": "factory_confirmed"
+    }
+  ]
+}
