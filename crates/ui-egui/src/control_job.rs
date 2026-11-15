@@ -386,6 +386,7 @@ impl SolveApp {
             .as_ref()
             .map(|j| (j.started, j.steps.as_ref().map_or_else(|| j.label.clone(), |s| s.shown())))
             .or_else(|| self.agent.computing())
+            .or_else(|| crate::agent_chat::review::computing(&self.agent_chat))
     }
 
     /// Stop waiting for the agent's design change that is computing: it is answered as stopped
@@ -399,8 +400,14 @@ impl SolveApp {
             }
             None => self.agent.stop(),
         };
-        if let Some((reply, response)) = stopped {
-            let _ = reply.send(response);
+        match stopped {
+            Some((reply, response)) => {
+                let _ = reply.send(response);
+            }
+            // The agent chat's request computing on its copy of the design (preview, then accept).
+            None => {
+                crate::agent_chat::review::stop(&mut self.agent_chat);
+            }
         }
     }
 

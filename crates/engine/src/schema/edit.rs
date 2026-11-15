@@ -16,6 +16,15 @@ pub struct AssistantParams {}
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AssistantResult {}
 
+/// Ask Here is UI-owned and takes no parameters.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AskHereParams {}
+
+/// Headless sessions refuse Ask Here and produce no result.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AskHereResult {}
+
 /// `edit.repeat` takes no parameters: it starts the last tool with its defaults.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]

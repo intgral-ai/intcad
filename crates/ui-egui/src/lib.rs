@@ -194,6 +194,7 @@ pub mod navigation_bar;
 mod navigation_bar_view;
 pub use navigation::WebWheelGestures;
 pub mod network_prompt;
+pub mod new_project;
 pub mod op_auto;
 pub mod open_elsewhere;
 pub(crate) mod open_meshing;
@@ -216,6 +217,7 @@ mod primitive_placement;
 #[cfg(test)]
 mod primitive_units_tests;
 mod print_face_ui;
+pub mod project_settings;
 pub(crate) mod quick_measure;
 #[cfg(test)]
 mod quick_measure_tests;
@@ -448,6 +450,8 @@ pub struct Services {
     /// only the types it names, so the agent chat's files need a dialog of their own. `None`: the
     /// Open dialog.
     pub pick_file: Option<Box<dyn Fn(&str, &[&str]) -> FilePickerFuture>>,
+    /// Ask for a folder (New Project's location); `None` when the host has no folder dialog.
+    pub pick_folder: Option<Box<dyn Fn() -> FilePickerFuture>>,
     /// Open a dialog asking for a program (a slicer); `None` when the host has no such dialog.
     pub pick_program: Option<Box<dyn Fn() -> FilePickerFuture>>,
     pub show_in_folder: Option<Box<dyn Fn(&str)>>,
@@ -774,6 +778,12 @@ pub struct SolveApp {
     pub flat_view: dialogs_sheet::FlatView,
     /// The start page.
     pub home: home::HomeState,
+    /// The New Project window, when open.
+    pub new_project: Option<new_project::NewProject>,
+    /// The Project Settings window, when open.
+    pub project_settings: Option<project_settings::ProjectSettings>,
+    /// The folder the last project was made in, offered as the next one's location.
+    pub(crate) last_project_folder: Option<String>,
     /// The 3D mouse: which device, its reading, and the calibration window.
     pub space_mouse: space_mouse::Input,
     pub file_load: file_load::FileLoad,
@@ -948,6 +958,9 @@ impl SolveApp {
             embedded: false,
             embed_editor: false,
             home: home::HomeState::default(),
+            new_project: None,
+            project_settings: None,
+            last_project_folder: None,
             space_mouse: Default::default(),
             file_load: file_load::FileLoad::default(),
             open_meshing: None,
@@ -1497,6 +1510,22 @@ impl SolveApp {
                     // `file.new` starts from millimetres. Units of new designs still apply (#1205).
                     prefs::apply_new_design(self);
                 }
+                if matches!(
+                    id,
+                    "file.new"
+                        | "doc.open"
+                        | "doc.recover"
+                        | "file.save_as"
+                        | "project.create"
+                        | "project.attach"
+                        | "project.ci_set"
+                        | "project.data_set"
+                        | "project.settings_set"
+                ) {
+                    // The automatic DFM check follows the project's `ci.toml` switch; read it when
+                    // the document or the project settings change, not on every frame.
+                    agent_chat::refresh_dfm_auto(self);
+                }
                 if matches!(id, "file.new" | "doc.open" | "doc.recover") {
                     documents::reset_chat(self);
                     self.edit_in_place.active = None;
@@ -1640,6 +1669,10 @@ impl SolveApp {
             if agent_chat::shown(self) {
                 agent_chat::toggle(self);
             }
+            return;
+        }
+        if id == "ui.ask_here" {
+            let _ = agent_chat::ask_here::open(self);
             return;
         }
         if id == "ui.palette" {
@@ -1942,6 +1975,10 @@ impl SolveApp {
         }
         if matches!(id, "document.metadata" | "document.metadata.set") {
             design_properties::open(self);
+            return;
+        }
+        if id == "project.inspect" {
+            project_settings::open(self);
             return;
         }
         if id == "sketch.inspect" {
@@ -3294,6 +3331,8 @@ impl SolveApp {
         recovery_ui::show(self, ui.ctx());
         stand_up::show(self, ui.ctx());
         prefs_notice::show(self, ui.ctx());
+        new_project::show(self, ui.ctx());
+        project_settings::show(self, ui.ctx());
         context_menu::show(self, ui.ctx());
         mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());
@@ -3301,6 +3340,7 @@ impl SolveApp {
         linked_source::show_copies(self, ui.ctx());
         joint_handles::show_warning(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
+        agent_chat::ask_here::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
         toolbar_custom::window(self, ui.ctx());
     }

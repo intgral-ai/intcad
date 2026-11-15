@@ -57,6 +57,7 @@ use solidcraft_geom::prelude::*;
 
 use crate::sheet::SheetBody;
 use crate::{DocError, apply_point, mat_mul};
+use solidcraft_kernel as kernel;
 
 /// Two circles are the same circle when their centres and radii agree to this in flat mm.
 const CIRCLE_TOL: f64 = 1e-9;
@@ -797,6 +798,190 @@ fn bend_fact(sheet: &SheetBody, i: usize, f: &crate::sheet::SheetFlange) -> Bend
     }
 }
 
+/// Two flat material pieces share more area than this and the sheet cannot be folded as drawn.
+///
+/// The number comes from the planar boolean, not from the hole-pair measurement tolerance: every
+/// `material_boolean` call closes its loops within `1e-7` mm (`crates/doc/src/sheet.rs` passes
+/// `1e-7` to the kernel). A false sliver along a shared seam of length `L` therefore has an area
+/// of at most `L * 1e-7` mm²; on a 1 m seam that is `1e-4` mm². `0.01` mm² is 100 times that
+/// bound and still 1/78 of a Ø1 mm hole, so any overlap a person can make is far above it.
+pub const OVERLAP_AREA_TOLERANCE_MM2: f64 = 0.01;
+
+/// The most structural flat pieces one check will intersect. More than this would make the
+/// pairwise work unbounded, so the check reports that it is not covered instead.
+const MAX_OVERLAP_PIECES: usize = 128;
+
+/// A structural piece of the flat pattern: the base panel, a flange's flat panel, or a bend
+/// zone. Panels are numbered by flange index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlatPiece {
+    Base,
+    Panel(usize),
+    Zone(usize),
+}
+
+impl FlatPiece {
+    /// A stable plain name for evidence and reports.
+    pub fn label(self) -> String {
+        match self {
+            FlatPiece::Base => "base".to_string(),
+            FlatPiece::Panel(i) => format!("panel {i}"),
+            FlatPiece::Zone(i) => format!("bend {i}"),
+        }
+    }
+}
+
+/// Why the flat self-overlap could not be decided. It is a typed reason, never a pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlapNotCovered {
+    /// The sheet has no trustworthy flat pattern: a later feature changed the body, or the
+    /// bounded flat work refused it.
+    CannotUnfold,
+    /// The flat pattern exists, but a structural piece or a pair could not be intersected.
+    CannotIntersect,
+}
+
+impl OverlapNotCovered {
+    /// A stable reason code for a report.
+    pub fn code(self) -> &'static str {
+        match self {
+            OverlapNotCovered::CannotUnfold => "CANNOT_UNFOLD",
+            OverlapNotCovered::CannotIntersect => "CANNOT_INTERSECT",
+        }
+    }
+}
+
+/// One pair of flat pieces that occupies the same flat area.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct OverlapPair {
+    /// The two structural pieces, in flat-pattern order.
+    pub pieces: [FlatPiece; 2],
+    /// The exact intersection area in mm².
+    pub area_mm2: f64,
+    /// The intersection's outer loops in flat coordinates (`[x, y]`), the largest first.
+    ///
+    /// This is drawing evidence only: the loops are the exact boolean result sampled at 0.001 mm
+    /// for display. The area above is computed from the unsampled regions.
+    pub outline: Vec<Vec<[f64; 2]>>,
+}
+
+/// The result of the flat self-overlap check for one sheet body.
+///
+/// Only one body is ever measured, so two bodies are never projected onto each other.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum Overlap {
+    /// No pair of pieces shares more area than [`OVERLAP_AREA_TOLERANCE_MM2`]. Shared edges and
+    /// single points are not overlap.
+    Clear,
+    /// At least one pair shares more area than the tolerance.
+    Overlapping { pairs: Vec<OverlapPair> },
+    /// The check could not be computed; nothing is claimed either way.
+    NotCovered { reason: OverlapNotCovered },
+}
+
+/// Measure whether one flat sheet's structural pieces overlap each other after unfolding.
+///
+/// The pieces are the base panel, every flange panel with material, and every bend zone. Each
+/// piece's material is the exact flat material after all cut-outs, holes and openings, clipped to
+/// that piece, so a hole through the shared area is not material and is not an overlap. Every
+/// pair is intersected exactly with the planar booleans the flat pattern already uses.
+///
+/// A pair fails when its intersection area is greater than [`OVERLAP_AREA_TOLERANCE_MM2`]. Shared
+/// edges, single points and smaller areas are not an overlap. A sheet that cannot be unfolded, or
+/// whose pieces cannot be intersected within the bounded flat work, returns
+/// [`Overlap::NotCovered`] with a typed reason instead of a pass.
+pub fn flat_overlap(sheet: &SheetBody) -> Result<Overlap, DocError> {
+    if sheet.altered_by.is_some() {
+        return Ok(Overlap::NotCovered { reason: OverlapNotCovered::CannotUnfold });
+    }
+    let material = match sheet.flat_material() {
+        Ok(material) => material,
+        Err(_) => return Ok(Overlap::NotCovered { reason: OverlapNotCovered::CannotUnfold }),
+    };
+    if material.is_empty() {
+        return Ok(Overlap::NotCovered { reason: OverlapNotCovered::CannotUnfold });
+    }
+
+    let mut pieces: Vec<(FlatPiece, Region2)> = vec![(FlatPiece::Base, sheet.base.clone())];
+    for (i, f) in sheet.flanges.iter().enumerate() {
+        if f.leg > 1e-9 {
+            pieces.push((FlatPiece::Panel(i), sheet.panel(f)));
+        }
+    }
+    for (i, f) in sheet.flanges.iter().enumerate() {
+        pieces.push((FlatPiece::Zone(i), sheet.zone(f)));
+    }
+    if pieces.len() > MAX_OVERLAP_PIECES {
+        return Ok(Overlap::NotCovered { reason: OverlapNotCovered::CannotIntersect });
+    }
+
+    let mut work = crate::sheet::FlatWork::new();
+    let mut owned: Vec<Option<Vec<Region2>>> = Vec::with_capacity(pieces.len());
+    for (_, region) in &pieces {
+        // A degenerate structural piece has no material to share.
+        if !(region.area().is_finite() && region.area() > 0.0) {
+            owned.push(None);
+            continue;
+        }
+        let clipped = match crate::sheet::material_boolean(&material, std::slice::from_ref(region), kernel::BoolOp::Intersect, &mut work) {
+            Ok(clipped) => clipped,
+            Err(_) => return Ok(Overlap::NotCovered { reason: OverlapNotCovered::CannotIntersect }),
+        };
+        let area: f64 = clipped.iter().map(Region2::area).sum();
+        if !(area.is_finite() && area >= 0.0) {
+            return Ok(Overlap::NotCovered { reason: OverlapNotCovered::CannotIntersect });
+        }
+        owned.push((area > 0.0).then_some(clipped));
+    }
+
+    let mut pairs = Vec::new();
+    for i in 0..pieces.len() {
+        for j in (i + 1)..pieces.len() {
+            let (Some(left), Some(right)) = (owned.get(i).and_then(Option::as_ref), owned.get(j).and_then(Option::as_ref)) else {
+                continue;
+            };
+            let common = match crate::sheet::material_boolean(left, right, kernel::BoolOp::Intersect, &mut work) {
+                Ok(common) => common,
+                Err(_) => return Ok(Overlap::NotCovered { reason: OverlapNotCovered::CannotIntersect }),
+            };
+            let area: f64 = common.iter().map(Region2::area).sum();
+            if !(area.is_finite() && area >= 0.0) {
+                return Ok(Overlap::NotCovered { reason: OverlapNotCovered::CannotIntersect });
+            }
+            if area <= OVERLAP_AREA_TOLERANCE_MM2 {
+                continue;
+            }
+            let (Some(piece_a), Some(piece_b)) = (pieces.get(i), pieces.get(j)) else {
+                continue;
+            };
+            pairs.push(OverlapPair { pieces: [piece_a.0, piece_b.0], area_mm2: area, outline: outline_loops(&common) });
+        }
+    }
+
+    if pairs.is_empty() { Ok(Overlap::Clear) } else { Ok(Overlap::Overlapping { pairs }) }
+}
+
+/// Every intersection region's outer loop in flat coordinates, the largest region first.
+fn outline_loops(regions: &[Region2]) -> Vec<Vec<[f64; 2]>> {
+    let mut loops: Vec<(f64, Vec<[f64; 2]>)> = regions
+        .iter()
+        .map(|region| {
+            let mut points: Vec<[f64; 2]> = region.outer.polyline(1e-3).into_iter().map(|point| [point.x, point.y]).collect();
+            // `polyline` repeats the first point at the end; keep one copy.
+            if points.len() > 1 && points.first() == points.last() {
+                points.pop();
+            }
+            (region.area(), points)
+        })
+        .collect();
+    loops.sort_by(|left, right| right.0.total_cmp(&left.0));
+    loops.into_iter().map(|(_, points)| points).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,5 +1383,145 @@ mod tests {
         assert_eq!(measured.altered_by.as_deref(), Some("Fillet1"));
         assert_eq!(measured.holes.len(), 1);
         close(measured.holes[0].diameter_mm, 3.0);
+    }
+
+    /// A 40 x 25 plate with one flange whose flat panel is the given polygon. The bend zone sits
+    /// outside the base (y = 25 to 25 + BA), so only the panel can overlap the base in flat.
+    fn sheet_with_flange_panel(corners: &[Vec2]) -> SheetBody {
+        let mut sheet = plate(40.0, 25.0, 1.5);
+        sheet.flanges.push(SheetFlange {
+            parent: None,
+            p: Vec2::new(0.0, 25.0),
+            d: Vec2::X,
+            len: 40.0,
+            n: Vec2::Y,
+            angle: FRAC_PI_2,
+            radius: 1.5,
+            leg: 10.0,
+            ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
+            tear: (false, false),
+            shape: Some(corners.to_vec()),
+            exact: None,
+            zone_shape: None,
+            tag: String::new(),
+        });
+        sheet
+    }
+
+    fn rect_corners(x0: f64, y0: f64, x1: f64, y1: f64) -> [Vec2; 4] {
+        [Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]
+    }
+
+    fn overlap_pairs(outcome: &Overlap) -> &[OverlapPair] {
+        match outcome {
+            Overlap::Overlapping { pairs } => pairs,
+            other => panic!("expected an overlap, got {other:?}"),
+        }
+    }
+
+    fn turned_frame(angle: f64, translation: Vec3) -> Plane {
+        let (sin, cos) = angle.sin_cos();
+        Plane { origin: translation, x: Vec3::new(cos, sin, 0.0), y: Vec3::new(-sin, cos, 0.0) }
+    }
+
+    /// The panel is far outside the base, so nothing shares material.
+    #[test]
+    fn separated_flat_pieces_are_clear() {
+        let sheet = sheet_with_flange_panel(&rect_corners(60.0, 60.0, 70.0, 70.0));
+        assert_eq!(flat_overlap(&sheet).unwrap(), Overlap::Clear);
+    }
+
+    /// A 5 x 4 mm panel lies inside the 40 x 25 base: 20 mm² of shared material.
+    #[test]
+    fn a_known_overlap_area_is_measured_with_its_region_pair() {
+        let sheet = sheet_with_flange_panel(&rect_corners(30.0, 5.0, 35.0, 9.0));
+        let outcome = flat_overlap(&sheet).unwrap();
+        let pairs = overlap_pairs(&outcome);
+        assert_eq!(pairs.len(), 1);
+        close(pairs[0].area_mm2, 20.0);
+        assert_eq!(pairs[0].pieces, [FlatPiece::Base, FlatPiece::Panel(0)]);
+        assert_eq!(pairs[0].pieces.map(FlatPiece::label), ["base".to_string(), "panel 0".to_string()]);
+        // Locatable evidence: the overlap is the 5 x 4 rectangle itself.
+        assert_eq!(pairs[0].outline.len(), 1);
+        let outline = &pairs[0].outline[0];
+        assert_eq!(outline.len(), 4);
+        let (min_x, max_x) = outline.iter().map(|p| p[0]).fold((f64::MAX, f64::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        let (min_y, max_y) = outline.iter().map(|p| p[1]).fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+        close(min_x, 30.0);
+        close(max_x, 35.0);
+        close(min_y, 5.0);
+        close(max_y, 9.0);
+    }
+
+    /// Sharing the whole x = 40 edge is contact, not overlap: the intersection has no area.
+    #[test]
+    fn pieces_that_share_only_an_edge_are_clear() {
+        let sheet = sheet_with_flange_panel(&rect_corners(40.0, 0.0, 50.0, 25.0));
+        assert_eq!(flat_overlap(&sheet).unwrap(), Overlap::Clear);
+    }
+
+    /// Touching at one corner is contact, not overlap.
+    #[test]
+    fn pieces_that_touch_at_a_point_are_clear() {
+        let sheet = sheet_with_flange_panel(&rect_corners(40.0, 25.0, 50.0, 35.0));
+        assert_eq!(flat_overlap(&sheet).unwrap(), Overlap::Clear);
+    }
+
+    /// The piece outlines cross, but a hole removes the shared material: no material overlap.
+    #[test]
+    fn an_opening_through_the_shared_area_is_not_overlap() {
+        let mut sheet = sheet_with_flange_panel(&rect_corners(30.0, 5.0, 35.0, 9.0));
+        // A 9 x 8 opening from (28, 3) to (37, 11) removes the whole 5 x 4 shared rectangle.
+        let hole = Loop2::polygon(&rect_corners(28.0, 3.0, 37.0, 11.0));
+        sheet.holes.push(Region2 { outer: hole, holes: Vec::new() });
+        assert_eq!(flat_overlap(&sheet).unwrap(), Overlap::Clear);
+    }
+
+    /// A later feature changes the body after its sheet-metal features, so the flat pattern is not
+    /// the part: the check says it is not covered instead of passing.
+    #[test]
+    fn a_sheet_that_cannot_unfold_is_not_covered() {
+        let mut sheet = sheet_with_flange_panel(&rect_corners(30.0, 5.0, 35.0, 9.0));
+        sheet.altered_by = Some("Fillet1".to_string());
+        assert_eq!(flat_overlap(&sheet).unwrap(), Overlap::NotCovered { reason: OverlapNotCovered::CannotUnfold });
+    }
+
+    /// Hand arithmetic either side of the tolerance: 1 x 0.005 = 0.005 mm² is below 0.01 mm²;
+    /// 1 x 0.02 = 0.02 mm² is above it.
+    #[test]
+    fn the_overlap_area_tolerance_is_half_open_at_its_named_value() {
+        assert_eq!(OVERLAP_AREA_TOLERANCE_MM2, 0.01);
+        let below = sheet_with_flange_panel(&rect_corners(20.0, 20.0, 21.0, 20.005));
+        assert_eq!(flat_overlap(&below).unwrap(), Overlap::Clear);
+
+        let above = sheet_with_flange_panel(&rect_corners(20.0, 20.0, 21.0, 20.02));
+        let outcome = flat_overlap(&above).unwrap();
+        let pairs = overlap_pairs(&outcome);
+        assert_eq!(pairs.len(), 1);
+        close(pairs[0].area_mm2, 0.02);
+    }
+
+    /// The check is in the flat frame, so moving the whole body does not change it.
+    #[test]
+    fn flat_overlap_is_invariant_under_a_whole_body_move() {
+        let sheet = sheet_with_flange_panel(&rect_corners(30.0, 5.0, 35.0, 9.0));
+        let before = flat_overlap(&sheet).unwrap();
+        let mut moved = sheet;
+        moved.frame = turned_frame(0.523_598_775_598_298_8, Vec3::new(5.0, -3.0, 2.0));
+        let after = flat_overlap(&moved).unwrap();
+        assert_eq!(after, before);
+    }
+
+    /// Two bodies are separate inputs: an overlap in one never makes the other fail.
+    #[test]
+    fn two_sheet_bodies_are_measured_separately() {
+        let overlapping = sheet_with_flange_panel(&rect_corners(30.0, 5.0, 35.0, 9.0));
+        let clear = sheet_with_flange_panel(&rect_corners(60.0, 60.0, 70.0, 70.0));
+        let first = flat_overlap(&overlapping).unwrap();
+        let second = flat_overlap(&clear).unwrap();
+        assert_eq!(overlap_pairs(&first)[0].area_mm2, 20.0);
+        assert_eq!(second, Overlap::Clear);
+        assert_eq!(flat_overlap(&overlapping).unwrap(), first, "the other body did not change this one");
     }
 }

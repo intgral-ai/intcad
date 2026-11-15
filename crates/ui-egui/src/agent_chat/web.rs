@@ -250,6 +250,13 @@ pub fn state(app: &mut SolveApp) -> String {
                 "kind": "text", "index": index, "text": text, "thought": false,
                 "objects": refs.iter().map(|reference| reference.label.as_str()).collect::<Vec<_>>(),
             }),
+            Item::Review(card) => json!({
+                "kind": "review", "index": index, "review": card.id, "steps": card.words, "more": card.more,
+                "made": card.made.iter().map(|b| json!({"name": b.name, "volume": b.after})).collect::<Vec<_>>(),
+                "changed": card.changed.iter().map(|b| json!({"name": b.name, "before": b.before, "after": b.after})).collect::<Vec<_>>(),
+                "removed": card.removed.iter().map(|b| json!({"name": b.name, "volume": b.before})).collect::<Vec<_>>(),
+                "outcome": format!("{:?}", card.outcome),
+            }),
             Item::Tool { id, title, kind, status, input, output } => {
                 let done = *status == Some(backend::ToolStatus::Completed);
                 json!({
