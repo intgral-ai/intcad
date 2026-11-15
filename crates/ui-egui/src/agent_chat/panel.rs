@@ -147,7 +147,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     let available = ui.available_rect_before_wrap();
     let screen = ctx.content_rect();
-    app.agent_chat.dock_space = Some(Rect::from_x_y_ranges(screen.x_range(), available.y_range()));
+    // The right rail is window chrome: the Assistant docks beside it, never under it.
+    let right = app.shell.right_rail.filter(|_| crate::right_rail::shown(app)).map_or(screen.right(), |rail| rail.left());
+    app.agent_chat.dock_space = Some(Rect::from_x_y_ranges(screen.left()..=right, available.y_range()));
     let t = Tokens::get();
     let left = app.preferences.agent_chat_side == "left";
     let host = Container::new(ui.ctx(), Surface::Panel);

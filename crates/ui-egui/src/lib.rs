@@ -233,6 +233,7 @@ pub mod resume_ui;
 mod revolve_edit_tests;
 #[cfg(test)]
 mod revolve_manipulator_tests;
+pub(crate) mod right_rail;
 #[cfg(test)]
 mod round_pick_tests;
 mod rule_editor;
@@ -3206,6 +3207,8 @@ impl SolveApp {
         }
         // The status bar first: it spans the window's width below History and the side panels.
         status_bar::show(self, ui);
+        // Then the right rail, between the application bar and the status bar.
+        right_rail::show(self, ui);
         let floating = render_workspace::active(self) || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
         timeline::follow_view_pick(self);
         render_ui::focus_shortcut(self, ui);

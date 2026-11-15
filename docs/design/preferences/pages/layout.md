@@ -13,6 +13,7 @@ Source today: Interface page (`prefs/interface.rs`, `prefs/navbar.rs`).
 | Menus | Segmented: List / Large icons | `Prefs.ribbon_icon_grid` | `false` (List) | none | none | |
 | Notices | Segmented: Bottom right / Bottom centre | `Prefs.toast_place` (`ToastPlace`; Corner = Bottom right) | Corner (Bottom right) | none | none | |
 | Status bar | Checkbox | `Prefs.status_bar` | `false` | "What is being edited, the sketch state and units." | none | |
+| Right rail | Checkbox | `Prefs.right_rail` | `true` | "A rail along the window's right edge with Files, Review, Simulation and Autocomplete; an item opens its panel beside the rail. Off: no rail." | none | Not on the board yet. The open item (`Prefs.right_rail_open`) and the panel's width (`Prefs.right_rail_width`) are set on the rail itself. |
 | Layout preview | Schematic (262 wide) of the window, showing the choices above | none | n/a | none | `layout-schematic` | Reflects the Workspace choice and the History, Browser and Dialog choices below. |
 
 ## Panels
