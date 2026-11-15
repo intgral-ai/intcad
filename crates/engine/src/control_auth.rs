@@ -19,7 +19,13 @@ pub const DEFAULT_PORT: u16 = 27878;
 /// its name, data folder, `SOLIDCRAFT_` environment and default port. The token files, listener and
 /// client token below stay here, so the app's own channel is unchanged; shared pieces that take an
 /// [`App`] read the same identity from it.
-pub const APP: App = App { name: "Intcad", data_dir: crate::recovery::data_dir, env: solidcraft_geom::env::var_os, utc: crate::crash::utc, default_port: DEFAULT_PORT };
+pub const APP: App = App {
+    name: "Intcad",
+    data_dir: crate::recovery::data_dir,
+    env: solidcraft_geom::env::var_os,
+    utc: crate::crash::utc,
+    default_port: DEFAULT_PORT,
+};
 
 /// Ports tried from [`DEFAULT_PORT`] upward when it is taken (a second window, another program).
 pub const PORT_TRIES: u16 = 16;

@@ -9,9 +9,9 @@ use solidcraft_engine::Session;
 use solidcraft_engine::control_pending;
 use solidcraft_engine::panels::ActionSink;
 use solidcraft_engine::panels::commands::LayoutCatalogue;
-use solidcraft_viewport::StandardView;
 use solidcraft_engine::schema::ParamCheck;
 use solidcraft_engine::view::Guides;
+use solidcraft_viewport::StandardView;
 
 pub(crate) use crate::document_guard::decode_guarded_reply;
 use crate::document_guard::{
@@ -475,7 +475,9 @@ impl Remote {
     /// The tool error for the outstanding request still running after its wait.
     fn still_running(&self, earlier: bool) -> String {
         let Some(o) = &self.outstanding else { return format!("{STILL_RUNNING} a request is still running in the app") };
-        let effect = o.effect.map_or("it was not cancelled and may still change the design when it finishes", |e: control_pending::Effect| e.when_done("design"));
+        let effect = o
+            .effect
+            .map_or("it was not cancelled and may still change the design when it finishes", |e: control_pending::Effect| e.when_done("design"));
         let settle = self.waits.settle.as_secs();
         if earlier {
             format!(

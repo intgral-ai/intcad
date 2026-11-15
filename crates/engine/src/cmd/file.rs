@@ -2422,13 +2422,8 @@ mod tests {
         // 0.1.0's format: 51, with the changes it wrote as pending. They are folded into v51 here.
         let mut old: Value = serde_json::from_str(&s.doc.to_json()).unwrap();
         old["format"] = json!("solidcraft/51");
-        old["format_pending"] = json!([
-            "bridged-counterbore",
-            "fillet-turn",
-            "hole-direction-own-faces",
-            "revolve-axis-origin-expressions",
-            "transferred-profile-frame"
-        ]);
+        old["format_pending"] =
+            json!(["bridged-counterbore", "fillet-turn", "hole-direction-own-faces", "revolve-axis-origin-expressions", "transferred-profile-frame"]);
         let old_path = dir.join("old.json");
         std::fs::write(&old_path, old.to_string()).unwrap();
         let reply = opened.execute("doc.open", &json!({"path": old_path.to_string_lossy()})).unwrap();

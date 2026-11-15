@@ -2114,10 +2114,7 @@ mod tests {
         metadata["format"] = json!(newer);
         let payload = b"a future payload".to_vec();
         let blob = format!("blobs/{}.lattice", digest(&payload));
-        metadata["features"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"id": 9000, "name": "Lattice1", "type": "gyroid_lattice", "lattice_blob": blob}));
+        metadata["features"].as_array_mut().unwrap().push(json!({"id": 9000, "name": "Lattice1", "type": "gyroid_lattice", "lattice_blob": blob}));
         metadata["future_section"] = json!({"keep": true});
         entries.insert("document.json".into(), serde_json::to_vec(&metadata).unwrap());
         entries.insert(blob, payload);

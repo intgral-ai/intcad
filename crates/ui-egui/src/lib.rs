@@ -840,10 +840,10 @@ pub struct SolveApp {
     /// A synthetic press is held: its drag never moves the real cursor (`navigation::wrap_cursor`).
     pub(crate) synthetic_press: bool,
     control_rx: Option<Receiver<ControlRequest>>,
-        /// Leaving a document invalidates every request admitted in its current tab context.
-        guarded_context: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        /// The app's control channel turned on and off from the settings ([`control_switch`]).
-        pub control_switch: control_switch::ControlSwitch,
+    /// Leaving a document invalidates every request admitted in its current tab context.
+    guarded_context: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The app's control channel turned on and off from the settings ([`control_switch`]).
+    pub control_switch: control_switch::ControlSwitch,
     /// Control requests that change the design, held while a file loads or an agent's design
     /// change computes.
     control_held: std::collections::VecDeque<ControlRequest>,

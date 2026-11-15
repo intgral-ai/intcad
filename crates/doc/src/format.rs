@@ -1432,7 +1432,10 @@ mod tests {
         let error = read(&text).unwrap_err().to_string();
         assert_eq!(
             error,
-            format!("this design was saved by a newer Intcad (file format {}; this version reads formats up to {FORMAT}): update Intcad to open it", FORMAT + 1)
+            format!(
+                "this design was saved by a newer Intcad (file format {}; this version reads formats up to {FORMAT}): update Intcad to open it",
+                FORMAT + 1
+            )
         );
     }
 
@@ -1457,13 +1460,8 @@ mod tests {
     /// with nothing salvaged, and saving writes this build's format.
     #[test]
     fn a_0_1_0_design_at_format_51_opens_and_round_trips() {
-        let pending = [
-            "bridged-counterbore",
-            "fillet-turn",
-            "hole-direction-own-faces",
-            "revolve-axis-origin-expressions",
-            "transferred-profile-frame",
-        ];
+        let pending =
+            ["bridged-counterbore", "fillet-turn", "hole-direction-own-faces", "revolve-axis-origin-expressions", "transferred-profile-frame"];
         let mut d = Document::new("0.1.0 project");
         d.set_param("width", "20 mm", None, None).unwrap();
         d.set_param("depth", "5 mm", None, None).unwrap();
@@ -1570,7 +1568,10 @@ mod tests {
         let error = read(&tagged(&DESIGN, FORMAT + 1).to_string()).unwrap_err().to_string();
         assert_eq!(
             error,
-            format!("this design was saved by a newer Intcad (file format {}; this version reads formats up to {FORMAT}): update Intcad to open it", FORMAT + 1)
+            format!(
+                "this design was saved by a newer Intcad (file format {}; this version reads formats up to {FORMAT}): update Intcad to open it",
+                FORMAT + 1
+            )
         );
         let current = DRAWING.current();
         assert!(matches!(DRAWING.take_version(&mut tagged(&DRAWING, current)), Ok((v, None)) if v == current));
