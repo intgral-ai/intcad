@@ -62,6 +62,8 @@ pub struct InspectReply {
     pub project: Option<ManifestSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CiSummary>,
+    /// The critical hole-to-hole dimensions `critical.toml` declares.
+    pub critical: Vec<CriticalSummary>,
     /// Why a project folder that exists could not be read. The settings are not shown as valid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -203,4 +205,46 @@ pub struct OverrideParams {
 #[serde(rename_all = "camelCase")]
 pub struct OverridesReply {
     pub overrides: Vec<OverrideSummary>,
+}
+
+/// Replace the project's critical hole-to-hole dimensions.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(deny_unknown_fields)]
+pub struct CriticalParams {
+    /// Every critical dimension the project declares. An empty list removes them all.
+    #[serde(default)]
+    pub critical: Vec<CriticalInput>,
+}
+
+/// One critical dimension as a caller writes it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(deny_unknown_fields)]
+pub struct CriticalInput {
+    /// The name a drawing or a person uses for this dimension.
+    pub name: String,
+    /// A model mm point near the first round through hole's centre.
+    pub from_mm: [f64; 3],
+    /// A model mm point near the second round through hole's centre.
+    pub to_mm: [f64; 3],
+    /// The plus-or-minus the drawing allows, in mm.
+    pub tolerance_mm: f64,
+}
+
+/// One critical dimension as the project reports it.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CriticalSummary {
+    pub name: String,
+    pub from_mm: [f64; 3],
+    pub to_mm: [f64; 3],
+    pub tolerance_mm: f64,
+}
+
+/// The project's critical dimensions after a `project.critical_set`.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CriticalReply {
+    pub critical: Vec<CriticalSummary>,
 }

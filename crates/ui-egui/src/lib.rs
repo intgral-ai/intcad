@@ -1524,6 +1524,7 @@ impl SolveApp {
                         | "project.create"
                         | "project.attach"
                         | "project.ci_set"
+                        | "project.critical_set"
                         | "project.data_set"
                         | "project.settings_set"
                 ) {

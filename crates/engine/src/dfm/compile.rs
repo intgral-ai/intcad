@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use solidcraft_dfm_rules::{Declared, Override, Profile};
+use solidcraft_dfm_rules::{Critical, Declared, Override, Point3, Profile};
 
 use crate::dfm::{DfmError, SheetCheckParameters};
 use crate::validation::{CheckProfile, CheckRequirement, native_basic_profile, validate_profile};
@@ -43,6 +43,9 @@ pub struct RunInput {
     pub shop: Option<Profile>,
     #[serde(default)]
     pub overrides: Vec<Override>,
+    /// The project's critical hole-to-hole dimensions, frozen with the rest of the run.
+    #[serde(default)]
+    pub critical: Vec<crate::project::CriticalDimension>,
     /// The App's model source: `native` or `converted <sha256>`.
     pub source: String,
 }
@@ -59,6 +62,7 @@ impl RunInput {
             generic: frozen.generic.clone(),
             shop: frozen.shop.clone(),
             overrides: frozen.overrides.clone(),
+            critical: frozen.critical.clone(),
             source: source.to_string(),
         }
     }
@@ -149,6 +153,16 @@ pub fn compile(input: &RunInput, sheets: &[SheetRef], model_version: &str) -> Re
             generic: input.generic.clone(),
             shop: input.shop.clone(),
             overrides: input.overrides.clone(),
+            critical: input
+                .critical
+                .iter()
+                .map(|dimension| Critical {
+                    name: dimension.name.clone(),
+                    from_mm: Point3 { x: dimension.from_mm[0], y: dimension.from_mm[1], z: dimension.from_mm[2] },
+                    to_mm: Point3 { x: dimension.to_mm[0], y: dimension.to_mm[1], z: dimension.to_mm[2] },
+                    tolerance_mm: dimension.tolerance_mm,
+                })
+                .collect(),
             model: solidcraft_dfm_rules::ModelRef {
                 model_version: model_version.to_string(),
                 body: sheet.body.clone(),
