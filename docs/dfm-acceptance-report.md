@@ -1,8 +1,11 @@
 # DFM full-catalogue acceptance report
 
 Status: integration evidence for the twelve missing sheet-metal DFM rules and the full
-20-rule catalogue. Integration evidence head: `dfm/catalog-accept` `4c5e920f9`; later commits touch only this
-report. Draft PR #151 is stacked on #147/#148/#149, base `dfm/integration-base` `f5a7f9f26`.
+20-rule catalogue. **Integration code/evidence head: `dfm/catalog-accept` `7d6351061`**
+(this includes the exact-corner-relief semantics and the input-change variants below).
+Desktop evidence builds: `b106ecfa4` for the tray/sink card shots and `e65b9bd94` for the
+corner-relief card; later report edits do not change those builds. Draft PR #151 is
+stacked on #147/#148/#149, base `dfm/integration-base` `f5a7f9f26`.
 Integration inputs: `coord/pil-291-candidate2` `fbd3b1aba` + A `59b90f0e5` + B `ab8083ae8`
 (the PR is rebased to `3b84ac913`; no rule or fact logic changed) + C `8d1306023`.
 Every result below was
@@ -67,6 +70,43 @@ missing.
 Counts: all 20 non-gate rules have an L4 decided result. `app.flat_no_overlap` has
 L4 rows (all passing on these samples) and PIL-306's L3 failing evidence; it is not
 counted as a worker failure here.
+
+## 3.1 Two coverage counts
+
+- **20/20 rules have an actual worker result** in a written report (a row with its own
+  state, not just a catalogue name).
+- **18/20 rules have a worker-level proof that changing the input flips the conclusion**
+  (a pass and a fail/non-pass variant through the worker). The two exceptions are
+  `sm.countersink_to_bend` (worker always `checked` on the harness designs; pass/fail is
+  adapter-level L3) and `app.flat_no_overlap` (worker samples all pass; the 20 mm² failure
+  remains PIL-306's L3 real-`SheetBody` evidence).
+
+| Rule | Worker result | Worker input-change proof | Evidence |
+|---|---|---|---|
+| `sm.inside_radius` | yes | yes | `l_bracket` passed 1.0; `SOLIDCRAFT_DFM_BEND_RADIUS=0.25` failed |
+| `sm.min_flange` | yes | yes | height 10 (leg 7) failed; `SOLIDCRAFT_DFM_FLANGE_LEG=14` passed |
+| `sm.bend_relief_width` | yes | yes | 1 mm corner relief failed; `SOLIDCRAFT_DFM_RELIEF_SIZE=3` passed |
+| `sm.bend_relief_depth` | yes | yes | 0.5 mm corner relief failed; size 3 gives 1.5 and passes |
+| `sm.min_web_parallel_bends` | yes | yes | base 60 passed; `SOLIDCRAFT_DFM_BASE_WIDTH=8` failed |
+| `sm.u_channel_ratio` | yes | yes | base 60 passed; `SOLIDCRAFT_DFM_BASE_WIDTH=20` failed |
+| `sm.hole_min_diameter` | yes | yes | `plate` Ø2 failed; `l_bracket` Ø3 passed |
+| `sm.max_bend_length` | yes | yes | `l_bracket` 60 passed; `long_bend` 600 failed against 500 |
+| `sm.hole_to_bend` | yes | yes | `l_bracket` passed; `hole_bend` 1.5 vs 2.5 failed |
+| `sm.hole_to_edge` | yes | yes | `plate` 1 mm failed; `sink-report.json` hole passed |
+| `sm.tolerance_across_bends` | yes | yes | declared ±0.1 failed; ±0.3 passed; old report stale between |
+| `sm.countersink_depth` | yes | yes | Ø6 (1.0 mm) failed; `SOLIDCRAFT_DFM_CS_DIAMETER=4.5` (0.25) passed |
+| `sm.countersink_to_edge` | yes | yes | 7 mm passed; `SOLIDCRAFT_DFM_SINK_X=5` (2 mm) failed |
+| `sm.countersink_to_bend` | yes | **no worker flip** | `docs/dfm-evidence/sink-report.json` passed (20.75); the near case is adapter-level L3 |
+| `sm.hole_spacing` | yes | yes | `spacing` wall 1 failed; `SOLIDCRAFT_DFM_HOLE_GAP=10` wall 7 passed |
+| `sm.bend_radius_consistent` | yes | yes | R1/R3 failed; `SOLIDCRAFT_DFM_SECOND_RADIUS=1` passed |
+| `sm.countersink_land` | yes | yes | Ø6 land 1.0 passed; `SOLIDCRAFT_DFM_CS_DIAMETER=7.5` land 0.25 failed |
+| `sm.countersink_angle` | yes | yes | 90° passed; `SOLIDCRAFT_DFM_SINK_ANGLE=120` unsupported (shop holds 90°) |
+| `sm.bend_relief_present` | yes | yes | `no_relief` failed; `relief_small` passed |
+| `app.flat_no_overlap` | yes | **no worker fail** | `docs/dfm-evidence/tray-report.json` and `sink-report.json` passed; PIL-306 L3 20 mm² failure |
+
+The `sink-report.json` and `tray-report.json` rows above are from the desktop run; the
+worker harness assertions live in `crates/engine/tests/dfm_acceptance.rs` and
+`docs/dfm-catalogue-acceptance.md`.
 
 ## 4. Gates and non-pass states
 

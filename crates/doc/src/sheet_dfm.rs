@@ -1219,10 +1219,12 @@ fn material_run(flat: &Flat, pattern: &FlatPattern, origin: Vec2, dir: Vec2) -> 
 /// parent flat.
 /// A corner relief at one end of a bend. The flat's zone span is the model's bend length less
 /// the relief's half size at an end (`SheetFlange::len` is the length before the relief trim), so
-/// a rectangular 1 mm corner relief reports 1 mm across the bend and 0.5 mm into its end. The
-/// trim is only read when `SheetBody::relief` says a round or rectangular relief was applied and
-/// the missing length is exactly that relief's half size; a legitimately shorter flange is left
-/// to the ordinary end checks.
+/// a rectangular 1 mm corner relief reports 1 mm across the bend and 0.5 mm into its end.
+///
+/// The production path is `Sheet::relieve_side_corner`: it is called only for a corner where two
+/// flange ends meet, and cuts a square/round hole of radius `size / 2` centred on that corner.
+/// The flange end is exactly at the corner, so the flat zone is trimmed by exactly that radius;
+/// a shorter or longer trim is not this relief and is left to the ordinary end checks.
 fn corner_relief(sheet: &SheetBody, f: &crate::sheet::SheetFlange, u_end: f64, outward: f64, d: Vec2) -> Option<ReliefFact> {
     if !matches!(sheet.relief, ReliefShape::Round | ReliefShape::Rectangular) || !(sheet.relief_size > LINEAR_TOL) {
         return None;

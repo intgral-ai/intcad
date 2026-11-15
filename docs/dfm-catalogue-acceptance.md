@@ -45,6 +45,16 @@ SOLIDCRAFT_DFM_SAMPLE=countersink SOLIDCRAFT_DFM_CS_DIAMETER=4.5 \
   cargo test -p solidcraft-engine --test dfm_acceptance catalogue_samples
 SOLIDCRAFT_DFM_SAMPLE=mixed_radii SOLIDCRAFT_DFM_SECOND_RADIUS=1 \
   cargo test -p solidcraft-engine --test dfm_acceptance catalogue_samples
+SOLIDCRAFT_DFM_SAMPLE=l_bracket SOLIDCRAFT_DFM_BEND_RADIUS=0.25 \
+  cargo test -p solidcraft-engine --test dfm_acceptance catalogue_samples
+SOLIDCRAFT_DFM_SAMPLE=relief_small SOLIDCRAFT_DFM_RELIEF_SIZE=3 \
+  cargo test -p solidcraft-engine --test dfm_acceptance catalogue_samples
+SOLIDCRAFT_DFM_SAMPLE=countersink SOLIDCRAFT_DFM_SINK_X=5 \
+  cargo test -p solidcraft-engine --test dfm_acceptance catalogue_samples
+SOLIDCRAFT_DFM_SAMPLE=countersink SOLIDCRAFT_DFM_CS_DIAMETER=7.5 \
+  cargo test -p solidcraft-engine --test dfm_acceptance catalogue_samples
+SOLIDCRAFT_DFM_SAMPLE=countersink SOLIDCRAFT_DFM_SINK_ANGLE=120 \
+  cargo test -p solidcraft-engine --test dfm_acceptance catalogue_samples
 ```
 
 ## Samples and the rule each one drives
@@ -60,6 +70,8 @@ SOLIDCRAFT_DFM_SAMPLE=mixed_radii SOLIDCRAFT_DFM_SECOND_RADIUS=1 \
 | `spacing` | flat plate with two Ø3 holes 4 mm apart | `sm.hole_spacing` | `failed` 1 vs 4; at 10 mm apart, `passed` |
 | `countersink` | native 2 mm sheet, Ø4 through hole with a Ø6 × 90° countersink | all five `sm.countersink_*` rules | depth `failed` 1.0 vs 0.75 (Ø4.5 countersink passes at 0.25); edge `passed` 17; land `passed` 1.0; angle `passed` 90°; to-bend `checked` (no bend) |
 | `mixed_radii` | two edge flanges with R1 and R3 | `sm.bend_radius_consistent` | `failed` / `BEND_RADII_MIXED`; with both R1, `passed` |
+| `long_bend` | 600 mm base, one full-edge flange | `sm.max_bend_length` | `failed`, measured 600 vs 500 |
+| `hole_bend` | one flange and a hole 1.5 mm from the tangent | `sm.hole_to_bend` | `failed` 1.5 vs 2.5 |
 
 `unsupported` is a real result, not a skipped test: the rule row is present, the finding keeps its
 body and id, and `notChecked` names the rule as not verified. The `gates_and_generic_values`
