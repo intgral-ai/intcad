@@ -28,8 +28,8 @@ missing.
 |---|---|---|---|
 | 1 | `sm.min_flange` | each bend's two 20-place flange runs, longest run, crossed-cut flag | L4: 7 mm leg vs 8 mm fails; 11 mm passes |
 | 2 | `sm.bend_relief_present` | bend-end material across the line / no margin | L4: corner with no margin fails `RELIEF_NO_MARGIN`; a relieved corner passes |
-| 3 | `sm.bend_relief_width` | notch width at the bend end | L3: real `SheetBody` with a 3 mm notch measures 3; L4 row `checked` for a corner relief (see limit) |
-| 4 | `sm.bend_relief_depth` | notch depth at the bend end | L3: real `SheetBody` with a 5 mm notch measures 5; L4 row `checked` (see limit) |
+| 3 | `sm.bend_relief_width` | notch width at the bend end | L4: 1 mm corner relief vs 2 mm fails; measured 1.0 |
+| 4 | `sm.bend_relief_depth` | notch depth at the bend end | L4: 0.5 mm corner relief vs 1 mm fails; measured 0.5 |
 | 5 | `sm.min_web_parallel_bends` | tangent-to-tangent web between parallel bends | L4: 54 mm vs 5 mm passes; 2 mm web fails |
 | 6 | `sm.u_channel_ratio` | taller flange / shared web | L4: 7 mm vs 10.8 mm passes; base 20 mm makes 7/14 fail |
 | 7 | `sm.countersink_depth` | native countersink record: rim, depth, angle, land | L4: 1.0 mm vs 0.75 fails; Ø4.5 rim gives 0.25 and passes |
@@ -58,16 +58,15 @@ missing.
 | 13 | `sm.countersink_to_bend` | countersink on a flat sheet | checked / not applicable |
 | 14 | `sm.hole_spacing` | two Ø3 holes 4 -> 10 mm apart | failed wall 1 vs 4, then passed wall 7 |
 | 15 | `sm.bend_radius_consistent` | second flange R3 -> R1 | failed `BEND_RADII_MIXED`, then passed |
-| 16 | `sm.bend_relief_width` | rectangular notch width 1 vs 2 | L3 measured 1.0; L4 row `checked` on a corner relief (limit) |
-| 17 | `sm.bend_relief_depth` | rectangular notch depth 0.5 vs 1 | L3 measured 0.5; L4 row `checked` (limit) |
+| 16 | `sm.bend_relief_width` | rectangular corner relief 1 vs 2 mm | L4 failed, measured 1.0, code `RELIEF_WIDTH_BELOW_LIMIT` |
+| 17 | `sm.bend_relief_depth` | rectangular corner relief 0.5 vs 1 mm | L4 failed, measured 0.5, code `RELIEF_DEPTH_BELOW_LIMIT` |
 | 18 | `sm.countersink_land` | Ø6 over Ø4 leaves 1 mm | passed, measured 1.0 |
 | 19 | `sm.countersink_angle` | 90° countersink vs shop 90° | passed, measured 90° |
 | 20 | `app.flat_no_overlap` | flat pattern regions | passed on every sample; the failing 20 mm² case remains PIL-306's L3 real-`SheetBody` evidence |
 
-Counts: 18 of 20 rules have an L4 decided result; `sm.bend_relief_width` and
-`sm.bend_relief_depth` have L3 decided measurements plus L4 rows that stay `checked`
-rather than inventing a size. `app.flat_no_overlap` has L4 rows (all passing on these
-samples) and PIL-306's L3 failing evidence.
+Counts: all 20 non-gate rules have an L4 decided result. `app.flat_no_overlap` has
+L4 rows (all passing on these samples) and PIL-306's L3 failing evidence; it is not
+counted as a worker failure here.
 
 ## 4. Gates and non-pass states
 
@@ -127,7 +126,7 @@ Results:
 | Countersinks | Sink: `sm.countersink_depth` and `sm.countersink_land` failed; `sm.countersink_to_edge`, `_to_bend` and `_angle` passed; two red model labels, card rows visible. |
 | Critical declaration | Tray: declared ±0.01 makes `sm.tolerance_across_bends` failed; changing the same declaration to ±0.1 and re-running makes it passed; the old report is stale in between. |
 | Flat geometry | `app.flat_no_overlap` passed in the card on both designs. |
-| Relief size | Still `checked` on the corner-relief sample; the measured-notch evidence remains L3 (see boundaries). |
+| Relief size | The 1 mm rectangular corner relief reports 1 mm across and 0.5 mm deep; the card shows two `failed` `sm.bend_relief_width` rows and two `failed` `sm.bend_relief_depth` rows, with measured values 1.0 and 0.5. |
 
 The first desktop run found a real integration gap: an agent reaching `dfm.check` through the
 generic Code Mode `execute` tool produced a plain tool row, so no card and no model marks
@@ -135,24 +134,21 @@ appeared. `adopt_model_check` now recognises the command's reply from either a d
 `execute`, and a regression test covers both. The screenshots above are from the fixed build.
 
 Card screenshots: `tray-card-4.png` (hole/bend/relief rows and model labels),
-`sink-card-3.png` (countersink rows and labels), `tray-check.png` (model labels only).
-Report JSON: `docs/dfm-evidence/tray-report.json`, `tray-loose-report.json`,
-`sink-report.json`. The screenshots are attached to PIL-292.
+`sink-card-3.png` (countersink rows and labels), `relief-card-rows.png` (both relief-size
+rules failed), `tray-check.png` (model labels only). Report JSON:
+`docs/dfm-evidence/tray-report.json`, `tray-loose-report.json`, `sink-report.json`,
+`relief-report.json`. The screenshots are attached to PIL-292.
 
 ## 7. Boundaries
 
 - **Desktop scope.** L5 covers holes, bends/flanges/relief presence, countersinks, the
   critical declaration and the flat-overlap row. The build used the official Nix package
   (Nix store does not count toward the 200 GiB workspace budget) on a separate Xvfb
-  display. Relief width/depth remain L3 because a normal corner relief is an outline cut;
-  the desktop card honestly shows `checked` for that shape.
-- **Corner relief sizing**: a normal `sheet.flange` corner relief is an outline cut, not
-  a notch hole, so the fact layer leaves width/depth `checked` for that shape. The
-  measured-notch path is covered with a real `SheetBody` at L3. Reproduce with the
-  `relief_small` sample (1 mm rectangular corner relief, 0.5 mm deep). Recommendation:
-  teach `notch_at`/the relief scan to read the outline interval at the bend end, or keep
-  a derived corner-relief record, then change only the two expectations to `failed`
-  (1 vs 2 mm, 0.5 vs 1 mm). The rule needs no change.
+  display. The 1 mm rectangular corner relief reports 1 mm across and 0.5 mm deep; both
+  relief-size rows fail in the card and on the model.
+- **Other notch shapes.** The corner relief a `sheet.flange` command cuts is now read from
+  the model bend length less the flat zone trim. Free-form or converted notches that do not
+  use that model value still fall back to the L3 measured-notch tests, not a guess.
 - **Converted countersinks**: `sheet_convert` does not recognise a cone, so a countersink
   on a converted body still reads as a pocket. The countersink sample starts as a native
   sheet. Recommendation: recognise the cone in the converter and write the same
