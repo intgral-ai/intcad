@@ -1,8 +1,0 @@
-{
-  "en": {
-    "cmd.dfm.check": "Run DFM Check",
-    "cmd.dfm.cancel": "Cancel DFM Check",
-    "cmd.dfm.status": "DFM Check Status",
-    "cmd.inspect.dfm": "DFM Report"
-  }
-}
