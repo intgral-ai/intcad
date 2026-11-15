@@ -104,7 +104,42 @@ CARGO_TARGET_DIR=<target> SOLIDCRAFT_DFM_SAMPLE=mixed_radii \
 The harness and its sample table are in `docs/dfm-catalogue-acceptance.md`. The
 TEST-ONLY rows are in `crates/engine/src/project/test_data/critical_shop.json`.
 
-## 6. Boundaries
+## 6. Desktop evidence (L5)
+
+The official Nix package was built from this integration branch and run on a separate Xvfb
+display (`:98`, X11 window system, llvmpipe), so no other agent's desktop was used and no
+Cargo target was added to the project's disk budget.
+
+- Build: `nix build .#solidcraft` at head `b106ecfa4`; the Nix store path is
+  `/nix/store/7iz0dmmqkxhfkaraf2lv4z6rci0ada4b-solidcraft-0.1.0`.
+- Run: `DISPLAY=:98` with `WINIT_UNIX_BACKEND=x11`, `GDK_BACKEND=x11`,
+  `WEBKIT_DISABLE_COMPOSITING_MODE=1`, `WEBKIT_DISABLE_DMABUF_RENDERER=1`, a fresh
+  `HOME`/XDG tree; control channel on a separate port.
+- The Assistant page is a native child window, so `ui.screenshot` records it black; the
+  evidence captures the X root window with ImageMagick `import`, as a person sees it.
+
+Results:
+
+| Family | What the desktop run showed |
+|---|---|
+| Holes | Tray: `sm.hole_spacing` failed with two red `! Failed · sheet-1/F20` labels; a passing spacing row beside it. |
+| Bends / flanges / relief | Tray: `sm.bend_radius_consistent` failed, four `sm.bend_relief_present` ends failed (`F10`, `F11` labels), `sm.inside_radius` passed; the card listed every row. |
+| Countersinks | Sink: `sm.countersink_depth` and `sm.countersink_land` failed; `sm.countersink_to_edge`, `_to_bend` and `_angle` passed; two red model labels, card rows visible. |
+| Critical declaration | Tray: declared ±0.01 makes `sm.tolerance_across_bends` failed; changing the same declaration to ±0.1 and re-running makes it passed; the old report is stale in between. |
+| Flat geometry | `app.flat_no_overlap` passed in the card on both designs. |
+| Relief size | Still `checked` on the corner-relief sample; the measured-notch evidence remains L3 (see boundaries). |
+
+The first desktop run found a real integration gap: an agent reaching `dfm.check` through the
+generic Code Mode `execute` tool produced a plain tool row, so no card and no model marks
+appeared. `adopt_model_check` now recognises the command's reply from either a direct tool or
+`execute`, and a regression test covers both. The screenshots above are from the fixed build.
+
+Card screenshots: `tray-card-4.png` (hole/bend/relief rows and model labels),
+`sink-card-3.png` (countersink rows and labels), `tray-check.png` (model labels only).
+Report JSON: `tray-report.json`, `tray-loose-report.json`, `sink-report.json`. They are
+attached to PIL-292.
+
+## 7. Boundaries
 
 - **No desktop (L5) evidence in this run.** The Nix desktop build and a WebKit/Xvfb
   session are outside the local disk budget (the task's worktrees and targets exceeded
