@@ -228,3 +228,22 @@ Wrapper `/nix/store/q30f6g0pjid3p633ssacf46lv1ngvc56-solidcraft-0.1.0`, fresh ap
 
 Earlier counts on the same code (tree identical except EXEMPT): direct multi-step round 1,
 preview 0, accept 1, reject 0, duplicate accept 0, stale accept 0.
+
+## Combined candidate desktop run (first batch: develop + #138 + #141 + #142)
+
+Wrapper `/nix/store/iaq3gzb3hh2z2x3hhhbsanq6xp1apq27-solidcraft-0.1.0`, built from the composed
+tree (`worktrees/p142comp`, develop + #138 + #141 + the #142 feature), control 46697, Tray
+project copied from the second batch's desktop fixture.
+
+- A Chat request (`运行 DFM 检查并把报告告诉我`, model path) started one run:
+  `run-337b54f69cf74679-a69636835dcdfe61`; the card equals the disk report (runId, model
+  version, candidate and config digests, status `done / current`), 25 findings.
+- Clicking the failed `sm.bend_radius_consistent` row put `Failed · sheet-1/F19` on the model and
+  highlighted the hole (`evidence/combined-row-to-marker.png`); the reverse direction is covered
+  by `a_report_row_and_a_viewport_label_choose_the_same_finding` and was shown on the PIL-304
+  desktop run.
+- With preview on, an agent request to change R1 to R2 waited as a preview (runs 5 -> 5); Accept
+  committed it and added exactly one run `run-9bfd9ba204a5421d-8a1a0453127b0566`
+  (`evidence/combined-after-accept.png`).
+- Second-batch rule visibility is not yet possible here: `sm.bend_relief_*`, `sm.min_flange`,
+  `sm.u_channel_ratio` and `sm.countersink_*` report `RULE_NOT_IMPLEMENTED` until #147/#149 merge.

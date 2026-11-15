@@ -1,0 +1,8 @@
+# This project's identity and defaults. Edits are read on the next open.
+schema_version = 1
+id = "7256e4ca-e070-4030-a4d9-e4f6557becc3"
+name = "Tray"
+process = "press brake"
+material = "5052-H32"
+# thickness_mm = 2.0
+designs = ["Tray.sc"]

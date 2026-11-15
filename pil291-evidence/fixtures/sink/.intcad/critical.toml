@@ -1,0 +1,3 @@
+# Critical hole-to-hole dimensions: the ones a drawing gives with a plus or minus.
+# Each point is a model mm point near a round through hole's centre.
+schema_version = 1

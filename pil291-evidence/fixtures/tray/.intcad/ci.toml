@@ -1,0 +1,14 @@
+# Checks: whether they run by themselves, and which data they use.
+schema_version = 1
+enabled = true
+on_manual_edit = "stale"
+
+[data]
+kind = "factory"
+name = "DFM critical acceptance shop"
+version = "1.0.0-test"
+sha256 = "41bf5750e798a3f41c08e30994075172199925da5978639b86ce975cebc965df"
+file = ".intcad/data/41bf5750-dfm-critical-acceptance-shop-1.0.0-test.json"
+
+[checks]
+skip = []

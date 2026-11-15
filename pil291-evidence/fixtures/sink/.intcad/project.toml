@@ -1,0 +1,8 @@
+# This project's identity and defaults. Edits are read on the next open.
+schema_version = 1
+id = "5a66f35e-d067-408e-aa27-54fcb1da9a40"
+name = "Sink"
+process = "press brake"
+material = "5052-H32"
+# thickness_mm = 2.0
+designs = ["Sink.sc"]
