@@ -1511,6 +1511,22 @@ impl SolveApp {
                     // `file.new` starts from millimetres. Units of new designs still apply (#1205).
                     prefs::apply_new_design(self);
                 }
+                if matches!(
+                    id,
+                    "file.new"
+                        | "doc.open"
+                        | "doc.recover"
+                        | "file.save_as"
+                        | "project.create"
+                        | "project.attach"
+                        | "project.ci_set"
+                        | "project.data_set"
+                        | "project.settings_set"
+                ) {
+                    // The automatic DFM check follows the project's `ci.toml` switch; read it when
+                    // the document or the project settings change, not on every frame.
+                    agent_chat::refresh_dfm_auto(self);
+                }
                 if matches!(id, "file.new" | "doc.open" | "doc.recover") {
                     documents::reset_chat(self);
                     self.edit_in_place.active = None;
