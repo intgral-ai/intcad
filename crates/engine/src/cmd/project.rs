@@ -87,7 +87,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              → kind, name, version, sha256, file, imported. The whole file is copied into .intcad/",
         ),
     CommandSpec::new("project.critical_set", "Declare Critical Dimensions", crate::checked!("project.critical_set", critical_set))
-        .icon("check")
+        .icon("dimension")
         .noundo()
         .contract(&CRITICAL_CONTRACT)
         .output(crate::schema::output_schema_for::<CriticalReply>)
