@@ -981,17 +981,44 @@ mod tests {
         assert_eq!(queued.project_id, "p");
     }
 
-    /// Chat's "检查一下当前设计" calls the same entry as the card's refresh button.
+    /// Chat's "检查一下当前设计" calls the same entry as the card's refresh button; the sheet
+    /// metal wording the same, while a negative, a question about an earlier check and a
+    /// repeated phrase are not requests.
     #[test]
     fn the_chat_phrase_runs_the_same_check_entry_as_the_button() {
-        assert!(crate::dfm_chat::is_check_request("检查一下当前设计"));
-        assert!(crate::dfm_chat::is_check_request("Check this design."));
-        assert!(!crate::dfm_chat::is_check_request("检查一下这个零件的孔"));
+        for request in [
+            "检查一下当前设计",
+            "检查当前设计",
+            "检查一下当前钣金件",
+            "检查当前钣金件",
+            "检查一下钣金件",
+            "检查钣金件",
+            "帮我检查一下当前钣金件",
+            "检查一下当前钣金件。",
+            "Check this design.",
+            "check the sheet metal part",
+        ] {
+            assert!(crate::dfm_chat::is_check_request(request), "{request}");
+        }
+        for not_request in [
+            "检查一下这个零件的孔",
+            "不要检查一下当前钣金件",
+            "别检查当前钣金件",
+            "不需要检查",
+            "取消检查",
+            "上次检查的结果是什么",
+            "之前的检查结果怎么样",
+            "检查结果是什么",
+            "检查一下当前钣金件的结果",
+            "检查一下当前钣金件检查一下当前钣金件",
+        ] {
+            assert!(!crate::dfm_chat::is_check_request(not_request), "{not_request}");
+        }
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let before = app.agent_chat.items.len();
-        act(&mut app, &egui::Context::default(), r#"{"type":"send","text":"检查一下当前设计"}"#).expect("send");
+        act(&mut app, &egui::Context::default(), r#"{"type":"send","text":"检查一下当前钣金件"}"#).expect("send");
         assert_eq!(app.agent_chat.items.len(), before + 2, "a check row and its notice");
-        assert!(app.agent_chat.items.iter().any(|item| matches!(item, Item::Tool { kind, .. } if kind == "dfm.check")));
+        assert_eq!(app.agent_chat.items.iter().filter(|item| matches!(item, Item::Tool { kind, .. } if kind == "dfm.check")).count(), 1);
         // The command is C's; until it lands the card says why, and the row is an error, not a result.
         let card = app.dfm_chat.card.as_ref().expect("a card");
         assert_eq!(card.status, "error");
