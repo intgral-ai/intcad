@@ -3,10 +3,11 @@
 This repository's product is **Intcad**, an Intgral fork. On a user's machine Intcad has an
 identity of its own, so an install of it is not an install of upstream SolidCraft under another
 label: the app ID, the macOS bundle, the Windows installer identity, the package and release file
-names and the settings and data folders are Intcad's ([Intcad's identity](#intcads-identity)).
-Names inside the code remain `solidcraft` so designs, scripts and merges from upstream keep
-working: crate and binary names, `.sc` and the `solidcraft/N` tag, `SOLIDCRAFT_*` variables and
-the MCP server. The upstream project keeps the SolidCraft name and logo.
+names, the settings and data folders, the programs (`intcad`, `intcad-cli`) and the MCP server
+entry are Intcad's ([Intcad's identity](#intcads-identity)). Names inside the code remain
+`solidcraft` so designs, scripts and merges from upstream keep working: crate and Cargo package
+names, `.sc` and the `solidcraft/N` tag and `SOLIDCRAFT_*` variables. The upstream project keeps
+the SolidCraft name and logo.
 
 SolidCraft was first called SolveCraft, and builds up to 0.4 kept that name in their
 identifiers after the displayed name changed. 0.5.0 renamed the binaries, release assets and
@@ -109,33 +110,27 @@ old folder intact), `first_launch_adopts_the_previous_release_settings`,
 
 ## 5. `solvecraft-cli` alias
 
-A tiny `solvecraft-cli` binary (`apps/solidcraft-cli/src/alias.rs`) ships in every package for
-at least one release (since 0.5.0). It prints a one-line deprecation note to stderr and runs the
-`solidcraft-cli` next to it with the same arguments, stdin/stdout and exit code, so scripts
-and MCP client configs that call `solvecraft-cli` keep working. Test: `apps/solidcraft-cli/tests/legacy_alias.rs` (forwards `--version` and the exit status;
-the note goes to stderr only, so stdout stays clean for MCP).
+Upstream ships a `solvecraft-cli` that forwards to its CLI. Intcad does not: the name is
+upstream's, Intcad was never published under it, and two packages cannot both install
+`/usr/bin/solvecraft-cli`. The alias binary and its test are gone from this repository.
 
-There is no alias for the desktop binary: launchers, file associations and Start-menu entries
-installed by the packages point at `solidcraft`.
+Intcad's own programs have no alias for the names they had in 0.1.0 (`solidcraft`,
+`solidcraft-cli`) either: those are upstream's names.
 
 ## 6. MCP
 
-`serverInfo.name` is now `solidcraft`. The name a client shows is chosen by the user when the
-server is added, so an existing setup such as
+`serverInfo.name` is `intcad`, and `intcad-cli mcp setup` writes the entries `intcad` and
+`intcad-live`. It reads and changes only those two. An entry named `solidcraft` is upstream's or
+the user's and stays as it is (test `an_upstream_solidcraft_entry_is_left_alone` in
+`crates/engine/src/agent_setup.rs`). New setups use:
 
 ```sh
-claude mcp add solvecraft -- solvecraft-cli mcp
+claude mcp add intcad -- intcad-cli mcp
 ```
 
-keeps working (through the alias above). New setups use:
-
-```sh
-claude mcp add solidcraft -- solidcraft-cli mcp
-```
-
-Switch before the alias is removed. Resources are listed as `solidcraft://design` and
-`solidcraft://commands`; the old `solvecraft://` URIs still read (`crates/mcp/src/server.rs`,
-test `legacy_design_files_and_resource_uris`).
+Resources are listed as `solidcraft://design` and `solidcraft://commands`; the old
+`solvecraft://` URIs still read (`crates/mcp/src/server.rs`, test
+`legacy_design_files_and_resource_uris`).
 
 ## Intcad's identity
 
@@ -152,6 +147,11 @@ nothing is read from its folders.
 | deb / rpm package | `intcad` | Its own entry in the package database (`/var/lib/dpkg/info/intcad.list` is how the update check recognises a deb install). |
 | Release files | `intcad-<version>-<platform>…`, and `Intcad-<version>-windows-x64.exe` | The update check and the download page pick files by these names. |
 | Settings, recovery and cache folders | `Intcad` / `intcad` (section 4); nothing is taken from a `SolidCraft` folder | Two products no longer write one `graphics.json` and one recovery folder. |
+| Programs | `intcad` and `intcad-cli` (`intcad.exe`, `intcad-cli.exe`, `Intcad.app/Contents/MacOS/Intcad`) | Both products' Linux packages installed `/usr/bin/solidcraft` and `/usr/bin/solidcraft-cli`, and both Windows installers put a `solidcraft-cli.exe` on `PATH`. |
+| Folders the Linux packages install | `/usr/lib/intcad`, `/usr/share/doc/intcad` | The same paths in two packages. |
+| deb / rpm relations | none to `solidcraft` or `solvecraft` | `Replaces`, `Conflicts` and `Provides: solvecraft` made installing Intcad remove upstream's earlier package. |
+| MCP server entry | `intcad`, `intcad-live`; `serverInfo.name` is `intcad` (section 6) | `mcp setup` rewrote the entry upstream's setup writes. |
+| Snap | `intcad`, with the commands `intcad` and `intcad.cli` | A snap name belongs to one product. |
 
 Two things keep working for what was published under the earlier names:
 
@@ -169,8 +169,8 @@ and settings kept in a Flatpak sandbox under that ID are not read. The older IDs
 are upstream's own history and are left as upstream wrote them.
 
 Unchanged, and still shared with upstream by design: the design format (`.sc`, `solidcraft/N`,
-`application/x-solidcraft`), `SOLIDCRAFT_*` variables, crate and binary names
-(`solidcraft`, `solidcraft-cli`) and the MCP server name.
+`application/x-solidcraft`), `SOLIDCRAFT_*` variables, crate and Cargo package names
+(`-p solidcraft`, `-p solidcraft-cli`) and the `solidcraft://` resource URIs.
 
 ## Package IDs
 

@@ -1,7 +1,7 @@
-//! `solidcraft-cli mcp setup` and Help > Connect AI assistants: add a `solidcraft` MCP server entry
-//! to the AI clients installed on this machine, using the `solidcraft-cli` path given.
+//! `intcad-cli mcp setup` and Help > Connect AI assistants: add a `intcad` MCP server entry
+//! to the AI clients installed on this machine, using the `intcad-cli` path given.
 //!
-//! Only the `solidcraft` entries change; every other byte (other servers, other settings, comments,
+//! Only the `intcad` entries change; every other byte (other servers, other settings, comments,
 //! key order) stays as it was. Updates replace the file atomically, keeping the previous version
 //! as `<name>.bak`. A file that cannot be read as JSON (with comments) or TOML is
 //! left alone, and so is an entry the user changed (its command is not a SolidCraft CLI, or its
@@ -94,11 +94,11 @@ struct Target {
 /// The names `--client` takes.
 pub const CLIENTS: &[&str] = &["opencode", "claude-desktop", "claude-code", "cursor", "codex", "gemini", "copilot", "windsurf", "zed", "vscode"];
 
-/// The server entries to write: `solidcraft`, and `solidcraft-live` with `--live`.
+/// The server entries to write: `intcad`, and `intcad-live` with `--live`.
 fn servers(live: bool) -> Vec<(&'static str, Vec<&'static str>)> {
-    let mut v = vec![("solidcraft", vec!["mcp"])];
+    let mut v = vec![("intcad", vec!["mcp"])];
     if live {
-        v.push(("solidcraft-live", vec!["mcp", "--connect", LIVE_ADDR]));
+        v.push(("intcad-live", vec!["mcp", "--connect", LIVE_ADDR]));
     }
     v
 }
@@ -232,11 +232,11 @@ enum Verdict {
     Custom,
 }
 
-/// Whether `command` runs a SolidCraft CLI (under this name or the pre-rename one).
-fn is_solidcraft_cli(command: &str) -> bool {
+/// Whether `command` runs Intcad's CLI.
+fn is_our_cli(command: &str) -> bool {
     let name = command.rsplit(['/', '\\']).next().unwrap_or(command).to_ascii_lowercase();
     let stem = name.strip_suffix(".exe").unwrap_or(&name);
-    stem == "solidcraft-cli" || stem == "solvecraft-cli"
+    stem == "intcad-cli"
 }
 
 /// The command and arguments of an entry, whether it spells them as `command` + `args` or as
@@ -261,7 +261,7 @@ fn judge(existing: Option<&Value>, exe: &str, args: &[&str]) -> Verdict {
     }
     if cmd == exe {
         Verdict::Same
-    } else if is_solidcraft_cli(&cmd) {
+    } else if is_our_cli(&cmd) {
         Verdict::Stale
     } else {
         Verdict::Custom
@@ -654,7 +654,7 @@ fn write_config(path: &Path, expected: Option<&str>, text: &str) -> std::io::Res
 }
 
 /// Set up every detected client (or `--client NAME`; flags `--dry-run`, `--live`) for the
-/// `solidcraft-cli` at `exe`. Returns the result lines, one per client file, and whether every
+/// `intcad-cli` at `exe`. Returns the result lines, one per client file, and whether every
 /// client succeeded.
 pub fn setup(args: &[String], env: &Env, exe: &str) -> Result<(Vec<String>, bool), String> {
     let dry_run = args.iter().any(|a| a == "--dry-run");
@@ -701,17 +701,17 @@ pub struct Quiet {
     pub removed: Vec<&'static str>,
 }
 
-/// Make `solidcraft-cli` at `exe` available to every installed client (`Mode::Add`), or take
+/// Make `intcad-cli` at `exe` available to every installed client (`Mode::Add`), or take
 /// the entries setup wrote out of them again (`remove`). Quiet and best effort, for the app: a
 /// client that fails is skipped. The rules for the user's own entries are the same as `setup`'s.
 pub fn quiet(env: &Env, exe: &str, remove: bool) -> Quiet {
     let mode = if remove { Mode::Remove } else { Mode::Add };
     let mut q = Quiet::default();
     for t in detect(env, None) {
-        // Adding writes `solidcraft` only (plain `mcp` finds the app by itself); removing also
-        // takes out a `solidcraft-live` that is ours.
+        // Adding writes `intcad` only (plain `mcp` finds the app by itself); removing also
+        // takes out a `intcad-live` that is ours.
         let Ok((_, changes)) = configure_file(&t, exe, remove, false, mode) else { continue };
-        if changes.iter().any(|(n, c)| *n == "solidcraft" && *c == Change::Added) {
+        if changes.iter().any(|(n, c)| *n == "intcad" && *c == Change::Added) {
             q.added.push(t.client);
         }
         if changes.iter().any(|(_, c)| *c == Change::Removed) {
@@ -725,7 +725,7 @@ pub fn quiet(env: &Env, exe: &str, remove: bool) -> Quiet {
 mod tests {
     use super::*;
 
-    const EXE: &str = "/opt/solidcraft/solidcraft-cli";
+    const EXE: &str = "/opt/solidcraft/intcad-cli";
 
     fn edit(text: &str, shape: Shape) -> (String, Vec<(&'static str, Change)>) {
         let mut t = text.to_owned();
@@ -736,15 +736,15 @@ mod tests {
     #[test]
     fn adds_to_an_empty_file_and_keeps_everything_else_byte_for_byte() {
         let (t, c) = edit("", Shape::McpServers);
-        assert_eq!(c, [("solidcraft", Change::Added)]);
+        assert_eq!(c, [("intcad", Change::Added)]);
         let v: Value = serde_json::from_str(&t).unwrap();
-        assert_eq!(v["mcpServers"]["solidcraft"], json!({"command": EXE, "args": ["mcp"]}));
+        assert_eq!(v["mcpServers"]["intcad"], json!({"command": EXE, "args": ["mcp"]}));
 
         let src = "{\n    \"zeta\": 1, // keep\n    \"mcpServers\": {\n        \"other\": {\"command\": \"o\"}\n    },\n    \"alpha\": [1,2]\n}\n";
         let (t, _) = edit(src, Shape::McpServers);
         // Only the new member was inserted: the original text is intact around it.
         assert!(
-            t.starts_with("{\n    \"zeta\": 1, // keep\n    \"mcpServers\": {\n        \"other\": {\"command\": \"o\"},\n        \"solidcraft\": {"),
+            t.starts_with("{\n    \"zeta\": 1, // keep\n    \"mcpServers\": {\n        \"other\": {\"command\": \"o\"},\n        \"intcad\": {"),
             "{t}"
         );
         assert!(t.ends_with("    },\n    \"alpha\": [1,2]\n}\n"), "{t}");
@@ -761,38 +761,38 @@ mod tests {
 
     #[test]
     fn stale_path_is_updated_and_custom_entries_are_not() {
-        let old = r#"{"mcpServers": {"solidcraft": {"command": "C:\\Old\\solidcraft-cli.exe", "args": ["mcp"], "env": {"A": "1"}}}}"#;
+        let old = r#"{"mcpServers": {"intcad": {"command": "C:\\Old\\intcad-cli.exe", "args": ["mcp"], "env": {"A": "1"}}}}"#;
         let (t, c) = edit(old, Shape::McpServers);
-        assert_eq!(c, [("solidcraft", Change::Updated)]);
+        assert_eq!(c, [("intcad", Change::Updated)]);
         let v: Value = serde_json::from_str(&t).unwrap();
-        assert_eq!(v["mcpServers"]["solidcraft"]["command"], EXE);
-        assert_eq!(v["mcpServers"]["solidcraft"]["env"], json!({"A": "1"}), "other fields stay");
+        assert_eq!(v["mcpServers"]["intcad"]["command"], EXE);
+        assert_eq!(v["mcpServers"]["intcad"]["env"], json!({"A": "1"}), "other fields stay");
 
         // The user added an argument: theirs.
-        let custom = r#"{"mcpServers": {"solidcraft": {"command": "/x/solidcraft-cli", "args": ["mcp", "--allow-any-path"]}}}"#;
+        let custom = r#"{"mcpServers": {"intcad": {"command": "/x/intcad-cli", "args": ["mcp", "--allow-any-path"]}}}"#;
         let (t, c) = edit(custom, Shape::McpServers);
-        assert_eq!(c, [("solidcraft", Change::Custom)]);
+        assert_eq!(c, [("intcad", Change::Custom)]);
         assert_eq!(t.trim_end(), custom);
         // Another program under that name: theirs.
-        let other = r#"{"mcpServers": {"solidcraft": {"command": "node", "args": ["mcp"]}}}"#;
-        assert_eq!(edit(other, Shape::McpServers).1, [("solidcraft", Change::Custom)]);
+        let other = r#"{"mcpServers": {"intcad": {"command": "node", "args": ["mcp"]}}}"#;
+        assert_eq!(edit(other, Shape::McpServers).1, [("intcad", Change::Custom)]);
         // Already right: the text is untouched.
-        let same = format!(r#"{{"mcpServers": {{"solidcraft": {{"command": "{EXE}", "args": ["mcp"]}}}}}}"#);
+        let same = format!(r#"{{"mcpServers": {{"intcad": {{"command": "{EXE}", "args": ["mcp"]}}}}}}"#);
         let (t, c) = edit(&same, Shape::McpServers);
-        assert_eq!((t.trim_end(), c), (same.as_str(), vec![("solidcraft", Change::Unchanged)]));
+        assert_eq!((t.trim_end(), c), (same.as_str(), vec![("intcad", Change::Unchanged)]));
     }
 
     #[test]
     fn opencode_entries_use_one_command_array() {
         let (t, _) = edit("{\"mcp\": {}}", Shape::OpenCode);
         let v: Value = serde_json::from_str(&t).unwrap();
-        assert_eq!(v["mcp"]["solidcraft"], json!({"type": "local", "command": [EXE, "mcp"], "enabled": true}));
-        let stale = r#"{"mcp": {"solidcraft": {"type": "local", "command": ["/old/solidcraft-cli", "mcp"], "enabled": false}}}"#;
+        assert_eq!(v["mcp"]["intcad"], json!({"type": "local", "command": [EXE, "mcp"], "enabled": true}));
+        let stale = r#"{"mcp": {"intcad": {"type": "local", "command": ["/old/intcad-cli", "mcp"], "enabled": false}}}"#;
         let (t, c) = edit(stale, Shape::OpenCode);
-        assert_eq!(c, [("solidcraft", Change::Updated)]);
+        assert_eq!(c, [("intcad", Change::Updated)]);
         let v: Value = serde_json::from_str(&t).unwrap();
-        assert_eq!(v["mcp"]["solidcraft"]["command"], json!([EXE, "mcp"]));
-        assert_eq!(v["mcp"]["solidcraft"]["enabled"], false);
+        assert_eq!(v["mcp"]["intcad"]["command"], json!([EXE, "mcp"]));
+        assert_eq!(v["mcp"]["intcad"]["enabled"], false);
     }
 
     #[test]
@@ -807,45 +807,57 @@ mod tests {
         let src = "# my codex\nmodel = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\" # mine\n";
         let mut t = src.to_owned();
         let c = edit_toml(&mut t, EXE, true, Mode::Add).unwrap();
-        assert_eq!(c, [("solidcraft", Change::Added), ("solidcraft-live", Change::Added)]);
+        assert_eq!(c, [("intcad", Change::Added), ("intcad-live", Change::Added)]);
         assert!(t.starts_with(src), "{t}");
-        assert!(t.contains("[mcp_servers.solidcraft]") && t.contains(&format!("command = \"{EXE}\"")), "{t}");
+        assert!(t.contains("[mcp_servers.intcad]") && t.contains(&format!("command = \"{EXE}\"")), "{t}");
         // Stale path, then a user-changed entry.
-        let mut stale = "[mcp_servers.solidcraft]\ncommand = \"/old/solidcraft-cli\"\nargs = [\"mcp\"]\nstartup_timeout_sec = 30\n".to_owned();
-        assert_eq!(edit_toml(&mut stale, EXE, false, Mode::Add).unwrap(), [("solidcraft", Change::Updated)]);
+        let mut stale = "[mcp_servers.intcad]\ncommand = \"/old/intcad-cli\"\nargs = [\"mcp\"]\nstartup_timeout_sec = 30\n".to_owned();
+        assert_eq!(edit_toml(&mut stale, EXE, false, Mode::Add).unwrap(), [("intcad", Change::Updated)]);
         assert!(stale.contains("startup_timeout_sec = 30") && stale.contains(EXE), "{stale}");
-        let mut custom = "[mcp_servers.solidcraft]\ncommand = \"/x/solidcraft-cli\"\nargs = [\"mcp\", \"--headless\"]\n".to_owned();
+        let mut custom = "[mcp_servers.intcad]\ncommand = \"/x/intcad-cli\"\nargs = [\"mcp\", \"--headless\"]\n".to_owned();
         let before = custom.clone();
-        assert_eq!(edit_toml(&mut custom, EXE, false, Mode::Add).unwrap(), [("solidcraft", Change::Custom)]);
+        assert_eq!(edit_toml(&mut custom, EXE, false, Mode::Add).unwrap(), [("intcad", Change::Custom)]);
         assert_eq!(custom, before);
         // An empty file works too.
         let mut empty = String::new();
         edit_toml(&mut empty, EXE, false, Mode::Add).unwrap();
-        assert!(empty.contains("[mcp_servers.solidcraft]"), "{empty}");
+        assert!(empty.contains("[mcp_servers.intcad]"), "{empty}");
+    }
+
+    /// An upstream SolidCraft entry is another product's: setup adds Intcad's own beside it, and
+    /// removing takes out only Intcad's.
+    #[test]
+    fn an_upstream_solidcraft_entry_is_left_alone() {
+        // Upstream's names, spelled apart so scripts/identity_to_intcad.py leaves them.
+        let upstream = format!(r#""{0}": {{"command": "/usr/bin/{0}-cli", "args": ["mcp"]}}"#, concat!("solid", "craft"));
+        let (mut t, c) = edit(&format!(r#"{{"mcpServers": {{{upstream}}}}}"#), Shape::McpServers);
+        assert_eq!(c, [("intcad", Change::Added)]);
+        assert!(t.contains(&upstream), "{t}");
+        assert_eq!(edit_json(&mut t, Shape::McpServers, EXE, true, Mode::Remove).unwrap(), [("intcad", Change::Removed)]);
+        assert!(t.contains(&upstream), "{t}");
     }
 
     #[test]
     fn removing_takes_out_only_our_entries_and_keeps_the_rest() {
-        let src = "{\n  \"mcpServers\": {\n    \"a\": {\"command\": \"x\"},\n    \"solidcraft\": {\"command\": \"/old/solidcraft-cli\", \"args\": [\"mcp\"]},\n    \"solidcraft-live\": {\"command\": \"/old/solidcraft-cli\", \"args\": [\"mcp\", \"--connect\", \"127.0.0.1:7878\"]}\n  },\n  \"k\": 1\n}\n";
+        let src = "{\n  \"mcpServers\": {\n    \"a\": {\"command\": \"x\"},\n    \"intcad\": {\"command\": \"/old/intcad-cli\", \"args\": [\"mcp\"]},\n    \"intcad-live\": {\"command\": \"/old/intcad-cli\", \"args\": [\"mcp\", \"--connect\", \"127.0.0.1:7878\"]}\n  },\n  \"k\": 1\n}\n";
         let mut t = src.to_owned();
         let c = edit_json(&mut t, Shape::McpServers, EXE, true, Mode::Remove).unwrap();
-        assert_eq!(c, [("solidcraft", Change::Removed), ("solidcraft-live", Change::Removed)]);
+        assert_eq!(c, [("intcad", Change::Removed), ("intcad-live", Change::Removed)]);
         let v: Value = serde_json::from_str(&t).unwrap();
         assert_eq!(v, json!({"mcpServers": {"a": {"command": "x"}}, "k": 1}));
         // The user's own entry stays.
-        let mut mine = r#"{"mcpServers": {"solidcraft": {"command": "node", "args": ["mcp"]}}}"#.to_owned();
+        let mut mine = r#"{"mcpServers": {"intcad": {"command": "node", "args": ["mcp"]}}}"#.to_owned();
         let before = mine.clone();
-        assert_eq!(edit_json(&mut mine, Shape::McpServers, EXE, true, Mode::Remove).unwrap(), [("solidcraft", Change::Custom)]);
+        assert_eq!(edit_json(&mut mine, Shape::McpServers, EXE, true, Mode::Remove).unwrap(), [("intcad", Change::Custom)]);
         assert_eq!(mine.trim_end(), before);
         // Nothing there: nothing happens, no list is created.
         let mut none = "{\"k\": 1}".to_owned();
         assert!(edit_json(&mut none, Shape::McpServers, EXE, true, Mode::Remove).unwrap().is_empty());
         assert_eq!(none.trim_end(), "{\"k\": 1}");
         // TOML.
-        let mut toml =
-            "[mcp_servers.other]\ncommand = \"o\"\n\n[mcp_servers.solidcraft]\ncommand = \"/old/solidcraft-cli\"\nargs = [\"mcp\"]\n".to_owned();
-        assert_eq!(edit_toml(&mut toml, EXE, false, Mode::Remove).unwrap(), [("solidcraft", Change::Removed)]);
-        assert!(toml.contains("[mcp_servers.other]") && !toml.contains("solidcraft"), "{toml}");
+        let mut toml = "[mcp_servers.other]\ncommand = \"o\"\n\n[mcp_servers.intcad]\ncommand = \"/old/intcad-cli\"\nargs = [\"mcp\"]\n".to_owned();
+        assert_eq!(edit_toml(&mut toml, EXE, false, Mode::Remove).unwrap(), [("intcad", Change::Removed)]);
+        assert!(toml.contains("[mcp_servers.other]") && !toml.contains("intcad"), "{toml}");
     }
 
     fn config_dir(label: &str) -> PathBuf {
@@ -866,18 +878,18 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
         let changed_by_client = std::fs::read_to_string(&target.file).unwrap().replace("true", "false");
         std::fs::write(&target.file, &changed_by_client).unwrap();
-        configure_file(&target, "/new/solidcraft-cli", false, false, Mode::Add).unwrap();
+        configure_file(&target, "/new/intcad-cli", false, false, Mode::Add).unwrap();
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), changed_by_client);
         let current = std::fs::read_to_string(&target.file).unwrap();
-        assert!(current.contains("false") && current.contains("/new/solidcraft-cli"));
+        assert!(current.contains("false") && current.contains("/new/intcad-cli"));
         // A no-op or dry run must leave both the file and its backup alone.
-        configure_file(&target, "/new/solidcraft-cli", false, false, Mode::Add).unwrap();
-        configure_file(&target, "/future/solidcraft-cli", false, true, Mode::Add).unwrap();
+        configure_file(&target, "/new/intcad-cli", false, false, Mode::Add).unwrap();
+        configure_file(&target, "/future/intcad-cli", false, true, Mode::Add).unwrap();
         assert_eq!(std::fs::read_to_string(&target.file).unwrap(), current);
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), changed_by_client);
-        configure_file(&target, "/new/solidcraft-cli", false, false, Mode::Remove).unwrap();
+        configure_file(&target, "/new/intcad-cli", false, false, Mode::Remove).unwrap();
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), current);
-        assert!(!std::fs::read_to_string(&target.file).unwrap().contains("solidcraft"));
+        assert!(!std::fs::read_to_string(&target.file).unwrap().contains("intcad"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -948,16 +960,16 @@ mod tests {
         let q = quiet(&env, EXE, false);
         assert_eq!(q.added, ["cursor", "gemini"]);
         let t = std::fs::read_to_string(h.join(".cursor/mcp.json")).unwrap();
-        assert!(t.contains("\"solidcraft\"") && !t.contains("solidcraft-live"), "{t}");
+        assert!(t.contains("\"intcad\"") && !t.contains("intcad-live"), "{t}");
         // A second run changes nothing and names nobody.
         assert_eq!(quiet(&env, EXE, false), Quiet::default());
         // An old path is refreshed without being called new.
-        std::fs::write(h.join(".cursor/mcp.json"), t.replace(EXE, "/gone/solidcraft-cli")).unwrap();
+        std::fs::write(h.join(".cursor/mcp.json"), t.replace(EXE, "/gone/intcad-cli")).unwrap();
         assert_eq!(quiet(&env, EXE, false), Quiet::default());
         assert!(std::fs::read_to_string(h.join(".cursor/mcp.json")).unwrap().contains(EXE));
         // Turning it off takes the entries out again.
         assert_eq!(quiet(&env, EXE, true).removed, ["cursor", "gemini"]);
-        assert!(!std::fs::read_to_string(h.join(".cursor/mcp.json")).unwrap().contains("solidcraft"));
+        assert!(!std::fs::read_to_string(h.join(".cursor/mcp.json")).unwrap().contains("intcad"));
         let _ = std::fs::remove_dir_all(&h);
     }
 }

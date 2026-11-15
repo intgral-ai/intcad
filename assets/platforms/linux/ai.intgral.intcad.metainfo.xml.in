@@ -53,8 +53,8 @@
     <control>pointing</control>
   </supports>
   <provides>
-    <binary>solidcraft</binary>
-    <binary>solidcraft-cli</binary>
+    <binary>intcad</binary>
+    <binary>intcad-cli</binary>
     <mediatype>application/x-solidcraft</mediatype>
     <!-- The app and desktop ids of earlier releases (docs/compatibility.md). -->
     <id>ai.storyteller.solidcraft</id>

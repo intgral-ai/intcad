@@ -184,11 +184,11 @@ the limit. In the desktop app you can raise both:
 - **Preferences › General › Largest file to open** sets each limit in MB, from its default up to
   16 GB (16384 MB). It is kept between runs; Restore page defaults on the General page puts back 512 MB
   and 256 MB.
-- **`--max-file-size SIZE`** at launch (`solidcraft --max-file-size 2GB big-assembly.step`) raises
+- **`--max-file-size SIZE`** at launch (`intcad --max-file-size 2GB big-assembly.step`) raises
   both limits for that run only, over the preference, without saving anything. SIZE is a number
   with MB or GB (`2GB`, `1.5GB`, `1500MB`; 1 GB is 1024 MB), at most 16GB. A size below a default
   leaves that limit at its default. A size the app can't read stops it from starting, with the
-  reason. `solidcraft-cli` takes the same flag with any command.
+  reason. `intcad-cli` takes the same flag with any command.
 
 Before you raise them:
 

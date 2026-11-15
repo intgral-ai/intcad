@@ -51,7 +51,7 @@ cp -R "$MNT/Intcad.app" "$APPS/"
 hdiutil detach "$MNT" -quiet
 MOUNTED=0
 APP="$APPS/Intcad.app"
-EXE="$APP/Contents/MacOS/SolidCraft"
+EXE="$APP/Contents/MacOS/Intcad"
 case "$APP" in
   "$MNT"/*) echo "error: the app was not copied out of the disk image" >&2; exit 1 ;;
 esac

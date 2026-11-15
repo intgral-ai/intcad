@@ -8,7 +8,7 @@
 
   Per-machine install with a setup wizard: Welcome, install folder (Program Files\Intcad by
   default, remembered for upgrades), Ready, progress, and a Finish page with a ticked "Launch
-  SolidCraft" box. Installs a Start Menu shortcut, solidcraft-cli (and adds its folder to the system PATH), the licence files (including
+  SolidCraft" box. Installs a Start Menu shortcut, intcad-cli (and adds its folder to the system PATH), the licence files (including
   THIRD-PARTY-LICENSES.txt), makes SolidCraft the owner of `.sc` (and of the older `.solidcraft` and pre-rename `.solvecraft`), and offers it under
   "Open with" for STEP, IGES, 3MF and STL. `msiexec /qn` installs silently.
   Adapted from PhotoCraft's (storytold/photocraft, Apache-2.0; see ATTRIBUTION.md).
@@ -79,10 +79,10 @@
 
   <Fragment>
     <ComponentGroup Id="SolidcraftFiles" Directory="INSTALLFOLDER">
-      <!-- A new GUID with the rename: the key file changed from solvecraft.exe to solidcraft.exe.
-           The UpgradeCode above is unchanged, so this MSI major-upgrades a pre-rename install. -->
+      <!-- A GUID of Intcad's own, for the key file intcad.exe in Intcad's folder. No install of
+           upstream SolidCraft, and none of Intcad 0.1.0, carries it. -->
       <Component Id="SolidcraftApp" Guid="52EE9723-50D7-463A-8F4B-4551B5D33517">
-        <File Id="SolidcraftExe" Source="$(var.BinDir)\solidcraft.exe" KeyPath="yes">
+        <File Id="SolidcraftExe" Source="$(var.BinDir)\intcad.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Intcad"
               Description="Intcad parametric 3D CAD" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
               Icon="SolidcraftIcon.exe" IconIndex="0" />
@@ -111,31 +111,27 @@
         <RegistryValue Root="HKLM" Key="Software\Classes\.3mf\OpenWithProgids" Name="Intcad.Model" Value="" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\.stl\OpenWithProgids" Name="Intcad.Model" Value="" Type="string" />
 
-        <!-- "Open with" app list and the Run dialog (Win+R "solidcraft"). -->
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe" Name="FriendlyAppName" Value="Intcad" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\shell\open\command" Value="&quot;[#SolidcraftExe]&quot; &quot;%1&quot;" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".sc" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".solidcraft" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".solvecraft" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".step" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".stp" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".igs" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".iges" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".3mf" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".stl" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\solidcraft.exe" Value="[#SolidcraftExe]" Type="string" />
+        <!-- "Open with" app list and the Run dialog (Win+R "intcad"). -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe" Name="FriendlyAppName" Value="Intcad" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\shell\open\command" Value="&quot;[#SolidcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".sc" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".solidcraft" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".solvecraft" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".step" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".stp" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".igs" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".iges" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".3mf" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\intcad.exe\SupportedTypes" Name=".stl" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\intcad.exe" Value="[#SolidcraftExe]" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Intcad" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
       </Component>
 
       <Component Id="SolidcraftCli">
-        <File Id="SolidcraftCliExe" Source="$(var.BinDir)\solidcraft-cli.exe" KeyPath="yes" />
-        <!-- The install folder on the system PATH, so MCP clients and shells find `solidcraft-cli` by name;
+        <File Id="SolidcraftCliExe" Source="$(var.BinDir)\intcad-cli.exe" KeyPath="yes" />
+        <!-- The install folder on the system PATH, so MCP clients and shells find `intcad-cli` by name;
              removed again on uninstall. -->
         <Environment Id="SolidcraftPath" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" System="yes" Permanent="no" />
-      </Component>
-      <!-- Compatibility shim (docs/compatibility.md): the old CLI name, forwarding to solidcraft-cli. -->
-      <Component Id="SolidcraftCliAlias">
-        <File Id="SolvecraftCliAliasExe" Source="$(var.BinDir)\solvecraft-cli.exe" KeyPath="yes" />
       </Component>
       <!-- Several unversioned files: an explicit GUID (WIX0367). -->
       <Component Id="SolidcraftLicences" Guid="2BC0E79E-2792-4849-B0BC-B8AB82D403EA">

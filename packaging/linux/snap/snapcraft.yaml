@@ -14,7 +14,7 @@
 # on LD_LIBRARY_PATH. So GTK 3 and WebKitGTK 4.1 are not repeated here: staging a second copy
 # would make the snap larger and let an ABI from the base shadow the extension's matching
 # WebKitGTK helpers. The release job checks the mounted content snap for both libraries.
-name: solidcraft
+name: intcad
 title: Intcad
 summary: Open-source parametric 3D CAD
 description: |
@@ -28,7 +28,7 @@ description: |
   - STEP and IGES import and export; 3MF, STL and OBJ
   - Every action is a command, scriptable from a CLI, a JSON control channel and an MCP server
 
-  The command-line tool is `solidcraft.cli` (for example `solidcraft.cli mcp`).
+  The command-line tool is `intcad.cli` (for example `intcad.cli mcp`).
 adopt-info: solidcraft
 license: MIT OR Apache-2.0
 contact: https://github.com/intgral-ai/intcad/issues
@@ -46,8 +46,8 @@ platforms:
   arm64:
 
 apps:
-  solidcraft:
-    command: usr/bin/solidcraft
+  intcad:
+    command: usr/bin/intcad
     desktop: usr/share/applications/ai.intgral.intcad.desktop
     # Ties the snap to the AppStream id (ai.intgral.intcad, the same in every package) so
     # software centres treat it as the same app.
@@ -68,7 +68,7 @@ apps:
       - network
       - network-bind
   cli:
-    command: usr/bin/solidcraft-cli
+    command: usr/bin/intcad-cli
     plugs: [home, removable-media, network, network-bind]
 
 parts:

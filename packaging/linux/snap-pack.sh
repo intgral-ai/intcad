@@ -52,7 +52,7 @@ WORK="$CARGO_TARGET_DIR/snap-pack"
 rm -rf "$WORK"
 mkdir -p "$WORK/snap" "$WORK/stage"
 tar -xzf "$TARBALL" -C "$WORK/stage" --strip-components=1
-[ -x "$WORK/stage/bin/solidcraft" ] || { echo "error: $TARBALL has no bin/solidcraft" >&2; exit 1; }
+[ -x "$WORK/stage/bin/intcad" ] || { echo "error: $TARBALL has no bin/intcad" >&2; exit 1; }
 cp "$HERE/snap/snapcraft.yaml" "$WORK/snap/snapcraft.yaml"
 printf '%s\n' "$VERSION" >"$WORK/version.txt"
 

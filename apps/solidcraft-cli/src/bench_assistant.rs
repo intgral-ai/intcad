@@ -9,7 +9,7 @@
 //! put in one of the issue's failure categories from the conversation's items.
 //!
 //! ```text
-//! solidcraft-cli bench-assistant --connect 127.0.0.1:PORT --base-url URL --model NAME
+//! intcad-cli bench-assistant --connect 127.0.0.1:PORT --base-url URL --model NAME
 //!     [--token T] [--tasks 1,2,5] [--repeat N] [--timeout-s 300]
 //!     [--json out.json] [--markdown out.md]
 //! ```

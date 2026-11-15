@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Build and package SolidCraft for macOS:
 #
-#   $DIST/intcad-<version>-macos-<arch>.dmg        Intcad.app (with solidcraft-cli inside) on a
+#   $DIST/intcad-<version>-macos-<arch>.dmg        Intcad.app (with intcad-cli inside) on a
 #                                                      drag-to-Applications DMG with a drawn window
 #                                                      (assets/platforms/macos/dmg)
-#   $DIST/intcad-cli-<version>-macos-<arch>.zip    the headless CLI (and its solvecraft-cli
-#                                                      compatibility alias) with the licence files
+#   $DIST/intcad-cli-<version>-macos-<arch>.zip    the headless CLI with the licence files
 #
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--sign] [--with-mastra]
 #        packaging/macos/package.sh --build-only <rust-target>
@@ -148,7 +147,7 @@ fi
 
 rm -rf "$WORK"
 mkdir -p "$WORK/bin"
-for bin in solidcraft solidcraft-cli solvecraft-cli; do
+for bin in intcad intcad-cli; do
   inputs=()
   for t in "${TARGETS[@]}"; do inputs+=("$CARGO_TARGET_DIR/$t/release/$bin"); done
   lipo -create -output "$WORK/bin/$bin" "${inputs[@]}"
@@ -158,14 +157,14 @@ done
 # ---- Intcad.app ----------------------------------------------------------------------------
 echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$WORK/bin/solidcraft" "$APP/Contents/MacOS/SolidCraft"
-# solidcraft-cli next to the app, as every other package has it: the agent chat starts it as the
-# agent's MCP server (`solidcraft-cli mcp --connect`) and looks for it beside the running program.
-cp "$WORK/bin/solidcraft-cli" "$APP/Contents/MacOS/solidcraft-cli"
+cp "$WORK/bin/intcad" "$APP/Contents/MacOS/Intcad"
+# intcad-cli next to the app, as every other package has it: the agent chat starts it as the
+# agent's MCP server (`intcad-cli mcp --connect`) and looks for it beside the running program.
+cp "$WORK/bin/intcad-cli" "$APP/Contents/MacOS/intcad-cli"
 # The icon file with the product's mark (regeneration: assets/README.md). No layered icon is
 # installed: the Assets.car under assets/ still holds the upstream artwork, and compiling one
 # for the mark needs Xcode 26. macOS 26 would show a layered icon in place of the icon file.
-cp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$APP/Contents/Resources/SolidCraft.icns"
+cp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$APP/Contents/Resources/Intcad.icns"
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
 # The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
@@ -212,7 +211,7 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 # Signature over the whole bundle. Nested code is signed first: the bundle signature refuses an
 # unsigned helper in Contents/MacOS. The entitlements go on the bundle (they apply to the main
 # executable): the 3D mouse driver is loaded by the app, not by the CLI.
-sign_code "$APP/Contents/MacOS/solidcraft-cli" "$MACOS_BUNDLE_ID.cli"
+sign_code "$APP/Contents/MacOS/intcad-cli" "$MACOS_BUNDLE_ID.cli"
 # The bundled pinned Node is nested executable code: sign it before the app bundle.
 if [ -d "$APP/Contents/Resources/mastra" ]; then
   find "$APP/Contents/Resources/mastra" -type f -name node -print0 | while IFS= read -r -d '' node; do
@@ -229,7 +228,7 @@ if [ -n "$SIGN_IDENTITY" ]; then
   info="$(codesign --display --entitlements - --xml "$APP" 2>/dev/null)"
   grep -q 'com.apple.security.cs.disable-library-validation' <<<"$info"
 fi
-test -x "$APP/Contents/MacOS/solidcraft-cli" || { echo "solidcraft-cli is missing from $APP" >&2; exit 1; }
+test -x "$APP/Contents/MacOS/intcad-cli" || { echo "intcad-cli is missing from $APP" >&2; exit 1; }
 if [ "$NOTARIZE" = 1 ]; then
   # Staple the app itself, so a copy dragged out of the DMG opens offline too.
   echo "==> notarizing $APP"
@@ -268,7 +267,7 @@ for key in CFBundleName CFBundleDisplayName; do
   test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/Intcad.app/Contents/Info.plist")" = Intcad
 done
 for key in CFBundleExecutable CFBundleIconFile; do
-  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/Intcad.app/Contents/Info.plist")" = SolidCraft
+  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/Intcad.app/Contents/Info.plist")" = Intcad
 done
 # Nothing names or carries a layered icon, which macOS 26 would show in place of the icon file.
 if /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$MNT/Intcad.app/Contents/Info.plist" >/dev/null 2>&1; then
@@ -277,12 +276,12 @@ if /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$MNT/Intcad.app/Content
 fi
 test ! -e "$MNT/Intcad.app/Contents/Resources/Assets.car"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MNT/Intcad.app/Contents/Info.plist")" = "$MACOS_BUNDLE_ID"
-test -s "$MNT/Intcad.app/Contents/Resources/SolidCraft.icns"
-cmp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$MNT/Intcad.app/Contents/Resources/SolidCraft.icns"
+test -s "$MNT/Intcad.app/Contents/Resources/Intcad.icns"
+cmp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$MNT/Intcad.app/Contents/Resources/Intcad.icns"
 cmp "$ROOT/assets/platforms/macos/README.txt" "$MNT/README.txt"
 case "$ARCH" in universal) WANT=(arm64 x86_64) ;; aarch64) WANT=(arm64) ;; *) WANT=(x86_64) ;; esac
 for arch in "${WANT[@]}"; do
-  lipo "$MNT/Intcad.app/Contents/MacOS/SolidCraft" -verify_arch "$arch"
+  lipo "$MNT/Intcad.app/Contents/MacOS/Intcad" -verify_arch "$arch"
 done
 test -s "$MNT/Intcad.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
 cmp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$MNT/Intcad.app/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
@@ -301,7 +300,7 @@ if [ "$WITH_MASTRA" = 1 ]; then
 fi
 # Not --strict: the mounted HFS volume adds Finder info, which strict verification rejects.
 codesign --verify --deep --verbose=2 "$MNT/Intcad.app"
-"$MNT/Intcad.app/Contents/MacOS/SolidCraft" --version
+"$MNT/Intcad.app/Contents/MacOS/Intcad" --version
 hdiutil detach "$MNT"
 
 if [ -n "$SIGN_IDENTITY" ]; then
@@ -325,11 +324,8 @@ fi
 echo "==> building $CLI_ZIP"
 CLI_DIR="$WORK/intcad-cli-$VERSION-macos-$ARCH"
 mkdir -p "$CLI_DIR"
-cp "$WORK/bin/solidcraft-cli" "$CLI_DIR/"
-sign_code "$CLI_DIR/solidcraft-cli" "$MACOS_BUNDLE_ID.cli"
-# Compatibility shim (docs/compatibility.md): the old CLI name forwards to solidcraft-cli.
-cp "$WORK/bin/solvecraft-cli" "$CLI_DIR/"
-sign_code "$CLI_DIR/solvecraft-cli" "$MACOS_BUNDLE_ID.cli-alias"
+cp "$WORK/bin/intcad-cli" "$CLI_DIR/"
+sign_code "$CLI_DIR/intcad-cli" "$MACOS_BUNDLE_ID.cli"
 copy_docs "$CLI_DIR"
 rm -f "$CLI_ZIP"
 ditto -c -k --keepParent "$CLI_DIR" "$CLI_ZIP"
@@ -339,6 +335,6 @@ if [ "$NOTARIZE" = 1 ]; then
   notarize "$CLI_ZIP"
 fi
 
-"$WORK/bin/solidcraft-cli" --version
+"$WORK/bin/intcad-cli" --version
 echo "==> done"
 ls -lh "$DMG" "$CLI_ZIP"

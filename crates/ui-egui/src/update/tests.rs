@@ -39,37 +39,31 @@ fn probe(os: &str, release: bool, env: &[(&str, &str)], exe: &str, files: &[&str
 fn install_kinds_are_told_apart() {
     let home = "/home/me/Apps/solidcraft";
     assert_eq!(probe("linux", false, &[("APPIMAGE", "/x.AppImage")], home, &[]), InstallKind::Dev, "dev builds never check");
-    assert_eq!(probe("linux", true, &[("FLATPAK_ID", APP_ID)], "/app/bin/solidcraft", &[]), InstallKind::Flatpak(APP_ID.into()));
+    assert_eq!(probe("linux", true, &[("FLATPAK_ID", APP_ID)], "/app/bin/intcad", &[]), InstallKind::Flatpak(APP_ID.into()));
     let snap = |rev: &str| {
-        probe(
-            "linux",
-            true,
-            &[("SNAP", "/snap/solidcraft/12"), ("SNAP_NAME", "solidcraft"), ("SNAP_REVISION", rev)],
-            "/snap/solidcraft/12/usr/bin/solidcraft",
-            &[],
-        )
+        probe("linux", true, &[("SNAP", "/snap/intcad/12"), ("SNAP_NAME", "intcad"), ("SNAP_REVISION", rev)], "/snap/intcad/12/usr/bin/intcad", &[])
     };
     assert_eq!(snap("12"), InstallKind::Snap { store: true });
     assert_eq!(snap("x3"), InstallKind::Snap { store: false }, "installed from a file with --dangerous");
     assert_eq!(
-        probe("linux", true, &[("APPIMAGE", "/home/me/SolidCraft.AppImage")], "/tmp/.mount_SolidXYZ/usr/bin/solidcraft", &[]),
+        probe("linux", true, &[("APPIMAGE", "/home/me/SolidCraft.AppImage")], "/tmp/.mount_SolidXYZ/usr/bin/intcad", &[]),
         InstallKind::AppImage("/home/me/SolidCraft.AppImage".into())
     );
     // An empty variable doesn't count.
-    assert_eq!(probe("linux", true, &[("APPIMAGE", "")], "/opt/sc/bin/solidcraft", &[]), InstallKind::LinuxTarball);
-    assert_eq!(probe("linux", true, &[], "/usr/bin/solidcraft", &["/var/lib/dpkg/info/intcad.list", "/var/lib/rpm"]), InstallKind::Deb);
-    assert_eq!(probe("linux", true, &[], "/usr/bin/solidcraft", &["/var/lib/rpm"]), InstallKind::Rpm);
-    assert_eq!(probe("linux", true, &[], "/usr/bin/solidcraft", &["/usr/lib/sysimage/rpm"]), InstallKind::Rpm);
-    assert_eq!(probe("linux", true, &[], "/usr/bin/solidcraft", &[]), InstallKind::Other);
+    assert_eq!(probe("linux", true, &[("APPIMAGE", "")], "/opt/sc/bin/intcad", &[]), InstallKind::LinuxTarball);
+    assert_eq!(probe("linux", true, &[], "/usr/bin/intcad", &["/var/lib/dpkg/info/intcad.list", "/var/lib/rpm"]), InstallKind::Deb);
+    assert_eq!(probe("linux", true, &[], "/usr/bin/intcad", &["/var/lib/rpm"]), InstallKind::Rpm);
+    assert_eq!(probe("linux", true, &[], "/usr/bin/intcad", &["/usr/lib/sysimage/rpm"]), InstallKind::Rpm);
+    assert_eq!(probe("linux", true, &[], "/usr/bin/intcad", &[]), InstallKind::Other);
     assert_eq!(probe("linux", true, &[], home, &[]), InstallKind::LinuxTarball);
 
     let pf = [("ProgramFiles", "C:\\Program Files"), ("ProgramFiles(x86)", "C:\\Program Files (x86)")];
-    assert_eq!(probe("windows", true, &pf, "C:\\Program Files\\Intcad\\solidcraft.exe", &[]), InstallKind::WindowsMsi);
-    assert_eq!(probe("windows", true, &pf, "c:\\program files\\Intcad\\solidcraft.exe", &[]), InstallKind::WindowsMsi, "case-insensitive");
+    assert_eq!(probe("windows", true, &pf, "C:\\Program Files\\Intcad\\intcad.exe", &[]), InstallKind::WindowsMsi);
+    assert_eq!(probe("windows", true, &pf, "c:\\program files\\Intcad\\intcad.exe", &[]), InstallKind::WindowsMsi, "case-insensitive");
     // "C:\Program Files Extra" is not under "C:\Program Files".
-    assert_eq!(probe("windows", true, &pf, "C:\\Program Files Extra\\solidcraft.exe", &[]), InstallKind::WindowsExe);
-    let portable = "C:\\Users\\me\\intcad-0.10.0-windows-x64-portable\\solidcraft.exe";
-    let cli = "C:\\Users\\me\\intcad-0.10.0-windows-x64-portable\\solidcraft-cli.exe";
+    assert_eq!(probe("windows", true, &pf, "C:\\Program Files Extra\\intcad.exe", &[]), InstallKind::WindowsExe);
+    let portable = "C:\\Users\\me\\intcad-0.10.0-windows-x64-portable\\intcad.exe";
+    let cli = "C:\\Users\\me\\intcad-0.10.0-windows-x64-portable\\intcad-cli.exe";
     // Path::parent splits on `\` only on Windows; this test describes the layout either way.
     if cfg!(windows) {
         assert_eq!(probe("windows", true, &pf, portable, &[cli]), InstallKind::WindowsPortable);
@@ -77,38 +71,38 @@ fn install_kinds_are_told_apart() {
     assert_eq!(probe("windows", true, &pf, "C:\\Users\\me\\Downloads\\Intcad-0.10.0-windows-x64.exe", &[]), InstallKind::WindowsExe);
 
     assert_eq!(
-        probe("macos", true, &[], "/Applications/Intcad.app/Contents/MacOS/solidcraft", &[]),
+        probe("macos", true, &[], "/Applications/Intcad.app/Contents/MacOS/Intcad", &[]),
         InstallKind::MacApp("/Applications/Intcad.app".into())
     );
-    assert_eq!(probe("macos", true, &[], "/usr/local/bin/solidcraft", &[]), InstallKind::Other);
-    assert_eq!(probe("macos", false, &[], "/Applications/Intcad.app/Contents/MacOS/solidcraft", &[]), InstallKind::Dev);
-    assert_eq!(probe("freebsd", true, &[], "/usr/local/bin/solidcraft", &[]), InstallKind::Other);
+    assert_eq!(probe("macos", true, &[], "/usr/local/bin/intcad", &[]), InstallKind::Other);
+    assert_eq!(probe("macos", false, &[], "/Applications/Intcad.app/Contents/MacOS/Intcad", &[]), InstallKind::Dev);
+    assert_eq!(probe("freebsd", true, &[], "/usr/local/bin/intcad", &[]), InstallKind::Other);
     assert!(!InstallKind::Dev.checks() && !InstallKind::Web.checks() && InstallKind::Snap { store: true }.checks());
     assert!(!InstallKind::Flatpak(APP_ID.into()).checks(), "the Flatpak has no network permission; Flatpak updates it");
 }
 
 #[test]
 fn portable_windows_layout_is_recognised() {
-    let exe = PathBuf::from("/portable/solidcraft.exe");
+    let exe = PathBuf::from("/portable/intcad.exe");
     let get = |k: &str| (k == "ProgramFiles").then(|| "C:\\Program Files".to_string());
-    let exists = |p: &Path| p == Path::new("/portable/solidcraft-cli.exe");
+    let exists = |p: &Path| p == Path::new("/portable/intcad-cli.exe");
     assert_eq!(
         detect(&Probe { os: "windows", release_build: true, env: &get, exe: Some(exe), exists: &exists, msi_dir: None }),
         InstallKind::WindowsPortable
     );
 }
 
-/// #1870: the installer's wizard can put SolidCraft anywhere, and it puts solidcraft-cli.exe
+/// #1870: the installer's wizard can put SolidCraft anywhere, and it puts intcad-cli.exe
 /// beside it as the portable zip does. The folder it recorded is what tells its copy apart.
 #[test]
 fn an_msi_install_outside_program_files_is_recognised() {
-    let exe = PathBuf::from(r"D:\Program Files\Intcad\solidcraft.exe");
+    let exe = PathBuf::from(r"D:\Program Files\Intcad\intcad.exe");
     let get = |k: &str| match k {
         "ProgramFiles" | "ProgramW6432" => Some(r"C:\Program Files".to_string()),
         "ProgramFiles(x86)" => Some(r"C:\Program Files (x86)".to_string()),
         _ => None,
     };
-    // solidcraft-cli.exe is beside it.
+    // intcad-cli.exe is beside it.
     let exists = |_: &Path| true;
     let kind = |msi_dir: Option<&str>| {
         detect(&Probe { os: "windows", release_build: true, env: &get, exe: Some(exe.clone()), exists: &exists, msi_dir: msi_dir.map(PathBuf::from) })
@@ -585,7 +579,7 @@ fn the_memo_survives_with_the_preferences() {
 
 #[test]
 fn release_notes_read_as_markdown() {
-    let md = "## What's new\n\n**Why 0.10:** a minor\nbump.\n\n- **Surface tools.** Revolve and `solidcraft-cli mcp`\n  continued ([#925](https://x/925)).\n  - nested\n* Fix by @a in https://github.com/intgral-ai/open-skyfall-desktop/pull/1064\n\nSee https://example.com/x.";
+    let md = "## What's new\n\n**Why 0.10:** a minor\nbump.\n\n- **Surface tools.** Revolve and `intcad-cli mcp`\n  continued ([#925](https://x/925)).\n  - nested\n* Fix by @a in https://github.com/intgral-ai/open-skyfall-desktop/pull/1064\n\nSee https://example.com/x.";
     let b = parse_markdown(md);
     assert_eq!(b.first(), Some(&Block::Heading(vec![Span::Text("What's new".into())])));
     assert_eq!(b.get(1), Some(&Block::Paragraph(vec![Span::Strong("Why 0.10:".into()), Span::Text(" a minor bump.".into())])));
@@ -596,7 +590,7 @@ fn release_notes_read_as_markdown() {
             vec![
                 Span::Strong("Surface tools.".into()),
                 Span::Text(" Revolve and ".into()),
-                Span::Code("solidcraft-cli mcp".into()),
+                Span::Code("intcad-cli mcp".into()),
                 Span::Text(" continued (".into()),
                 Span::Link { text: "#925".into(), url: Some("https://x/925".into()) },
                 Span::Text(").".into()),
@@ -817,7 +811,7 @@ fn the_launchers_record_marks_the_install_it_made() {
         }
     };
     // The AppImage the launcher recorded; the running executable is inside its mount.
-    let run = |path: &str| managed_by("linux", &env, Some(Path::new("/tmp/.mount_SolidXYZ/usr/bin/solidcraft")), &appimage, &read(record(path)));
+    let run = |path: &str| managed_by("linux", &env, Some(Path::new("/tmp/.mount_SolidXYZ/usr/bin/intcad")), &appimage, &read(record(path)));
     assert_eq!(run("/home/me/Apps/SolidCraft.AppImage").as_deref(), Some("ArtCraft Launcher"));
     assert_eq!(seen.borrow().as_slice(), [PathBuf::from("/home/me/.local/share/artcraft-launcher/installed.json")]);
     // Another copy, a prefix that is not a folder of ours, the root and a relative path are not ours.
@@ -847,7 +841,7 @@ fn the_record_matches_folders_bundles_and_windows_paths() {
     let nothing_else = |bytes: Vec<u8>| move |_: &Path| Some(bytes.clone());
     // An unpacked tarball: the record names the folder, and the launcher's own HOME is no help,
     // so the record is found beside the `apps` folder the app runs from.
-    let exe = Path::new("/home/me/.local/share/artcraft-launcher/apps/solidcraft/bin/solidcraft");
+    let exe = Path::new("/home/me/.local/share/artcraft-launcher/apps/solidcraft/bin/intcad");
     let read = |p: &Path| {
         (p == Path::new("/home/me/.local/share/artcraft-launcher/installed.json"))
             .then(|| record("/home/me/.local/share/artcraft-launcher/apps/solidcraft"))
@@ -857,7 +851,7 @@ fn the_record_matches_folders_bundles_and_windows_paths() {
     // macOS: the bundle.
     let bundle = PathBuf::from("/Applications/Intcad.app");
     let mac = InstallKind::MacApp(bundle.clone());
-    let exe = Path::new("/Applications/Intcad.app/Contents/MacOS/solidcraft");
+    let exe = Path::new("/Applications/Intcad.app/Contents/MacOS/Intcad");
     let home = |k: &str| (k == "HOME").then(|| "/Users/me".to_string());
     let read = |p: &Path| {
         assert_eq!(p, Path::new("/Users/me/Library/Application Support/ArtCraft Launcher/installed.json"));
@@ -866,8 +860,8 @@ fn the_record_matches_folders_bundles_and_windows_paths() {
     assert_eq!(managed_by("macos", &home, Some(exe), &mac, &read).as_deref(), Some("ArtCraft Launcher"));
     // Windows: case and the verbatim prefix don't matter, and the record is under LOCALAPPDATA.
     let local = |k: &str| (k == "LOCALAPPDATA").then(|| r"C:\Users\me\AppData\Local".to_string());
-    let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\SolidCraft\solidcraft.exe");
-    let read = nothing_else(record(r"\\?\c:\users\me\appdata\local\programs\solidcraft\SOLIDCRAFT.EXE"));
+    let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\SolidCraft\intcad.exe");
+    let read = nothing_else(record(r"\\?\c:\users\me\appdata\local\programs\solidcraft\INTCAD.EXE"));
     assert_eq!(managed_by("windows", &local, Some(exe), &InstallKind::WindowsExe, &read).as_deref(), Some("ArtCraft Launcher"));
     let read = nothing_else(record(r"C:\Users\me\AppData\Local\Programs\SolidCraft2"));
     assert_eq!(managed_by("windows", &local, Some(exe), &InstallKind::WindowsExe, &read), None, "a folder whose name only starts the same");

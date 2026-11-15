@@ -11,7 +11,7 @@ Fill in every section and delete the hints in angle brackets. Keep it short: the
 2. <…>
 3. <the step that fails>
 
-Minimal script (`solidcraft-cli run repro.json`):
+Minimal script (`intcad-cli run repro.json`):
 
 ```json
 {"commands":[
@@ -46,7 +46,7 @@ The shape filled in, for a command that fails with an error. (This one is expect
 1. Box, 20 × 20 × 10 mm, corner at the origin.
 2. Fillet the top front edge, radius 12 mm.
 
-Minimal script (`solidcraft-cli run repro.json`):
+Minimal script (`intcad-cli run repro.json`):
 
 ```json
 {"commands":[

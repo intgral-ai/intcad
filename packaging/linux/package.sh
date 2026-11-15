@@ -67,27 +67,25 @@ STAGE="$WORK/root"
 rm -rf "$WORK"
 
 # ---- stage an FHS tree (shared by every format) -------------------------------------------------
-install -Dm755 "$BIN/solidcraft" "$STAGE/usr/bin/solidcraft"
-install -Dm755 "$BIN/solidcraft-cli" "$STAGE/usr/bin/solidcraft-cli"
-# Compatibility shim (docs/compatibility.md): the old CLI name forwards to solidcraft-cli.
-install -Dm755 "$BIN/solvecraft-cli" "$STAGE/usr/bin/solvecraft-cli"
-strip "$STAGE/usr/bin/solidcraft" "$STAGE/usr/bin/solidcraft-cli" "$STAGE/usr/bin/solvecraft-cli" 2>/dev/null || true
+install -Dm755 "$BIN/intcad" "$STAGE/usr/bin/intcad"
+install -Dm755 "$BIN/intcad-cli" "$STAGE/usr/bin/intcad-cli"
+strip "$STAGE/usr/bin/intcad" "$STAGE/usr/bin/intcad-cli" 2>/dev/null || true
 install -Dm644 "$ROOT/assets/platforms/linux/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$ROOT/assets/platforms/linux/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$SOLIDCRAFT_BUILD_DATE/g" \
   "$ROOT/assets/platforms/linux/$APP_ID.metainfo.xml.in" >"$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
-make_icons "$STAGE/usr/bin/solidcraft-cli" "$WORK/icons"
+make_icons "$STAGE/usr/bin/intcad-cli" "$WORK/icons"
 mkdir -p "$STAGE/usr/share/icons"
 cp -R "$WORK/icons/hicolor" "$STAGE/usr/share/icons/"
-mkdir -p "$STAGE/usr/share/doc/solidcraft"
-copy_docs "$STAGE/usr/share/doc/solidcraft"
+mkdir -p "$STAGE/usr/share/doc/intcad"
+copy_docs "$STAGE/usr/share/doc/intcad"
 # The third-party notices of the Assistant's page (Mastra's components, npm packages, fonts),
 # which the app carries built in as well (Help > About > Licences).
-install -Dm644 "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$STAGE/usr/share/doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt"
+install -Dm644 "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$STAGE/usr/share/doc/intcad/ASSISTANT-THIRD-PARTY-NOTICES.txt"
 # The platform web view's licences (GTK 3, WebKitGTK 4.1, WebView2, WKWebView), including the
 # LGPL text a dynamically linked system library needs. Also built into About > Licences.
-install -Dm644 "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$STAGE/usr/share/doc/solidcraft/WEB-VIEW-PLATFORM-NOTICES.txt"
+install -Dm644 "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$STAGE/usr/share/doc/intcad/WEB-VIEW-PLATFORM-NOTICES.txt"
 
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"
@@ -103,15 +101,15 @@ fi
 if [ "$WITH_MASTRA" = 1 ]; then
   case "$ARCH" in
     x86_64)
-      "$HERE/../mastra/stage.sh" --target x86_64-unknown-linux-gnu --dest "$STAGE/usr/lib/solidcraft/mastra"
-      mkdir -p "$STAGE/usr/share/doc/solidcraft"
-      cp "$STAGE/usr/lib/solidcraft/mastra/licenses/LICENSES.txt" "$STAGE/usr/share/doc/solidcraft/MASTRA-LICENSES.txt"
-      cp "$STAGE/usr/lib/solidcraft/mastra/notices/NOTICE.txt" "$STAGE/usr/share/doc/solidcraft/MASTRA-NOTICE.txt"
+      "$HERE/../mastra/stage.sh" --target x86_64-unknown-linux-gnu --dest "$STAGE/usr/lib/intcad/mastra"
+      mkdir -p "$STAGE/usr/share/doc/intcad"
+      cp "$STAGE/usr/lib/intcad/mastra/licenses/LICENSES.txt" "$STAGE/usr/share/doc/intcad/MASTRA-LICENSES.txt"
+      cp "$STAGE/usr/lib/intcad/mastra/notices/NOTICE.txt" "$STAGE/usr/share/doc/intcad/MASTRA-NOTICE.txt"
       ;;
     *) echo "error: the built-in Mastra workflow does not ship for Linux $ARCH in 1.0; drop --with-mastra for this package" >&2; exit 2 ;;
   esac
 else
-  mkdir -p "$STAGE/usr/lib/solidcraft"
+  mkdir -p "$STAGE/usr/lib/intcad"
   warn "the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)"
 fi
 
@@ -190,6 +188,6 @@ if has appimage; then
   fi
 fi
 
-"$STAGE/usr/bin/solidcraft-cli" --version
+"$STAGE/usr/bin/intcad-cli" --version
 echo "==> done"
 ls -lh "$DIST"

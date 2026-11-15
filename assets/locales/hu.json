@@ -4202,7 +4202,7 @@
   "ui.agent_chat_new": "Új csevegés",
   "ui.agent_chat_new_confirm": "Új csevegést indít? A jelenlegi törlődik.",
   "ui.agent_chat_next_picture": "Következő kép",
-  "ui.agent_chat_no_cli": "A solidcraft-cli nem található az alkalmazás mellett, így az ügynök nem éri el a tervet.",
+  "ui.agent_chat_no_cli": "An intcad-cli nem található az alkalmazás mellett, így az ügynök nem éri el a tervet.",
   "ui.agent_chat_no_control": "Az ügynök-csevegés végpontja nem indult el, így az ügynök nem éri el a tervet.",
   "ui.agent_chat_no_images": "Ez az ügynök nem fogad képeket",
   "ui.agent_chat_no_picture": "Nincs kép a vágólapon",

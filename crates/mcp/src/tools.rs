@@ -404,8 +404,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "Intcad's crash reports on this computer (the app's when connected to it). Without `id`: the list, newest \
              first (id, kind, time, message, command, count, version, path, replayable). With `id`: the whole report: \
              message, location, backtrace, app version and commit, system, the command that crashed and the recent ones, \
-             and design_path / replay_path when it can be replayed: `solidcraft-cli crashes replay <id>`, or \
-             `solidcraft-cli run <replay_path> --in <design_path>`. Reports never leave this computer.",
+             and design_path / replay_path when it can be replayed: `intcad-cli crashes replay <id>`, or \
+             `intcad-cli run <replay_path> --in <design_path>`. Reports never leave this computer.",
             obj(
                 json!({
                     "id": string("A report id from the list"),

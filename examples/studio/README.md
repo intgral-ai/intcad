@@ -93,8 +93,8 @@ opposite edges, one connected triangle shell and positive signed volume.
 Example replay (outputs belong outside the repository):
 
 ```text
-solidcraft-cli run examples/studio/coffee-exploded.json --save coffee.sc
-solidcraft-cli eval coffee.sc --json-out coffee-measurements.json
+intcad-cli run examples/studio/coffee-exploded.json --save coffee.sc
+intcad-cli eval coffee.sc --json-out coffee-measurements.json
 ```
 
 Use the evidence runner with the paired render-request JSON to capture runtime

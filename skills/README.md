@@ -65,6 +65,6 @@ foreach ($s in 'modeling','editing','checking','mechanisms') { Copy-Item -Recurs
 - The sketch-plane table is covered by `sketch_plane_axes_match_the_skill_reference` in the same file.
 - The worked example in `solidcraft-mechanisms/reference.md` runs in CI too: `mechanisms_skill_example_moves_as_documented` builds it, drives the hinge and checks the actuator stroke, the linked panel and the stop against their analytic values.
 - `skills_name_only_real_tools_and_commands` checks that every tool and command the skills call exists.
-- `solidcraft-checking/scripts/tests` checks that skill's helpers, its traps and conventions, and the facts behind the corrections in `solidcraft-modeling`: `PYTHONDONTWRITEBYTECODE=1 uv run --no-project --with pytest --with build123d pytest -p no:cacheprovider skills/solidcraft-checking/scripts/tests`. The tests run the `solidcraft-cli` on `PATH`, not the workspace build, and CI does not run them.
+- `solidcraft-checking/scripts/tests` checks that skill's helpers, its traps and conventions, and the facts behind the corrections in `solidcraft-modeling`: `PYTHONDONTWRITEBYTECODE=1 uv run --no-project --with pytest --with build123d pytest -p no:cacheprovider skills/solidcraft-checking/scripts/tests`. The tests run the `intcad-cli` on `PATH`, not the workspace build, and CI does not run them.
 - When a command, a parameter name or a behaviour that these files describe changes, update them in the same PR.
 - Facts that describe current limitations, such as edge picks without a distance limit, should go once the limitation is fixed.

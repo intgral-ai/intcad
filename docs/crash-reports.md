@@ -43,8 +43,8 @@ stays editable for retrying. Copying or opening a report does not modify the des
 | Windows | `%LOCALAPPDATA%\Intcad\crashes` |
 | macOS | `~/Library/Application Support/Intcad/crashes` |
 
-`SOLIDCRAFT_CRASH_DIR` overrides the folder. `solidcraft --crash-log` and
-`solidcraft-cli crashes dir` print it.
+`SOLIDCRAFT_CRASH_DIR` overrides the folder. `intcad --crash-log` and
+`intcad-cli crashes dir` print it.
 
 ## For agents
 
@@ -54,12 +54,12 @@ All of these read the same folder:
 |---|---|---|---|
 | Engine command (MCP `execute`, control channel, scripts) | `diagnostics.crash_reports {limit?}` | `diagnostics.crash_report {id}` | `diagnostics.crash_reports.clear {id?}` |
 | MCP tool | `crash_reports {limit?}` | `crash_reports {id}` | — |
-| CLI | `solidcraft-cli crashes [--json]` | `solidcraft-cli crashes show <id>` | `solidcraft-cli crashes clear [<id>]` |
+| CLI | `intcad-cli crashes [--json]` | `intcad-cli crashes show <id>` | `intcad-cli crashes clear [<id>]` |
 | Control channel (UI) | `ui.help {"item": "crashes"}` opens the window | | |
 
-**Reproduce:** `solidcraft-cli crashes replay <id>` opens the report's design, runs its
+**Reproduce:** `intcad-cli crashes replay <id>` opens the report's design, runs its
 commands, and reports whether the same internal error happens again (same place and message).
-Without the CLI, run `solidcraft-cli run <report>/replay.json --in <report>/design.sc`.
+Without the CLI, run `intcad-cli run <report>/replay.json --in <report>/design.sc`.
 A fixed crash turns into a regression test with the same two files.
 
 **Check that reporting works:** with `SOLIDCRAFT_CRASH_TEST=1` set for the app, the command

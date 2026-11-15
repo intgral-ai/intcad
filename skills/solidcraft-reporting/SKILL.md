@@ -10,17 +10,17 @@ A report the maintainers can act on reproduces in a fresh design, in as few step
 Written against SolidCraft 0.18.2. Report what you observed, never a guessed cause: "the fillet fails with `…`", not "the kernel can't handle tangent edges".
 
 ## 1. Gather (ask only for what you cannot find)
-- **Version and OS.** Help → About in the app, `solidcraft --version` or `solidcraft-cli --version`; the MCP server reports its version in `initialize` (`serverInfo.version`). Note whether the user built from source.
+- **Version and OS.** Help → About in the app, `intcad --version` or `intcad-cli --version`; the MCP server reports its version in `initialize` (`serverInfo.version`). Note whether the user built from source.
 - **What the user did**, in order, what they expected and what happened instead.
 - **The exact error text**, copied, not paraphrased: a failed `execute` or `batch` step's `failed.error`, the timeline feature's `error` in `inspect_design {"measure":false,"sketches":false}`, or the message in the app.
-- **If the app closed or froze:** `crash_reports {}` first. A matching report has the version, the command that crashed, the commands before it and a replay. `solidcraft-cli crashes replay <id>` checks that it still happens. Its `design.sc` is the user's design: see Privacy.
+- **If the app closed or froze:** `crash_reports {}` first. A matching report has the version, the command that crashed, the commands before it and a replay. `intcad-cli crashes replay <id>` checks that it still happens. Its `design.sc` is the user's design: see Privacy.
 
 ## 2. Reproduce in a fresh design
 Start from nothing, so the report does not depend on the user's file.
-- **Headless:** write the steps as a command script `{"commands":[...]}` and run `solidcraft-cli run repro.json`. A failing feature fails the run and names the feature. This never touches the design open in the app.
+- **Headless:** write the steps as a command script `{"commands":[...]}` and run `intcad-cli run repro.json`. A failing feature fails the run and names the feature. This never touches the design open in the app.
 - **Over MCP:** `new_design {}`, then the steps in one `batch {"commands":[...],"rollback":false}`. With `rollback: false` the steps before the failure stay, so you can inspect the state it failed in. When the server is bridged to the app and the open design is `dirty`, ask before `new_design`.
 - Find commands and parameters with `list_commands {"filter":"fillet"}` and `describe_command {"id":"solid.fillet"}`, not the unfiltered catalog.
-- **Only in the user's design:** `solidcraft-cli script design.sc --out repro.json` writes its history as a command script. `solidcraft-cli eval repro.json` replays it and prints the measurements; `solidcraft-cli run repro.json` stops at the first failing feature. If the script rebuilds without the problem, say so in the report: it then depends on something the history does not hold (an import, a file the design links to).
+- **Only in the user's design:** `intcad-cli script design.sc --out repro.json` writes its history as a command script. `intcad-cli eval repro.json` replays it and prints the measurements; `intcad-cli run repro.json` stops at the first failing feature. If the script rebuilds without the problem, say so in the report: it then depends on something the history does not hold (an import, a file the design links to).
 - **Interactive only** (a dialog, a pick, a drag, the viewport): write the clicks as numbered app steps. A script cannot show those.
 - Check that it fails the same way twice. A problem that comes and goes is still worth reporting; say how often it happened.
 
@@ -31,12 +31,12 @@ Shrink while the same failure, with the same message, still happens. Re-run afte
 3. Round the dimensions (10, 20, 2.5) and replace parameter expressions with numbers, unless an expression is the problem.
 4. Stop when removing anything more makes it pass. Note the boundary when you find one ("fails at radius 5, works at 4.9").
 
-**Hangs and slow commands:** never wait forever. Cap every run: `timeout 120 solidcraft-cli run repro.json --timings` prints the milliseconds of each step when the run finishes. A run that is killed prints nothing, so find the slow step by running the script one step longer at a time. Over MCP, `batch {"commands":[...],"timings":true}` reports every step's time, the failing one included. Report the step, the time, and how the time grows when you double a count or a size.
+**Hangs and slow commands:** never wait forever. Cap every run: `timeout 120 intcad-cli run repro.json --timings` prints the milliseconds of each step when the run finishes. A run that is killed prints nothing, so find the slow step by running the script one step longer at a time. Over MCP, `batch {"commands":[...],"timings":true}` reports every step's time, the failing one included. Report the step, the time, and how the time grows when you double a count or a size.
 
 ## 4. Check the claim
 - Wrong geometry: `measure {}` (volume, area, bounding box, centre of mass) against a value you computed by hand. Put both numbers in the report.
 - Wrong pick or wrong face: `body_topology {"body":"Body1"}` shows what was there to pick.
-- A look at it: `screenshot {"view":"iso"}` after the `rollback: false` batch, or `solidcraft-cli snapshot repro.json --out shot.png --view iso`. `snapshot` fails with the script when a step fails, so for a failing command snapshot the script without that step and show the state it fails on. Look at the image before you attach it.
+- A look at it: `screenshot {"view":"iso"}` after the `rollback: false` batch, or `intcad-cli snapshot repro.json --out shot.png --view iso`. `snapshot` fails with the script when a step fails, so for a failing command snapshot the script without that step and show the state it fails on. Look at the image before you attach it.
 - Re-run the final minimal script from scratch once more. Its output goes into the report as it is.
 
 ## 5. Privacy

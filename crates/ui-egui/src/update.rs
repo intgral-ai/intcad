@@ -198,7 +198,7 @@ pub fn detect(p: &Probe) -> InstallKind {
             if let Some(id) = env("FLATPAK_ID") {
                 return InstallKind::Flatpak(id);
             }
-            if env("SNAP").is_some() && env("SNAP_NAME").is_none_or(|n| n.starts_with("solidcraft")) {
+            if env("SNAP").is_some() && env("SNAP_NAME").is_none_or(|n| n.starts_with("intcad")) {
                 // Locally installed (unasserted) snaps have revisions x1, x2, …
                 return InstallKind::Snap { store: !env("SNAP_REVISION").is_some_and(|r| r.starts_with('x')) };
             }
@@ -223,7 +223,7 @@ pub fn detect(p: &Probe) -> InstallKind {
             if installed || under("ProgramFiles") || under("ProgramW6432") || under("ProgramFiles(x86)") {
                 return InstallKind::WindowsMsi;
             }
-            if exe.parent().is_some_and(|d| (p.exists)(&d.join("solidcraft-cli.exe"))) {
+            if exe.parent().is_some_and(|d| (p.exists)(&d.join("intcad-cli.exe"))) {
                 return InstallKind::WindowsPortable;
             }
             InstallKind::WindowsExe
@@ -425,7 +425,7 @@ impl InstallKind {
     pub fn update_command(&self, asset: Option<&str>) -> Option<String> {
         match self {
             InstallKind::Flatpak(id) => Some(format!("flatpak update {id}")),
-            InstallKind::Snap { store: true } => Some("sudo snap refresh solidcraft".into()),
+            InstallKind::Snap { store: true } => Some("sudo snap refresh intcad".into()),
             InstallKind::Snap { store: false } => Some(format!("sudo snap install --dangerous ./{}", asset.unwrap_or("intcad-linux-x86_64.snap"))),
             InstallKind::Deb => Some(format!("sudo apt install ./{}", asset.unwrap_or("intcad-linux-x86_64.deb"))),
             InstallKind::Rpm => Some(format!("sudo dnf install ./{}", asset.unwrap_or("intcad-linux-x86_64.rpm"))),

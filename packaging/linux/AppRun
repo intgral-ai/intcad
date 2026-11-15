@@ -17,16 +17,16 @@
 # launcher that manages AppImages (Gear Lever, AppImageLauncher) started it: it sets
 # DESKTOPINTEGRATION and owns the menu entry.
 #
-# The same step puts `solidcraft-cli` on PATH: a small wrapper script in ~/.local/bin that starts this
+# The same step puts `intcad-cli` on PATH: a small wrapper script in ~/.local/bin that starts this
 # AppImage in command-line mode (SOLIDCRAFT_APPIMAGE_CLI=1 makes AppRun run the bundled
-# solidcraft-cli), so MCP clients and shells find it by name. It is rewritten when the AppImage
+# intcad-cli), so MCP clients and shells find it by name. It is rewritten when the AppImage
 # moves, and a file there that this script did not write is never touched. The same opt-outs apply.
 
 set -u
 
 APPDIR="$(dirname "$(readlink -f "$0")")"
 DESK_ID=ai.intgral.intcad
-CLI_MARKER="# solidcraft-cli wrapper written by the SolidCraft AppImage"
+CLI_MARKER="# intcad-cli wrapper written by the SolidCraft AppImage"
 # Compatibility shim (docs/compatibility.md): the desktop ids of earlier releases (0.8 until the
 # move to Tangency Labs, and before 0.8).
 OLD_DESK_IDS="ai.storyteller.solidcraft ai.storyteller.solvecraft"
@@ -34,13 +34,13 @@ OLD_DESK_IDS="ai.storyteller.solidcraft ai.storyteller.solvecraft"
 # The wrapper in ~/.local/bin: $1 is the AppImage's path, $2 the home folder.
 install_cli() {
   bin="${XDG_BIN_HOME:-$2/.local/bin}"
-  wrapper="$bin/solidcraft-cli"
+  wrapper="$bin/intcad-cli"
   # Anything there that is not our wrapper (a file, a link, a directory) is the user's.
   if [ -e "$wrapper" ] || [ -L "$wrapper" ]; then
     [ -f "$wrapper" ] && [ ! -L "$wrapper" ] && grep -qF "$CLI_MARKER" "$wrapper" 2>/dev/null || return 0
   fi
   mkdir -p "$bin" 2>/dev/null || return 0
-  tmp="$bin/.solidcraft-cli.tmp.$$"
+  tmp="$bin/.intcad-cli.tmp.$$"
   printf '#!/bin/sh\n%s\nSOLIDCRAFT_APPIMAGE_CLI=1 exec "%s" "$@"\n' "$CLI_MARKER" "$1" >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   chmod 755 "$tmp" 2>/dev/null
   if cmp -s "$tmp" "$wrapper" 2>/dev/null; then
@@ -164,7 +164,7 @@ integrate() {
 # loader's own message is not lost, and a wrong guess here costs nothing.
 missing_libraries() {
   command -v ldd >/dev/null 2>&1 || return 0
-  missing="$(ldd "$APPDIR/usr/bin/solidcraft" 2>/dev/null | awk '/not found/ { print $1 }' | sort -u | tr '\n' ' ')"
+  missing="$(ldd "$APPDIR/usr/bin/intcad" 2>/dev/null | awk '/not found/ { print $1 }' | sort -u | tr '\n' ' ')"
   missing="${missing% }"
   [ -n "$missing" ] || return 0
   text="Intcad cannot start: this system lacks $missing.
@@ -187,9 +187,9 @@ It needs the system's WebKitGTK 4.1 (with GTK 3). Install it with:
 # Started through the wrapper `integrate` installs: the command-line tool, with no integration.
 if [ "${SOLIDCRAFT_APPIMAGE_CLI:-}" = 1 ]; then
   unset SOLIDCRAFT_APPIMAGE_CLI
-  exec "$APPDIR/usr/bin/solidcraft-cli" "$@"
+  exec "$APPDIR/usr/bin/intcad-cli" "$@"
 fi
 
 missing_libraries
 integrate
-exec "$APPDIR/usr/bin/solidcraft" "$@"
+exec "$APPDIR/usr/bin/intcad" "$@"

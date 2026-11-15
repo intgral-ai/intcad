@@ -24,7 +24,7 @@ id: ai.intgral.intcad
 runtime: org.gnome.Platform
 runtime-version: '51'
 sdk: org.gnome.Sdk
-command: solidcraft
+command: intcad
 finish-args:
   # Display: Wayland first, with the X11 socket for the XWayland window whose child view hosts
   # the Assistant. `fallback-x11` gives no X11 socket under a Wayland session, so the page could
@@ -51,17 +51,15 @@ modules:
   - name: solidcraft
     buildsystem: simple
     build-commands:
-      - install -Dm755 bin/solidcraft /app/bin/solidcraft
-      - install -Dm755 bin/solidcraft-cli /app/bin/solidcraft-cli
-      # The old CLI name, forwarding to solidcraft-cli (compatibility shim, docs/compatibility.md).
-      - install -Dm755 bin/solvecraft-cli /app/bin/solvecraft-cli
+      - install -Dm755 bin/intcad /app/bin/intcad
+      - install -Dm755 bin/intcad-cli /app/bin/intcad-cli
       - install -Dm644 share/applications/ai.intgral.intcad.desktop /app/share/applications/ai.intgral.intcad.desktop
       - install -Dm644 share/mime/packages/ai.intgral.intcad.xml /app/share/mime/packages/ai.intgral.intcad.xml
       # Already has the release's version and date substituted by package.sh.
       - install -Dm644 share/metainfo/ai.intgral.intcad.metainfo.xml /app/share/metainfo/ai.intgral.intcad.metainfo.xml
-      - mkdir -p /app/share/icons /app/share/doc && cp -R share/icons/hicolor /app/share/icons/ && cp -R share/doc/solidcraft /app/share/doc/
+      - mkdir -p /app/share/icons /app/share/doc && cp -R share/icons/hicolor /app/share/icons/ && cp -R share/doc/intcad /app/share/doc/
       # Application-relative Mastra runtime; absent on architectures that do not advertise it.
-      - if [ -d lib/solidcraft ]; then mkdir -p /app/lib && cp -R lib/solidcraft /app/lib/; fi
+      - if [ -d lib/intcad ]; then mkdir -p /app/lib && cp -R lib/intcad /app/lib/; fi
     sources:
       - type: dir
         path: stage

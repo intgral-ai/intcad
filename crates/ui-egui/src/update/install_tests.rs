@@ -44,7 +44,7 @@ fn signatures_must_match_the_key_the_list_and_the_release() {
 
 #[test]
 fn methods_per_installation() {
-    let exe = Path::new("/x/solidcraft.exe");
+    let exe = Path::new("/x/intcad.exe");
     assert_eq!(method(&InstallKind::AppImage("/a/S.AppImage".into()), Some(exe)), Some(Method::AppImage("/a/S.AppImage".into())));
     assert_eq!(method(&InstallKind::WindowsMsi, Some(exe)), Some(Method::Msi));
     assert_eq!(method(&InstallKind::WindowsPortable, Some(exe)), Some(Method::PortableZip(exe.into())));
@@ -178,15 +178,15 @@ fn an_appimage_is_replaced_only_when_it_verifies() {
 #[test]
 fn the_portable_zip_swaps_both_executables() {
     let dir = scratch("portable");
-    let exe = dir.join("solidcraft.exe");
+    let exe = dir.join("intcad.exe");
     std::fs::write(&exe, b"old app").unwrap();
-    std::fs::write(dir.join("solidcraft-cli.exe"), b"old cli").unwrap();
+    std::fs::write(dir.join("intcad-cli.exe"), b"old cli").unwrap();
     let mut zip_bytes = Vec::new();
     {
         let mut z = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
         let o = zip::write::SimpleFileOptions::default();
         z.add_directory("intcad-9.9.9-windows-x64-portable/", o).unwrap();
-        for (n, b) in [("solidcraft.exe", &b"new app"[..]), ("solidcraft-cli.exe", b"new cli"), ("README.md", b"readme")] {
+        for (n, b) in [("intcad.exe", &b"new app"[..]), ("intcad-cli.exe", b"new cli"), ("README.md", b"readme")] {
             z.start_file(format!("intcad-9.9.9-windows-x64-portable/{n}"), o).unwrap();
             z.write_all(b).unwrap();
         }
@@ -199,7 +199,7 @@ fn the_portable_zip_swaps_both_executables() {
         run(&r, &InstallKind::WindowsPortable, &Method::PortableZip(exe.clone()), "x86_64", &n, &dir.join("staging"), &Progress::default()).unwrap();
     assert_eq!(out, Outcome::Restart(exe.clone()));
     assert_eq!(std::fs::read(&exe).unwrap(), b"new app");
-    assert_eq!(std::fs::read(dir.join("solidcraft-cli.exe")).unwrap(), b"new cli");
+    assert_eq!(std::fs::read(dir.join("intcad-cli.exe")).unwrap(), b"new cli");
     assert!(!dir.join("staging").join(name).exists(), "the zip is removed");
     // A zip without the app is refused and changes nothing.
     std::fs::write(dir.join("empty.zip"), {
@@ -211,9 +211,9 @@ fn the_portable_zip_swaps_both_executables() {
     assert!(apply(&Method::PortableZip(exe.clone()), &dir.join("empty.zip")).is_err());
     assert_eq!(std::fs::read(&exe).unwrap(), b"new app");
     // The moved-aside executable of an update goes at the next start.
-    std::fs::write(dir.join("solidcraft.exe.old"), b"x").unwrap();
+    std::fs::write(dir.join("intcad.exe.old"), b"x").unwrap();
     clean_up_after_update(Some(&exe));
-    assert!(!dir.join("solidcraft.exe.old").exists());
+    assert!(!dir.join("intcad.exe.old").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

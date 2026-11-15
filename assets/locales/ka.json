@@ -4313,7 +4313,7 @@
   "ui.agent_chat_new": "ახალი ჩატი",
   "ui.agent_chat_new_confirm": "დავიწყოთ ახალი ჩატი? მიმდინარე გასუფთავდება.",
   "ui.agent_chat_next_picture": "შემდეგი სურათი",
-  "ui.agent_chat_no_cli": "solidcraft-cli აპის გვერდით ვერ მოიძებნა, ამიტომ აგენტი პროექტს ვერ მისწვდება.",
+  "ui.agent_chat_no_cli": "intcad-cli აპის გვერდით ვერ მოიძებნა, ამიტომ აგენტი პროექტს ვერ მისწვდება.",
   "ui.agent_chat_no_control": "აგენტის ჩატის ენდპოინტი არ გაეშვა, ამიტომ აგენტი პროექტს ვერ მისწვდება.",
   "ui.agent_chat_no_images": "ეს აგენტი სურათებს არ იღებს",
   "ui.agent_chat_no_picture": "გაცვლის ბუფერში სურათი არ არის",

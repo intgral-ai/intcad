@@ -1,4 +1,4 @@
-//! `solidcraft-cli validate`: drive the engine's local `ValidationPort` from a scriptable CLI.
+//! `intcad-cli validate`: drive the engine's local `ValidationPort` from a scriptable CLI.
 //!
 //! The request is the contract's `submit` payload (`candidate`, `profile`, `requestId`); the
 //! actual `CheckProfile` for a task profile comes from `--profile FILE`. `submit` runs the local
@@ -17,7 +17,7 @@ use solidcraft_engine::validation::{
 };
 
 /// `validate`'s lines in the top-level usage.
-pub const USAGE: &str = "  solidcraft-cli validate submit <request.json> [--profile FILE] [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate skill <request.json> --profile FILE [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate status <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  solidcraft-cli validate report <runId> [--candidate-dir DIR] [--validation-dir DIR] [--out FILE]\n  solidcraft-cli validate cancel <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n      (submit admits the candidate/profile job, runs the local headless worker and prints its status;\n       skill uses the same port through the UI-free skill path, requires live {documentId, revision}\n       and prints the bound SkillValidationReport. A quality failure is a terminal report, not a CLI\n       error. --profile is the complete task profile; native-basic needs none. The request is\n       {candidate, profile, requestId[, live]} and requestId is '<unix-ms>:<uuid-v4>'. --json-out/--out\n       write the same JSON to a file.)\n";
+pub const USAGE: &str = "  intcad-cli validate submit <request.json> [--profile FILE] [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  intcad-cli validate skill <request.json> --profile FILE [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  intcad-cli validate status <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n  intcad-cli validate report <runId> [--candidate-dir DIR] [--validation-dir DIR] [--out FILE]\n  intcad-cli validate cancel <runId> [--candidate-dir DIR] [--validation-dir DIR] [--json-out FILE]\n      (submit admits the candidate/profile job, runs the local headless worker and prints its status;\n       skill uses the same port through the UI-free skill path, requires live {documentId, revision}\n       and prints the bound SkillValidationReport. A quality failure is a terminal report, not a CLI\n       error. --profile is the complete task profile; native-basic needs none. The request is\n       {candidate, profile, requestId[, live]} and requestId is '<unix-ms>:<uuid-v4>'. --json-out/--out\n       write the same JSON to a file.)\n";
 
 struct SubmitRequest {
     candidate: CandidateRef,

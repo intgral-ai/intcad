@@ -4208,7 +4208,7 @@
   "ui.agent_chat_new": "Nuova chat",
   "ui.agent_chat_new_confirm": "Avviare una nuova chat? Quella corrente verrà cancellata.",
   "ui.agent_chat_next_picture": "Immagine successiva",
-  "ui.agent_chat_no_cli": "solidcraft-cli non è stato trovato accanto all'applicazione, quindi l'agente non può accedere al progetto.",
+  "ui.agent_chat_no_cli": "intcad-cli non è stato trovato accanto all'applicazione, quindi l'agente non può accedere al progetto.",
   "ui.agent_chat_no_control": "L'endpoint della chat con l'agente non si è avviato, quindi l'agente non può accedere al progetto.",
   "ui.agent_chat_no_images": "Questo agente non accetta immagini",
   "ui.agent_chat_no_picture": "Negli appunti non c'è nessuna immagine",

@@ -130,7 +130,7 @@ and with its update check off as well (`SOLIDCRAFT_UPDATE_CHECK=0`):
   runner's download carries no quarantine mark, so **Gatekeeper is not exercised**:
   an ad-hoc signature does not pass it on a user's Mac.
 - **Windows** (`packaging/windows/installed-check.ps1`): the MSI is installed for
-  the machine, the installed `solidcraft.exe` must be byte for byte the one the job
+  the machine, the installed `intcad.exe` must be byte for byte the one the job
   built, the firewall blocks it and the WebView2 runtime's processes from reaching
   out (a copy of `curl.exe` under the same kind of rule shows the block holds),
   `tools/windows-assistant-smoke.ps1` runs against the installed app, and the MSI

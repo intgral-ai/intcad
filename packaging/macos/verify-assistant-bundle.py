@@ -3,7 +3,7 @@
 
 The page is not a folder of files in the app: solidcraft embeds packages/assistant-web/dist in
 its executable with include_bytes!. This check therefore looks for each built file's exact bytes
-inside Contents/MacOS/SolidCraft, and for the records the package carries beside it:
+inside Contents/MacOS/Intcad, and for the records the package carries beside it:
 
   Contents/Resources/Assistant/inventory.json
   Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt

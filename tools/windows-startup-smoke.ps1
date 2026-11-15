@@ -2,7 +2,7 @@
 # draws a frame and quits cleanly, with no crash report. The CI runner has no GPU: its D3D12 adapter
 # is WARP, so this exercises the backend order's fallback and the D3D12 path end to end.
 #
-# Usage: tools/windows-startup-smoke.ps1 -Exe target\ci\solidcraft.exe
+# Usage: tools/windows-startup-smoke.ps1 -Exe target\ci\intcad.exe
 param([Parameter(Mandatory = $true)][string]$Exe)
 $ErrorActionPreference = 'Stop'
 

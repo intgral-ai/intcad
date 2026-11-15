@@ -190,7 +190,7 @@ fn current_exe() -> Option<PathBuf> {
 
 /// Candidate application-relative runtime directories, most specific first. They follow each
 /// package's installed layout: macOS `Contents/Resources/mastra`, Linux FHS
-/// `/usr/lib/solidcraft/mastra`, and `mastra/` next to a Windows executable. A universal macOS
+/// `/usr/lib/intcad/mastra`, and `mastra/` next to a Windows executable. A universal macOS
 /// app may also carry one folder per architecture under `mastra/<triple>`.
 pub fn roots(exe: &Path) -> Vec<PathBuf> {
     let Some(dir) = exe.parent() else { return Vec::new() };
@@ -205,9 +205,9 @@ pub fn roots(exe: &Path) -> Vec<PathBuf> {
     } else if cfg!(target_os = "linux")
         && let Some(prefix) = dir.parent()
     {
-        roots.push(prefix.join("lib/solidcraft/mastra"));
+        roots.push(prefix.join("lib/intcad/mastra"));
         if let Some(target) = host_target() {
-            roots.push(prefix.join("lib/solidcraft/mastra").join(target));
+            roots.push(prefix.join("lib/intcad/mastra").join(target));
         }
     }
     roots.push(dir.join("mastra"));
@@ -456,11 +456,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sc-packaged-runtime-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (exe, root) = if cfg!(target_os = "macos") {
-            (dir.join("Contents/MacOS/SolidCraft"), dir.join("Contents/Resources/mastra"))
+            (dir.join("Contents/MacOS/Intcad"), dir.join("Contents/Resources/mastra"))
         } else if cfg!(target_os = "windows") {
-            (dir.join("bin/solidcraft.exe"), dir.join("bin/mastra"))
+            (dir.join("bin/intcad.exe"), dir.join("bin/mastra"))
         } else {
-            (dir.join("usr/bin/solidcraft"), dir.join("usr/lib/solidcraft/mastra"))
+            (dir.join("usr/bin/intcad"), dir.join("usr/lib/intcad/mastra"))
         };
         std::fs::create_dir_all(&exe).unwrap();
         std::fs::create_dir_all(root.join("node_modules/example")).unwrap();

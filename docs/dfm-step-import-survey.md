@@ -30,7 +30,7 @@ separately.
 | `jaimeuyd__MotorBracketBent.step` | `4c811664812f8a02eedc9630037d43bcd27ba0dd5078faece1ea3750b522004e` | B-spline bracket, import refused |
 
 Reproduction: the local evidence directory (not committed) holds the re-run driver, per-part
-configs and logs. It uses the prebuilt `solidcraft-cli` at develop `1a45733` and INTdfm `22c3f3a`.
+configs and logs. It uses the prebuilt `intcad-cli` at develop `1a45733` and INTdfm `22c3f3a`.
 The scripts download only the public files above, verify their hashes, and keep all output outside
 both repositories.
 

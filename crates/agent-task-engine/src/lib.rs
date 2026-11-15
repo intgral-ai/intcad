@@ -730,7 +730,7 @@ mod live_tests {
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("solidcraft-live-task-{name}-{}-{nanos}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("intcad-live-task-{name}-{}-{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

@@ -68,7 +68,7 @@ jobs:
       - run: cargo build --release --locked -p solidcraft-cli
       - run: |
           . packaging/env.sh
-          make_icons target/release/solidcraft-cli icons
+          make_icons target/release/intcad-cli icons
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: icons-${{ github.sha }}
@@ -114,17 +114,18 @@ jobs:
       - name: Check the packages (no desktop launch)
         run: |
           dpkg-deb --info dist/release/*.deb
-          dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/solidcraft$|usr/bin/solidcraft-cli$|metainfo|applications|THIRD-PARTY-LICENSES.txt'
+          dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/intcad$|usr/bin/intcad-cli$|metainfo|applications|THIRD-PARTY-LICENSES.txt'
           # The notices of the Assistant's page go with every package that carries the page.
-          dpkg-deb --contents dist/release/*.deb | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
-          rpm -qlp dist/release/*.rpm | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
-          tar -tzf dist/release/*.tar.gz | grep -F 'doc/solidcraft/ASSISTANT-THIRD-PARTY-NOTICES.txt'
-          dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/solvecraft-cli$'
-          dpkg-deb --field dist/release/*.deb Replaces Conflicts Provides | grep -F solvecraft
+          dpkg-deb --contents dist/release/*.deb | grep -F 'doc/intcad/ASSISTANT-THIRD-PARTY-NOTICES.txt'
+          rpm -qlp dist/release/*.rpm | grep -F 'doc/intcad/ASSISTANT-THIRD-PARTY-NOTICES.txt'
+          tar -tzf dist/release/*.tar.gz | grep -F 'doc/intcad/ASSISTANT-THIRD-PARTY-NOTICES.txt'
+          # Intcad's package takes nothing over from upstream's: not its old CLI name, not its package names.
+          ! dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/(solvecraft|solidcraft)'
+          ! dpkg-deb --field dist/release/*.deb Replaces Conflicts Provides | grep -E 'solvecraft|solidcraft'
           rpm -qip dist/release/*.rpm
-          rpm -qlp dist/release/*.rpm | grep -E '/usr/bin/solidcraft$|THIRD-PARTY-LICENSES.txt'
-          tar -tzf dist/release/*.tar.gz | grep -E '/bin/solidcraft$|THIRD-PARTY-LICENSES.txt'
-          ldd target/release/solidcraft
+          rpm -qlp dist/release/*.rpm | grep -E '/usr/bin/intcad$|THIRD-PARTY-LICENSES.txt'
+          tar -tzf dist/release/*.tar.gz | grep -E '/bin/intcad$|THIRD-PARTY-LICENSES.txt'
+          ldd target/release/intcad
           # This runner has the web view's libraries (it built against them), so an AppImage
           # that starts here says nothing about a user's machine: the next step covers that.
           for appimage in dist/release/*.AppImage; do
@@ -325,7 +326,7 @@ jobs:
         run: |
           # Each path on its own: an alternation passes as soon as one of them is there.
           listing="$(tar --zstd -tf "$PKG")"
-          for path in usr/bin/solidcraft usr/bin/solidcraft-cli usr/share/applications/ai.intgral.intcad.desktop; do
+          for path in usr/bin/intcad usr/bin/intcad-cli usr/share/applications/ai.intgral.intcad.desktop; do
             grep -qxF "$path" <<<"$listing" || { echo "::error::$path is not in the package"; exit 1; }
           done
           info="$(mktemp)"
@@ -379,13 +380,13 @@ jobs:
           snap_file="dist/release/intcad-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.snap"
           sudo snap install --dangerous "$snap_file"
           snap info --verbose "$snap_file" | head -n 12
-          snap connections solidcraft
-          solidcraft.cli --version
+          snap connections intcad
+          intcad.cli --version
           # The gnome extension on core24 is gnome-46-2404. Its content snap stage-packages
           # libwebkit2gtk-4.1-0 and its SDK supplies GTK 3, so a clean install gets the
           # Assistant's two libraries without duplicating them in this snap. Check the
           # mounted content and its connection; the app itself is not started here.
-          snap connections solidcraft | grep -F 'gnome-46-2404'
+          snap connections intcad | grep -F 'gnome-46-2404'
           for lib in libgtk-3.so.0 libwebkit2gtk-4.1.so.0; do
             if [ -z "$(find -L /snap/gnome-46-2404/current -name "$lib" -print -quit)" ]; then
               echo "::error::the gnome-46-2404 content snap does not provide $lib"
@@ -454,7 +455,7 @@ jobs:
             bash packaging/freebsd/package.sh
             # Each path on its own: an alternation passes as soon as one of them is there.
             listing="$(tar -tzf dist/release/intcad-*-freebsd-x86_64.tar.gz)"
-            for path in bin/solidcraft bin/solidcraft-cli share/applications/ai.intgral.intcad.desktop share/doc/solidcraft/THIRD-PARTY-LICENSES.txt; do
+            for path in bin/intcad bin/intcad-cli share/applications/ai.intgral.intcad.desktop share/doc/intcad/THIRD-PARTY-LICENSES.txt; do
               found=0
               for entry in $listing; do case "$entry" in */"$path") found=1; break ;; esac; done
               [ "$found" = 1 ] || { echo "$path is not in the package" >&2; exit 1; }
@@ -492,9 +493,8 @@ jobs:
         with:
           name: macos-bin-${{ matrix.arch }}-${{ github.sha }}
           path: |
-            target/${{ matrix.target }}/release/solidcraft
-            target/${{ matrix.target }}/release/solidcraft-cli
-            target/${{ matrix.target }}/release/solvecraft-cli
+            target/${{ matrix.target }}/release/intcad
+            target/${{ matrix.target }}/release/intcad-cli
           if-no-files-found: error
 
   macos:
@@ -518,7 +518,7 @@ jobs:
           path: target/x86_64-apple-darwin/release
       - name: Join, package and mount-check (no credential signing)
         run: |
-          chmod +x target/*-apple-darwin/release/solidcraft target/*-apple-darwin/release/solidcraft-cli target/*-apple-darwin/release/solvecraft-cli
+          chmod +x target/*-apple-darwin/release/intcad target/*-apple-darwin/release/intcad-cli
           packaging/macos/package.sh --arch universal --skip-build
       # The app as a user gets it: copied out of the disk image, started, the Assistant opened
       # (packaging/assistant-check.py). The app is started without the network, in a sandbox
