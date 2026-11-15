@@ -42,7 +42,7 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-export SOLIDCRAFT_MAINTAINER="${SOLIDCRAFT_MAINTAINER:-${SOLVECRAFT_MAINTAINER:-Intgral <https://github.com/intgral-ai/open-skyfall-desktop>}}"  # SOLVECRAFT_*: compatibility shim, see docs/compatibility.md
+export SOLIDCRAFT_MAINTAINER="${SOLIDCRAFT_MAINTAINER:-${SOLVECRAFT_MAINTAINER:-Intgral <https://github.com/intgral-ai/intcad>}}"  # SOLVECRAFT_*: compatibility shim, see docs/compatibility.md
 BASENAME="intcad-$VERSION-linux-$ARCH"
 
 echo "==> SolidCraft $VERSION for Linux $ARCH ($FORMATS)"
@@ -165,7 +165,7 @@ if has appimage; then
   # Update information: AppImageUpdate and the like fetch only the changed blocks of a newer
   # release through the .zsync published next to each AppImage. `latest` is the newest published
   # release that is not a pre-release.
-  REPO="${GITHUB_REPOSITORY:-intgral-ai/open-skyfall-desktop}"
+  REPO="${GITHUB_REPOSITORY:-intgral-ai/intcad}"
   UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|intcad-*-linux-$ARCH.AppImage.zsync"
   # Extract-and-run: works without FUSE (containers, CI). With zsyncmake on the host appimagetool
   # also writes the .zsync, into its working directory, hence the cd.

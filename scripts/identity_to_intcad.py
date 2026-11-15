@@ -14,6 +14,7 @@ SolidCraft under another label:
   - the deb / rpm package name
   - the settings, data and cache folders, where docs, comments, messages and check scripts
     spell them (the code that picks the folders is edited by hand)
+  - the repository's own name in what a package says about itself (see REPO_FILES)
 
 Binary names (`solidcraft`, `solidcraft-cli`) and the MCP server name are a separate change. Until
 it lands the two products still collide where those names are installed: the Linux packages
@@ -134,6 +135,18 @@ EXACT = {
     "packaging/macos/package.sh": [('  SolidCraft "$DMG"\n', '  Intcad "$DMG"\n')],
 }
 
+# The repository was renamed. These files carry its name into a package: the links Windows shows
+# for an installed program, the deb / rpm / snap / Nix homepage and maintainer, the AppStream
+# links, the AppImage's update source when it is built outside CI, the web app's preview card.
+# Only these: the update check, the docs and the dated records that name the repository are not
+# package metadata.
+OLD_REPO, NEW_REPO = "intgral-ai/open-skyfall-desktop", "intgral-ai/intcad"
+REPO_FILES = {
+    "Cargo.toml", "flake.nix", "apps/solidcraft-web/index.html",
+    "assets/platforms/windows/solidcraft.wxs", f"assets/platforms/linux/{NEW_ID}.metainfo.xml.in",
+    "packaging/linux/nfpm.yaml", "packaging/linux/package.sh", "packaging/linux/snap/snapcraft.yaml",
+}
+
 
 def git(*args):
     return subprocess.run(["git", *args], capture_output=True, check=True).stdout.decode()
@@ -171,6 +184,8 @@ def main():
                 )
             else:
                 new = pattern.sub(replacement, new)
+        if rel.replace(OLD_ID, NEW_ID) in REPO_FILES:
+            new = new.replace(OLD_REPO, NEW_REPO)
         for before, after in EXACT.get(rel, []):
             if before in new:
                 new = new.replace(before, after)

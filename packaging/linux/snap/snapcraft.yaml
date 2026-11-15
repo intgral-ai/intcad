@@ -31,10 +31,10 @@ description: |
   The command-line tool is `solidcraft.cli` (for example `solidcraft.cli mcp`).
 adopt-info: solidcraft
 license: MIT OR Apache-2.0
-contact: https://github.com/intgral-ai/open-skyfall-desktop/issues
-website: https://github.com/intgral-ai/open-skyfall-desktop
-source-code: https://github.com/intgral-ai/open-skyfall-desktop
-issues: https://github.com/intgral-ai/open-skyfall-desktop/issues
+contact: https://github.com/intgral-ai/intcad/issues
+website: https://github.com/intgral-ai/intcad
+source-code: https://github.com/intgral-ai/intcad
+issues: https://github.com/intgral-ai/intcad/issues
 icon: stage/share/icons/hicolor/512x512/apps/ai.intgral.intcad.png
 base: core24
 grade: stable
