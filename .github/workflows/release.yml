@@ -5,6 +5,11 @@ name: Package builds (nonpublishing)
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      beta_three_platforms:
+        description: "Build only the Beta Linux x86_64, macOS universal and Windows x64 packages"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -224,6 +229,7 @@ jobs:
   flatpak:
     name: Flatpak ${{ matrix.arch }}
     needs: [version, linux]
+    if: inputs.beta_three_platforms != true
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -260,6 +266,7 @@ jobs:
   arch:
     name: Arch Linux ${{ matrix.arch }}
     needs: [version, linux]
+    if: inputs.beta_three_platforms != true
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -331,6 +338,7 @@ jobs:
   snap:
     name: Snap ${{ matrix.arch }}
     needs: [version, linux]
+    if: inputs.beta_three_platforms != true
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -350,7 +358,13 @@ jobs:
           name: release-linux-${{ matrix.arch }}
           path: dist/linux
       - name: Install snapcraft
-        run: sudo snap install snapcraft --classic
+        run: |
+          # The store can reset a snapd download; retry the same install a few times.
+          for attempt in 1 2 3; do
+            if sudo snap install snapcraft --classic; then exit 0; fi
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Build the snap
         run: |
           sudo --preserve-env=SOLIDCRAFT_VERSION,SOLIDCRAFT_BUILD_DATE env "PATH=$PATH" \
@@ -407,6 +421,7 @@ jobs:
   freebsd:
     name: FreeBSD x86_64
     needs: version
+    if: inputs.beta_three_platforms != true
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -581,6 +596,7 @@ jobs:
   web:
     name: Web (wasm)
     needs: version
+    if: inputs.beta_three_platforms != true
     runs-on: ubuntu-24.04
     env:
       SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}

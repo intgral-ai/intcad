@@ -513,6 +513,35 @@ fn cancellation_persists_a_marker_and_a_late_pass_cannot_overwrite_it() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Two processes can race to commit the same terminal state (the CLI's submit and a second
+/// process's cancel). The first report is authoritative; the second must not report a mismatch.
+#[test]
+fn a_second_report_for_the_same_terminal_state_is_idempotent() {
+    let root = scratch("cancel-report-idempotent");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-cancel-report", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    assert_eq!(port.cancel(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    let admission = port.load_admission(&run.run_id).unwrap();
+    let profile = port.store.read_profile(&run.run_id).unwrap();
+    clock.advance(1_000);
+    let second = port.recovery_report(
+        &admission,
+        &profile,
+        ValidationState::Cancelled,
+        Some(ValidationError::cancelled("a second observer cancelled the job")),
+    );
+    assert!(port.commit_report(&run.run_id, second, ValidationState::Cancelled).is_ok());
+    assert_eq!(port.report(&run.run_id).unwrap().report.state, ValidationState::Cancelled);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn a_queued_job_cancel_is_immediate_and_idempotent() {
     let root = scratch("cancel-queued");

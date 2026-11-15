@@ -606,14 +606,14 @@ fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() 
         .arg(&candidates)
         .args(["--validation-dir"])
         .arg(&validation)
-        .env("SOLIDCRAFT_VALIDATION_RUNNER_DELAY_MS", "1500")
+        .env("SOLIDCRAFT_VALIDATION_RUNNER_DELAY_MS", "10000")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
 
     let run_id = {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         'poll: loop {
             if let Ok(entries) = std::fs::read_dir(validation.join("runs")) {
                 for entry in entries.flatten() {

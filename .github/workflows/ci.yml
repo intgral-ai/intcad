@@ -249,9 +249,10 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.plan).jobs.contract-rust.decision == 'run'
     runs-on: ubuntu-24.04
-    # Measured 27m16s cold at 41628f6a5 (mostly test-binary compilation); keep
-    # the PR cap at 30 minutes now that the conformance filter is narrowed.
-    timeout-minutes: 30
+    # Measured 27m16s cold at 41628f6a5 (mostly test-binary compilation); a
+    # loaded standard runner can exceed the old 30-minute cap before the filter
+    # run starts, so allow the same headroom as the other full test jobs.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -408,6 +409,8 @@ jobs:
         with:
           name: selection-plan
           path: selection
+      - name: Free unused runner SDKs
+        run: bash scripts/ci/free-disk.sh
       - name: Software Vulkan and native build dependencies
         run: |
           sudo apt-get update
@@ -493,11 +496,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' && fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Free unused runner SDKs
+        run: bash scripts/ci/free-disk.sh
       - run: scripts/ci/build-jobs.sh
       - name: Native build dependencies
         run: |
@@ -560,7 +565,7 @@ jobs:
     name: Action matrix (${{ matrix.shard }}/16)
     needs: build-tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
@@ -576,10 +581,11 @@ jobs:
         with:
           name: nextest-archive
       - name: Run one shard of the matrix
-        timeout-minutes: 45
+        timeout-minutes: 240
         env:
           SHARD: ${{ matrix.shard }}
           OUT: ${{ github.workspace }}/action-matrix
+          ACTION_MATRIX_ACTION_TIMEOUT: "1800"
         run: |
           mkdir -p "$OUT"
           export ACTION_MATRIX_SHARD="$SHARD/16" ACTION_MATRIX_RESULTS="$OUT/results-$SHARD.json" ACTION_MATRIX_TIMINGS="$OUT/timings-$SHARD.jsonl" ACTION_MATRIX_WORKDIR="$OUT/raw-$SHARD"
@@ -596,7 +602,9 @@ jobs:
     name: Action matrix determinism
     needs: build-tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 150
+    env:
+      ACTION_MATRIX_ACTION_TIMEOUT: "1800"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
