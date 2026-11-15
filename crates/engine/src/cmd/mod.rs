@@ -66,6 +66,9 @@ mod component_link;
 pub use component_link::resolve_design_links;
 mod config;
 mod design_link;
+mod dfm;
+#[cfg(not(target_arch = "wasm32"))]
+mod dfm_check;
 mod file;
 mod frame;
 pub(crate) mod inspect;
@@ -95,6 +98,7 @@ mod parameter_sweep;
 mod parameters;
 mod plastic;
 mod print_face;
+mod project;
 mod render;
 mod render_ui;
 #[cfg(test)]
@@ -355,6 +359,10 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(parameters::COMMANDS.iter());
     v.extend(parameter_sweep::COMMANDS.iter());
     v.extend(file::COMMANDS.iter());
+    v.extend(project::COMMANDS.iter());
+    v.extend(dfm::COMMANDS.iter());
+    #[cfg(not(target_arch = "wasm32"))]
+    v.extend(dfm_check::COMMANDS.iter());
     v.extend(print_face::COMMANDS.iter());
     v.extend(metadata::COMMANDS.iter());
     v.extend(snapshot::COMMANDS.iter());

@@ -25,6 +25,7 @@ mod api_client;
 pub mod attach;
 pub mod backend;
 pub mod context;
+pub(crate) mod dfm_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod discover;
 pub mod gate;
@@ -307,6 +308,9 @@ pub enum Item {
 
 /// The message being answered: what undo and the limits need.
 struct Turn {
+    /// This conversation's identity for the message; an accepted preview refers to it after the
+    /// reply has ended.
+    id: u64,
     /// Deferred requests stop being valid when this turn ends or its tab is left.
     active: Arc<std::sync::atomic::AtomicBool>,
     /// The design and the undo depth before it.
@@ -520,6 +524,10 @@ pub struct AgentChat {
     running_endpoint: String,
     backend: Option<Box<dyn ChatBackend>>,
     turn: Option<Turn>,
+    /// The next message's identity, for the automatic DFM check's commit keys.
+    next_turn: u64,
+    /// Automatic DFM checks: the host seam and the round de-duplication (PIL-305).
+    pub(crate) dfm: dfm_runtime::HostDfm,
     /// The design as the agent last saw it: at the end of its last turn that it answered or worked
     /// in. The next message tells it when the design is no longer that one (#10854).
     seen: Option<Arc<solidcraft_engine::doc::Document>>,
@@ -1392,6 +1400,108 @@ pub fn disconnect(app: &mut SolveApp) {
     app.agent_chat.disconnect_document(&mut app.session, false);
 }
 
+/// Read the project's `ci.toml` automatic-check switch.
+#[allow(dead_code)]
+pub(crate) fn set_dfm_auto_enabled(app: &mut SolveApp, enabled: bool) {
+    app.agent_chat.dfm.set_auto_enabled(enabled);
+}
+
+/// Re-read the open design's project switch. Call it when the document or the project settings
+/// change; the automatic-check path never reads the project itself.
+pub(crate) fn refresh_dfm_auto(app: &mut SolveApp) {
+    let enabled = app
+        .session
+        .path
+        .as_deref()
+        .and_then(|path| solidcraft_engine::project::Project::of(std::path::Path::new(path)).ok().flatten())
+        .is_some_and(|project| project.ci().enabled);
+    app.agent_chat.dfm.set_auto_enabled(enabled);
+}
+
+/// Submit a decided trigger through the engine's background DFM service. This is the one host
+/// entry: the Run DFM command and the automatic checks both come through here. The service is a
+/// desktop host: the browser build has no background thread and submits nothing.
+#[cfg(not(target_arch = "wasm32"))]
+fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
+    match solidcraft_engine::dfm::service::start(&mut app.session) {
+        Ok(_) => true,
+        Err(error) => {
+            log::warn!("the DFM check did not start after {trigger:?}: {error}");
+            false
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn submit_dfm(_app: &mut SolveApp, _trigger: dfm_runtime::Trigger) -> bool {
+    false
+}
+
+/// The host's Run DFM entry: no AI connection is needed. Returns whether a run was submitted.
+#[allow(dead_code)]
+pub(crate) fn run_dfm(app: &mut SolveApp) -> bool {
+    let stamp = app.session.document_stamp();
+    match app.agent_chat.dfm.manual(&stamp.document_id, stamp.revision) {
+        Some(trigger) => submit_dfm(app, trigger),
+        None => false,
+    }
+}
+
+/// Cancel the live check (the result, if it still commits, can never take `latest` back).
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub(crate) fn cancel_dfm(app: &mut SolveApp) -> bool {
+    let _ = app;
+    solidcraft_engine::dfm::service::cancel()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+pub(crate) fn cancel_dfm(_app: &mut SolveApp) -> bool {
+    false
+}
+
+/// The live check's `(run_id, document_id)`, if one is running.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub(crate) fn running_dfm(app: &SolveApp) -> Option<String> {
+    let _ = app;
+    solidcraft_engine::dfm::service::status().active_run
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+pub(crate) fn running_dfm(_app: &SolveApp) -> Option<String> {
+    None
+}
+
+/// PIL-300's accept path calls this after `review::accept` applied the preview and committed it.
+///
+/// This is the one adapter for the half of PIL-305 that waits for PIL-300 to merge. On develop
+/// there is no `review` module, so nothing calls it yet; when that branch lands, add this call to
+/// the success branch of `crates/ui-egui/src/agent_chat/review.rs::accept` (after the apply and
+/// before returning `Ok`):
+///
+/// ```ignore
+/// crate::agent_chat::preview_accepted(app, id);
+/// ```
+#[allow(dead_code)]
+pub(crate) fn preview_accepted(app: &mut SolveApp, preview: u64) {
+    let stamp = app.session.document_stamp();
+    if let Some(trigger) = app.agent_chat.dfm.on_preview_accepted(&stamp.document_id, &format!("preview-{preview}"), stamp.revision) {
+        submit_dfm(app, trigger);
+    }
+}
+
+/// A rejected preview, a failed accept, or an accept refused because the design changed meanwhile.
+/// It commits nothing, so it runs nothing; the adapter exists so the accept path has one place to
+/// report both outcomes.
+#[allow(dead_code)]
+pub(crate) fn preview_not_committed(app: &mut SolveApp, preview: u64) {
+    let stamp = app.session.document_stamp();
+    app.agent_chat.dfm.on_preview_not_committed(&stamp.document_id, &format!("preview-{preview}"));
+}
+
 /// The app is quitting: end the agent and its helpers before the window goes.
 pub fn shutdown(app: &mut SolveApp) {
     app.agent_chat.disconnect_document(&mut app.session, true);
@@ -1850,7 +1960,10 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     let first_line = text.lines().find(|l| !l.trim().is_empty()).or_else(|| files.first().map(|f| f.name.as_str())).unwrap_or("");
     let label: String = first_line.chars().take(48).collect();
     app.agent_chat.turn_warning = None;
+    app.agent_chat.next_turn = app.agent_chat.next_turn.wrapping_add(1);
+    let turn_id = app.agent_chat.next_turn;
     app.agent_chat.turn = Some(Turn {
+        id: turn_id,
         active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         start_doc: app.session.doc.clone(),
         start_undo: app.session.undo.len(),
@@ -2413,8 +2526,16 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         let refused = if matches!(e, Event::ModelRejected(_)) { app.agent_chat.model_revert.as_ref().map(|r| r.saved.clone()) } else { None };
         match app.agent_chat.on_event(e) {
             Some(Outcome::TurnEnd) => {
+                // Read the round's commit state before the turn is consumed; its final model is
+                // what an automatic check uses, and a reply that changed nothing runs nothing.
+                let ended = app.agent_chat.turn.as_ref().map(|turn| (turn.id, turn.changes > 0 && !Arc::ptr_eq(&app.session.doc, &turn.start_doc)));
+                let pending = app.control_job.is_some() || !app.control_held.is_empty();
                 app.agent_chat.attach_anatomy_refs(&mut app.session);
                 end_turn(app);
+                if let Some((turn, changed)) = ended {
+                    let stamp = app.session.document_stamp();
+                    app.agent_chat.dfm.on_turn_end(&stamp.document_id, &format!("turn-{turn}"), stamp.revision, changed, pending);
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 task_runtime::on_turn_end(app);
                 after_turn(app, ctx);
@@ -2466,6 +2587,19 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         connect_at_start(app, ctx);
     }
     pump_tools(app);
+    // One place decides what automatic checks see: the live model and whether the window still
+    // has work in flight. A person's edit or undo only makes the old report stale; it starts
+    // nothing by itself.
+    {
+        let stamp = app.session.document_stamp();
+        let idle = app.control_job.is_none() && app.control_held.is_empty() && !app.agent.busy();
+        if let Some(trigger) = app.agent_chat.dfm.observe(&stamp.document_id, stamp.revision, idle) {
+            submit_dfm(app, trigger);
+        }
+        // A person's edit makes the old report stale and stops its check; it starts nothing.
+        #[cfg(not(target_arch = "wasm32"))]
+        solidcraft_engine::dfm::service::cancel_if_stale(&mut app.session);
+    }
     if !app.agent_chat.held.is_empty() || app.agent_chat.state() == State::Busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }

@@ -47,6 +47,15 @@ impl SolveApp {
         self.begin_picker(future, Box::new(complete));
     }
 
+    /// Ask for a folder (New Project's location). Without a host dialog, the answer is a cancel.
+    pub(crate) fn pick_folder(&mut self, complete: impl FnOnce(&mut SolveApp, Option<String>) + 'static) {
+        if self.file_picker_busy() {
+            return;
+        }
+        let future = self.services.pick_folder.as_ref().map(|pick| pick());
+        self.begin_picker(future, Box::new(complete));
+    }
+
     /// Ask for one file of a kind (`label`, `extensions`), with the host's dialog for it, or the
     /// Open dialog where the host has none. (The agent chat asks for its files; the web build has
     /// no chat.)
