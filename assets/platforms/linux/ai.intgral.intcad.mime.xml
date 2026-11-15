@@ -4,7 +4,7 @@
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-solidcraft">
     <comment>Intcad design</comment>
-    <icon name="io.tangencylabs.solidcraft"/>
+    <icon name="ai.intgral.intcad"/>
     <sub-class-of type="application/json"/>
     <!-- shared-mime-info also gives *.sc to Scala scripts (text/x-scala, weight 50); with
          SolidCraft installed its designs win. -->

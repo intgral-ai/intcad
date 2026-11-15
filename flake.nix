@@ -167,16 +167,16 @@
 
             postInstall = ''
               ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-                install -Dm644 assets/platforms/linux/io.tangencylabs.solidcraft.desktop \
-                  $out/share/applications/io.tangencylabs.solidcraft.desktop
-                install -Dm644 assets/platforms/linux/io.tangencylabs.solidcraft.mime.xml \
-                  $out/share/mime/packages/io.tangencylabs.solidcraft.xml
+                install -Dm644 assets/platforms/linux/ai.intgral.intcad.desktop \
+                  $out/share/applications/ai.intgral.intcad.desktop
+                install -Dm644 assets/platforms/linux/ai.intgral.intcad.mime.xml \
+                  $out/share/mime/packages/ai.intgral.intcad.xml
                 install -Dm644 packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt \
                   $out/share/doc/solidcraft/WEB-VIEW-PLATFORM-NOTICES.txt
                 for size in 16 24 32 48 64 128 256 512; do
-                  icon=$out/share/icons/hicolor/''${size}x''${size}/apps/io.tangencylabs.solidcraft.png
+                  icon=$out/share/icons/hicolor/''${size}x''${size}/apps/ai.intgral.intcad.png
                   mkdir -p "$(dirname "$icon")"
-                  cp assets/icons/app/linux/exports/hicolor/''${size}x''${size}/apps/io.tangencylabs.solidcraft.png "$icon" >/dev/null
+                  cp assets/icons/app/linux/exports/hicolor/''${size}x''${size}/apps/ai.intgral.intcad.png "$icon" >/dev/null
                 done
               ''}
             '';
@@ -208,7 +208,7 @@
 
             meta = {
               description = "Rust-native parametric 3D CAD app";
-              homepage = "https://github.com/intgral-ai/open-skyfall-desktop";
+              homepage = "https://github.com/intgral-ai/intcad";
               # The app is MIT/Apache-2.0. The closure also carries GTK 3 (LGPL-2.1-or-later) and
               # WebKitGTK 4.1 (LGPL-2.1-or-later and BSD-2-Clause), dynamically linked; their
               # notice text is installed under share/doc/solidcraft.

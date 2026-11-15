@@ -41,7 +41,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 # window's Wayland app_id / X11 class. Earlier releases used ai.storyteller.solidcraft (0.8 until
 # the move to Tangency Labs) and ai.storyteller.solvecraft (before 0.8); the Flatpak repository
 # rebases both to this one (packaging/flatpak-site.sh, docs/compatibility.md).
-APP_ID=io.tangencylabs.solidcraft
+APP_ID=ai.intgral.intcad
 export APP_ID
 
 # Emit a GitHub Actions warning (plain stderr outside Actions).

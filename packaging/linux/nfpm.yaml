@@ -1,10 +1,10 @@
 # .deb and .rpm packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
 # the file tree, substitutes its path for ${STAGE} (nfpm doesn't expand env vars in `src`) and
 # exports VERSION and NFPM_ARCH. Adapted from PhotoCraft's (storytold/photocraft, Apache-2.0).
-name: solidcraft
+name: intcad
 # Compatibility shim (docs/compatibility.md): releases before the rename were packaged as `solvecraft`.
 # Installing this package replaces that one (Debian Replaces/Conflicts, set under overrides.deb;
-# nfpm writes `replaces` as RPM Obsoletes), so `apt install ./solidcraft-….deb` or `dnf install ./solidcraft-….rpm`
+# nfpm writes `replaces` as RPM Obsoletes), so `apt install ./intcad-….deb` or `dnf install ./intcad-….rpm`
 # upgrades an old install instead of failing on the shared desktop and icon files.
 replaces:
   - solvecraft
@@ -20,7 +20,7 @@ section: graphics
 priority: optional
 maintainer: ${SOLIDCRAFT_MAINTAINER}
 vendor: Intgral
-homepage: https://github.com/intgral-ai/open-skyfall-desktop
+homepage: https://github.com/intgral-ai/intcad
 license: MIT OR Apache-2.0
 description: |-
   Open-source, independent parametric 3D CAD

@@ -8612,7 +8612,7 @@ fn a_title_that_mentions_solidcraft_goes_through_the_users_mode() {
     let titles = [
         ("run solidcraft-cli; ls", Some("execute")),
         ("run solidcraft-cli; ls", None),
-        ("Edit ~/.local/share/solidcraft/agent-chat/work/notes.txt", Some("edit")),
+        ("Edit ~/.local/share/intcad/agent-chat/work/notes.txt", Some("edit")),
         ("mcp__solidcraft__batch", Some("other")),
         ("mcp__intcad-app__batch", Some("execute")),
     ];

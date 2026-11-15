@@ -6,7 +6,7 @@
       -culture en-US -loc solidcraft.en-us.wxl -d Version=1.2.3 -d DisplayVersion=1.2.3-rc.1
       -d BinDir=... -d IconPath=... -d HasMastra=0|1 -o out.msi
 
-  Per-machine install with a setup wizard: Welcome, install folder (Program Files\SolidCraft by
+  Per-machine install with a setup wizard: Welcome, install folder (Program Files\Intcad by
   default, remembered for upgrades), Ready, progress, and a Finish page with a ticked "Launch
   SolidCraft" box. Installs a Start Menu shortcut, solidcraft-cli (and adds its folder to the system PATH), the licence files (including
   THIRD-PARTY-LICENSES.txt), makes SolidCraft the owner of `.sc` (and of the older `.solidcraft` and pre-rename `.solvecraft`), and offers it under
@@ -15,13 +15,14 @@
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <!-- Never change the UpgradeCode: it is what lets a new MSI replace every earlier install,
-       including those from before the SolveCraft -> SolidCraft rename (docs/compatibility.md). -->
+  <!-- Never change the UpgradeCode: it is what lets a new MSI replace every earlier install that
+       carries it. It is Intcad's own, not upstream SolidCraft's, so neither product's installer
+       replaces the other (docs/compatibility.md). -->
   <Package
       Name="Intcad"
       Manufacturer="Intgral"
       Version="$(var.Version)"
-      UpgradeCode="6A145FD6-D285-428D-AE84-A69570CDF4DB"
+      UpgradeCode="984E28EB-86EB-46BE-908D-738A48FE6432"
       Scope="perMachine"
       Compressed="yes"
       Language="1033">
@@ -34,21 +35,21 @@
     <!-- Advertised shortcuts to an .exe need an .exe icon identifier (ICE50). -->
     <Icon Id="SolidcraftIcon.exe" SourceFile="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="SolidcraftIcon.exe" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/intgral-ai/open-skyfall-desktop" />
-    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/intgral-ai/open-skyfall-desktop/releases" />
-    <Property Id="ARPHELPLINK" Value="https://github.com/intgral-ai/open-skyfall-desktop/issues" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/intgral-ai/intcad" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/intgral-ai/intcad/releases" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/intgral-ai/intcad/issues" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="INSTALLFOLDER" Name="SolidCraft" />
+      <Directory Id="INSTALLFOLDER" Name="Intcad" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
     <!-- An upgrade installs where the user put the previous version (written by SolidcraftApp). -->
     <!-- Since the rename the folder and this key say SolidCraft. A pre-rename install recorded
          Software\SolveCraft, which isn't read: its upgrade (same UpgradeCode) removes the old
-         folder and installs into Program Files\SolidCraft (docs/compatibility.md). -->
+         folder and installs into Program Files\Intcad (docs/compatibility.md). -->
     <Property Id="INSTALLFOLDER">
-      <RegistrySearch Id="PreviousInstallFolder" Root="HKLM" Key="Software\SolidCraft" Name="InstallDir" Type="raw" />
+      <RegistrySearch Id="PreviousInstallFolder" Root="HKLM" Key="Software\Intcad" Name="InstallDir" Type="raw" />
     </Property>
 
     <Feature Id="Main" Title="Intcad" Level="1">
@@ -80,7 +81,7 @@
     <ComponentGroup Id="SolidcraftFiles" Directory="INSTALLFOLDER">
       <!-- A new GUID with the rename: the key file changed from solvecraft.exe to solidcraft.exe.
            The UpgradeCode above is unchanged, so this MSI major-upgrades a pre-rename install. -->
-      <Component Id="SolidcraftApp" Guid="A379D509-D776-4B34-A3A4-71FBF5724971">
+      <Component Id="SolidcraftApp" Guid="52EE9723-50D7-463A-8F4B-4551B5D33517">
         <File Id="SolidcraftExe" Source="$(var.BinDir)\solidcraft.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Intcad"
               Description="Intcad parametric 3D CAD" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
@@ -88,7 +89,7 @@
         </File>
 
         <!-- .sc: SolidCraft's own format; SolidCraft is its default app. -->
-        <ProgId Id="Solidcraft.Design" Description="Intcad Design" Icon="SolidcraftExe" IconIndex="0">
+        <ProgId Id="Intcad.Design" Description="Intcad Design" Icon="SolidcraftExe" IconIndex="0">
           <Extension Id="sc" ContentType="application/x-solidcraft">
             <Verb Id="open" Command="Open" TargetFile="SolidcraftExe" Argument="&quot;%1&quot;" />
           </Extension>
@@ -96,19 +97,19 @@
         <!-- Compatibility shim (docs/compatibility.md): designs saved as .solidcraft (before .sc)
              and as .solvecraft (before the rename) open as the same ProgId. Registered by hand: a
              second Extension under one ProgId would write its open verb twice (WIX0091). -->
-        <RegistryValue Root="HKLM" Key="Software\Classes\.solidcraft" Value="Solidcraft.Design" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.solidcraft" Value="Intcad.Design" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\.solidcraft" Name="Content Type" Value="application/x-solidcraft" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.solvecraft" Value="Solidcraft.Design" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.solvecraft" Value="Intcad.Design" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\.solvecraft" Name="Content Type" Value="application/x-solvecraft" Type="string" />
         <!-- STEP, IGES and meshes: offered under "Open with", never forced as the default. -->
-        <ProgId Id="Solidcraft.Model" Description="3D model" Icon="SolidcraftExe" IconIndex="0" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Solidcraft.Model\shell\open\command" Value="&quot;[#SolidcraftExe]&quot; &quot;%1&quot;" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.step\OpenWithProgids" Name="Solidcraft.Model" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.stp\OpenWithProgids" Name="Solidcraft.Model" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.igs\OpenWithProgids" Name="Solidcraft.Model" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.iges\OpenWithProgids" Name="Solidcraft.Model" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.3mf\OpenWithProgids" Name="Solidcraft.Model" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.stl\OpenWithProgids" Name="Solidcraft.Model" Value="" Type="string" />
+        <ProgId Id="Intcad.Model" Description="3D model" Icon="SolidcraftExe" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\Intcad.Model\shell\open\command" Value="&quot;[#SolidcraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.step\OpenWithProgids" Name="Intcad.Model" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.stp\OpenWithProgids" Name="Intcad.Model" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.igs\OpenWithProgids" Name="Intcad.Model" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.iges\OpenWithProgids" Name="Intcad.Model" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.3mf\OpenWithProgids" Name="Intcad.Model" Value="" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\.stl\OpenWithProgids" Name="Intcad.Model" Value="" Type="string" />
 
         <!-- "Open with" app list and the Run dialog (Win+R "solidcraft"). -->
         <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe" Name="FriendlyAppName" Value="Intcad" Type="string" />
@@ -123,7 +124,7 @@
         <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".3mf" Value="" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Classes\Applications\solidcraft.exe\SupportedTypes" Name=".stl" Value="" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\solidcraft.exe" Value="[#SolidcraftExe]" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\SolidCraft" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Intcad" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
       </Component>
 
       <Component Id="SolidcraftCli">
@@ -137,7 +138,7 @@
         <File Id="SolvecraftCliAliasExe" Source="$(var.BinDir)\solvecraft-cli.exe" KeyPath="yes" />
       </Component>
       <!-- Several unversioned files: an explicit GUID (WIX0367). -->
-      <Component Id="SolidcraftLicences" Guid="CDEDEE8D-4BE9-4872-A2EA-EE623A6C7E91">
+      <Component Id="SolidcraftLicences" Guid="2BC0E79E-2792-4849-B0BC-B8AB82D403EA">
         <File Id="LicenseMit" Source="$(var.BinDir)\LICENSE-MIT" KeyPath="yes" />
         <File Id="LicenseApache" Source="$(var.BinDir)\LICENSE-APACHE" />
         <File Id="Notice" Source="$(var.BinDir)\NOTICE" />

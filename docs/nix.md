@@ -37,7 +37,7 @@ solidcraft --sample
 
 On Linux, this installs the SolidCraft desktop entry, MIME definition and generated icon
 sizes alongside the commands. On macOS the package contains the binaries only; for a bundled
-`SolidCraft.app`, use the release `.dmg`. NixOS/Home Manager can instead put the flake's
+`Intcad.app`, use the release `.dmg`. NixOS/Home Manager can instead put the flake's
 `packages.${system}.solidcraft` in `environment.systemPackages`/`home.packages`.
 If a non-NixOS desktop does not discover profile-installed launchers, ensure that
 its session includes `~/.nix-profile/share` in `XDG_DATA_DIRS`, then log out and
@@ -113,7 +113,7 @@ OpenGL rendering uses 1x anti-aliasing to avoid the multisampled black-frame fai
 Vulkan and other backends keep the requested sample count; saved preferences are preserved.
 For older builds, including 0.3.0, set Anti-aliasing to 1x and restart when using OpenGL.
 If that window cannot show the settings dialog, edit only the `msaa` field to `1` in
-`~/.local/share/solidcraft/graphics.json`; preserve any other settings.
+`~/.local/share/intcad/graphics.json`; preserve any other settings.
 
 ## Wayland, XWayland and niri
 

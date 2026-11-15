@@ -49,6 +49,8 @@ jobs:
         run: python3 packaging/tests/apprun_test.py
       - name: Flatpak desktop smoke validation regression
         run: python3 packaging/tests/flatpak_test.py
+      - name: Web channel deployment regression
+        run: python3 packaging/tests/web_channels_test.py
       - name: Mastra packaged-runtime gate regression
         run: python3 packaging/tests/mastra_runtime_test.py
       - uses: dtolnay/rust-toolchain@stable
@@ -66,16 +68,16 @@ jobs:
       - name: XML, desktop entry, AppStream, Flatpak manifest
         run: |
           xmllint --noout assets/platforms/windows/solidcraft.wxs assets/platforms/windows/solidcraft.en-us.wxl assets/platforms/macos/*.plist* assets/platforms/linux/*.xml*
-          desktop-file-validate assets/platforms/linux/io.tangencylabs.solidcraft.desktop
+          desktop-file-validate assets/platforms/linux/ai.intgral.intcad.desktop
           # The window's X11 class is its app id; the old ids stay only as the rename shims.
-          grep -qx 'StartupWMClass=io.tangencylabs.solidcraft' assets/platforms/linux/io.tangencylabs.solidcraft.desktop
-          grep -q '<id>ai.storyteller.solidcraft</id>' assets/platforms/linux/io.tangencylabs.solidcraft.metainfo.xml.in
-          grep -q '<id>ai.storyteller.solvecraft</id>' assets/platforms/linux/io.tangencylabs.solidcraft.metainfo.xml.in
-          grep -qx 'X-Flatpak-RenamedFrom=ai.storyteller.solidcraft.desktop;ai.storyteller.solvecraft.desktop;' assets/platforms/linux/io.tangencylabs.solidcraft.desktop
+          grep -qx 'StartupWMClass=ai.intgral.intcad' assets/platforms/linux/ai.intgral.intcad.desktop
+          grep -q '<id>ai.storyteller.solidcraft</id>' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in
+          grep -q '<id>ai.storyteller.solvecraft</id>' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in
+          grep -qx 'X-Flatpak-RenamedFrom=ai.storyteller.solidcraft.desktop;ai.storyteller.solvecraft.desktop;' assets/platforms/linux/ai.intgral.intcad.desktop
           grep -qF -e '--end-of-life-rebase=' packaging/flatpak-site.sh
-          sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' assets/platforms/linux/io.tangencylabs.solidcraft.metainfo.xml.in >"$RUNNER_TEMP/io.tangencylabs.solidcraft.metainfo.xml"
-          appstreamcli validate --no-net --explain "$RUNNER_TEMP/io.tangencylabs.solidcraft.metainfo.xml"
-          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/io.tangencylabs.solidcraft.bundle.yml')); assert m['id'] == 'io.tangencylabs.solidcraft' and m['command'] == 'solidcraft'"
+          sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in >"$RUNNER_TEMP/ai.intgral.intcad.metainfo.xml"
+          appstreamcli validate --no-net --explain "$RUNNER_TEMP/ai.intgral.intcad.metainfo.xml"
+          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/ai.intgral.intcad.bundle.yml')); assert m['id'] == 'ai.intgral.intcad' and m['command'] == 'solidcraft'"
           python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/snap/snapcraft.yaml')); assert m['name'] == 'solidcraft' and m['confinement'] == 'strict' and m['apps']['solidcraft']['command'] == 'usr/bin/solidcraft'"
           python3 -m py_compile packaging/linux/snap-smoke.py
 

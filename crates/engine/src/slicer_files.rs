@@ -11,8 +11,8 @@ pub const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Most numbered copies (`name-2.3mf`, …) tried when the file is locked.
 const MAX_COPIES: u32 = 9;
 
-/// The per-user folder: `%LOCALAPPDATA%\SolidCraft\slicer`, `~/Library/Caches/SolidCraft/slicer`
-/// or `$XDG_CACHE_HOME/solidcraft/slicer` (`~/.cache/solidcraft/slicer`).
+/// The per-user folder: `%LOCALAPPDATA%\Intcad\slicer`, `~/Library/Caches/Intcad/slicer`
+/// or `$XDG_CACHE_HOME/intcad/slicer` (`~/.cache/intcad/slicer`).
 pub fn dir() -> Option<PathBuf> {
     // Tests never touch the user's real folder.
     if cfg!(test) {
@@ -20,11 +20,11 @@ pub fn dir() -> Option<PathBuf> {
     }
     let env = |k: &str| std::env::var_os(k).filter(|d| !d.is_empty()).map(PathBuf::from);
     let (root, name) = if cfg!(windows) {
-        (env("LOCALAPPDATA")?, "SolidCraft")
+        (env("LOCALAPPDATA")?, "Intcad")
     } else if cfg!(target_os = "macos") {
-        (env("HOME")?.join("Library/Caches"), "SolidCraft")
+        (env("HOME")?.join("Library/Caches"), "Intcad")
     } else {
-        (env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|h| h.join(".cache")))?, "solidcraft")
+        (env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|h| h.join(".cache")))?, "intcad")
     };
     Some(root.join(name).join("slicer"))
 }

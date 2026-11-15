@@ -241,7 +241,7 @@ Write-Host "WebView2 runtime: $($runtime.Version) ($($runtime.Scope), $($runtime
 # window is put at a known place and size that fits the runner's screen (physical px; the minimum
 # is 960 x 600) and brought to the front.
 function Launch([int]$port, [hashtable]$extra) {
-    $settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'SolidCraft\data'
+    $settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Intcad\data'
     Remove-Item -Recurse -Force $settings -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $settings, $local, $crashes | Out-Null
     $script:token = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
@@ -419,7 +419,7 @@ try {
             Check $false 'compact layout: the web view is a visible window inside the app window'
         }
 
-        $data = Join-Path $local 'SolidCraft\assistant-web-view'
+        $data = Join-Path $local 'Intcad\assistant-web-view'
         Check (Test-Path $data) "WebView2 keeps its files in the app's data folder ($data)"
         Check ($besideBefore -or -not (Test-Path $beside)) "WebView2 wrote nothing beside the exe ($beside)"
     } elseif ($state.webView -and -not $state.webView.host) {

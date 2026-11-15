@@ -4,10 +4,10 @@
 
 .DESCRIPTION
   Produces, in $env:DIST (default: dist/release):
-    solidcraft-<version>-windows-<arch>.msi            per-machine installer (WiX v5)
-    solidcraft-<version>-windows-<arch>-portable.zip   solidcraft.exe + solidcraft-cli.exe + licences
+    intcad-<version>-windows-<arch>.msi            per-machine installer (WiX v5)
+    intcad-<version>-windows-<arch>-portable.zip   solidcraft.exe + solidcraft-cli.exe + licences
                                                        (+ the solvecraft-cli.exe compatibility alias)
-    SolidCraft-<version>-windows-<arch>.exe            the app alone (x64 only: a plain download)
+    Intcad-<version>-windows-<arch>.exe            the app alone (x64 only: a plain download)
 
   The binaries link the C runtime statically (+crt-static), so nothing else needs installing.
   The icon comes from $env:SOLIDCRAFT_ICONS (solidcraft.ico, made by `solidcraft-cli icon`), or
@@ -129,7 +129,7 @@ $Icon = if ($env:SOLIDCRAFT_ICONS) { Join-Path $env:SOLIDCRAFT_ICONS 'solidcraft
 if (-not (Test-Path $Icon)) { throw "Missing package icon: $Icon" }
 
 # ---- MSI ---------------------------------------------------------------------------------------
-$Msi = Join-Path $Dist "solidcraft-$Version-windows-$Arch.msi"
+$Msi = Join-Path $Dist "intcad-$Version-windows-$Arch.msi"
 $HasMastra = if ($WithMastra -and (Test-Path (Join-Path $Stage 'mastra\runtime.json'))) { 1 } else { 0 }
 Invoke-Native 'wix build' {
   wix build (Join-Path $Root 'assets/platforms/windows/solidcraft.wxs') -arch $Arch `
@@ -145,7 +145,7 @@ Invoke-Native 'MSI shortcut icon validation (ICE50)' {
 Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
 
 # ---- portable zip ------------------------------------------------------------------------------
-$Portable = Join-Path $TargetDir "windows-package\solidcraft-$Version-windows-$Arch-portable"
+$Portable = Join-Path $TargetDir "windows-package\intcad-$Version-windows-$Arch-portable"
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
@@ -153,14 +153,14 @@ foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PA
 Copy-Item (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt') $Portable
 Copy-Item (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt') $Portable
 if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
-$Zip = Join-Path $Dist "solidcraft-$Version-windows-$Arch-portable.zip"
+$Zip = Join-Path $Dist "intcad-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip
 
 # ---- the app as a plain download (x64) ---------------------------------------------------------
 $Outputs = @($Msi, $Zip)
 if ($Arch -eq 'x64') {
-  $Exe = Join-Path $Dist "SolidCraft-$Version-windows-$Arch.exe"
+  $Exe = Join-Path $Dist "Intcad-$Version-windows-$Arch.exe"
   Copy-Item (Join-Path $Stage 'solidcraft.exe') $Exe
   $Outputs += $Exe
 }

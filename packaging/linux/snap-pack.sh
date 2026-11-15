@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Repackage a SolidCraft Linux tarball as a snap:
 #
-#   $DIST/solidcraft-<version>-linux-<arch>.snap
+#   $DIST/intcad-<version>-linux-<arch>.snap
 #
 # Usage: packaging/linux/snap-pack.sh [--destructive-mode] [TARBALL]
 #
-# TARBALL defaults to $DIST/solidcraft-<version>-linux-<arch>.tar.gz from package.sh. The snap is
+# TARBALL defaults to $DIST/intcad-<version>-linux-<arch>.tar.gz from package.sh. The snap is
 # built for the host architecture (x86_64 or aarch64), which must match the tarball's. Needs
 # snapcraft (`sudo snap install snapcraft --classic`) and, without --destructive-mode, LXD.
 # --destructive-mode builds on the host itself, which must be Ubuntu 24.04 (the core24 base),
 # as in CI. The gnome extension (gnome-46-2404 on core24) brings GTK 3 and WebKitGTK 4.1 at
 # runtime; snapcraft.yaml says why they are not staged here. Install and smoke-test the result:
-#   sudo snap install --dangerous dist/release/solidcraft-<version>-linux-<arch>.snap
+#   sudo snap install --dangerous dist/release/intcad-<version>-linux-<arch>.snap
 #   python3 packaging/linux/snap-smoke.py    # models a box and opens the Assistant's page
 # Manifest: packaging/linux/snap/snapcraft.yaml.
 set -euo pipefail
@@ -36,7 +36,7 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; SNAP_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-BASENAME="solidcraft-$VERSION-linux-$ARCH"
+BASENAME="intcad-$VERSION-linux-$ARCH"
 TARBALL="${TARBALL:-$DIST/$BASENAME.tar.gz}"
 [ -f "$TARBALL" ] || { echo "error: $TARBALL not found (run packaging/linux/package.sh --formats tar first)" >&2; exit 1; }
 command -v snapcraft >/dev/null || { echo "error: snapcraft not found (sudo snap install snapcraft --classic)" >&2; exit 1; }

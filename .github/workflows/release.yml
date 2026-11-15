@@ -133,7 +133,7 @@ jobs:
             "$appimage" --appimage-updateinformation | grep -F 'gh-releases-zsync|'
             test -s "$appimage.zsync"
           done
-          ls dist/release/solvecraft-*-linux-*.AppImage.zsync
+          ls dist/release/{solidcraft,solvecraft}-*-linux-*.AppImage.zsync
       # Each package on bare systems, with nothing but what it declares, then started there with
       # the Assistant opened (packaging/linux/installed-check.sh). The tarball has the same
       # program files as the AppImage and no launcher of its own; it is not installed here.
@@ -141,9 +141,9 @@ jobs:
         env:
           EVIDENCE: ${{ runner.temp }}/installed-check
         run: |
-          deb=(dist/release/solidcraft-*.deb)
-          rpm=(dist/release/solidcraft-*.rpm)
-          appimage=(dist/release/solidcraft-*.AppImage)
+          deb=(dist/release/intcad-*.deb)
+          rpm=(dist/release/intcad-*.rpm)
+          appimage=(dist/release/intcad-*.AppImage)
           packaging/linux/installed-check.sh ubuntu:22.04 "${deb[0]}" x11
           packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" x11
           packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" wayland
@@ -204,7 +204,7 @@ jobs:
                      '--out', str(directory / 'contents.json')]
           if package_id.startswith(('release-flatpak-', 'release-arch-', 'release-snap-')):
               arch = package_id.rsplit('-', 1)[-1]
-              sources = sorted(Path('dist/linux').glob('solidcraft-*-linux-' + arch + '.tar.gz'))
+              sources = sorted(Path('dist/linux').glob('intcad-*-linux-' + arch + '.tar.gz'))
               if len(sources) != 1:
                   raise SystemExit('derived package needs exactly one source Linux tarball')
               command += ['--derived-from', 'release-linux-' + arch, '--source-artifact', str(sources[0])]
@@ -258,7 +258,7 @@ jobs:
       - name: Build and smoke-test the Flatpak in its network-denying sandbox
         # The existing manifest grants no network. Its desktop smoke stays inside
         # that sandbox; never add a host network override to make it pass.
-        run: packaging/linux/flatpak-bundle.sh "dist/linux/solidcraft-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.tar.gz"
+        run: packaging/linux/flatpak-bundle.sh "dist/linux/intcad-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.tar.gz"
       - *package-evidence
       - *upload-package
       - *upload-evidence
@@ -300,34 +300,38 @@ jobs:
           # step requires exactly one source tarball in dist/linux. Hand the action an alias
           # in dist/arch so the inspected Linux artifact stays the only dist/linux tarball.
           mkdir -p dist/arch
-          cp "dist/linux/solidcraft-$VERSION-linux-$ARCH.tar.gz" "dist/arch/solidcraft-$pkgver-linux-$ARCH.tar.gz"
+          cp "dist/linux/intcad-$VERSION-linux-$ARCH.tar.gz" "dist/arch/intcad-$pkgver-linux-$ARCH.tar.gz"
       - uses: storytold/craft-common-actions/actions/arch-package@fa5ef18780cf5e7d5d3b8de068de56cffc83cac5 # main
         with:
-          tarball: dist/arch/solidcraft-${{ steps.pkgver.outputs.pkgver }}-linux-${{ matrix.arch }}.tar.gz
+          tarball: dist/arch/intcad-${{ steps.pkgver.outputs.pkgver }}-linux-${{ matrix.arch }}.tar.gz
           arch: ${{ matrix.arch }}
       - name: The package under the checkout version
         if: steps.pkgver.outputs.pkgver != env.VERSION
         env:
           ARCH: ${{ matrix.arch }}
           PKGVER: ${{ steps.pkgver.outputs.pkgver }}
-        run: sudo mv "dist/release/solidcraft-$PKGVER-linux-$ARCH.pkg.tar.zst" "dist/release/solidcraft-$VERSION-linux-$ARCH.pkg.tar.zst"
+        run: sudo mv "dist/release/intcad-$PKGVER-linux-$ARCH.pkg.tar.zst" "dist/release/intcad-$VERSION-linux-$ARCH.pkg.tar.zst"
       # The arch-package action writes a fixed depends list with no input for more. The app
       # links libgtk-3.so.0 and libwebkit2gtk-4.1.so.0 directly, so the package must declare
       # Arch's gtk3 and webkit2gtk-4.1 or a clean install will not start. Rewrite .PKGINFO
       # (package files and .MTREE are untouched) and then fail unless both are there.
       - name: Declare the Assistant's runtime libraries
         env:
-          PKG: dist/release/solidcraft-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+          PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
         run: packaging/linux/arch-depends.sh "$PKG" gtk3 webkit2gtk-4.1
       - name: Check the package
         env:
-          PKG: dist/release/solidcraft-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+          PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
         run: |
-          tar --zstd -tf "$PKG" | grep -E '^usr/bin/solidcraft$|^usr/bin/solidcraft-cli$|^usr/share/applications/io\.tangencylabs\.solidcraft\.desktop$'
+          # Each path on its own: an alternation passes as soon as one of them is there.
+          listing="$(tar --zstd -tf "$PKG")"
+          for path in usr/bin/solidcraft usr/bin/solidcraft-cli usr/share/applications/ai.intgral.intcad.desktop; do
+            grep -qxF "$path" <<<"$listing" || { echo "::error::$path is not in the package"; exit 1; }
+          done
           info="$(mktemp)"
           tar --zstd -xOf "$PKG" .PKGINFO >"$info"
           grep -E '^(pkgname|pkgver|arch) = ' "$info"
-          grep -qx 'pkgname = io.tangencylabs.solidcraft' "$info"
+          grep -qx 'pkgname = ai.intgral.intcad' "$info"
           grep -qx 'depend = gtk3' "$info"
           grep -qx 'depend = webkit2gtk-4.1' "$info"
           rm -f "$info"
@@ -368,11 +372,11 @@ jobs:
       - name: Build the snap
         run: |
           sudo --preserve-env=SOLIDCRAFT_VERSION,SOLIDCRAFT_BUILD_DATE env "PATH=$PATH" \
-            packaging/linux/snap-pack.sh --destructive-mode "dist/linux/solidcraft-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.tar.gz"
+            packaging/linux/snap-pack.sh --destructive-mode "dist/linux/intcad-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.tar.gz"
           sudo chown -R "$(id -u):$(id -g)" dist target
       - name: Install and check the package
         run: |
-          snap_file="dist/release/solidcraft-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.snap"
+          snap_file="dist/release/intcad-$SOLIDCRAFT_VERSION-linux-${{ matrix.arch }}.snap"
           sudo snap install --dangerous "$snap_file"
           snap info --verbose "$snap_file" | head -n 12
           snap connections solidcraft
@@ -448,8 +452,13 @@ jobs:
             git config --global --add safe.directory "$PWD"
             export CARGO_TARGET_DIR=/var/tmp/solidcraft-target CARGO_BUILD_JOBS=4
             bash packaging/freebsd/package.sh
-            tar -tzf dist/release/solidcraft-*-freebsd-x86_64.tar.gz \
-              | grep -E '/bin/solidcraft$|/bin/solidcraft-cli$|/share/applications/io\.tangencylabs\.solidcraft\.desktop$|/share/doc/solidcraft/THIRD-PARTY-LICENSES\.txt$'
+            # Each path on its own: an alternation passes as soon as one of them is there.
+            listing="$(tar -tzf dist/release/intcad-*-freebsd-x86_64.tar.gz)"
+            for path in bin/solidcraft bin/solidcraft-cli share/applications/ai.intgral.intcad.desktop share/doc/solidcraft/THIRD-PARTY-LICENSES.txt; do
+              found=0
+              for entry in $listing; do case "$entry" in */"$path") found=1; break ;; esac; done
+              [ "$found" = 1 ] || { echo "$path is not in the package" >&2; exit 1; }
+            done
       - *package-evidence
       - *upload-package
       - *upload-evidence

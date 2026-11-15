@@ -73,18 +73,18 @@ $EvidenceRoot = $Evidence
 . (Join-Path $PSScriptRoot 'webview2-runtime.ps1')
 $Evidence = $EvidenceRoot
 
-# Never change this: it is what lets a new MSI replace every earlier install, including those from
-# before the SolveCraft -> SolidCraft rename (assets/platforms/windows/solidcraft.wxs).
-$ExpectedUpgradeCode = '6A145FD6-D285-428D-AE84-A69570CDF4DB'
+# Never change this: it is what lets a new MSI replace every earlier install that carries it. It
+# is Intcad's own, not upstream SolidCraft's (assets/platforms/windows/solidcraft.wxs).
+$ExpectedUpgradeCode = '984E28EB-86EB-46BE-908D-738A48FE6432'
 
-$found = @(Get-ChildItem $Dist -Filter "solidcraft-*-windows-$Arch.msi")
+$found = @(Get-ChildItem $Dist -Filter "intcad-*-windows-$Arch.msi")
 if ($found.Count -ne 1) { throw "expected one $Arch MSI in $Dist, found $($found.Count)" }
 $Msi = $found[0].FullName
 $Built = Join-Path $TargetDir "windows-package\$Arch\solidcraft.exe"
 if (-not (Test-Path $Built)) { throw "no built solidcraft.exe at $Built (run package.ps1 first)" }
 # The MSI installs for the machine, a 32-bit build under "Program Files (x86)" on 64-bit Windows.
 $ProgramFiles = if ($Arch -eq 'x86' -and ${env:ProgramFiles(x86)}) { ${env:ProgramFiles(x86)} } else { $env:ProgramFiles }
-$Dir = Join-Path $ProgramFiles 'SolidCraft'
+$Dir = Join-Path $ProgramFiles 'Intcad'
 if (Test-Path $Dir) { throw "there is an install at $Dir already: this machine is not a clean one, so the check would prove nothing" }
 
 New-Item -ItemType Directory -Force -Path $Evidence | Out-Null
@@ -362,7 +362,7 @@ if ($failure) { throw $failure }
 if (Test-Path (Join-Path $Dir 'solidcraft.exe')) { throw "after the uninstall, solidcraft.exe is still in $Dir" }
 if (Get-ArpEntry $meta.ProductCode) { throw "after the uninstall, ProductCode $($meta.ProductCode) is still in ARP" }
 if ($previousMeta -and (Get-ArpEntry $previousMeta.ProductCode)) { throw "after the uninstall, the previous ProductCode $($previousMeta.ProductCode) is still in ARP" }
-$installDir = (Get-ItemProperty -Path 'HKLM:\Software\SolidCraft' -Name InstallDir -ErrorAction SilentlyContinue).InstallDir
+$installDir = (Get-ItemProperty -Path 'HKLM:\Software\Intcad' -Name InstallDir -ErrorAction SilentlyContinue).InstallDir
 if ($installDir) { throw "after the uninstall, the InstallDir registry value is still $installDir" }
 $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 if ($machinePath -and (($machinePath -split ';') -contains $Dir)) { throw "after the uninstall, the install folder is still on the machine PATH" }

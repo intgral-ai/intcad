@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Build and package SolidCraft for macOS:
 #
-#   $DIST/solidcraft-<version>-macos-<arch>.dmg        SolidCraft.app (with solidcraft-cli inside) on a
+#   $DIST/intcad-<version>-macos-<arch>.dmg        Intcad.app (with solidcraft-cli inside) on a
 #                                                      drag-to-Applications DMG with a drawn window
 #                                                      (assets/platforms/macos/dmg)
-#   $DIST/solidcraft-cli-<version>-macos-<arch>.zip    the headless CLI (and its solvecraft-cli
+#   $DIST/intcad-cli-<version>-macos-<arch>.zip    the headless CLI (and its solvecraft-cli
 #                                                      compatibility alias) with the licence files
 #
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--sign] [--with-mastra]
@@ -26,7 +26,7 @@ set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 # The same reverse-DNS id as the Linux APP_ID.
-MACOS_BUNDLE_ID=io.tangencylabs.solidcraft
+MACOS_BUNDLE_ID=ai.intgral.intcad
 
 # sign_code <path> [identifier] [entitlements]: Developer ID with the hardened runtime and a secure
 # timestamp, or the ad-hoc signature (Apple silicon refuses unsigned code) without an identity.
@@ -125,9 +125,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export MACOSX_DEPLOYMENT_TARGET=11.0
 SHORT_VERSION="${VERSION%%-*}"
 WORK="$CARGO_TARGET_DIR/macos-package"
-APP="$WORK/SolidCraft.app"
-DMG="$DIST/solidcraft-$VERSION-macos-$ARCH.dmg"
-CLI_ZIP="$DIST/solidcraft-cli-$VERSION-macos-$ARCH.zip"
+APP="$WORK/Intcad.app"
+DMG="$DIST/intcad-$VERSION-macos-$ARCH.dmg"
+CLI_ZIP="$DIST/intcad-cli-$VERSION-macos-$ARCH.zip"
 
 if [ -n "$BUILD_ONLY" ]; then
   case "$BUILD_ONLY" in
@@ -155,7 +155,7 @@ for bin in solidcraft solidcraft-cli solvecraft-cli; do
   lipo -info "$WORK/bin/$bin"
 done
 
-# ---- SolidCraft.app ----------------------------------------------------------------------------
+# ---- Intcad.app ----------------------------------------------------------------------------
 echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$WORK/bin/solidcraft" "$APP/Contents/MacOS/SolidCraft"
@@ -233,8 +233,8 @@ test -x "$APP/Contents/MacOS/solidcraft-cli" || { echo "solidcraft-cli is missin
 if [ "$NOTARIZE" = 1 ]; then
   # Staple the app itself, so a copy dragged out of the DMG opens offline too.
   echo "==> notarizing $APP"
-  ditto -c -k --keepParent "$APP" "$WORK/SolidCraft-app.zip"
-  notarize "$WORK/SolidCraft-app.zip"
+  ditto -c -k --keepParent "$APP" "$WORK/Intcad-app.zip"
+  notarize "$WORK/Intcad-app.zip"
   staple "$APP"
   xcrun stapler validate "$APP"
 fi
@@ -251,57 +251,57 @@ rm -f "$DMG"
 "$VENV/bin/dmgbuild" -s "$DMG_ART/settings.py" \
   -D "here=$DMG_ART" -D "app=$APP" -D "readme=$ROOT/assets/platforms/macos/README.txt" \
   -D "icns=$ROOT/assets/icons/app/macos/exports/icon.icns" \
-  SolidCraft "$DMG"
+  Intcad "$DMG"
 
 # Check the image as a user gets it: mount it and look inside.
 MNT="$(mktemp -d)"
 hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
-ls -la "$MNT" "$MNT/SolidCraft.app/Contents" "$MNT/SolidCraft.app/Contents/MacOS" "$MNT/SolidCraft.app/Contents/Resources"
+ls -la "$MNT" "$MNT/Intcad.app/Contents" "$MNT/Intcad.app/Contents/MacOS" "$MNT/Intcad.app/Contents/Resources"
 test -L "$MNT/Applications" && test "$(readlink "$MNT/Applications")" = /Applications
 # The window's look: Finder layout, background art and the volume icon.
 test -s "$MNT/.DS_Store" && test -s "$MNT/.VolumeIcon.icns"
 test -s "$MNT/.background.tiff"
-plutil -lint "$MNT/SolidCraft.app/Contents/Info.plist"
+plutil -lint "$MNT/Intcad.app/Contents/Info.plist"
 # Check the names Finder/LaunchServices actually use, and the bundle identity. The executable and
 # icon file keep the upstream names so existing bundles and update scripts stay compatible.
 for key in CFBundleName CFBundleDisplayName; do
-  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = Intcad
+  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/Intcad.app/Contents/Info.plist")" = Intcad
 done
 for key in CFBundleExecutable CFBundleIconFile; do
-  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/SolidCraft.app/Contents/Info.plist")" = SolidCraft
+  test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$MNT/Intcad.app/Contents/Info.plist")" = SolidCraft
 done
 # Nothing names or carries a layered icon, which macOS 26 would show in place of the icon file.
-if /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$MNT/SolidCraft.app/Contents/Info.plist" >/dev/null 2>&1; then
+if /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$MNT/Intcad.app/Contents/Info.plist" >/dev/null 2>&1; then
   echo "the bundle names a layered icon (CFBundleIconName)" >&2
   exit 1
 fi
-test ! -e "$MNT/SolidCraft.app/Contents/Resources/Assets.car"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MNT/SolidCraft.app/Contents/Info.plist")" = "$MACOS_BUNDLE_ID"
-test -s "$MNT/SolidCraft.app/Contents/Resources/SolidCraft.icns"
-cmp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$MNT/SolidCraft.app/Contents/Resources/SolidCraft.icns"
+test ! -e "$MNT/Intcad.app/Contents/Resources/Assets.car"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$MNT/Intcad.app/Contents/Info.plist")" = "$MACOS_BUNDLE_ID"
+test -s "$MNT/Intcad.app/Contents/Resources/SolidCraft.icns"
+cmp "$ROOT/assets/icons/app/macos/exports/icon.icns" "$MNT/Intcad.app/Contents/Resources/SolidCraft.icns"
 cmp "$ROOT/assets/platforms/macos/README.txt" "$MNT/README.txt"
 case "$ARCH" in universal) WANT=(arm64 x86_64) ;; aarch64) WANT=(arm64) ;; *) WANT=(x86_64) ;; esac
 for arch in "${WANT[@]}"; do
-  lipo "$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" -verify_arch "$arch"
+  lipo "$MNT/Intcad.app/Contents/MacOS/SolidCraft" -verify_arch "$arch"
 done
-test -s "$MNT/SolidCraft.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
-cmp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$MNT/SolidCraft.app/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
-cmp "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$MNT/SolidCraft.app/Contents/Resources/Licenses/WEB-VIEW-PLATFORM-NOTICES.txt"
+test -s "$MNT/Intcad.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
+cmp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$MNT/Intcad.app/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
+cmp "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$MNT/Intcad.app/Contents/Resources/Licenses/WEB-VIEW-PLATFORM-NOTICES.txt"
 # The page's files are embedded in the executable and its inventory/notices are beside it: check
 # the app as the mounted image carries it, not the build output it came from.
-python3 "$ROOT/packaging/macos/verify-assistant-bundle.py" --app "$MNT/SolidCraft.app" --source "$ROOT/packages/assistant-web"
+python3 "$ROOT/packaging/macos/verify-assistant-bundle.py" --app "$MNT/Intcad.app" --source "$ROOT/packages/assistant-web"
 if [ "$WITH_MASTRA" = 1 ]; then
   case "$ARCH" in
     universal)
-      test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/aarch64-apple-darwin/runtime.json"
-      test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/x86_64-apple-darwin/runtime.json"
+      test -f "$MNT/Intcad.app/Contents/Resources/mastra/aarch64-apple-darwin/runtime.json"
+      test -f "$MNT/Intcad.app/Contents/Resources/mastra/x86_64-apple-darwin/runtime.json"
       ;;
-    *) test -f "$MNT/SolidCraft.app/Contents/Resources/mastra/runtime.json" ;;
+    *) test -f "$MNT/Intcad.app/Contents/Resources/mastra/runtime.json" ;;
   esac
 fi
 # Not --strict: the mounted HFS volume adds Finder info, which strict verification rejects.
-codesign --verify --deep --verbose=2 "$MNT/SolidCraft.app"
-"$MNT/SolidCraft.app/Contents/MacOS/SolidCraft" --version
+codesign --verify --deep --verbose=2 "$MNT/Intcad.app"
+"$MNT/Intcad.app/Contents/MacOS/SolidCraft" --version
 hdiutil detach "$MNT"
 
 if [ -n "$SIGN_IDENTITY" ]; then
@@ -317,13 +317,13 @@ if [ "$NOTARIZE" = 1 ]; then
   spctl -a -t open --context context:primary-signature -vv "$DMG"
   MNT="$(mktemp -d)"
   hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
-  spctl --assess --type execute --verbose=4 "$MNT/SolidCraft.app"
+  spctl --assess --type execute --verbose=4 "$MNT/Intcad.app"
   hdiutil detach "$MNT"
 fi
 
 # ---- CLI ---------------------------------------------------------------------------------------
 echo "==> building $CLI_ZIP"
-CLI_DIR="$WORK/solidcraft-cli-$VERSION-macos-$ARCH"
+CLI_DIR="$WORK/intcad-cli-$VERSION-macos-$ARCH"
 mkdir -p "$CLI_DIR"
 cp "$WORK/bin/solidcraft-cli" "$CLI_DIR/"
 sign_code "$CLI_DIR/solidcraft-cli" "$MACOS_BUNDLE_ID.cli"

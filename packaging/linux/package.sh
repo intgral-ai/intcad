@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Build and package SolidCraft for Linux (<arch> is x86_64 or aarch64):
 #
-#   $DIST/solidcraft-<version>-linux-<arch>.AppImage        any distro with glibc >= the build host's
-#   $DIST/solidcraft-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
-#   $DIST/solvecraft-<version>-linux-<arch>.AppImage.zsync  the same, for pre-rename AppImages
-#   $DIST/solidcraft-<version>-linux-<arch>.deb             Debian, Ubuntu, Mint, Pop!_OS, ...
-#   $DIST/solidcraft-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
-#   $DIST/solidcraft-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
+#   $DIST/intcad-<version>-linux-<arch>.AppImage        any distro with glibc >= the build host's
+#   $DIST/intcad-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
+#   $DIST/{solidcraft,solvecraft}-<version>-linux-<arch>.AppImage.zsync  the same, for AppImages
+#                                                        published under those earlier names
+#   $DIST/intcad-<version>-linux-<arch>.deb             Debian, Ubuntu, Mint, Pop!_OS, ...
+#   $DIST/intcad-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
+#   $DIST/intcad-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
 #
 # Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--with-mastra]
 #
@@ -41,8 +42,8 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-export SOLIDCRAFT_MAINTAINER="${SOLIDCRAFT_MAINTAINER:-${SOLVECRAFT_MAINTAINER:-Intgral <https://github.com/intgral-ai/open-skyfall-desktop>}}"  # SOLVECRAFT_*: compatibility shim, see docs/compatibility.md
-BASENAME="solidcraft-$VERSION-linux-$ARCH"
+export SOLIDCRAFT_MAINTAINER="${SOLIDCRAFT_MAINTAINER:-${SOLVECRAFT_MAINTAINER:-Intgral <https://github.com/intgral-ai/intcad>}}"  # SOLVECRAFT_*: compatibility shim, see docs/compatibility.md
+BASENAME="intcad-$VERSION-linux-$ARCH"
 
 echo "==> SolidCraft $VERSION for Linux $ARCH ($FORMATS)"
 
@@ -164,20 +165,26 @@ if has appimage; then
   # Update information: AppImageUpdate and the like fetch only the changed blocks of a newer
   # release through the .zsync published next to each AppImage. `latest` is the newest published
   # release that is not a pre-release.
-  REPO="${GITHUB_REPOSITORY:-intgral-ai/open-skyfall-desktop}"
-  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|solidcraft-*-linux-$ARCH.AppImage.zsync"
+  REPO="${GITHUB_REPOSITORY:-intgral-ai/intcad}"
+  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|intcad-*-linux-$ARCH.AppImage.zsync"
   # Extract-and-run: works without FUSE (containers, CI). With zsyncmake on the host appimagetool
   # also writes the .zsync, into its working directory, hence the cd.
   (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream -u "$UPDATE_INFO" "$APPDIR" "$OUT")
   echo "wrote $OUT"
   if [ -s "$OUT.zsync" ]; then
     echo "wrote $OUT.zsync"
-    # Compatibility shim (docs/compatibility.md): AppImages from before the rename look for
-    # `solvecraft-*-linux-$ARCH.AppImage.zsync` in the latest release. The same .zsync under that
-    # name (its URL is the new AppImage's file name, relative to the release) updates them to
-    # SolidCraft.
-    cp "$OUT.zsync" "$DIST/solvecraft-$VERSION-linux-$ARCH.AppImage.zsync"
-    echo "wrote $DIST/solvecraft-$VERSION-linux-$ARCH.AppImage.zsync (legacy update alias)"
+    # Compatibility shim (docs/compatibility.md): an AppImage published under an earlier name
+    # looks in the latest release for the .zsync under that name: `solidcraft` until Intcad had
+    # its own, `solvecraft` before the rename. The same .zsync under each name (it names the new
+    # AppImage's file, relative to the release) updates them to this one.
+    for earlier in solidcraft solvecraft; do
+      alias="$DIST/$earlier-$VERSION-linux-$ARCH.AppImage.zsync"
+      cp "$OUT.zsync" "$alias"
+      # The earlier build's selector is <name>-*-linux-<arch>.AppImage.zsync: the copy must
+      # match it and lead to the new image.
+      grep -a -m1 -qxF "Filename: $BASENAME.AppImage" "$alias" || { echo "error: $alias does not name $BASENAME.AppImage" >&2; exit 1; }
+      echo "wrote $alias (update alias for the earlier name)"
+    done
   else
     warn "zsyncmake not found, so $OUT.zsync was not written; AppImage delta updates need it"
   fi

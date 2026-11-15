@@ -2,7 +2,7 @@
 <!-- AppStream metadata (software centres, Flathub). Template: package.sh substitutes @VERSION@
      and @DATE@ from Cargo.toml and the build date. -->
 <component type="desktop-application">
-  <id>io.tangencylabs.solidcraft</id>
+  <id>ai.intgral.intcad</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT OR Apache-2.0</project_license>
   <name>Intcad</name>
@@ -24,11 +24,11 @@
       <li>Every action is a command, scriptable from a CLI, a JSON control channel and an MCP server</li>
     </ul>
   </description>
-  <launchable type="desktop-id">io.tangencylabs.solidcraft.desktop</launchable>
-  <icon type="stock">io.tangencylabs.solidcraft</icon>
-  <url type="homepage">https://github.com/intgral-ai/open-skyfall-desktop</url>
-  <url type="bugtracker">https://github.com/intgral-ai/open-skyfall-desktop/issues</url>
-  <url type="help">https://github.com/intgral-ai/open-skyfall-desktop#readme</url>
+  <launchable type="desktop-id">ai.intgral.intcad.desktop</launchable>
+  <icon type="stock">ai.intgral.intcad</icon>
+  <url type="homepage">https://github.com/intgral-ai/intcad</url>
+  <url type="bugtracker">https://github.com/intgral-ai/intcad/issues</url>
+  <url type="help">https://github.com/intgral-ai/intcad#readme</url>
   <categories>
     <category>Graphics</category>
     <category>3DGraphics</category>
@@ -42,7 +42,7 @@
   <screenshots>
     <screenshot type="default">
       <caption>A sample part with its sketches and feature timeline</caption>
-      <image>https://raw.githubusercontent.com/intgral-ai/open-skyfall-desktop/main/docs/screenshots/sample-plate.png</image>
+      <image>https://raw.githubusercontent.com/intgral-ai/intcad/main/docs/screenshots/sample-plate.png</image>
     </screenshot>
   </screenshots>
   <requires>

@@ -30,6 +30,6 @@ Hard rules; reasons: CONTRIBUTING.md, "Rules that aren't negotiable".
 - Before icon or media edits, read `assets/AGENTS.md` and its icon guides; use canonical bases and finished references; `cargo xtask icons` validates.
 
 ## The name
-- Displayed name: **Intcad**. Internal identifiers stay `solidcraft`: crates, binaries, `.sc`, `solidcraft/N`, `SOLIDCRAFT_*`, settings, app IDs and MCP.
+- Name: **Intcad**, with its own app ID `ai.intgral.intcad`, packages and folders. Code names stay `solidcraft`: crates, binaries, `.sc`, `solidcraft/N`, `SOLIDCRAFT_*`, MCP.
 - Compatibility: `docs/compatibility.md`; no new internal `solidcraft` names without a reason. Upstream keeps the SolidCraft name/logo; credit it only as upstream.
 - Terms: `docs/book/src/reference/glossary.md`; units mm/radians, Z up.

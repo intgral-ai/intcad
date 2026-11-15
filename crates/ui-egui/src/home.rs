@@ -159,7 +159,7 @@ fn cache_path(key: &str) -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    Some(root.join("SolidCraft").join("thumbnails").join(format!("{:016x}.png", h.finish())))
+    Some(root.join("Intcad").join("thumbnails").join(format!("{:016x}.png", h.finish())))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

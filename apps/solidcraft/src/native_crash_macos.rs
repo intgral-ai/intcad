@@ -619,7 +619,7 @@ mod tests {
         let mut b = Buf::new();
         json(&mut b, f, frames, |at, _| {
             (at >= 0x1_0000_0000).then_some(Module {
-                path: b"/Applications/SolidCraft.app/Contents/MacOS/solidcraft",
+                path: b"/Applications/Intcad.app/Contents/MacOS/solidcraft",
                 base: 0x1_0000_0000,
                 symbol: Some((b"_ZN4main17h0123456789abcdefE", 0x1_0000_1200)),
             })
@@ -635,7 +635,7 @@ mod tests {
         assert_eq!(v["name"], "segmentation fault");
         assert_eq!(v["detail"], "read of 0x0000000000000010 (SEGV_MAPERR)");
         assert_eq!(v["address"], "0x0000000100001234");
-        assert_eq!(v["module"], "/Applications/SolidCraft.app/Contents/MacOS/solidcraft");
+        assert_eq!(v["module"], "/Applications/Intcad.app/Contents/MacOS/solidcraft");
         assert_eq!(v["offset"], "0x1234");
         assert_eq!(v["thread"], 4242);
         assert_eq!(v["thread_name"], "main");

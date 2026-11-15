@@ -1,6 +1,6 @@
 """dmgbuild settings for the SolidCraft disk image (packaging/macos/package.sh).
 
-Passed with -D here=<this folder> -D app=<SolidCraft.app> -D readme=<README.txt>
+Passed with -D here=<this folder> -D app=<Intcad.app> -D readme=<README.txt>
 -D icns=<icon.icns>. dmgbuild writes the Finder layout (window, background, icon positions) straight into the image, so the build
 needs no Finder session and no AppleScript.
 """

@@ -143,7 +143,7 @@ pub fn admin_script(cli: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
-    const CLI: &str = "/Applications/SolidCraft.app/Contents/MacOS/solidcraft-cli";
+    const CLI: &str = "/Applications/Intcad.app/Contents/MacOS/solidcraft-cli";
 
     #[test]
     fn plans() {

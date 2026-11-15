@@ -72,9 +72,9 @@ def control_token(port):
     if os.environ.get("SOLIDCRAFT_CONTROL_DIR"):
         folder = Path(os.environ["SOLIDCRAFT_CONTROL_DIR"])
     elif sys.platform == "win32":
-        folder = Path(os.environ["LOCALAPPDATA"]) / "SolidCraft" / "control"
+        folder = Path(os.environ["LOCALAPPDATA"]) / "Intcad" / "control"
     elif sys.platform == "darwin":
-        folder = Path.home() / "Library/Application Support/SolidCraft/control"
+        folder = Path.home() / "Library/Application Support/Intcad/control"
     else:
         data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
         folder = Path(data) / "solidcraft" / "control"

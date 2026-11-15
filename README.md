@@ -57,7 +57,7 @@ More commands, the Windows cross-build and the browser build are in [docs/buildi
 runs its own design session, or with `--connect` it drives the running app so you can watch.
 Claude Code: `claude mcp add solidcraft -- solidcraft-cli mcp`. If a terminal doesn't find
 `solidcraft-cli` (older Windows installers don't put it on `PATH`), give its full path (by default
-`"C:\\Program Files\\SolidCraft\\solidcraft-cli.exe"`). Tools, access rules and an example session:
+`"C:\\Program Files\\Intcad\\solidcraft-cli.exe"`). Tools, access rules and an example session:
 [docs/mcp.md](docs/mcp.md).
 
 ## Scripts

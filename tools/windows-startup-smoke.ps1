@@ -23,7 +23,7 @@ foreach ($case in $cases) {
     Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
     # eframe asks Windows for the roaming folder (not %APPDATA%), so the settings go in the
     # runner's real one, emptied for each case.
-    $settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'SolidCraft\data'
+    $settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Intcad\data'
     Remove-Item -Recurse -Force $settings -ErrorAction SilentlyContinue
     $local = Join-Path $root 'local'
     $crashes = Join-Path $root 'crashes'
