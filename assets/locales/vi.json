@@ -1535,6 +1535,7 @@
   "help.contact.enable_all": "Đưa mọi chi tiết của cụm lắp ráp vào một tập hợp tiếp xúc để không có hai chi tiết nào xuyên qua nhau khi khớp nối chuyển động. Dùng để kiểm tra nhanh toàn bộ cơ cấu.",
   "help.contact.enable_sets": "Bật tiếp xúc cho các tập hợp tiếp xúc đã định nghĩa để khớp nối được dẫn động và nghiên cứu chuyển động dừng tại nơi các chi tiết sắp xuyên qua nhau. Dùng để bật lại các tập hợp sau khi tắt tiếp xúc.",
   "help.contact.list": "Liệt kê các tập hợp tiếp xúc của thiết kế, các chi tiết trong mỗi tập hợp và trạng thái bật tiếp xúc. Dùng để kiểm tra thiết lập tiếp xúc trước khi dẫn động cụm lắp ráp.",
+  "help.dfm.check": "Bắt đầu kiểm tra DFM chạy nền cho dự án đang mở và lưu báo cáo để xem. Dùng khi muốn kiểm tra quy tắc kim loại tấm của xưởng mà không cần lượt AI.",
   "help.document.inspect": "Hiển thị tổng quan về thiết kế: các cụm chi tiết, thân khối, phác thảo, tính năng và tham số. Dùng để nắm nhanh một thiết kế do người khác tạo.",
   "help.document.units": "Thay đổi đơn vị hiển thị chiều dài của thiết kế, chẳng hạn mm hoặc inch. Hình học giữ nguyên kích thước; chỉ phần hiển thị và các số thuần túy thay đổi theo.",
   "help.edit.checkpoint": "Ghi nhớ thiết kế, phác thảo đang hoạt động và lịch sử hoàn tác ở trạng thái hiện tại. Dùng trước khi thử điều gì rủi ro mà bạn có thể muốn quay lại.",

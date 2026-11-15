@@ -1535,6 +1535,7 @@
   "help.contact.enable_all": "Puts every part of the assembly into one contact set, so no two parts can pass through each other while joints move. Use it for a quick check of a whole mechanism.",
   "help.contact.enable_sets": "Turns contact on for the contact sets you defined, so driven joints and motion studies stop where their parts would pass through each other. Use it to bring your sets back after turning contact off.",
   "help.contact.list": "Lists the contact sets of the design, the parts in each one and whether contact is on. Use it to check how contact is set up before you drive the assembly.",
+  "help.dfm.check": "Starts a background DFM check of the open project and saves a report you can inspect. Use it when you want the shop's sheet-metal rules checked without an AI turn.",
   "help.document.inspect": "Shows an overview of the design: its components, bodies, sketches, features and parameters. Use it to get your bearings in a design you did not build yourself.",
   "help.document.units": "Changes the units the design shows lengths in, such as mm or inches. The geometry keeps its size; only the display and plain numbers follow.",
   "help.edit.checkpoint": "Remembers the design, the active sketch and the undo history as they are now. Use it before trying something risky that you may want to go back from.",
