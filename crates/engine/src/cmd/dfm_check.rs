@@ -22,7 +22,7 @@ const INSPECT_CONTRACT: TypedContract<InspectDfmParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("dfm.check", "Run DFM Check", crate::checked!("dfm.check", check))
-        .at("INSPECT", "CHECK")
+        .at("SOLID", "INSPECT")
         .icon("render_check")
         .noundo()
         .contract(&CHECK_CONTRACT)
