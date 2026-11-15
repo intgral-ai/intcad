@@ -881,9 +881,12 @@ fn poll_check(app: &mut SolveApp) {
 /// While a check row says running, refresh it from the saved report on each frame; the page's
 /// poll action is not the only driver (a host-sent shortcut starts the row itself).
 pub(crate) fn poll_running_checks(app: &mut SolveApp) {
-    let running = app.agent_chat.items.iter().rev().any(|item| {
-        matches!(item, Item::Tool { kind, status: Some(backend::ToolStatus::InProgress), .. } if kind == "dfm.check")
-    });
+    let running = app
+        .agent_chat
+        .items
+        .iter()
+        .rev()
+        .any(|item| matches!(item, Item::Tool { kind, status: Some(backend::ToolStatus::InProgress), .. } if kind == "dfm.check"));
     if running {
         poll_check(app);
     }
@@ -1042,11 +1045,7 @@ mod tests {
             })
             .expect("the adopted row");
         assert_eq!(row.0, "dfm.check");
-        assert!(
-            matches!(row.1, Some(backend::ToolStatus::Completed | backend::ToolStatus::Failed)),
-            "the row stops saying running: {:?}",
-            row.1
-        );
+        assert!(matches!(row.1, Some(backend::ToolStatus::Completed | backend::ToolStatus::Failed)), "the row stops saying running: {:?}", row.1);
     }
 
     /// A queued run reads as running, and a failed or replaced run keeps its state and reason.
