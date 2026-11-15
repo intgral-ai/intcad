@@ -4547,7 +4547,7 @@
   "ui.agent_chat_new": "צ'אט חדש",
   "ui.agent_chat_new_confirm": "להתחיל צ'אט חדש? הצ'אט הנוכחי יימחק.",
   "ui.agent_chat_next_picture": "התמונה הבאה",
-  "ui.agent_chat_no_cli": "solidcraft-cli לא נמצא לצד האפליקציה, ולכן הסוכן לא יכול לגשת לתכן.",
+  "ui.agent_chat_no_cli": "intcad-cli לא נמצא לצד האפליקציה, ולכן הסוכן לא יכול לגשת לתכן.",
   "ui.agent_chat_no_control": "נקודת הקצה של הצ'אט עם הסוכן לא הופעלה, ולכן הסוכן לא יכול לגשת לתכן.",
   "ui.agent_chat_no_images": "הסוכן הזה לא מקבל תמונות",
   "ui.agent_chat_no_picture": "אין תמונה בלוח",

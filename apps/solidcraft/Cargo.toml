@@ -5,7 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-default-run = "solidcraft"
+default-run = "intcad"
+
+# The program is named for the product; the package keeps its name (docs/compatibility.md).
+[[bin]]
+name = "intcad"
+path = "src/main.rs"
 
 [features]
 default = ["raytrace-cpu", "bundled-render-library", "profile"]

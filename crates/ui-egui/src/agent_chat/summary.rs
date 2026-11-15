@@ -41,13 +41,18 @@ pub fn summary(title: &str, input: Option<&Value>, output: Option<&str>, done: b
 
 /// SolidCraft's tool a title names: `mcp__<server>__<tool>` (an agent names MCP tools after their
 /// server: the chat's own, [`super::acp::BRIDGE_NAME`], or one a user set up, which has
-/// `solidcraft` in its name as the chat's own had), or the in-app client's own `measure`,
+/// `intcad` in its name as the chat's own has, or `solidcraft` as both had in earlier builds), or the in-app client's own `measure`,
 /// `execute: solid.box`, `batch: …`.
 pub fn tool_name(title: &str) -> Option<&str> {
     let head = title.trim();
     let name = head.split(|c: char| c == ':' || c.is_whitespace()).next()?;
     let parts: Vec<&str> = name.split("__").take(4).collect();
-    let ours = |server: &str| server.eq_ignore_ascii_case(super::acp::BRIDGE_NAME) || server.to_ascii_lowercase().contains("solidcraft");
+    // `solidcraft` too: the chat's own server and a user's entry had that name in earlier builds,
+    // and conversations saved then still read.
+    let ours = |server: &str| {
+        let server = server.to_ascii_lowercase();
+        server.eq_ignore_ascii_case(super::acp::BRIDGE_NAME) || ["intcad", "solidcraft"].iter().any(|own| server.contains(own))
+    };
     match parts.as_slice() {
         ["mcp", server, tool] if ours(server) && !tool.is_empty() => Some(*tool),
         [bare] if !bare.is_empty() && head.strip_prefix(*bare).is_some_and(|rest| rest.is_empty() || rest.starts_with(':')) => Some(*bare),

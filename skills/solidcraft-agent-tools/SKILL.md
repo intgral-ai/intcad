@@ -11,12 +11,12 @@ description: "Use when running SolidCraft to see a change working, driving it th
   - `{"id":1,"method":"engine.execute","params":{"command":"solid.extrude","params":{"distance":20}}}`
   - `{"id":2,"method":"ui.start","params":{"command":"sketch.create"}}`, then `ui.click {x, y}`
   - `{"id":3,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`, then read the PNG
-- For UI work, look at the result. Without a window use `ui.render` or `solidcraft-cli snapshot`.
-- Headless: `solidcraft-cli run script.json --out part.step`, `solidcraft-cli eval design.sc`, `solidcraft-cli snapshot script.json --out shot.png`, `solidcraft-cli commands`.
+- For UI work, look at the result. Without a window use `ui.render` or `intcad-cli snapshot`.
+- Headless: `intcad-cli run script.json --out part.step`, `intcad-cli eval design.sc`, `intcad-cli snapshot script.json --out shot.png`, `intcad-cli commands`.
 - Build with `CARGO_TARGET_DIR=<repo>/target`.
 
 ## MCP tools
-The server is `solidcraft-cli mcp` (`crates/mcp/src/`, `docs/mcp.md`). Tools are defined in `crates/mcp/src/tools.rs`; keep `docs/mcp.md` in step, and keep tool annotations (read-only, destructive) honest.
+The server is `intcad-cli mcp` (`crates/mcp/src/`, `docs/mcp.md`). Tools are defined in `crates/mcp/src/tools.rs`; keep `docs/mcp.md` in step, and keep tool annotations (read-only, destructive) honest.
 - Anything the user can do is a command; add a command, not a new tool, unless the tool is about the session itself (open, save, screenshot, batch).
 - Files: tools reach only the allowed folders (the design's folder, the recovery folder, the scratch folder, `--allow-path`). Do not widen this casually; paths are resolved before comparing, so `..` and links leaving the allowed set are refused, and on Windows UNC and device paths are refused.
 - Replies stay small: `verbose: false`, no unfiltered command catalogue or topology dumps.

@@ -9,7 +9,7 @@
 | L3 | `io` | design files, STL/OBJ/STEP/3MF export, STEP and 3MF/STL/OBJ/glTF import features |
 | L4 | `engine` | the session and the command registry (everything is a command) |
 | L5 | `gpu`, `ui-egui`, `mcp` | compute-shader evaluation of display tessellation plans; the swappable desktop front end; the MCP server (headless or bridged to the app) |
-| apps | `solidcraft`, `solidcraft-cli` | desktop app, headless CLI |
+| apps | `apps/solidcraft`, `apps/solidcraft-cli` | desktop app (`intcad`), headless CLI (`intcad-cli`) |
 <!-- ANCHOR_END: architecture -->
 
 [Mastra workflow hosting](mastra-runtime.md) defines the proposed desktop runtime,

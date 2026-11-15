@@ -153,7 +153,7 @@ def read_paths(src):
 
 # This is a thin execution/evidence adapter around select() and the existing Rust
 # coverage/known-failing/ladder graders, not another geometry or baseline grader.
-BINARIES = ("target/rig/release/solidcraft-cli", "target/rig/debug/xtask")
+BINARIES = ("target/rig/release/intcad-cli", "target/rig/debug/xtask")
 BUILD_COMMANDS = [["cargo", "build", "--release", "--locked", "-p", "solidcraft-cli"],
                   ["cargo", "build", "--locked", "-p", "xtask"],
                   [BINARIES[1], "kernel-cases", "--coverage", "--cli", BINARIES[0]]]

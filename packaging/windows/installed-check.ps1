@@ -14,8 +14,8 @@
     1. The machine has no install yet (one already there would be what gets checked).
     2. A supplied previous MSI is installed; then msiexec installs this MSI silently, for the
        machine, into its default folder. The previous product's ARP entry must be gone.
-    3. The installed solidcraft.exe is byte for byte the one this job built.
-    4. The installed solidcraft-cli.exe runs.
+    3. The installed intcad.exe is byte for byte the one this job built.
+    4. The installed intcad-cli.exe runs.
     5. The WebView2 Evergreen Runtime is detected. It is the Assistant's only renderer: there is
        no built-in fallback, so absence fails the check unless the recovery path is exercised.
        -WebView2Recovery Auto (default) installs it from the official online bootstrapper, or from
@@ -80,8 +80,8 @@ $ExpectedUpgradeCode = '984E28EB-86EB-46BE-908D-738A48FE6432'
 $found = @(Get-ChildItem $Dist -Filter "intcad-*-windows-$Arch.msi")
 if ($found.Count -ne 1) { throw "expected one $Arch MSI in $Dist, found $($found.Count)" }
 $Msi = $found[0].FullName
-$Built = Join-Path $TargetDir "windows-package\$Arch\solidcraft.exe"
-if (-not (Test-Path $Built)) { throw "no built solidcraft.exe at $Built (run package.ps1 first)" }
+$Built = Join-Path $TargetDir "windows-package\$Arch\intcad.exe"
+if (-not (Test-Path $Built)) { throw "no built intcad.exe at $Built (run package.ps1 first)" }
 # The MSI installs for the machine, a 32-bit build under "Program Files (x86)" on 64-bit Windows.
 $ProgramFiles = if ($Arch -eq 'x86' -and ${env:ProgramFiles(x86)}) { ${env:ProgramFiles(x86)} } else { $env:ProgramFiles }
 $Dir = Join-Path $ProgramFiles 'Intcad'
@@ -239,18 +239,18 @@ try {
   }
   Write-Output "ok: the ARP entry is present ($($arp.Path), DisplayVersion $($arp.DisplayVersion))"
 
-  $App = Join-Path $Dir 'solidcraft.exe'
-  $Cli = Join-Path $Dir 'solidcraft-cli.exe'
+  $App = Join-Path $Dir 'intcad.exe'
+  $Cli = Join-Path $Dir 'intcad-cli.exe'
   $Notices = Join-Path $Dir 'ASSISTANT-THIRD-PARTY-NOTICES.txt'
   foreach ($file in $App, $Cli, $Notices) { if (-not (Test-Path $file)) { throw "the MSI did not install $file" } }
   Get-ChildItem $Dir | Format-Table Name, Length
   $installed = (Get-FileHash $App -Algorithm SHA256).Hash
   $expected = (Get-FileHash $Built -Algorithm SHA256).Hash
-  if ($installed -ne $expected) { throw "the installed solidcraft.exe ($installed) is not the one this job built ($expected)" }
-  Write-Output "ok: the installed solidcraft.exe is the one this job built ($installed)"
+  if ($installed -ne $expected) { throw "the installed intcad.exe ($installed) is not the one this job built ($expected)" }
+  Write-Output "ok: the installed intcad.exe is the one this job built ($installed)"
   & $Cli --version
-  if ($LASTEXITCODE -ne 0) { throw "the installed solidcraft-cli --version exited $LASTEXITCODE" }
-  Write-Output 'ok: the installed solidcraft-cli runs'
+  if ($LASTEXITCODE -ne 0) { throw "the installed intcad-cli --version exited $LASTEXITCODE" }
+  Write-Output 'ok: the installed intcad-cli runs'
 
   # The Assistant is WebView2 and has no built-in fallback. Detect before the app starts so a
   # machine without the runtime fails (or exercises recovery) rather than showing a blank panel.
@@ -338,8 +338,8 @@ try {
   Remove-Item -Force (Join-Path $Evidence 'network-probe.exe') -ErrorAction SilentlyContinue
   Write-Output '==> uninstalling'
   # A failed check may have left the app running, and the uninstall cannot remove a running file.
-  Get-Process solidcraft -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  if ($currentInstalled -or (Test-Path (Join-Path $Dir 'solidcraft.exe'))) {
+  Get-Process intcad -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  if ($currentInstalled -or (Test-Path (Join-Path $Dir 'intcad.exe'))) {
     try {
       Invoke-MsiFile $Msi '/x' (Join-Path $Evidence 'msi-uninstall.log')
     } catch {
@@ -359,7 +359,7 @@ try {
   }
 }
 if ($failure) { throw $failure }
-if (Test-Path (Join-Path $Dir 'solidcraft.exe')) { throw "after the uninstall, solidcraft.exe is still in $Dir" }
+if (Test-Path (Join-Path $Dir 'intcad.exe')) { throw "after the uninstall, intcad.exe is still in $Dir" }
 if (Get-ArpEntry $meta.ProductCode) { throw "after the uninstall, ProductCode $($meta.ProductCode) is still in ARP" }
 if ($previousMeta -and (Get-ArpEntry $previousMeta.ProductCode)) { throw "after the uninstall, the previous ProductCode $($previousMeta.ProductCode) is still in ARP" }
 $installDir = (Get-ItemProperty -Path 'HKLM:\Software\Intcad' -Name InstallDir -ErrorAction SilentlyContinue).InstallDir

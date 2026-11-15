@@ -2,7 +2,7 @@
 
 A triage of the regression rig's sweeps, threads and shell cases, and of the ladder's tiers 03
 (analytic profiles), 04 (spline profiles), 06 (threads) and 09 (shells and offsets): 169 cases,
-each run on SMLib (`solidcraft-cli kernel-cases`) on `kernel-smlib` at 4b8953726 and graded
+each run on SMLib (`intcad-cli kernel-cases`) on `kernel-smlib` at 4b8953726 and graded
 against the case's own answer ([kernel-cases.md](kernel-cases.md)). This page lists only the
 cases that do not pass, grouped by what goes wrong, worst first; it is kept by hand as fixes
 land.

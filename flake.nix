@@ -172,7 +172,7 @@
                 install -Dm644 assets/platforms/linux/ai.intgral.intcad.mime.xml \
                   $out/share/mime/packages/ai.intgral.intcad.xml
                 install -Dm644 packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt \
-                  $out/share/doc/solidcraft/WEB-VIEW-PLATFORM-NOTICES.txt
+                  $out/share/doc/intcad/WEB-VIEW-PLATFORM-NOTICES.txt
                 for size in 16 24 32 48 64 128 256 512; do
                   icon=$out/share/icons/hicolor/''${size}x''${size}/apps/ai.intgral.intcad.png
                   mkdir -p "$(dirname "$icon")"
@@ -229,7 +229,7 @@
           package = self.packages.${pkgs.stdenv.hostPlatform.system}.solidcraft;
           desktop = {
             type = "app";
-            program = "${package}/bin/solidcraft";
+            program = "${package}/bin/intcad";
           };
         in
         {
@@ -237,7 +237,7 @@
           solidcraft = desktop;
           cli = {
             type = "app";
-            program = "${package}/bin/solidcraft-cli";
+            program = "${package}/bin/intcad-cli";
           };
         }
       );

@@ -1,8 +1,8 @@
 //! `cargo xtask book`: generate the book's command reference and screenshots, then build it.
 //!
 //! The command reference (`docs/book/src/reference/commands.md`) comes from
-//! `solidcraft-cli commands`, so it can't drift from the registry. The screenshots in
-//! `docs/book/src/generated/` are GPU renders by `solidcraft-cli snapshot` of `examples/*.json`
+//! `intcad-cli commands`, so it can't drift from the registry. The screenshots in
+//! `docs/book/src/generated/` are GPU renders by `intcad-cli snapshot` of `examples/*.json`
 //! and `docs/book/scripts/*.json`, plus the app screenshot from `docs/screenshots/`. Both are
 //! gitignored and attributed in ATTRIBUTION.md. The book itself is built by `mdbook` (a separate
 //! tool, not a dependency) into `target/book`.
@@ -25,9 +25,9 @@ pub fn run(root: &Path, build: bool) -> Result<(), String> {
     c.args(["build", "-q", "--release", "-p", "solidcraft-cli"]);
     crate::run(c, "cargo build -p solidcraft-cli")?;
 
-    let out = cli().arg("commands").output().map_err(|e| format!("solidcraft-cli: {e}"))?;
+    let out = cli().arg("commands").output().map_err(|e| format!("intcad-cli: {e}"))?;
     if !out.status.success() {
-        return Err(format!("solidcraft-cli commands failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+        return Err(format!("intcad-cli commands failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }
     let cmds: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("commands JSON: {e}"))?;
     let cmds = cmds.as_array().ok_or("commands JSON must be an array")?;
@@ -44,7 +44,7 @@ pub fn run(root: &Path, build: bool) -> Result<(), String> {
         let png = gen_dir.join(format!("{stem}.png"));
         let mut c = cli();
         c.arg("snapshot").arg(s).arg("--out").arg(&png).args(["--width", SNAPSHOT_SIZE.0, "--height", SNAPSHOT_SIZE.1]);
-        let o = c.output().map_err(|e| format!("solidcraft-cli snapshot: {e}"))?;
+        let o = c.output().map_err(|e| format!("intcad-cli snapshot: {e}"))?;
         if !o.status.success() {
             return Err(format!("snapshot of {} failed:\n{}", s.display(), String::from_utf8_lossy(&o.stderr)));
         }
@@ -62,7 +62,7 @@ pub fn run(root: &Path, build: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// The release solidcraft-cli just built.
+/// The release intcad-cli just built.
 fn cli() -> std::process::Command {
     let mut c = cargo();
     c.args(["run", "-q", "--release", "-p", "solidcraft-cli", "--"]);
@@ -95,7 +95,7 @@ fn reference(cmds: &[Value], guides: &BTreeMap<String, String>) -> String {
          [Contribute a guide, tip, demo or model link](../dev/command-guides.md).\n\n\
          Expand **Automation details** for the command ID and parameters used by scripts, the CLI and MCP. \
          In that notation, `?` marks an optional parameter and `expr` means a number or an expression with units.\n\n\
-         This catalog is generated from `solidcraft-cli commands` by `cargo xtask book` ({} commands).\n",
+         This catalog is generated from `intcad-cli commands` by `cargo xtask book` ({} commands).\n",
         cmds.len()
     );
     let practical: Vec<_> = cmds.iter().filter(|c| guides.contains_key(command_text(c, "id"))).collect();

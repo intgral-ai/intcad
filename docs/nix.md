@@ -22,17 +22,16 @@ Build without installing:
 
 ```sh
 nix build github:intgral-ai/open-skyfall-desktop#solidcraft
-./result/bin/solidcraft --version
-./result/bin/solidcraft --sample
+./result/bin/intcad --version
+./result/bin/intcad --sample
 ```
 
-The result contains `solidcraft`, `solidcraft-cli` and the deprecated old-name CLI alias
-(see [compatibility.md](compatibility.md)). **Building does not install a desktop-menu entry.** For a user
+The result contains `intcad` and `intcad-cli`. **Building does not install a desktop-menu entry.** For a user
 profile installation, run:
 
 ```sh
 nix profile install github:intgral-ai/open-skyfall-desktop#solidcraft
-solidcraft --sample
+intcad --sample
 ```
 
 On Linux, this installs the SolidCraft desktop entry, MIME definition and generated icon
@@ -49,12 +48,12 @@ Check which executable a plain terminal command would run:
 ```sh
 type -a solidcraft
 readlink -f "$(command -v solidcraft)"
-solidcraft --version
+intcad --version
 nix run github:intgral-ai/open-skyfall-desktop#solidcraft -- --version
 ```
 
 An unrelated old executable on `PATH` is not updated by `nix build`.
-Use the flake app or `./result/bin/solidcraft` to verify the package you just built.
+Use the flake app or `./result/bin/intcad` to verify the package you just built.
 
 ## Source builds and the Mastra runtime binding
 
@@ -103,7 +102,7 @@ GPU-specific instructions; a wrapper for a different driver is not a substitute.
 For Intel/Mesa, after building:
 
 ```sh
-nix run github:nix-community/nixGL#nixGLIntel -- ./result/bin/solidcraft --sample
+nix run github:nix-community/nixGL#nixGLIntel -- ./result/bin/intcad --sample
 ```
 
 If a window is black, first verify that you launched the newly wrapped package
@@ -147,5 +146,5 @@ The environment overrides the preference: `SOLIDCRAFT_WAYLAND=1` (always native 
 
 `nix develop` supplies runtime libraries and uses the Rust/C toolchain already on
 your `PATH`. `nix develop .#rust` supplies the pinned toolchain, C linker and
-`target/nix` build directory. Both retain the GUI and CLI's existing Cargo package
-names (`solidcraft`, `solidcraft-cli`).
+`target/nix` build directory. Both retain the GUI and CLI's existing Cargo packages
+(`-p solidcraft`, `-p solidcraft-cli`).

@@ -77,8 +77,8 @@ jobs:
           grep -qF -e '--end-of-life-rebase=' packaging/flatpak-site.sh
           sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in >"$RUNNER_TEMP/ai.intgral.intcad.metainfo.xml"
           appstreamcli validate --no-net --explain "$RUNNER_TEMP/ai.intgral.intcad.metainfo.xml"
-          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/ai.intgral.intcad.bundle.yml')); assert m['id'] == 'ai.intgral.intcad' and m['command'] == 'solidcraft'"
-          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/snap/snapcraft.yaml')); assert m['name'] == 'solidcraft' and m['confinement'] == 'strict' and m['apps']['solidcraft']['command'] == 'usr/bin/solidcraft'"
+          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/ai.intgral.intcad.bundle.yml')); assert m['id'] == 'ai.intgral.intcad' and m['command'] == 'intcad'"
+          python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/snap/snapcraft.yaml')); assert m['name'] == 'intcad' and m['confinement'] == 'strict' and m['apps']['intcad']['command'] == 'usr/bin/intcad'"
           python3 -m py_compile packaging/linux/snap-smoke.py
 
   # The Assistant's page (packages/assistant-web/dist) is a build output that is checked in, so

@@ -6,7 +6,7 @@
 # What this can't check on a CI runner (one monitor at 100 %): moving the window between monitors
 # with different scales, and the resize border's width at other scales (unit tests cover the sizes).
 #
-# Usage: tools/windows-resize-smoke.ps1 -Exe target\ci\solidcraft.exe
+# Usage: tools/windows-resize-smoke.ps1 -Exe target\ci\intcad.exe
 param([Parameter(Mandatory = $true)][string]$Exe)
 $ErrorActionPreference = 'Stop'
 

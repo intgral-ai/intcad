@@ -148,7 +148,7 @@ const WORKGROUP: u32 = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GpuError {
-    #[error("no GPU adapter qualifies under the `{0}` policy (SOLIDCRAFT_GPU); `solidcraft-cli gpu` lists the adapters this machine offers")]
+    #[error("no GPU adapter qualifies under the `{0}` policy (SOLIDCRAFT_GPU); `intcad-cli gpu` lists the adapters this machine offers")]
     NoAdapter(&'static str),
     #[error("{0}")]
     Policy(String),

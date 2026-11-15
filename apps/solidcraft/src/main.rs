@@ -212,7 +212,7 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 solidcraft_engine::crash::phase(solidcraft_engine::crash::RUNNING);
-                // A DMG install has no installer step: put solidcraft-cli on PATH, quietly.
+                // A DMG install has no installer step: put intcad-cli on PATH, quietly.
                 #[cfg(target_os = "macos")]
                 std::thread::spawn(solidcraft_ui_egui::cli_link::install_on_launch);
                 // Automation runs (a control port was asked for) leave the user's AI apps alone.
@@ -1079,7 +1079,7 @@ fn main() -> eframe::Result {
             s if s.starts_with("--max-file-size=") => max_file_size = Some(s.strip_prefix("--max-file-size=").map(str::to_string)),
             "--safe-mode" => safe_mode = true,
             "--version" | "-V" => {
-                println!("solidcraft {}", env!("CARGO_PKG_VERSION"));
+                println!("intcad {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             "--crash-log" => {
@@ -1089,7 +1089,7 @@ fn main() -> eframe::Result {
                         for r in solidcraft_engine::crash::list(&dir).iter().take(5) {
                             println!("  {}  {}  {}", r.id, r.kind, r.message);
                         }
-                        println!("more: solidcraft-cli crashes");
+                        println!("more: intcad-cli crashes");
                     }
                     None => println!("no crash folder on this system"),
                 }

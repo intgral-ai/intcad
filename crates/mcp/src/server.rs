@@ -97,7 +97,7 @@ impl Server {
     pub fn new(backend: Box<dyn Backend>) -> Self {
         Self { backend, initialized: false, scope: None }
     }
-    /// Confine the files tool calls may reach to `scope` (`None`: anywhere). `solidcraft-cli mcp`
+    /// Confine the files tool calls may reach to `scope` (`None`: anywhere). `intcad-cli mcp`
     /// always sets one unless started with `--allow-any-path` (docs/mcp.md).
     pub fn with_path_scope(mut self, scope: Option<PathScope>) -> Self {
         self.scope = scope;
@@ -215,7 +215,7 @@ impl Server {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false}},
-                    "serverInfo": {"name": "solidcraft", "title": "Intcad", "version": env!("CARGO_PKG_VERSION")},
+                    "serverInfo": {"name": "intcad", "title": "Intcad", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": format!("{INSTRUCTIONS} Backend: {}.", self.backend.describe()),
                 }))
             }

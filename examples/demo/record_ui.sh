@@ -15,7 +15,7 @@
 set -e
 DISP=${1:-:0}; PORT=${2:-7878}; OUT=$(cd "${3:-.}" && pwd); STORY=${4:-pi}; RATE=${5:-1}
 HERE=$(cd "$(dirname "$0")" && pwd)
-CLI=${SOLIDCRAFT_CLI:-solidcraft-cli}
+CLI=${SOLIDCRAFT_CLI:-intcad-cli}
 NAME=${SOLIDCRAFT_DEMO_NAME:-enclosure-demo-$STORY}
 PAUSE=${SOLIDCRAFT_DEMO_PAUSE:-0.55}
 CAPTION=${SOLIDCRAFT_DEMO_CAPTION:-1.4}

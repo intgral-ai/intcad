@@ -4547,7 +4547,7 @@
   "ui.agent_chat_new": "新しいチャット",
   "ui.agent_chat_new_confirm": "新しいチャットを始めますか？ 現在のチャットは消去されます。",
   "ui.agent_chat_next_picture": "次の画像",
-  "ui.agent_chat_no_cli": "アプリの隣に solidcraft-cli が見つからないため、エージェントはデザインにアクセスできません。",
+  "ui.agent_chat_no_cli": "アプリの隣に intcad-cli が見つからないため、エージェントはデザインにアクセスできません。",
   "ui.agent_chat_no_control": "エージェントチャットのエンドポイントが起動しなかったため、エージェントはデザインにアクセスできません。",
   "ui.agent_chat_no_images": "このエージェントは画像を受け付けません",
   "ui.agent_chat_no_picture": "クリップボードに画像がありません",

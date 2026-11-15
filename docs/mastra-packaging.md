@@ -15,11 +15,11 @@ from the running program, never from the development checkout, `PATH`, `npx` or 
 
 | Package | Installed location | Resolved from |
 |---|---|---|
-| Linux `.deb`, `.rpm`, `.tar.gz`, AppImage, snap | `/usr/lib/solidcraft/mastra` (inside the image/sandbox: the same FHS path) | `usr/bin/solidcraft` → `../lib/solidcraft/mastra` |
-| Flatpak | `/app/lib/solidcraft/mastra` | `/app/bin/solidcraft` → `../lib/solidcraft/mastra` |
-| macOS `.app` (single architecture) | `Intcad.app/Contents/Resources/mastra` | `Contents/MacOS/SolidCraft` → `../Resources/mastra` |
+| Linux `.deb`, `.rpm`, `.tar.gz`, AppImage, snap | `/usr/lib/intcad/mastra` (inside the image/sandbox: the same FHS path) | `usr/bin/intcad` → `../lib/intcad/mastra` |
+| Flatpak | `/app/lib/intcad/mastra` | `/app/bin/intcad` → `../lib/intcad/mastra` |
+| macOS `.app` (single architecture) | `Intcad.app/Contents/Resources/mastra` | `Contents/MacOS/Intcad` → `../Resources/mastra` |
 | macOS `.app` (universal) | `Contents/Resources/mastra/aarch64-apple-darwin` and `.../x86_64-apple-darwin` | the matching slice by host target |
-| Windows MSI and portable zip | `mastra\` beside `solidcraft.exe` | beside the executable |
+| Windows MSI and portable zip | `mastra\` beside `intcad.exe` | beside the executable |
 
 The directory contains `runtime.json`, `dist/src/main.js`, production `node_modules/`, the
 contract bundle under `schema/mastra-runtime/v1/`, retained `licenses/` and `notices/`, and the

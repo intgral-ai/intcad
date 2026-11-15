@@ -51,8 +51,8 @@ Prepared commands for a built native CLI, run from the repository root:
 
 ```sh
 mkdir -p target/selene-render
-solidcraft-cli run assets/render/selene/materials/appearance-swatches.json --save target/selene-render/appearance-swatches.solidcraft --results --json-out target/selene-render/appearance-swatches-results.json
-solidcraft-cli render target/selene-render/appearance-swatches.solidcraft --out target/selene-render/appearance-swatches.png --width 768 --height 576
+intcad-cli run assets/render/selene/materials/appearance-swatches.json --save target/selene-render/appearance-swatches.solidcraft --results --json-out target/selene-render/appearance-swatches-results.json
+intcad-cli render target/selene-render/appearance-swatches.solidcraft --out target/selene-render/appearance-swatches.png --width 768 --height 576
 ```
 
 These commands have been prepared, not executed. The render CLI automatically fits a camera when none is supplied. Existing output is protected unless `--overwrite` is explicitly provided. Keep local render evidence under ignored `target/`; this pack does not bundle unreviewed preview exports.
@@ -60,7 +60,7 @@ These commands have been prepared, not executed. The render CLI automatically fi
 To style a pinned SELENE design, prepare a separate overlay containing only `appearance.assign` commands with verified target names, then run:
 
 ```sh
-solidcraft-cli run target/selene-render/verified-appearance-overlay.json --in path/to/pinned-selene.solidcraft --save target/selene-render/selene-styled.solidcraft --results
+intcad-cli run target/selene-render/verified-appearance-overlay.json --in path/to/pinned-selene.solidcraft --save target/selene-render/selene-styled.solidcraft --results
 ```
 
 Both input paths above are placeholders until the model and overlay are prepared. The overlay must contain no `file.new`, geometry edits, physical-material edits, joint edits or pose changes. Native save is the preservation path. `timeline.export_script` currently omits appearance overrides and refuses component/joint assemblies; it is not an appearance or articulated-model round-trip mechanism. A multi-command script stops at the first error and is not a whole-script transaction, so verify targets before applying it to the review copy.

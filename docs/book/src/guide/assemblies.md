@@ -324,7 +324,7 @@ their size in pixels (800 × 500 by default, at most 4096 a side), and `fps` the
 by default); `grid: false` and `axes: false` leave out the ground grid and the origin's axes.
 `camera` takes the reply of the control channel's `ui.camera` (or any of its fields;
 the rest come from the view `view.apply` chose, or the home view framing the model). The frames
-are drawn by the same renderer as `solidcraft-cli snapshot`, on a copy of the design, which is not
+are drawn by the same renderer as `intcad-cli snapshot`, on a copy of the design, which is not
 changed. A GIF keeps one palette for all its frames, so colours don't flicker, and stores only
 what changed from one frame to the next. Frames are capped: at most 1000, and a GIF holds at most
 2^26 pixels of frames (about 160 frames of 800 × 500).

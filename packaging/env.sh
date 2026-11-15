@@ -50,7 +50,7 @@ warn() {
 }
 
 # Copy the licence, notice and readme files into a package directory. The programs also carry
-# them (Help > About > Licences, `solidcraft-cli licences`).
+# them (Help > About > Licences, `intcad-cli licences`).
 copy_docs() {
   local dest="$1" f
   for f in README.md LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES.txt; do

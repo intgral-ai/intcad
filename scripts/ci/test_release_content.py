@@ -56,7 +56,7 @@ class NativeContentDecision(unittest.TestCase):
     def test_runtime_markers_fail_the_native_declaration(self):
         descriptors = {"release-linux-x86_64": build("release-linux-x86_64", [("solidcraft.tar.gz", DG)])}
         contents = {"release-linux-x86_64": report("release-linux-x86_64", [("solidcraft.tar.gz", DG)],
-                                                   markers=("usr/lib/solidcraft/mastra/runtime/node",))}
+                                                   markers=("usr/lib/intcad/mastra/runtime/node",))}
         problems = content.problems(SHA, descriptors, contents)
         self.assertTrue(problems)
         self.assertIn("mastra", problems[0])

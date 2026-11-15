@@ -16,12 +16,12 @@ SolidCraft under another label:
     spell them (the code that picks the folders is edited by hand)
   - the repository's own name in what a package says about itself (see REPO_FILES)
 
-Binary names (`solidcraft`, `solidcraft-cli`) and the MCP server name are a separate change. Until
-it lands the two products still collide where those names are installed: the Linux packages
-ship the same files under /usr, and on Windows both register `solidcraft.exe` and put their
-folder on PATH. Only on macOS are they fully apart after this script.
+  - the programs and what the packages install beside them: `solidcraft` -> `intcad`,
+    `solidcraft-cli` -> `intcad-cli`, /usr/lib/solidcraft -> /usr/lib/intcad, and the MCP server
+    entry `mcp setup` writes (`solidcraft` -> `intcad`). See "The programs" below.
 
-It leaves alone, on purpose: crate names, `SOLIDCRAFT_*` variables, the design format
+It leaves alone, on purpose: crate and Cargo package names (`-p solidcraft-cli`,
+`apps/solidcraft-cli`), `SOLIDCRAFT_*` variables, the design format
 (`solidcraft/N`, `.sc`, `.solidcraft`, `application/x-solidcraft`), `solidcraft://` URIs, links
 to upstream, licence and attribution text, and the older ids and names that
 `docs/compatibility.md` keeps as shims for upstream's own history.
@@ -49,6 +49,9 @@ SKIP_FILES = {
     "docs/beta-evidence.md",              # dated records of candidates that were built under the old names
     "docs/fork-governance.md",            # a dated inventory of what the repository held
     ".github/workflows/verify-beta-installers.yml",  # checks a prerelease already published, under the names it has
+    "ATTRIBUTION.md",                     # how each asset was made, with the command of the time
+    "docs/features.md",                   # generated; follows xtask/src/features.rs after a merge
+    "xtask/src/licences.rs",              # writes THIRD-PARTY-LICENSES.txt, which CI compares byte for byte
 }
 SKIP_DIRS = ("vendor/",)
 
@@ -152,6 +155,63 @@ REPO_FILES = {
 }
 
 
+# The programs. A package's programs are named for the product; the Cargo packages they are built
+# from, and their folders, keep their names. So `solidcraft-cli` changes where it is a command, a
+# file or a build's output, and stays where it is the package (`-p solidcraft-cli`,
+# `package(solidcraft-cli)`, a test id `solidcraft-cli::…`) or its folder.
+CLI = re.compile(r"solidcraft-cli")
+# A quoted "solidcraft-cli" with nothing else in the quotes is the program in these files. In
+# every other file it is left alone: in the build tooling it is the Cargo package.
+BARE_IS_PROGRAM = {
+    "crates/engine/src/agent_setup.rs", "crates/ui-egui/src/agent_chat/mod.rs", "crates/ui-egui/src/cli_link.rs",
+    "packaging/tests/apprun_test.py", "examples/demo/enclosure_mcp.py", "examples/demo/enclosure_ui_mcp.py",
+    "skills/solidcraft-checking/scripts/run.py", "skills/solidcraft-checking/scripts/tests/test_facts.py",
+    "skills/solidcraft-checking/templates/test_design.py",
+}
+PROGRAM_RULES = [
+    # The app as a file or a command.
+    (re.compile(r"(?<![\w-])solidcraft\.exe\b"), "intcad.exe"),
+    (re.compile(r"\bbin/solidcraft(?![\w/-]|\.\w)"), "bin/intcad"),
+    (re.compile(r"\b((?:release|debug)/)solidcraft(?![\w/-]|\.\w)"), r"\1intcad"),
+    (re.compile(r"((?:Try)?Exec=)solidcraft\b"), r"\1intcad"),
+    (re.compile(r"\bMacOS/(?:SolidCraft|solidcraft)\b"), "MacOS/Intcad"),
+    (re.compile(r"(\"MacOS\" / )\"SolidCraft\""), r'\1"Intcad"'),  # the same path, built piece by piece
+    (re.compile(r"(--bin[ =])solidcraft(?![\w-])"), r"\1intcad"),
+    (re.compile(r"\bCARGO_BIN_EXE_solidcraft(?![\w-])"), "CARGO_BIN_EXE_intcad"),
+    (re.compile(r"(?<![\w/.-])(?<!-p )(?<!--package )solidcraft (?=--[a-z])"), "intcad "),
+    # The folders the Linux packages install beside the programs.
+    (re.compile(r"(\$\{?BIN\}?/)solidcraft(?![\w/-]|\.\w)"), r"\1intcad"),
+    (re.compile(r"\b((?:lib|libexec|share|doc|licenses)/)solidcraft(?![\w.-])"), r"\1intcad"),
+    (re.compile(r"\b(snap (?:connections|install|run|remove|info|refresh) )solidcraft\b"), r"\1intcad"),
+    (re.compile(r"(?<![\w./-])solidcraft\.cli\b"), "intcad.cli"),
+    # The MCP server as an agent's configuration names it.
+    (re.compile(r"\bmcp__solidcraft__"), "mcp__intcad__"),
+    (re.compile(r"\b(mcp add )solidcraft(?![\w-])"), r"\1intcad"),
+    (re.compile(r"\b(mcp_servers\.)solidcraft\b"), r"\1intcad"),
+    (re.compile(r"(?<![A-Za-z0-9-])solidcraft-live(?![A-Za-z0-9-])"), "intcad-live"),
+    (re.compile(r"\b([Aa]) (?=intcad(-cli)?\b)"), r"\1n "),
+]
+
+
+def programs(rel, text):
+    if rel.startswith("packages/"):  # the Assistant's page and runtime are built from pinned sources
+        return text
+    def cli(m):
+        before, after = m.string[max(0, m.start() - 20):m.start()], m.string[m.end():m.end() + 2]
+        package = before.endswith(("apps/", "apps\\", "package(", "rdeps(")) or after.startswith(("/", "::")) or re.search(r"(-p|--(?:[a-z]+-)?package|--exclude)[ =]$", before)
+        bare = before[-1:] in ("\"", "'") and after[:1] in ("\"", "'") and rel not in BARE_IS_PROGRAM
+        return m.group(0) if package or bare else "intcad-cli"
+
+    lines = []
+    for line in text.splitlines(keepends=True):
+        if not (UPSTREAM_LINE.search(line) or SIGNED_LINE.search(line)):
+            line = CLI.sub(cli, line)
+            for pattern, replacement in PROGRAM_RULES:
+                line = pattern.sub(replacement, line)
+        lines.append(line)
+    return "".join(lines)
+
+
 def git(*args):
     return subprocess.run(["git", *args], capture_output=True, check=True).stdout.decode()
 
@@ -188,6 +248,7 @@ def main():
                 )
             else:
                 new = pattern.sub(replacement, new)
+        new = programs(rel, new)
         if rel.replace(OLD_ID, NEW_ID) in REPO_FILES:
             new = new.replace(OLD_REPO, NEW_REPO)
         for before, after in EXACT.get(rel, []):

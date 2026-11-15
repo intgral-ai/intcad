@@ -14,7 +14,7 @@ report(runId) -> ValidationReport
 cancel(runId)
 ```
 
-Rust: `solidcraft_engine::validation::ValidationPort`. CLI: `solidcraft-cli validate`.
+Rust: `solidcraft_engine::validation::ValidationPort`. CLI: `intcad-cli validate`.
 
 ## Profiles
 
@@ -158,13 +158,13 @@ candidate inputs only after retention, and never touches an active job.
 ## CLI
 
 ```sh
-solidcraft-cli validate submit request.json --profile task.json \
+intcad-cli validate submit request.json --profile task.json \
     --candidate-dir candidates --validation-dir validation
-solidcraft-cli validate skill request.json --profile task.json \
+intcad-cli validate skill request.json --profile task.json \
     --candidate-dir candidates --validation-dir validation --json-out skill-report.json
-solidcraft-cli validate status <runId> --validation-dir validation
-solidcraft-cli validate report <runId> --validation-dir validation --out report.json
-solidcraft-cli validate cancel <runId> --validation-dir validation
+intcad-cli validate status <runId> --validation-dir validation
+intcad-cli validate report <runId> --validation-dir validation --out report.json
+intcad-cli validate cancel <runId> --validation-dir validation
 ```
 
 `request.json` is `{candidate, profile, requestId}` where `requestId` is

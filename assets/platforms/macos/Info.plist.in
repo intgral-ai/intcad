@@ -11,7 +11,7 @@
   <key>CFBundleName</key>
   <string>Intcad</string>
   <key>CFBundleExecutable</key>
-  <string>SolidCraft</string>
+  <string>Intcad</string>
   <key>CFBundleIdentifier</key>
   <string>ai.intgral.intcad</string>
   <key>CFBundleInfoDictionaryVersion</key>
@@ -27,7 +27,7 @@
   <key>SolidCraftVersion</key>
   <string>@VERSION@</string>
   <key>CFBundleIconFile</key>
-  <string>SolidCraft</string>
+  <string>Intcad</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.graphics-design</string>
   <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. -->

@@ -78,7 +78,7 @@ The shipping host is `eframe`/`winit` + `wry`; on niri it prefers native Wayland
 cannot exist), so this run selected the XWayland path explicitly:
 
 ```sh
-SOLIDCRAFT_WAYLAND=0 solidcraft --control 18905
+SOLIDCRAFT_WAYLAND=0 intcad --control 18905
 ```
 
 The window (1280×720 logical at scale 1.25) opened with the real Assistant page

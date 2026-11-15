@@ -20,7 +20,7 @@
 # What this can't check on a CI runner (one monitor at 100 %, no GPU): input methods, a scale other
 # than 100 %, files dropped on the panel, and the view over a real graphics card.
 #
-# Usage: tools/windows-assistant-smoke.ps1 -Exe target\ci\solidcraft.exe -Evidence assistant-smoke
+# Usage: tools/windows-assistant-smoke.ps1 -Exe target\ci\intcad.exe -Evidence assistant-smoke
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
     [string]$Evidence = 'assistant-smoke',
