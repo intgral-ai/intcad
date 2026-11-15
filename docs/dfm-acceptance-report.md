@@ -1,7 +1,7 @@
 # DFM full-catalogue acceptance report
 
 Status: integration evidence for the twelve missing sheet-metal DFM rules and the full
-20-rule catalogue. **Integration code/evidence head: `dfm/catalog-accept` `7d6351061`**
+20-rule catalogue. **Integration code/evidence head: `dfm/catalog-accept` `822638e7c`**
 (this includes the exact-corner-relief semantics and the input-change variants below).
 Desktop evidence builds: `b106ecfa4` for the tray/sink card shots and `e65b9bd94` for the
 corner-relief card; later report edits do not change those builds. Draft PR #151 is
