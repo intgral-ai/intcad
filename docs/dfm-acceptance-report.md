@@ -136,16 +136,16 @@ appeared. `adopt_model_check` now recognises the command's reply from either a d
 
 Card screenshots: `tray-card-4.png` (hole/bend/relief rows and model labels),
 `sink-card-3.png` (countersink rows and labels), `tray-check.png` (model labels only).
-Report JSON: `tray-report.json`, `tray-loose-report.json`, `sink-report.json`. They are
-attached to PIL-292.
+Report JSON: `docs/dfm-evidence/tray-report.json`, `tray-loose-report.json`,
+`sink-report.json`. The screenshots are attached to PIL-292.
 
 ## 7. Boundaries
 
-- **No desktop (L5) evidence in this run.** The Nix desktop build and a WebKit/Xvfb
-  session are outside the local disk budget (the task's worktrees and targets exceeded
-  the 200 GiB local budget before this integration; only our own regenerable targets
-  were reclaimed). The report, card and viewport wiring are covered by the earlier
-  PIL-303/PIL-304 host tests; they were not re-demonstrated here for each rule family.
+- **Desktop scope.** L5 covers holes, bends/flanges/relief presence, countersinks, the
+  critical declaration and the flat-overlap row. The build used the official Nix package
+  (Nix store does not count toward the 200 GiB workspace budget) on a separate Xvfb
+  display. Relief width/depth remain L3 because a normal corner relief is an outline cut;
+  the desktop card honestly shows `checked` for that shape.
 - **Corner relief sizing**: a normal `sheet.flange` corner relief is an outline cut, not
   a notch hole, so the fact layer leaves width/depth `checked` for that shape. The
   measured-notch path is covered with a real `SheetBody` at L3. Reproduce with the

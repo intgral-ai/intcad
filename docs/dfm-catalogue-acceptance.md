@@ -135,7 +135,8 @@ the report's hole list; it never builds a `SheetBody` by hand.
   level (a real `SheetBody` with a 3 × 5 mm notch, hand values 3 and 5). A follow-up that reads an
   outline notch closes this without changing the rule.
 - The harness runs the engine + validation worker in a test process. It does not open the desktop
-  window or capture L5 evidence (the finding shown in the UI and the object selected).
+  window; the separate desktop run (L5) is recorded in `docs/dfm-acceptance-report.md`, with the
+  card rows, model labels and screenshots.
 - `app.flat_no_overlap` keeps PIL-306's evidence boundary: the 20 mm² failing sample is a real
   `SheetBody` through the production adapter, not a worker/desktop run. This harness asserts the
   rule row is present and passing on its samples; it does not fabricate a failing overlap through
