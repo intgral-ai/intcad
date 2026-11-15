@@ -1,7 +1,7 @@
 # DFM full-catalogue acceptance report
 
 Status: integration evidence for the twelve missing sheet-metal DFM rules and the full
-20-rule catalogue. Integration head: `dfm/catalog-accept` `4c5e920f9` (draft PR #151,
+20-rule catalogue. Integration evidence head: `dfm/catalog-accept` `4c5e920f9`; final docs head `cb8cb2671` (draft PR #151,
 stacked on #147/#148/#149; base `dfm/integration-base` `f5a7f9f26`). Every result below was
 produced by the production path from a saved design through `dfm.check`, the validation
 worker and the report written under `.intcad/checks/runs/<run>/`, then read back through
