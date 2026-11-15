@@ -279,8 +279,22 @@ pub fn refresh(app: &mut SolveApp) -> Card {
 
 /// A message that asks for the check in words, so chat and the button share one entry.
 pub fn is_check_request(text: &str) -> bool {
-    let text = text.trim().trim_end_matches(['.', '。', '!', '！']).to_lowercase();
-    matches!(text.as_str(), "检查一下当前设计" | "检查当前设计" | "check this design" | "check the current design")
+    let text = text.trim().trim_end_matches(['.', '。', '!', '！', '?', '？']).to_lowercase();
+    matches!(
+        text.as_str(),
+        "检查一下当前设计"
+            | "检查当前设计"
+            | "检查一下当前钣金件"
+            | "检查当前钣金件"
+            | "检查一下钣金件"
+            | "检查钣金件"
+            | "帮我检查一下当前钣金件"
+            | "帮我检查当前钣金件"
+            | "check this design"
+            | "check the current design"
+            | "check this sheet metal part"
+            | "check the sheet metal part"
+    )
 }
 
 /// Select one `(run_id, finding_id)` from the card.
