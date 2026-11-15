@@ -1596,11 +1596,6 @@ mod tests {
         }
     }
 
-    fn turned_frame(angle: f64, translation: Vec3) -> Plane {
-        let (sin, cos) = angle.sin_cos();
-        Plane { origin: translation, x: Vec3::new(cos, sin, 0.0), y: Vec3::new(-sin, cos, 0.0) }
-    }
-
     /// The panel is far outside the base, so nothing shares material.
     #[test]
     fn separated_flat_pieces_are_clear() {
