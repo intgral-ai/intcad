@@ -16571,12 +16571,48 @@ fn ask_here_sends_no_view_picture_and_waits_for_the_card() {
     assert_eq!(script.prompts().len(), prompts, "nothing was sent");
 }
 
+/// PIL-305: the automatic check reads the project's `ci.toml` switch when it decides. A design
+/// opened from a project whose checks are on must run its check even when no project command has
+/// refreshed the switch yet (the open path adopts the session without `finish_command`).
+#[test]
+fn an_accepted_preview_reads_the_projects_check_switch() {
+    let dir = std::env::temp_dir().join(format!("solidcraft-dfm-switch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let made = solidcraft_engine::project::create(&dir, "dfm-switch", "Part").unwrap();
+    let (mut app, tx, script, _ctx) = previewed_turn("a box");
+    app.session.path = Some(made.design.to_string_lossy().to_string());
+    assert!(!app.agent_chat.dfm.auto_enabled(), "nothing read the switch yet");
+    let before = app.agent_chat.dfm.fired;
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    review::accept(&mut app, id).unwrap();
+    assert!(app.agent_chat.dfm.auto_enabled(), "the project says checks run by themselves");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "so the accept runs one check");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Put the open design in a project whose checks run by themselves, and read its switch the way
+/// the project host does. Returns the project folder, removed when the test drops it.
+fn a_project_with_checks_on(app: &mut SolveApp) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("solidcraft-dfm-project-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let made = solidcraft_engine::project::create(&dir, "shop", "Part").unwrap();
+    app.session.path = Some(made.design.to_string_lossy().to_string());
+    crate::agent_chat::refresh_dfm_auto(app);
+    assert!(app.agent_chat.dfm.auto_enabled(), "the project's ci.toml says checks run by themselves");
+    dir
+}
+
 /// PIL-305: accepting a preview submits exactly one check; a rejection or a stale accept submits
 /// none. The trigger is the same one direct commits use.
 #[test]
 fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none() {
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
-    app.agent_chat.dfm.set_auto_enabled(true);
+    let _project = a_project_with_checks_on(&mut app);
     let before = app.agent_chat.dfm.fired;
     finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
     let id = review_card(&app).id;
@@ -16584,7 +16620,7 @@ fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none(
     assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept commits and runs one check");
 
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
-    app.agent_chat.dfm.set_auto_enabled(true);
+    let _project = a_project_with_checks_on(&mut app);
     let before = app.agent_chat.dfm.fired;
     finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
     let id = review_card(&app).id;
@@ -16592,7 +16628,7 @@ fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none(
     assert_eq!(app.agent_chat.dfm.fired, before, "a rejection commits nothing and runs nothing");
 
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
-    app.agent_chat.dfm.set_auto_enabled(true);
+    let _project = a_project_with_checks_on(&mut app);
     let before = app.agent_chat.dfm.fired;
     finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
     let id = review_card(&app).id;

@@ -1484,6 +1484,8 @@ pub(crate) fn running_dfm(app: &SolveApp) -> Option<String> {
 /// ```
 #[allow(dead_code)]
 pub(crate) fn preview_accepted(app: &mut SolveApp, preview: u64) {
+    // The design or its project settings may have changed since the switch was last read.
+    refresh_dfm_auto(app);
     let stamp = app.session.document_stamp();
     if let Some(trigger) = app.agent_chat.dfm.on_preview_accepted(&stamp.document_id, &format!("preview-{preview}"), stamp.revision) {
         submit_dfm(app, trigger);
@@ -2592,6 +2594,7 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
                 app.agent_chat.attach_anatomy_refs(&mut app.session);
                 end_turn(app);
                 if let Some((turn, changed)) = ended {
+                    refresh_dfm_auto(app);
                     let stamp = app.session.document_stamp();
                     app.agent_chat.dfm.on_turn_end(&stamp.document_id, &format!("turn-{turn}"), stamp.revision, changed, pending);
                 }
