@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -164,12 +165,25 @@ def verify(plan_path, evidence_root, out):
     return 0 if raw else 1
 
 
-def record(plan_path, shard, out):
-    plan = gate.BoundPlan(Path(plan_path).read_bytes())
-    main_merge.check_revision(plan)
+def matrix_common(shard):
+    return ["--archive-file", "tests.tar.zst", "--workspace-remap", ".", "--extract-to", ".",
+            "--extract-overwrite", "--profile", "ci", "--ignore-default-filter", "--run-ignored", "only",
+            "-E", RUN_EXPRESSION[shard]]
+
+
+def run_command(shard):
+    return ["cargo", "nextest", "run", *matrix_common(shard), "--success-output", "final", "--test-threads", "2"]
+
+
+def record(plan_path, shard, out, *, evidence=False):
     gate.require(shard in SHARDS, "unexpected shard: " + shard)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    if not evidence:
+        return subprocess.run(run_command(shard), check=False).returncode
+    gate.require(plan_path is not None, "raw evidence requires a selection plan")
+    plan = gate.BoundPlan(Path(plan_path).read_bytes())
+    main_merge.check_revision(plan)
     skeleton = dict(version=VERSION, shard=shard, matrixShard=os.environ.get("ACTION_MATRIX_SHARD", ""),
                     sourceRevision=plan["sourceRevision"], planDigest=gate.digest_for(plan),
                     runId=os.environ.get("GITHUB_RUN_ID", ""), runAttempt=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
@@ -177,15 +191,11 @@ def record(plan_path, shard, out):
                     complete=False, rawExitCode=None, expectedIds=[], passedIds=[], failedIds=[],
                     skippedIds=[], junitSha256="")
     (out / "matrix-evidence.json").write_text(json.dumps(skeleton, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    expression_value = RUN_EXPRESSION[shard]
-    common = ["--archive-file", "tests.tar.zst", "--workspace-remap", ".", "--extract-to", ".",
-              "--extract-overwrite", "--profile", "ci", "--ignore-default-filter", "--run-ignored", "only",
-              "-E", expression_value]
     junit = Path("target/nextest/ci/junit.xml")
     junit.unlink(missing_ok=True)
     commands = main_merge.capture_commands([
-        ["cargo", "nextest", "list", *common, "--message-format", "json"],
-        ["cargo", "nextest", "run", *common, "--success-output", "final", "--test-threads", "2"],
+        ["cargo", "nextest", "list", *matrix_common(shard), "--message-format", "json"],
+        run_command(shard),
     ], out)
     if junit.exists():
         shutil.copyfile(junit, out / "junit.xml")
@@ -227,9 +237,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_subparsers(dest="mode", required=True)
     recorder = modes.add_parser("run")
-    recorder.add_argument("--plan", type=Path, required=True)
+    recorder.add_argument("--plan", type=Path)
     recorder.add_argument("--shard", required=True)
     recorder.add_argument("--out", type=Path, required=True)
+    recorder.add_argument("--evidence", action="store_true")
     verifier = modes.add_parser("verify")
     verifier.add_argument("--plan", type=Path, required=True)
     verifier.add_argument("--evidence", type=Path, required=True)
@@ -237,7 +248,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.mode == "run":
-            return record(args.plan, args.shard, args.out)
+            return record(args.plan, args.shard, args.out, evidence=args.evidence)
         return verify(args.plan, args.evidence, args.out)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print("raw geometry matrix: " + str(error), file=sys.stderr)

@@ -29,6 +29,10 @@ on:
         description: "Also check RISC-V"
         type: boolean
         default: false
+      raw_matrix_evidence:
+        description: "Collect the nightly raw geometry evidence (not needed by ordinary full runs)"
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       concurrency_namespace:
@@ -41,6 +45,9 @@ on:
         type: boolean
         default: false
       cross_compile:
+        type: boolean
+        default: false
+      raw_matrix_evidence:
         type: boolean
         default: false
 
@@ -581,6 +588,7 @@ jobs:
         with:
           name: nextest-archive
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.raw_matrix_evidence }}
         with:
           name: selection-plan
           path: selection
@@ -592,10 +600,15 @@ jobs:
           SHARD: ${{ matrix.shard }}
           OUT: ${{ github.workspace }}/action-matrix
           ACTION_MATRIX_ACTION_TIMEOUT: "1800"
+          RAW_MATRIX_EVIDENCE: ${{ inputs.raw_matrix_evidence }}
         run: |
           mkdir -p "$OUT"
           export ACTION_MATRIX_SHARD="$SHARD/16" ACTION_MATRIX_RESULTS="$OUT/results-$SHARD.json" ACTION_MATRIX_TIMINGS="$OUT/timings-$SHARD.jsonl" ACTION_MATRIX_WORKDIR="$OUT/raw-$SHARD"
-          python3 -I scripts/ci/raw_matrix.py run --plan selection/plan.json --shard "$SHARD" --out "$OUT"
+          if [ "$RAW_MATRIX_EVIDENCE" = "true" ]; then
+            python3 -I scripts/ci/raw_matrix.py run --plan selection/plan.json --shard "$SHARD" --out "$OUT" --evidence
+          else
+            python3 -I scripts/ci/raw_matrix.py run --shard "$SHARD" --out "$OUT"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -623,15 +636,22 @@ jobs:
         with:
           name: nextest-archive
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.raw_matrix_evidence }}
         with:
           name: selection-plan
           path: selection
       # Determinism is a separate unit of raw evidence; shard artifacts cannot replace it.
-      - run: |
+      - env:
+          RAW_MATRIX_EVIDENCE: ${{ inputs.raw_matrix_evidence }}
+        run: |
           mkdir -p "$OUT"
-          python3 -I scripts/ci/raw_matrix.py run --plan selection/plan.json --shard determinism --out "$OUT"
+          if [ "$RAW_MATRIX_EVIDENCE" = "true" ]; then
+            python3 -I scripts/ci/raw_matrix.py run --plan selection/plan.json --shard determinism --out "$OUT" --evidence
+          else
+            python3 -I scripts/ci/raw_matrix.py run --shard determinism --out "$OUT"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+        if: ${{ always() && inputs.raw_matrix_evidence }}
         with:
           name: action-matrix-determinism
           path: action-matrix-determinism

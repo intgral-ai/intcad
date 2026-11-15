@@ -235,10 +235,31 @@ class RawMatrixTest(unittest.TestCase):
                  mock.patch.object(raw_matrix.main_merge, "capture_commands", side_effect=capture), \
                  mock.patch.dict(os.environ, {"ACTION_MATRIX_SHARD": "" if shard == "determinism" else shard + "/16",
                                               "ACTION_MATRIX_JOBS": "2", "ACTION_MATRIX_ACTION_TIMEOUT": "1800"}):
-                status = raw_matrix.record(self.plan_path, shard, out)
+                status = raw_matrix.record(self.plan_path, shard, out, evidence=True)
         finally:
             os.chdir(old)
         return status, out
+
+    def test_record_without_evidence_runs_the_test_once(self):
+        out = self.root / "plain" / "5"
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(raw_matrix.subprocess, "run", return_value=completed) as run:
+            status = raw_matrix.record(None, "5", out, evidence=False)
+        self.assertEqual(status, 0)
+        run.assert_called_once()
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:3], ["cargo", "nextest", "run"])
+        self.assertNotIn("list", argv)
+        self.assertIn("--run-ignored", argv)
+        self.assertIn("--ignore-default-filter", argv)
+        self.assertIn("binary(action_matrix) & test(=action_matrix_shard)", argv)
+        self.assertFalse((out / "matrix-evidence.json").exists())
+        self.assertFalse((out / "selection.json").exists())
+
+    def test_record_without_evidence_propagates_failure(self):
+        out = self.root / "plain" / "6"
+        with mock.patch.object(raw_matrix.subprocess, "run", return_value=mock.Mock(returncode=100)):
+            self.assertEqual(raw_matrix.record(None, "6", out, evidence=False), 100)
 
     def test_record_pass_and_raw_failure(self):
         status, out = self._record("5", 0, "passed")

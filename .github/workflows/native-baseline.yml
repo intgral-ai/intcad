@@ -26,6 +26,7 @@ jobs:
     with:
       validation_mode: full
       release_required: false
+      raw_matrix_evidence: true
 
   raw-native:
     name: Full native and heavy properties (raw)
