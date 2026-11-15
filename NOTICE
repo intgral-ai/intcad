@@ -11,7 +11,7 @@ Third-party material
 
 Software dependencies are listed in Cargo.lock; their licences are in THIRD-PARTY-LICENSES.txt
 (`cargo xtask licences`), which the programs also carry (Help > About > Licences,
-`solidcraft-cli licences`). The geometry kernel builds on the truck crates
+`intcad-cli licences`). The geometry kernel builds on the truck crates
 (truck-modeling, truck-shapeops, truck-meshalgo, truck-stepio, truck-topology and their
 dependencies, https://github.com/ricosjp/truck), licensed under the Apache License 2.0 and used
 as libraries. truck-shapeops 0.4.0 is vendored in vendor/truck-shapeops with SolidCraft
