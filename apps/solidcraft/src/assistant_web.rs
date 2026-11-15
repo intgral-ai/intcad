@@ -819,11 +819,12 @@ fn build_embedded_gtk(
         .ok_or_else(|| "the GTK window has no X11 window".to_string())?;
     {
         // A window that is mapped again (the Assistant hidden and shown, or the window system
-        // replaying it) is put back on the panel after GTK has finished mapping it.
-        let mapped = window.clone();
+        // replaying it) is put back on the panel after GTK has finished mapping it. The signal
+        // keeps this window alive, so it must not capture a clone of the window: the one-shot
+        // timer takes the only owned clone and drops it when the correction is done.
         let map_latest = latest.clone();
-        window.connect_map_event(move |_, _| {
-            let mapped = mapped.clone();
+        window.connect_map_event(move |window, _| {
+            let mapped = window.clone();
             let map_latest = map_latest.clone();
             gtk::glib::timeout_add_local(std::time::Duration::ZERO, move || {
                 place_gtk(&mapped, delayed_place(map_latest.get(), at));
