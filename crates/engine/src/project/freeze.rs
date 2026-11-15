@@ -40,6 +40,8 @@ pub struct FrozenProject {
     pub generic: Profile,
     /// The selected data rows exactly as parsed by the rule layer, when the copy is usable.
     pub shop: Option<Profile>,
+    /// The critical hole-to-hole dimensions `critical.toml` declares, in file order.
+    pub critical: Vec<super::CriticalDimension>,
     /// Name, version, sha256, and the project-relative path of the copy in `.intcad/`.
     pub data: FrozenDataRef,
     pub overrides: Vec<RuleOverride>,
@@ -101,13 +103,14 @@ impl Project {
                 shop = None;
             }
         }
-        let config_digest = digest(&manifest.id, &manifest.name, &declared, &generic, &shop, &data, &overrides)?;
+        let config_digest = digest(&manifest.id, &manifest.name, &declared, &generic, &shop, &self.critical, &data, &overrides)?;
         Ok(FrozenProject {
             project_id: manifest.id.clone(),
             project_name: manifest.name.clone(),
             declared,
             generic,
             shop,
+            critical: self.critical.clone(),
             data,
             overrides,
             config_digest,
@@ -149,15 +152,28 @@ fn digest(
     declared: &Declared,
     generic: &Profile,
     shop: &Option<Profile>,
+    critical: &[super::CriticalDimension],
     data: &FrozenDataRef,
     overrides: &[RuleOverride],
 ) -> Result<String, super::ProjectError> {
+    let critical: Vec<serde_json::Value> = critical
+        .iter()
+        .map(|dimension| {
+            serde_json::json!({
+                "name": dimension.name,
+                "fromMm": dimension.from_mm,
+                "toMm": dimension.to_mm,
+                "toleranceMm": dimension.tolerance_mm,
+            })
+        })
+        .collect();
     let value = serde_json::json!({
         "projectId": project_id,
         "projectName": project_name,
         "declared": declared,
         "generic": generic,
         "shop": shop,
+        "critical": critical,
         "data": data,
         "overrides": overrides,
     });

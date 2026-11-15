@@ -104,7 +104,7 @@ pub(crate) fn cancelled(method: &str) -> GuardRefusal {
 
 /// Settings only a person may change: project data, checks and a rule's number. The assistant
 /// cannot switch data, lower a threshold or turn checks off, directly or through a batch.
-const UI_ONLY: &[&str] = &["dfm.override", "project.ci_set", "project.data_set", "project.settings_set"];
+const UI_ONLY: &[&str] = &["dfm.override", "project.ci_set", "project.critical_set", "project.data_set", "project.settings_set"];
 
 fn ui_only(command: &str) -> Option<&'static str> {
     let canonical = solidcraft_engine::find_command(command).map_or(command, |spec| spec.id);
