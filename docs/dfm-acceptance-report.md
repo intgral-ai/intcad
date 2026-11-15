@@ -111,11 +111,15 @@ TEST-ONLY rows are in `crates/engine/src/project/test_data/critical_shop.json`.
   PIL-303/PIL-304 host tests; they were not re-demonstrated here for each rule family.
 - **Corner relief sizing**: a normal `sheet.flange` corner relief is an outline cut, not
   a notch hole, so the fact layer leaves width/depth `checked` for that shape. The
-  measured-notch path is covered with a real `SheetBody` at L3. A follow-up that reads
-  an outline notch closes this without changing the rule.
+  measured-notch path is covered with a real `SheetBody` at L3. Reproduce with the
+  `relief_small` sample (1 mm rectangular corner relief, 0.5 mm deep). Recommendation:
+  teach `notch_at`/the relief scan to read the outline interval at the bend end, or keep
+  a derived corner-relief record, then change only the two expectations to `failed`
+  (1 vs 2 mm, 0.5 vs 1 mm). The rule needs no change.
 - **Converted countersinks**: `sheet_convert` does not recognise a cone, so a countersink
   on a converted body still reads as a pocket. The countersink sample starts as a native
-  sheet.
+  sheet. Recommendation: recognise the cone in the converter and write the same
+  `SheetCountersink` record; the facts and rules then work unchanged.
 - **`sm.bend_radius_consistent`** is a whole-part result with no single anchor; the
   matrix records that explicitly rather than forcing a location.
 - **PIL-306 flat-overlap failure** remains the accepted 20 mm² real-`SheetBody` L3
