@@ -15527,6 +15527,7 @@ fn the_web_page_may_only_ask_for_listed_actions_that_fit_the_chat() {
         json!({"no": "type"}),
         json!({"type": "send", "text": "   "}),
         json!({"type": "approve", "id": 7, "allow": true}),
+        json!({"type": "review", "id": 1, "accept": true}),
         json!({"type": "permission", "index": 0, "option": "once"}),
         json!({"type": "undo", "index": 0}),
         json!({"type": "permissions", "mode": "everything"}),
@@ -16605,6 +16606,21 @@ fn a_project_with_checks_on(app: &mut SolveApp) -> std::path::PathBuf {
     crate::agent_chat::refresh_dfm_auto(app);
     assert!(app.agent_chat.dfm.auto_enabled(), "the project's ci.toml says checks run by themselves");
     dir
+}
+
+/// The page's Accept button posts `review`; the host turns it into the same accept the panel's
+/// button calls, so the page can finish a previewed turn.
+#[test]
+fn the_web_page_accepts_a_waiting_preview() {
+    let (mut app, tx, script, ctx) = previewed_turn("a box");
+    let _project = a_project_with_checks_on(&mut app);
+    let before = app.agent_chat.dfm.fired;
+    finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
+    let id = review_card(&app).id;
+    web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).expect("the page may accept");
+    assert_eq!(review_card(&app).outcome, review::Outcome::Accepted);
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "and the accepted change runs one check");
+    assert!(web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).is_err(), "a second accept has nothing to accept");
 }
 
 /// PIL-305: accepting a preview submits exactly one check; a rejection or a stale accept submits
