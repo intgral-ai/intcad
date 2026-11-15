@@ -30,15 +30,15 @@ use crate::theme::Tokens;
 use crate::ui_kit;
 
 /// The repository releases come from.
-pub const REPO: &str = "intgral-ai/open-skyfall-desktop";
+pub const REPO: &str = "intgral-ai/intcad";
 /// The one request an update check makes.
-pub const LATEST_API: &str = "https://api.github.com/repos/intgral-ai/open-skyfall-desktop/releases/latest";
+pub const LATEST_API: &str = "https://api.github.com/repos/intgral-ai/intcad/releases/latest";
 /// Where Download goes when no package fits this installation.
-pub const RELEASES_PAGE: &str = "https://github.com/intgral-ai/open-skyfall-desktop/releases/latest";
+pub const RELEASES_PAGE: &str = "https://github.com/intgral-ai/intcad/releases/latest";
 /// Release pages and assets must be on GitHub, under this project, and nowhere else: an old
-/// upstream repository is not an update source for open-skyfall. The trailing slash rules out
-/// look-alike names such as `open-skyfall-desktop-evil`.
-const RELEASE_PREFIX: &str = "https://github.com/intgral-ai/open-skyfall-desktop/releases/";
+/// upstream repository is not an update source for Intcad. The trailing slash rules out
+/// look-alike names such as `intcad-evil`.
+const RELEASE_PREFIX: &str = "https://github.com/intgral-ai/intcad/releases/";
 
 fn is_release_url(url: &str) -> bool {
     url.starts_with(RELEASE_PREFIX)
@@ -110,7 +110,7 @@ pub fn comparable(v: &semver::Version) -> semver::Version {
 /// candidate and nightly releases are all tagged `v<version>`), else, for a development build or
 /// a string that is not a version, the release history.
 pub fn release_notes_url(version: &str, release_build: bool) -> String {
-    const HISTORY: &str = "https://github.com/intgral-ai/open-skyfall-desktop/releases";
+    const HISTORY: &str = "https://github.com/intgral-ai/intcad/releases";
     if release_build && parse_version(version).is_some() && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
         format!("{HISTORY}/tag/v{version}")
     } else {
