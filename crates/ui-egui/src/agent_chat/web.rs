@@ -1107,11 +1107,7 @@ mod tests {
                 })
                 .expect("the adopted row");
             assert_eq!(row.0, "dfm.check", "{kind}");
-            assert!(
-                matches!(row.1, Some(backend::ToolStatus::Completed | backend::ToolStatus::Failed)),
-                "the row stops saying running: {:?}",
-                row.1
-            );
+            assert!(matches!(row.1, Some(backend::ToolStatus::Completed | backend::ToolStatus::Failed)), "the row stops saying running: {:?}", row.1);
         }
     }
 
