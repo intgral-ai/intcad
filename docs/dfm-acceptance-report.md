@@ -4,7 +4,9 @@ Status: integration evidence for the twelve missing sheet-metal DFM rules and th
 20-rule catalogue. **Integration code/evidence head: `dfm/catalog-accept` `822638e7c`**
 (this includes the exact-corner-relief semantics and the input-change variants below).
 Desktop evidence builds: `b106ecfa4` for the tray/sink card shots and `e65b9bd94` for the
-corner-relief card; later report edits do not change those builds. Draft PR #151 is
+corner-relief card; `e65b9bd94` is the commit that introduced the corner-relief measurement, and
+`822638e7c` tightens it to the exact half plus the input-change variants. Later report edits do
+not change those builds/behavior. Draft PR #151 is
 stacked on #147/#148/#149, base `dfm/integration-base` `f5a7f9f26`.
 Integration inputs: `coord/pil-291-candidate2` `fbd3b1aba` + A `59b90f0e5` + B `ab8083ae8`
 (the PR is rebased to `3b84ac913`; no rule or fact logic changed) + C `8d1306023`.
