@@ -2465,6 +2465,8 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         settings::poll_listing(app, ctx);
         connect_at_start(app, ctx);
     }
+    web::adopt_model_check(app);
+    web::poll_running_checks(app);
     pump_tools(app);
     if !app.agent_chat.held.is_empty() || app.agent_chat.state() == State::Busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
