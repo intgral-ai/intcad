@@ -8,6 +8,8 @@ corner-relief card; later report edits do not change those builds. Draft PR #151
 stacked on #147/#148/#149, base `dfm/integration-base` `f5a7f9f26`.
 Integration inputs: `coord/pil-291-candidate2` `fbd3b1aba` + A `59b90f0e5` + B `ab8083ae8`
 (the PR is rebased to `3b84ac913`; no rule or fact logic changed) + C `8d1306023`.
+**Review order:** #147 flange/relief/web facts → #148 critical declarations and the harness (base `pil-291/c`) → #149 countersink facts → #151 this acceptance evidence. #151 is stacked and must not merge alone.
+
 Every result below was
 produced by the production path from a saved design through `dfm.check`, the validation
 worker and the report written under `.intcad/checks/runs/<run>/`, then read back through
