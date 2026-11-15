@@ -1,0 +1,70 @@
+# Build SolidCore's progress site and unit checklist from the vendored `solidcore/` tree, as an
+# artifact only.
+#
+# Upstream's workflow checks out tangency-labs/solidcore, force-pushes `_site` to that repository's
+# gh-pages branch with SOLIDCORE_DEPLOY_KEY, and runs on Blacksmith runners. IntCAD does not publish
+# to an external repository: this fork builds the site from the subtree it already has, uploads it
+# as an artifact, and deploys nothing.
+#
+# Dropped from upstream: the `workflow_run` and hourly `schedule` triggers (nothing is mirrored to
+# react to), the external checkout, the `Publish to tangency-labs/solidcore's gh-pages` step, the
+# deploy key, and the Blacksmith runner label. Kept: the checklist tests, the optional solids
+# report fetch (empty here, the page says "no data yet"), the site build and its artifact.
+name: SolidCore site (build only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # optional: main's solids report artifact
+  pull-requests: read # open "port:" PRs for the checklist's claims
+
+concurrency:
+  group: solidcore-pages
+  cancel-in-progress: false
+
+jobs:
+  # Upstream's `build` job, without its publish step.
+  build:
+    name: Build SolidCore's site (no deploy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: solidcore
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # full history for the progress timeline
+
+      # This repository's CI may not upload a solids report; the page then says "no data yet".
+      - name: Fetch this repository's solids report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        # Explicit DEST: the script defaults to the git root, but the site reads solidcore/reports.
+        run: bash scripts/fetch-solids.sh reports/solids || echo "no solids report; the Solids page will say so"
+
+      - name: Test checklist generator
+        run: python3 -m unittest discover -s harness/plan -p 'test_*.py'
+
+      - name: Generate checklist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 harness/plan/progress.py --prs
+
+      # The site names this repository, since it is built from its vendored kernel.
+      - name: Build site
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 site/build.py --out _site
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solidcore-site
+          path: solidcore/_site
+          if-no-files-found: error
+          retention-days: 7

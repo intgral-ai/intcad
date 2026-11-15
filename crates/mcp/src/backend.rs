@@ -9,9 +9,9 @@ use solidcraft_engine::Session;
 use solidcraft_engine::control_pending;
 use solidcraft_engine::panels::ActionSink;
 use solidcraft_engine::panels::commands::LayoutCatalogue;
-use solidcraft_engine::render::StandardView;
 use solidcraft_engine::schema::ParamCheck;
 use solidcraft_engine::view::Guides;
+use solidcraft_viewport::StandardView;
 
 pub(crate) use crate::document_guard::decode_guarded_reply;
 use crate::document_guard::{
@@ -475,7 +475,10 @@ impl Remote {
     /// The tool error for the outstanding request still running after its wait.
     fn still_running(&self, earlier: bool) -> String {
         let Some(o) = &self.outstanding else { return format!("{STILL_RUNNING} a request is still running in the app") };
-        let effect = o.effect.map_or("it was not cancelled and may still change the design when it finishes", control_pending::Effect::when_done);
+        let effect = o.effect.map_or_else(
+            || "it was not cancelled and may still change the design when it finishes".to_string(),
+            |e: control_pending::Effect| e.when_done("design"),
+        );
         let settle = self.waits.settle.as_secs();
         if earlier {
             format!(
@@ -867,6 +870,9 @@ impl Remote {
     /// that breaks its command's contract before anything is sent, as the app would refuse it
     /// unrun, and `warn` adds each step's issues to its result.
     fn batch_checked(&mut self, params: Value) -> Result<Value, String> {
+        // `rollback: false` keeps the steps that ran; a refused batch says which of them would
+        // have run, so the refusal needs the same flag `run_document_steps` takes (default true).
+        let rollback = params.get("rollback").and_then(Value::as_bool).unwrap_or(true);
         if self.app_checks() {
             let params = self.at_level(params);
             let reply = self.call_once("engine.batch", params, true);
@@ -875,7 +881,7 @@ impl Remote {
         let steps = params.get("commands").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
         if self.param_check == ParamCheck::Strict {
             if let Some(refusal) = solidcraft_engine::batch_preflight::contracts(steps) {
-                return Ok(refusal.reply(steps.len()));
+                return Ok(refusal.reply(steps.len(), rollback));
             }
             return self.call_once("engine.batch", params, true);
         }
@@ -982,7 +988,7 @@ impl Headless {
         if method == "engine.batch"
             && let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, self.session.param_check, &[])
         {
-            return Ok(refusal.reply(steps.len()));
+            return Ok(refusal.reply(steps.len(), p.get("rollback").and_then(Value::as_bool).unwrap_or(true)));
         }
         let panels = steps.iter().filter(|step| step_command(step).is_some_and(commands::is_command)).count();
         if method == "engine.batch" && p.get("rollback").and_then(Value::as_bool).unwrap_or(true) {
@@ -1049,7 +1055,7 @@ impl Headless {
                     "fit" => {
                         let b = solidcraft_engine::view::bounds(s).map_err(|e| e.to_string())?;
                         if let Some(c) = s.camera.as_mut() {
-                            c.fit(&b);
+                            c.fit(&solidcraft_engine::render::view_bounds(&b));
                         }
                     }
                     _ => {

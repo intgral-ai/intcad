@@ -41,7 +41,7 @@ PR_TEST_SHARD = "count:1/8"
 # release. Clippy and wasm still build every selected consumer on the PR.
 PR_TEST_PACKAGES = frozenset(("xtask", "solidcraft-derive", "solidcraft-doc", "solidcraft-geom",
                               "solidcraft-io", "solidcraft-profile", "solidcraft-sketch",
-                              "solidcraft-step", "solidcraft-testkit"))
+                              "solidcraft-testkit"))
 NIGHTLY_WORKFLOW = ".github/workflows/native-baseline.yml"
 # The browser offline/update harness: the web app and its packaging, the Pages
 # workflow that runs it against a real build, and the xtask implementation that

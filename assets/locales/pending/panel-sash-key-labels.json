@@ -1,0 +1,38 @@
+{
+  "en": {
+    "cmd.panel.sash.down.key": "Resize Panel Sash Down (Down)",
+    "cmd.panel.sash.left.key": "Resize Panel Sash Left (Left)",
+    "cmd.panel.sash.right.key": "Resize Panel Sash Right (Right)",
+    "cmd.panel.sash.up.key": "Resize Panel Sash Up (Up)"
+  },
+  "ar": {
+    "cmd.panel.sash.down.key": "Resize Panel Sash Down (Down)",
+    "cmd.panel.sash.left.key": "Resize Panel Sash Left (Left)",
+    "cmd.panel.sash.right.key": "Resize Panel Sash Right (Right)",
+    "cmd.panel.sash.up.key": "Resize Panel Sash Up (Up)"
+  },
+  "he": {
+    "cmd.panel.sash.down.key": "Resize Panel Sash Down (Down)",
+    "cmd.panel.sash.left.key": "Resize Panel Sash Left (Left)",
+    "cmd.panel.sash.right.key": "Resize Panel Sash Right (Right)",
+    "cmd.panel.sash.up.key": "Resize Panel Sash Up (Up)"
+  },
+  "ja": {
+    "cmd.panel.sash.down.key": "Resize Panel Sash Down (Down)",
+    "cmd.panel.sash.left.key": "Resize Panel Sash Left (Left)",
+    "cmd.panel.sash.right.key": "Resize Panel Sash Right (Right)",
+    "cmd.panel.sash.up.key": "Resize Panel Sash Up (Up)"
+  },
+  "vi": {
+    "cmd.panel.sash.down.key": "Resize Panel Sash Down (Down)",
+    "cmd.panel.sash.left.key": "Resize Panel Sash Left (Left)",
+    "cmd.panel.sash.right.key": "Resize Panel Sash Right (Right)",
+    "cmd.panel.sash.up.key": "Resize Panel Sash Up (Up)"
+  },
+  "zh": {
+    "cmd.panel.sash.down.key": "Resize Panel Sash Down (Down)",
+    "cmd.panel.sash.left.key": "Resize Panel Sash Left (Left)",
+    "cmd.panel.sash.right.key": "Resize Panel Sash Right (Right)",
+    "cmd.panel.sash.up.key": "Resize Panel Sash Up (Up)"
+  }
+}

@@ -7960,7 +7960,7 @@ fn mastra_values_native_stamp_adapter_has_no_numeric_loss() {
     }
 }
 
-fn transcript_clipboard_harness(layout: crate::shell::LayoutMode) -> crate::scenario::Harness {
+fn transcript_clipboard_harness(layout: crate::ui_kit::LayoutMode) -> crate::scenario::Harness {
     let mut h = narrow_chat();
     h.app.ui.layout = layout;
     h.app.preferences.agent_chat_width = 500.0;
@@ -7995,7 +7995,7 @@ fn transcript_click(h: &mut crate::scenario::Harness, pos: egui::Pos2) {
 
 #[test]
 fn transcript_copy_and_cut_do_not_touch_the_cad_clipboard() {
-    for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
+    for layout in [crate::ui_kit::LayoutMode::Docked, crate::ui_kit::LayoutMode::Floating] {
         let mut h = transcript_clipboard_harness(layout);
         let at = transcript_text_position(&h);
         transcript_click(&mut h, at);
@@ -8016,7 +8016,7 @@ fn transcript_copy_and_cut_do_not_touch_the_cad_clipboard() {
 
 #[test]
 fn transcript_paste_does_not_insert_a_previously_copied_body() {
-    for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
+    for layout in [crate::ui_kit::LayoutMode::Docked, crate::ui_kit::LayoutMode::Floating] {
         let mut h = transcript_clipboard_harness(layout);
         h.frame_with(vec![egui::Event::Copy]);
         assert!(!h.app.copied_bodies.is_empty(), "prime the real CAD clipboard");
@@ -8036,7 +8036,7 @@ fn transcript_paste_does_not_insert_a_previously_copied_body() {
 
 #[test]
 fn transcript_key_events_do_not_run_cad_shortcuts() {
-    for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
+    for layout in [crate::ui_kit::LayoutMode::Docked, crate::ui_kit::LayoutMode::Floating] {
         let mut h = transcript_clipboard_harness(layout);
         let at = transcript_text_position(&h);
         transcript_click(&mut h, at);
@@ -8065,7 +8065,7 @@ fn transcript_key_events_do_not_run_cad_shortcuts() {
 #[test]
 fn transcript_shortcut_ownership_ends_when_the_panel_is_hidden() {
     for hidden in ["closed", "minimized", "disabled"] {
-        let mut h = transcript_clipboard_harness(crate::shell::LayoutMode::Floating);
+        let mut h = transcript_clipboard_harness(crate::ui_kit::LayoutMode::Floating);
         h.frame_with(vec![egui::Event::Copy]);
         let at = transcript_text_position(&h);
         transcript_click(&mut h, at);
@@ -9535,7 +9535,7 @@ fn leaving_a_tab_refuses_admitted_commands_animations_and_screenshots() {
         // Capture a request already waiting for a frame, as well as a queued command.
         let screenshot = app.control_held.pop_back().unwrap();
         app.run_control(&ctx, screenshot);
-        assert_eq!(app.pending_shots.len(), 1);
+        assert_eq!(app.shots.pending.len(), 1);
         if animate {
             app.drain_control(&ctx);
             assert!(app.agent.busy(), "the command is waiting on cursor animation");
@@ -9551,8 +9551,8 @@ fn leaving_a_tab_refuses_admitted_commands_animations_and_screenshots() {
             assert!(response["error"].as_str().is_some_and(|e| e.contains("document tab was left")));
         }
         assert!(Arc::ptr_eq(&app.session.doc, &other));
-        assert!(app.session.undo.is_empty() && app.pending_shots.is_empty());
-        assert!(app.queued_shots.is_empty(), "a cancelled screenshot must not capture the incoming tab");
+        assert!(app.session.undo.is_empty() && app.shots.pending.is_empty());
+        assert!(app.shots.queued.is_empty(), "a cancelled screenshot must not capture the incoming tab");
         crate::documents::switch(&mut app, 0);
         assert!(app.session.doc.features.is_empty() && app.session.undo.is_empty());
         // Adopting into a blank tab replaces the document and clears its old conversation.
@@ -10083,7 +10083,7 @@ fn custom_instructions_reach_the_system_note_of_each_new_session() {
     h.step(&json!({"text": "M3"})).unwrap();
     h.frames(2);
     assert_eq!(h.app.preferences.agent_instructions, "M3", "typed text lands in the field");
-    assert!(h.app.prefs_window.filter.is_empty(), "Preferences search does not take the typing");
+    assert!(h.app.prefs_window.shell.filter.is_empty(), "Preferences search does not take the typing");
     let long = "x".repeat(acp::INSTRUCTIONS_LIMIT + 5);
     assert_eq!(
         h.call("ui.agent_chat", json!({"instructions": long}))["result"]["instructions"].as_str().map(str::len),
@@ -11577,7 +11577,7 @@ fn a_press_at_the_edge_without_a_drag_towards_it_scrolls_nothing() {
 /// at the panel's edge or is cut off at the other one.
 #[test]
 fn the_agent_list_keeps_the_panels_side_margin() {
-    use crate::shell::LayoutMode;
+    use crate::ui_kit::LayoutMode;
     for layout in [LayoutMode::Docked, LayoutMode::Floating] {
         let mut h = narrow_chat();
         h.app.ui.layout = layout;
@@ -13001,7 +13001,7 @@ fn the_composer_hint_stays_on_one_row_at_the_narrowest_width() {
 #[test]
 fn tool_room_beside_the_docked_assistant_survives_an_inside_out_view() {
     let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
-    app.ui.layout = crate::shell::LayoutMode::Floating;
+    app.ui.layout = crate::ui_kit::LayoutMode::Floating;
     app.preferences.ai_features = true;
     app.agent_chat.open = true;
     app.agent_chat.panel_rect = Some(egui::Rect::from_min_max(egui::pos2(100.0, 40.0), egui::pos2(150.0, 600.0)));
@@ -13446,7 +13446,8 @@ mod mastra_backend_tests {
     #[test]
     fn mastra_prompt_parts_use_the_same_selection_context_as_the_direct_backends() {
         let (mut app, ctx, log, _) = app();
-        let picked = Context { items: vec![Entry { kind: ContextKind::Body, label: "Body 1".into(), detail: String::new() }], omitted: 0 };
+        let entry = Entry { kind: ContextKind::Body, label: "Body 1".into(), detail: String::new(), sels: Vec::new(), names: Vec::new(), group: 0, attached: false };
+        let picked = Context { items: vec![entry], omitted: 0, groups: Vec::new() };
         let expected = context::with_context("make a plate", &picked);
         app.agent_chat.picked_context = picked;
         let native = app.session.document_stamp();
@@ -15593,8 +15594,8 @@ fn the_web_page_is_told_the_queue_the_pictures_and_the_names_an_answer_selects()
     h.frames(3);
     let refs = object_ref::collect(&mut h.app.session);
     let labels: Vec<String> = refs.iter().map(|reference| reference.label.clone()).collect();
-    let entry = |kind, label: String| context::Entry { kind, detail: format!("{label}, in detail"), label };
-    let mut with = Context { items: (0..8).map(|n| entry(context::Kind::Body, format!("Body {n}"))).collect(), omitted: 3 };
+    let entry = |kind, label: String| context::Entry { kind, detail: format!("{label}, in detail"), label, sels: Vec::new(), names: Vec::new(), group: 0, attached: false };
+    let mut with = Context { items: (0..8).map(|n| entry(context::Kind::Body, format!("Body {n}"))).collect(), omitted: 3, groups: Vec::new() };
     with.items.push(entry(context::Kind::Feature, "Extrude 1".into()));
     let (red, blue) = (test_png([200, 30, 30, 255], 8), test_png([30, 30, 200, 255], 8));
     h.app.agent_chat.items = vec![
@@ -15707,8 +15708,8 @@ fn the_web_page_edits_the_queue_and_selects_only_what_it_names_rightly() {
     assert_eq!(h.app.agent_chat.pending.iter().map(|message| message.text.as_str()).collect::<Vec<_>>(), ["second, reworded"]);
 
     // What is picked for the next message: a chip by its place and its label.
-    let entry = |label: &str| context::Entry { kind: context::Kind::Body, label: label.into(), detail: String::new() };
-    h.app.agent_chat.picked_context = Context { items: vec![entry("Cover"), entry("Base")], omitted: 0 };
+    let entry = |label: &str| context::Entry { kind: context::Kind::Body, label: label.into(), detail: String::new(), sels: Vec::new(), names: Vec::new(), group: 0, attached: false };
+    h.app.agent_chat.picked_context = Context { items: vec![entry("Cover"), entry("Base")], omitted: 0, groups: Vec::new() };
     assert!(act(&mut h, json!({"type": "remove_picked", "index": 0, "label": "Base"})).is_err());
     act(&mut h, json!({"type": "remove_picked", "index": 0, "label": "Cover"})).expect("the chip at that place");
     assert_eq!(h.app.agent_chat.picked_context.items, vec![entry("Base")]);
@@ -15861,7 +15862,7 @@ fn with_the_web_view_the_assistant_stays_inside_the_apps_window() {
 #[test]
 fn the_floating_panel_keeps_its_drag_strip_and_the_page_is_told_the_selection() {
     let mut h = app_with_cover_and_base();
-    h.app.ui.layout = crate::shell::LayoutMode::Floating;
+    h.app.ui.layout = crate::ui_kit::LayoutMode::Floating;
     h.call("ui.agent_chat", json!({"open": true}));
     web::set_host(&mut h.app, true);
     h.frames(4);
@@ -15894,7 +15895,7 @@ fn the_floating_panel_keeps_its_drag_strip_and_the_page_is_told_the_selection() 
     assert_eq!(state["attachSelection"], true, "and written into each message, unless that is turned off");
 
     // Docked, the panel meets the window's edge: square, and all of its room is the page's.
-    h.app.ui.layout = crate::shell::LayoutMode::Docked;
+    h.app.ui.layout = crate::ui_kit::LayoutMode::Docked;
     h.frames(4);
     assert_eq!(told(&mut h)["radius"].as_f64(), Some(0.0));
 }

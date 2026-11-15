@@ -184,6 +184,13 @@ impl ControlJob {
     }
 }
 
+/// The next number naming a plugin inspection's registration, unique for this process: the app
+/// keeps one registration per plugin id and asks this for a version no earlier run used.
+pub(crate) fn next_plugin_inspection() -> usize {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn label(app: &SolveApp, command: &str) -> String {
     let language = crate::i18n::Locale::for_language(&app.preferences.language);
     language.label(solidcraft_engine::find_command(command).map_or(command, |c| c.label)).to_string()

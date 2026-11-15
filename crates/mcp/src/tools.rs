@@ -574,6 +574,32 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 
 /// Run a tool. Failures are tool results with `isError: true` (the model sees the message);
 /// nothing here panics on hostile arguments.
+/// Every tool, with its JSON schema, for these output options: the same list whether or not
+/// output is compact (compaction shapes calls and replies, not the schemas an agent reads).
+pub fn tool_definitions_with(_opts: crate::Options) -> Vec<Value> {
+    tool_definitions()
+}
+
+/// Whether a tool takes `verbose` (a compact reply when false).
+fn takes_verbose(name: &str) -> bool {
+    tool_definitions().iter().any(|definition| definition["name"] == name && definition["inputSchema"]["properties"].get("verbose").is_some())
+}
+
+/// [`call_tool`] with the server's output options (`--compact` or the app's preference): a tool
+/// that takes `verbose` is called with `verbose: false` unless the call names it. The per-call
+/// `verbose` and `compact` arguments still win, so an agent can ask for a full reply either way.
+pub fn call_tool_with(b: &mut dyn Backend, name: &str, args: &Value, opts: crate::Options) -> Value {
+    if !opts.compact || !takes_verbose(name) || args.get("verbose").is_some() {
+        return call_tool(b, name, args);
+    }
+    if let Value::Object(object) = args {
+        let mut object = object.clone();
+        object.insert("verbose".into(), Value::Bool(false));
+        return call_tool(b, name, &Value::Object(object));
+    }
+    call_tool(b, name, args)
+}
+
 pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Value {
     let expected = match tool_guard(name, args) {
         Ok(expected) => expected,
@@ -1630,7 +1656,7 @@ fn batch_run(b: &mut dyn Backend, a: &Map<String, Value>) -> (Value, bool) {
     if b.in_process()
         && let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, b.param_check(), &[])
     {
-        let mut reply = refusal.reply(steps.len());
+        let mut reply = refusal.reply(steps.len(), rollback);
         if let Some(o) = reply.as_object_mut() {
             o.insert("ok".into(), Value::Bool(false));
             o.insert("applied".into(), json!([]));

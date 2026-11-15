@@ -34,9 +34,7 @@ static TOKEN_FILES: std::sync::Mutex<Vec<(std::path::PathBuf, String)>> = std::s
 
 /// A new random token: 32 bytes from the operating system, as hex.
 fn new_token() -> Option<String> {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).ok()?;
-    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    solidcraft_control::server::new_token()
 }
 
 /// Remove this launch's token files and discovery file (at exit), leaving any that another
@@ -410,7 +408,7 @@ fn watch(reply: Receiver<Value>, ticket: Ticket) -> Receiver<Value> {
 fn timeout_message(what: &str, effect: control_pending::Effect) -> String {
     match effect {
         control_pending::Effect::ReadsOnly => {
-            format!("timeout: {what} is still running in the app ({}); ask `control.pending` for its answer", effect.when_done())
+            format!("timeout: {what} is still running in the app ({}); ask `control.pending` for its answer", effect.when_done("design"))
         }
         control_pending::Effect::WritesFile => format!(
             "timeout: {what} is still running in the app and will still write the file when it finishes (it was not cancelled: \

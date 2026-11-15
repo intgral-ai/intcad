@@ -311,6 +311,7 @@ proptest! {
         let s = va + vb;
         prop_assert!(close(run(&ba, &bb, BoolOp::Intersect)?, overlap, s), "intersect != closed-form overlap {overlap}");
         prop_assert!(close(run(&ba, &bb, BoolOp::Cut)?, va - overlap, s), "cut != closed form {}", va - overlap);
+        // Touching along an edge or at a corner only, the union is the two solids touching there.
         prop_assert!(close(run(&ba, &bb, BoolOp::Union)?, s - overlap, s), "union != closed form {}", s - overlap);
     }
 
@@ -329,10 +330,10 @@ proptest! {
 // with `cargo test -p solidcraft-kernel --test boolean_props -- --ignored`.
 
 /// The saved commutativity case: SMLib returns the edge-only union as two closed
-/// solids meeting along an edge, not as a refusal or one merged solid. The name is
-/// historical (the pre-SMLib kernel refused this join). Intersection and cut remain valid.
+/// solids meeting along an edge, not as a refusal or one merged solid.
+/// Intersection and cut remain valid.
 #[test]
-fn edge_only_box_join_is_refused_in_both_orders() {
+fn edge_only_box_join_is_the_two_solids_touching_in_both_orders() {
     use solidcore_record::brep::part::{Contact, RegionContact};
     let a = Prim::Box { at: [15.0, 22.5, 0.0], size: [5.0, 5.0, 17.5] };
     let b = Prim::Box { at: [2.5, 12.5, 0.0], size: [12.5, 10.0, 5.0] };

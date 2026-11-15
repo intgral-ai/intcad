@@ -1,0 +1,7 @@
+Intcad's look (solidcraft-look) is licensed under the MIT License or the Apache License 2.0, at
+your option. The full texts are the repository's LICENSE-MIT and LICENSE-APACHE.
+
+Copyright (c) 2026 the Intcad maintainers.
+
+The IBM Plex fonts in `fonts/` are under the SIL Open Font License 1.1; their licence texts are
+`fonts/ibm-plex-sans/OFL.txt` and `fonts/ibm-plex-mono/OFL.txt`.

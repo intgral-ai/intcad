@@ -52,7 +52,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps};
 use solidcraft_engine::io::vfs;
-use solidcraft_engine::render::{Camera, StandardView};
+use solidcraft_viewport::{Camera, StandardView};
 use solidcraft_engine::schema::ParamCheck;
 
 use crate::SolveApp;
@@ -70,6 +70,15 @@ pub struct ControlRequest {
     pub(crate) chat_turn: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Original document precondition and tab context, pinned at first host admission.
     pub(crate) guarded: Option<crate::execution_guard::GuardedAdmission>,
+}
+
+impl From<solidcraft_control::ControlRequest> for ControlRequest {
+    /// A request from the shared control crate (`control_switch`, the plugin bridge) as this app's
+    /// own: the same method, parameters, reply channel and turn. The shared ticket cancels the
+    /// caller's own wait; the guarded admission is this app's, pinned at first admission.
+    fn from(r: solidcraft_control::ControlRequest) -> Self {
+        Self { method: r.method, params: r.params, reply: r.reply, started: r.started, chat_turn: r.chat_turn, guarded: None }
+    }
 }
 
 impl ControlRequest {
@@ -423,10 +432,10 @@ fn batch(app: &mut SolveApp, p: &Value, guarded: bool) -> Outcome {
         if let Some(why) = batch_refusal(steps) {
             return err(why);
         }
-        if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, app.session.param_check, &["view.pick"]) {
-            return ok(refusal.reply(steps.len()));
-        }
         let rollback = p.get("rollback").and_then(Value::as_bool).unwrap_or(true);
+        if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, app.session.param_check, &["view.pick"]) {
+            return ok(refusal.reply(steps.len(), rollback));
+        }
         if rollback {
             if panels != steps.len() {
                 return err(solidcraft_engine::panels::commands::error_text(solidcraft_engine::panels::error(
@@ -457,7 +466,7 @@ fn batch(app: &mut SolveApp, p: &Value, guarded: bool) -> Outcome {
     }
     // A step the batch would refuse at its turn refuses it now, before anything runs (#5853).
     if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, app.session.param_check, &["view.pick"]) {
-        return ok(refusal.reply(steps.len()));
+        return ok(refusal.reply(steps.len(), p.get("rollback").and_then(Value::as_bool).unwrap_or(true)));
     }
     let checkpoint_policy = if guarded { CheckpointPolicy::Required } else { CheckpointPolicy::BestEffort };
     ok(run_document_steps(app, steps, p, execute, SolveApp::run, checkpoint_policy))
@@ -487,11 +496,11 @@ pub fn request_scope(app: &SolveApp, params: &Value) -> Result<Option<vfs::PathS
 /// What a picture of the view shows: the model as the window shows it (theme and colour vision
 /// mode, the section the viewport shows: an open Section Analysis dialog's preview, a sketch's
 /// Slice), with the grid and the origin's axes as `guides` says.
-pub(crate) fn view_scene(app: &SolveApp, guides: solidcraft_engine::view::Guides) -> Result<solidcraft_engine::render::Scene, String> {
+pub(crate) fn view_scene(app: &SolveApp, guides: solidcraft_engine::view::Guides) -> Result<solidcraft_viewport::Scene, String> {
     let mut palette = crate::viewport::scene_palette(app.viewport_dark(), app.preferences.color_vision);
     // The view's own background colour (#7688).
     if let Some([r, g, b]) = app.preferences.viewport_background {
-        palette.background = (solidcraft_engine::render::Rgb(r, g, b), solidcraft_engine::render::Rgb(r, g, b));
+        palette.background = (solidcraft_viewport::Rgb(r, g, b), solidcraft_viewport::Rgb(r, g, b));
     }
     let mut scene = solidcraft_engine::view::scene_with_thread_markings(
         &app.session,
@@ -527,7 +536,28 @@ pub(crate) fn view_rgba(app: &SolveApp, w: u32, h: u32) -> Result<Vec<u8>, Strin
 /// [`view_rgba`] as PNG.
 pub fn view_png(app: &SolveApp, w: u32, h: u32) -> Result<Vec<u8>, String> {
     let rgba = view_rgba(app, w, h)?;
-    solidcraft_engine::render::png(w as usize, h as usize, rgba).ok_or_else(|| "PNG encoding failed".to_string())
+    solidcraft_viewport::png(w as usize, h as usize, rgba).ok_or_else(|| "PNG encoding failed".to_string())
+}
+
+/// A call's parameters against its command's contract, for a command that does not run on a
+/// session at `level` (one that switches design, one the file loader runs): `Err` refuses the
+/// call, `Ok` holds the warnings for its result.
+pub(crate) fn contract_check_before_run(id: &str, params: &Value, level: ParamCheck) -> Result<Vec<String>, String> {
+    let issues: Vec<String> = solidcraft_engine::schema::issues(id, params).into_iter().map(|i| i.message).collect();
+    match (level, issues.first()) {
+        (ParamCheck::Strict, Some(first)) => Err(solidcraft_engine::params::bad(id, first.as_str()).to_string()),
+        (ParamCheck::Warn, _) => Ok(issues),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Add what [`contract_check_before_run`] found to a reply's result.
+pub(crate) fn add_param_warnings(reply: &mut Value, warnings: Vec<String>) {
+    if !warnings.is_empty()
+        && let Some(o) = reply.get_mut("result").and_then(Value::as_object_mut)
+    {
+        o.insert("param_warnings".into(), json!(warnings));
+    }
 }
 
 pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
@@ -724,6 +754,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             let availability = crate::prefs::blur_availability(app);
             let reason = match availability {
                 crate::theme_options::Availability::Unavailable(reason) => Some(app.tr(reason)),
+                crate::theme_options::Availability::Unsupported => Some(app.tr_label("Blur is not supported by this theme host")),
                 crate::theme_options::Availability::Available => None,
             };
             ok(
@@ -1275,7 +1306,13 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             if explicit {
                 app.synthetic.push(egui::Event::ModifiersChanged(modifiers));
             }
-            app.synthetic.push(egui::Event::MouseWheel { unit, delta: egui::vec2(0.0, delta), modifiers, phase: egui::TouchPhase::Move });
+            app.synthetic.push(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit,
+                delta: egui::vec2(0.0, delta),
+                modifiers,
+                phase: egui::TouchPhase::Move,
+            });
             if explicit {
                 app.synthetic.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
             }
@@ -2724,7 +2761,7 @@ mod tests {
         let mut s = Session::default();
         s.execute("solid.box", &json!({"length": 40, "width": 30, "height": 20, "corner": [10, -15, -10]})).unwrap();
         let mut app = SolveApp::new(s, Services::default());
-        app.cam.set_view(solidcraft_engine::render::StandardView::Front);
+        app.cam.set_view(solidcraft_viewport::StandardView::Front);
         let dir = std::env::temp_dir().join(format!("solidcraft-render-guides-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("shot.png");
