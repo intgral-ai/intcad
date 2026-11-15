@@ -17,7 +17,7 @@ impl Session {
             return Err(ConditionedError::Command(EngineError::Other("engine.batch: commands must be an array of at most 10000 steps".into())));
         }
         let result = match batch_preflight::check(steps, self.param_check, &[]) {
-            Some(refusal) => refusal.reply(steps.len()),
+            Some(refusal) => refusal.reply(steps.len(), options.get("rollback").and_then(Value::as_bool).unwrap_or(true)),
             None => run_document_steps(self, steps, options, execute_session, execute_session, CheckpointPolicy::Required),
         };
         Ok((result, self.document_stamp()))
