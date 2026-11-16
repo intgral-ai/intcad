@@ -182,6 +182,84 @@ fn overrides_need_a_reason_and_a_name() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A critical dimension survives a save and reopen and changes the frozen configuration digest.
+#[test]
+fn critical_dimensions_save_reopen_and_change_the_frozen_digest() {
+    let dir = scratch("critical");
+    let mut project = create(&dir, "Bracket", "Bracket").expect("create").project;
+    assert!(project.critical().is_empty(), "a new project declares none");
+    let dimension = CriticalDimension { name: "A to B".into(), from_mm: [10.0, 5.0, 1.0], to_mm: [30.0, 5.0, 1.0], tolerance_mm: 0.2 };
+    project.set_critical(vec![dimension.clone()]).expect("save");
+    let text = read(&project.folder().join(CRITICAL));
+    assert!(text.contains("[[critical]]"), "{text}");
+    assert!(text.contains("tolerance_mm = 0.2"), "{text}");
+    let reopened = Project::open(project.root()).expect("reopen");
+    assert_eq!(reopened.critical(), std::slice::from_ref(&dimension));
+    let first = reopened.freeze().expect("freeze").config_digest;
+
+    project.set_critical(vec![CriticalDimension { tolerance_mm: 0.3, ..dimension }]).expect("change");
+    let second = Project::open(project.root()).expect("reopen again").freeze().expect("freeze").config_digest;
+    assert_ne!(first, second, "changing a declaration changes the frozen configuration");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A project made before `critical.toml` existed opens with no declarations.
+#[test]
+fn a_project_without_a_critical_file_declares_none() {
+    let dir = scratch("critical-missing");
+    let made = create(&dir, "Bracket", "Bracket").expect("create");
+    fs::remove_file(made.project.folder().join(CRITICAL)).expect("remove");
+    let project = Project::open(made.project.root()).expect("opens");
+    assert!(project.critical().is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A bad declaration names the file and the `[[critical]]` line it is on.
+#[test]
+fn a_critical_dimension_without_a_name_names_its_line() {
+    let dir = scratch("critical-bad");
+    let made = create(&dir, "Bracket", "Bracket").expect("create");
+    let path = made.project.folder().join(CRITICAL);
+    let text = "schema_version = 1\n\n[[critical]]\nname = \"ok\"\nfrom_mm = [0.0, 0.0, 0.0]\nto_mm = [10.0, 0.0, 0.0]\ntolerance_mm = 0.2\n\n[[critical]]\nname = \"\"\nfrom_mm = [0.0, 5.0, 0.0]\nto_mm = [10.0, 5.0, 0.0]\ntolerance_mm = 0.2\n";
+    fs::write(&path, text).expect("write");
+    let error = Project::open(made.project.root()).expect_err("no name");
+    match error {
+        ProjectError::Invalid { file, message } => {
+            assert!(file.ends_with("critical.toml:9"), "{file}");
+            assert!(message.contains("name"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A declaration whose tolerance is not a positive number is refused by name.
+#[test]
+fn a_critical_dimension_needs_a_positive_tolerance() {
+    let dir = scratch("critical-tolerance");
+    let mut project = create(&dir, "Bracket", "Bracket").expect("create").project;
+    let error = project
+        .set_critical(vec![CriticalDimension { name: "A to B".into(), from_mm: [0.0, 0.0, 0.0], to_mm: [10.0, 0.0, 0.0], tolerance_mm: 0.0 }])
+        .expect_err("zero tolerance");
+    assert!(error.to_string().contains("tolerance_mm"), "{error}");
+    assert!(project.critical().is_empty(), "a refused declaration changes nothing");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A newer `critical.toml` is refused and left exactly as it was.
+#[test]
+fn a_newer_critical_file_is_refused_without_rewriting() {
+    let dir = scratch("critical-newer");
+    let made = create(&dir, "Bracket", "Bracket").expect("create");
+    let path = made.project.folder().join(CRITICAL);
+    let newer = "schema_version = 99\n";
+    fs::write(&path, newer).expect("write");
+    let error = Project::open(made.project.root()).expect_err("newer");
+    assert!(matches!(error, ProjectError::SchemaTooNew { found: 99, .. }), "{error}");
+    assert_eq!(read(&path), newer);
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A `.intcad/` folder can be added beside a saved design without moving it.
 #[test]
 fn attach_keeps_the_design_and_puts_the_project_beside_it() {

@@ -1,8 +1,10 @@
 //! A project folder: the `.intcad/` folder that keeps a design's settings beside it.
 //!
 //! A project is a design file next to a `.intcad/` folder holding `project.toml` (identity and
-//! defaults) and `ci.toml` (checks and the data they use). This module reads, validates and
-//! creates those files. It never writes over an existing project: opening one reads it as it is.
+//! defaults), `ci.toml` (checks and the data they use) and `critical.toml` (the critical
+//! hole-to-hole dimensions a drawing gives with a plus or minus). This module reads, validates
+//! and creates those files. It never writes over an existing project: opening one reads it as it
+//! is.
 //!
 //! The files are TOML because people edit them. A file newer than this build is refused instead
 //! of being rewritten, and a damaged file names the file and the position of the problem.
@@ -28,9 +30,15 @@ pub const FOLDER: &str = ".intcad";
 pub const MANIFEST: &str = "project.toml";
 /// The check configuration inside it.
 pub const CI: &str = "ci.toml";
+/// The critical hole-to-hole dimensions the project declares.
+pub const CRITICAL: &str = "critical.toml";
 
 /// The longest project name this build accepts, in characters.
 pub const MAX_NAME_CHARS: usize = 128;
+/// The most critical dimensions one project may declare.
+pub const MAX_CRITICAL: usize = 64;
+/// The largest coordinate or tolerance a critical dimension may use, in mm.
+pub const MAX_CRITICAL_MM: f64 = 1.0e6;
 
 /// What can stop a project file from being read or made.
 #[derive(Debug, thiserror::Error)]
@@ -166,12 +174,38 @@ pub enum OverrideLimit {
     Max,
 }
 
-/// A project folder and its two files, read and validated.
+/// `critical.toml`: the hole-to-hole dimensions a drawing gives with a plus or minus.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CriticalFile {
+    pub schema_version: u32,
+    /// `[[critical]]` tables. Called `critical` in the file, like `[[override]]` in `ci.toml`.
+    #[serde(default, rename = "critical")]
+    pub dimensions: Vec<CriticalDimension>,
+}
+
+/// One declared critical dimension. Its points are matched to round through holes; the rule
+/// counts the bends between the holes' flats.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CriticalDimension {
+    /// The name a drawing or a person uses for this dimension.
+    pub name: String,
+    /// A point on the sheet near the first hole's centre, in model mm.
+    pub from_mm: [f64; 3],
+    /// A point on the sheet near the second hole's centre, in model mm.
+    pub to_mm: [f64; 3],
+    /// The plus-or-minus the drawing allows, in mm.
+    pub tolerance_mm: f64,
+}
+
+/// A project folder and its files, read and validated.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Project {
     root: PathBuf,
     manifest: ProjectManifest,
     ci: CiConfig,
+    critical: Vec<CriticalDimension>,
 }
 
 impl Project {
@@ -185,6 +219,11 @@ impl Project {
 
     pub fn ci(&self) -> &CiConfig {
         &self.ci
+    }
+
+    /// The critical dimensions the project declares, in file order.
+    pub fn critical(&self) -> &[CriticalDimension] {
+        &self.critical
     }
 
     /// The `.intcad` folder.
@@ -217,9 +256,10 @@ impl Project {
         }
         let manifest: ProjectManifest = read_toml(&manifest_path)?;
         let ci: CiConfig = read_toml(&ci_path)?;
+        let critical = read_critical(&folder.join(CRITICAL))?;
         validate_manifest(&manifest, &manifest_path)?;
         validate_ci(&ci, &ci_path)?;
-        Ok(Self { root: root.to_path_buf(), manifest, ci })
+        Ok(Self { root: root.to_path_buf(), manifest, ci, critical })
     }
 
     /// Read the project that holds `design_or_folder`, if there is one.
@@ -287,6 +327,16 @@ impl Project {
         validate_ci(&ci, &self.folder().join(CI))?;
         let manifest = self.manifest.clone();
         self.write(&manifest, &ci)
+    }
+
+    /// Replace the project's critical dimensions. An empty list removes them all.
+    pub fn set_critical(&mut self, dimensions: Vec<CriticalDimension>) -> Result<(), ProjectError> {
+        let path = self.folder().join(CRITICAL);
+        let text = critical_text(&dimensions);
+        validate_critical(&dimensions, &text, &path)?;
+        write_text_atomic(&path, &text)?;
+        self.critical = dimensions;
+        Ok(())
     }
 
     fn write(&mut self, manifest: &ProjectManifest, ci: &CiConfig) -> Result<(), ProjectError> {
@@ -451,6 +501,7 @@ fn build_project(root: &Path, folder: &Path, name: &str, design: &Path) -> Resul
     };
     write_text(&folder.join(MANIFEST), &manifest_text(&manifest))?;
     write_text(&folder.join(CI), &ci_text(&ci))?;
+    write_text(&folder.join(CRITICAL), &critical_text(&[]))?;
     write_text(&folder.join("design-intent.md"), "# Design intent\n\nWhat this design is for, and what must not change.\n")?;
     write_text(&folder.join("design-intent.toml"), "schema_version = 1\n")?;
     write_text(&folder.join("specs/requirements.toml"), "schema_version = 1\n")?;
@@ -601,6 +652,97 @@ fn validate_ci(ci: &CiConfig, path: &Path) -> Result<(), ProjectError> {
         }
     }
     Ok(())
+}
+
+/// Read `critical.toml`. A project without the file (one made by an older build) declares none.
+fn read_critical(path: &Path) -> Result<Vec<CriticalDimension>, ProjectError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(ProjectError::io(path, &error)),
+    };
+    let value: toml::Value = toml::from_str(&text)
+        .map_err(|error| ProjectError::Parse { file: path.display().to_string(), message: error.to_string().trim().to_string() })?;
+    let version = value.get("schema_version").and_then(toml::Value::as_integer).unwrap_or(0);
+    if version > i64::from(SCHEMA_VERSION) {
+        return Err(ProjectError::SchemaTooNew {
+            file: path.display().to_string(),
+            found: u32::try_from(version).unwrap_or(u32::MAX),
+            supported: SCHEMA_VERSION,
+        });
+    }
+    let file: CriticalFile = value
+        .try_into()
+        .map_err(|error: toml::de::Error| ProjectError::Parse { file: path.display().to_string(), message: error.to_string().trim().to_string() })?;
+    if file.schema_version == 0 {
+        return Err(ProjectError::Invalid { file: path.display().to_string(), message: "schema_version must be 1 or later".into() });
+    }
+    validate_critical(&file.dimensions, &text, path)?;
+    Ok(file.dimensions)
+}
+
+/// Validate the declarations and name the `[[critical]]` line that is wrong.
+fn validate_critical(dimensions: &[CriticalDimension], text: &str, path: &Path) -> Result<(), ProjectError> {
+    let invalid = |line: usize, message: String| ProjectError::Invalid { file: format!("{}:{line}", path.display()), message };
+    if dimensions.len() > MAX_CRITICAL {
+        return Err(invalid(1, format!("a project declares at most {MAX_CRITICAL} critical dimensions")));
+    }
+    let mut names: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for (index, dimension) in dimensions.iter().enumerate() {
+        let line = critical_line(text, index);
+        let name = dimension.name.trim();
+        if name.is_empty() {
+            return Err(invalid(line, "a critical dimension needs a name".into()));
+        }
+        if name.chars().count() > MAX_NAME_CHARS {
+            return Err(invalid(line, format!("the name is longer than {MAX_NAME_CHARS} characters")));
+        }
+        if name.chars().any(char::is_control) {
+            return Err(invalid(line, "the name holds a control character".into()));
+        }
+        if !names.insert(name) {
+            return Err(invalid(line, format!("`{name}` is declared twice")));
+        }
+        for (label, point) in [("from_mm", dimension.from_mm), ("to_mm", dimension.to_mm)] {
+            if point.iter().any(|value| !value.is_finite() || value.abs() > MAX_CRITICAL_MM) {
+                return Err(invalid(line, format!("{label} needs three finite mm values no larger than {MAX_CRITICAL_MM}")));
+            }
+        }
+        if !dimension.tolerance_mm.is_finite() || dimension.tolerance_mm <= 0.0 || dimension.tolerance_mm > MAX_CRITICAL_MM {
+            return Err(invalid(line, "tolerance_mm must be a finite number greater than 0".into()));
+        }
+    }
+    Ok(())
+}
+
+/// The 1-based line of the `index`th `[[critical]]` table, or line 1 when it cannot be found.
+fn critical_line(text: &str, index: usize) -> usize {
+    text.lines().enumerate().filter(|(_, line)| line.trim() == "[[critical]]").nth(index).map(|(zero, _)| zero + 1).unwrap_or(1)
+}
+
+/// The `critical.toml` text for these declarations, as a stable template.
+fn critical_text(dimensions: &[CriticalDimension]) -> String {
+    let mut text = String::new();
+    text.push_str("# Critical hole-to-hole dimensions: the ones a drawing gives with a plus or minus.\n");
+    text.push_str("# Each point is a model mm point near a round through hole's centre.\n");
+    text.push_str(&format!("schema_version = {}\n", SCHEMA_VERSION));
+    for dimension in dimensions {
+        text.push_str("\n[[critical]]\n");
+        text.push_str(&format!("name = {}\n", toml_string(&dimension.name)));
+        text.push_str(&format!("from_mm = {}\n", toml_point(dimension.from_mm)));
+        text.push_str(&format!("to_mm = {}\n", toml_point(dimension.to_mm)));
+        text.push_str(&format!("tolerance_mm = {}\n", toml_number(dimension.tolerance_mm)));
+    }
+    text
+}
+
+fn toml_point(point: [f64; 3]) -> String {
+    format!("[{}, {}, {}]", toml_number(point[0]), toml_number(point[1]), toml_number(point[2]))
+}
+
+/// A TOML float: `10.0`, never `10`, so reading it back needs no integer-to-float guess.
+fn toml_number(value: f64) -> String {
+    format!("{value:?}")
 }
 
 fn write_text(path: &Path, text: &str) -> Result<(), ProjectError> {

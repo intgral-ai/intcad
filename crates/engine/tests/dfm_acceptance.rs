@@ -1,0 +1,421 @@
+//! The full-catalogue DFM acceptance harness: sample parts built through the normal modelling
+//! commands, checked through `dfm.check`, the validation worker and the write to
+//! `.intcad/checks/runs/<run>/`, then read back through `inspect.dfm`.
+//!
+//! See `docs/dfm-catalogue-acceptance.md` for the sample table, the exact commands, and what to
+//! change when a rule's fact family lands. This file is the one place a later slice edits: add a
+//! sample to [`SAMPLE_IDS`], build it in [`build`], and add its expectation in [`expectations`].
+//!
+//! Select one sample with `SOLIDCRAFT_DFM_SAMPLE=l_bracket`; change the shared geometry with
+//! `SOLIDCRAFT_DFM_FLANGE_LEG=4` and the declared tolerance with
+//! `SOLIDCRAFT_DFM_TOLERANCE_MM=0.3`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use solidcraft_doc::sheet_dfm;
+use solidcraft_engine::Session;
+use solidcraft_engine::dfm::service;
+
+/// The samples this harness drives. A later slice that lands a fact family keeps the sample and
+/// changes its expectation in [`expectations`], never the rule's number.
+const SAMPLE_IDS: &[&str] = &["l_bracket", "u_channel", "no_relief", "plate", "countersink"];
+
+/// The sheet rule every sample uses: 2 mm, K 0.5, 1 mm inside radius. With it a 10 mm flange has
+/// a 7 mm leg past the bend and a 4 mm flange only 1 mm, so one number changes a flange result.
+fn sheet_rule(s: &mut Session, relief_width_mm: f64) {
+    exec(
+        s,
+        "sheet.manage_rules",
+        json!({
+            "name": "Acceptance",
+            "thickness": "2 mm",
+            "k_factor": "0.5",
+            "bend_radius": "1 mm",
+            "relief_width": format!("{relief_width_mm} mm"),
+            "relief_depth": format!("{relief_width_mm} mm"),
+            "active": true,
+        }),
+    );
+}
+
+fn base(s: &mut Session, width: f64, depth: f64) {
+    exec(s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    exec(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [width, depth]}));
+    exec(s, "sketch.finish", json!({}));
+    exec(s, "sheet.flange", json!({"sketch": "Base"}));
+}
+
+fn run(s: &mut Session, id: &str, params: Value) -> Value {
+    match s.execute(id, &params) {
+        Ok(value) => value,
+        Err(error) => panic!("{id} {params}: {error}"),
+    }
+}
+
+fn exec(s: &mut Session, id: &str, params: Value) -> Value {
+    run(s, id, params)
+}
+
+/// The shared dimensions a later slice can change from the shell.
+#[derive(Clone, Copy, Debug)]
+struct Config {
+    /// The edge flange's height: 10 mm gives a 7 mm leg, 4 mm gives 1 mm.
+    flange_leg_mm: f64,
+    /// The declared plus-or-minus across one bend: 0.2 mm is the test shop's one-bend value.
+    tolerance_mm: f64,
+}
+
+impl Config {
+    fn from_env() -> Config {
+        Config { flange_leg_mm: env_number("SOLIDCRAFT_DFM_FLANGE_LEG", 10.0), tolerance_mm: env_number("SOLIDCRAFT_DFM_TOLERANCE_MM", 0.1) }
+    }
+}
+
+fn env_number(name: &str, default: f64) -> f64 {
+    std::env::var(name).ok().and_then(|value| value.trim().parse::<f64>().ok()).filter(|value| value.is_finite() && *value > 0.0).unwrap_or(default)
+}
+
+/// One built sample: the session and any declaration to make.
+struct Built {
+    session: Session,
+    declaration: Option<Value>,
+}
+
+fn build(id: &str, cfg: Config) -> Built {
+    let mut s = Session::default();
+    let declaration = match id {
+        "l_bracket" => {
+            // One 90° bend: the base's long side, with a hole on each flat.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[30, 0, 2]], "height": cfg.flange_leg_mm}));
+            exec(&mut s, "solid.hole", json!({"position": [30, 20, 2], "diameter": 3}));
+            let on_flange = (cfg.flange_leg_mm * 0.7).clamp(3.5, cfg.flange_leg_mm - 1.0);
+            exec(&mut s, "solid.hole", json!({"position": [30, 2, on_flange], "diameter": 3}));
+            Some(across_one_bend(&s, cfg.tolerance_mm))
+        }
+        "u_channel" => {
+            // Two parallel same-way bends: the left and right edges both turn up.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[0, 20, 2], [60, 20, 2]], "height": cfg.flange_leg_mm}));
+            None
+        }
+        "no_relief" => {
+            // A flange across a full edge with no relief notch at either bend end.
+            sheet_rule(&mut s, 0.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[30, 0, 2]], "height": cfg.flange_leg_mm}));
+            None
+        }
+        "plate" => {
+            // A 2 mm hole (below the shop's 3 mm) and a hole whose wall is 1 mm from the outline.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "solid.hole", json!({"position": [30, 20, 2], "diameter": 2}));
+            exec(&mut s, "solid.hole", json!({"position": [2, 20, 2], "diameter": 2}));
+            None
+        }
+        "countersink" => {
+            // A countersunk hole. A folded sheet refuses tapered machining, so the sample starts
+            // as a 2 mm solid plate, drills the countersink and converts to sheet metal; the
+            // recess becomes a pocket until the App measures countersink facts.
+            sheet_rule(&mut s, 4.0);
+            exec(&mut s, "solid.box", json!({"length": 60, "width": 40, "height": 4, "body_name": "Plate"}));
+            exec(&mut s, "solid.hole", json!({"position": [30, 20, 4], "diameter": 4, "type": "countersink", "cs_diameter": 6, "cs_angle": 90}));
+            exec(&mut s, "sheet.convert", json!({"body": "Plate", "face": [30, 20, 4]}));
+            None
+        }
+        other => panic!("unknown sample `{other}`; known: {SAMPLE_IDS:?}"),
+    };
+    if s.model.state().sheets.is_empty() {
+        panic!("{id}: no native sheet body was built");
+    }
+    Built { session: s, declaration }
+}
+
+/// A declaration from the two holes on different flats of the L-bracket. The points are the
+/// measured folded hole centres, which is what a person reads from the report's `part.holes`.
+fn across_one_bend(s: &Session, tolerance_mm: f64) -> Value {
+    let facts = sheet_dfm::facts(&s.model.state().sheets[0]).expect("sheet facts");
+    let base = facts.holes.iter().find(|hole| hole.flat.is_none() && hole.flat_assigned).expect("a hole on the base");
+    let flange = facts.holes.iter().find(|hole| hole.flat.is_some() && hole.flat_assigned).expect("a hole on the flange");
+    assert_ne!(base.flat, flange.flat, "the declaration must span two flats");
+    json!({
+        "critical": [{
+            "name": "base to flange",
+            "fromMm": [base.x_mm, base.y_mm, base.z_mm],
+            "toMm": [flange.x_mm, flange.y_mm, flange.z_mm],
+            "toleranceMm": tolerance_mm,
+        }]
+    })
+}
+
+/// What one target rule must say for one sample today.
+#[derive(Debug)]
+struct Expectation {
+    rule: &'static str,
+    /// The worst state in `findings[].rules[].state`.
+    state: &'static str,
+    /// The state of the one finding this sample is about.
+    finding_state: &'static str,
+    /// The measured value, when the rule measured one.
+    measured_mm: Option<f64>,
+    /// The finding's `code`, when it has one.
+    code: Option<&'static str>,
+}
+
+/// The target rows per sample. These are the assertions a later slice changes when the missing
+/// fact families arrive; the rule thresholds themselves are never relaxed.
+fn expectations(id: &str, cfg: Config) -> Vec<Expectation> {
+    match id {
+        "l_bracket" => vec![Expectation {
+            rule: "sm.tolerance_across_bends",
+            // 0.1 mm is tighter than the test shop's 0.2 mm across one bend; 0.3 mm is looser.
+            state: if cfg.tolerance_mm < 0.2 { "failed" } else { "passed" },
+            finding_state: if cfg.tolerance_mm < 0.2 { "failed" } else { "passed" },
+            measured_mm: Some(cfg.tolerance_mm),
+            code: (cfg.tolerance_mm < 0.2).then_some("TOLERANCE_TIGHTER_THAN_SHOP"),
+        }],
+        // The remaining rows are the gaps the matrix names. They are Unsupported until the App
+        // measures their fact family; a slice that lands one changes `state` here.
+        "u_channel" => {
+            vec![Expectation { rule: "sm.min_web_parallel_bends", state: "unsupported", finding_state: "unsupported", measured_mm: None, code: None }]
+        }
+        "no_relief" => {
+            vec![Expectation { rule: "sm.bend_relief_present", state: "unsupported", finding_state: "unsupported", measured_mm: None, code: None }]
+        }
+        "plate" => vec![
+            Expectation { rule: "sm.hole_min_diameter", state: "failed", finding_state: "failed", measured_mm: Some(2.0), code: None },
+            // The far hole passes at 19 mm; the near hole's 1 mm wall is the failing one.
+            Expectation { rule: "sm.hole_to_edge", state: "failed", finding_state: "failed", measured_mm: Some(1.0), code: None },
+        ],
+        "countersink" => {
+            vec![Expectation { rule: "sm.countersink_depth", state: "unsupported", finding_state: "unsupported", measured_mm: None, code: None }]
+        }
+        other => panic!("unknown sample `{other}`; known: {SAMPLE_IDS:?}"),
+    }
+}
+
+/// The project folder and the two process-wide stores, made once per test binary.
+struct Roots {
+    scratch: PathBuf,
+    shop: PathBuf,
+}
+
+static ROOTS: OnceLock<Roots> = OnceLock::new();
+/// The DFM service keeps process-wide roots and one worker, so the runs in this binary are serial.
+static GUARD: Mutex<()> = Mutex::new(());
+
+fn roots() -> &'static Roots {
+    ROOTS.get_or_init(|| {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let scratch = std::env::temp_dir().join(format!("intcad-dfm-acceptance-{}-{nanos}", std::process::id()));
+        let candidates = scratch.join("candidates");
+        let validation = scratch.join("validation");
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        std::fs::create_dir_all(&candidates).expect("candidates");
+        std::fs::create_dir_all(&validation).expect("validation");
+        solidcraft_engine::cmd::set_candidate_store(Some(candidates));
+        service::set_store_root(Some(validation));
+        Roots { scratch, shop: Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project/test_data/critical_shop.json") }
+    })
+}
+
+fn selected_samples() -> Vec<&'static str> {
+    match std::env::var("SOLIDCRAFT_DFM_SAMPLE") {
+        Ok(one) => {
+            let id = SAMPLE_IDS.iter().copied().find(|known| *known == one.trim()).unwrap_or_else(|| {
+                panic!("SOLIDCRAFT_DFM_SAMPLE=`{one}` is not one of {SAMPLE_IDS:?}");
+            });
+            vec![id]
+        }
+        Err(_) => SAMPLE_IDS.to_vec(),
+    }
+}
+
+/// Put the built design in a new project with the test shop and (when given) its declaration.
+fn project_for(built: &mut Built, id: &str) -> Value {
+    let roots = roots();
+    let created = exec(&mut built.session, "project.create", json!({"name": id, "folder": roots.scratch.to_string_lossy()}));
+    exec(&mut built.session, "project.settings_set", json!({"process": "press brake", "material": "5052-H32"}));
+    exec(&mut built.session, "project.data_set", json!({"kind": "factory", "path": roots.shop.to_string_lossy()}));
+    if let Some(declaration) = &built.declaration {
+        exec(&mut built.session, "project.critical_set", declaration.clone());
+    }
+    created
+}
+
+/// Queue one `dfm.check` and wait for its worker record, returning the run id.
+fn check_and_wait(s: &mut Session, id: &str) -> String {
+    let before = service::status().last_run;
+    let ticket = exec(s, "dfm.check", json!({}));
+    assert!(ticket["sheets"].as_u64().unwrap_or(0) >= 1, "{id}: dfm.check found no sheet: {ticket}");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let status = service::status();
+        if let Some(error) = status.error {
+            panic!("{id}: the DFM worker failed: {error}");
+        }
+        if !status.running
+            && let Some(run) = status.last_run.clone()
+            && before.as_deref() != Some(run.as_str())
+        {
+            assert_eq!(status.last_outcome.as_deref(), Some("current"), "{id}: {status:?}");
+            return run;
+        }
+        assert!(Instant::now() < deadline, "{id}: the check did not finish: {status:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn inspect(s: &mut Session, run: &str) -> Value {
+    exec(s, "inspect.dfm", json!({"run": run}))
+}
+
+fn rule_row<'a>(findings: &'a Value, rule: &str) -> &'a Value {
+    findings["rules"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["ruleId"].as_str() == Some(rule)))
+        .unwrap_or_else(|| panic!("the report has no `{rule}` row: {}", findings["rules"]))
+}
+
+fn target_findings<'a>(findings: &'a Value, rule: &str) -> Vec<&'a Value> {
+    findings["findings"]
+        .as_array()
+        .map(|rows| rows.iter().filter(|row| row["rules"].as_array().is_some_and(|rules| rules.iter().any(|r| r.as_str() == Some(rule)))).collect())
+        .unwrap_or_default()
+}
+
+/// The full catalogue each report must speak for: every non-gate `RULE_ORDER` entry plus the
+/// App-owned flat self-overlap rule. A rule with no applicable object is still a row, not a
+/// missing one; the four gates are findings, not rows.
+fn assert_catalogue_rows(id: &str, findings: &Value) {
+    let rows = findings["rules"].as_array().unwrap_or_else(|| panic!("{id}: no rule rows"));
+    for rule in solidcraft_dfm_rules::RULE_ORDER.iter().copied().filter(|rule| !rule.contains("gate_")).chain(std::iter::once("app.flat_no_overlap"))
+    {
+        assert!(rows.iter().any(|row| row["ruleId"].as_str() == Some(rule)), "{id}: the report has no `{rule}` row");
+    }
+}
+
+fn assert_sample(id: &str, report: &Value, expected: &[Expectation]) {
+    assert_eq!(report["available"], true, "{id}: no report: {report}");
+    assert_eq!(report["outcome"], "current", "{id}: {report}");
+    let findings = &report["findings"];
+    assert!(findings["runId"].as_str().is_some_and(|run| !run.is_empty()), "{id}: no run identity");
+    assert!(findings["candidateDigest"].as_str().is_some_and(|digest| !digest.is_empty()), "{id}: no model identity");
+    assert!(findings["configDigest"].as_str().is_some_and(|digest| !digest.is_empty()), "{id}: no configuration identity");
+    assert_catalogue_rows(id, findings);
+    let not_checked = findings["notChecked"].as_str().unwrap_or_default();
+    assert!(!not_checked.trim().is_empty(), "{id}: no not-checked line");
+    assert!(not_checked.contains("were not checked"), "{id}: {not_checked}");
+
+    for want in expected {
+        let row = rule_row(findings, want.rule);
+        assert_eq!(row["state"], want.state, "{id} {}: {row}", want.rule);
+        assert!(row["count"].as_u64().is_some(), "{id} {}: no finding count: {row}", want.rule);
+        let rows = target_findings(findings, want.rule);
+        assert!(!rows.is_empty(), "{id} {}: the rule row has no finding", want.rule);
+        for finding in &rows {
+            assert!(!finding["id"].as_str().unwrap_or_default().is_empty(), "{id} {}: finding without an id: {finding}", want.rule);
+            assert!(!finding["body"].as_str().unwrap_or_default().is_empty(), "{id} {}: finding without a body: {finding}", want.rule);
+        }
+        let finding = rows
+            .iter()
+            .find(|finding| {
+                finding["state"].as_str() == Some(want.finding_state)
+                    && match want.measured_mm {
+                        Some(measured) => (finding["measured"]["value"].as_f64().unwrap_or(f64::NAN) - measured).abs() < 1e-9,
+                        None => true,
+                    }
+            })
+            .unwrap_or_else(|| panic!("{id} {}: no `{}` finding at {want:?}: {rows:?}", want.rule, want.finding_state));
+        if let Some(measured) = want.measured_mm {
+            let got = finding["measured"]["value"].as_f64().unwrap_or(f64::NAN);
+            assert!((got - measured).abs() < 1e-9, "{id} {}: measured {got}, expected {measured}: {finding}", want.rule);
+            // A decided rule that measured a number located it: the anchor, flat point or flat
+            // outline is what the viewport selects.
+            let located = finding["anchor"].as_array().is_some_and(|at| at.len() == 3)
+                || finding["flat"].as_array().is_some_and(|at| at.len() == 2)
+                || finding["outline"].as_array().is_some_and(|at| !at.is_empty());
+            assert!(located, "{id} {}: a measured finding has no location: {finding}", want.rule);
+        }
+        if let Some(code) = want.code {
+            assert_eq!(finding["code"], code, "{id} {}: {finding}", want.rule);
+        }
+        if std::env::var_os("SOLIDCRAFT_DFM_PRINT").is_some() {
+            eprintln!("{id} {}: row {row}", want.rule);
+            eprintln!("{id} {}: finding {finding}", want.rule);
+        }
+        if want.state == "unsupported" {
+            assert!(not_checked.contains(want.rule), "{id} {}: the not-checked text does not name the rule: {not_checked}", want.rule);
+        }
+    }
+}
+
+fn assert_tolerance_state(report: &Value, expected_state: &str, measured: f64) {
+    let findings = &report["findings"];
+    let row = rule_row(findings, "sm.tolerance_across_bends");
+    assert_eq!(row["state"], expected_state, "{row}");
+    let rows = target_findings(findings, "sm.tolerance_across_bends");
+    let finding = rows.first().expect("the tolerance finding");
+    assert!((finding["measured"]["value"].as_f64().unwrap_or(f64::NAN) - measured).abs() < 1e-9, "{finding}");
+    assert!(finding["anchor"].as_array().is_some_and(|at| at.len() == 3), "the tolerance finding has no midpoint: {finding}");
+}
+
+/// The full-catalogue sample run, one `dfm.check` per sample through the real worker.
+#[test]
+fn catalogue_samples_reach_the_written_report() {
+    let _guard = GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cfg = Config::from_env();
+    roots();
+    let selected = selected_samples();
+
+    for id in selected {
+        let mut built = build(id, cfg);
+        project_for(&mut built, id);
+        let run = check_and_wait(&mut built.session, id);
+        let report = inspect(&mut built.session, &run);
+        assert_sample(id, &report, &expectations(id, cfg));
+        let _ = std::fs::remove_dir_all(roots().scratch.join(id));
+    }
+}
+
+/// A declaration is frozen into the run, changing it makes the old report stale, and checking
+/// again with a looser plus-or-minus turns the same rule into a pass.
+#[test]
+fn a_changed_declaration_makes_the_old_report_stale_and_the_next_check_decides() {
+    let _guard = GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cfg = Config::from_env();
+    roots();
+    let mut built = build("l_bracket", cfg);
+    project_for(&mut built, "l_bracket_declaration");
+    let first = check_and_wait(&mut built.session, "l_bracket_declaration");
+    let report = inspect(&mut built.session, &first);
+    assert_eq!(report["freshness"], "current", "{report}");
+    assert_eq!(report["configDigest"], report["findings"]["configDigest"], "the run froze the live configuration");
+    let config_before = report["configDigest"].clone();
+    assert_tolerance_state(&report, if cfg.tolerance_mm < 0.2 { "failed" } else { "passed" }, cfg.tolerance_mm);
+
+    // The same two holes, a looser plus-or-minus: the old report no longer describes the project.
+    let looser = if cfg.tolerance_mm < 0.2 { 0.3 } else { 0.1 };
+    let Some(declaration) = &built.declaration else { panic!("the L-bracket declares a dimension") };
+    let mut changed = declaration.clone();
+    changed["critical"][0]["toleranceMm"] = json!(looser);
+    exec(&mut built.session, "project.critical_set", changed);
+    let stale = inspect(&mut built.session, &first);
+    assert_eq!(stale["freshness"], "staleConfig", "a changed declaration must stale the old report: {stale}");
+    assert_eq!(stale["findings"]["runId"], first, "the old report keeps its own identity");
+
+    let second = check_and_wait(&mut built.session, "l_bracket_declaration");
+    assert_ne!(second, first);
+    let report = inspect(&mut built.session, &second);
+    assert_eq!(report["freshness"], "current", "{report}");
+    assert_ne!(report["configDigest"], config_before, "the declaration is part of the frozen configuration digest");
+    assert_tolerance_state(&report, if looser < 0.2 { "failed" } else { "passed" }, looser);
+    let _ = std::fs::remove_dir_all(roots().scratch.join("l_bracket_declaration"));
+}

@@ -11,10 +11,11 @@ use serde_json::{Value, json};
 use super::CommandSpec;
 use crate::factory_data;
 use crate::params::{bad, str_};
-use crate::project::{DataKind, DataRef, Override, OverrideLimit, Project};
+use crate::project::{CriticalDimension, DataKind, DataRef, Override, OverrideLimit, Project};
 use crate::schema::TypedContract;
 use crate::schema::project::{
-    AttachParams, CiParams, CiSummary, CreateParams, CreateReply, DataParams, DataReply, InspectParams, InspectReply, ManifestSummary, SettingsParams,
+    AttachParams, CiParams, CiSummary, CreateParams, CreateReply, CriticalInput, CriticalParams, CriticalReply, CriticalSummary, DataParams,
+    DataReply, InspectParams, InspectReply, ManifestSummary, SettingsParams,
 };
 use crate::{Result, Session};
 
@@ -24,6 +25,7 @@ const INSPECT_CONTRACT: TypedContract<InspectParams> = TypedContract::new();
 const SETTINGS_CONTRACT: TypedContract<SettingsParams> = TypedContract::new();
 const CI_CONTRACT: TypedContract<CiParams> = TypedContract::new();
 const DATA_CONTRACT: TypedContract<DataParams> = TypedContract::new();
+const CRITICAL_CONTRACT: TypedContract<CriticalParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("project.create", "New Project", crate::checked!("project.create", create))
@@ -84,6 +86,18 @@ pub static COMMANDS: &[CommandSpec] = &[
              upgrade: replace a different selection the project already has \
              → kind, name, version, sha256, file, imported. The whole file is copied into .intcad/",
         ),
+    CommandSpec::new("project.critical_set", "Declare Critical Dimensions", crate::checked!("project.critical_set", critical_set))
+        .icon("dimension")
+        .noundo()
+        .contract(&CRITICAL_CONTRACT)
+        .output(crate::schema::output_schema_for::<CriticalReply>)
+        .params(
+            "critical: every hole-to-hole dimension the drawing gives with a plus or minus, each \
+             {name, fromMm: [x, y, z], toMm: [x, y, z], toleranceMm}; an empty list removes them all \
+             → the declarations as written. Each point is a model mm point near a round through hole's centre; the DFM run \
+             matches them and counts the bends between the holes. Only the app may call this, so a project's critical \
+             dimensions cannot be set by an assistant",
+        ),
 ];
 
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
@@ -124,17 +138,22 @@ fn attach(s: &mut Session, p: &Value) -> Result<Value> {
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let start = str_(p, "path").map(str::to_string).or_else(|| s.path.clone());
     let Some(start) = start else {
-        return reply(InspectReply { has_project: false, root: None, project: None, ci: None, error: None });
+        return reply(InspectReply { has_project: false, root: None, project: None, ci: None, critical: Vec::new(), error: None });
     };
     let start = Path::new(&start);
     let Some(root) = crate::project::Project::locate(start) else {
-        return reply(InspectReply { has_project: false, root: None, project: None, ci: None, error: None });
+        return reply(InspectReply { has_project: false, root: None, project: None, ci: None, critical: Vec::new(), error: None });
     };
     match crate::project::Project::open(&root) {
         Ok(project) => describe(&project),
-        Err(error) => {
-            reply(InspectReply { has_project: true, root: Some(root.display().to_string()), project: None, ci: None, error: Some(error.to_string()) })
-        }
+        Err(error) => reply(InspectReply {
+            has_project: true,
+            root: Some(root.display().to_string()),
+            project: None,
+            ci: None,
+            critical: Vec::new(),
+            error: Some(error.to_string()),
+        }),
     }
 }
 
@@ -148,6 +167,7 @@ fn describe(project: &Project) -> Result<Value> {
         root: Some(project.root().display().to_string()),
         project: Some(manifest_summary(project.manifest())),
         ci: Some(ci_summary(project.ci(), data_available, data_unavailable)),
+        critical: project.critical().iter().map(critical_summary).collect(),
         error: None,
     })
 }
@@ -257,6 +277,28 @@ fn kind_name(kind: DataKind) -> &'static str {
         DataKind::Factory => "factory",
         DataKind::Standard => "standard",
     }
+}
+
+fn critical_set(s: &mut Session, p: &Value) -> Result<Value> {
+    let params: CriticalParams = serde_json::from_value(p.clone()).map_err(|error| bad("project.critical_set", error.to_string()))?;
+    let mut project = open_project(s, "project.critical_set")?;
+    let dimensions: Vec<CriticalDimension> = params
+        .critical
+        .iter()
+        .map(|dimension: &CriticalInput| CriticalDimension {
+            name: dimension.name.clone(),
+            from_mm: dimension.from_mm,
+            to_mm: dimension.to_mm,
+            tolerance_mm: dimension.tolerance_mm,
+        })
+        .collect();
+    project.set_critical(dimensions).map_err(|error| bad("project.critical_set", error.to_string()))?;
+    serde_json::to_value(CriticalReply { critical: project.critical().iter().map(critical_summary).collect() })
+        .map_err(|error| bad("project.critical_set", format!("the result could not be written: {error}")))
+}
+
+fn critical_summary(dimension: &CriticalDimension) -> CriticalSummary {
+    CriticalSummary { name: dimension.name.clone(), from_mm: dimension.from_mm, to_mm: dimension.to_mm, tolerance_mm: dimension.tolerance_mm }
 }
 
 fn reply(value: InspectReply) -> Result<Value> {
@@ -382,6 +424,57 @@ mod tests {
         assert_eq!(inspected["project"], Value::Null);
         let error = inspected["error"].as_str().expect("error");
         assert!(error.contains("ci.toml") && error.contains("line 2"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The declaration is written by the command, reported by `project.inspect`, and read again
+    /// from the project folder after a reopen.
+    #[test]
+    fn critical_set_saves_and_inspect_reopens_the_declarations() {
+        let dir = scratch("critical-command");
+        let mut s = Session::default();
+        s.execute("project.create", &json!({"name": "Bracket", "folder": dir.to_string_lossy()})).expect("create");
+        let saved = s
+            .execute(
+                "project.critical_set",
+                &json!({"critical": [{"name": "A to B", "fromMm": [10.0, 5.0, 1.0], "toMm": [30.0, 5.0, 1.0], "toleranceMm": 0.2}]}),
+            )
+            .expect("declare");
+        assert_eq!(saved["critical"][0]["name"], "A to B");
+        assert_eq!(saved["critical"][0]["toleranceMm"], 0.2);
+
+        let inspected = s.execute("project.inspect", &json!({})).expect("inspect");
+        assert_eq!(inspected["critical"][0]["name"], "A to B");
+        assert_eq!(inspected["critical"][0]["fromMm"], json!([10.0, 5.0, 1.0]));
+
+        let reopened = crate::project::Project::of(std::path::Path::new(&dir.join("Bracket"))).expect("read").expect("a project");
+        let critical = reopened.critical();
+        assert_eq!(critical.len(), 1);
+        assert_eq!(critical[0].name, "A to B");
+        assert!((critical[0].tolerance_mm - 0.2).abs() < 1e-12);
+
+        let cleared = s.execute("project.critical_set", &json!({"critical": []})).expect("clear");
+        assert_eq!(cleared["critical"], json!([]));
+        let reopened = crate::project::Project::open(&dir.join("Bracket")).expect("reopen");
+        assert!(reopened.critical().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A declaration the rule cannot use is refused before the file changes.
+    #[test]
+    fn critical_set_refuses_a_bad_declaration_and_keeps_the_file() {
+        let dir = scratch("critical-command-bad");
+        let mut s = Session::default();
+        s.execute("project.create", &json!({"name": "Bracket", "folder": dir.to_string_lossy()})).expect("create");
+        let error = s
+            .execute(
+                "project.critical_set",
+                &json!({"critical": [{"name": "", "fromMm": [0.0, 0.0, 0.0], "toMm": [10.0, 0.0, 0.0], "toleranceMm": 0.2}]}),
+            )
+            .expect_err("no name");
+        assert!(error.to_string().contains("name"), "{error}");
+        let inspected = s.execute("project.inspect", &json!({})).expect("inspect");
+        assert_eq!(inspected["critical"], json!([]));
         let _ = fs::remove_dir_all(&dir);
     }
 }
