@@ -6520,3 +6520,114 @@ fn a_flange_on_part_of_a_stepped_outline_spans_that_part() {
     let expected = 215.8 * 403.5 + 377.8 * (allowance + 18.0);
     assert!(rel(flat_area(&flat(&mut s)), expected) < 1e-9, "{} vs {expected}", flat_area(&flat(&mut s)));
 }
+
+/// A countersink on a flange panel keeps its panel, and the refold cuts the same cone.
+#[test]
+fn a_flange_panel_countersink_keeps_its_panel_through_refold() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20}));
+    run(&mut s, "sheet.unfold", json!({}));
+    // Unfolded, the flange panel is flat beside the base: drill 10 mm up its panel, past the
+    // bend allowance, on the top skin.
+    let (centre, t) = {
+        let sheet = &s.model.state().sheets[0];
+        let flange = &sheet.flanges[0];
+        (flange.p + flange.n * (sheet.allowance(flange) + 10.0) + flange.d * 50.0, sheet.t)
+    };
+    run(
+        &mut s,
+        "solid.hole",
+        json!({"position": [centre.x, centre.y, t], "diameter": 3.4, "type": "countersink", "cs_diameter": 7.5, "cs_angle": "90 deg"}),
+    );
+    let sheet = &s.model.state().sheets[0];
+    assert_eq!(sheet.countersinks.len(), 1);
+    assert_eq!(sheet.countersinks[0].panel, Some(0), "the cone belongs to the flange's own panel");
+    assert_eq!(sheet.countersinks[0].entry_z, 2.5);
+
+    run(&mut s, "sheet.refold", json!({}));
+    let sheet = &s.model.state().sheets[0];
+    assert_eq!(sheet.countersinks.len(), 1, "the refold rebuilds the cone from the model");
+    assert_eq!(sheet.altered_by, None);
+    let facts = solidcraft_doc::sheet_dfm::facts(sheet).expect("facts");
+    assert_eq!(facts.countersinks, 1);
+    let hole = facts.holes.iter().find(|hole| hole.flat == Some(0)).expect("the flange hole");
+    assert!(hole.flat_assigned);
+    let sink = hole.countersink.as_ref().expect("the flange hole carries its countersink");
+    // 10 mm up the flange panel from its bend tangent, less the 3.75 mm rim.
+    assert!((sink.bend_gaps[0].gap_mm - 6.25).abs() < 1e-9, "{:?}", sink.bend_gaps);
+    // The panel's far edge is 5 mm past the centre, less the rim.
+    assert!((sink.edge_mm.unwrap_or(f64::NAN) - 1.25).abs() < 1e-9, "{:?}", sink.edge_mm);
+    // The rim's position is on the folded panel, not the flat one.
+    let flat = solidcraft_doc::apply_point(&sheet.world(Some(0)), solidcore_record::Vec3::new(centre.x, centre.y, t));
+    assert!((sink.x_mm - flat.x).abs() < 1e-9 && (sink.y_mm - flat.y).abs() < 1e-9 && (sink.z_mm - flat.z).abs() < 1e-9);
+}
+
+/// A countersink drilled into a sheet-metal body used to be refused whole ("this sheet machining
+/// cannot be preserved in its flat material"), so no DFM countersink rule could run. It is kept
+/// as a derived record of the flat model now: the cone is cut into the folded and the flat solid,
+/// and the model still rebuilds after unfold/refold and after reopening the design.
+#[test]
+fn a_sheet_countersink_is_kept_in_the_flat_model_and_measured() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "solid.hole", json!({"position": [30, 30, 2.5], "diameter": 3.4, "type": "countersink", "cs_diameter": 7.5, "cs_angle": "90 deg"}));
+    // The cone from its 7.5 mm rim down to the 3.4 mm bore, 2.05 mm deep, plus the through hole.
+    let (rim, bore, depth) = (3.75_f64, 1.7_f64, (3.75 - 1.7) / 45.0_f64.to_radians().tan());
+    let frustum = std::f64::consts::PI * depth / 3.0 * (rim * rim + rim * bore + bore * bore);
+    let extra = frustum - std::f64::consts::PI * bore * bore * depth;
+    let expected = 100.0 * 60.0 * 2.5 - (std::f64::consts::PI * bore * bore * 2.5 + extra);
+    assert!(rel(volume(&mut s), expected) < 1e-7, "{} vs {expected}", volume(&mut s));
+
+    let sheet = &s.model.state().sheets[0];
+    assert_eq!(sheet.holes.len(), 1, "the through hole stays a hole of the flat pattern");
+    assert_eq!(sheet.pockets.len(), 0);
+    assert_eq!(sheet.altered_by, None, "the flat pattern still describes the body");
+    assert_eq!(sheet.countersinks.len(), 1);
+    let record = sheet.countersinks[0];
+    assert_eq!(record.panel, None);
+    assert_eq!(record.centre, solidcore_record::Vec2::new(30.0, 30.0));
+    assert_eq!(record.entry_z, 2.5, "the hole was drilled down into the top skin");
+    assert_eq!(record.major_radius, 3.75);
+    assert_eq!(record.hole_radius, 1.7);
+    assert!((record.angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    assert!((record.depth() - 2.05).abs() < 1e-12);
+    assert!((record.land(2.5) - 0.45).abs() < 1e-12);
+
+    let facts = solidcraft_doc::sheet_dfm::facts(sheet).expect("facts");
+    assert_eq!(facts.countersinks, 1);
+    let sink = facts.holes[0].countersink.as_ref().expect("the hole carries its countersink");
+    assert!((sink.major_diameter_mm - 7.5).abs() < 1e-12);
+    assert!((sink.depth_mm - 2.05).abs() < 1e-12);
+    assert!((sink.land_mm - 0.45).abs() < 1e-12);
+    assert!((sink.angle_deg - 90.0).abs() < 1e-9);
+    assert_eq!([sink.x_mm, sink.y_mm, sink.z_mm], [30.0, 30.0, 2.5], "the rim sits on the entry skin");
+    assert!((sink.edge_mm.unwrap_or(f64::NAN) - 26.25).abs() < 1e-9, "30 mm to the edge less the 3.75 mm rim");
+
+    // The cone is real material: 3 mm from the axis, 0.1 mm below the entry skin, it is air;
+    // the same distance at the bottom is still material.
+    let body = &s.model.state().bodies[0].body;
+    let class = |x: f64, y: f64, z: f64| body.classify_point(solidcore_record::Vec3::new(x, y, z)).expect("classify");
+    assert_eq!(class(33.0, 30.0, 2.4), solidcraft_kernel::PointClass::Outside, "the rim is cut");
+    assert_eq!(class(33.0, 30.0, 0.1), solidcraft_kernel::PointClass::Inside, "the land is left");
+    assert_eq!(class(30.0, 30.0, 1.25), solidcraft_kernel::PointClass::Outside, "the bore is through");
+
+    for command in ["sheet.unfold", "sheet.refold"] {
+        run(&mut s, command, json!({}));
+        assert!(rel(volume(&mut s), expected) < 1e-7);
+        let sheet = &s.model.state().sheets[0];
+        assert_eq!(sheet.countersinks.len(), 1);
+        assert_eq!(sheet.altered_by, None);
+    }
+    assert_eq!(flat(&mut s)["cutouts"].as_array().map(Vec::len), Some(1));
+
+    // The record is derived from feature history, so reopening rebuilds it.
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(rel(volume(&mut reopened), expected) < 1e-7);
+    let sheet = &reopened.model.state().sheets[0];
+    assert_eq!(sheet.countersinks.len(), 1);
+    let facts = solidcraft_doc::sheet_dfm::facts(sheet).expect("facts after reopen");
+    assert_eq!(facts.countersinks, 1);
+    let sink = facts.holes[0].countersink.as_ref().expect("the countersink survives reopen");
+    assert!((sink.depth_mm - 2.05).abs() < 1e-12 && (sink.land_mm - 0.45).abs() < 1e-12);
+}
