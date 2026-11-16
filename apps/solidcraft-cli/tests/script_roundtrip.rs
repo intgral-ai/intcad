@@ -92,7 +92,7 @@ fn a_design_naming_a_sketch_and_its_extrude_alike_replays_from_its_script() {
     let dir = std::env::temp_dir().join(format!("solidcraft-shared-names-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cli = |args: &[&std::ffi::OsStr]| {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli")).args(args).output().unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli")).args(args).output().unwrap();
         assert!(
             out.status.success(),
             "{}: {}",
@@ -138,7 +138,7 @@ fn script_export_warns_about_omitted_print_faces_on_stderr() {
     let native = std::fs::read(&saved).unwrap();
 
     for to_file in [false, true] {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"));
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"));
         cmd.arg("script").arg(&saved);
         if to_file {
             cmd.arg("--out").arg(&exported);
@@ -167,7 +167,7 @@ fn script_export_warns_about_omitted_print_faces_on_stderr() {
 /// reopens independently of the live session and its file.
 #[test]
 fn cli_captures_a_native_snapshot_that_reopens_after_the_live_design_is_gone() {
-    let dir = std::env::temp_dir().join(format!("solidcraft-cli-snapshot-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("intcad-cli-snapshot-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let store = dir.join("candidates");
@@ -184,7 +184,7 @@ fn cli_captures_a_native_snapshot_that_reopens_after_the_live_design_is_gone() {
         .to_string(),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .arg("run")
         .arg(&script)
         .args(["--results", "--json-out"])
@@ -221,7 +221,7 @@ fn cli_captures_a_native_snapshot_that_reopens_after_the_live_design_is_gone() {
 fn cli_validates_a_captured_candidate_and_distinguishes_quality_from_infrastructure() {
     use solidcraft_engine::validation::{MeasurementRequirement, ParameterRequirement, generate_submission_key, profile_ref, task_profile};
 
-    let dir = std::env::temp_dir().join(format!("solidcraft-cli-validate-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("intcad-cli-validate-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let candidates = dir.join("candidates");
@@ -238,7 +238,7 @@ fn cli_validates_a_captured_candidate_and_distinguishes_quality_from_infrastruct
         .to_string(),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .arg("run")
         .arg(&script)
         .args(["--results", "--json-out"])
@@ -275,7 +275,7 @@ fn cli_validates_a_captured_candidate_and_distinguishes_quality_from_infrastruct
     let status_path = dir.join("status.json");
 
     let validate = |mode: &str, run: Option<&str>, profile: Option<&Path>, out: Option<&Path>| {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"));
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"));
         cmd.arg("validate").arg(mode);
         if let Some(run) = run {
             cmd.arg(run);
@@ -344,7 +344,7 @@ fn cli_validates_a_captured_candidate_and_distinguishes_quality_from_infrastruct
         .unwrap(),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["validate", "submit"])
         .arg(&wrong_request)
         .args(["--profile"])
@@ -366,7 +366,7 @@ fn cli_validates_a_captured_candidate_and_distinguishes_quality_from_infrastruct
         serde_json::to_string_pretty(&json!({"candidate": candidate, "profile": wrong_reference, "requestId": key})).unwrap(),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["validate", "submit"])
         .arg(&conflict_request)
         .args(["--profile"])
@@ -396,7 +396,7 @@ fn cli_skill_validation_prints_a_bound_report_and_requires_live() {
         MeasurementRequirement, ParameterRequirement, generate_submission_key, text_to_cad_profile, text_to_cad_profile_ref,
     };
 
-    let dir = std::env::temp_dir().join(format!("solidcraft-cli-skill-validate-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("intcad-cli-skill-validate-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let candidates = dir.join("candidates");
@@ -413,7 +413,7 @@ fn cli_skill_validation_prints_a_bound_report_and_requires_live() {
         .to_string(),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .arg("run")
         .arg(&script)
         .args(["--results", "--json-out"])
@@ -453,7 +453,7 @@ fn cli_skill_validation_prints_a_bound_report_and_requires_live() {
     std::fs::write(&request_path, serde_json::to_string_pretty(&request).unwrap()).unwrap();
     let report_path = dir.join("skill-report.json");
 
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"));
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"));
     cmd.args(["validate", "skill"]).arg(&request_path).args(["--profile"]).arg(&profile_path);
     cmd.args(["--candidate-dir"]).arg(&candidates).args(["--validation-dir"]).arg(&validation);
     cmd.args(["--json-out"]).arg(&report_path);
@@ -485,7 +485,7 @@ fn cli_skill_validation_prints_a_bound_report_and_requires_live() {
     let mut request_without_live = request.clone();
     request_without_live.as_object_mut().unwrap().remove("live");
     std::fs::write(&no_live_request, serde_json::to_string_pretty(&request_without_live).unwrap()).unwrap();
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"));
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"));
     cmd.args(["validate", "skill"]).arg(&no_live_request).args(["--profile"]).arg(&profile_path);
     cmd.args(["--candidate-dir"]).arg(&candidates).args(["--validation-dir"]).arg(&validation);
     let out = cmd.output().unwrap();
@@ -497,7 +497,7 @@ fn cli_skill_validation_prints_a_bound_report_and_requires_live() {
 /// #12: a changed captured input byte is rejected before the report can be accepted.
 #[test]
 fn cli_validation_rejects_a_changed_candidate_byte() {
-    let dir = std::env::temp_dir().join(format!("solidcraft-cli-validate-changed-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("intcad-cli-validate-changed-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let candidates = dir.join("candidates");
@@ -513,7 +513,7 @@ fn cli_validation_rejects_a_changed_candidate_byte() {
         .to_string(),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .arg("run")
         .arg(&script)
         .args(["--results", "--json-out"])
@@ -539,7 +539,7 @@ fn cli_validation_rejects_a_changed_candidate_byte() {
     });
     let request_path = dir.join("request.json");
     std::fs::write(&request_path, serde_json::to_string_pretty(&request).unwrap()).unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["validate", "submit"])
         .arg(&request_path)
         .args(["--candidate-dir"])
@@ -562,7 +562,7 @@ fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() 
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
-    let dir = std::env::temp_dir().join(format!("solidcraft-cli-validate-two-process-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("intcad-cli-validate-two-process-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let candidates = dir.join("candidates");
@@ -578,7 +578,7 @@ fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() 
         .to_string(),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .arg("run")
         .arg(&script)
         .args(["--results", "--json-out"])
@@ -599,7 +599,7 @@ fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() 
     let request_path = dir.join("request.json");
     std::fs::write(&request_path, serde_json::to_string_pretty(&request).unwrap()).unwrap();
 
-    let submit = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let submit = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["validate", "submit"])
         .arg(&request_path)
         .args(["--candidate-dir"])
@@ -625,7 +625,7 @@ fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() 
                         && !name.contains(".report.")
                         && let Some(id) = name.strip_suffix(".json")
                     {
-                        let status = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+                        let status = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
                             .args(["validate", "status", id, "--candidate-dir"])
                             .arg(&candidates)
                             .args(["--validation-dir"])
@@ -644,7 +644,7 @@ fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() 
         }
     };
 
-    let cancel = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let cancel = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["validate", "cancel", &run_id, "--candidate-dir"])
         .arg(&candidates)
         .args(["--validation-dir"])
@@ -661,7 +661,7 @@ fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() 
     let submitted: Value = serde_json::from_slice(&submit_out.stdout).unwrap();
     assert_eq!(submitted["state"], "cancelled", "{submitted:#}");
 
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["validate", "status", &run_id, "--candidate-dir"])
         .arg(&candidates)
         .args(["--validation-dir"])

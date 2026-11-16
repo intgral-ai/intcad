@@ -4512,7 +4512,7 @@
   "ui.agent_chat_new": "Nuevo chat",
   "ui.agent_chat_new_confirm": "¿Iniciar un nuevo chat? Se borrará la conversación actual.",
   "ui.agent_chat_next_picture": "Imagen siguiente",
-  "ui.agent_chat_no_cli": "No se ha encontrado solidcraft-cli junto a la aplicación, por lo que el agente no puede acceder al diseño.",
+  "ui.agent_chat_no_cli": "No se ha encontrado intcad-cli junto a la aplicación, por lo que el agente no puede acceder al diseño.",
   "ui.agent_chat_no_control": "No se ha iniciado el punto de conexión del chat del agente, por lo que no puede acceder al diseño.",
   "ui.agent_chat_no_images": "Este agente no admite imágenes",
   "ui.agent_chat_no_picture": "No hay ninguna imagen en el portapapeles",

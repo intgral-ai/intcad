@@ -60,7 +60,7 @@ const MAX_ASSETS: usize = 400;
 const TAB_ROOM: f32 = 300.0;
 
 /// The Linux app ID (Flatpak, desktop files).
-pub const APP_ID: &str = "io.tangencylabs.solidcraft";
+pub const APP_ID: &str = "ai.intgral.intcad";
 
 /// Why a check failed. Automatic checks never show it; Check now does.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,9 +162,9 @@ pub enum InstallKind {
     WindowsMsi,
     /// The portable `.zip`, unpacked somewhere.
     WindowsPortable,
-    /// The lone `SolidCraft-<version>-windows-x64.exe`.
+    /// The lone `Intcad-<version>-windows-x64.exe`.
     WindowsExe,
-    /// `SolidCraft.app`, at this path (the bundle).
+    /// `Intcad.app`, at this path (the bundle).
     MacApp(PathBuf),
     /// A release build in a place none of the above explains (FreeBSD, a copied binary).
     Other,
@@ -179,7 +179,7 @@ pub struct Probe<'a> {
     /// The running executable.
     pub exe: Option<PathBuf>,
     pub exists: &'a dyn Fn(&Path) -> bool,
-    /// Where the Windows installer put SolidCraft (`HKLM\Software\SolidCraft`, `InstallDir`): a
+    /// Where the Windows installer put SolidCraft (`HKLM\Software\Intcad`, `InstallDir`): a
     /// folder chosen in its wizard can be anywhere, not only under Program Files (#1870).
     pub msi_dir: Option<PathBuf>,
 }
@@ -198,7 +198,7 @@ pub fn detect(p: &Probe) -> InstallKind {
             if let Some(id) = env("FLATPAK_ID") {
                 return InstallKind::Flatpak(id);
             }
-            if env("SNAP").is_some() && env("SNAP_NAME").is_none_or(|n| n.starts_with("solidcraft")) {
+            if env("SNAP").is_some() && env("SNAP_NAME").is_none_or(|n| n.starts_with("intcad")) {
                 // Locally installed (unasserted) snaps have revisions x1, x2, …
                 return InstallKind::Snap { store: !env("SNAP_REVISION").is_some_and(|r| r.starts_with('x')) };
             }
@@ -207,7 +207,7 @@ pub fn detect(p: &Probe) -> InstallKind {
             }
             if exe.starts_with("/usr") {
                 // nfpm installs both packages under /usr; dpkg keeps a file list per package.
-                if (p.exists)(Path::new("/var/lib/dpkg/info/solidcraft.list")) {
+                if (p.exists)(Path::new("/var/lib/dpkg/info/intcad.list")) {
                     return InstallKind::Deb;
                 }
                 if (p.exists)(Path::new("/var/lib/rpm")) || (p.exists)(Path::new("/usr/lib/sysimage/rpm")) {
@@ -223,7 +223,7 @@ pub fn detect(p: &Probe) -> InstallKind {
             if installed || under("ProgramFiles") || under("ProgramW6432") || under("ProgramFiles(x86)") {
                 return InstallKind::WindowsMsi;
             }
-            if exe.parent().is_some_and(|d| (p.exists)(&d.join("solidcraft-cli.exe"))) {
+            if exe.parent().is_some_and(|d| (p.exists)(&d.join("intcad-cli.exe"))) {
                 return InstallKind::WindowsPortable;
             }
             InstallKind::WindowsExe
@@ -273,7 +273,7 @@ pub fn this_install() -> InstallKind {
 /// The folder the Windows installer recorded (solidcraft.wxs writes it for upgrades), if any.
 #[cfg(windows)]
 fn msi_install_dir() -> Option<PathBuf> {
-    let key = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE).open_subkey(r"Software\SolidCraft").ok()?;
+    let key = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE).open_subkey(r"Software\Intcad").ok()?;
     key.get_value::<String, _>("InstallDir").ok().map(PathBuf::from)
 }
 
@@ -425,19 +425,17 @@ impl InstallKind {
     pub fn update_command(&self, asset: Option<&str>) -> Option<String> {
         match self {
             InstallKind::Flatpak(id) => Some(format!("flatpak update {id}")),
-            InstallKind::Snap { store: true } => Some("sudo snap refresh solidcraft".into()),
-            InstallKind::Snap { store: false } => {
-                Some(format!("sudo snap install --dangerous ./{}", asset.unwrap_or("solidcraft-linux-x86_64.snap")))
-            }
-            InstallKind::Deb => Some(format!("sudo apt install ./{}", asset.unwrap_or("solidcraft-linux-x86_64.deb"))),
-            InstallKind::Rpm => Some(format!("sudo dnf install ./{}", asset.unwrap_or("solidcraft-linux-x86_64.rpm"))),
+            InstallKind::Snap { store: true } => Some("sudo snap refresh intcad".into()),
+            InstallKind::Snap { store: false } => Some(format!("sudo snap install --dangerous ./{}", asset.unwrap_or("intcad-linux-x86_64.snap"))),
+            InstallKind::Deb => Some(format!("sudo apt install ./{}", asset.unwrap_or("intcad-linux-x86_64.deb"))),
+            InstallKind::Rpm => Some(format!("sudo dnf install ./{}", asset.unwrap_or("intcad-linux-x86_64.rpm"))),
             _ => None,
         }
     }
 }
 
 /// The release asset that installs or replaces this installation, by its fixed name
-/// (docs/releasing.md: `solidcraft-windows-x64.msi`, `solidcraft-linux-x86_64.AppImage`, …), or
+/// (docs/releasing.md: `intcad-windows-x64.msi`, `intcad-linux-x86_64.AppImage`, …), or
 /// the versioned name for the packages without one. `arch` is `std::env::consts::ARCH`.
 pub fn asset_name(kind: &InstallKind, arch: &str, version: &str) -> Option<String> {
     let linux = match arch {
@@ -452,18 +450,18 @@ pub fn asset_name(kind: &InstallKind, arch: &str, version: &str) -> Option<Strin
     };
     let version = version.trim_start_matches('v');
     Some(match kind {
-        InstallKind::AppImage(_) => format!("solidcraft-linux-{}.AppImage", linux?),
-        InstallKind::Flatpak(_) => format!("solidcraft-linux-{}.flatpak", linux?),
-        InstallKind::Snap { .. } => format!("solidcraft-linux-{}.snap", linux?),
-        InstallKind::Deb => format!("solidcraft-linux-{}.deb", linux?),
-        InstallKind::Rpm => format!("solidcraft-linux-{}.rpm", linux?),
-        InstallKind::LinuxTarball => format!("solidcraft-{version}-linux-{}.tar.gz", linux?),
-        InstallKind::WindowsMsi => format!("solidcraft-windows-{}.msi", windows?),
-        InstallKind::WindowsPortable => format!("solidcraft-windows-{}-portable.zip", windows?),
+        InstallKind::AppImage(_) => format!("intcad-linux-{}.AppImage", linux?),
+        InstallKind::Flatpak(_) => format!("intcad-linux-{}.flatpak", linux?),
+        InstallKind::Snap { .. } => format!("intcad-linux-{}.snap", linux?),
+        InstallKind::Deb => format!("intcad-linux-{}.deb", linux?),
+        InstallKind::Rpm => format!("intcad-linux-{}.rpm", linux?),
+        InstallKind::LinuxTarball => format!("intcad-{version}-linux-{}.tar.gz", linux?),
+        InstallKind::WindowsMsi => format!("intcad-windows-{}.msi", windows?),
+        InstallKind::WindowsPortable => format!("intcad-windows-{}-portable.zip", windows?),
         // Only x64 has the lone .exe; elsewhere the portable zip is the same thing.
-        InstallKind::WindowsExe if windows == Some("x64") => format!("SolidCraft-{version}-windows-x64.exe"),
-        InstallKind::WindowsExe => format!("solidcraft-windows-{}-portable.zip", windows?),
-        InstallKind::MacApp(_) => "solidcraft-macos-universal.dmg".into(),
+        InstallKind::WindowsExe if windows == Some("x64") => format!("Intcad-{version}-windows-x64.exe"),
+        InstallKind::WindowsExe => format!("intcad-windows-{}-portable.zip", windows?),
+        InstallKind::MacApp(_) => "intcad-macos-universal.dmg".into(),
         InstallKind::Dev | InstallKind::Web | InstallKind::Other => return None,
     })
 }

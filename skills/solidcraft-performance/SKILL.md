@@ -12,7 +12,7 @@ description: "Use when a SolidCraft change is slow, blocks the window, runs long
 - Test it: `crates/ui-egui/src/apply_off_thread_tests.rs` drives a long feature through the harness; never depend on wall-clock timing in a test.
 
 ## Measure before you claim a speed-up
-- Profile first. Time with `solidcraft-cli` from `main` and from your branch, alternating runs, after the load is low. On a shared machine check `cut -d' ' -f1 /proc/loadavg` and wait while it is over 24; build with `nice`.
+- Profile first. Time with `intcad-cli` from `main` and from your branch, alternating runs, after the load is low. On a shared machine check `cut -d' ' -f1 /proc/loadavg` and wait while it is over 24; build with `nice`.
 - Report medians with the range, the machine, and the cases. The pattern to follow is `docs/perf.md`: what was slow, why, the result, and proof that nothing changed (same bodies, volumes, areas and triangle counts).
 - A speed-up never skips work on a mesh's box: decide with the exact bounds (`Body::exact_bounds`, grown by the record's tolerance as `apart` in `crates/kernel/src/ops.rs` does). A mesh is for display, export, previews and mesh bodies.
 - Do not rewrite kernel code for speed: the kernel is being replaced, and kernel work is paused. Report a slow case with its file under the `kernel-perf` label (CONTRIBUTING.md, "Where help is wanted most").

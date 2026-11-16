@@ -11,8 +11,8 @@
 //! - AppImage: the new AppImage is written next to the old one and renamed over it (atomic on
 //!   one file system; the running copy keeps its old inode), then SolidCraft offers a restart.
 //! - Windows installer: the `.msi` is started with `msiexec /i … /passive` as SolidCraft exits.
-//! - Windows portable `.zip` / standalone `.exe`: the running `solidcraft.exe` is renamed to
-//!   `solidcraft.exe.old` (Windows allows renaming a running executable), the new one takes its
+//! - Windows portable `.zip` / standalone `.exe`: the running `intcad.exe` is renamed to
+//!   `intcad.exe.old` (Windows allows renaming a running executable), the new one takes its
 //!   name, and SolidCraft offers a restart; the `.old` file is deleted at the next start.
 //! - macOS: the `.dmg` is verified and opened; the user drags the app to Applications. The
 //!   bundle is never replaced in place from the background.
@@ -275,13 +275,13 @@ pub fn run(
 }
 
 /// Where an AppImage called `path` goes once it holds `version`: if its name is a release name
-/// (`solidcraft-<version>-linux-<arch>.AppImage`, or the old `solvecraft-` one), the new release's name
+/// (`intcad-<version>-linux-<arch>.AppImage`, or an older `solidcraft-` / `solvecraft-` one), the new release's name
 /// in the same folder; any other name (renamed by the user, or without a version) is kept.
 pub fn release_named(path: &Path, version: &str, arch: &str) -> PathBuf {
     let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    let rest = name.strip_prefix("solidcraft-").or_else(|| name.strip_prefix("solvecraft-"));
+    let rest = ["intcad-", "solidcraft-", "solvecraft-"].iter().find_map(|prefix| name.strip_prefix(prefix));
     if rest.is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()) && r.contains("-linux-") && r.ends_with(".appimage")) {
-        path.with_file_name(format!("solidcraft-{}-linux-{arch}.AppImage", version.trim_start_matches('v')))
+        path.with_file_name(format!("intcad-{}-linux-{arch}.AppImage", version.trim_start_matches('v')))
     } else {
         path.to_path_buf()
     }
@@ -301,8 +301,8 @@ pub fn apply(method: &Method, package: &Path) -> Result<Outcome, String> {
         }
         Method::PortableZip(exe) => {
             let dir = exe.parent().ok_or_else(|| format!("{} has no folder", exe.display()))?;
-            let name = exe.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "solidcraft.exe".into());
-            let files = [name.as_str(), "solidcraft-cli.exe"];
+            let name = exe.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "intcad.exe".into());
+            let files = [name.as_str(), "intcad-cli.exe"];
             let mut extracted = Vec::new();
             for file in files {
                 let to = dir.join(format!("{file}.update"));
@@ -395,9 +395,9 @@ fn make_executable(_: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// At start: delete the executable a previous update moved aside (`solidcraft.exe.old`).
+/// At start: delete the executable a previous update moved aside (`intcad.exe.old`).
 pub fn clean_up_after_update(exe: Option<&Path>) {
-    for file in [exe.map(Path::to_path_buf), exe.and_then(|e| e.parent()).map(|d| d.join("solidcraft-cli.exe"))].into_iter().flatten() {
+    for file in [exe.map(Path::to_path_buf), exe.and_then(|e| e.parent()).map(|d| d.join("intcad-cli.exe"))].into_iter().flatten() {
         if let Ok(old) = sibling(&file, ".old")
             && old.exists()
         {

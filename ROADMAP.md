@@ -356,7 +356,7 @@ completed drawings publish atomically. The browser still exports synchronously.
 - Crash reports: every panic (in a command, in the kernel, anywhere else) and every unclean
   exit (abort, stack overflow, kill: found at the next start through a locked per-run command
   journal) leaves a local report with the backtrace, version and commit, the command and the
-  design that reproduce it (`solidcraft-cli crashes replay <id>`). Repeats are counted, not
+  design that reproduce it (`intcad-cli crashes replay <id>`). Repeats are counted, not
   rewritten; at most 20 reports, 50 MB and 90 days. The app shows them after a crash (Help >
   Crash Reports…) with a reviewed issue draft; agents read them through
   `diagnostics.crash_reports`, the MCP `crash_reports` tool or the CLI. Nothing is sent
@@ -369,7 +369,7 @@ completed drawings publish atomically. The browser still exports synchronously.
   the agent's whole process group ends with the panel or the app. Docks left or right,
   minimises to a strip. Grok Build discovery includes `~/.grok/bin` and reuses the user's
   Grok login. See [agent chat](docs/agent-chat.md).
-- Command scripts from designs (#886): `timeline.export_script` (CLI `solidcraft-cli script`)
+- Command scripts from designs (#886): `timeline.export_script` (CLI `intcad-cli script`)
   writes a design's history as a script that `eval` and `run` replay into the same design —
   user parameters, units, sheet metal and plastic rules and materials as their own commands,
   then each feature through `timeline.add` with its ids, names and dimension parameters kept,

@@ -51,12 +51,13 @@ cargo xtask test                                   # unit, engine and UI-scenari
 cargo xtask ci                                     # everything a PR must pass (see below)
 ```
 
-The displayed product name is `Intcad`. The repository, Cargo packages and executables
-keep the `solidcraft` name, and so do the `.sc`/`solidcraft/N` format, `SOLIDCRAFT_*`
-variables, settings folders, app IDs and the MCP server, so existing designs and scripts keep
+The product is `Intcad`, and what it installs carries that name: the programs `intcad` and
+`intcad-cli`, the packages, the app ID, the settings folders and the MCP server. Cargo packages
+and crates keep the `solidcraft` name, and so do the `.sc`/`solidcraft/N` format and
+`SOLIDCRAFT_*` variables, so existing designs and scripts keep
 working. Build the desktop app with `cargo build --release -p solidcraft`, or the CLI with
 `cargo build --release -p solidcraft-cli`. Run the CLI with
-`cargo run --release -p solidcraft-cli -- commands` (or `target/release/solidcraft-cli commands`
+`cargo run --release -p solidcraft-cli -- commands` (or `target/release/intcad-cli commands`
 after building). The compatibility record is [docs/compatibility.md](docs/compatibility.md).
 
 Web: `cd apps/solidcraft-web && trunk serve --release`, then open the printed URL (`?sample`
@@ -89,7 +90,7 @@ The default development shell retains the Rust/C toolchain already on `PATH`;
 To launch, use `nix run .#solidcraft -- --sample`. To install the app's terminal
 commands, desktop entry and generated icons, use `nix profile install .#solidcraft`.
 `nix build` alone creates a build result; it does not install a launcher in your
-desktop menu. The installed `solidcraft` command runs the wrapped app; `solidcraft-cli` is included as
+desktop menu. The installed `intcad` command runs the wrapped app; `intcad-cli` is included as
 well. See
 [Nix installation and troubleshooting](docs/nix.md) for remote-flake commands,
 desktop integration and how to distinguish an old executable on `PATH`.
@@ -314,7 +315,7 @@ the surface itself). Expected values are either worked out in closed form
 program (`tools/freecad-oracle/`); each file says which. The generated
 [reference test report](docs/oracle.md) has the current case count and results. The reference-test
 CI job runs `cargo xtask oracle` during full validation, and on pull requests that reach
-`solidcraft-cli`. A case that
+`intcad-cli`. A case that
 fails because of a known bug names its issue in `expected.json` (`"known_failure": "#123"`);
 never change an expected value to match SolidCraft's output.
 

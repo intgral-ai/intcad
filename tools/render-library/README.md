@@ -69,7 +69,7 @@ or timeout is reported, never silently retried at reduced quality.
 
 ```python
 # Start in this directory with an explicitly built CLI and an unused output path:
-# python -i selene_studio.py --cli /path/to/solidcraft-cli --out /new/render/output
+# python -i selene_studio.py --cli /path/to/intcad-cli --out /new/render/output
 from selene_recipe import hero_request
 request = hero_request(studio, width=3840, height=2400, samples=1024)
 receipt = studio.render("selene-studio-4k", request, timeout=7200)

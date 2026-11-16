@@ -4202,7 +4202,7 @@
   "ui.agent_chat_new": "Ny chat",
   "ui.agent_chat_new_confirm": "Starte en ny chat? Den nåværende tømmes.",
   "ui.agent_chat_next_picture": "Neste bilde",
-  "ui.agent_chat_no_cli": "solidcraft-cli ble ikke funnet ved siden av appen, så agenten kan ikke nå designet.",
+  "ui.agent_chat_no_cli": "intcad-cli ble ikke funnet ved siden av appen, så agenten kan ikke nå designet.",
   "ui.agent_chat_no_control": "Agentchattens endepunkt startet ikke, så agenten kan ikke nå designet.",
   "ui.agent_chat_no_images": "Denne agenten tar ikke imot bilder",
   "ui.agent_chat_no_picture": "Det er ikke noe bilde på utklippstavlen",

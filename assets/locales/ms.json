@@ -4202,7 +4202,7 @@
   "ui.agent_chat_new": "Sembang baharu",
   "ui.agent_chat_new_confirm": "Mulakan sembang baharu? Sembang semasa akan dikosongkan.",
   "ui.agent_chat_next_picture": "Gambar seterusnya",
-  "ui.agent_chat_no_cli": "solidcraft-cli tidak ditemui dalam folder aplikasi, jadi ejen tidak dapat mengakses reka bentuk.",
+  "ui.agent_chat_no_cli": "intcad-cli tidak ditemui dalam folder aplikasi, jadi ejen tidak dapat mengakses reka bentuk.",
   "ui.agent_chat_no_control": "Titik akhir sembang ejen gagal dimulakan, jadi ejen tidak dapat mengakses reka bentuk.",
   "ui.agent_chat_no_images": "Ejen ini tidak menerima imej",
   "ui.agent_chat_no_picture": "Tiada gambar pada papan keratan",

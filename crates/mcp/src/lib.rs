@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use solidcraft_engine::io::vfs::{self, PathScope};
 
-/// The folders `solidcraft-cli mcp` lets its agent read, write and delete in by default: the
+/// The folders `intcad-cli mcp` lets its agent read, write and delete in by default: the
 /// app's own recovery folder, this server's private scratch folder (screenshots), and each
 /// `allowed` folder (`--allow-path`). The open design's folder joins on every call when it is a
 /// safe one (`vfs::design_folder_refusal`; the server adds it), and stays for the rest of the run

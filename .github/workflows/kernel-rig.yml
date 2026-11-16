@@ -3,7 +3,7 @@
 # when a file its tests/kernel-cases/<area>/PATHS lists changes, or one of its cases; every area
 # runs when the shared core in tests/kernel-cases/PATHS-ALL changes, and when the solidcore pin in
 # the root Cargo.toml and Cargo.lock moves (the plan reads their diff); the ladder runs whenever any
-# area does. One job then builds solidcraft-cli once (release), checks that every
+# area does. One job then builds intcad-cli once (release), checks that every
 # registry command has a case or an exemption (tests/kernel-cases/EXEMPT), and hands the CLI to a
 # matrix of shards as an artifact, one per selected area plus the ladder, in parallel, so the
 # wall time is the build plus the slowest shard. See tests/kernel-cases/README.md.
@@ -184,7 +184,7 @@ jobs:
       # Coverage-only builds also carry their binaries to the aggregate so their
       # physical byte identities are checked, even when no shard was selected.
       - name: Pack the binaries
-        run: tar -cf "$RUNNER_TEMP/kernel-rig-bin.tar" target/rig/release/solidcraft-cli target/rig/debug/xtask rig-build/build.json
+        run: tar -cf "$RUNNER_TEMP/kernel-rig-bin.tar" target/rig/release/intcad-cli target/rig/debug/xtask rig-build/build.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kernel-rig-bin-${{ github.sha }}

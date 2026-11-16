@@ -212,7 +212,7 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 solidcraft_engine::crash::phase(solidcraft_engine::crash::RUNNING);
-                // A DMG install has no installer step: put solidcraft-cli on PATH, quietly.
+                // A DMG install has no installer step: put intcad-cli on PATH, quietly.
                 #[cfg(target_os = "macos")]
                 std::thread::spawn(solidcraft_ui_egui::cli_link::install_on_launch);
                 // Automation runs (a control port was asked for) leave the user's AI apps alone.
@@ -857,10 +857,17 @@ fn http_call(url: &str, timeout: std::time::Duration) -> Result<ureq::http::Resp
     Ok(response)
 }
 
+/// The name of the per-user settings folder, and the pre-rename name whose settings the first
+/// launch still copies (compatibility shim, docs/compatibility.md). The folder upstream SolidCraft
+/// uses is deliberately not a source: on a machine that has upstream installed it is another
+/// product's settings, autosaves and control tokens, and Intcad starts without them.
+const SETTINGS_FOLDER: &str = "Intcad";
+const LEGACY_SETTINGS_FOLDER: &str = "SolveCraft";
+
 /// The per-user settings folder: eframe's storage (`app.ron`) and the anti-aliasing preference.
 fn settings_dir() -> Result<Option<std::path::PathBuf>, String> {
     let selected = std::env::var_os("SOLIDCRAFT_SETTINGS_DIR");
-    startup::settings_directory(selected.as_deref(), eframe::storage_dir("SolidCraft"))
+    startup::settings_directory(selected.as_deref(), eframe::storage_dir(SETTINGS_FOLDER))
 }
 
 /// The anti-aliasing preference, kept next to eframe's storage (it is needed before the
@@ -876,7 +883,7 @@ fn graphics_path() -> Option<std::path::PathBuf> {
 /// old app id's `~/.var/app` folder; those copies come first, newest first. The old folders
 /// are never changed.
 fn adopt_legacy_settings() {
-    let (Some(current), Some(legacy)) = (settings_dir().ok().flatten(), eframe::storage_dir("SolveCraft")) else { return };
+    let (Some(current), Some(legacy)) = (settings_dir().ok().flatten(), eframe::storage_dir(LEGACY_SETTINGS_FOLDER)) else { return };
     let legacy_eframe = eframe::storage_dir(solidcraft_engine::io::LEGACY_APP_ID);
     let old_flatpak = solidcraft_engine::io::legacy_flatpak_paths(&current);
     if let Err(e) = adopt_settings(&current, &old_flatpak, &legacy, legacy_eframe.as_deref()) {
@@ -1072,7 +1079,7 @@ fn main() -> eframe::Result {
             s if s.starts_with("--max-file-size=") => max_file_size = Some(s.strip_prefix("--max-file-size=").map(str::to_string)),
             "--safe-mode" => safe_mode = true,
             "--version" | "-V" => {
-                println!("solidcraft {}", env!("CARGO_PKG_VERSION"));
+                println!("intcad {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             "--crash-log" => {
@@ -1082,7 +1089,7 @@ fn main() -> eframe::Result {
                         for r in solidcraft_engine::crash::list(&dir).iter().take(5) {
                             println!("  {}  {}  {}", r.id, r.kind, r.message);
                         }
-                        println!("more: solidcraft-cli crashes");
+                        println!("more: intcad-cli crashes");
                     }
                     None => println!("no crash folder on this system"),
                 }
@@ -2338,6 +2345,36 @@ mod msaa_tests {
         super::adopt_settings(&current, &[], &legacy, Some(&legacy_eframe)).unwrap();
         assert_eq!(std::fs::read_to_string(current.join("app.ron")).unwrap(), "(mine)");
         assert!(!current.join("graphics.json").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A machine may have a `SolidCraft` settings folder only because upstream SolidCraft is
+    /// installed. Intcad starts clean beside it and leaves it as it was.
+    #[test]
+    fn first_launch_leaves_an_upstream_solidcraft_folder_alone() {
+        let d = std::env::temp_dir().join(format!("solidcraft-upstream-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let upstream = d.join("SolidCraft");
+        let files = [("graphics.json", r#"{"msaa":8}"#), ("app.ron", "(upstream)"), ("control/7878.token", "secret"), ("recovery/a.sc", "unsaved")];
+        for (name, text) in files {
+            let path = upstream.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        // The folders the first launch works with are named by these two, and neither is upstream's.
+        for name in [super::SETTINGS_FOLDER, super::LEGACY_SETTINGS_FOLDER] {
+            assert!(!name.eq_ignore_ascii_case("SolidCraft"), "{name}");
+        }
+        let (current, legacy) = (d.join(super::SETTINGS_FOLDER), d.join(super::LEGACY_SETTINGS_FOLDER));
+        super::adopt_settings(&current, &[], &legacy, None).unwrap();
+        assert!(
+            !current.exists(),
+            "nothing of upstream's is copied: {:?}",
+            std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+        for (name, text) in files {
+            assert_eq!(std::fs::read_to_string(upstream.join(name)).unwrap(), text, "{name} is as upstream left it");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

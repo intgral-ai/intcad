@@ -151,7 +151,7 @@ pub fn initialize_params(version: &str) -> Value {
             "auth": {"terminal": true},
             "_meta": {"terminal-auth": true},
         },
-        "clientInfo": {"name": "solidcraft", "title": "Intcad", "version": version},
+        "clientInfo": {"name": "intcad", "title": "Intcad", "version": version},
     })
 }
 
@@ -175,7 +175,7 @@ pub fn is_bridge_tool(title: &str, kind: Option<&str>) -> bool {
     named && matches!(kind, None | Some("other"))
 }
 
-/// The MCP server the agent starts to reach the design: `solidcraft-cli mcp --connect` bridged to
+/// The MCP server the agent starts to reach the design: `intcad-cli mcp --connect` bridged to
 /// this app's control port. The server finds the port's token in the token file the app wrote
 /// (docs/control-protocol.md), so the token never travels through the agent, and it keeps its
 /// default folder limits (docs/mcp.md): no `--allow-any-path`. It is told which folder that
@@ -790,12 +790,12 @@ mod tests {
             "",
             "solidcraft",
             "Intcad",
-            "run solidcraft-cli; ls",
-            "solidcraft-cli --version",
-            "Edit ~/.local/share/solidcraft/agent-chat/work/notes.txt",
+            "run intcad-cli; ls",
+            "intcad-cli --version",
+            "Edit ~/.local/share/intcad/agent-chat/work/notes.txt",
             // A user's own MCP server (docs/mcp.md), which Intcad's gate doesn't see.
-            "mcp__solidcraft__batch",
-            "mcp__solidcraft-live__batch",
+            "mcp__intcad__batch",
+            "mcp__intcad-live__batch",
             "mcp__other__intcad-app",
             "mcp__intcad-app__",
             "mcp__intcad-app",
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn the_session_gets_the_bridged_mcp_server_without_a_token_or_any_path() {
-        let b = McpBridge { cli: "/opt/solidcraft/solidcraft-cli".into(), port: 41234 };
+        let b = McpBridge { cli: "/opt/solidcraft/intcad-cli".into(), port: 41234 };
         let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE);
         let s = &p["mcpServers"][0];
         assert_eq!(s["name"], BRIDGE_NAME);
@@ -900,17 +900,17 @@ mod tests {
         assert!(!runs_in_wsl(&[]));
 
         let wsl = |p: &str| wsl_path(std::path::Path::new(p)).to_string_lossy().into_owned();
-        assert_eq!(wsl(r"C:\Users\u\AppData\Local\SolidCraft\agent-chat\work"), "/mnt/c/Users/u/AppData/Local/SolidCraft/agent-chat/work");
-        assert_eq!(wsl(r"\\?\D:\Program Files\SolidCraft\solidcraft-cli.exe"), "/mnt/d/Program Files/SolidCraft/solidcraft-cli.exe");
+        assert_eq!(wsl(r"C:\Users\u\AppData\Local\Intcad\agent-chat\work"), "/mnt/c/Users/u/AppData/Local/Intcad/agent-chat/work");
+        assert_eq!(wsl(r"\\?\D:\Program Files\Intcad\intcad-cli.exe"), "/mnt/d/Program Files/Intcad/intcad-cli.exe");
         assert_eq!(wsl("E:/designs"), "/mnt/e/designs");
         assert_eq!(wsl("C:"), "/mnt/c/");
         assert_eq!(wsl("/home/u/designs"), "/home/u/designs");
         assert_eq!(wsl(r"\\server\share\x"), r"\\server\share\x");
 
-        let b = McpBridge { cli: r"C:\Program Files\SolidCraft\solidcraft-cli.exe".into(), port: 41234 };
+        let b = McpBridge { cli: r"C:\Program Files\Intcad\intcad-cli.exe".into(), port: 41234 };
         let p = session_new_params(&wsl_path(std::path::Path::new(r"C:\Users\u\work")), Some(&b.in_wsl()), &json!({}), SYSTEM_NOTE);
         assert_eq!(p["cwd"], "/mnt/c/Users/u/work");
-        assert_eq!(p["mcpServers"][0]["command"], "/mnt/c/Program Files/SolidCraft/solidcraft-cli.exe");
+        assert_eq!(p["mcpServers"][0]["command"], "/mnt/c/Program Files/Intcad/intcad-cli.exe");
         assert_eq!(p["mcpServers"][0]["args"], json!(["mcp", "--connect", "127.0.0.1:41234"]));
     }
 

@@ -25,7 +25,7 @@ def run_commands(commands: list, design: Path | None = None, save: Path | None =
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "script.json"
         script.write_text(json.dumps({"commands": [*commands, INSPECT]}))
-        args = ["solidcraft-cli", "run", str(script), "--results"]
+        args = ["intcad-cli", "run", str(script), "--results"]
         if design:
             args += ["--in", str(design)]
         if save:

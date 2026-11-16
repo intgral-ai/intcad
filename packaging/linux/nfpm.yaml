@@ -1,15 +1,10 @@
 # .deb and .rpm packages (nfpm: https://nfpm.goreleaser.com). Run by package.sh, which stages
 # the file tree, substitutes its path for ${STAGE} (nfpm doesn't expand env vars in `src`) and
 # exports VERSION and NFPM_ARCH. Adapted from PhotoCraft's (storytold/photocraft, Apache-2.0).
-name: solidcraft
-# Compatibility shim (docs/compatibility.md): releases before the rename were packaged as `solvecraft`.
-# Installing this package replaces that one (Debian Replaces/Conflicts, set under overrides.deb;
-# nfpm writes `replaces` as RPM Obsoletes), so `apt install ./solidcraft-….deb` or `dnf install ./solidcraft-….rpm`
-# upgrades an old install instead of failing on the shared desktop and icon files.
-replaces:
-  - solvecraft
-provides:
-  - solvecraft
+name: intcad
+# It replaces, conflicts with and provides no other package: upstream's `solidcraft` and its
+# earlier `solvecraft` are another product's, and installing Intcad leaves them alone
+# (docs/compatibility.md).
 arch: ${NFPM_ARCH}
 platform: linux
 version: ${VERSION}
@@ -20,12 +15,12 @@ section: graphics
 priority: optional
 maintainer: ${SOLIDCRAFT_MAINTAINER}
 vendor: Intgral
-homepage: https://github.com/intgral-ai/open-skyfall-desktop
+homepage: https://github.com/intgral-ai/intcad
 license: MIT OR Apache-2.0
 description: |-
   Open-source, independent parametric 3D CAD
   Sketches with a constraint solver, a parametric feature timeline, components and
-  joints, sheet metal; STEP, IGES, 3MF, STL and OBJ. Includes solidcraft-cli, a
+  joints, sheet metal; STEP, IGES, 3MF, STL and OBJ. Includes intcad-cli, a
   headless command runner and MCP server for AI agents.
 
 # The app links glibc, libgcc_s and, for the Assistant's web view, GTK 3 and WebKitGTK 4.1
@@ -34,9 +29,6 @@ description: |-
 # the package tools can't find them. nfpm reads no ELF file, so all of them are listed here.
 overrides:
   deb:
-    # Debian's rename pattern: Replaces + Conflicts + Provides (docs/compatibility.md).
-    conflicts:
-      - solvecraft
     depends:
       - libc6 (>= 2.35)
       - libgcc-s1
@@ -77,23 +69,19 @@ overrides:
       - xdg-desktop-portal
 
 contents:
-  - src: ${STAGE}/usr/bin/solidcraft
-    dst: /usr/bin/solidcraft
+  - src: ${STAGE}/usr/bin/intcad
+    dst: /usr/bin/intcad
     file_info: { mode: 0755 }
-  - src: ${STAGE}/usr/bin/solidcraft-cli
-    dst: /usr/bin/solidcraft-cli
-    file_info: { mode: 0755 }
-  # Compatibility shim (docs/compatibility.md): the old CLI name forwards to solidcraft-cli.
-  - src: ${STAGE}/usr/bin/solvecraft-cli
-    dst: /usr/bin/solvecraft-cli
+  - src: ${STAGE}/usr/bin/intcad-cli
+    dst: /usr/bin/intcad-cli
     file_info: { mode: 0755 }
   - src: ${STAGE}/usr/share/
     dst: /usr/share/
     type: tree
   # Application-relative Mastra workflow runtime (mastra/runtime.json, pinned node, JS entry).
   # Present only on supported x86_64 glibc builds; absent on architectures that do not advertise it.
-  - src: ${STAGE}/usr/lib/solidcraft
-    dst: /usr/lib/solidcraft
+  - src: ${STAGE}/usr/lib/intcad
+    dst: /usr/lib/intcad
     type: tree
 
 scripts:

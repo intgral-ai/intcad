@@ -23,9 +23,9 @@ per category) and the individual spans as a Chrome trace-event file for chrome:/
 ui.perfetto.dev (at most 200,000 spans; later ones still count in the table).
 
 ```sh
-solidcraft-cli run part.step --profile --profile-out trace.json   # table on stderr
-solidcraft-cli run part.solidcraft --profile --quiet
-solidcraft-cli bench-open part.step --profile
+intcad-cli run part.step --profile --profile-out trace.json   # table on stderr
+intcad-cli run part.solidcraft --profile --quiet
+intcad-cli bench-open part.step --profile
 ```
 
 Over the control channel or MCP: `diagnostics.profile {"reset": true, "enabled": true}`, do the
@@ -51,7 +51,7 @@ before. The polyline is the same, bit for bit: `edge_polyline_tests` compares it
 previous division (points, order and number of evaluations) on the intersection curves of a
 drilled cylinder and on a circle.
 
-Release `solidcraft-cli` from `main` (73493b94) and the same with the change, 3 alternating
+Release `intcad-cli` from `main` (73493b94) and the same with the change, 3 alternating
 pairs (before/after, after/before, before/after), each run a new process timed with
 `/usr/bin/time -v`, started once the 1-minute load average was below 2.5. Medians, with the
 range of the 3 runs. 2018 laptop: Intel Core i7-8565U (4 cores / 8 threads, 15 W), 7.4 GB,
@@ -78,7 +78,7 @@ not traced here; `tess::edges`, the display plans' own edge division, already ev
 point once). In the rover, the second shell (which names every body's faces, so meshes them all)
 goes from 7.8 s to 5.7 s.
 
-No model changed. `solidcraft-cli eval` of the five designs (the bicycle as `bench-agent` saved
+No model changed. `intcad-cli eval` of the five designs (the bicycle as `bench-agent` saved
 it) is the same with both binaries apart from the per-feature milliseconds: bodies, volumes,
 areas, centres, bounding boxes, topology counts and warnings. `bench-open` meshes the same
 triangle counts, and the bicycles both binaries save differ only in the document's name.
@@ -96,10 +96,10 @@ difference of the two placements: the same triangles, faces and edge flags, move
 made once, by whichever instance is drawn first. Only a rotation and translation is shared
 this way (anything else meshes itself), and anything that changes what a body shows (split
 lines; any operation, which makes a new body) drops the link. Measurements, booleans and export
-read the instance's own geometry as before, so `solidcraft-cli eval` of an assembly is unchanged.
+read the instance's own geometry as before, so `intcad-cli eval` of an assembly is unchanged.
 
 Two generated assemblies (SolidCraft designs with placed copies of components, exported as STEP
-AP214 assemblies), `solidcraft-cli bench-open`, release build, shared 16-core Linux box:
+AP214 assemblies), `intcad-cli bench-open`, release build, shared 16-core Linux box:
 
 | file | bodies | mesh phase before | after | CPU before | after | peak RSS before | after |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -114,7 +114,7 @@ way is the next step.
 A design an agent builds over MCP is made of many small commands: a cylinder per spoke, a box
 per chain plate, one part built at the origin and its component moved into place. Each command
 did work over the whole design, so the 1,000th command cost far more than the first and a
-1,300-body design took minutes to build and to show. `solidcraft-cli bench-agent` builds such a
+1,300-body design took minutes to build and to show. `intcad-cli bench-agent` builds such a
 design (a generated bicycle: about 1,260 commands, 1,280 bodies, 1,250 features, wheels built at
 the origin and moved), timing each command and then what a window needs to draw its result (the
 world state and its display meshes), and finally opens the saved design like `bench-open`. The
@@ -138,7 +138,7 @@ What grew with the design, per command:
   one pass now. The desktop also stops gathering expression completions (eleven parameter
   tables) on every change while no text box has focus.
 
-`solidcraft-cli bench-agent`, release build, 16-core Linux shared with other builds (load
+`intcad-cli bench-agent`, release build, 16-core Linux shared with other builds (load
 average 15-20), one run each:
 
 | per command, by design size | before: command | before: display | after: command | after: display |
@@ -150,7 +150,7 @@ average 15-20), one run each:
 | whole build (1,260 commands) | 241 s | | 16.3 s | |
 
 The command column still grows (the timeline's fingerprints and parameter values are walked
-once per command), but slowly. `solidcraft-cli eval` output for the design corpus, the examples,
+once per command), but slowly. `intcad-cli eval` output for the design corpus, the examples,
 the regression scripts, the generated bicycle and a 3,300-feature agent-built design is
 unchanged apart from the timings.
 
@@ -323,7 +323,7 @@ the following medians of the three nine-sample medians (milliseconds, fast mode)
 | STEP decode | 1.479 | 1.318 |
 | STEP atomic save | 7.213 | 7.087 |
 
-Three alternating fresh-process `solidcraft-cli bench-open` runs of each STEP encoding
+Three alternating fresh-process `intcad-cli bench-open` runs of each STEP encoding
 returned the same 512 bodies and 6,144 triangles. Median read-plus-parse was 2.274 ms
 for JSON and 2.151 ms for the container; median evaluation was 218.559/236.915 ms and
 display meshing 203.160/197.790 ms respectively. Geometry dominates and these variable
@@ -527,8 +527,8 @@ straight-line projection and exact surface-refinement reuse changes:
 | Local Pi case assembly, 25 features, 2,990 bodies | 14.75 s | 11.57 s | 21.6% |
 
 These are geometry rebuild times, not complete desktop opening times. The public fixture
-can be generated with `solidcraft-cli run examples/acceptance/sensor_enclosure.json
---save sensor.sc --quiet`, then measured with `solidcraft-cli bench-open
+can be generated with `intcad-cli run examples/acceptance/sensor_enclosure.json
+--save sensor.sc --quiet`, then measured with `intcad-cli bench-open
 sensor.sc`. Each benchmark starts a new process; this does not measure a warm
 timeline-cache hit. The local assembly is private and is not part of the repository.
 
@@ -570,7 +570,7 @@ ready: 13.04 s geometry, 2.20 s placement, 0.53 s meshing and 0.07 s thumbnails.
 the optimized `ci` profile and actual Vulkan rendering, with isolated settings and caches.
 Linux and Windows timings are separate measurements and must not be compared as a speedup.
 
-`solidcraft-cli bench-open design.sc` reports JSON lines for file reading,
+`intcad-cli bench-open design.sc` reports JSON lines for file reading,
 JSON decoding and migrations (including input-name repair), timeline evaluation, individual
 features, and world placement/display meshing. `--parse-only` stops before geometry evaluation.
 The parse timer includes document validation and repair, not just the JSON parser.
@@ -643,7 +643,7 @@ every row's place.
 
 # Recompute performance
 
-`solidcraft-cli bench-edit <script> <param> "(<old>) * 1.02"` builds a design from its script
+`intcad-cli bench-edit <script> <param> "(<old>) * 1.02"` builds a design from its script
 (timing the build), then times a parameter edit, setting the parameter back to its old
 expression, undo and redo. Each cell is before → after the evaluation cache, with the number of
 features recomputed in parentheses. Release build, on a machine shared with other build jobs (load average about 45; the
@@ -724,7 +724,7 @@ nothing dropped the entries nothing referred to any more. It now also holds at m
 first, and always keeps the newest result, so a single evaluation is never thrown away in the same
 breath.
 
-Release `solidcraft-cli`, `eval <design> --quiet`, wall time of the whole process and peak RSS
+Release `intcad-cli`, `eval <design> --quiet`, wall time of the whole process and peak RSS
 from `/usr/bin/time -v`, alternating the baseline and patched binaries, median of 12 runs each
 (8 for the 400-hole plate and the vent plate), no other build or test running (Fedora Linux, AMD
 Ryzen 7 5700X, 8 cores / 16 threads, 32 GB):
@@ -761,7 +761,7 @@ apart from the per-feature milliseconds. The
 kernel's test suite passes, including four new tests for the prism route and its identity rule.
 
 Reproduce after compiling a release build, without other builds running: time
-`target/release/solidcraft-cli eval <design>` with `/usr/bin/time -v`, alternating the
+`target/release/intcad-cli eval <design>` with `/usr/bin/time -v`, alternating the
 baseline and patched binaries, and compare the middle of the runs. The corpus (20 generated designs:
 hole plates, box grids, assemblies, many-sketch parts) and the measuring scripts are in
 https://github.com/sahenjp/solidcraft-perf under `perf/`.
@@ -796,7 +796,7 @@ No thumbnail or base64 image is added to the design JSON. A regression test veri
 source bytes remain unchanged, a cached picture works even without a parseable source
 file, and changing the source invalidates the cache.
 
-`solidcraft-cli bench-open` also accepts STEP/IGES. For exchange files its `parse` phase
+`intcad-cli bench-open` also accepts STEP/IGES. For exchange files its `parse` phase
 includes constructing and checking the imported B-rep, not merely decoding STEP syntax.
 
 The live test loaded both cached recent cards in 21 ms and inserted the 2 MB lightweight

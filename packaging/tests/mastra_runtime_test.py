@@ -194,7 +194,7 @@ class StageGate(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.checker = self.tmp / "admission"
-        self.dest = self.tmp / "package/usr/lib/solidcraft/mastra"
+        self.dest = self.tmp / "package/usr/lib/intcad/mastra"
         self.inputs = self.tmp / "inputs"
         self.inputs.mkdir()
 

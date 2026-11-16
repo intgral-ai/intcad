@@ -90,10 +90,10 @@ and help is welcome: see [CONTRIBUTING.md](../CONTRIBUTING.md).
   control channel so agents and tests can drive it.
   Feature errors and Help can open an editable **Create Issue** draft with relevant context
   and an optional reviewed screenshot; opening GitHub does not submit the report.
-- **Headless CLI** `solidcraft-cli`: run command scripts, measure (volume, area, centre of mass,
+- **Headless CLI** `intcad-cli`: run command scripts, measure (volume, area, centre of mass,
   face/edge/vertex counts), export, render PNG snapshots and replay reference recipes.
   A snapshot can draw a body see-through and another solid in a colour of its own, and cut
   the model at a plane, so a picture shows the body a cut would remove inside the material
   it meets.
-- **MCP server** `solidcraft-cli mcp`: AI agents model, measure and look at parts headless or
+- **MCP server** `intcad-cli mcp`: AI agents model, measure and look at parts headless or
   in the running app (see below).

@@ -11,7 +11,7 @@ evaluating the model or changing the document, camera, dirty state or undo/redo 
 It also leaves a model made stale by a live sketch gesture stale.
 
 ```sh
-solidcraft-cli exec render.backends '{}'
+intcad-cli exec render.backends '{}'
 ```
 
 The control channel and MCP `execute` use the same engine command. Parameters must be

@@ -337,7 +337,7 @@ through nvm or `~/.local/bin` can therefore work in a terminal while SolidCraft 
 that no agent was found. For Claude Code and its ACP adapter, run:
 
 ```sh
-flatpak override --user io.tangencylabs.solidcraft --filesystem=~/.nvm:ro --filesystem=~/.local/bin:ro --filesystem=~/.local/share/claude:ro --filesystem=~/.claude --filesystem=~/.claude.json --share=network
+flatpak override --user ai.intgral.intcad --filesystem=~/.nvm:ro --filesystem=~/.local/bin:ro --filesystem=~/.local/share/claude:ro --filesystem=~/.claude --filesystem=~/.claude.json --share=network
 ```
 
 These permissions apply to SolidCraft for your user account:
@@ -534,7 +534,7 @@ current document. Ask Anatomy again to get links for the current revision.
 
 The agent reaches the open design only through SolidCraft's own tools (the
 [MCP server](mcp.md)), which SolidCraft hands it when the chat starts. That server is named
-`intcad-app`, so an MCP server you set up yourself under the name `solidcraft` (as in
+`intcad-app`, so an MCP server you set up yourself under the name `intcad` (as in
 [client configuration](mcp.md#client-configuration)) doesn't take its place:
 
 - **Read the design:** list commands, inspect features, sketches and parameters, measure,
@@ -708,15 +708,15 @@ or "ask" to see the agent ask its own permission.
 
 ## Benchmarking the Assistant
 
-`solidcraft-cli bench-assistant` runs the eleven tasks of the
+`intcad-cli bench-assistant` runs the eleven tasks of the
 [standard model test (v1, #4851)](https://github.com/tangency-labs/solidcraft/issues/4851) against a
 desktop app that is already running with a control port, and checks each result on the design
 itself. Use it to see how well a local model drives SolidCraft before you post its results.
 
 ```sh
-solidcraft --control 9271
+intcad --control 9271
 # In another terminal:
-solidcraft-cli bench-assistant --connect 127.0.0.1:9271 \
+intcad-cli bench-assistant --connect 127.0.0.1:9271 \
   --base-url http://localhost:11434/v1 --model qwen2.5:7b \
   --json results.json --markdown results.md
 ```

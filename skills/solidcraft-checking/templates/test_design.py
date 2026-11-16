@@ -1,6 +1,6 @@
 """Regression test for a SolidCraft design. One session walks the parameters through the cases in
 order, as edits in the app do, and compares a body after each case with frozen values.
-Copy next to the design, then fill in DESIGN, BODY and CASES. Needs solidcraft-cli on PATH."""
+Copy next to the design, then fill in DESIGN, BODY and CASES. Needs intcad-cli on PATH."""
 
 import json
 import subprocess
@@ -52,7 +52,7 @@ def inspections() -> dict:
         script = Path(tmp) / "script.json"
         script.write_text(json.dumps({"commands": commands}))
         done = subprocess.run(
-            ["solidcraft-cli", "run", script, "--in", DESIGN, "--results"], capture_output=True, text=True
+            ["intcad-cli", "run", script, "--in", DESIGN, "--results"], capture_output=True, text=True
         )
     assert done.returncode == 0, done.stderr
     results = json.loads(done.stdout)

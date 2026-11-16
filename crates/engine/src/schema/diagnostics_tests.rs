@@ -66,7 +66,7 @@ fn write_report(id: &str) {
         "system": {"os": "windows", "arch": "x86_64", "environment": ""}, "session": {"uptime_s": 60},
         "message": "an internal error", "location": "here.rs:1", "thread": "main", "backtrace": ["f (here.rs:1)"],
         "command": {"command": "solid.box", "params": {}}, "base": "new", "recent_commands": [],
-        "files": {"design": "design.sc", "replay": "replay.json"}, "reproduce": format!("solidcraft-cli crashes replay {id}"), "notes": [],
+        "files": {"design": "design.sc", "replay": "replay.json"}, "reproduce": format!("intcad-cli crashes replay {id}"), "notes": [],
         "startup_phase": "running"
     });
     for (name, text) in [("report.json", report.to_string()), ("design.sc", "{}".into()), ("replay.json", "[]".into())] {

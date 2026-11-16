@@ -4208,7 +4208,7 @@
   "ui.agent_chat_new": "Nouveau chat",
   "ui.agent_chat_new_confirm": "Démarrer un nouveau chat ? Le chat actuel sera effacé.",
   "ui.agent_chat_next_picture": "Image suivante",
-  "ui.agent_chat_no_cli": "solidcraft-cli est introuvable à côté de l'application : l'agent ne peut donc pas accéder à la conception.",
+  "ui.agent_chat_no_cli": "intcad-cli est introuvable à côté de l'application : l'agent ne peut donc pas accéder à la conception.",
   "ui.agent_chat_no_control": "Le point d'accès du chat de l'agent n'a pas démarré : l'agent ne peut donc pas accéder à la conception.",
   "ui.agent_chat_no_images": "Cet agent n'accepte pas les images",
   "ui.agent_chat_no_picture": "Il n'y a pas d'image dans le presse-papiers",

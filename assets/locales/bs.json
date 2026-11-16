@@ -4202,7 +4202,7 @@
   "ui.agent_chat_new": "Novi razgovor",
   "ui.agent_chat_new_confirm": "Započeti novi razgovor? Trenutni će biti obrisan.",
   "ui.agent_chat_next_picture": "Sljedeća slika",
-  "ui.agent_chat_no_cli": "solidcraft-cli nije pronađen pored aplikacije, pa agent ne može pristupiti dizajnu.",
+  "ui.agent_chat_no_cli": "intcad-cli nije pronađen pored aplikacije, pa agent ne može pristupiti dizajnu.",
   "ui.agent_chat_no_control": "Krajnja tačka razgovora s agentom nije se pokrenula, pa agent ne može pristupiti dizajnu.",
   "ui.agent_chat_no_images": "Ovaj agent ne prima slike",
   "ui.agent_chat_no_picture": "U međuspremniku nema slike",

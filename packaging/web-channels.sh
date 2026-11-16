@@ -10,7 +10,7 @@
 # address. It stays while people may still have designs here.
 #
 # Stable and the release candidate are not rebuilt: the release workflow already attaches
-# solidcraft-web-<version>.zip (packaging/web/package.sh, built by that tag's own workflow), and
+# intcad-web-<version>.zip (packaging/web/package.sh, built by that tag's own workflow), and
 # a deploy takes that zip as it is. Rebuilding old tags here would need each tag's own build steps
 # (they changed: the kernel moved from SMLib to solidcore). The channels are not nested, because
 # the app's service worker controls everything under its own directory (apps/solidcraft-web/sw.js).
@@ -30,16 +30,31 @@ cp "$(dirname "${BASH_SOURCE[0]}")"/web/transfer/app-transfer.{html,js} "$site"/
 # Version order, newest last: 0.31.0-rc.2 sorts after 0.31.0-rc.1 and before 0.31.0.
 version_sort() { sed 's/-/~/' | sort -V | sed 's/~/-/'; }
 
-# Unpack the web zip of release $1 into directory $2. Fails when the release has none.
+# The name of the web zip release $1 carries. Releases made since Intcad has its own file names
+# attach it as intcad-web-<version>.zip, earlier ones under the name of that time, and a deploy
+# may take stable from an old tag and the release candidate from a new one. Exactly one must be
+# there.
+web_zip_of() {
+  local tag="$1" names
+  names="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name' | grep -E '^(intcad|solidcraft)-web-[0-9][^/]*\.zip$' || true)"
+  if [ "$(printf '%s' "$names" | grep -c .)" != 1 ]; then
+    echo "error: release $tag does not carry exactly one web zip (found: ${names:-none})" >&2
+    return 1
+  fi
+  printf '%s\n' "$names"
+}
+
+# Unpack the web zip of release $1 into directory $2. Fails when the release has none, or when
+# the file is not the one the release's SHA256SUMS.txt lists under that exact name.
 fetch_build() {
-  local tag="$1" dest="$2" tmp
+  local tag="$1" dest="$2" tmp name
   tmp="$(mktemp -d)"
-  gh release download "$tag" --repo "$repo" --pattern "solidcraft-web-*.zip" --dir "$tmp"
+  name="$(web_zip_of "$tag")"
+  gh release download "$tag" --repo "$repo" --pattern "$name" --dir "$tmp"
   gh release download "$tag" --repo "$repo" --pattern SHA256SUMS.txt --dir "$tmp"
-  local zip
-  zip="$(find "$tmp" -name 'solidcraft-web-*.zip' | head -n1)"
-  test -n "$zip"
-  (cd "$tmp" && awk -v file="$(basename "$zip")" '$2 == file || $2 == "*" file { print; found=1 } END { exit !found }' SHA256SUMS.txt | sha256sum --check -)
+  local zip="$tmp/$name"
+  test -s "$zip"
+  (cd "$tmp" && awk -v file="$name" '$2 == file || $2 == "*" file { print; found=1 } END { exit !found }' SHA256SUMS.txt | sha256sum --check -)
   unzip -q "$zip" -d "$tmp/unpacked"
   mkdir -p "$dest"
   cp -R "$tmp"/unpacked/*/. "$dest"/

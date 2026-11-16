@@ -4202,7 +4202,7 @@
   "ui.agent_chat_new": "Chat novo",
   "ui.agent_chat_new_confirm": "Comezar un chat novo? Borrarase o actual.",
   "ui.agent_chat_next_picture": "Imaxe seguinte",
-  "ui.agent_chat_no_cli": "Non se atopou solidcraft-cli xunto á aplicación, así que o axente non pode chegar ao deseño.",
+  "ui.agent_chat_no_cli": "Non se atopou intcad-cli xunto á aplicación, así que o axente non pode chegar ao deseño.",
   "ui.agent_chat_no_control": "O punto de acceso do chat co axente non se iniciou, así que o axente non pode chegar ao deseño.",
   "ui.agent_chat_no_images": "Este axente non admite imaxes",
   "ui.agent_chat_no_picture": "Non hai ningunha imaxe no portapapeis",

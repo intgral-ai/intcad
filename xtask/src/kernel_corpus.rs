@@ -1,5 +1,5 @@
 //! `cargo xtask kernel-cases [--ladder] --export DIR`: the kernel rig as a corpus for solidcore's
-//! own rig. Each case's process writes its entry (`solidcraft-cli kernel-cases --export`,
+//! own rig. Each case's process writes its entry (`intcad-cli kernel-cases --export`,
 //! `DIR/<area>/<case>.json`: the kernel operations that made its result, their operand records,
 //! the fix set, its expected values and the rig's result). This writes what that leaves out:
 //! an entry for each case whose process left none (a hang or a crash, so no trace), each ladder

@@ -1666,7 +1666,7 @@
   "ui.agent_chat_new": "Novo chat",
   "ui.agent_chat_new_confirm": "Começar um novo chat? O atual será apagado.",
   "ui.agent_chat_next_picture": "Próxima imagem",
-  "ui.agent_chat_no_cli": "O solidcraft-cli não foi encontrado junto ao aplicativo, então o agente não consegue acessar o projeto.",
+  "ui.agent_chat_no_cli": "O intcad-cli não foi encontrado junto ao aplicativo, então o agente não consegue acessar o projeto.",
   "ui.agent_chat_no_control": "O endpoint do chat com agente não iniciou, então o agente não consegue acessar o projeto.",
   "ui.agent_chat_no_images": "Este agente não aceita imagens",
   "ui.agent_chat_no_picture": "Não há imagem na área de transferência",

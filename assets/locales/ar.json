@@ -4552,7 +4552,7 @@
   "ui.agent_chat_new": "محادثة جديدة",
   "ui.agent_chat_new_confirm": "بدء محادثة جديدة؟ ستُمسح المحادثة الحالية.",
   "ui.agent_chat_next_picture": "الصورة التالية",
-  "ui.agent_chat_no_cli": "لم يُعثر على solidcraft-cli بجوار التطبيق، لذا لا يستطيع الوكيل الوصول إلى التصميم.",
+  "ui.agent_chat_no_cli": "لم يُعثر على intcad-cli بجوار التطبيق، لذا لا يستطيع الوكيل الوصول إلى التصميم.",
   "ui.agent_chat_no_control": "لم تبدأ نقطة نهاية محادثة الوكيل، لذا لا يستطيع الوكيل الوصول إلى التصميم.",
   "ui.agent_chat_no_images": "هذا الوكيل لا يقبل الصور",
   "ui.agent_chat_no_picture": "لا توجد صورة في الحافظة",

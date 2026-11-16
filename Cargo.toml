@@ -10,7 +10,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 authors = ["Intgral"]
-repository = "https://github.com/intgral-ai/open-skyfall-desktop"
+repository = "https://github.com/intgral-ai/intcad"
 
 [workspace.dependencies]
 robust = "1.2"

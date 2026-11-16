@@ -6,7 +6,7 @@
 # What this can't check on a CI runner (one monitor at 100 %): moving the window between monitors
 # with different scales, and the resize border's width at other scales (unit tests cover the sizes).
 #
-# Usage: tools/windows-resize-smoke.ps1 -Exe target\ci\solidcraft.exe
+# Usage: tools/windows-resize-smoke.ps1 -Exe target\ci\intcad.exe
 param([Parameter(Mandatory = $true)][string]$Exe)
 $ErrorActionPreference = 'Stop'
 
@@ -115,7 +115,7 @@ function CheckBorder($h, [string]$when) {
 $port = 47901
 $root = Join-Path $env:RUNNER_TEMP 'resize-smoke'
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-$settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'SolidCraft\data'
+$settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Intcad\data'
 Remove-Item -Recurse -Force $settings -ErrorAction SilentlyContinue
 $local = Join-Path $root 'local'
 $crashes = Join-Path $root 'crashes'
