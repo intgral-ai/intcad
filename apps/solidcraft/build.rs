@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rc = out.join("solidcraft.rc");
     let icon_line = format!("1 ICON \"{}\"\n", copy.display().to_string().replace('\\', "/"));
     std::fs::write(&rc, format!("{icon_line}{}", version_resource(&std::env::var("CARGO_PKG_VERSION")?)))?;
-    embed_resource::compile_for(&rc, ["solidcraft"], embed_resource::NONE).manifest_required()?;
+    embed_resource::compile_for(&rc, ["intcad"], embed_resource::NONE).manifest_required()?;
     Ok(())
 }
 
@@ -27,6 +27,6 @@ fn version_resource(version: &str) -> String {
     let mut next = || numbers.next().unwrap_or(0);
     let (major, minor, patch) = (next(), next(), next());
     format!(
-        "1 VERSIONINFO\nFILEVERSION {major},{minor},{patch},0\nPRODUCTVERSION {major},{minor},{patch},0\nFILEOS 0x40004\nFILETYPE 0x1\n{{\nBLOCK \"StringFileInfo\"\n{{\nBLOCK \"040904B0\"\n{{\nVALUE \"CompanyName\", \"Intgral\"\nVALUE \"FileDescription\", \"Intcad, parametric 3D CAD\"\nVALUE \"FileVersion\", \"{version}\"\nVALUE \"InternalName\", \"solidcraft\"\nVALUE \"OriginalFilename\", \"solidcraft.exe\"\nVALUE \"ProductName\", \"Intcad\"\nVALUE \"ProductVersion\", \"{version}\"\n}}\n}}\nBLOCK \"VarFileInfo\"\n{{\nVALUE \"Translation\", 0x0409, 1200\n}}\n}}\n"
+        "1 VERSIONINFO\nFILEVERSION {major},{minor},{patch},0\nPRODUCTVERSION {major},{minor},{patch},0\nFILEOS 0x40004\nFILETYPE 0x1\n{{\nBLOCK \"StringFileInfo\"\n{{\nBLOCK \"040904B0\"\n{{\nVALUE \"CompanyName\", \"Intgral\"\nVALUE \"FileDescription\", \"Intcad, parametric 3D CAD\"\nVALUE \"FileVersion\", \"{version}\"\nVALUE \"InternalName\", \"solidcraft\"\nVALUE \"OriginalFilename\", \"intcad.exe\"\nVALUE \"ProductName\", \"Intcad\"\nVALUE \"ProductVersion\", \"{version}\"\n}}\n}}\nBLOCK \"VarFileInfo\"\n{{\nVALUE \"Translation\", 0x0409, 1200\n}}\n}}\n"
     )
 }

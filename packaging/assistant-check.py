@@ -5,7 +5,7 @@ For the package checks in .github/workflows/release.yml: the app here is the one
 on the machine (a .deb or .rpm in a bare container, the app copied out of the macOS disk image),
 not a build tree. A build tree says nothing about what a package brings with it.
 
-  python3 packaging/assistant-check.py --exe /usr/bin/solidcraft --evidence DIR [--screen]
+  python3 packaging/assistant-check.py --exe /usr/bin/intcad --evidence DIR [--screen]
 
 The app gets folders of its own, so nothing of the user's is read or written, and its update
 check is turned off (SOLIDCRAFT_UPDATE_CHECK=0). A package check also takes the network away

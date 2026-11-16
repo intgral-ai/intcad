@@ -1,12 +1,12 @@
 //! `cargo xtask kernel-cases`: the kernel regression rig. Runs every case in
-//! `tests/kernel-cases/<area>/<id>/` through `solidcraft-cli kernel-cases`, one process per case
+//! `tests/kernel-cases/<area>/<id>/` through `intcad-cli kernel-cases`, one process per case
 //! (so a crash or a hang is that case's result, not the run's), and writes its report,
 //! `docs/kernel-cases.md`: results per case, coverage per area and per source, and the issues and
 //! PRs looked at and skipped. Each case is graded against its own answer.
 //!
 //! The run's output folder (`--out`, default `target/kernel-cases`) holds `results.json`, every
 //! case's full result, and `dumps/<area>-<case>/`, the inputs of each kernel call a case's run
-//! failed in (`solidcraft-cli kernel-cases --dumps`), for replay.
+//! failed in (`intcad-cli kernel-cases --dumps`), for replay.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ pub(crate) struct Options {
     /// `--validation MODE`: when SMLib's full check runs on the cases' features (each_step,
     /// each_feature, off; the CLI's default, each_feature, when not given).
     validation: Option<String>,
-    /// `--export DIR`: each case's corpus entry for solidcore's rig into DIR (`solidcraft-cli
+    /// `--export DIR`: each case's corpus entry for solidcore's rig into DIR (`intcad-cli
     /// kernel-cases --export`), then DIR/manifest.json; no report is written.
     pub(crate) export: Option<PathBuf>,
 }
@@ -185,7 +185,7 @@ fn run_case(o: &Options, case: &Path) -> Value {
     };
     let child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return base("fail", format!("solidcraft-cli: {e}")),
+        Err(e) => return base("fail", format!("intcad-cli: {e}")),
     };
     // A case may need longer than the run's timeout (`timeout_s`, at most 30 min).
     let timeout = read(&case.join("expected.json"))["timeout_s"].as_u64().map_or(o.timeout, |s| Duration::from_secs(s.min(1800)).max(o.timeout));
@@ -218,7 +218,7 @@ pub(crate) fn run_all(o: &Options, list: &[PathBuf]) -> Vec<Value> {
         let mut c = cargo();
         c.args(["build", "-q", "--release", "-p", "solidcraft-cli"]);
         if let Err(e) = c.status().map_err(|e| e.to_string()).and_then(|s| if s.success() { Ok(()) } else { Err(s.to_string()) }) {
-            eprintln!("kernel-cases: building solidcraft-cli failed ({e}); each case will say why");
+            eprintln!("kernel-cases: building intcad-cli failed ({e}); each case will say why");
         }
     }
     let next = Arc::new(Mutex::new(0usize));
@@ -505,7 +505,7 @@ fn gate(text: &str, cases: &[String], statuses: &[&str]) -> Result<String, Strin
     }
 }
 
-/// The commands of the registry (`solidcraft-cli commands`): each id, with whether it is only
+/// The commands of the registry (`intcad-cli commands`): each id, with whether it is only
 /// planned (registered, not built yet).
 fn registry(o: &Options) -> Result<Vec<(String, bool)>, String> {
     let mut cmd = match &o.cli {
@@ -516,9 +516,9 @@ fn registry(o: &Options) -> Result<Vec<(String, bool)>, String> {
             c
         }
     };
-    let out = cmd.current_dir(root()).arg("commands").output().map_err(|e| format!("solidcraft-cli: {e}"))?;
+    let out = cmd.current_dir(root()).arg("commands").output().map_err(|e| format!("intcad-cli: {e}"))?;
     if !out.status.success() {
-        return Err(format!("solidcraft-cli commands failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+        return Err(format!("intcad-cli commands failed:\n{}", String::from_utf8_lossy(&out.stderr)));
     }
     let list: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("commands JSON: {e}"))?;
     let list = list.as_array().ok_or("commands JSON: not a list")?;

@@ -53,16 +53,16 @@ More commands, the Windows cross-build and the browser build are in [docs/buildi
 
 ## AI agents (MCP)
 
-`solidcraft-cli mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server. Headless it
+`intcad-cli mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server. Headless it
 runs its own design session, or with `--connect` it drives the running app so you can watch.
-Claude Code: `claude mcp add solidcraft -- solidcraft-cli mcp`. If a terminal doesn't find
-`solidcraft-cli` (older Windows installers don't put it on `PATH`), give its full path (by default
-`"C:\\Program Files\\SolidCraft\\solidcraft-cli.exe"`). Tools, access rules and an example session:
+Claude Code: `claude mcp add intcad -- intcad-cli mcp`. If a terminal doesn't find
+`intcad-cli` (older Windows installers don't put it on `PATH`), give its full path (by default
+`"C:\\Program Files\\Intcad\\intcad-cli.exe"`). Tools, access rules and an example session:
 [docs/mcp.md](docs/mcp.md).
 
 ## Scripts
 
-A script is a JSON list of the same commands the UI runs, executed with `solidcraft-cli run`.
+A script is a JSON list of the same commands the UI runs, executed with `intcad-cli run`.
 Format and example: [docs/scripts.md](docs/scripts.md). Pages can also be driven through the
 [browser command API](docs/browser-api.md).
 
@@ -78,10 +78,10 @@ the clean-room and licence rules, and where help is wanted most. Open work is in
 [SolidCraft](https://github.com/tangency-labs/solidcraft), and the upstream project keeps its
 own name, logo, website and releases.
 
-The product name in the interface is `Intcad`. Internal identifiers still use
-`solidcraft` so existing designs, scripts, packages and settings keep working: crate and binary
-names (`solidcraft`, `solidcraft-cli`), the `.sc` design format and its `solidcraft/N` tag,
-`SOLIDCRAFT_*` environment variables, settings folders, app IDs and the MCP server name.
+The product is `Intcad`: its programs (`intcad`, `intcad-cli`), packages, app ID, settings
+folders and MCP server carry that name. Internal identifiers still use `solidcraft` so
+existing designs and scripts keep working: crate and Cargo package names, the `.sc` design
+format and its `solidcraft/N` tag, and `SOLIDCRAFT_*` environment variables.
 The compatibility record is in [docs/compatibility.md](docs/compatibility.md).
 
 The code is MIT OR Apache-2.0, at your option. The Intgral name and marks are brand assets and

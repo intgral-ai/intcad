@@ -33,9 +33,9 @@ Where SolidCraft can replace itself safely, the window also has **Update now**:
 
 | Installed as | Update now does |
 |---|---|
-| AppImage | Downloads the new AppImage next to the old one, verifies it, renames it over the old file and offers **Restart now**; a file named like a release (`solidcraft-<version>-linux-<arch>.AppImage`) takes the new release's name, so tools such as Gearlever keep finding its update data, and any other name is kept |
+| AppImage | Downloads the new AppImage next to the old one, verifies it, renames it over the old file and offers **Restart now**; a file named like a release (`intcad-<version>-linux-<arch>.AppImage`) takes the new release's name, so tools such as Gearlever keep finding its update data, and any other name is kept |
 | Windows installer (`.msi`) | **Install (closes SolidCraft)**: downloads and verifies the `.msi`, closes SolidCraft (asking about unsaved designs first) and starts the installer |
-| Windows portable `.zip` or `.exe` | Downloads and verifies the package, swaps in the new `solidcraft.exe` (and `solidcraft-cli.exe`) and offers **Restart now**; the old file is removed at the next start |
+| Windows portable `.zip` or `.exe` | Downloads and verifies the package, swaps in the new `intcad.exe` (and `intcad-cli.exe`) and offers **Restart now**; the old file is removed at the next start |
 | macOS | **Download and open**: downloads and verifies the `.dmg` and opens it; quit SolidCraft, then drag the new SolidCraft to Applications to replace the old copy (macOS won't replace an app that is running) |
 | Flatpak, Snap, `.deb`, `.rpm`, `.tar.gz` | Nothing: your package manager updates these (the window shows the command), or you unpack the new archive |
 
@@ -121,17 +121,17 @@ and SolidCraft picks the one matching how it was installed:
 
 | Installed as | Detected by | Download | How to update |
 |---|---|---|---|
-| AppImage | `APPIMAGE` is set | `solidcraft-linux-<arch>.AppImage` | Replace the old AppImage with the new one |
-| Flatpak | `FLATPAK_ID` is set | doesn't check (see below) | `flatpak update io.tangencylabs.solidcraft` |
-| Snap from the Snap Store | `SNAP` is set | release page | `sudo snap refresh solidcraft` (snapd also refreshes by itself) |
-| Snap from a downloaded file | `SNAP_REVISION` starts with `x` | `solidcraft-linux-<arch>.snap` | `sudo snap install --dangerous ./solidcraft-linux-<arch>.snap` |
-| `.deb` | under `/usr`, dpkg knows `solidcraft` | `solidcraft-linux-<arch>.deb` | `sudo apt install ./solidcraft-linux-<arch>.deb` |
-| `.rpm` | under `/usr`, an rpm database exists | `solidcraft-linux-<arch>.rpm` | `sudo dnf install ./solidcraft-linux-<arch>.rpm` |
-| `.tar.gz` | anywhere else on Linux | `solidcraft-<version>-linux-<arch>.tar.gz` | Unpack over the old copy |
-| Windows installer | under Program Files, or in the folder the installer recorded | `solidcraft-windows-<arch>.msi` | Run the installer |
-| Windows portable | `solidcraft-cli.exe` beside it | `solidcraft-windows-<arch>-portable.zip` | Unzip over the old copy |
-| Windows `.exe` | anywhere else on Windows | `SolidCraft-<version>-windows-x64.exe` | Replace the old `.exe` |
-| macOS | inside `SolidCraft.app` | `solidcraft-macos-universal.dmg` | Quit SolidCraft, then drag the new app to Applications |
+| AppImage | `APPIMAGE` is set | `intcad-linux-<arch>.AppImage` | Replace the old AppImage with the new one |
+| Flatpak | `FLATPAK_ID` is set | doesn't check (see below) | `flatpak update ai.intgral.intcad` |
+| Snap from the Snap Store | `SNAP` is set | release page | `sudo snap refresh intcad` (snapd also refreshes by itself) |
+| Snap from a downloaded file | `SNAP_REVISION` starts with `x` | `intcad-linux-<arch>.snap` | `sudo snap install --dangerous ./intcad-linux-<arch>.snap` |
+| `.deb` | under `/usr`, dpkg knows `intcad` | `intcad-linux-<arch>.deb` | `sudo apt install ./intcad-linux-<arch>.deb` |
+| `.rpm` | under `/usr`, an rpm database exists | `intcad-linux-<arch>.rpm` | `sudo dnf install ./intcad-linux-<arch>.rpm` |
+| `.tar.gz` | anywhere else on Linux | `intcad-<version>-linux-<arch>.tar.gz` | Unpack over the old copy |
+| Windows installer | under Program Files, or in the folder the installer recorded | `intcad-windows-<arch>.msi` | Run the installer |
+| Windows portable | `intcad-cli.exe` beside it | `intcad-windows-<arch>-portable.zip` | Unzip over the old copy |
+| Windows `.exe` | anywhere else on Windows | `Intcad-<version>-windows-x64.exe` | Replace the old `.exe` |
+| macOS | inside `Intcad.app` | `intcad-macos-universal.dmg` | Quit SolidCraft, then drag the new app to Applications |
 
 The window shows the command for Snap, `.deb` and `.rpm` installations, with a Copy button. The
 Flatpak has no network permission and Flatpak itself (or your software center) offers its

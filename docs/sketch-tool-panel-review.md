@@ -1,6 +1,6 @@
 # Sketch tool panel review
 
-Inventory before the port, checked against `solidcraft-cli commands`, `dialogs::Kind`,
+Inventory before the port, checked against `intcad-cli commands`, `dialogs::Kind`,
 the sketch tool dispatchers, and all sketch sources' window/area helpers.
 Control requests below are JSON lines sent to an already running app. Add the launch
 token to the first request on each connection and use distinct request IDs.
@@ -195,7 +195,7 @@ binaries, a native app launch, screenshots or process-management commands.
 | `cargo test -p solidcraft-ui-egui --lib i18n --no-fail-fast` | 33 passed | `/private/tmp/solidcraft-i18n-final-check.log` |
 | `cargo test -p solidcraft-ui-egui --lib shell --no-fail-fast` | 16 passed | `/private/tmp/solidcraft-shell-final-check.log` |
 | `cargo fmt` | Passed | No output; subsequent `git diff --check` passed |
-| `cargo clippy -p solidcraft-ui-egui --all-targets -- -D warnings` | Passed | `/private/tmp/solidcraft-clippy.log` |
+| `cargo clippy -p solidcraft-ui-egui --all-targets -- -D warnings` | Passed | `/private/tmp/intcad-clippy.log` |
 | `cargo check -p solidcraft-ui-egui --target wasm32-unknown-unknown` | Passed | `/private/tmp/solidcraft-wasm.log` |
 | `cargo xtask assets` | Passed; 387 files attributed | `/private/tmp/solidcraft-assets.log` |
 | `cargo xtask layers` | Passed; 16 crates, no violations | `/private/tmp/solidcraft-layers.log` |

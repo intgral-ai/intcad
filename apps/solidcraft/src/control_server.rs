@@ -72,7 +72,7 @@ pub fn start(listen_on: control_auth::Listen, ctx: egui::Context) -> Receiver<Co
                                 "solidcraft: control channel on the default port 127.0.0.1:{port} (Preferences > Assistant turns it off)"
                             );
                         }
-                        // The discovery file: where `solidcraft-cli mcp` finds this app with no arguments.
+                        // The discovery file: where `intcad-cli mcp` finds this app with no arguments.
                         match control_auth::write_current_port(port) {
                             Ok(_) => {
                                 if let Ok(mut p) = APP_PORT.lock() {

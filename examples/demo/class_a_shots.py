@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the three class-A surfacing pictures of docs/screenshots with the running app.
 
-    solidcraft --control 7878 &
+    intcad --control 7878 &
     python3 examples/demo/class_a_shots.py --port 7878 OUTDIR
 
 Each picture is built from commands on a new design and drawn by the control channel's

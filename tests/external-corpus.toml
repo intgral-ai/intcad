@@ -2,7 +2,7 @@
 #
 # Real-world STEP files from many exporters find bugs our own designs never hit.
 # `cargo xtask external-corpus` downloads each source (cached under corpus/external/,
-# gitignored), verifies its hash, imports every file headless with solidcraft-cli, and
+# gitignored), verifies its hash, imports every file headless with intcad-cli, and
 # checks the expected results below within tolerances: import succeeds with no panic,
 # the body count, total volume and area, and time and memory budgets.
 #

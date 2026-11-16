@@ -43,7 +43,7 @@ From the repository root:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 assets/render/selene/tools/build.py \
-  --cli /path/to/solidcraft-cli \
+  --cli /path/to/intcad-cli \
   --work target/selene/rebuild \
   --output target/selene/SELENE-functional.solidcraft
 ```
@@ -56,7 +56,7 @@ Run independent acceptance on the saved derivative:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 assets/render/selene/tools/validate_native.py \
-  --cli /path/to/solidcraft-cli \
+  --cli /path/to/intcad-cli \
   --model target/selene/SELENE-functional.solidcraft \
   --interference-pairs assets/render/selene/motion/interference-pairs.json \
   --out target/selene/acceptance

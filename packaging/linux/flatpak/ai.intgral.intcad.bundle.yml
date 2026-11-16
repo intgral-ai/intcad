@@ -1,8 +1,8 @@
 # Flatpak manifest for the single-file bundle attached to every GitHub release
-# (solidcraft-<version>-linux-<arch>.flatpak). Build it with packaging/linux/flatpak-bundle.sh.
+# (intcad-<version>-linux-<arch>.flatpak). Build it with packaging/linux/flatpak-bundle.sh.
 # Adapted from PhotoCraft's (storytold/photocraft, Apache-2.0; see ATTRIBUTION.md).
 #
-# It repackages the release's own Linux tarball (solidcraft-<version>-linux-<arch>.tar.gz, built
+# It repackages the release's own Linux tarball (intcad-<version>-linux-<arch>.tar.gz, built
 # on Ubuntu 22.04 by package.sh) instead of compiling Rust inside flatpak-builder: no network
 # during the build, and the same binaries as the AppImage/deb/rpm. The binaries need glibc >= 2.35
 # and load X11, Wayland, xkbcommon and Vulkan at runtime; the runtime has all of them, and the
@@ -20,11 +20,11 @@
 # and ai.storyteller.solvecraft (before 0.8). The Flatpak repository marks both end-of-life with a
 # rebase to this one, so `flatpak update` moves existing installs over (packaging/flatpak-site.sh,
 # docs/compatibility.md).
-id: io.tangencylabs.solidcraft
+id: ai.intgral.intcad
 runtime: org.gnome.Platform
 runtime-version: '51'
 sdk: org.gnome.Sdk
-command: solidcraft
+command: intcad
 finish-args:
   # Display: Wayland first, with the X11 socket for the XWayland window whose child view hosts
   # the Assistant. `fallback-x11` gives no X11 socket under a Wayland session, so the page could
@@ -45,23 +45,21 @@ finish-args:
   - --filesystem=~/.var/app/ai.storyteller.solidcraft:ro
   - --filesystem=~/.var/app/ai.storyteller.solvecraft:ro
   # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
-  # the sandbox; `flatpak override --user --share=network io.tangencylabs.solidcraft` exposes it to
+  # the sandbox; `flatpak override --user --share=network ai.intgral.intcad` exposes it to
   # host agents) and home/host filesystem access.
 modules:
   - name: solidcraft
     buildsystem: simple
     build-commands:
-      - install -Dm755 bin/solidcraft /app/bin/solidcraft
-      - install -Dm755 bin/solidcraft-cli /app/bin/solidcraft-cli
-      # The old CLI name, forwarding to solidcraft-cli (compatibility shim, docs/compatibility.md).
-      - install -Dm755 bin/solvecraft-cli /app/bin/solvecraft-cli
-      - install -Dm644 share/applications/io.tangencylabs.solidcraft.desktop /app/share/applications/io.tangencylabs.solidcraft.desktop
-      - install -Dm644 share/mime/packages/io.tangencylabs.solidcraft.xml /app/share/mime/packages/io.tangencylabs.solidcraft.xml
+      - install -Dm755 bin/intcad /app/bin/intcad
+      - install -Dm755 bin/intcad-cli /app/bin/intcad-cli
+      - install -Dm644 share/applications/ai.intgral.intcad.desktop /app/share/applications/ai.intgral.intcad.desktop
+      - install -Dm644 share/mime/packages/ai.intgral.intcad.xml /app/share/mime/packages/ai.intgral.intcad.xml
       # Already has the release's version and date substituted by package.sh.
-      - install -Dm644 share/metainfo/io.tangencylabs.solidcraft.metainfo.xml /app/share/metainfo/io.tangencylabs.solidcraft.metainfo.xml
-      - mkdir -p /app/share/icons /app/share/doc && cp -R share/icons/hicolor /app/share/icons/ && cp -R share/doc/solidcraft /app/share/doc/
+      - install -Dm644 share/metainfo/ai.intgral.intcad.metainfo.xml /app/share/metainfo/ai.intgral.intcad.metainfo.xml
+      - mkdir -p /app/share/icons /app/share/doc && cp -R share/icons/hicolor /app/share/icons/ && cp -R share/doc/intcad /app/share/doc/
       # Application-relative Mastra runtime; absent on architectures that do not advertise it.
-      - if [ -d lib/solidcraft ]; then mkdir -p /app/lib && cp -R lib/solidcraft /app/lib/; fi
+      - if [ -d lib/intcad ]; then mkdir -p /app/lib && cp -R lib/intcad /app/lib/; fi
     sources:
       - type: dir
         path: stage

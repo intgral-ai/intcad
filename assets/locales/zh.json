@@ -4552,7 +4552,7 @@
   "ui.agent_chat_new": "新对话",
   "ui.agent_chat_new_confirm": "开始新对话？当前对话将被清除。",
   "ui.agent_chat_next_picture": "下一张图片",
-  "ui.agent_chat_no_cli": "在应用旁边未找到 solidcraft-cli，因此智能体无法访问设计。",
+  "ui.agent_chat_no_cli": "在应用旁边未找到 intcad-cli，因此智能体无法访问设计。",
   "ui.agent_chat_no_control": "智能体聊天的端点未能启动，因此智能体无法访问设计。",
   "ui.agent_chat_no_images": "该智能体不接收图片",
   "ui.agent_chat_no_picture": "剪贴板上没有图片",

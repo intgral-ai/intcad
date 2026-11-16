@@ -22,7 +22,7 @@ fn mcp_connect_serves_before_the_app_runs_and_reaches_it_once_it_does() {
     let addr = format!("127.0.0.1:{port}");
     let control_dir = std::env::temp_dir().join(format!("solidcraft-mcp-connect-{}-{port}", std::process::id()));
     std::fs::create_dir_all(&control_dir).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["mcp", "--connect", &addr, "--allow-any-path"])
         .env("SOLIDCRAFT_CONTROL_DIR", &control_dir)
         .env_remove("SOLIDCRAFT_CONTROL_TOKEN")
@@ -52,7 +52,7 @@ fn mcp_connect_serves_before_the_app_runs_and_reaches_it_once_it_does() {
     // A tool call says the app is not running and how to start it.
     let r = ask(3, "tools/call", measure.clone());
     assert_eq!(r["result"]["isError"], true, "{r}");
-    assert!(text(&r).contains("not running") && text(&r).contains(&format!("solidcraft --control {port}")), "{r}");
+    assert!(text(&r).contains("not running") && text(&r).contains(&format!("intcad --control {port}")), "{r}");
 
     // The app starts: a token file for this launch, and its control port.
     let token = "0123456789abcdef".repeat(4);
@@ -83,7 +83,7 @@ fn mcp_connect_serves_before_the_app_runs_and_reaches_it_once_it_does() {
 #[test]
 fn mcp_connect_without_a_port_is_refused_at_start() {
     for addr in ["localhost", "127.0.0.1:0"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_solidcraft-cli")).args(["mcp", "--connect", addr]).stdin(Stdio::null()).output().unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_intcad-cli")).args(["mcp", "--connect", addr]).stdin(Stdio::null()).output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{addr}: {stderr}");
         assert!(stderr.contains("HOST:PORT"), "{addr}: {stderr}");
@@ -116,7 +116,7 @@ fn mcp_without_arguments_finds_the_running_app() {
         let reply = json!({"id": req["id"], "ok": ok, "result": {"bodies": [], "method": req["method"]}, "error": "unauthorized"});
         writeln!(&stream, "{reply}").unwrap();
     });
-    let mut child = Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["mcp", "--allow-any-path"])
         .env("SOLIDCRAFT_CONTROL_DIR", &control_dir)
         .env_remove("SOLIDCRAFT_CONTROL_TOKEN")
@@ -142,7 +142,7 @@ fn mcp_without_arguments_finds_the_running_app() {
     let dead = closed.local_addr().unwrap().port();
     drop(closed);
     std::fs::write(control_dir.join("current.port"), format!("{dead}\n")).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+    let out = Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["mcp", "--allow-any-path"])
         .env("SOLIDCRAFT_CONTROL_DIR", &control_dir)
         .stdin(Stdio::null())
@@ -166,7 +166,7 @@ mod setup {
     }
 
     fn run(home: &Path, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"))
+        Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
             .args(["mcp", "setup"])
             .args(args)
             .env_clear()
@@ -185,7 +185,7 @@ mod setup {
     }
 
     fn exe() -> String {
-        let p = Path::new(env!("CARGO_BIN_EXE_solidcraft-cli")).canonicalize().unwrap();
+        let p = Path::new(env!("CARGO_BIN_EXE_intcad-cli")).canonicalize().unwrap();
         p.to_string_lossy().trim_start_matches(r"\\?\").to_owned()
     }
 
@@ -204,12 +204,12 @@ mod setup {
         let v = json_of(&oc.join("opencode.json"));
         assert_eq!(v["theme"], "x");
         assert_eq!(v["mcp"]["other"], old["mcp"]["other"]);
-        assert_eq!(v["mcp"]["solidcraft"], json!({"type": "local", "command": [exe(), "mcp"], "enabled": true}));
-        assert_eq!(v["mcp"]["solidcraft-live"]["command"], json!([exe(), "mcp", "--connect", "127.0.0.1:7878"]));
+        assert_eq!(v["mcp"]["intcad"], json!({"type": "local", "command": [exe(), "mcp"], "enabled": true}));
+        assert_eq!(v["mcp"]["intcad-live"]["command"], json!([exe(), "mcp", "--connect", "127.0.0.1:7878"]));
         assert_eq!(json_of(&oc.join("opencode.json.bak")), old);
         let c = json_of(&h.join(".cursor/mcp.json"));
         assert_eq!(c["mcpServers"]["other"], json!({"command": "o"}));
-        assert_eq!(c["mcpServers"]["solidcraft"], json!({"command": exe(), "args": ["mcp"]}));
+        assert_eq!(c["mcpServers"]["intcad"], json!({"command": exe(), "args": ["mcp"]}));
 
         // Codex (TOML) and Claude Code (a big file the CLI owns) are edited in place too.
         std::fs::create_dir_all(h.join(".codex")).unwrap();
@@ -218,10 +218,10 @@ mod setup {
         std::fs::write(h.join(".claude.json"), cc).unwrap();
         assert!(run(&h, &[]).status.success());
         let toml = std::fs::read_to_string(h.join(".codex/config.toml")).unwrap();
-        assert!(toml.starts_with("# mine\nmodel = \"x\"\n") && toml.contains("[mcp_servers.solidcraft]"), "{toml}");
+        assert!(toml.starts_with("# mine\nmodel = \"x\"\n") && toml.contains("[mcp_servers.intcad]"), "{toml}");
         let c = json_of(&h.join(".claude.json"));
         assert_eq!(c["numStartups"], 3);
-        assert_eq!(c["mcpServers"]["solidcraft"], json!({"type": "stdio", "command": exe(), "args": ["mcp"]}));
+        assert_eq!(c["mcpServers"]["intcad"], json!({"type": "stdio", "command": exe(), "args": ["mcp"]}));
         assert_eq!(std::fs::read_to_string(h.join(".claude.json.bak")).unwrap(), cc);
 
         // Running again updates the same entries and leaves one of each.
@@ -236,7 +236,7 @@ mod setup {
         let out = run(&h, &["--dry-run"]);
         assert!(out.status.success());
         let text = String::from_utf8_lossy(&out.stdout);
-        assert!(text.contains("would write") && text.contains("solidcraft"), "{text}");
+        assert!(text.contains("would write") && text.contains("intcad"), "{text}");
         assert!(!h.join(".cursor/mcp.json").exists());
         assert!(!h.join(".config/opencode").exists(), "OpenCode was not installed, so nothing is created for it");
         let out = run(&h, &["--client", "claude-desktop"]);
@@ -260,7 +260,7 @@ mod setup {
         std::fs::create_dir_all(&pkg).unwrap();
         // The MSIX folder is only read through LOCALAPPDATA, set for every platform here.
         assert!(run(&h, &["--client", "claude-desktop"]).status.success());
-        assert!(json_of(&pkg.join("claude_desktop_config.json"))["mcpServers"]["solidcraft"].is_object());
+        assert!(json_of(&pkg.join("claude_desktop_config.json"))["mcpServers"]["intcad"].is_object());
     }
 }
 
@@ -272,7 +272,7 @@ mod scratch_cleanup {
     fn command(case: &str) -> (PathBuf, Command) {
         let dir = std::env::temp_dir().join(format!("solidcraft-mcp-lifecycle-{case}-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_solidcraft-cli"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_intcad-cli"));
         command
             .args(["mcp", "--headless"])
             .env("TMPDIR", &dir)

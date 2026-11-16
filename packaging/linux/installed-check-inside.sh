@@ -43,21 +43,21 @@ install_step() {
   case "$package" in
     *.deb | *.rpm)
       bare "$package"
-      exe=/usr/bin/solidcraft
+      exe=/usr/bin/intcad
       missing="$(lacking "$exe")"
       if [ -n "$missing" ]; then
         echo "FAIL: the package does not bring these libraries the app names: $missing"
         exit 1
       fi
       echo "ok: installed with only what the package declares, the app finds every library it names"
-      solidcraft-cli --version
+      intcad-cli --version
       ;;
     *.AppImage)
       # Unpacked, as the AppImage runtime does where there is no FUSE (containers, CI).
       install -m755 "$package" /opt/app.AppImage
       (cd /opt && ./app.AppImage --appimage-extract >/dev/null)
       exe=/opt/squashfs-root/AppRun
-      missing="$(lacking /opt/squashfs-root/usr/bin/solidcraft)"
+      missing="$(lacking /opt/squashfs-root/usr/bin/intcad)"
       if [ -n "$missing" ]; then
         said="$("$exe" --version 2>&1 >/dev/null || true)"
         if ! printf '%s' "$said" | grep -q 'sudo apt install libwebkit2gtk-4.1-0'; then
@@ -68,12 +68,12 @@ install_step() {
         echo "ok: on a system without them the launcher names the missing libraries and how to get them"
         bare "${appimage_needs[@]}"
       fi
-      missing="$(lacking /opt/squashfs-root/usr/bin/solidcraft)"
+      missing="$(lacking /opt/squashfs-root/usr/bin/intcad)"
       if [ -n "$missing" ]; then
         echo "FAIL: with the package the launcher names installed, these are still missing: $missing"
         exit 1
       fi
-      /opt/squashfs-root/usr/bin/solidcraft-cli --version
+      /opt/squashfs-root/usr/bin/intcad-cli --version
       ;;
     *)
       echo "error: not a .deb, .rpm or .AppImage: $package" >&2

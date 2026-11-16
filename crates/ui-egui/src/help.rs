@@ -10,8 +10,9 @@ use crate::ui_kit::{Container, Surface};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("SOLIDCRAFT_COMMIT");
 pub const BUILD_DATE: &str = env!("SOLIDCRAFT_BUILD_DATE");
-/// The user and developer guide (docs/book, published by .github/workflows/pages.yml).
-pub const DOCS_URL: &str = "https://docs.solidcraft.io/";
+/// The user and developer guide (docs/book). Intcad has no guide site of its own yet, so this is
+/// the guide's contents page in the repository.
+pub const DOCS_URL: &str = "https://github.com/intgral-ai/intcad/blob/main/docs/book/src/SUMMARY.md";
 const ATTRIBUTION: &str = include_str!("../../../ATTRIBUTION.md");
 use solidcraft_engine::licences::{LICENSE_APACHE, LICENSE_MIT, NOTICE, THIRD_PARTY};
 /// What the Assistant's page holds that is not Intcad's own (Mastra's components, the npm
@@ -111,13 +112,13 @@ pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
     }
 }
 
-/// Add SolidCraft's MCP server to the AI assistants installed here (`solidcraft-cli mcp setup`),
-/// with the `solidcraft-cli` beside this program. One line per client.
+/// Add SolidCraft's MCP server to the AI assistants installed here (`intcad-cli mcp setup`),
+/// with the `intcad-cli` beside this program. One line per client.
 #[cfg(not(target_arch = "wasm32"))]
 fn connect_assistants() -> Vec<String> {
     use solidcraft_engine::agent_setup as setup;
     let Some(cli) = crate::agent_chat::find_cli() else {
-        return vec!["solidcraft-cli was not found next to Intcad; run `solidcraft-cli mcp setup` from a terminal.".into()];
+        return vec!["intcad-cli was not found next to Intcad; run `intcad-cli mcp setup` from a terminal.".into()];
     };
     let cli = cli.canonicalize().unwrap_or(cli).to_string_lossy().trim_start_matches(r"\\?\").to_owned();
     match setup::setup(&[], &setup::Env::from_process(), &cli) {
@@ -172,7 +173,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context, anchor: egui::Pos2) {
                         ("report", "Report an Issue…", "bug_report"),
                         ("crashes", "Crash Reports…", "status_error"),
                         ("connect", "Connect AI assistants…", "settings"),
-                        ("install_cli", "Install solidcraft-cli command", "settings"),
+                        ("install_cli", "Install intcad-cli command", "settings"),
                     ]
                     .into_iter()
                     .filter(|(id, ..)| *id != "install_cli" || cfg!(target_os = "macos"))

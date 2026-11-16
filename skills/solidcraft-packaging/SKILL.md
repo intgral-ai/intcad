@@ -24,7 +24,7 @@ For the opt-in desktop TS companion in `packages/mastra-runtime/`, follow `docs/
 - Nightlies are prereleases built by the same workflow; they never become latest or advance `release`.
 
 ## Names that must stay stable
-- Assets are `solidcraft-<version>-...` and are also attached without the version (`solidcraft-windows-x64.msi`). The README links and the in-app update check (`crates/ui-egui/src/update.rs`) pick them by name; renaming one breaks both.
+- Assets are `intcad-<version>-...` and are also attached without the version (`intcad-windows-x64.msi`). The README links and the in-app update check (`crates/ui-egui/src/update.rs`) pick them by name; renaming one breaks both.
 - The old product name survives only in the shims in `docs/compatibility.md`. Do not rewrite published assets, checksums, tags or historical notes.
 - Documentation, the browser app and the Flatpak repository publish under project Pages `/solidcraft/`. Add no old-name Pages aliases.
 

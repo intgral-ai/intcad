@@ -210,7 +210,7 @@ def test_centre_of_mass_and_bounding_box_measure_within_5e_5_of_the_part_size():
 def test_expressions_have_no_conditionals_and_sign_of_zero_is_one():
     def evaluate(expression):
         done = subprocess.run(
-            ["solidcraft-cli", "exec", "expr.evaluate", json.dumps({"expression": expression, "kind": "unitless"})],
+            ["intcad-cli", "exec", "expr.evaluate", json.dumps({"expression": expression, "kind": "unitless"})],
             capture_output=True, text=True,
         )
         return json.loads(done.stdout)
@@ -296,7 +296,7 @@ def test_a_command_script_works_as_a_design(tmp_path):
     script.write_text(json.dumps({"commands": BLOCK}))
     assert execute([], design=script)["bodies"][0]["volume_mm3"] == pytest.approx(40 * 40 * 12)
     shot = tmp_path / "shot.png"
-    subprocess.run(["solidcraft-cli", "snapshot", script, "--out", shot, "--width", "64", "--height", "64"],
+    subprocess.run(["intcad-cli", "snapshot", script, "--out", shot, "--width", "64", "--height", "64"],
                    capture_output=True, check=True)
     assert shot.stat().st_size > 0
 
