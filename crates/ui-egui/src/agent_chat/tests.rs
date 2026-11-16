@@ -15914,7 +15914,7 @@ fn files_dropped_on_the_web_view_join_the_next_message() {
     web::dropped(&mut h.app, vec![d.join("brief.md"), d.join("no-such-picture.png"), std::path::PathBuf::new()]);
     assert_eq!(dragging(&mut h), false, "the drop ends the drag");
     let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
-    assert_eq!(state["attachments"], json!([{"name": "brief.md", "picture": null}]));
+    assert_eq!(state["attachments"], json!([{"name": "brief.md", "picture": null, "report": null}]));
     assert!(matches!(h.app.agent_chat.items.as_slice(), [Item::Notice { error: true, .. }]), "the missing file is said, the empty path is nothing");
     let _ = std::fs::remove_dir_all(&d);
 }

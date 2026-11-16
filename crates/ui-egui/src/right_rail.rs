@@ -188,7 +188,7 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     ctx.data_mut(|data| data.remove::<egui::containers::panel::PanelState>(panel_id()));
     let host = Container::new(&ctx, Surface::Panel);
     let pane = host.edge(panel_id(), Edge::Right).default_size(want).size_range(MIN_PANEL..=widest).resizable(true);
-    let drawn = host.show_edge(ui, pane, host.edge_frame(t.panel), |ui| ui_kit::scope(ui, |ui| panel(ui, item))).response.rect;
+    let drawn = host.show_edge(ui, pane, host.edge_frame(t.panel), |ui| ui_kit::scope(ui, |ui| panel(app, ui, item))).response.rect;
     crate::scenario::publish_target("rail:panel", drawn);
     app.shell.right_rail = Some(rail.union(drawn));
     let grab = ctx.global_style().interaction.resize_grab_radius_side;
@@ -285,15 +285,21 @@ fn drawing(painter: &egui::Painter, item: Item, centre: Pos2, side: f32, ink: Co
     }
 }
 
-/// One panel: its title over a rule and, while there is nothing to list, the empty block.
-fn panel(ui: &mut egui::Ui, item: Item) {
+/// One panel: its title over a rule and, while there is nothing to list, the empty block. The
+/// Review panel lists the DFM check's findings once the person has run one.
+fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
     let t = Tokens::get();
     let full = ui.max_rect();
     let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER.min(full.height())));
     let title = egui::UiBuilder::new().max_rect(header.shrink2(vec2(t.space_16, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center));
     ui.scope_builder(title, |ui| ui_kit::text(ui, item.title(), ui_kit::Text::Heading(item.id())));
     ui.painter().hline(full.x_range(), header.bottom() - 0.5, t.primary_border(t.border));
-    empty(ui, Rect::from_min_max(pos2(full.left(), header.bottom()), full.max), item);
+    let body = Rect::from_min_max(pos2(full.left(), header.bottom()), full.max);
+    if item == Item::Review {
+        crate::dfm_review::panel(app, ui, body);
+    } else {
+        empty(ui, body, item);
+    }
     ui.allocate_rect(full, Sense::hover());
 }
 

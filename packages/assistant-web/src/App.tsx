@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Camera,
   ChevronDown,
+  ClipboardCheck,
   Ellipsis,
   FileText,
   Image,
@@ -803,6 +804,8 @@ function AssistantComposer({ state }: { state: AssistantState }) {
                   icon={
                     file.picture ? (
                       <img src={pictureUrl(file.picture)} alt="" className="size-4 rounded-sm object-cover" draggable={false} />
+                    ) : file.report ? (
+                      <ClipboardCheck aria-hidden />
                     ) : (
                       <FileText aria-hidden />
                     )
