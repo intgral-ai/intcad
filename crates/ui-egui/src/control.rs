@@ -1766,6 +1766,7 @@ mod tests {
             ("engine.execute", json!({"command":"dfm.override","params":{"rule":"sm.hole_min_diameter","value":{"mm":2.5},"reason":"x","by":"y"}})),
             ("engine.execute", json!({"command":"project.ci_set","params":{"enabled":false}})),
             ("engine.execute", json!({"command":"project.settings_set","params":{"material":"6061"}})),
+            ("engine.execute", json!({"command":"project.critical_set","params":{"critical":[]}})),
             ("engine.execute", json!({"command":"project.data_set","params":{"kind":"generic"}})),
             ("engine.execute", json!({"command":"engine.batch","params":{"commands":[{"command":"project.ci_set","params":{"enabled":false}}]}})),
             ("engine.batch", json!({"commands":[{"command":"dfm.override","params":{}}]})),

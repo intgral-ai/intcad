@@ -154,6 +154,7 @@ pointcloud.list                   point clouds: points drawn, never a body
 project.attach                    a project folder beside a saved design, not geometry: project::tests::attach_keeps_the_design_and_puts_the_project_beside_it
 project.ci_set                    project check settings, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
 project.create                    a project folder and its templates, not geometry: project::tests::a_created_project_reopens_with_the_same_identity_and_settings
+project.critical_set              project critical hole-to-hole dimensions, not geometry: project::tests::critical_dimensions_save_reopen_and_change_the_frozen_digest
 project.data_set                  a project's DFM data selection, not geometry: project::tests::a_copied_project_reads_its_own_data_copy_and_another_tier
 project.inspect                   reading a project folder, not geometry: cmd::project::attach_tests::attach_uses_the_open_designs_path_and_inspect_finds_the_project
 project.settings_set              project settings, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused

@@ -48,6 +48,7 @@ fn plate(thickness: f64) -> SheetBody {
         flanges: Vec::<SheetFlange>::new(),
         holes: vec![Region2 { outer: Loop2::circle(Vec2::new(20.0, 12.5), 1.5), holes: Vec::new() }],
         pockets: Vec::new(),
+        countersinks: Vec::new(),
         bores: Vec::new(),
         perforations: Vec::new(),
         labels: Vec::new(),
@@ -95,6 +96,7 @@ fn parameters(sheet: &SheetBody, index: usize, declared_thickness: Option<f64>, 
         generic: Profile { format: 1, name: "generic".into(), version: "TEST-ONLY".into(), layer: Layer::Generic, requirements: rows },
         shop: None,
         overrides: Vec::new(),
+        critical: Vec::new(),
         model: ModelRef { model_version: "sha256:model".into(), body: sheet.body.clone(), source: "native".into() },
         source: "native".into(),
     }
@@ -114,6 +116,7 @@ fn run_input() -> RunInput {
         generic: Profile { format: 1, name: "generic".into(), version: "TEST-ONLY".into(), layer: Layer::Generic, requirements: Vec::new() },
         shop: None,
         overrides: Vec::new(),
+        critical: Vec::new(),
         source: "native".into(),
     }
 }
@@ -632,6 +635,24 @@ fn an_explicit_project_thickness_is_not_replaced_by_a_bodys_own() {
 }
 
 #[test]
+fn compile_carries_the_frozen_critical_dimensions_into_each_sheet() {
+    let mut input = run_input();
+    input.critical = vec![crate::project::CriticalDimension {
+        name: "base to flange".into(),
+        from_mm: [30.0, 20.0, 1.0],
+        to_mm: [30.0, 2.0, 7.0],
+        tolerance_mm: 0.1,
+    }];
+    let sheets = vec![SheetRef { sheet: 0, body: "Bracket".into(), thickness_mm: Some(1.5), converted: false }];
+    let compiled = compile::compile(&input, &sheets, "sha256:model-a").unwrap();
+    let critical = &compiled.sheets[0].critical;
+    assert_eq!(critical.len(), 1);
+    assert_eq!(critical[0].name, "base to flange");
+    assert_eq!(critical[0].tolerance_mm, 0.1);
+    assert!((critical[0].from_mm.x - 30.0).abs() < 1e-12 && (critical[0].to_mm.z - 7.0).abs() < 1e-12);
+}
+
+#[test]
 fn compile_refuses_duplicate_sheets_and_a_missing_model_identity() {
     let sheets =
         [SheetRef { sheet: 0, body: "Plate".into(), ..Default::default() }, SheetRef { sheet: 0, body: "Other".into(), ..Default::default() }];
@@ -930,6 +951,7 @@ fn a_real_overlapping_sheet_becomes_a_failed_app_finding_with_an_anchor() {
         }],
         holes: Vec::new(),
         pockets: Vec::new(),
+        countersinks: Vec::new(),
         bores: Vec::new(),
         perforations: Vec::new(),
         labels: Vec::new(),

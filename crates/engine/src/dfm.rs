@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use solidcraft_dfm_rules::{
-    BendFact as RuleBend, BendGap as RuleGap, CheckInput, Declared, EdgeKind as RuleEdgeKind, FactFamily, Facts as RuleFacts, HoleFact as RuleHole,
-    ModelRef, Override, Profile, Recognition as RuleRecognition, Report,
+    BendFact as RuleBend, BendGap as RuleGap, CheckInput, CountersinkFact as RuleCountersink, Declared, EdgeKind as RuleEdgeKind, Facts as RuleFacts,
+    HoleFact as RuleHole, ModelRef, Override, Profile, Recognition as RuleRecognition, Report,
 };
 use solidcraft_doc::sheet::SheetBody;
 use solidcraft_doc::sheet_dfm;
@@ -68,6 +68,9 @@ pub struct SheetCheckParameters {
     pub shop: Option<Profile>,
     #[serde(default)]
     pub overrides: Vec<Override>,
+    /// The project's declared critical hole-to-hole dimensions, frozen into this check.
+    #[serde(default)]
+    pub critical: Vec<solidcraft_dfm_rules::Critical>,
     #[serde(default)]
     pub model: ModelRef,
     /// The selector the App used, for the report: `native` or `converted <digest>`.
@@ -88,7 +91,7 @@ impl SheetCheckParameters {
                 body: self.model.body,
                 source: if self.model.source.is_empty() { self.source } else { self.model.source },
             },
-            critical: Vec::new(),
+            critical: self.critical,
         }
     }
 }
@@ -194,18 +197,11 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
         square: hole.square && hole.flat_assigned,
         edge_mm: if hole.flat_assigned { hole.edge_mm } else { None },
         edge_at_mm: if hole.flat_assigned { hole.edge_at_mm.map(|point| point.to_vec()) } else { None },
-        edge_kind: hole.edge_kind.map(|kind| match kind {
-            sheet_dfm::EdgeKind::Outline => RuleEdgeKind::Outline,
-            sheet_dfm::EdgeKind::Opening => RuleEdgeKind::Opening,
-        }),
+        edge_kind: hole.edge_kind.map(rule_edge_kind),
         edge_hole: hole.edge_hole,
-        bend_gaps: if hole.flat_assigned {
-            hole.bend_gaps.iter().map(|gap| RuleGap { bend: gap.bend, gap_mm: gap.gap_mm, inside_radius_mm: gap.inside_radius_mm }).collect()
-        } else {
-            Vec::new()
-        },
+        bend_gaps: if hole.flat_assigned { rule_gaps(&hole.bend_gaps) } else { Vec::new() },
         flat: rule_flat(hole.flat, hole.flat_assigned),
-        countersink: None,
+        countersink: if hole.flat_assigned { hole.countersink.as_ref().map(rule_countersink) } else { None },
     });
     RuleFacts {
         volume_mm3: None,
@@ -216,7 +212,7 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
         holes: Some(holes.collect()),
         other_openings: measured.other_openings.saturating_add(measured.bores),
         unknown_faces: 0,
-        missing: vec![FactFamily::Countersinks],
+        missing: vec![],
         recognition: Some(RuleRecognition {
             bends: measured
                 .bends
@@ -261,10 +257,44 @@ pub fn rule_facts(measured: &sheet_dfm::SheetFacts) -> RuleFacts {
             unknown_faces: 0,
             cone_faces: 0,
             form_faces: 0,
+            // Every recorded countersink counts here, whether or not it sits on a read hole: a
+            // count above the holes that carry one is unread, never "no countersink".
+            countersinks: measured.countersinks,
             joined: true,
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+fn rule_edge_kind(kind: sheet_dfm::EdgeKind) -> RuleEdgeKind {
+    match kind {
+        sheet_dfm::EdgeKind::Outline => RuleEdgeKind::Outline,
+        sheet_dfm::EdgeKind::Opening => RuleEdgeKind::Opening,
+    }
+}
+
+fn rule_gaps(gaps: &[sheet_dfm::BendGapFact]) -> Vec<RuleGap> {
+    gaps.iter().map(|gap| RuleGap { bend: gap.bend, gap_mm: gap.gap_mm, inside_radius_mm: gap.inside_radius_mm }).collect()
+}
+
+/// A measured countersink as the rule layer reads it. The App does not yet own a hole wall with
+/// its own countersink, so `edge_hole` and `edge_rim` stay empty and false.
+fn rule_countersink(sink: &sheet_dfm::CountersinkFact) -> RuleCountersink {
+    RuleCountersink {
+        major_diameter_mm: sink.major_diameter_mm,
+        depth_mm: sink.depth_mm,
+        angle_deg: sink.angle_deg,
+        land_mm: sink.land_mm,
+        x_mm: sink.x_mm,
+        y_mm: sink.y_mm,
+        z_mm: sink.z_mm,
+        edge_mm: sink.edge_mm,
+        edge_at_mm: sink.edge_at_mm.map(|point| point.to_vec()),
+        edge_kind: sink.edge_kind.map(rule_edge_kind),
+        edge_hole: None,
+        edge_rim: false,
+        bend_gaps: rule_gaps(&sink.bend_gaps),
     }
 }
 
@@ -397,6 +427,7 @@ pub fn flat_no_overlap(sheet: &SheetBody) -> Result<Vec<FlatOverlapObservation>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solidcraft_dfm_rules::FactFamily;
     use std::collections::BTreeMap;
 
     use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
@@ -422,6 +453,7 @@ mod tests {
             flanges: Vec::<SheetFlange>::new(),
             holes: vec![Region2 { outer: Loop2::circle(Vec2::new(20.0, 12.5), diameter / 2.0), holes: Vec::new() }],
             pockets: Vec::new(),
+            countersinks: Vec::new(),
             bores: Vec::new(),
             perforations: Vec::new(),
             labels: Vec::new(),
@@ -447,6 +479,7 @@ mod tests {
             flanges: Vec::<SheetFlange>::new(),
             holes: Vec::new(),
             pockets: Vec::new(),
+            countersinks: Vec::new(),
             bores: Vec::new(),
             perforations: Vec::new(),
             labels: Vec::new(),
@@ -688,6 +721,7 @@ mod tests {
             generic: Profile { format: 1, name: "generic".into(), version: "TEST-ONLY".into(), layer: Layer::Generic, requirements: rows },
             shop: None,
             overrides: Vec::new(),
+            critical: Vec::new(),
             model: ModelRef { model_version: "doc-7".into(), body: "Plate".into(), source: "native".into() },
             source: "native".into(),
         }
@@ -703,6 +737,115 @@ mod tests {
             requirements: vec![requirement(rule, value, Some(Confirmation::FactoryConfirmed))],
         });
         params
+    }
+
+    /// A shop table for `sm.tolerance_across_bends`, one row per bend count, plus one declared
+    /// critical dimension when given.
+    fn tolerance_parameters(dimension: Option<solidcraft_dfm_rules::Critical>) -> SheetCheckParameters {
+        let mut params = parameters(Vec::new());
+        let row = |value: f64, low: i64, high: i64| {
+            let mut requirement = requirement("sm.tolerance_across_bends", value, Some(Confirmation::FactoryConfirmed));
+            requirement.limit = Limit::Min;
+            requirement.bends = Some(vec![Some(low), Some(high)]);
+            requirement
+        };
+        params.shop = Some(Profile {
+            format: 1,
+            name: "shop".into(),
+            version: "TEST-ONLY".into(),
+            layer: Layer::Factory,
+            requirements: vec![row(0.05, 0, 0), row(0.2, 1, 1), row(0.4, 2, 9)],
+        });
+        if let Some(dimension) = dimension {
+            params.critical.push(dimension);
+        }
+        params
+    }
+
+    fn point(at: (f64, f64, f64)) -> solidcraft_dfm_rules::Point3 {
+        solidcraft_dfm_rules::Point3 { x: at.0, y: at.1, z: at.2 }
+    }
+
+    fn tolerance_finding(report: &Report) -> &solidcraft_dfm_rules::Finding {
+        report.findings.iter().find(|finding| finding.rules.iter().any(|rule| rule == "sm.tolerance_across_bends")).expect("a tolerance result")
+    }
+
+    #[test]
+    fn no_declared_critical_dimension_says_it_was_not_declared() {
+        let sheet = u_holes_sheet(false);
+        let outcome = check_sheet(&sheet, tolerance_parameters(None)).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::NotVerified);
+        assert_eq!(finding.reason_code.as_deref(), Some("CRITICAL_NOT_DECLARED"));
+    }
+
+    #[test]
+    fn a_critical_point_far_from_a_hole_is_not_found() {
+        let sheet = u_holes_sheet(false);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let first = facts.holes.first().expect("a hole");
+        let dimension = solidcraft_dfm_rules::Critical {
+            name: "far".into(),
+            from_mm: point((1000.0, 1000.0, 0.0)),
+            to_mm: point((first.x_mm, first.y_mm, first.z_mm)),
+            tolerance_mm: 0.2,
+        };
+        let outcome = check_sheet(&sheet, tolerance_parameters(Some(dimension))).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::NotVerified);
+        assert_eq!(finding.reason_code.as_deref(), Some("CRITICAL_FEATURE_NOT_FOUND"));
+    }
+
+    #[test]
+    fn two_critical_points_on_the_same_hole_are_one_feature() {
+        let sheet = u_holes_sheet(false);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let first = facts.holes.first().expect("a hole");
+        let at = (first.x_mm, first.y_mm, first.z_mm);
+        let dimension = solidcraft_dfm_rules::Critical { name: "one hole".into(), from_mm: point(at), to_mm: point(at), tolerance_mm: 0.2 };
+        let outcome = check_sheet(&sheet, tolerance_parameters(Some(dimension))).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::NotVerified);
+        assert_eq!(finding.reason_code.as_deref(), Some("CRITICAL_SAME_FEATURE"));
+    }
+
+    #[test]
+    fn a_tolerance_tighter_than_the_shop_across_one_bend_needs_review() {
+        let sheet = u_holes_sheet(false);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        assert_eq!(facts.holes.len(), 2, "one hole on the base and one on a flange");
+        let from = facts.holes[0].clone();
+        let to = facts.holes[1].clone();
+        let dimension = solidcraft_dfm_rules::Critical {
+            name: "A to B".into(),
+            from_mm: point((from.x_mm, from.y_mm, from.z_mm)),
+            to_mm: point((to.x_mm, to.y_mm, to.z_mm)),
+            tolerance_mm: 0.1,
+        };
+        let outcome = check_sheet(&sheet, tolerance_parameters(Some(dimension))).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.state, solidcraft_dfm_rules::AppState::Failed, "{finding:?}");
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::NeedsReview);
+        assert_eq!(finding.error_code.as_deref(), Some("TOLERANCE_TIGHTER_THAN_SHOP"));
+        assert_eq!(finding.measured_mm, Some(0.1));
+        assert!(finding.message.contains("crosses 1 bend"), "{}", finding.message);
+    }
+
+    #[test]
+    fn a_tolerance_the_shop_holds_across_one_bend_passes() {
+        let sheet = u_holes_sheet(false);
+        let facts = sheet_dfm::facts(&sheet).expect("facts");
+        let dimension = solidcraft_dfm_rules::Critical {
+            name: "A to B".into(),
+            from_mm: point((facts.holes[0].x_mm, facts.holes[0].y_mm, facts.holes[0].z_mm)),
+            to_mm: point((facts.holes[1].x_mm, facts.holes[1].y_mm, facts.holes[1].z_mm)),
+            tolerance_mm: 0.3,
+        };
+        let outcome = check_sheet(&sheet, tolerance_parameters(Some(dimension))).expect("check");
+        let finding = tolerance_finding(&outcome.report);
+        assert_eq!(finding.status, solidcraft_dfm_rules::RuleStatus::Pass);
+        assert_eq!(finding.measured_mm, Some(0.3));
+        assert_eq!(finding.requirement.as_ref().map(|requirement| requirement.value_mm), Some(0.2));
     }
 
     fn spacing_finding(report: &Report) -> &solidcraft_dfm_rules::Finding {
@@ -852,14 +995,201 @@ mod tests {
         assert_eq!(outcome.report.model.model_version, "doc-7");
         assert_eq!(outcome.facts.holes.len(), 1);
         assert!(outcome.report.rules.len() >= 15);
-        let sink = outcome
-            .report
-            .findings
-            .iter()
-            .find(|finding| finding.rules.iter().any(|rule| rule == "sm.countersink_depth"))
-            .expect("a countersink result");
+        // A plain through hole carries no countersink: the five countersink rules say so rather
+        // than reporting that the App cannot measure countersinks at all.
+        let sink = sink_finding(&outcome.report);
+        assert_eq!(sink.status, solidcraft_dfm_rules::RuleStatus::NotApplicable);
+        assert_eq!(sink.state, solidcraft_dfm_rules::AppState::Checked);
+        assert!(sink.reason_code.is_none());
+        for rule in solidcraft_dfm_rules::sink_rules::COUNTERSINK_RULES {
+            assert!(sink.rules.iter().any(|found| found == rule), "{rule} is in the one finding");
+        }
+    }
+
+    fn sink_finding(report: &Report) -> &solidcraft_dfm_rules::Finding {
+        report.findings.iter().find(|finding| finding.rules.iter().any(|rule| rule == "sm.countersink_depth")).expect("a countersink result")
+    }
+
+    fn finding_for<'a>(report: &'a Report, rule: &str) -> &'a solidcraft_dfm_rules::Finding {
+        report.findings.iter().find(|finding| finding.rules.iter().any(|found| found == rule)).unwrap_or_else(|| panic!("{rule} result"))
+    }
+
+    /// The five countersink rows of the shared TEST-ONLY full-catalogue shop profile
+    /// (`examples/dfm/test-only-full-catalogue-shop.json`, another branch): depth max 1.0 mm,
+    /// rim to edge and to bend min 3.0 mm, land min 0.5 mm, and within 1° of a 90° tool. A
+    /// factory-confirmed row decides, so a miss is `failed` rather than an advisory.
+    fn sink_parameters() -> SheetCheckParameters {
+        let millimetre = |rule: &str, limit: Limit, value: f64| {
+            let mut row = requirement(rule, value, Some(Confirmation::FactoryConfirmed));
+            row.limit = limit;
+            row.inputs = BTreeMap::from([("mm".to_string(), "mm".to_string())]);
+            row
+        };
+        let mut angle = requirement("sm.countersink_angle", 0.0, Some(Confirmation::FactoryConfirmed));
+        angle.limit = Limit::Max;
+        angle.inputs = BTreeMap::from([("deg".to_string(), "deg".to_string())]);
+        angle.value = BTreeMap::from([("deg".to_string(), 1.0)]);
+        angle.angles_deg = Some(vec![90.0]);
+        let mut params = parameters(Vec::new());
+        params.shop = Some(Profile {
+            format: 1,
+            name: "TEST-ONLY full catalogue shop".into(),
+            version: "2026-11-15".into(),
+            layer: Layer::Factory,
+            requirements: vec![
+                millimetre("sm.countersink_depth", Limit::Max, 1.0),
+                millimetre("sm.countersink_to_edge", Limit::Min, 3.0),
+                millimetre("sm.countersink_to_bend", Limit::Min, 3.0),
+                millimetre("sm.countersink_land", Limit::Min, 0.5),
+                angle,
+            ],
+        });
+        params
+    }
+
+    /// One 100 x 60 base with a 20 mm flange on its y = 0 edge and a Ø7.5, 90° countersink at
+    /// (50, 30) widening a Ø3.4 through hole. The commands build the native sheet body.
+    fn countersunk_design() -> crate::Session {
+        let mut session = crate::Session::default();
+        for (command, params) in [
+            (
+                "sheet.manage_rules",
+                serde_json::json!({"name": "AL2", "thickness": "2.5 mm", "k_factor": 0.5, "bend_radius": "2.5 mm", "gap": "1 mm", "active": true}),
+            ),
+            ("sketch.create", serde_json::json!({"plane": "XY", "name": "Base"})),
+            ("sketch.rectangle.two_point", serde_json::json!({"p0": [0, 0], "p1": [100, 60]})),
+            ("sketch.finish", serde_json::json!({})),
+            ("sheet.flange", serde_json::json!({"sketch": "Base"})),
+            ("sheet.flange", serde_json::json!({"edges": [[50, 0, 2.5]], "height": 20})),
+            (
+                "solid.hole",
+                serde_json::json!({
+                    "position": [50, 30, 2.5],
+                    "diameter": 3.4,
+                    "type": "countersink",
+                    "cs_diameter": 7.5,
+                    "cs_angle": "90 deg"
+                }),
+            ),
+        ] {
+            session.execute(command, &params).unwrap_or_else(|error| panic!("{command}: {error}"));
+        }
+        session
+    }
+
+    /// The production adapter turns the measured cone into the five countersink findings, with
+    /// hand-computed depth, land, rim distances and angle.
+    #[test]
+    fn a_countersunk_native_sheet_reaches_the_five_countersink_rules() {
+        let session = countersunk_design();
+        let state = session.model.state();
+        let sheet = state.sheets.first().expect("one sheet body");
+        assert_eq!(sheet.altered_by, None, "the flat model keeps the countersink");
+        let mut params = sink_parameters();
+        params.body = sheet.body.clone();
+        params.declared.thickness_mm = Some(2.5);
+        let outcome = check_sheet(sheet, params).expect("facts and report");
+        assert_eq!(outcome.facts.countersinks, 1);
+        let sink = outcome.facts.holes[0].countersink.as_ref().expect("the hole carries its countersink");
+        assert!((sink.depth_mm - 2.05).abs() < 1e-9, "{}", sink.depth_mm);
+        assert!((sink.land_mm - 0.45).abs() < 1e-9, "{}", sink.land_mm);
+
+        // (rule, status, measured): the shop's confirmed rows decide. The depth is past its
+        // 1.0 mm most and the 0.45 mm land is under its 0.5 mm least, so both fail; the rim is
+        // clear of the edge and the bend and the cone is the held 90°, so those pass.
+        for (rule, status, measured) in [
+            ("sm.countersink_depth", solidcraft_dfm_rules::RuleStatus::NeedsReview, 2.05),
+            ("sm.countersink_to_edge", solidcraft_dfm_rules::RuleStatus::Pass, 26.25),
+            // The picked y = 0 edge is inset by the 90° setback R + t = 5 mm, so the rim is
+            // 30 - 5 - 3.75 = 21.25 mm from the bend tangent.
+            ("sm.countersink_to_bend", solidcraft_dfm_rules::RuleStatus::Pass, 21.25),
+            ("sm.countersink_land", solidcraft_dfm_rules::RuleStatus::NeedsReview, 0.45),
+            ("sm.countersink_angle", solidcraft_dfm_rules::RuleStatus::Pass, 90.0),
+        ] {
+            let finding = finding_for(&outcome.report, rule);
+            assert_eq!(finding.status, status, "{rule}: {}", finding.message);
+            let expected_state = if status == solidcraft_dfm_rules::RuleStatus::Pass {
+                solidcraft_dfm_rules::AppState::Passed
+            } else {
+                solidcraft_dfm_rules::AppState::Failed
+            };
+            assert_eq!(finding.state, expected_state, "{rule}: {}", finding.message);
+            let value = finding.measured_mm.unwrap_or(f64::NAN);
+            assert!((value - measured).abs() < 1e-6, "{rule}: {value} != {measured}");
+            if status == solidcraft_dfm_rules::RuleStatus::NeedsReview {
+                assert!(finding.location.is_some(), "{rule} points at the rim");
+            }
+        }
+    }
+
+    /// A counterbore is a flat pocket of the sheet model, never a conical countersink.
+    #[test]
+    fn a_counterbore_in_a_sheet_is_not_a_countersink() {
+        let mut session = crate::Session::default();
+        for (command, params) in [
+            ("sketch.create", serde_json::json!({"plane": "XY", "name": "Base"})),
+            ("sketch.rectangle.two_point", serde_json::json!({"p0": [0, 0], "p1": [100, 60]})),
+            ("sketch.finish", serde_json::json!({})),
+            ("sheet.flange", serde_json::json!({"sketch": "Base"})),
+            (
+                "solid.hole",
+                serde_json::json!({"position": [30, 30, 2.5], "diameter": 3.4, "type": "counterbore", "cb_diameter": 7.5, "cb_depth": 1.0}),
+            ),
+        ] {
+            session.execute(command, &params).unwrap_or_else(|error| panic!("{command}: {error}"));
+        }
+        let state = session.model.state();
+        let sheet = state.sheets.first().expect("one sheet body");
+        let facts = sheet_dfm::facts(sheet).expect("facts");
+        assert_eq!(facts.countersinks, 0, "a counterbore is not a countersink");
+        assert!(facts.holes[0].countersink.is_none());
+        let mut params = sink_parameters();
+        params.body = sheet.body.clone();
+        params.declared.thickness_mm = Some(2.5);
+        let outcome = check_sheet(sheet, params).expect("check");
+        let sink = sink_finding(&outcome.report);
+        assert_eq!(sink.status, solidcraft_dfm_rules::RuleStatus::NotApplicable);
+        assert!(sink.reason_code.is_none());
+    }
+
+    /// A countersink with no round through hole under it can never read as "no countersink":
+    /// the five rules say the countersink was not read.
+    #[test]
+    fn a_blind_countersink_is_unrecognised_not_not_applicable() {
+        let mut session = crate::Session::default();
+        for (command, params) in [
+            ("sketch.create", serde_json::json!({"plane": "XY", "name": "Base"})),
+            ("sketch.rectangle.two_point", serde_json::json!({"p0": [0, 0], "p1": [100, 60]})),
+            ("sketch.finish", serde_json::json!({})),
+            ("sheet.flange", serde_json::json!({"sketch": "Base"})),
+            (
+                "solid.hole",
+                serde_json::json!({
+                    "position": [30, 30, 2.5],
+                    "diameter": 3.4,
+                    "depth": 1.0,
+                    "type": "countersink",
+                    "cs_diameter": 7.5,
+                    "cs_angle": "90 deg"
+                }),
+            ),
+        ] {
+            session.execute(command, &params).unwrap_or_else(|error| panic!("{command}: {error}"));
+        }
+        let state = session.model.state();
+        let sheet = state.sheets.first().expect("one sheet body");
+        let facts = sheet_dfm::facts(sheet).expect("facts");
+        assert_eq!(facts.countersinks, 1);
+        assert!(facts.holes.is_empty(), "the blind bore is a pocket, not a round through hole");
+        let mut params = sink_parameters();
+        params.body = sheet.body.clone();
+        params.declared.thickness_mm = Some(2.5);
+        let outcome = check_sheet(sheet, params).expect("check");
+        let sink = sink_finding(&outcome.report);
+        assert_eq!(sink.status, solidcraft_dfm_rules::RuleStatus::NotVerified);
+        assert_eq!(sink.reason_code.as_deref(), Some("HOLES_UNRECOGNISED"));
         assert_eq!(sink.state, solidcraft_dfm_rules::AppState::Unsupported);
-        assert_eq!(sink.reason_code.as_deref(), Some("RULE_NOT_IMPLEMENTED"));
+        assert!(sink.measured_mm.is_none(), "nothing is measured or guessed");
     }
 
     #[test]
