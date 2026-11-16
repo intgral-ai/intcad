@@ -71,6 +71,15 @@ export type Item =
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
   | { kind: 'notice'; text: string; error: boolean };
 
+export interface MissingAgent {
+  id: string;
+  name: string;
+  install: string;
+  /** One of the basic agents: listed although it is not found, with `body` saying what to do. */
+  basic: boolean;
+  body: string | null;
+}
+
 export interface AssistantState {
   items: Item[];
   /** off, starting, ready, busy, auth, failed, exited */
@@ -97,7 +106,8 @@ export interface AssistantState {
   /** The running turn's change count, in words. */
   turn: string | null;
   /** The agents this conversation can use, and the one it uses. */
-  agents: { id: string; name: string; detail: string }[];
+  /** `hint`: what is known of an installed agent without starting it, in a word; null for one the user added. */
+  agents: { id: string; name: string; detail: string; hint: string | null }[];
   agent: string | null;
   detecting: boolean;
   running: boolean;
@@ -114,7 +124,8 @@ export interface AssistantState {
   notes: string[];
   /** The agent asks for a sign-in: how each of its methods is done. */
   auth: AuthMethod[] | null;
-  missing: { name: string; install: string }[];
+  /** The known agents not found. The basic ones are listed as not ready. */
+  missing: MissingAgent[];
   confirmNew: boolean;
   left: boolean;
   dark: boolean;
@@ -131,6 +142,7 @@ export type StringKey =
   | 'attachSelection' | 'pickContext' | 'modeAsk' | 'modeEdits' | 'modeAll' | 'queued' | 'viewAttached' | 'waiting'
   | 'connect' | 'disconnect' | 'retry' | 'newChat' | 'newChatConfirm' | 'cancel' | 'close' | 'minimize'
   | 'dockLeft' | 'dockRight' | 'addAgent' | 'settings' | 'switchAgent' | 'detecting' | 'noneFound' | 'notInstalled'
+  | 'notReady' | 'notSetUp'
   | 'refresh' | 'authTitle' | 'authNeeded' | 'authNone' | 'authTerminal' | 'authRetry' | 'setupTitle'
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
   | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'revalidate' | 'dropHint' | 'removeChip'
