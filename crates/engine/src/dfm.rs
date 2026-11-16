@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use solidcraft_dfm_rules::{
-    BendFact as RuleBend, BendGap as RuleGap, CheckInput, CountersinkFact as RuleCountersink, Declared, EdgeKind as RuleEdgeKind, FactFamily,
-    Facts as RuleFacts, HoleFact as RuleHole, ModelRef, Override, Profile, Recognition as RuleRecognition, Report,
+    BendFact as RuleBend, BendGap as RuleGap, CheckInput, CountersinkFact as RuleCountersink, Declared, EdgeKind as RuleEdgeKind, Facts as RuleFacts,
+    HoleFact as RuleHole, ModelRef, Override, Profile, Recognition as RuleRecognition, Report,
 };
 use solidcraft_doc::sheet::SheetBody;
 use solidcraft_doc::sheet_dfm;
@@ -424,6 +424,7 @@ pub fn flat_no_overlap(sheet: &SheetBody) -> Result<Vec<FlatOverlapObservation>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solidcraft_dfm_rules::FactFamily;
     use std::collections::BTreeMap;
 
     use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
