@@ -277,7 +277,7 @@ pub fn build_with_reasons(identity: &FindingsIdentity, sheets: &[SheetCheck], ex
                 status: status_name(finding.status).to_string(),
                 code: reason_code(finding, state),
                 measured: finding.measured_mm.map(|value| Measure {
-                    value,
+                    value: round6(value),
                     unit: if finding.rules.iter().any(|rule| rule == "app.flat_no_overlap") {
                         MeasureUnit::SquareMillimetre
                     } else if angle_rule {
@@ -442,7 +442,7 @@ fn requirement_view(finding: &solidcraft_dfm_rules::Finding, requirement: &solid
     // The rule layer's `value_mm` is a length except for the countersink angle, which is degrees.
     let unit = if finding.rules.iter().any(|rule| rule == "sm.countersink_angle") { MeasureUnit::Degree } else { MeasureUnit::Millimetre };
     RequirementView {
-        value: requirement.value_mm,
+        value: round6(requirement.value_mm),
         unit,
         layer: requirement.layer,
         confirmed: requirement.confirmation,
@@ -563,4 +563,10 @@ fn state_index(state: FindingState) -> usize {
 /// The exact bytes `findings.json` holds for these findings.
 pub fn to_bytes(findings: &RunFindings) -> Result<Vec<u8>, String> {
     serde_json::to_vec(findings).map_err(|error| error.to_string())
+}
+
+/// The rule layer reports to six decimals (`round6` in solidcraft-dfm-rules); a raw f64 from a
+/// measured distance is not what a drawing or the model sees, so the report keeps the same six.
+fn round6(value: f64) -> f64 {
+    (value * 1_000_000.0).round() / 1_000_000.0
 }
