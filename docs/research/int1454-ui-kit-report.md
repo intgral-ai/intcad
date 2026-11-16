@@ -325,7 +325,8 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 **Assistant / WebView**：
 
 - `ui.agent_chat {"open":true,"side":"right"}` 打开原生 WebView；页面实际显示 “Set up an assistant / No agent found”、安装项和输入框（`assistant-webview.png`），`webView.host: true`；交互后 `page: true`。
-- 未验证：把 Review 报告卡拖入 Assistant 的完整 round-trip。当前 VM 没有安装 agent；拖拽发生在新设计（没有 DFM 报告）时不会生成附件。需要在一个有已存 DFM 报告、且安装/连接了 agent 的环境复测；在此之前只能算“WebView 显示已确认，报告卡桥接未验证”。
+- **已验证拖拽**：在存有 DFM 项目报告的设计上，把 Review 报告卡拖入 Assistant，`ui.agent_chat` 的 `attachments` 变为 `["DFM report run-..."]`，WebView `page: true`（`assistant-report-drop.png`）。这证明宿主侧的卡片拖拽和附件桥接。
+- **未验证**：把附件发送给 agent 的完整 round-trip。当前 VM 没有安装 agent；附件只证明宿主侧桥接，不证明模型实际读取报告。
 
 ### 5.4 #145 的 CI 分类
 
@@ -375,7 +376,7 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 - 144 个全量路线 A 编译错误实际修复时间（目前只统计，未修）。
 - `solidcore` pin 从 `8ddce901` 到 v0.41.0 的实际 delta。
 - 同面标签 hit-test 的 33 px 风险（需要发布 label 手柄的自动化用例）。
-- Assistant 报告卡拖拽/round-trip（当前环境无 agent）。
+- Assistant 报告卡发送给 agent 的 round-trip（宿主侧拖拽/附件桥接已验证；当前环境无 agent）。
 - Windows/macOS 的 WebView、面板和跨平台验收。
 - 律师对 §5/§1(a)/§3(c) 的结论。
 
@@ -419,6 +420,7 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 | `dfm-row-f5.png` / `dfm-row-f6.png` | 行选择不同 finding |
 | `dfm-stale-after-edit.png` | 加第三个孔后旧报告/标记仍在（阻塞） |
 | `assistant-webview.png` | Assistant WebView 实际显示 |
+| `assistant-report-drop.png` | Review 报告卡拖入 Assistant 后生成 DFM 报告附件 |
 | `exp2-dfm-row-f5.png` | orbit 修复版上的 DFM 回归 |
 
 ## 9. 建议的下一步（可排期）
