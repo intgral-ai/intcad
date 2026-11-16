@@ -320,7 +320,7 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 - 这是 DFM 产品行为缺陷，不是 ui-kit 替换成本；A/B 都需要修。
 - 截图：`dfm-stale-after-edit.png`（模型已有第三个孔，旧 F5/F6/F8 标签仍在）。
 
-**同面标签的待核实风险**：F5/F8 标签相邻约 33 px；VM 坐标下点击 F8 标签附近曾在一次运行中选中 F6。行选择本身是准确的。建议发布 `dfm:label:<finding_id>` 手柄并加一个“同面两 finding”的自动化用例，再判断是坐标偏移还是 hit-test 缺陷。
+**同面标签的自动化风险**：F5/F8 标签相邻约 33 px；Assistant 检查卡的行在展开后会改变 WebView 行坐标。最初一次点击落在展开后的错误行上，造成“F8 行却选中 F6”的假象；用当前行坐标复核后，F8 行→F8 标签、F6 标签→F6 行都正确。建议发布 `dfm:label:<finding_id>` 和固定行 handle，再做“同面两 finding”的自动化回归。
 
 **Assistant / WebView**：
 
