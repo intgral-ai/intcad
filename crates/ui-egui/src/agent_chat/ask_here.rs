@@ -103,13 +103,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.set_width(width);
                 ui_kit::scope(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = t.space_4;
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut text)
-                            .id(egui::Id::new("sc_ask_here_text"))
-                            .hint_text(tr("ui.agent_chat_ask_here_hint"))
-                            .char_limit(MAX_TEXT)
-                            .desired_width(width),
-                    );
+                    let field =
+                        ui_kit::single_line(ui, &mut text, egui::Id::new("sc_ask_here_text"), tr("ui.agent_chat_ask_here_hint"), MAX_TEXT, width);
                     if focus {
                         field.request_focus();
                     }

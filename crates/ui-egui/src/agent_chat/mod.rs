@@ -414,8 +414,6 @@ pub struct AgentChat {
     pub(crate) task: Option<task_runtime::Runtime>,
     /// Send a picture of the view with the next message.
     pub attach_view: bool,
-    /// Send what is selected in the model with the next message.
-    pub attach_selection: bool,
     /// Ask Here: the box beside a pick in the model ([`ask_here`]).
     pub ask_box: ask_here::AskBox,
     /// How many things the current selection is by clicks, kept while the selection and the design
@@ -1866,7 +1864,7 @@ pub(crate) fn send_with(app: &mut SolveApp, ctx: &egui::Context, text: String, o
         None => {
             let mut context = std::mem::take(&mut app.agent_chat.picked_context);
             app.agent_chat.picked.clear();
-            if app.agent_chat.attach_selection {
+            if app.preferences.agent_chat_attach_selection {
                 let mut selected = context::describe_selection(&mut app.session);
                 selected.items.retain(|i| !context.items.contains(i));
                 context.merge(selected);

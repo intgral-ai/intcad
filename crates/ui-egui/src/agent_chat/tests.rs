@@ -16615,7 +16615,7 @@ fn ask_here_sends_exactly_the_selection_as_attach_selection_would() {
     poll(&mut app, &ctx);
 
     app.agent_chat.picked_context = Context::default();
-    app.agent_chat.attach_selection = true;
+    app.preferences.agent_chat_attach_selection = true;
     send(&mut app, &ctx, "round this".into());
     let attached = script.calls().pop().expect("a prompt");
     assert_eq!(asked, attached, "as a message with Attach selection ticked");

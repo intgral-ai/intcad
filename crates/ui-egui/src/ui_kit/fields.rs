@@ -16,6 +16,12 @@ pub(super) fn text_input(edit: egui::TextEdit<'_>) -> egui::TextEdit<'_> {
     edit.vertical_align(egui::Align::Center).margin(vec2(t.form_inset, 0.0)).min_size(vec2(0.0, t.control_height))
 }
 
+/// One-line text input with the kit's shared alignment: Ask Here's box and the page's composer
+/// use this instead of a raw `egui::TextEdit`.
+pub(crate) fn single_line(ui: &mut Ui, value: &mut String, id: egui::Id, hint: &str, limit: usize, width: f32) -> Response {
+    ui.add(text_input(egui::TextEdit::singleline(value).id(id).hint_text(hint).char_limit(limit).desired_width(width)))
+}
+
 /// Expression editor with the application's existing completion and number-focus behaviour.
 /// Values carry their own unit text ("20 mm", "45 deg"): there is no unit suffix. Returns accepted Enter.
 /// Tokens: `control_height, control_fill, form_inset, font_label, space_4; scope tokens`.

@@ -1956,13 +1956,19 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                 });
             }
             Item::Review(card) => {
-                if let Some(action) = review_card(ui, card, units) {
-                    review_action = Some((card.id, action));
+                #[cfg(any(not(target_arch = "wasm32"), test))]
+                {
+                    if let Some(action) = review_card(ui, card, units) {
+                        review_action = Some((card.id, action));
+                    }
                 }
+                #[cfg(target_arch = "wasm32")]
+                let _ = card;
             }
         }
     }
     // The turn's changes so far, while it runs on a copy of the design: the card to come.
+    #[cfg(any(not(target_arch = "wasm32"), test))]
     if let Some((words, computing)) = super::review::progress(&app.agent_chat) {
         running_review_card(ui, &words, computing);
     }
@@ -2114,6 +2120,7 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
 #[cfg(not(target_arch = "wasm32"))]
 /// The card of a turn still running on a copy of the design: its steps so far and the one
 /// computing, with how long it has taken.
+#[cfg(any(not(target_arch = "wasm32"), test))]
 fn running_review_card(ui: &mut egui::Ui, words: &[String], computing: Option<(f64, String)>) {
     const SHOWN: usize = 12;
     let t = Tokens::get();
@@ -2139,6 +2146,7 @@ fn running_review_card(ui: &mut egui::Ui, words: &[String], computing: Option<(f
     });
 }
 
+#[cfg(any(not(target_arch = "wasm32"), test))]
 fn review_card(ui: &mut egui::Ui, card: &super::review::Card, units: summary::Units) -> Option<bool> {
     use super::review::{MAX_BODIES, Outcome, volume_text};
     let t = Tokens::get();
