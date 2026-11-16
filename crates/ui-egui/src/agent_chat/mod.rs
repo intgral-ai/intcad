@@ -555,6 +555,13 @@ pub struct AgentChat {
     detection: Option<discover::Detection>,
     #[cfg(not(target_arch = "wasm32"))]
     detecting: Option<Receiver<discover::Detection>>,
+    /// `detection` came from a look at this computer (not put there by a test or a caller), so
+    /// it is taken again each time the panel opens.
+    #[cfg(not(target_arch = "wasm32"))]
+    looked: bool,
+    /// The panel was open on the last frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    seen_open: bool,
 }
 
 impl Drop for AgentChat {
@@ -2575,6 +2582,7 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         }
         app.agent_chat.detection = Some(d);
         app.agent_chat.detecting = None;
+        app.agent_chat.looked = true;
     }
     // AI features turned off: nothing keeps running, nothing is looked for.
     if !shown(app) {
@@ -2692,7 +2700,22 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
-/// Look for installed agents in the background (cached; Refresh looks again).
+/// The panel is open this frame: look for installed agents when nothing is known yet, and again
+/// each time the panel opens, so what was installed or removed meanwhile shows without Refresh.
+/// A detection that did not come from a look (a test's, a caller's) is kept as it was given.
+// ponytail: the look on opening is a plain Refresh, so reopening the panel forgets "Signed in"
+// until the next connection. If that matters, keep `login_results` for a look begun here.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn look_on_open(app: &mut SolveApp, ctx: &egui::Context) {
+    let opened = !std::mem::replace(&mut app.agent_chat.seen_open, true);
+    let chat = &app.agent_chat;
+    if chat.detecting.is_none() && (chat.detection.is_none() || (opened && chat.looked)) {
+        refresh(app, ctx);
+    }
+}
+
+/// Look for installed agents in the background (cached until the panel opens again; Refresh
+/// looks at once).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
     if app.agent_chat.detecting.is_some() {
@@ -3201,7 +3224,7 @@ pub fn status(app: &SolveApp) -> Value {
     let detection = c.detection.as_ref().map(|d| {
         json!({
             "found": d.found.iter().map(|f| json!({"id": f.id, "name": f.name, "argv": f.argv, "version": f.version, "login": f.login.id(), "problem": f.problem})).collect::<Vec<_>>(),
-            "missing": d.missing.iter().map(|m| json!({"id": m.id, "install": m.install})).collect::<Vec<_>>(),
+            "missing": d.missing.iter().map(|m| json!({"id": m.id, "install": m.install, "basic": m.basic})).collect::<Vec<_>>(),
             "ms": d.took_ms,
         })
     });

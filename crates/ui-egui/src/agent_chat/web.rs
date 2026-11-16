@@ -380,10 +380,17 @@ pub fn state(app: &mut SolveApp) -> String {
             })
             .collect::<Vec<_>>()
     });
+    // The known agents not found. A basic one is listed by the page as not ready, with `body`.
     let missing: Vec<Value> = chat
         .detection
         .as_ref()
-        .map(|found| found.missing.iter().map(|agent| json!({"name": agent.name, "install": agent.install})).collect())
+        .map(|found| {
+            let listed = |agent: &super::discover::Missing| {
+                let body = agent.basic.then(|| trf("ui.agent_chat_install_body", &[("agent", agent.name)]));
+                json!({"id": agent.id, "name": agent.name, "install": agent.install, "basic": agent.basic, "body": body})
+            };
+            found.missing.iter().map(listed).collect()
+        })
         .unwrap_or_default();
     let strings: serde_json::Map<String, Value> = [
         ("placeholder", "ui.agent_chat_placeholder"),
@@ -434,6 +441,8 @@ pub fn state(app: &mut SolveApp) -> String {
         ("detecting", "ui.agent_chat_detecting"),
         ("noneFound", "ui.agent_chat_none_found_short"),
         ("notInstalled", "ui.agent_chat_not_installed"),
+        ("notReady", "ui.agent_chat_not_ready"),
+        ("notSetUp", "ui.agent_chat_not_set_up"),
         ("refresh", "ui.agent_chat_refresh"),
         ("authTitle", "ui.agent_chat_auth_title"),
         ("authNeeded", "ui.agent_chat_auth_needed"),
@@ -519,7 +528,11 @@ pub fn state(app: &mut SolveApp) -> String {
         "skill": chat.skill.id(),
         "skills": skill::Skill::ALL.iter().map(|skill| json!({"id": skill.id(), "title": skill.title()})).collect::<Vec<_>>(),
         "turn": turn,
-        "agents": entries.iter().map(|entry| json!({"id": entry.id, "name": entry.name, "detail": entry.detail()})).collect::<Vec<_>>(),
+        // `hint`: what is known of an installed agent without starting it, in a word beside its name.
+        "agents": entries
+            .iter()
+            .map(|entry| json!({"id": entry.id, "name": entry.name, "detail": entry.detail(), "hint": entry.status().map(tr)}))
+            .collect::<Vec<_>>(),
         "agent": current.as_ref().map(|entry| entry.id.clone()),
         "detecting": chat.detecting.is_some(),
         "running": state.running(),
