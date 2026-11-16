@@ -70,3 +70,63 @@ Open at the time of writing: #138 (`2e9422e31`, base develop; three develop-CI r
 Second batch (another agent's): #147 `59b90f0e5` (draft, behind develop; rebase in progress in `worktrees/reb147`), #149 `3b84ac913` (draft, behind; rebase in progress), #148 `8d1306023` (base `pil-291/c`, now merged, so it needs a new baseline), #151 `89de3a6b1` (base `dfm/integration-base`; retarget after its parents land).
 
 Product decision (2026-11-15): the manual DFM entry becomes a standalone panel in the new UI, owned by the colleague's UI work; no "Run DFM" button is added to Chat in this round, and no phrase-list expansion. The panel wiring checklist is `DFM-WIRING.md` next to this file. Current Chat card and the exact phrases stay for regression.
+
+## Merge progress update (later, 2026-11-15)
+
+- #138 merged as `701d2bfe1` after fixing four develop-CI regressions (dfm.check's toolbar
+  destination, four command labels in English and the five complete catalogs, the icon
+  manifest, and the toolbar help entry).
+- #141 could not be reopened (closed and its head force-pushed afterwards) and is replaced by
+  **#158**, merged as `4eb71a7a6` (one commit: a report row and a model label choose the same
+  finding).
+- #142 was re-cut as a single commit on develop `4eb71a7a6`: head `9c3603028`, base develop,
+  reviewer diff 27 files / 2757 insertions (preview module, Ask Here, the page review card and
+  its `review` action, the adopted-design check-switch read). The earlier re-cut head
+  `b0b312ae0` and the verification tag remain for comparison.
+- Another agent merged #155 (right rail UI) into develop mid-flight, which made every open
+  branch behind; all were rebased again.
+- Second batch: #147 `ef4363e56` and #149 `b7acc419a` were rebased onto the new develop; #148
+  `c1fa8b7dd` had a missing icon for `project.critical_set` (fixed). They merge after #142.
+- #151 waits for #147/#149/#148.
+
+## Final merge state (2026-11-16)
+
+All thirteen authorised PRs are in develop; final SHA `dca081b61`.
+
+| Ticket | PR | merge commit |
+|---|---|---|
+| PIL-299 | #124 | `4bd72d0f3` |
+| PIL-304 | #131 | `18366bbf0` |
+| PIL-306 | #125 | `08dc35d9d` |
+| PIL-298 | #126 | `2d53b380f` |
+| PIL-301 | #135 → #150 | `3166053ad` |
+| PIL-302 | #137 | `7a3b8e02b` |
+| PIL-303 | #138 | `701d2bfe1` |
+| PIL-304 two-way | #141 → #158 | `4eb71a7a6` |
+| PIL-305 | #142 | `782c734f6` |
+| PIL-314 | #147 | `7de5cfba8` |
+| PIL-312 | #149 → #165 | `da1545fdc` |
+| PIL-313 | #148 | `d9ff9b20d` |
+| catalogue evidence | #151 | `dca081b61` |
+
+Develop source checks: `panel.rs` has `web::active` and no `agent_chat_popped`; `assistant_web.rs`
+keeps `delayed_place`; `file_load.rs` reads the project switch; `web.rs` has the page `review`
+action; `dfm_review.rs` (right-rail panel) is present.
+
+## Final acceptance on develop `dca081b61` (wrapper `/nix/store/abhwg0gbjr8i81g46rrqy3mvd4qhs789-solidcraft-0.1.1`)
+
+- Tray, control 46699: `run-3f84d013b3a048c8-872d0fc808774e79`; viewport shows
+  `Failed · sheet-1/F10`…`F13` and `F20`.
+- Second-batch rules now carry their real values on the card/report:
+  `sm.bend_relief_present` failed `RELIEF_NO_MARGIN` (F10–F13), `sm.min_web_parallel_bends`
+  passed 92.0, `sm.u_channel_ratio` passed 11.0, `sm.min_flange` `FLANGE_CROSSES_CUT` (not
+  verified), countersink rows `not_applicable` on this part.
+- The model-tool path could not be re-verified in this run: the agent's tool channel reported a
+  project-less session while a second app instance (other task, control 46814) was running. The
+  Chat card and preview-accept were verified on the #142 tree (`run-3180678d…`, accept added
+  `run-746f6611…`). Recorded as an environment caveat, not a proven defect.
+- Catalogue evidence (from #151, worker level): 20/20 rules have a worker report row; 18/20 also
+  flip with changed input. Exceptions: `sm.countersink_to_bend` (worker always `checked`; adapter
+  L3 decides) and `app.flat_no_overlap` (worker rows pass; the 20 mm² failure stays PIL-306 L3).
+  `sm.bend_relief_width/depth` keep L3 measured-notch evidence and stay `checked` at L4 for a
+  corner relief (outline cut). No desktop L5 run was made by #151 itself.

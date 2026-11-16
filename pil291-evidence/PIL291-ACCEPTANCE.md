@@ -247,3 +247,53 @@ project copied from the second batch's desktop fixture.
   (`evidence/combined-after-accept.png`).
 - Second-batch rule visibility is not yet possible here: `sm.bend_relief_*`, `sm.min_flange`,
   `sm.u_channel_ratio` and `sm.countersink_*` report `RULE_NOT_IMPLEMENTED` until #147/#149 merge.
+
+## Final #142 tree desktop run (develop `183cf7836` + #142 `33bd9dced`, wrapper `/nix/store/blg384y11hqdg32nmxfswwn4fp6v7s51-solidcraft-0.1.0`)
+
+Tray project, control 46698, real page in the right rail:
+
+- Chat request (`运行 DFM 检查并把报告告诉我`, model path) started exactly one run
+  `run-3180678df6d145ee-346efbb442fdca70`; the card equals the disk report (runId, model,
+  candidate and config digests), 25 findings.
+- Clicking a finding row put `Failed · sheet-1/F19` on the model with its geometry highlighted
+  (`evidence/final142-row-to-marker.png`); the reverse direction is covered by
+  `a_report_row_and_a_viewport_label_choose_the_same_finding` and the PIL-304 desktop record
+  (the page's selected-row caption was above the visible list area in this run).
+- With preview on, an agent request to change R1 to R2 waited as a preview (runs 7 -> 7);
+  Accept committed it and added exactly one run
+  `run-746f66113dbb4f11-d635b2bd3aac7266`, `current` (`evidence/final142-marker-click.png`).
+- Second-batch rules are still `RULE_NOT_IMPLEMENTED` on this tree (they need #147/#149); the
+  post-merge run checks one of them on the card.
+
+## Final develop `dca081b61` (wrapper `/nix/store/abhwg0gbjr8i81g46rrqy3mvd4qhs789-solidcraft-0.1.1`)
+
+Tray project, control 46699.
+
+- `dfm.check` through the control channel produced `run-3f84d013b3a048c8-872d0fc808774e79`.
+  Second-batch rows now carry measured values: `sm.bend_relief_present` failed
+  `RELIEF_NO_MARGIN` on F10–F13, `sm.min_web_parallel_bends` passed 92.0,
+  `sm.u_channel_ratio` passed 11.0, `sm.min_flange` reports `FLANGE_CROSSES_CUT` (not verified),
+  the countersink rows are `not_applicable` on this part (no countersink).
+- Finding found while checking the Chat path: with **Preview the agent's changes** on, the
+  agent's own `dfm.check` fails with “the open design is not saved in a project”, because the
+  tool runs on the turn's copy of the design, which has no project path; `project.inspect` also
+  says `hasProject: false` there. The check works with preview off (the control-channel run above
+  and the earlier #142-tree runs). This is a product limitation of preview + project-scoped
+  commands, not a regression in the project files; recorded rather than worked around.
+
+### Chat-triggered check on final develop: blocked by a tool-session defect
+
+On `dca081b61`, an agent turn's `dfm.check`/`project.inspect` (the tools the model reaches through
+the app's tool endpoint) report `hasProject: false` and “the open design is not saved in a
+project”, while the same commands through the control channel succeed and produce
+`run-3f84d013b3a048c8-872d0fc808774e79` on the same open design. The viewport does show the
+second-batch markers from that run (`Failed · sheet-1/F10`…`F13`, `F20`), so the report and marks
+are correct; the failure is in the model's tool session seeing no project path.
+
+Caveat: a second app instance (`/nix/store/v4dcnafs…-solidcraft-0.1.1`, control 46814) owned by
+another task was running at the same time, so the agent's tool channel may have reached that
+instance's session rather than this one; that would explain a project-less session. The failure is
+therefore recorded as **unresolved in this environment**, not proven as a product defect. The
+Chat card path itself was verified end-to-end on the #142 tree earlier today
+(`run-3180678df6d145ee-346efbb442fdca70`, card = disk), and the preview accept there added exactly
+one run (`run-746f66113dbb4f11-d635b2bd3aac7266`).

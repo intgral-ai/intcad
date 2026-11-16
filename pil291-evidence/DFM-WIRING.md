@@ -73,3 +73,21 @@
 
 边界：`Chat` 当前用“检查一下…”短语与模型工具调用触发 DFM 的路径已验收（见 PIL-291 记录），
 本轮只做回归；面板入口与拖拽由新版 UI 落地后接线。
+
+
+## 更新（#157 已进 develop）：面板与拖入接口已经落地
+
+`Review: run the DFM check from the right rail, locate a finding, and drag its report to the Assistant`
+(#157, `183cf7836`) 已经提供了本文第 1、3 节的大部分接线，独立面板不再需要我们新增：
+
+- 运行与状态：`crates/ui-egui/src/agent_chat/mod.rs` 的 `dfm_state() -> DfmState { running, last_run, error }`
+  与 `last_dfm_run()`；桌面与 wasm 各有实现（wasm 返回空闲）。
+- 右侧栏面板：`crates/ui-egui/src/dfm_review.rs`（运行检查、定位 finding、拖动报告）。
+- 报告附件（第 3 节的缺口现已存在）：`crates/ui-egui/src/agent_chat/attach.rs`
+  `Attachment::dfm_report(&Card)`、`Content::DfmReport { run_id, project_id, model_version, context }`、
+  `is_report()`、`report_run()`；`agent_chat::attach_ready(app, file)` 把附件放到下一条消息并打开 Assistant；
+  发送时按 run_id 重新读取报告（拿不到时用附加时的快照并提示）。
+- 页面侧：`web.rs` 新增对应动作，`App.tsx` 增加 3 行接线；测试在 `dfm_review_tests.rs` 与 `attach.rs` 单测。
+
+因此“拖入输入框 → 随消息发送”不再需要新增接口；剩余工作只是新版 UI 自己的视觉与交互打磨。
+本文第 2 节（run_id 读报告、过期判断、finding ↔ 视口双向选择）仍按原样复用。
