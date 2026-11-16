@@ -321,6 +321,7 @@ timeline.inspect                  a listing of the timeline
 timeline.play                     plays the history back in the view: no new geometry
 timeline.rename                   a feature name
 timeline.rename_group             a group name
+ui.ask_here                       the Ask Here box and its turn on a copy, not geometry: agent_chat::tests::ask_here_with_previews_on_runs_the_turn_on_a_copy
 ui.assistant                      the view: camera, layout, display
 view.ambient_occlusion            the view: camera, layout, display
 view.angle_readout                the view: camera, layout, display

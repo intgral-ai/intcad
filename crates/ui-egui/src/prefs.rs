@@ -1534,6 +1534,10 @@ preference_settings! {
     /// so the window stays live while they run (#1989, [`crate::control_job`]). Off: they run on
     /// the window thread, and the window waits for each, as before (the default).
     agent_off_thread: bool = false, PAGE_ASSISTANT;
+    /// The agent chat's design changes run on a copy of the design, shown over it, and wait for
+    /// Accept or Reject ([`crate::agent_chat::review`]). Off: they change the open design as they
+    /// come, as before (the default).
+    agent_chat_preview: bool = false, PAGE_ASSISTANT;
     /// Let AI agents connect: the localhost control channel (MCP) opens on the default port at
     /// start-up, unless `--control`/`SOLIDCRAFT_CONTROL_PORT` name one. Read at start-up.
     agent_control: bool = true, PAGE_ASSISTANT;
@@ -1563,6 +1567,11 @@ preference_settings! {
     agent_chat_side: String = "right".into(), PAGE_ASSISTANT;
     agent_chat_width: f32 = 380.0, PAGE_ASSISTANT;
     agent_chat_minimized: bool = false, PAGE_ASSISTANT;
+    /// Whether the chat is in its own window instead of the side panel, and that window's place
+    /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
+    /// negative or past the main screen when the window sits on another one).
+    agent_chat_popped: bool = false, PAGE_ASSISTANT;
+    agent_chat_window: Option<[f32; 4]> = None, PAGE_ASSISTANT;
     /// Whether what is selected in the design is written into each message (Attach selection),
     /// so the agent knows what "this" means without asking the app. Off: the agent is sent the
     /// selection only when it reads it through the app's tools, as before this was a setting.

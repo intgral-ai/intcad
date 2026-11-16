@@ -1468,6 +1468,9 @@ const ELEMENTS: &[Element] = &[
     element!("cell_editor", |ui, s| {
         cell_editor(ui, ui.id().with("cell"), &mut s.value, "Expression", true);
     }),
+    element!("single_line", |ui, s| {
+        single_line(ui, &mut s.value, ui.id().with("ask_here"), "Ask about the selection", 64, 240.0);
+    }),
     element!("color_field", |ui, _| {
         color_field(ui, &mut [120, 150, 180]);
     }),
