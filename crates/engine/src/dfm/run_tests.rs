@@ -578,6 +578,29 @@ fn another_not_verified_reason_is_unsupported_even_with_a_measurement() {
     assert!(built.not_checked.contains("sm.hole_min_diameter"));
 }
 
+/// A measured distance is reported to six decimals, as the rule layer's own `round6` does: a raw
+/// f64 from the geometry is not what a drawing, the panel or a model sees.
+#[test]
+fn a_measured_value_and_its_requirement_are_reported_to_six_decimals() {
+    let sheet = plate(1.5);
+    let facts = sheet_dfm::facts(&sheet).unwrap();
+    let requirement = RequirementRef {
+        value_mm: 20.000_000_000_000_004,
+        layer: Layer::Generic,
+        confirmation: None,
+        source: "TEST-ONLY".into(),
+        text: "TEST-ONLY".into(),
+        overridden: false,
+    };
+    let mut finding = rule_finding(RuleStatus::Pass, AppState::Checked, Some(requirement));
+    finding.rules = vec!["sm.hole_spacing".into()];
+    finding.measured_mm = Some(33.805_512_754_639_89);
+    let sheets = [SheetCheck { sheet: 0, body: "Plate".into(), facts, report: synthetic_report(vec![finding]) }];
+    let built = findings::build(&identity("run-1"), &sheets);
+    assert_eq!(built.findings[0].measured.as_ref().map(|measured| measured.value), Some(33.805_513));
+    assert_eq!(built.findings[0].requirement.as_ref().map(|requirement| requirement.value), Some(20.0));
+}
+
 #[test]
 fn an_app_overlap_finding_may_fail_without_factory_data() {
     let sheet = plate(1.5);
