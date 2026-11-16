@@ -326,6 +326,11 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 
 - `ui.agent_chat {"open":true,"side":"right"}` 打开原生 WebView；页面实际显示 “Set up an assistant / No agent found”、安装项和输入框（`assistant-webview.png`），`webView.host: true`；交互后 `page: true`。
 - **已验证拖拽**：在存有 DFM 项目报告的设计上，把 Review 报告卡拖入 Assistant，`ui.agent_chat` 的 `attachments` 变为 `["DFM report run-..."]`，WebView `page: true`（`assistant-report-drop.png`）。这证明宿主侧的卡片拖拽和附件桥接。
+- **已验证 Assistant 双向选择**：Assistant 的 DFM 检查卡由宿主 `agent_chat::web::run_check` 创建（探针分支让控制通道的 `send` 像页面一样识别“check the sheet metal part”，`probe/int1454-exp2` `c2631046a`）。在真实 WebView 中：
+  - 点击 Assistant 行 F5（`sm.hole_min_diameter`，hole 1）→ Review 行 F5 选中（`review-after-assistant-f5.png`），即视口选中同一 `(run_id, finding_id)`；
+  - 点击 Assistant 行 F8（`sm.hole_to_edge`，hole 1）→ 视口标签 F8 选中（`assistant-row-f8.png`），F6 保持未选；
+  - 点击视口标签 F6 → Assistant 行 F6（`sm.hole_min_diameter`，hole 2）选中（`assistant-label-f6-row.png`）。
+  - 检查卡截图：`assistant-check-card.png`。
 - **未验证**：把附件发送给 agent 的完整 round-trip。当前 VM 没有安装 agent；附件只证明宿主侧桥接，不证明模型实际读取报告。
 
 ### 5.4 #145 的 CI 分类
@@ -362,7 +367,7 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 - 开放几何修复（重复圆）可以 34 行回移，当前 UI 得到正确体积/孔。
 - 开放 UI/视口修复（orbit pivot）可以 259 行回移，当前 UI 行为改善，DFM 双向选择不回归。
 - DFM 行↔标记双向选择在最新 develop 上工作；同面两个 finding 的身份可以区分（F5/F8 vs F6）。
-- Assistant WebView 在真实桌面 VM 中实际渲染页面，不只是空宿主。
+- Assistant WebView 在真实桌面 VM 中实际渲染页面，不只是空宿主；Assistant 检查卡的行→视口、视口标签→Assistant 行均已在真实 WebView 中点击验证（F5/F8/F6）。
 
 ### 7.2 存在具体阻塞
 
@@ -375,8 +380,8 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 
 - 144 个全量路线 A 编译错误实际修复时间（目前只统计，未修）。
 - `solidcore` pin 从 `8ddce901` 到 v0.41.0 的实际 delta。
-- 同面标签 hit-test 的 33 px 风险（需要发布 label 手柄的自动化用例）。
-- Assistant 报告卡发送给 agent 的 round-trip（宿主侧拖拽/附件桥接已验证；当前环境无 agent）。
+- 同面标签的 33 px 自动化风险：双向点击已验证，但行展开会改变 WebView 行坐标，且标签没有发布 handle；需要 `dfm:label:<finding_id>` 和固定行 handle 才能稳定回归。
+- Assistant 报告卡发送给 agent 的 round-trip（宿主侧拖拽、附件桥接和双向选择已验证；当前环境无 agent，未验证模型读取）。
 - Windows/macOS 的 WebView、面板和跨平台验收。
 - 律师对 §5/§1(a)/§3(c) 的结论。
 
@@ -390,12 +395,16 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 
 ## 8. 证据索引
 
-基线/来源/覆盖/边界详细报告（本机工作材料，关键结论已在本报告内）：
+详细证据文件（本分支 `docs/research/int1454-evidence/`）：
+
+- `licence.md` — 许可时间线、逐路径来源表、三种场景、待法律确认问题
+- `upstream-coverage.md` — 4,009 commit 分组、混合 commit、开放/受限依赖、v0.40.1→v0.41.0 回放、文档格式冲突
+- `dfm-boundary.md` — 两条桌面调用链、DFM 数据/选中/投影/命中/WebView 归属、E2E 方法
+- `commands.md` — 全部实验的准确命令、SHA、结果和截图对应
+
+早期工作材料（关键结论已并入本报告；路径仅作追溯）：
 
 - `/tmp/opencode/int1454-v2/baseline.md`
-- `/tmp/opencode/int1454-v2/licence.md`
-- `/tmp/opencode/int1454-v2/upstream-coverage.md`
-- `/tmp/opencode/int1454-v2/dfm-boundary.md`
 - `/tmp/opencode/int1454-uikit/reuse-map.md`
 - `/tmp/opencode/int1454-uikit/call-audit.md`
 - `/tmp/opencode/int1454-uikit/prototype.md`
@@ -403,7 +412,7 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 实验分支（不合并）：
 
 - `probe/int1454-exp1` `eda5fbd3e` — 重复圆修复 + 测试；工作树 `worktrees/int1454-exp1`
-- `probe/int1454-exp2` — orbit 修复，7 文件 259/39；工作树 `worktrees/int1454-exp2`
+- `probe/int1454-exp2` `c2631046a` — orbit 修复（7 文件 259/39）+ 控制通道复用 DFM 检查短语；工作树 `worktrees/int1454-exp2`
 - `probe/int1454-uikit` — 预品牌 kit 替换原型；工作树 `worktrees/int1454`
 - `probe/int1454-route-a` `d9eae79a7` — develop UI + v0.41.0 后端的全量探测；144 errors
 - `docs/int1454-ui-kit-study` — 本报告和截图
@@ -421,6 +430,11 @@ DFM 链路：`#131` `18366bbf0`、`#157` `183cf7836`、`#158` `4eb71a7a6`，均�
 | `dfm-stale-after-edit.png` | 加第三个孔后旧报告/标记仍在（阻塞） |
 | `assistant-webview.png` | Assistant WebView 实际显示 |
 | `assistant-report-drop.png` | Review 报告卡拖入 Assistant 后生成 DFM 报告附件 |
+| `assistant-check-card.png` | Assistant 中的真实 DFM 检查卡（含 failed 行） |
+| `assistant-row-f5.png` | Assistant 行 F5 选中/展开 |
+| `review-after-assistant-f5.png` | Assistant 行 F5 选中后 Review 行 F5 同选 |
+| `assistant-row-f8.png` | Assistant 行 F8 选中，视口标签 F8 同选 |
+| `assistant-label-f6-row.png` | 点击视口标签 F6 后 Assistant 行 F6 选中 |
 | `exp2-dfm-row-f5.png` | orbit 修复版上的 DFM 回归 |
 
 ## 9. 建议的下一步（可排期）
