@@ -1086,6 +1086,9 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
                     }
                 }
                 app.home.open = false;
+                // An open design's `ci.toml` decides whether its checks run by themselves. This
+                // path adopts the session without `finish_command`, so read the switch here too.
+                crate::agent_chat::refresh_dfm_auto(app);
                 crate::frame_watch::step(app, "adopt the design");
                 // Shown as its bodies are meshed, framed from their outlines meanwhile; its Home
                 // picture is drawn once they all are.

@@ -67,6 +67,7 @@ type Part =
   | { kind: 'permission'; item: Of<'permission'> }
   | { kind: 'approval'; item: Approval }
   | { kind: 'changes'; item: Of<'changes'> }
+  | { kind: 'review'; item: Of<'review'> }
   | { kind: 'notice'; item: Of<'notice'> }
   | { kind: 'check'; item: Of<'check'> }
   | { kind: 'skill'; item: Of<'skill'> };
@@ -315,6 +316,40 @@ function Answer({ part, streaming }: { part: Extract<Part, { kind: 'text' }>; st
   );
 }
 
+/** The agent's turn on a copy: what it made, changed and removed, and Accept or Reject. */
+function ReviewCard({ item, strings }: { item: Of<'review'>; strings: Strings }) {
+  const bodies = (label: string, names: string[]) =>
+    names.length > 0 && (
+      <Txt variant="caption" tone="muted">
+        {label.replace('{bodies}', names.join(', '))}
+      </Txt>
+    );
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border1 p-3">
+      <Txt variant="ui-md" weight="medium">{strings.reviewTitle}</Txt>
+      {item.steps.map((step, at) => (
+        <Txt key={at} variant="caption" tone="muted">• {step}</Txt>
+      ))}
+      {item.more > 0 && <Txt variant="caption" tone="muted">{strings.reviewMore.replace('{n}', String(item.more))}</Txt>}
+      {bodies(strings.reviewMade, item.made.map(b => b.name))}
+      {bodies(strings.reviewChanged, item.changed.map(b => b.name))}
+      {bodies(strings.reviewRemoved, item.removed.map(b => b.name))}
+      {item.outcome === 'Waiting' ? (
+        <div className="flex items-center gap-2">
+          <Button type="button" size="sm" variant="primary" onClick={() => post({ type: 'review', id: item.review, accept: true })}>
+            {strings.reviewAccept}
+          </Button>
+          <Button type="button" size="sm" onClick={() => post({ type: 'review', id: item.review, accept: false })}>
+            {strings.reviewReject}
+          </Button>
+        </div>
+      ) : (
+        <Txt variant="caption" tone="muted">{item.outcome === 'Accepted' ? strings.reviewAccepted : strings.reviewRejected}</Txt>
+      )}
+    </div>
+  );
+}
+
 /** The DFM check card: counts, "not checked", and one expandable row per finding. */
 function CheckCardView({ item, strings }: { item: Of<'check'>; strings: Strings }) {
   const card = item.card;
@@ -458,6 +493,8 @@ function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings:
                 )}
               </Notice>
             );
+          case 'review':
+            return <ReviewCard key={key} item={part.item} strings={strings} />;
           case 'changes':
             return (
               <div key={key} className="flex flex-wrap items-center gap-2">
