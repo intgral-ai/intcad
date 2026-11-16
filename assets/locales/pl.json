@@ -2483,7 +2483,7 @@
   "ui.agent_chat_new": "Nowy czat",
   "ui.agent_chat_new_confirm": "Rozpocząć nowy czat? Bieżący zostanie wyczyszczony.",
   "ui.agent_chat_next_picture": "Następny obraz",
-  "ui.agent_chat_no_cli": "Nie znaleziono solidcraft-cli obok aplikacji, więc agent nie ma dostępu do projektu.",
+  "ui.agent_chat_no_cli": "Nie znaleziono intcad-cli obok aplikacji, więc agent nie ma dostępu do projektu.",
   "ui.agent_chat_no_control": "Punkt końcowy czatu z agentem się nie uruchomił, więc agent nie ma dostępu do projektu.",
   "ui.agent_chat_no_images": "Ten agent nie przyjmuje obrazów",
   "ui.agent_chat_no_picture": "W schowku nie ma obrazu",

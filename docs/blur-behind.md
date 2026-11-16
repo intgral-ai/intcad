@@ -402,7 +402,7 @@ written token file (`$blurTokenPath` below). Port 38876 is the user review app a
 must not be contacted or relaunched; blur validation uses explicit port 38877:
 
 ```powershell
-.\target\ci\solidcraft.exe --sample --control 38877
+.\target\ci\intcad.exe --sample --control 38877
 # In a second shell; always choose a NEW output directory:
 .\scripts\blur-evidence.ps1 -Port 38877 -TokenPath $blurTokenPath -OutputDirectory "$env:TEMP\solidcraft-9809-window-review"
 ```

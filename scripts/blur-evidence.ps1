@@ -7,7 +7,7 @@ param(
     [ValidateRange(1, 1000)][int]$Frames = 30
 )
 $ErrorActionPreference = 'Stop'
-if (-not $TokenPath) { $TokenPath = Join-Path $env:LOCALAPPDATA "SolidCraft/control/$Port.token" }
+if (-not $TokenPath) { $TokenPath = Join-Path $env:LOCALAPPDATA "Intcad/control/$Port.token" }
 $blurToken = (Get-Content -LiteralPath $TokenPath -Raw).Trim()
 $blurOutput = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $blurOutput) { throw 'Use a new output directory; existing evidence is never overwritten.' }

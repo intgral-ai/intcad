@@ -41,7 +41,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 # window's Wayland app_id / X11 class. Earlier releases used ai.storyteller.solidcraft (0.8 until
 # the move to Tangency Labs) and ai.storyteller.solvecraft (before 0.8); the Flatpak repository
 # rebases both to this one (packaging/flatpak-site.sh, docs/compatibility.md).
-APP_ID=io.tangencylabs.solidcraft
+APP_ID=ai.intgral.intcad
 export APP_ID
 
 # Emit a GitHub Actions warning (plain stderr outside Actions).
@@ -50,7 +50,7 @@ warn() {
 }
 
 # Copy the licence, notice and readme files into a package directory. The programs also carry
-# them (Help > About > Licences, `solidcraft-cli licences`).
+# them (Help > About > Licences, `intcad-cli licences`).
 copy_docs() {
   local dest="$1" f
   for f in README.md LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES.txt; do

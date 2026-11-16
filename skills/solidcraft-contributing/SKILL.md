@@ -224,7 +224,7 @@ capture actual screenshots or a short recording, preferably before and after.
 For model output without a display, run:
 
 ```sh
-solidcraft-cli snapshot script.json --out /tmp/solidcraft-result.png
+intcad-cli snapshot script.json --out /tmp/solidcraft-result.png
 ```
 
 For UI behaviour, launch the desktop app with a free control port:
@@ -268,7 +268,7 @@ merge or rerun an unchanged failing check without evidence of infrastructure tro
 
 ## Cloud sandbox
 
-Without a display, use `solidcraft-cli snapshot` for model evidence or launch the
+Without a display, use `intcad-cli snapshot` for model evidence or launch the
 app under `Xvfb :99` with `DISPLAY=:99` for UI evidence. With limited disk or CPU,
 prefer a documentation or small isolated task, targeted tests and existing build
 artifacts; explain any missing checks. Preserve work before temporary storage

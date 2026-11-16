@@ -61,7 +61,7 @@ function askBody(asks) {
   const lines = ['Thanks for the report! To reproduce it we need a little more:'];
   lines.push(
     '- **Steps to reproduce**: what you clicked or typed, in order. For a problem on a particular design, ' +
-      '`solidcraft-cli script design.sc --out repro.json` turns its history into a script; attach that, or the design.',
+      '`intcad-cli script design.sc --out repro.json` turns its history into a script; attach that, or the design.',
   );
   if (asks.includes('version')) lines.push('- **SolidCraft version** (Help → About) and your OS.');
   lines.push(

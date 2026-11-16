@@ -1,6 +1,6 @@
 # The fillet rig as a regression gate: a pull request that touches fillet code (the paths below)
 # runs every case in tests/kernel-cases/fillets/ through one release build of
-# solidcraft-cli, and fails on a regression (a case that fails and
+# intcad-cli, and fails on a regression (a case that fails and
 # tests/kernel-cases/fillets/KNOWN_FAILING does not list) or on a listed case that now passes
 # (it is fixed: remove its line, so the list only shrinks). See tests/kernel-cases/README.md.
 #
@@ -87,7 +87,7 @@ jobs:
       - name: Run the fillet cases against the known-failing list
         run: >-
           cargo run -q --locked -p xtask -- kernel-cases --area fillets
-          --cli target/release/solidcraft-cli --out "$RUNNER_TEMP/fillet-rig"
+          --cli target/release/intcad-cli --out "$RUNNER_TEMP/fillet-rig"
           --known-failing tests/kernel-cases/fillets/KNOWN_FAILING
       - name: Keep the results
         if: always()

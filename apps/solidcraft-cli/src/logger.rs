@@ -15,7 +15,9 @@ struct Stderr {
 
 impl Log for Stderr {
     fn enabled(&self, m: &Metadata) -> bool {
-        m.level() <= if m.target().starts_with("solidcraft") { self.ours } else { self.others }
+        // The programs' own modules are `intcad…` (their `[[bin]]` names); the crates are `solidcraft_…`.
+        let ours = m.target().starts_with("solidcraft") || m.target().starts_with("intcad");
+        m.level() <= if ours { self.ours } else { self.others }
     }
 
     fn log(&self, r: &Record) {

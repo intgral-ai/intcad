@@ -55,7 +55,7 @@ Runtime request-only [glass overrides](render-transmission.md) and an optional
 Neither adds saved document fields. Positive aperture requires perspective.
 
 ```sh
-solidcraft-cli render examples/render-path-studio.json --out enclosure.png --progressive --samples 64 --max-depth 8 --seed 0 --width 800 --height 600
+intcad-cli render examples/render-path-studio.json --out enclosure.png --progressive --samples 64 --max-depth 8 --seed 0 --width 800 --height 600
 ```
 
 The CLI explicitly fails if a progressive request has no suitable device. Ordinary

@@ -1,4 +1,4 @@
-//! The control channel's per-launch token (docs/control-protocol.md). `solidcraft --control PORT`
+//! The control channel's per-launch token (docs/control-protocol.md). `intcad --control PORT`
 //! makes a random token, writes it to a file only the user can read
 //! ([`token_path`]) and refuses every connection whose first request doesn't carry it, so other
 //! users on the same machine (loopback is shared, on Windows across remote-desktop sessions too)
@@ -75,7 +75,7 @@ pub fn token_path(port: u16) -> Option<PathBuf> {
 }
 
 /// The discovery file: the port of the most recently started app, so a client with no port
-/// (`solidcraft-cli mcp`) finds it. It holds only the port; the token stays in its own file.
+/// (`intcad-cli mcp`) finds it. It holds only the port; the token stays in its own file.
 pub fn current_port_path() -> Option<PathBuf> {
     Some(control_dir()?.join("current.port"))
 }

@@ -169,7 +169,7 @@ def run_backend(backend, out):
             if probe.connect_ex(("127.0.0.1", PORTS[backend])) == 0:
                 raise RuntimeError(f"port {PORTS[backend]} is already in use (another SolidCraft?)")
         # Its own process group, so stopping it also stops the app under xvfb-run.
-        app = subprocess.Popen(prefix + ["/snap/bin/solidcraft", "--control", str(PORTS[backend])],
+        app = subprocess.Popen(prefix + ["/snap/bin/intcad", "--control", str(PORTS[backend])],
                                env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             renderer, stats = drive(app, PORTS[backend], work / "frame.png")

@@ -90,11 +90,11 @@ design quick and makes the assembly when its structure is clear.
 | Design a bent sheet part | A base flange from a sketch, then flanges, hems and folds under a sheet metal rule | [Sheet metal](sheet-metal.md) |
 | Design a plastic enclosure | A shelled body, then bosses, lip and groove, snap fits, ribs | [Plastic parts](plastic.md) |
 | Work on a part from another program | Open a STEP, IGES, 3MF, STL or OBJ file as a new design | [Import and export](files.md) |
-| Script a design or hand it to an agent | Commands in a script for `solidcraft-cli`, or the MCP server | [Getting started](getting-started.md#cli), [MCP](mcp.md) |
+| Script a design or hand it to an agent | Commands in a script for `intcad-cli`, or the MCP server | [Getting started](getting-started.md#cli), [MCP](mcp.md) |
 
 Everything you click is a **command** with named parameters, and the toolbar, scripts, the CLI and
 AI agents all run the same commands. A design built in the window can be turned into a script with
-`solidcraft-cli script`, which rebuilds it without the window (designs with components or joints
+`intcad-cli script`, which rebuilds it without the window (designs with components or joints
 are not supported there yet).
 
 ## Terms if you come from another CAD program

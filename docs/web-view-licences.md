@@ -48,7 +48,7 @@ table. Their notice belongs with the other library notices in `NOTICE` and in
 - `packaging/linux/nfpm.yaml` declares `libgtk-3-0t64 | libgtk-3-0` and
   `libwebkit2gtk-4.1-0` for the deb, and the two sonames for the rpm. They are dependencies,
   not payload.
-- Check a build with `readelf -d target/release/solidcraft | grep NEEDED`; it names
+- Check a build with `readelf -d target/release/intcad | grep NEEDED`; it names
   `libgtk-3.so.0`, `libgdk-3.so.0`, `libwebkit2gtk-4.1.so.0` and
   `libjavascriptcoregtk-4.1.so.0` beside GLib, Pango, cairo and ATK.
 - WebKitGTK's own `NEEDED` entries include the LGPL-2.1-or-later GNOME libraries (GLib,
@@ -64,15 +64,15 @@ table. Their notice belongs with the other library notices in `NOTICE` and in
 
 | Shape | GTK 3 / WebKitGTK source | Notice requirement |
 |---|---|---|
-| deb, rpm, tarball | system packages, declared dependencies, not bundled | Ship the LGPL/BSD notice and licence text (for example `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` in `/usr/share/doc/solidcraft/`). The distro supplies the library source. **Missing today.** |
+| deb, rpm, tarball | system packages, declared dependencies, not bundled | Ship the LGPL/BSD notice and licence text (for example `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` in `/usr/share/doc/intcad/`). The distro supplies the library source. **Missing today.** |
 | AppImage | host system libraries; the AppImage bundles neither | The AppRun message explains which package to install; still ship the notice in the AppImage's docs. **Missing today.** |
 | Flatpak | the GNOME 51 runtime supplies GTK 3 and WebKitGTK 4.1; neither is in the app bundle | The runtime is a separate Flatpak, so this bundle redistributes neither library. The Assistant page's notices still ship in the app. |
 | Snap | the core24 `gnome` extension (`gnome-46-2404`) supplies GTK 3 and WebKitGTK 4.1; this snap stages neither | The content snap is separate, so this snap redistributes neither library. The Assistant page's notices still ship in the app. |
-| Nix package | `flake.nix` adds `gtk3` and `webkitgtk_4_1` to the runtime library closure, wraps `LD_LIBRARY_PATH` with `wrapGAppsHook3`, and installs `share/doc/solidcraft/WEB-VIEW-PLATFORM-NOTICES.txt` | The closure **does redistribute** both libraries. The package metadata lists `lgpl21Plus` and `bsd2` alongside MIT/Apache, and the notice carries the LGPL/BSD texts. Source-availability evidence per release is still the release owner's item. |
+| Nix package | `flake.nix` adds `gtk3` and `webkitgtk_4_1` to the runtime library closure, wraps `LD_LIBRARY_PATH` with `wrapGAppsHook3`, and installs `share/doc/intcad/WEB-VIEW-PLATFORM-NOTICES.txt` | The closure **does redistribute** both libraries. The package metadata lists `lgpl21Plus` and `bsd2` alongside MIT/Apache, and the notice carries the LGPL/BSD texts. Source-availability evidence per release is still the release owner's item. |
 | Windows MSI / portable zip | Evergreen WebView2 Runtime is not redistributed; the SDK loader is statically linked | State the Microsoft terms and the runtime dependency in the notices; confirm whether the WebView2Loader notice is required. **Missing today.** |
 | macOS disk image | system WKWebView | No third-party library notice for the engine itself; the Assistant page notices still ship. |
 
-`NOTICE` is compiled into every program (`Help > About > Licences`, `solidcraft-cli
+`NOTICE` is compiled into every program (`Help > About > Licences`, `intcad-cli
 licences`), so the notice reaches single-executable and AppImage users. The About dialog
 still cannot show the system libraries' full licence text because `THIRD-PARTY-LICENSES.txt`
 covers only Cargo crates; shipping `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` with
@@ -138,7 +138,7 @@ cargo tree -i wry -i gtk -i webkit2gtk
 cargo tree --target x86_64-pc-windows-msvc -i webview2-com
 
 # Direct linkage of a built app
-readelf -d target/release/solidcraft | grep NEEDED
+readelf -d target/release/intcad | grep NEEDED
 
 # Licences of every shipped crate
 cargo xtask licences --check

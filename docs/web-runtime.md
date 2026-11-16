@@ -22,7 +22,7 @@ Access import/export. That works for small and medium designs but hits three wal
 |------|------------------------|
 | Quota | Large STEP imports and container blobs compete with autosave and cache in OPFS |
 | Main thread | Open, save, and timeline evaluation run synchronously on the UI thread with egui |
-| Agents | MCP runs out of process (`solidcraft-cli mcp`); the tab has no first-class agent session |
+| Agents | MCP runs out of process (`intcad-cli mcp`); the tab has no first-class agent session |
 
 WebGPU for the viewport already runs on the main thread (wgpu via eframe). Moving the entire UI
 renderer into a worker is out of scope for the first integration; worker GPU is for offload jobs
@@ -65,7 +65,7 @@ Tiers (craft-tier-store)
 ```
 
 On **desktop**, the same `BlobStore` and job envelopes apply: warm/cold map to normal directories;
-[`solidcraft-cli mcp`](mcp.md) and wasmtime plugin hosts ([#1221](https://github.com/bherbruck/solidcraft/issues/1221))
+[`intcad-cli mcp`](mcp.md) and wasmtime plugin hosts ([#1221](https://github.com/bherbruck/solidcraft/issues/1221))
 call the same `run(command, args)` JSON.
 
 ## Mapping SolidCraft today
@@ -106,7 +106,7 @@ providers and key namespaces only.
 
 | Mode | Transport |
 |------|-----------|
-| Desktop agent | `solidcraft-cli mcp` (stdio) or `--connect` to [control protocol](control-protocol.md) |
+| Desktop agent | `intcad-cli mcp` (stdio) or `--connect` to [control protocol](control-protocol.md) |
 | Browser agent | RPC to broker session; dialog-free tools only |
 | IDE bridge | Optional local relay (stdio MCP ↔ tab); not required for CollabCraft-hosted wasm |
 

@@ -47,7 +47,7 @@ mod tests {
         assert_eq!(of_path("/app-rc/index.html"), "rc");
         assert_eq!(of_path("/app-edge/"), "edge");
         assert_eq!(of_path("/"), "");
-        assert_eq!(of_path("/solidcraft-web-0.30.1/"), "");
+        assert_eq!(of_path("/intcad-web-0.30.1/"), "");
         assert_eq!(of_path("/app/app-rc/"), "rc", "only the directory's own name counts");
         assert_eq!(of_path("/app-rc/app/"), "");
     }

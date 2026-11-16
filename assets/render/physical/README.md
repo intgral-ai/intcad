@@ -76,7 +76,7 @@ All tools use Python 3.11+ standard-library code. From the repository root:
 ```sh
 python -B assets/render/physical/tools/physical.py validate
 python -B -m unittest discover -s assets/render/physical/tools -p 'test_*.py'
-python -B assets/render/physical/tools/check_physical.py --cli /trusted/solidcraft-cli
+python -B assets/render/physical/tools/check_physical.py --cli /trusted/intcad-cli
 python -B assets/render/physical/tools/physical.py resolve SURF-001
 python -B assets/render/physical/tools/physical.py prepare steel-c45 --acknowledge-reference
 ```
@@ -99,7 +99,7 @@ library v2, create and verify a separate reference library:
 
 ```sh
 python -B assets/render/physical/tools/export_library.py \
-  --acknowledge-reference --cli /trusted/card-capable/solidcraft-cli
+  --acknowledge-reference --cli /trusted/card-capable/intcad-cli
 ```
 
 Optional repeated `--profile ID` arguments restrict the selection. The exporter

@@ -4202,7 +4202,7 @@
   "ui.agent_chat_new": "Nový chat",
   "ui.agent_chat_new_confirm": "Začít nový chat? Aktuální bude vymazán.",
   "ui.agent_chat_next_picture": "Další obrázek",
-  "ui.agent_chat_no_cli": "Vedle aplikace nebyl nalezen solidcraft-cli, takže agent nemá přístup k návrhu.",
+  "ui.agent_chat_no_cli": "Vedle aplikace nebyl nalezen intcad-cli, takže agent nemá přístup k návrhu.",
   "ui.agent_chat_no_control": "Endpoint chatu s agentem se nespustil, takže agent nemá přístup k návrhu.",
   "ui.agent_chat_no_images": "Tento agent nepřijímá obrázky",
   "ui.agent_chat_no_picture": "Ve schránce není žádný obrázek",

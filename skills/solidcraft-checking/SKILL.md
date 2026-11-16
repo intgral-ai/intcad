@@ -12,13 +12,13 @@ description: Use alongside solidcraft-modeling and solidcraft-editing whenever y
 
 ## Scripts
 
-An MCP `batch` and a command script (`{"commands": [...]}`, run by `solidcraft-cli run`) take the same command list. Build with a script when the design goes into a repo or must be rebuilt later: a script rebuilds the design from scratch on every run. Subagents share the session's one MCP design, so agents that run in parallel use `solidcraft-cli` only.
+An MCP `batch` and a command script (`{"commands": [...]}`, run by `intcad-cli run`) take the same command list. Build with a script when the design goes into a repo or must be rebuilt later: a script rebuilds the design from scratch on every run. Subagents share the session's one MCP design, so agents that run in parallel use `intcad-cli` only.
 
 In `$SKILL/scripts/`:
 - `python3 $SKILL/scripts/run.py script.json [--in <design>] [--save <name>.json]` runs a script and prints `FAIL`, a `WARN` line per feature warning, a `SKETCH` line per sketch above dof 0 and a `BODY` line per body, for the end state and for each `document.inspect` inside the script.
 - `scb.py` gives a generator a `Script` with sketch helpers that come out at dof 0 (`hexagon`, `circle`, `rounded_rectangle`, `place`) and `cmd` for any other command. It rejects repeated sketch, feature and body names. Import it with `sys.path.insert(0, "<$SKILL>/scripts")`.
 - `uv run --no-project --with build123d python $SKILL/scripts/compare_step.py actual.step expected.step` gives the exact volume of the difference between two STEP files and where it sits. It and the tests run OpenCASCADE through build123d as a separate tool, the way `tools/freecad-oracle` runs FreeCAD: SolidCraft does not use, link, vendor or ship any of it.
-- `solidcraft-cli snapshot <design or script> --out shot.png --view iso` renders a PNG to look at.
+- `intcad-cli snapshot <design or script> --out shot.png --view iso` renders a PNG to look at.
 
 ## Steps to add
 
@@ -44,5 +44,5 @@ In `$SKILL/scripts/`:
 - `taper` positive widens along the extrude direction, negative narrows it, also with `direction: negative`.
 - `sketch.polygon.circumscribed` with 6 sides and `angle: 0` puts vertices up and down and flat sides facing ±x.
 - A pattern of a join or cut feature repeats that join or cut. Put every join before the cuts that must stay open: a later join fills them.
-- When a timeline feature fails, `solidcraft-cli run` writes nothing and the error names the feature. `run --in` and `snapshot` also accept a command script in place of a design.
+- When a timeline feature fails, `intcad-cli run` writes nothing and the error names the feature. `run --in` and `snapshot` also accept a command script in place of a design.
 - To build in the user's open app, see the bridged mode in [docs/mcp.md](https://github.com/bherbruck/solidcraft/blob/main/docs/mcp.md): the app and the server both start with extra flags, so ask the user.

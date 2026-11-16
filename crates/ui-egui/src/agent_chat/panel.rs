@@ -133,13 +133,15 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         request_new_chat(app);
     }
     if !app.agent_chat.open {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.agent_chat.seen_open = false;
+        }
         return;
     }
-    // Look for installed agents the first time the panel opens (in the background).
+    // Look for installed agents each time the panel opens (in the background).
     #[cfg(not(target_arch = "wasm32"))]
-    if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
-        refresh(app, &ctx);
-    }
+    look_on_open(app, &ctx);
     if Container::for_layout(app.ui.layout, Surface::Panel).floating() {
         floating(app, ui);
         show_drop_hint(app, &ctx);
@@ -1231,7 +1233,7 @@ fn switcher(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-const FLATPAK_OVERRIDE: &str = "flatpak override --user io.tangencylabs.solidcraft --filesystem=~/.nvm:ro --filesystem=~/.local/bin:ro --filesystem=~/.local/share/claude:ro --filesystem=~/.claude --filesystem=~/.claude.json --share=network";
+const FLATPAK_OVERRIDE: &str = "flatpak override --user ai.intgral.intcad --filesystem=~/.nvm:ro --filesystem=~/.local/bin:ro --filesystem=~/.local/share/claude:ro --filesystem=~/.claude --filesystem=~/.claude.json --share=network";
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn no_agents_message() -> String {
@@ -2459,7 +2461,7 @@ mod tests {
             child.args(["--exact", "agent_chat::panel::tests::empty_discovery_explains_flatpak_permissions", "--nocapture"]);
             child.env(CHILD, case);
             if case == "flatpak" {
-                child.env("FLATPAK_ID", "io.tangencylabs.solidcraft");
+                child.env("FLATPAK_ID", "ai.intgral.intcad");
             } else {
                 child.env_remove("FLATPAK_ID");
             }

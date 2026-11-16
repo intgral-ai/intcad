@@ -1,6 +1,6 @@
 //! A scripted ACP agent for trying the agent chat without an account (docs/agent-chat.md):
 //! it speaks the Agent Client Protocol on stdin and stdout like the real adapters, starts the MCP
-//! server the chat gives it (`solidcraft-cli mcp --connect …`) and models through it. No model
+//! server the chat gives it (`intcad-cli mcp --connect …`) and models through it. No model
 //! runs: what it does is fixed.
 //!
 //! ```text

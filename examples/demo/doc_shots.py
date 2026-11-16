@@ -14,7 +14,7 @@ them) or .mp4 (a clip, with the drawn pointer and click ripples of overlay.py, i
 trim_idle.py). Shots are the functions below; the page that shows a shot explains it.
 
 Needs Xvfb, ffmpeg (x11grab) and Pillow, and a release build of the app (`--app`, default
-$CARGO_TARGET_DIR/release/solidcraft, else target/release/solidcraft). Every new file needs an
+$CARGO_TARGET_DIR/release/intcad, else target/release/intcad). Every new file needs an
 ATTRIBUTION row (attribution/pending/).
 """
 
@@ -372,7 +372,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("shots", nargs="*", help="shot names, or a page (ui-tour); default every shot")
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("--app", default=str(Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release/solidcraft"))
+    ap.add_argument("--app", default=str(Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release/intcad"))
     ap.add_argument("--display", default=":97", help="the Xvfb display to start (or use, with --no-xvfb)")
     ap.add_argument("--no-xvfb", action="store_true", help="use a display that is already running")
     ap.add_argument("--keep", action="store_true", help="keep each shot's work folder")

@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 
 /// List this computer's crash reports, newest first. They stay on this computer and are never
 /// sent anywhere. Read one with `diagnostics.crash_report`; reproduce one with
-/// `solidcraft-cli crashes replay <id>`.
+/// `intcad-cli crashes replay <id>`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct CrashReportsParams {
@@ -85,7 +85,7 @@ impl JsonSchema for CrashReport {
                 "notes": {"description": "What the report could not record, and why."},
                 "path": {"description": "The report's folder on this computer.", "type": "string"},
                 "design_path": path("design"),
-                "replay_path": path("replay (`solidcraft-cli run <replay_path> --in <design_path>`)"),
+                "replay_path": path("replay (`intcad-cli run <replay_path> --in <design_path>`)"),
                 "minidump_path": path("minidump"),
                 "param_warnings": {"description": "In the warn parameter-check mode: what the call's parameters got wrong.", "type": "array", "items": {"type": "string"}}
             }

@@ -65,7 +65,7 @@ the actual window with `ui.screenshot` when reviewing it.
 
 On an Apple M3 Pro (18-core GPU, 36 GiB unified memory), macOS 27.0
 (26A428), both unchanged main `0872eb95` and this branch merged with that
-revision reproduce the same startup defect: `solidcraft --sample` shows the
+revision reproduce the same startup defect: `intcad --sample` shows the
 plate's edges and ground shadow but no opaque faces. AO is disabled on the
 branch and does not exist on main. Both were built with `--profile ci`, launched
 separately on Metal with MSAA 4x, and captured at 1200 × 850 logical pixels
@@ -123,7 +123,7 @@ Per-trial medians (ms), in chronological order:
 ## AO while the view moves (2026-10-26, #7165)
 
 Apple M4 Max, macOS 27, release build, MSAA 4x, ground shadow on, normal display quality,
-supersampling off. The design is `solidcraft-cli bench-agent --save` (1,280 bodies, 767,476
+supersampling off. The design is `intcad-cli bench-agent --save` (1,280 bodies, 767,476
 triangles), fitted to a 1600 x 960 point viewport. The camera was turned through `ui.camera`
 every 8 ms for 6 seconds while a Metal System Trace recorded the window. The figure is the
 median fragment time of the command buffers that drew the scene (over 1 ms of GPU work), one

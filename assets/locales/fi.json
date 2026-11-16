@@ -4484,7 +4484,7 @@
   "ui.agent_chat_new": "Uusi keskustelu",
   "ui.agent_chat_new_confirm": "Aloitetaanko uusi keskustelu? Nykyinen tyhjennetään.",
   "ui.agent_chat_next_picture": "Seuraava kuva",
-  "ui.agent_chat_no_cli": "solidcraft-cli:tä ei löytynyt sovelluksen vierestä, joten agentti ei pääse malliin.",
+  "ui.agent_chat_no_cli": "intcad-cli:tä ei löytynyt sovelluksen vierestä, joten agentti ei pääse malliin.",
   "ui.agent_chat_no_control": "Agenttikeskustelun päätepiste ei käynnistynyt, joten agentti ei pääse malliin.",
   "ui.agent_chat_no_images": "Tämä agentti ei vastaanota kuvia",
   "ui.agent_chat_no_picture": "Leikepöydällä ei ole kuvaa",

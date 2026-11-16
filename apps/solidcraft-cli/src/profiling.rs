@@ -27,7 +27,7 @@ pub fn start(args: &[String]) -> Result<Option<Profiling>, String> {
         return Ok(None);
     }
     if !profile::COMPILED {
-        return Err("this solidcraft-cli was built without the profiler (its `profile` feature)".into());
+        return Err("this intcad-cli was built without the profiler (its `profile` feature)".into());
     }
     profile::reset();
     profile::set_enabled(true);

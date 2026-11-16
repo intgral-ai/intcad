@@ -33,8 +33,8 @@ The image uses the original saved visibility and neutral pose. There is no mesh 
 Build the native CLI once, then reuse the loaded model and device:
 
 ```sh
-cargo build --locked --profile ci -p solidcraft-cli --bin solidcraft-cli
-python -i tools/render-library/selene_studio.py --cli /path/to/solidcraft-cli   --out /new/output/directory
+cargo build --locked --profile ci -p solidcraft-cli --bin intcad-cli
+python -i tools/render-library/selene_studio.py --cli /path/to/intcad-cli   --out /new/output/directory
 ```
 
 In the resulting interactive studio:
@@ -77,7 +77,7 @@ Regenerate them in a fresh output directory:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 assets/render/selene/tools/export_views.py \
-  --cli /path/to/solidcraft-cli \
+  --cli /path/to/intcad-cli \
   --model assets/render/selene/models/SELENE-functional.solidcraft \
   --out target/selene/previews
 ```

@@ -111,7 +111,7 @@ The pinned authoring executor is the official v0.18.2 CLI described in [SOURCE.m
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 assets/render/selene/tools/validate_native.py \
-  --cli /path/to/solidcraft-cli \
+  --cli /path/to/intcad-cli \
   --model assets/render/selene/models/SELENE-functional.solidcraft \
   --out target/selene/validation-final \
   --interference-pairs assets/render/selene/motion/interference-pairs.json

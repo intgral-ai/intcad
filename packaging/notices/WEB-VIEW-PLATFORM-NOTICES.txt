@@ -52,10 +52,10 @@ Required notice
 GTK 3 and WebKitGTK 4.1 are used by this program and are covered by the GNU Lesser
 General Public License. A copy of that licence follows. Both libraries are unmodified
 and dynamically linked, so you can replace either with an interface-compatible modified
-version without rebuilding open-skyfall. Their copyright notices are held by the GTK
+version without rebuilding Intcad. Their copyright notices are held by the GTK
 Team and contributors (https://gitlab.gnome.org/GNOME/gtk) and by Apple Inc. and the
 WebKit contributors (https://www.webkit.org/). The source of the exact versions a
-distribution supplies comes from that distribution; when open-skyfall itself bundles
+distribution supplies comes from that distribution; when Intcad itself bundles
 the libraries (the Nix package closure), their source is the corresponding upstream
 release named above.
 

@@ -11,9 +11,9 @@
   <key>CFBundleName</key>
   <string>Intcad</string>
   <key>CFBundleExecutable</key>
-  <string>SolidCraft</string>
+  <string>Intcad</string>
   <key>CFBundleIdentifier</key>
-  <string>io.tangencylabs.solidcraft</string>
+  <string>ai.intgral.intcad</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -27,7 +27,7 @@
   <key>SolidCraftVersion</key>
   <string>@VERSION@</string>
   <key>CFBundleIconFile</key>
-  <string>SolidCraft</string>
+  <string>Intcad</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.graphics-design</string>
   <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. -->
@@ -47,7 +47,7 @@
            shims, docs/compatibility.md). -->
       <array><string>sc</string><string>solidcraft</string><string>solvecraft</string></array>
       <key>LSItemContentTypes</key>
-      <array><string>io.tangencylabs.solidcraft.design</string></array>
+      <array><string>ai.intgral.intcad.design</string></array>
       <key>CFBundleTypeRole</key>
       <string>Editor</string>
       <key>LSHandlerRank</key>
@@ -69,7 +69,7 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>io.tangencylabs.solidcraft.design</string>
+      <string>ai.intgral.intcad.design</string>
       <key>UTTypeDescription</key>
       <string>Intcad design</string>
       <key>UTTypeConformsTo</key>

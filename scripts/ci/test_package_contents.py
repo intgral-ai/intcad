@@ -35,7 +35,7 @@ class PackageContents(unittest.TestCase):
     def test_a_native_linux_archive_has_no_runtime_markers(self):
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / "solidcraft.tar.gz"
-            make_tar(package, ["bin/solidcraft", "bin/solidcraft-cli", "share/doc/solidcraft/NOTICE"])
+            make_tar(package, ["bin/intcad", "bin/intcad-cli", "share/doc/intcad/NOTICE"])
             report = Path(directory) / "contents.json"
             result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
                                      "--package-id", "release-linux-x86_64",
@@ -51,7 +51,7 @@ class PackageContents(unittest.TestCase):
     def test_a_bundled_mastra_or_node_marker_is_recorded(self):
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / "solidcraft.tar.gz"
-            make_tar(package, ["bin/solidcraft", "mastra/runtime/node_modules/x", "lib/node"])
+            make_tar(package, ["bin/intcad", "mastra/runtime/node_modules/x", "lib/node"])
             report = Path(directory) / "contents.json"
             result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
                                      "--package-id", "release-linux-x86_64",
@@ -70,12 +70,12 @@ class PackageContents(unittest.TestCase):
     def test_other_runtime_component_and_node_sidecar_are_markers(self):
         self.assertTrue(contents.marker("../ee/app/main.js"))
         self.assertTrue(contents.marker("resources/node.exe"))
-        self.assertFalse(contents.marker("share/doc/solidcraft/node.txt"))
+        self.assertFalse(contents.marker("share/doc/intcad/node.txt"))
 
     def test_a_zip_is_inspected(self):
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / "solidcraft.zip"
-            make_zip(package, ["bin/solidcraft", "node_modules/x/index.js"])
+            make_zip(package, ["bin/intcad", "node_modules/x/index.js"])
             _, names = contents.inspect(package)
             self.assertIn("node_modules/x/index.js", names)
 
@@ -97,7 +97,7 @@ class PackageContents(unittest.TestCase):
     def test_a_standalone_exe_is_covered_by_an_inspected_msi_or_zip(self):
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / "solidcraft.zip"
-            make_zip(package, ["solidcraft.exe"])
+            make_zip(package, ["intcad.exe"])
             app = Path(directory) / "SolidCraft.exe"
             app.write_bytes(b"MZ")
             report = Path(directory) / "contents.json"
@@ -117,7 +117,7 @@ class PackageContents(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             app = root / "fake.AppImage"
-            app.write_text("#!/bin/sh\nmkdir -p squashfs-root/usr/bin\ntouch squashfs-root/usr/bin/solidcraft\n")
+            app.write_text("#!/bin/sh\nmkdir -p squashfs-root/usr/bin\ntouch squashfs-root/usr/bin/intcad\n")
             app.chmod(0o755)
             previous = os.getcwd()
             os.chdir(root)
@@ -125,12 +125,12 @@ class PackageContents(unittest.TestCase):
                 names = contents.names_appimage(Path("fake.AppImage"))
             finally:
                 os.chdir(previous)
-            self.assertIn("usr/bin/solidcraft", [name.replace("\\", "/") for name in names])
+            self.assertIn("usr/bin/intcad", [name.replace("\\", "/") for name in names])
 
     def test_derived_package_records_source_name_and_digest(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "solidcraft-linux-x86_64.tar.gz"
-            make_tar(source, ["bin/solidcraft"])
+            source = Path(directory) / "intcad-linux-x86_64.tar.gz"
+            make_tar(source, ["bin/intcad"])
             report = Path(directory) / "contents.json"
             result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
                                      "--package-id", "release-flatpak-x86_64",

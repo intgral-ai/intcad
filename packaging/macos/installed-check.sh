@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install check for the macOS disk image: copy SolidCraft.app out of the .dmg, verify the
+# Install check for the macOS disk image: copy Intcad.app out of the .dmg, verify the
 # Assistant page and its records inside that copy, then open the Assistant in it with the network
 # taken away. The build tree is never treated as the installed app.
 #
@@ -42,16 +42,16 @@ trap cleanup EXIT INT TERM
 echo "==> mounting $DMG"
 hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG"
 MOUNTED=1
-if [ ! -d "$MNT/SolidCraft.app" ]; then
-  echo "error: the disk image has no SolidCraft.app" >&2
+if [ ! -d "$MNT/Intcad.app" ]; then
+  echo "error: the disk image has no Intcad.app" >&2
   exit 1
 fi
-echo "==> copying SolidCraft.app out of the disk image"
-cp -R "$MNT/SolidCraft.app" "$APPS/"
+echo "==> copying Intcad.app out of the disk image"
+cp -R "$MNT/Intcad.app" "$APPS/"
 hdiutil detach "$MNT" -quiet
 MOUNTED=0
-APP="$APPS/SolidCraft.app"
-EXE="$APP/Contents/MacOS/SolidCraft"
+APP="$APPS/Intcad.app"
+EXE="$APP/Contents/MacOS/Intcad"
 case "$APP" in
   "$MNT"/*) echo "error: the app was not copied out of the disk image" >&2; exit 1 ;;
 esac

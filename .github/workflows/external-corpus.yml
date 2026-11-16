@@ -36,7 +36,7 @@ jobs:
           ONLY: ${{ inputs.only }}
         run: |
           if [ -z "$ONLY" ]; then
-            cargo run -q -p xtask -- external-corpus --cli target/ci/solidcraft-cli
+            cargo run -q -p xtask -- external-corpus --cli target/ci/intcad-cli
           else
-            cargo run -q -p xtask -- external-corpus --cli target/ci/solidcraft-cli --only "$ONLY"
+            cargo run -q -p xtask -- external-corpus --cli target/ci/intcad-cli --only "$ONLY"
           fi

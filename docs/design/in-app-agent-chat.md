@@ -26,7 +26,7 @@ What the prototype uses:
 | Direction | Message | Use |
 |---|---|---|
 | → agent | `initialize {protocolVersion: 1, clientCapabilities, clientInfo}` | We declare no file system and no terminal (`fs.readTextFile/writeTextFile: false`, `terminal: false`), and terminal login (`auth.terminal: true`, plus the older `_meta["terminal-auth"]`). The reply carries `agentInfo` and `authMethods`. |
-| → agent | `session/new {cwd, mcpServers}` | `mcpServers` holds one stdio server: `solidcraft-cli mcp --connect 127.0.0.1:PORT`. `cwd` is the open design's folder (else SolidCraft's own `agent` folder). The system note goes in the standard `systemPrompt` field when the agent offers `sessionCapabilities.systemPrompt`, in `_meta.antigravity.systemPrompt.append` when Antigravity offers that, and always in `_meta.systemPrompt.append` for the Claude adapter. An agent with none of these doesn't get it. |
+| → agent | `session/new {cwd, mcpServers}` | `mcpServers` holds one stdio server: `intcad-cli mcp --connect 127.0.0.1:PORT`. `cwd` is the open design's folder (else SolidCraft's own `agent` folder). The system note goes in the standard `systemPrompt` field when the agent offers `sessionCapabilities.systemPrompt`, in `_meta.antigravity.systemPrompt.append` when Antigravity offers that, and always in `_meta.systemPrompt.append` for the Claude adapter. An agent with none of these doesn't get it. |
 | → agent | `session/set_config_option {sessionId, configId, value}` | Set an advertised select option, including a model, reasoning effort or mode. The complete returned `configOptions` snapshot confirms the state; rejection leaves the previous confirmed snapshot intact. |
 | → agent | `session/prompt {sessionId, prompt: [content]}` | One text block. The reply comes at the end of the turn with `stopReason` (`end_turn`, `cancelled`, `refusal`, …). |
 | → agent | `session/cancel {sessionId}` (notification) | Cancel button. Open permission prompts are answered `cancelled` first, as the spec asks. |
@@ -62,6 +62,7 @@ with SolidCraft, the user installs the agent.
 | Gemini CLI (retired) | `gemini --acp` | `@google/gemini-cli` 0.64, Apache-2.0 | `--version` | Google ended it for consumer accounts on 2026-06-18 in favour of Antigravity. Still found when installed (enterprise licences may keep it working) but no longer offered for install. Its own login `~/.gemini/oauth_creds.json` or a key in the environment. |
 | OpenCode | built in: `opencode acp` | `opencode-ai` 1.19, MIT | `--version` | Its own providers' logins (`~/.local/share/opencode/auth.json`) or keys in the environment. |
 | Mistral Vibe | `uv tool install mistral-vibe`, then `vibe-acp` over stdio | Apache-2.0 | `vibe-acp --version` | Vibe's ACP sign-in or `vibe --setup`. Vibe keeps credentials in its keyring or `~/.vibe/.env` and accepts `MISTRAL_API_KEY`. |
+| Kimi Code | built in: `kimi acp` | Moonshot's installer script (the ACP registry also names the npm package `@moonshot-ai/kimi-code`, MIT, which was not tried); installed separately | `kimi --version` prints `0.27.0` (checked 2026-11-13 on macOS with a real ACP `initialize`: protocol version 1) | Its own sign-in, which it offers in ACP (method `login`). No login file is looked at. |
 | XAI Grok | built in: `grok agent stdio` | [Grok Build](https://github.com/xai-org/grok-build), Apache-2.0; installed separately | `grok --version` prints `grok 1.0.58 (…) [alpha]` (checked 2026-10-15; in-app connection also checked with 1.0.60) | Its own `~/.grok/auth.json` or `XAI_API_KEY`. `grok login` signs in in the browser; ACP advertises `cached_token` and `grok.com` authentication methods. |
 | Others in the ACP registry | `copilot --acp`, `qwen --acp`, `opencode acp`, `goose acp`, `cline --acp`, `kimi acp`, … | mixed; several are proprietary, one is GPL and one AGPL (we only start them as programs, never link them) | `--version` | each its own |
 
@@ -94,7 +95,7 @@ the picker instead of the hard-coded table.
 SolidCraft window ──(child process, own process group, ACP over stdio)──> agent (claude-agent-acp, codex-acp, agy_acp_server, opencode acp, …)
       ▲                                                                     │ starts, per session/new
       │ the chat's own endpoint (loopback, fresh token, gate)               ▼
-      └──────────────────────────────────────────────────── solidcraft-cli mcp --connect 127.0.0.1:PORT
+      └──────────────────────────────────────────────────── intcad-cli mcp --connect 127.0.0.1:PORT
 ```
 
 Code: `crates/ui-egui/src/agent_chat/`.
@@ -125,7 +126,7 @@ requests, for a backend that runs tools in process). Two backends exist:
 - `ApiBackend` talks to an OpenAI-compatible chat completions endpoint (Ollama, LM Studio,
   OpenAI, a custom URL) or an Anthropic-compatible Messages endpoint (Anthropic, or a provider
   that speaks the Messages API), and runs the tool loop itself: it starts the same
-  `solidcraft-cli mcp --connect` server an ACP agent would get and is its MCP client
+  `intcad-cli mcp --connect` server an ACP agent would get and is its MCP client
   (`tools/list` becomes the endpoint's tools, `crash_reports` left out), so its calls pass the
   same gate, limits, questions and undo as an ACP agent's. There is no cap on model requests
   per message; Stop ends it. It lists the endpoint's models at each connection (`Event::Models`),
@@ -143,7 +144,7 @@ Another kind of backend slots in the same way without reshaping the panel.
 
 On the first Connect the app starts **an endpoint of the chat's own**
 (`control_server::listen_agent`): a free loopback port with a fresh random token, written to the
-per-user token file where `solidcraft-cli mcp --connect` finds it. The token never passes
+per-user token file where `intcad-cli mcp --connect` finds it. The token never passes
 through the agent, `SOLIDCRAFT_CONTROL_TOKEN` is removed from the agent's environment, and
 `--allow-any-path` is never passed, so the MCP server keeps its #205 folder limits (a request
 that names no folders is confined to the chat's working folder).
@@ -246,6 +247,12 @@ As before, plus key variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_AP
 reported as *key set*, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` respected, and OpenCode's
 `~/.local/share/opencode/auth.json`. Nothing is started except `--version`.
 
+Four agents (`discover::BASIC`) are always listed, found or not, each found one's row with what
+is known of it without starting it, and discovery runs again each time the panel opens. The
+default agent is the first that can be expected to work (`agents::default_of`): a retired agent
+and one whose `--version` check failed are passed over while another agent can be. Whether a
+found program speaks ACP at all is still not checked before the first connection.
+
 ### Panel
 
 Opened from the **AI** button at the toolbar row's right end (the panels give it room and spill
@@ -270,6 +277,6 @@ returns the whole state, for tests and screenshots.
 | Session controls | Slash commands |
 | Auth | An embedded terminal or "open a terminal here" for terminal logins on each OS; logout |
 | Discovery | Read the ACP registry; keychain-aware login check on macOS |
-| Packaging | Make sure every desktop package ships `solidcraft-cli` next to `solidcraft` (Flatpak, AppImage, macOS bundle, Windows zip), or serve MCP from the app binary itself |
+| Packaging | Make sure every desktop package ships `intcad-cli` next to `intcad` (Flatpak, AppImage, macOS bundle, Windows zip), or serve MCP from the app binary itself |
 | Windows | Job objects instead of `taskkill /T` once there's a safe API for them |
 | API backend | Streaming answers; images in tool results |

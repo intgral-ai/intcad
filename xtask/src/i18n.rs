@@ -138,7 +138,7 @@ fn read(root: &Path, locale: &str) -> Result<Map<String, Value>, String> {
 
 /// Command labels the English catalog cannot translate, mapped to the commands that use them.
 ///
-/// The registry is read through `solidcraft-cli commands` so the report comes from the real
+/// The registry is read through `intcad-cli commands` so the report comes from the real
 /// command table, never from a copy of it.
 fn labels_needing_translation(known: &[&str]) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();

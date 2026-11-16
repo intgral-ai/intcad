@@ -1,4 +1,4 @@
-"""AppRun puts a `solidcraft-cli` wrapper on PATH (~/.local/bin) and the wrapper runs the bundled CLI."""
+"""AppRun puts a `intcad-cli` wrapper on PATH (~/.local/bin) and the wrapper runs the bundled CLI."""
 import os
 import shutil
 import subprocess
@@ -17,8 +17,8 @@ class AppRunCli(unittest.TestCase):
         (self.appdir / "usr/bin").mkdir(parents=True)
         (self.appdir / "usr/share/applications").mkdir(parents=True)
         shutil.copy(ROOT / "packaging/linux/AppRun", self.appdir / "AppRun")
-        (self.appdir / "usr/share/applications/io.tangencylabs.solidcraft.desktop").write_text("[Desktop Entry]\nExec=solidcraft\n")
-        for name in ("solidcraft", "solidcraft-cli"):
+        (self.appdir / "usr/share/applications/ai.intgral.intcad.desktop").write_text("[Desktop Entry]\nExec=intcad\n")
+        for name in ("intcad", "intcad-cli"):
             p = self.appdir / "usr/bin" / name
             p.write_text(f"#!/bin/sh\necho {name} \"$@\"\n")
             p.chmod(0o755)
@@ -30,17 +30,17 @@ class AppRunCli(unittest.TestCase):
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.env = {"PATH": os.environ["PATH"], "HOME": str(self.home), "APPIMAGE": str(self.image)}
-        self.wrapper = self.home / ".local/bin/solidcraft-cli"
+        self.wrapper = self.home / ".local/bin/intcad-cli"
 
     def run_apprun(self, *args, **extra):
         env = {**self.env, **extra}
         return subprocess.run([str(self.appdir / "AppRun"), *args], env=env, capture_output=True, text=True, check=True).stdout.strip()
 
     def test_wrapper_runs_the_bundled_cli(self):
-        self.assertEqual(self.run_apprun("a"), "solidcraft a")
+        self.assertEqual(self.run_apprun("a"), "intcad a")
         self.assertTrue(self.wrapper.is_file())
         out = subprocess.run([str(self.wrapper), "mcp", "setup"], env=self.env, capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(out, "solidcraft-cli mcp setup")
+        self.assertEqual(out, "intcad-cli mcp setup")
 
     def test_wrapper_follows_a_moved_appimage(self):
         self.run_apprun()
@@ -55,7 +55,7 @@ class AppRunCli(unittest.TestCase):
         self.wrapper.write_text("#!/bin/sh\necho mine\n")
         self.run_apprun()
         self.assertEqual(self.wrapper.read_text(), "#!/bin/sh\necho mine\n")
-        other = self.home / ".local/bin/solidcraft-cli"
+        other = self.home / ".local/bin/intcad-cli"
         other.unlink()
         other.symlink_to("/bin/true")
         self.run_apprun()
@@ -72,7 +72,7 @@ class AppRunCli(unittest.TestCase):
         # An entry this script did not write (a package's, Exec on PATH) is left alone.
         (apps / "ai.storyteller.other.desktop").write_text("[Desktop Entry]\nExec=other\nIcon=ai.storyteller.other\n")
         self.run_apprun()
-        self.assertTrue((apps / "io.tangencylabs.solidcraft.desktop").is_file())
+        self.assertTrue((apps / "ai.intgral.intcad.desktop").is_file())
         for old in ("ai.storyteller.solidcraft", "ai.storyteller.solvecraft"):
             self.assertFalse((apps / f"{old}.desktop").exists())
             self.assertFalse((icons / f"{old}.png").exists())
@@ -86,16 +86,16 @@ class AppRunCli(unittest.TestCase):
         # Ship a hicolor mark so AppRun can copy it and point Icon= at the install (#10673).
         src = self.appdir / "usr/share/icons/hicolor/256x256/apps"
         src.mkdir(parents=True)
-        (src / "io.tangencylabs.solidcraft.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-        (self.appdir / "usr/share/applications/io.tangencylabs.solidcraft.desktop").write_text(
-            "[Desktop Entry]\nExec=solidcraft\nIcon=io.tangencylabs.solidcraft\n"
+        (src / "ai.intgral.intcad.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (self.appdir / "usr/share/applications/ai.intgral.intcad.desktop").write_text(
+            "[Desktop Entry]\nExec=intcad\nIcon=ai.intgral.intcad\n"
         )
         self.run_apprun()
-        desk = (self.home / ".local/share/applications/io.tangencylabs.solidcraft.desktop").read_text()
-        installed = self.home / ".local/share/icons/hicolor/256x256/apps/io.tangencylabs.solidcraft.png"
+        desk = (self.home / ".local/share/applications/ai.intgral.intcad.desktop").read_text()
+        installed = self.home / ".local/share/icons/hicolor/256x256/apps/ai.intgral.intcad.png"
         self.assertTrue(installed.is_file())
         self.assertIn(f"Icon={installed}", desk)
-        self.assertNotIn("Icon=io.tangencylabs.solidcraft\n", desk)
+        self.assertNotIn("Icon=ai.intgral.intcad\n", desk)
 
     def run_with_ldd(self, ldd_output):
         """AppRun with an `ldd` that answers `ldd_output`: what the launch wrote, and its error output."""
@@ -112,14 +112,14 @@ class AppRunCli(unittest.TestCase):
         out, said = self.run_with_ldd(
             "\tlibwebkit2gtk-4.1.so.0 => not found\n\tlibc.so.6 => /lib/libc.so.6 (0x1)\n\tlibgtk-3.so.0 => not found\n"
         )
-        self.assertEqual(out, "solidcraft a")
+        self.assertEqual(out, "intcad a")
         self.assertIn("this system lacks libgtk-3.so.0 libwebkit2gtk-4.1.so.0.", said)
         self.assertIn("sudo apt install libwebkit2gtk-4.1-0", said)
         self.assertIn("sudo dnf install webkit2gtk4.1", said)
 
     def test_nothing_is_said_when_every_library_is_there(self):
         out, said = self.run_with_ldd("\tlibgtk-3.so.0 => /usr/lib/libgtk-3.so.0 (0x1)\n\tlibc.so.6 => /lib/libc.so.6 (0x2)\n")
-        self.assertEqual(out, "solidcraft a")
+        self.assertEqual(out, "intcad a")
         self.assertEqual(said, "")
 
 
