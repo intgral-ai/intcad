@@ -911,8 +911,11 @@ fn graphics() -> Option<serde_json::Value> {
 }
 
 fn restore_preferences(app: &mut SolveApp, stored_ui: Option<&str>, saved_graphics: Option<&serde_json::Value>, safe_mode: bool) {
-    if let Some(p) = stored_ui.filter(|_| !safe_mode) {
-        app.load_prefs(p);
+    match stored_ui {
+        Some(p) if !safe_mode => app.load_prefs(p),
+        Some(_) => {}
+        // Nothing saved yet: a fresh install starts in the app's own look.
+        None => solidcraft_ui_egui::prefs::start_in_first_run_theme(app),
     }
     // Even safe mode edits the real graphics.json. Keep its choices in Preferences so an
     // anti-aliasing change cannot erase them; safe mode's renderer still uses its own defaults.
@@ -2272,6 +2275,28 @@ mod msaa_tests {
             assert_eq!(normal.app.preferences.window_system, choice);
             assert_eq!(normal.app.preferences.graphics_adapter, "Selected GPU");
             assert_eq!(normal.app.preferences.display_quality, "fine", "normal startup still restores UI settings");
+        }
+    }
+
+    /// A fresh install has saved nothing and starts in Black; whoever has saved preferences
+    /// keeps the theme they hold, Dark included (INT-1480).
+    #[test]
+    fn a_fresh_install_starts_in_black_and_saved_preferences_keep_their_theme() {
+        use serde_json::json;
+        use solidcraft_ui_egui::scenario::Harness;
+
+        let mut fresh = Harness::new();
+        assert_eq!(fresh.app.preferences.theme, "dark", "the preference's own default is unchanged");
+        super::restore_preferences(&mut fresh.app, None, None, false);
+        assert_eq!(fresh.app.preferences.theme, solidcraft_ui_egui::prefs::FIRST_RUN_THEME);
+        assert_eq!(fresh.app.preferences.theme, "black");
+        assert!(fresh.app.ui.dark, "Black is a dark theme");
+
+        for saved in ["dark", "light", "gruvbox-dark"] {
+            let mut h = Harness::new();
+            let stored_ui = json!({"preferences": {"theme": saved}}).to_string();
+            super::restore_preferences(&mut h.app, Some(&stored_ui), None, false);
+            assert_eq!(h.app.preferences.theme, saved);
         }
     }
 
