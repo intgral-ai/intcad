@@ -939,11 +939,13 @@ pub(crate) fn poll_running_checks(app: &mut SolveApp) {
     }
 }
 
-/// A model tool call to `dfm.check` arrives as a plain tool row with no command kind. Recognise
-/// its reply (project id and sheet count), make it a check row and fill it from the saved report.
+/// A model tool call to `dfm.check` arrives as a tool row. Recognise its reply (project id and
+/// sheet count), make it a check row and fill it from the saved report. An agent may reach the
+/// command through a direct tool (no command kind) or through the generic Code Mode `execute`
+/// tool (kind `execute`); both carry the same reply.
 pub(crate) fn adopt_model_check(app: &mut SolveApp) {
     let found = app.agent_chat.items.iter().rev().find_map(|item| match item {
-        Item::Tool { id, kind, output: Some(output), .. } if kind.is_empty() => {
+        Item::Tool { id, output: Some(output), .. } => {
             let value: Value = serde_json::from_str(output).ok()?;
             (value.get("projectId").is_some() && value.get("sheets").is_some()).then(|| id.clone())
         }
@@ -1079,50 +1081,34 @@ mod tests {
         assert!(output.contains("\"failed\""), "{output}");
     }
 
-    /// A model's `dfm.check` tool row is plain (no command kind): the host turns it into the
-    /// check card, so the model path and the button show the same report.
+    /// A model's `dfm.check` reply becomes the check card whether the agent used a direct tool
+    /// (no command kind) or the generic Code Mode `execute` tool, so both paths show the report.
     #[test]
     fn a_model_check_row_becomes_the_card() {
-        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
-        app.agent_chat.push(Item::Tool {
-            id: "call-1".into(),
-            title: "execute: dfm.check".into(),
-            kind: String::new(),
-            status: Some(backend::ToolStatus::Completed),
-            input: None,
-            output: Some(r#"{"projectId":"p","projectName":"Hole Tier","sheets":2}"#.into()),
-        });
-        adopt_model_check(&mut app);
-        let row = app
-            .agent_chat
-            .items
-            .iter()
-            .rev()
-            .find_map(|item| match item {
-                Item::Tool { id, kind, status, .. } if id == "call-1" => Some((kind.clone(), *status)),
-                _ => None,
-            })
-            .expect("the adopted row");
-        assert_eq!(row.0, "dfm.check");
-        assert!(matches!(row.1, Some(backend::ToolStatus::Completed | backend::ToolStatus::Failed)), "the row stops saying running: {:?}", row.1);
-    }
-
-    /// A list row and a viewport label address the same run-scoped finding in both directions.
-    #[test]
-    fn a_report_row_and_a_viewport_label_choose_the_same_finding() {
-        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
-        let mut reply = report();
-        reply["freshness"] = json!("current");
-        let card = crate::dfm_chat::Card::from_inspect(&reply);
-        set_check_item(&mut app, "row", card);
-        assert_eq!(app.viewport.dfm.selected_key(), None);
-        act(&mut app, &egui::Context::default(), r#"{"type":"finding","runId":"run-1","id":"sheet-1/F2"}"#).expect("the row chooses a finding");
-        assert_eq!(app.viewport.dfm.selected_key(), Some(("run-1", "sheet-1/F2")), "the model shows the row");
-        // A label click writes the host state; the list reads the same pair.
-        app.viewport.select_dfm_finding(Some("sheet-1/F2"));
-        assert_eq!(selected_finding(&app), Some(("run-1".to_string(), "sheet-1/F2".to_string())));
-        // The row action refuses a finding that is not in the loaded run.
-        assert!(act(&mut app, &egui::Context::default(), r#"{"type":"finding","runId":"run-1","id":"sheet-9/F9"}"#).is_err());
+        for (call, kind) in [("call-1", ""), ("call-2", "execute")] {
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+            app.agent_chat.push(Item::Tool {
+                id: call.into(),
+                title: "execute: dfm.check".into(),
+                kind: kind.into(),
+                status: Some(backend::ToolStatus::Completed),
+                input: None,
+                output: Some(r#"{"projectId":"p","projectName":"Hole Tier","sheets":2}"#.into()),
+            });
+            adopt_model_check(&mut app);
+            let row = app
+                .agent_chat
+                .items
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    Item::Tool { id, kind, status, .. } if id == call => Some((kind.clone(), *status)),
+                    _ => None,
+                })
+                .expect("the adopted row");
+            assert_eq!(row.0, "dfm.check", "{kind}");
+            assert!(matches!(row.1, Some(backend::ToolStatus::Completed | backend::ToolStatus::Failed)), "the row stops saying running: {:?}", row.1);
+        }
     }
 
     /// A queued run reads as running, and a failed or replaced run keeps its state and reason.

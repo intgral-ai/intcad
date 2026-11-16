@@ -22,11 +22,27 @@ use solidcraft_engine::dfm::service;
 
 /// The samples this harness drives. A later slice that lands a fact family keeps the sample and
 /// changes its expectation in [`expectations`], never the rule's number.
-const SAMPLE_IDS: &[&str] = &["l_bracket", "u_channel", "no_relief", "plate", "countersink"];
+const SAMPLE_IDS: &[&str] = &[
+    "l_bracket",
+    "u_channel",
+    "no_relief",
+    "relief_small",
+    "plate",
+    "plate_mixed",
+    "spacing",
+    "countersink",
+    "mixed_radii",
+    "long_bend",
+    "hole_bend",
+];
 
 /// The sheet rule every sample uses: 2 mm, K 0.5, 1 mm inside radius. With it a 10 mm flange has
 /// a 7 mm leg past the bend and a 4 mm flange only 1 mm, so one number changes a flange result.
 fn sheet_rule(s: &mut Session, relief_width_mm: f64) {
+    sheet_rule_sizes(s, relief_width_mm, relief_width_mm);
+}
+
+fn sheet_rule_sizes(s: &mut Session, relief_width_mm: f64, relief_depth_mm: f64) {
     exec(
         s,
         "sheet.manage_rules",
@@ -34,9 +50,30 @@ fn sheet_rule(s: &mut Session, relief_width_mm: f64) {
             "name": "Acceptance",
             "thickness": "2 mm",
             "k_factor": "0.5",
-            "bend_radius": "1 mm",
+            "bend_radius": format!("{} mm", env_number("SOLIDCRAFT_DFM_BEND_RADIUS", 1.0)),
             "relief_width": format!("{relief_width_mm} mm"),
-            "relief_depth": format!("{relief_width_mm} mm"),
+            "relief_depth": format!("{relief_depth_mm} mm"),
+            "active": true,
+        }),
+    );
+}
+
+/// The rule used by the corner-relief sample: a rectangular 1 mm corner cut, so the sheet model
+/// records both the shape and the size the fact layer needs.
+fn sheet_rule_corner(s: &mut Session) {
+    let size = env_number("SOLIDCRAFT_DFM_RELIEF_SIZE", 1.0);
+    exec(
+        s,
+        "sheet.manage_rules",
+        json!({
+            "name": "AcceptanceCorner",
+            "thickness": "2 mm",
+            "k_factor": "0.5",
+            "bend_radius": "1 mm",
+            "relief_width": format!("{} mm", size / 2.0),
+            "relief_depth": format!("{} mm", size / 2.0),
+            "corner_relief": format!("{size} mm"),
+            "corner_relief_shape": "rectangular",
             "active": true,
         }),
     );
@@ -67,11 +104,26 @@ struct Config {
     flange_leg_mm: f64,
     /// The declared plus-or-minus across one bend: 0.2 mm is the test shop's one-bend value.
     tolerance_mm: f64,
+    /// The U-channel's base width, tangent to tangent.
+    base_width_mm: f64,
+    /// Centre distance between the two holes in the spacing sample.
+    hole_gap_mm: f64,
+    /// The countersink's rim diameter over the Ø4 hole.
+    cs_diameter_mm: f64,
+    /// The second bend's inside radius in the mixed-radii sample.
+    second_radius_mm: f64,
 }
 
 impl Config {
     fn from_env() -> Config {
-        Config { flange_leg_mm: env_number("SOLIDCRAFT_DFM_FLANGE_LEG", 10.0), tolerance_mm: env_number("SOLIDCRAFT_DFM_TOLERANCE_MM", 0.1) }
+        Config {
+            flange_leg_mm: env_number("SOLIDCRAFT_DFM_FLANGE_LEG", 10.0),
+            tolerance_mm: env_number("SOLIDCRAFT_DFM_TOLERANCE_MM", 0.1),
+            base_width_mm: env_number("SOLIDCRAFT_DFM_BASE_WIDTH", 60.0),
+            hole_gap_mm: env_number("SOLIDCRAFT_DFM_HOLE_GAP", 4.0),
+            cs_diameter_mm: env_number("SOLIDCRAFT_DFM_CS_DIAMETER", 6.0),
+            second_radius_mm: env_number("SOLIDCRAFT_DFM_SECOND_RADIUS", 3.0),
+        }
     }
 }
 
@@ -101,15 +153,16 @@ fn build(id: &str, cfg: Config) -> Built {
         "u_channel" => {
             // Two parallel same-way bends: the left and right edges both turn up.
             sheet_rule(&mut s, 4.0);
-            base(&mut s, 60.0, 40.0);
-            exec(&mut s, "sheet.flange", json!({"edges": [[0, 20, 2], [60, 20, 2]], "height": cfg.flange_leg_mm}));
+            base(&mut s, cfg.base_width_mm, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[0, 20, 2], [cfg.base_width_mm, 20, 2]], "height": cfg.flange_leg_mm}));
             None
         }
         "no_relief" => {
-            // A flange across a full edge with no relief notch at either bend end.
+            // Two flanges meeting at a base corner: the second flat starts on the first bend's
+            // line with no margin, and the zero relief width leaves the corner unrelieved.
             sheet_rule(&mut s, 0.0);
             base(&mut s, 60.0, 40.0);
-            exec(&mut s, "sheet.flange", json!({"edges": [[30, 0, 2]], "height": cfg.flange_leg_mm}));
+            exec(&mut s, "sheet.flange", json!({"edges": [[30, 0, 2], [60, 20, 2]], "height": cfg.flange_leg_mm}));
             None
         }
         "plate" => {
@@ -120,14 +173,83 @@ fn build(id: &str, cfg: Config) -> Built {
             exec(&mut s, "solid.hole", json!({"position": [2, 20, 2], "diameter": 2}));
             None
         }
-        "countersink" => {
-            // A countersunk hole. A folded sheet refuses tapered machining, so the sample starts
-            // as a 2 mm solid plate, drills the countersink and converts to sheet metal; the
-            // recess becomes a pocket until the App measures countersink facts.
+        "relief_small" => {
+            // A corner relief 1 mm across the corner, 0.5 mm into each bend end, below the test
+            // shop's 2 mm width and 1 mm depth.
+            sheet_rule_corner(&mut s);
+            base(&mut s, 60.0, 40.0);
+            exec(
+                &mut s,
+                "sheet.flange",
+                json!({
+                    "edges": [[30, 0, 2], [60, 20, 2]],
+                    "height": cfg.flange_leg_mm,
+                    "corner_relief_shape": "rectangular",
+                    "corner_relief": format!("{} mm", env_number("SOLIDCRAFT_DFM_RELIEF_SIZE", 1.0)),
+                }),
+            );
+            None
+        }
+        "long_bend" => {
+            // A 600 mm bend line against the TEST-ONLY 500 mm upper row.
             sheet_rule(&mut s, 4.0);
-            exec(&mut s, "solid.box", json!({"length": 60, "width": 40, "height": 4, "body_name": "Plate"}));
-            exec(&mut s, "solid.hole", json!({"position": [30, 20, 4], "diameter": 4, "type": "countersink", "cs_diameter": 6, "cs_angle": 90}));
-            exec(&mut s, "sheet.convert", json!({"body": "Plate", "face": [30, 20, 4]}));
+            base(&mut s, 600.0, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[300, 0, 2]], "height": 10}));
+            None
+        }
+        "hole_bend" => {
+            // A hole 1.5 mm from the bend tangent, below the TEST-ONLY 2.5 mm row.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[30, 0, 2]], "height": 10}));
+            exec(&mut s, "solid.hole", json!({"position": [30, 6, 2], "diameter": 3}));
+            None
+        }
+        "plate_mixed" => {
+            // A measurable round hole beside a non-circular opening: the hole rules can answer
+            // for the hole, while the report must still say the opening was not checked.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "solid.hole", json!({"position": [50, 20, 2], "diameter": 5}));
+            exec(&mut s, "sketch.create", json!({"plane": "XY", "name": "Slot"}));
+            exec(&mut s, "sketch.rectangle.two_point", json!({"p0": [14, 14], "p1": [26, 26]}));
+            exec(&mut s, "sketch.finish", json!({}));
+            exec(&mut s, "solid.extrude", json!({"sketch": "Slot", "distance": 2, "direction": "positive", "operation": "cut"}));
+            None
+        }
+        "spacing" => {
+            // Two Ø3 holes; the gap changes the wall between them without changing the outline.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "solid.hole", json!({"position": [20, 20, 2], "diameter": 3}));
+            exec(&mut s, "solid.hole", json!({"position": [20.0 + cfg.hole_gap_mm, 20, 2], "diameter": 3}));
+            None
+        }
+        "countersink" => {
+            // A countersunk round through hole on a native sheet. Ø6 over Ø4 at 90° is 1 mm deep
+            // in a 2 mm sheet and leaves a 1 mm land.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            let (sx, sy, sa) =
+                (env_number("SOLIDCRAFT_DFM_SINK_X", 50.0), env_number("SOLIDCRAFT_DFM_SINK_Y", 30.0), env_number("SOLIDCRAFT_DFM_SINK_ANGLE", 90.0));
+            exec(
+                &mut s,
+                "solid.hole",
+                json!({"position": [sx, sy, 2], "diameter": 4, "type": "countersink", "cs_diameter": cfg.cs_diameter_mm, "cs_angle": sa}),
+            );
+            None
+        }
+        "mixed_radii" => {
+            // Two edge flanges with their own radii: the part carries two inside radii and the
+            // consistency rule has something to compare.
+            sheet_rule(&mut s, 4.0);
+            base(&mut s, 60.0, 40.0);
+            exec(&mut s, "sheet.flange", json!({"edges": [[0, 20, 2]], "height": cfg.flange_leg_mm, "radius": "1 mm"}));
+            exec(
+                &mut s,
+                "sheet.flange",
+                json!({"edges": [[60, 20, 2]], "height": cfg.flange_leg_mm, "radius": format!("{} mm", cfg.second_radius_mm)}),
+            );
             None
         }
         other => panic!("unknown sample `{other}`; known: {SAMPLE_IDS:?}"),
@@ -172,31 +294,159 @@ struct Expectation {
 /// The target rows per sample. These are the assertions a later slice changes when the missing
 /// fact families arrive; the rule thresholds themselves are never relaxed.
 fn expectations(id: &str, cfg: Config) -> Vec<Expectation> {
+    let leg = cfg.flange_leg_mm - 3.0;
+    let radius = env_number("SOLIDCRAFT_DFM_BEND_RADIUS", 1.0);
+    let relief_size = env_number("SOLIDCRAFT_DFM_RELIEF_SIZE", 1.0);
+    let (sink_x, sink_y, sink_angle) =
+        (env_number("SOLIDCRAFT_DFM_SINK_X", 50.0), env_number("SOLIDCRAFT_DFM_SINK_Y", 30.0), env_number("SOLIDCRAFT_DFM_SINK_ANGLE", 90.0));
+    let rim = cfg.cs_diameter_mm / 2.0;
+    // The two bend zones take a 3 mm allowance each at these test-rule values.
+    let web = cfg.base_width_mm - 6.0;
+    let wall = cfg.hole_gap_mm - 3.0;
     match id {
-        "l_bracket" => vec![Expectation {
-            rule: "sm.tolerance_across_bends",
-            // 0.1 mm is tighter than the test shop's 0.2 mm across one bend; 0.3 mm is looser.
-            state: if cfg.tolerance_mm < 0.2 { "failed" } else { "passed" },
-            finding_state: if cfg.tolerance_mm < 0.2 { "failed" } else { "passed" },
-            measured_mm: Some(cfg.tolerance_mm),
-            code: (cfg.tolerance_mm < 0.2).then_some("TOLERANCE_TIGHTER_THAN_SHOP"),
+        "l_bracket" => vec![
+            Expectation {
+                rule: "sm.tolerance_across_bends",
+                // 0.1 mm is tighter than the test shop's 0.2 mm across one bend; 0.3 mm is looser.
+                state: if cfg.tolerance_mm < 0.2 { "failed" } else { "passed" },
+                finding_state: if cfg.tolerance_mm < 0.2 { "failed" } else { "passed" },
+                measured_mm: Some(cfg.tolerance_mm),
+                code: (cfg.tolerance_mm < 0.2).then_some("TOLERANCE_TIGHTER_THAN_SHOP"),
+            },
+            Expectation {
+                rule: "sm.inside_radius",
+                state: if radius < 0.5 { "failed" } else { "passed" },
+                finding_state: if radius < 0.5 { "failed" } else { "passed" },
+                measured_mm: (radius < 0.5).then_some(radius),
+                code: None,
+            },
+            Expectation { rule: "sm.max_bend_length", state: "passed", finding_state: "passed", measured_mm: None, code: None },
+            Expectation { rule: "sm.hole_to_bend", state: "passed", finding_state: "passed", measured_mm: None, code: None },
+            // The 8 mm shop floor: a 10 mm height gives a 7 mm leg and fails; 14 mm gives 11 mm.
+            Expectation {
+                rule: "sm.min_flange",
+                state: if leg < 8.0 { "failed" } else { "passed" },
+                finding_state: if leg < 8.0 { "failed" } else { "passed" },
+                measured_mm: (leg < 8.0 && (radius - 1.0).abs() < 1e-9).then_some(leg),
+                code: (leg < 8.0).then_some("FLANGE_BELOW_LIMIT"),
+            },
+        ],
+        "u_channel" => vec![
+            Expectation {
+                rule: "sm.min_web_parallel_bends",
+                state: if web < 5.0 { "failed" } else { "passed" },
+                finding_state: if web < 5.0 { "failed" } else { "passed" },
+                measured_mm: (web < 5.0).then_some(web),
+                code: (web < 5.0).then_some("WEB_BELOW_LIMIT"),
+            },
+            Expectation {
+                rule: "sm.u_channel_ratio",
+                state: if leg / web > 0.2 { "failed" } else { "passed" },
+                finding_state: if leg / web > 0.2 { "failed" } else { "passed" },
+                measured_mm: (leg / web > 0.2).then_some(leg),
+                code: (leg / web > 0.2).then_some("U_FLANGE_ABOVE_LIMIT"),
+            },
+        ],
+        "no_relief" => vec![Expectation {
+            rule: "sm.bend_relief_present",
+            state: "failed",
+            finding_state: "failed",
+            measured_mm: None,
+            code: Some("RELIEF_NO_MARGIN"),
         }],
-        // The remaining rows are the gaps the matrix names. They are Unsupported until the App
-        // measures their fact family; a slice that lands one changes `state` here.
-        "u_channel" => {
-            vec![Expectation { rule: "sm.min_web_parallel_bends", state: "unsupported", finding_state: "unsupported", measured_mm: None, code: None }]
-        }
-        "no_relief" => {
-            vec![Expectation { rule: "sm.bend_relief_present", state: "unsupported", finding_state: "unsupported", measured_mm: None, code: None }]
-        }
         "plate" => vec![
             Expectation { rule: "sm.hole_min_diameter", state: "failed", finding_state: "failed", measured_mm: Some(2.0), code: None },
             // The far hole passes at 19 mm; the near hole's 1 mm wall is the failing one.
             Expectation { rule: "sm.hole_to_edge", state: "failed", finding_state: "failed", measured_mm: Some(1.0), code: None },
+            Expectation { rule: "sm.hole_spacing", state: "passed", finding_state: "passed", measured_mm: None, code: None },
         ],
-        "countersink" => {
-            vec![Expectation { rule: "sm.countersink_depth", state: "unsupported", finding_state: "unsupported", measured_mm: None, code: None }]
+        "relief_small" => vec![
+            Expectation { rule: "sm.bend_relief_present", state: "passed", finding_state: "passed", measured_mm: None, code: None },
+            // A rectangular 1 mm corner relief is 1 mm across the bend and 0.5 mm deep at each
+            // end; the TEST-ONLY shop rows are 2 mm and 1 mm, so both fail.
+            Expectation {
+                rule: "sm.bend_relief_width",
+                state: if relief_size < 2.0 { "failed" } else { "passed" },
+                finding_state: if relief_size < 2.0 { "failed" } else { "passed" },
+                measured_mm: (relief_size < 2.0).then_some(relief_size),
+                code: (relief_size < 2.0).then_some("RELIEF_WIDTH_BELOW_LIMIT"),
+            },
+            Expectation {
+                rule: "sm.bend_relief_depth",
+                state: if relief_size / 2.0 < 1.0 { "failed" } else { "passed" },
+                finding_state: if relief_size / 2.0 < 1.0 { "failed" } else { "passed" },
+                measured_mm: (relief_size / 2.0 < 1.0).then_some(relief_size / 2.0),
+                code: (relief_size / 2.0 < 1.0).then_some("RELIEF_DEPTH_BELOW_LIMIT"),
+            },
+        ],
+        "long_bend" => {
+            vec![Expectation { rule: "sm.max_bend_length", state: "failed", finding_state: "failed", measured_mm: Some(600.0), code: None }]
         }
+        "hole_bend" => vec![Expectation { rule: "sm.hole_to_bend", state: "failed", finding_state: "failed", measured_mm: None, code: None }],
+        "plate_mixed" => vec![Expectation {
+            rule: "sm.hole_min_diameter",
+            // A non-circular opening is present, so the hole rule says it cannot answer rather
+            // than guessing from the round hole alone.
+            state: "unsupported",
+            finding_state: "unsupported",
+            measured_mm: None,
+            code: None,
+        }],
+        "spacing" => vec![Expectation {
+            rule: "sm.hole_spacing",
+            state: if wall < 4.0 { "failed" } else { "passed" },
+            finding_state: if wall < 4.0 { "failed" } else { "passed" },
+            measured_mm: (wall < 4.0).then_some(wall),
+            code: (wall < 4.0).then_some("HOLE_SPACING_BELOW_LIMIT"),
+        }],
+        "countersink" => {
+            // Ø6 over Ø4 at 90° is 1 mm deep; Ø4.5 is 0.25 mm, below the 0.75 mm row. The rim is
+            // 3 mm across, 17 mm from the nearest long edge, and leaves a 1 mm land.
+            let depth = cfg.cs_diameter_mm / 2.0 - 2.0;
+            vec![
+                Expectation {
+                    rule: "sm.countersink_depth",
+                    state: if depth > 0.75 { "failed" } else { "passed" },
+                    finding_state: if depth > 0.75 { "failed" } else { "passed" },
+                    measured_mm: Some(depth),
+                    code: (depth > 0.75).then_some("COUNTERSINK_DEPTH_ABOVE_LIMIT"),
+                },
+                {
+                    let edge = sink_x.min(60.0 - sink_x).min(sink_y).min(40.0 - sink_y) - rim;
+                    Expectation {
+                        rule: "sm.countersink_to_edge",
+                        state: if edge < 3.0 { "failed" } else { "passed" },
+                        finding_state: if edge < 3.0 { "failed" } else { "passed" },
+                        measured_mm: Some(edge),
+                        code: None,
+                    }
+                },
+                Expectation {
+                    rule: "sm.countersink_land",
+                    state: if 4.0 - rim < 0.5 { "failed" } else { "passed" },
+                    finding_state: if 4.0 - rim < 0.5 { "failed" } else { "passed" },
+                    measured_mm: Some(4.0 - rim),
+                    code: None,
+                },
+                Expectation {
+                    rule: "sm.countersink_angle",
+                    state: if (sink_angle - 90.0).abs() > 1.0 { "unsupported" } else { "passed" },
+                    finding_state: if (sink_angle - 90.0).abs() > 1.0 { "unsupported" } else { "passed" },
+                    measured_mm: None,
+                    code: None,
+                },
+                // This native sample's countersink report has no bend gaps (the rule is
+                // `checked`); the adapter-level tests carry the pass/fail bend evidence.
+                Expectation { rule: "sm.countersink_to_bend", state: "checked", finding_state: "checked", measured_mm: None, code: None },
+            ]
+        }
+        "mixed_radii" => vec![Expectation {
+            rule: "sm.bend_radius_consistent",
+            state: if (cfg.second_radius_mm - 1.0).abs() > 0.05 { "failed" } else { "passed" },
+            finding_state: if (cfg.second_radius_mm - 1.0).abs() > 0.05 { "failed" } else { "passed" },
+            measured_mm: ((cfg.second_radius_mm - 1.0).abs() > 0.05).then_some(2.0),
+            code: ((cfg.second_radius_mm - 1.0).abs() > 0.05).then_some("BEND_RADII_MIXED"),
+        }],
         other => panic!("unknown sample `{other}`; known: {SAMPLE_IDS:?}"),
     }
 }
@@ -310,9 +560,15 @@ fn assert_sample(id: &str, report: &Value, expected: &[Expectation]) {
     assert!(findings["candidateDigest"].as_str().is_some_and(|digest| !digest.is_empty()), "{id}: no model identity");
     assert!(findings["configDigest"].as_str().is_some_and(|digest| !digest.is_empty()), "{id}: no configuration identity");
     assert_catalogue_rows(id, findings);
+    if std::env::var_os("SOLIDCRAFT_DFM_PRINT").is_some() {
+        eprintln!("{id} all rows: {}", findings["rules"]);
+    }
     let not_checked = findings["notChecked"].as_str().unwrap_or_default();
     assert!(!not_checked.trim().is_empty(), "{id}: no not-checked line");
     assert!(not_checked.contains("were not checked"), "{id}: {not_checked}");
+    if id == "plate_mixed" {
+        assert!(not_checked.contains("non-circular opening"), "{id}: the unmeasured opening is not named: {not_checked}");
+    }
 
     for want in expected {
         let row = rule_row(findings, want.rule);
@@ -337,12 +593,15 @@ fn assert_sample(id: &str, report: &Value, expected: &[Expectation]) {
         if let Some(measured) = want.measured_mm {
             let got = finding["measured"]["value"].as_f64().unwrap_or(f64::NAN);
             assert!((got - measured).abs() < 1e-9, "{id} {}: measured {got}, expected {measured}: {finding}", want.rule);
-            // A decided rule that measured a number located it: the anchor, flat point or flat
-            // outline is what the viewport selects.
+            // A failing or advisory finding that measured a number located it: the anchor, flat
+            // point or flat outline is what the viewport selects. A passing summary line need not
+            // name one object. `sm.bend_radius_consistent` is a whole-part result (several bends
+            // with different radii), so it has no single object to select.
+            let needs_location = matches!(want.finding_state, "failed" | "advisory") && want.rule != "sm.bend_radius_consistent";
             let located = finding["anchor"].as_array().is_some_and(|at| at.len() == 3)
                 || finding["flat"].as_array().is_some_and(|at| at.len() == 2)
                 || finding["outline"].as_array().is_some_and(|at| !at.is_empty());
-            assert!(located, "{id} {}: a measured finding has no location: {finding}", want.rule);
+            assert!(!needs_location || located, "{id} {}: a measured finding has no location: {finding}", want.rule);
         }
         if let Some(code) = want.code {
             assert_eq!(finding["code"], code, "{id} {}: {finding}", want.rule);
@@ -418,4 +677,58 @@ fn a_changed_declaration_makes_the_old_report_stale_and_the_next_check_decides()
     assert_ne!(report["configDigest"], config_before, "the declaration is part of the frozen configuration digest");
     assert_tolerance_state(&report, if looser < 0.2 { "failed" } else { "passed" }, looser);
     let _ = std::fs::remove_dir_all(roots().scratch.join("l_bracket_declaration"));
+}
+
+/// A missing number, a generic reference and a declared thickness are three different
+/// "not a pass" states; none of them may be reported as a pass or as measured geometry.
+#[test]
+fn gates_and_generic_values_never_fake_a_pass() {
+    let _guard = GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    roots();
+    let mut built = build("plate", Config::from_env());
+    let created = exec(&mut built.session, "project.create", json!({"name": "gates", "folder": roots().scratch.to_string_lossy()}));
+    exec(&mut built.session, "project.settings_set", json!({"process": "press brake", "material": "5052-H32"}));
+    let _ = created;
+
+    // No selected data: the numeric rule has no number, so it cannot decide.
+    let run = check_and_wait(&mut built.session, "gates-none");
+    let report = inspect(&mut built.session, &run);
+    let hole = rule_row(&report["findings"], "sm.hole_min_diameter");
+    assert_eq!(hole["state"], "unsupported", "{hole}");
+    let no_number = target_findings(&report["findings"], "sm.hole_min_diameter");
+    assert!(no_number.iter().any(|finding| finding["code"] == "NO_SHOP_NUMBER"), "{no_number:?}");
+
+    // A project override is a team-reported number: it may advise, never fail. The layer, not
+    // the value, decides whether a number can conclude.
+    exec(
+        &mut built.session,
+        "dfm.override",
+        json!({
+            "rule": "sm.hole_min_diameter",
+            "limit": "min",
+            "old": {"mm": 4.0},
+            "value": {"mm": 3.0},
+            "reason": "TEST-ONLY acceptance row",
+            "by": "DFM acceptance",
+        }),
+    );
+    let run = check_and_wait(&mut built.session, "gates-generic");
+    let report = inspect(&mut built.session, &run);
+    let hole = rule_row(&report["findings"], "sm.hole_min_diameter");
+    assert_eq!(hole["state"], "advisory", "{hole}");
+    let advisory = target_findings(&report["findings"], "sm.hole_min_diameter");
+    assert!(advisory.iter().any(|finding| finding["state"] == "advisory"), "{advisory:?}");
+
+    // A declared thickness that conflicts with the model blocks the dependent rules, but it is
+    // one body's problem: the report still says which checks did not run.
+    exec(&mut built.session, "project.settings_set", json!({"thickness_mm": 3.0}));
+    let run = check_and_wait(&mut built.session, "gates-thickness");
+    let report = inspect(&mut built.session, &run);
+    let gate = rule_row(&report["findings"], "sm.gate_sheet_thickness");
+    assert_eq!(gate["state"], "failed", "{gate}");
+    let hole = rule_row(&report["findings"], "sm.hole_min_diameter");
+    assert_eq!(hole["state"], "unsupported", "{hole}");
+    let not_checked = report["findings"]["notChecked"].as_str().unwrap_or_default();
+    assert!(not_checked.contains("sm.hole_min_diameter"), "the blocked rule is not named: {not_checked}");
+    let _ = std::fs::remove_dir_all(roots().scratch.join("gates"));
 }

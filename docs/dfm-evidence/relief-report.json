@@ -1,0 +1,739 @@
+{
+  "available": true,
+  "candidateDigest": "sha256:9f418aeb8fb2b9b1f8509b29a0a4b1c0bcc7f5a1b49af6246dae88db876c4798",
+  "configDigest": "51e60dde7c172f40b0aa43f50bff2ff2946a8c84843ecbe3d2ac4f01307c709d",
+  "findings": {
+    "candidateDigest": "sha256:9f418aeb8fb2b9b1f8509b29a0a4b1c0bcc7f5a1b49af6246dae88db876c4798",
+    "configDigest": "51e60dde7c172f40b0aa43f50bff2ff2946a8c84843ecbe3d2ac4f01307c709d",
+    "findings": [
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "region",
+          "number": 0
+        },
+        "flat": null,
+        "from": "app",
+        "id": "sheet-1/A1",
+        "measured": null,
+        "outline": [],
+        "requirement": {
+          "confirmed": null,
+          "layer": "project",
+          "source": "app.flat_no_overlap",
+          "unit": "mm2",
+          "value": 0.01
+        },
+        "rules": [
+          "app.flat_no_overlap"
+        ],
+        "sheet": 0,
+        "state": "passed",
+        "status": "pass"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "sheet",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F1",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "pass"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F10",
+        "measured": null,
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY: no factory supplied this number.",
+          "unit": "mm",
+          "value": 0.0
+        },
+        "rules": [
+          "sm.bend_relief_present"
+        ],
+        "sheet": 0,
+        "state": "passed",
+        "status": "pass"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "sheet",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F11",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.hole_to_edge"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "not_applicable"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "sheet",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F12",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.min_web_parallel_bends"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "not_applicable"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "sheet",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F13",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.u_channel_ratio"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "not_applicable"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": "CRITICAL_NOT_DECLARED",
+        "faces": [],
+        "feature": {
+          "kind": "part",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F14",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.tolerance_across_bends"
+        ],
+        "sheet": 0,
+        "state": "unsupported",
+        "status": "not_verified"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "part",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F15",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.countersink_depth",
+          "sm.countersink_to_edge",
+          "sm.countersink_to_bend",
+          "sm.countersink_land",
+          "sm.countersink_angle"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "not_applicable"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "part",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F16",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.hole_spacing"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "not_applicable"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F17",
+        "measured": {
+          "unit": "mm",
+          "value": 1.0
+        },
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY: no factory supplied this number.",
+          "unit": "mm",
+          "value": 0.0
+        },
+        "rules": [
+          "sm.bend_radius_consistent"
+        ],
+        "sheet": 0,
+        "state": "passed",
+        "status": "pass"
+      },
+      {
+        "anchor": [
+          56.75,
+          3.0,
+          0.0
+        ],
+        "body": "Body1",
+        "code": "RELIEF_WIDTH_BELOW_LIMIT",
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F18",
+        "measured": {
+          "unit": "mm",
+          "value": 1.0
+        },
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY: no factory supplied this number.",
+          "unit": "mm",
+          "value": 2.0
+        },
+        "rules": [
+          "sm.bend_relief_width"
+        ],
+        "sheet": 0,
+        "state": "failed",
+        "status": "needs_review"
+      },
+      {
+        "anchor": [
+          57.0,
+          3.25,
+          0.0
+        ],
+        "body": "Body1",
+        "code": "RELIEF_WIDTH_BELOW_LIMIT",
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F19",
+        "measured": {
+          "unit": "mm",
+          "value": 1.0
+        },
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY: no factory supplied this number.",
+          "unit": "mm",
+          "value": 2.0
+        },
+        "rules": [
+          "sm.bend_relief_width"
+        ],
+        "sheet": 0,
+        "state": "failed",
+        "status": "needs_review"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "sheet",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F2",
+        "measured": {
+          "unit": "mm",
+          "value": 2.0
+        },
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.gate_sheet_thickness"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "pass"
+      },
+      {
+        "anchor": [
+          56.75,
+          3.0,
+          0.0
+        ],
+        "body": "Body1",
+        "code": "RELIEF_DEPTH_BELOW_LIMIT",
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F20",
+        "measured": {
+          "unit": "mm",
+          "value": 0.5
+        },
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY: no factory supplied this number.",
+          "unit": "mm",
+          "value": 1.0
+        },
+        "rules": [
+          "sm.bend_relief_depth"
+        ],
+        "sheet": 0,
+        "state": "failed",
+        "status": "needs_review"
+      },
+      {
+        "anchor": [
+          57.0,
+          3.25,
+          0.0
+        ],
+        "body": "Body1",
+        "code": "RELIEF_DEPTH_BELOW_LIMIT",
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F21",
+        "measured": {
+          "unit": "mm",
+          "value": 0.5
+        },
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY: no factory supplied this number.",
+          "unit": "mm",
+          "value": 1.0
+        },
+        "rules": [
+          "sm.bend_relief_depth"
+        ],
+        "sheet": 0,
+        "state": "failed",
+        "status": "needs_review"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "part",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F3",
+        "measured": {
+          "unit": "mm",
+          "value": 2.0
+        },
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.gate_bends_found"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "pass"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "sheet",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F4",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.gate_profile_coverage"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "pass"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F5",
+        "measured": {
+          "unit": "mm",
+          "value": 1.0
+        },
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY",
+          "unit": "mm",
+          "value": 0.5
+        },
+        "rules": [
+          "sm.inside_radius"
+        ],
+        "sheet": 0,
+        "state": "passed",
+        "status": "pass"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F6",
+        "measured": {
+          "unit": "mm",
+          "value": 11.0
+        },
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY",
+          "unit": "mm",
+          "value": 8.0
+        },
+        "rules": [
+          "sm.min_flange"
+        ],
+        "sheet": 0,
+        "state": "passed",
+        "status": "pass"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "sheet",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F7",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.hole_min_diameter"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "not_applicable"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "bend",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F8",
+        "measured": {
+          "unit": "mm",
+          "value": 57.0
+        },
+        "outline": [],
+        "requirement": {
+          "confirmed": "factory_confirmed",
+          "layer": "factory",
+          "source": "TEST-ONLY",
+          "unit": "mm",
+          "value": 500.0
+        },
+        "rules": [
+          "sm.max_bend_length"
+        ],
+        "sheet": 0,
+        "state": "passed",
+        "status": "pass"
+      },
+      {
+        "anchor": null,
+        "body": "Body1",
+        "code": null,
+        "faces": [],
+        "feature": {
+          "kind": "sheet",
+          "number": null
+        },
+        "flat": null,
+        "from": "rules",
+        "id": "sheet-1/F9",
+        "measured": null,
+        "outline": [],
+        "requirement": null,
+        "rules": [
+          "sm.hole_to_bend"
+        ],
+        "sheet": 0,
+        "state": "checked",
+        "status": "not_applicable"
+      }
+    ],
+    "modelVersion": "sha256:9f418aeb8fb2b9b1f8509b29a0a4b1c0bcc7f5a1b49af6246dae88db876c4798",
+    "notChecked": "Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked.\nSheet 1 (`Body1`): sm.tolerance_across_bends was not verified.",
+    "profileDigest": "sha256:4cdebc35fd256101443c7ecbfaf968ed11d4b7144e175fe18b0aecbcd25bdd25",
+    "projectId": "f7ba3b77-310a-45f7-851b-79d7db437f7c",
+    "rules": [
+      {
+        "count": 1,
+        "ruleId": "app.flat_no_overlap",
+        "state": "passed"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.bend_radius_consistent",
+        "state": "passed"
+      },
+      {
+        "count": 2,
+        "ruleId": "sm.bend_relief_depth",
+        "state": "failed"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.bend_relief_present",
+        "state": "passed"
+      },
+      {
+        "count": 2,
+        "ruleId": "sm.bend_relief_width",
+        "state": "failed"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.countersink_angle",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.countersink_depth",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.countersink_land",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.countersink_to_bend",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.countersink_to_edge",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.gate_bends_found",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.gate_profile_coverage",
+        "state": "checked"
+      },
+      {
+        "count": 2,
+        "ruleId": "sm.gate_sheet_thickness",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.hole_min_diameter",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.hole_spacing",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.hole_to_bend",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.hole_to_edge",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.inside_radius",
+        "state": "passed"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.max_bend_length",
+        "state": "passed"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.min_flange",
+        "state": "passed"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.min_web_parallel_bends",
+        "state": "checked"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.tolerance_across_bends",
+        "state": "unsupported"
+      },
+      {
+        "count": 1,
+        "ruleId": "sm.u_channel_ratio",
+        "state": "checked"
+      }
+    ],
+    "runId": "run-9ef18f1d58ff4968-24dd43c6a71939ea",
+    "schemaVersion": 2,
+    "source": {
+      "kind": "native"
+    }
+  },
+  "freshness": "current",
+  "modelVersion": "sha256:9f418aeb8fb2b9b1f8509b29a0a4b1c0bcc7f5a1b49af6246dae88db876c4798",
+  "outcome": "current",
+  "reason": null,
+  "runId": "run-9ef18f1d58ff4968-24dd43c6a71939ea",
+  "running": false,
+  "sourceRevision": "8",
+  "summary": "# DFM check\n\nRun: `run-9ef18f1d58ff4968-24dd43c6a71939ea`\nProject: `f7ba3b77-310a-45f7-851b-79d7db437f7c`\nModel: `sha256:9f418aeb8fb2b9b1f8509b29a0a4b1c0bcc7f5a1b49af6246dae88db876c4798`\nConfiguration digest: `51e60dde7c172f40b0aa43f50bff2ff2946a8c84843ecbe3d2ac4f01307c709d`\n\nPassed: 6 | Checked: 11 | Advisory: 0 | Failed: 4 | Unsupported: 1 | Not applicable: 0 | Not run: 0\n\nResult: check failed: 4 finding(s) break a confirmed requirement.\n\n## Findings\n\n- `sheet-1/A1` `passed` (Body1), required 0.010 mm2 (unconfirmed)\n- `sheet-1/F1` `checked` (Body1)\n- `sheet-1/F10` `passed` (Body1), required 0.000 mm (factory confirmed)\n- `sheet-1/F11` `checked` (Body1)\n- `sheet-1/F12` `checked` (Body1)\n- `sheet-1/F13` `checked` (Body1)\n- `sheet-1/F14` `unsupported` (Body1), code `CRITICAL_NOT_DECLARED`\n- `sheet-1/F15` `checked` (Body1)\n- `sheet-1/F16` `checked` (Body1)\n- `sheet-1/F17` `passed` (Body1), measured 1.000 mm, required 0.000 mm (factory confirmed)\n- `sheet-1/F18` `failed` (Body1), measured 1.000 mm, required 2.000 mm (factory confirmed), code `RELIEF_WIDTH_BELOW_LIMIT`\n- `sheet-1/F19` `failed` (Body1), measured 1.000 mm, required 2.000 mm (factory confirmed), code `RELIEF_WIDTH_BELOW_LIMIT`\n- `sheet-1/F2` `checked` (Body1), measured 2.000 mm\n- `sheet-1/F20` `failed` (Body1), measured 0.500 mm, required 1.000 mm (factory confirmed), code `RELIEF_DEPTH_BELOW_LIMIT`\n- `sheet-1/F21` `failed` (Body1), measured 0.500 mm, required 1.000 mm (factory confirmed), code `RELIEF_DEPTH_BELOW_LIMIT`\n- `sheet-1/F3` `checked` (Body1), measured 2.000 mm\n- `sheet-1/F4` `checked` (Body1)\n- `sheet-1/F5` `passed` (Body1), measured 1.000 mm, required 0.500 mm (factory confirmed)\n- `sheet-1/F6` `passed` (Body1), measured 11.000 mm, required 8.000 mm (factory confirmed)\n- `sheet-1/F7` `checked` (Body1)\n- `sheet-1/F8` `passed` (Body1), measured 57.000 mm, required 500.000 mm (factory confirmed)\n- `sheet-1/F9` `checked` (Body1)\n\n## Not checked\n\n- Tolerances other than declared hole-to-hole dimensions, bend sequence, collisions, grain and cut-outs that reach the outline were not checked.\n- Sheet 1 (`Body1`): sm.tolerance_across_bends was not verified.\n"
+}
