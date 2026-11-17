@@ -134,6 +134,10 @@ pub fn command(id: &str, params: &Value, undo_left: usize) -> Verdict {
     if id == "file.open_in_easyprint" {
         return Verdict::Ask(format!("{id}, upload the model to Printables' servers (EasyPrint)"));
     }
+    // Starts other programs on this computer: the user says yes first. The part stays here.
+    if id == "inspect.stress_estimate" {
+        return Verdict::Ask(format!("{id}: mesh and solve the part with gmsh and CalculiX on this computer"));
+    }
     if let Some(p) = names_a_file(id, params) {
         return Verdict::Ask(with_slicer(format!("{id}: {p}")));
     }
@@ -241,6 +245,13 @@ mod tests {
 
     fn exec(id: &str, params: Value) -> Verdict {
         request("engine.execute", &json!({"command": id, "params": params}), 5)
+    }
+
+    #[test]
+    fn a_stress_estimate_asks_first_because_it_starts_other_programs() {
+        let v = exec("inspect.stress_estimate", json!({"loads": [], "supports": []}));
+        assert!(matches!(&v, Verdict::Ask(a) if a.contains("gmsh") && a.contains("this computer")), "{v:?}");
+        assert_eq!(exec("inspect.stress_estimate.show", json!({"show": "deflection"})), Verdict::Run { change: false });
     }
 
     #[test]

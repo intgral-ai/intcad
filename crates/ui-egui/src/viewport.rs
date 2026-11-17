@@ -4910,7 +4910,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             app.set_status(app.tr("ui.gpu_memory_lowered"), false);
         }
     }
+    // A stress estimate's colour map and legend, over the model (PIL-294).
     let overlay_rect = crate::shell::bottom_overlay_rect(app, rect);
+    crate::stress_overlay::paint(app, ui, &painter, &proj, crate::shell::workspace_content(app, overlay_rect));
     crate::viewport_details::legacy_legends(app, ui, overlay_rect);
     placement_note(app, &painter, overlay_rect);
     crate::frame_rate::paint(app, ui, &painter, overlay_rect);

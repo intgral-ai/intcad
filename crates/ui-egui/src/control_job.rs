@@ -85,6 +85,8 @@ const READ_ON_A_COPY: &[&str] = &[
     // Physical properties of a component or placement: every body of every placement (#8706).
     "component.properties",
     "occurrence.properties",
+    // A stress estimate meshes and solves for seconds to minutes in other programs (PIL-294).
+    "inspect.stress_estimate",
 ];
 
 /// Exports and readings computing at once; more run here.
@@ -393,6 +395,9 @@ impl SolveApp {
     /// and nothing of it is applied (its worker finishes on its own, unseen). Requests waiting
     /// behind it go on.
     pub fn stop_agent_command(&mut self) {
+        if solidcraft_engine::fea::progress().is_some() {
+            solidcraft_engine::fea::cancel();
+        }
         let stopped = match self.control_job.take() {
             Some(job) => {
                 let response = crate::control::stopped_command_response(&job.req.method, &job.req.params, job.req.guarded.is_some(), &job.label);
