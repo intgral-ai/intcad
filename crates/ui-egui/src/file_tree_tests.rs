@@ -495,3 +495,35 @@ fn a_right_click_opens_the_row_menu_and_rename_edits_in_place() {
     h.frames(2);
     assert!(rect_of("files:edit").is_some(), "Rename opened the name field");
 }
+
+/// The Enter that finishes a rename belongs to the name field: it must not also open the row,
+/// which would put a second tab on the renamed file beside the one being edited.
+#[test]
+fn the_enter_that_renames_a_design_does_not_open_it_again() {
+    use crate::scenario::Harness;
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let path = scratch.path().join("bracket.sc");
+    Session::default().execute("file.save_as", &json!({"path": path.to_string_lossy(), "cache": false})).unwrap();
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.call("ui.files", json!({"root": scratch.path().to_string_lossy()}));
+    h.frames(20);
+    let row = crate::scenario::rect_of("files:row:bracket.sc").expect("the row");
+    h.call("ui.click", json!({"x": row.center().x, "y": row.center().y, "double": true}));
+    h.frames(60);
+    let before = h.app.docs.count();
+    h.call("ui.click", json!({"x": row.center().x, "y": row.center().y}));
+    h.frames(2);
+    h.step(&json!({"key": "F2"})).unwrap();
+    h.frames(2);
+    h.step(&json!({"key": "A", "ctrl": true})).unwrap();
+    h.step(&json!({"text": "bracket-v2.sc"})).unwrap();
+    h.step(&json!({"key": "Enter"})).unwrap();
+    h.frames(20);
+    assert_eq!(h.app.docs.count(), before, "rename opens no second tab");
+    let names: Vec<String> = crate::documents::open_sessions(&h.app).iter().map(|s| s.doc.name.clone()).collect();
+    assert!(names.iter().any(|name| name == "bracket-v2"), "{names:?}");
+    assert!(!names.iter().any(|name| name == "bracket"), "the old tab was renamed, not kept: {names:?}");
+}
