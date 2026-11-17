@@ -1232,7 +1232,15 @@ pub(crate) fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde
         })),
         "notice": app.file_tree.notice.as_ref().map(|(text, error)| json!({"text": text, "error": error})),
         "busy": app.file_tree.busy,
-        "report": app.file_tree.report.as_ref().map(|report| json!({"done": report.succeeded(), "failed": report.failed(), "skipped": report.skipped()})),
+        "report": app.file_tree.report.as_ref().map(|report| json!({
+            "done": report.succeeded(),
+            "failed": report.failed(),
+            "skipped": report.skipped(),
+            "failures": report.results.iter().filter_map(|result| match &result.outcome {
+                Outcome::Failed(error) => Some(format!("{}: {error}", result.source.display())),
+                _ => None,
+            }).collect::<Vec<_>>(),
+        })),
     }))
 }
 
