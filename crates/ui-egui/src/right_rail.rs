@@ -297,6 +297,8 @@ fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
     let body = Rect::from_min_max(pos2(full.left(), header.bottom()), full.max);
     if item == Item::Review {
         crate::dfm_review::panel(app, ui, body);
+    } else if item == Item::Files {
+        crate::file_tree::panel(app, ui, body);
     } else {
         empty(ui, body, item);
     }

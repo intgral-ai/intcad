@@ -175,6 +175,7 @@ mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
 mod file_picker;
+pub(crate) mod file_tree;
 pub(crate) mod frame_watch;
 #[cfg(test)]
 mod history_off_thread_tests;
@@ -590,6 +591,8 @@ pub struct SolveApp {
     pub gesture: mouse_gesture::State,
     /// Browser tree state (reveal, groups being edited, occurrence moves).
     pub tree: browser::TreeState,
+    /// The Files panel: one local folder as a tree, the designs it opens, and file operations.
+    pub(crate) file_tree: file_tree::FileTree,
     /// A saved design copied for insertion into another open document.
     pub linked_design_clipboard: Option<String>,
     /// The S box (command search at the cursor): recent and pinned commands.
@@ -869,6 +872,7 @@ impl SolveApp {
             menu: context_menu::MenuState::default(),
             gesture: mouse_gesture::State::default(),
             tree,
+            file_tree: file_tree::FileTree::new(),
             linked_design_clipboard: None,
             sbox: shortcut_box::ShortcutBox::default(),
             keymap: keymap::Keymap::default(),
