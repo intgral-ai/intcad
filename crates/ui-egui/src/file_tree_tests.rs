@@ -473,3 +473,25 @@ fn a_batch_reports_the_good_item_and_the_failed_one() {
     assert_eq!((report.succeeded(), report.failed()), (1, 1));
     assert_eq!(report.retry.len(), 1, "only the failed item can run again");
 }
+
+/// The secondary click opens the row menu, and Rename in it opens the name field. The rows are
+/// virtualized, so the menu is drawn by the panel rather than by the row that asked for it.
+#[test]
+fn a_right_click_opens_the_row_menu_and_rename_edits_in_place() {
+    use crate::scenario::{Harness, rect_of};
+    use serde_json::json;
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "");
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.call("ui.files", json!({"root": scratch.path().to_string_lossy()}));
+    h.frames(20);
+    let row = rect_of("files:row:notes.txt").expect("the row");
+    h.call("ui.click", json!({"x": row.center().x, "y": row.center().y, "button": "right"}));
+    h.frames(2);
+    let rename = rect_of("menu:files_rename").expect("the row menu opened");
+    h.call("ui.click", json!({"x": rename.center().x, "y": rename.center().y}));
+    h.frames(2);
+    assert!(rect_of("files:edit").is_some(), "Rename opened the name field");
+}
