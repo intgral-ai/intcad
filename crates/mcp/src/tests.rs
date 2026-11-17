@@ -1463,6 +1463,8 @@ fn skill_reference_returns_bundled_text_without_backend_calls() {
         ("solidcraft-mechanisms", "SKILL.md", include_str!("../../../skills/solidcraft-mechanisms/SKILL.md")),
         ("solidcraft-checking", "SKILL.md", include_str!("../../../skills/solidcraft-checking/SKILL.md")),
         ("solidcraft-editing", "SKILL.md", include_str!("../../../skills/solidcraft-editing/SKILL.md")),
+        ("solidcraft-analysis", "SKILL.md", include_str!("../../../skills/solidcraft-analysis/SKILL.md")),
+        ("solidcraft-analysis", "reference.md", include_str!("../../../skills/solidcraft-analysis/reference.md")),
     ];
     for (skill, file, expected) in docs {
         let args = json!({"skill": skill, "file": file});
@@ -1479,7 +1481,7 @@ fn skill_reference_returns_bundled_text_without_backend_calls() {
 #[test]
 fn skill_reference_refuses_unknown_names_and_paths_with_available_choices() {
     let mut s = server();
-    let skills = ["solidcraft-checking", "solidcraft-editing", "solidcraft-mechanisms", "solidcraft-modeling"];
+    let skills = ["solidcraft-analysis", "solidcraft-checking", "solidcraft-editing", "solidcraft-mechanisms", "solidcraft-modeling"];
     for skill in ["unknown", "../solidcraft-modeling", "/tmp/solidcraft-modeling"] {
         let r = raw_tool(&mut s, "skill_reference", json!({"skill": skill}));
         assert_eq!(r["result"]["isError"], true, "{r}");
