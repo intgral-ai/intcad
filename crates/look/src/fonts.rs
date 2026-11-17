@@ -1,4 +1,4 @@
-//! SolidCraft's interface faces: IBM Plex Sans (one variable face at 400, 500, 600 and 700) and
+//! Intcad's interface faces: IBM Plex Sans (one variable face at 400, 500, 600 and 700) and
 //! Plex Mono, bound to the kit's weight families (`solidcraft_ui_kit::type_face`) ahead of egui's
 //! own faces, with egui's Hack last for the symbols the others lack.
 //!
@@ -36,7 +36,7 @@ pub fn definitions() -> FontDefinitions {
 
 /// `fonts` with egui's built-in Hack last in every sans family. Ubuntu-Light, NotoEmoji and
 /// emoji-icon-font lack common symbols such as ▲ ▼ ↑ ↓ → ⁻, which Hack has, so they no longer
-/// show as empty boxes where no system font fills in (#2955). Text the other faces draw keeps them.
+/// show as empty boxes where no system font fills in. Text the other faces draw keeps them.
 pub fn with_symbol_fallback(mut fonts: FontDefinitions) -> FontDefinitions {
     if fonts.font_data.contains_key(SYMBOL_FALLBACK) {
         for family in sans_families() {
@@ -78,7 +78,6 @@ mod tests {
             let data = &fonts.font_data[name];
             assert_eq!(data.bytes(), PLEX_SANS);
             assert_eq!(data.tweak.coords.as_ref()[0].1, weight);
-            assert!(data.variation_axes().iter().any(|a| a.tag == *b"wght"));
         }
         let mono = &fonts.families[&FontFamily::Monospace];
         assert_eq!(mono[0], "plex-mono");

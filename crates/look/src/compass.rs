@@ -1,4 +1,4 @@
-//! The view compass's axis ends: SolidCraft's [`Glyphs::axis_tip`](solidcraft_ui_kit::icons::glyphs::Glyphs::axis_tip)
+//! The view compass's axis ends: Intcad's [`Glyphs::axis_tip`](solidcraft_ui_kit::icons::glyphs::Glyphs::axis_tip)
 //! and its pointer target.
 use egui::{Pos2, Stroke, pos2};
 use solidcraft_theme::Tokens;
@@ -32,9 +32,9 @@ pub fn axis_tip_scaled(painter: &egui::Painter, c: Pos2, name: &str, d: [f64; 3]
     if positive {
         painter.circle_filled(at, radius, col);
     }
-    // Negative tips are hollow: neither the axis shaft nor a fill covers their
-    // centres, so the translucent compass background shows through. A hovered tip of either
-    // kind turns fully white.
+    // Negative tips are hollow: neither the axis shaft nor a fill covers their centres, so the
+    // translucent compass background shows through. A hovered tip of either kind turns fully
+    // white.
     if hovered {
         // Same outer size as the resting tip: a ring's outline is half its stroke outside.
         painter.circle_filled(at, if positive { radius } else { radius + 1.2 * scale }, t.on_accent);
@@ -48,7 +48,7 @@ pub fn axis_tip_scaled(painter: &egui::Painter, c: Pos2, name: &str, d: [f64; 3]
         // On a hovered (white) disc the letter takes the axis colour.
         let letter = if hovered { col } else { t.on_accent };
         let label = name.to_uppercase();
-        let galley = painter.layout_no_wrap(label, solidcraft_ui_kit::type_face::bold(solidcraft_theme::Tokens::get().font_compass * scale), letter);
+        let galley = painter.layout_no_wrap(label, solidcraft_ui_kit::type_face::bold(Tokens::get().font_compass * scale), letter);
         let origin = at - galley.size() / 2.0;
         let ppp = painter.ctx().pixels_per_point().max(0.5);
         let origin = pos2((origin.x * ppp).round() / ppp, (origin.y * ppp).round() / ppp);

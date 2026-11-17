@@ -1,10 +1,9 @@
-//! Original light and dark palette values.
-use crate::{IconColors, Tokens};
-use egui::Color32;
-use solidcraft_color::AnalysisColors;
+//! Intcad's built-in light and dark palette values, carried from v0.1.0 (MIT OR Apache-2.0).
+//! The light palette is the base; `dark` overrides the roles that differ.
+use crate::{AnalysisColors, Borders, IconColors, Tokens};
 
-/// The primary (`active-3`) strokes, light then dark, that the tokens share with SolidCraft's icon artwork
-/// (`crates/look/icons/design/palette.toml`, including its colour vision variants). The look crate's icon tests hold them equal.
+/// The primary (`active-3`) strokes, light then dark, shared by the UI tokens and the icon
+/// artwork. These are the v0.1.0 icon palette's values (MIT OR Apache-2.0).
 pub mod icon_strokes {
     pub const SKETCH_PRIMARY: [[u8; 3]; 2] = [[5, 127, 69], [18, 141, 69]];
     pub const CONSTRAINT_PRIMARY: [[u8; 3]; 2] = [[202, 71, 61], [193, 99, 88]];
@@ -15,6 +14,8 @@ pub mod icon_strokes {
     pub const CONSTRUCTION_BLUE_YELLOW: [[u8; 3]; 2] = [[185, 115, 0], [195, 125, 0]];
     pub const CONSTRAINT_BLUE_YELLOW: [[u8; 3]; 2] = [[175, 64, 56], [133, 85, 74]];
 }
+
+use egui::Color32;
 use icon_strokes as strokes;
 
 const fn icon_primary(rgb: [u8; 3]) -> Color32 {
@@ -32,7 +33,7 @@ impl Tokens {
             nav_tip_key_border: Color32::from_rgba_unmultiplied_const(128, 140, 160, 153),
             nav_field: Color32::from_rgb(255, 255, 255),
 
-            borders: crate::Borders::LEGACY,
+            borders: Borders::LEGACY,
             file_dim: Color32::from_rgb(58, 70, 86),
             file_recovery_well: Color32::from_rgb(247, 226, 184),
             file_action_height: 32.0,
@@ -189,7 +190,6 @@ impl Tokens {
             construction_geom: icon_primary(strokes::CONSTRUCTION_PRIMARY[0]),
             body: Color32::from_rgb(176, 186, 198),
             body_edge: Color32::from_rgb(40, 44, 52),
-            // Halfway from the edge colour to the body's: about half the edges' contrast.
             isoparm: Color32::from_rgb(108, 115, 125),
             manipulator: Color32::from_rgb(40, 110, 220),
             joint_manipulator: Color32::from_rgb(235, 157, 0),

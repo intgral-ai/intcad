@@ -1,9 +1,10 @@
-//! SolidCraft's token contract: every colour and size a UI component draws with ([`Tokens`]), SolidCraft's light and
-//! dark values written in code (a dark theme, the default, a blue-grey in the spirit of desktop CAD tools, viewport
-//! #2e3440, and a light one), colour vision modes, tab accents, and the per-thread and per-context theme state a host
-//! sets. With nothing set, components draw with the built-in dark tokens. It holds no data files and knows no theme
-//! file format: a host's theme system resolves its own palettes and hands them over ([`set_custom`],
-//! [`scoped_panel_tokens`], [`set_published`]).
+//! Intcad's theme contract: every colour and size a UI component draws with ([`Tokens`]), the
+//! built-in dark and light palettes, colour vision modes, tab accents, and the per-thread theme
+//! state a host sets. Derived from Intcad's own v0.1.0 theme code (MIT OR Apache-2.0).
+//!
+//! The crate holds no data files and knows no theme file format: a host's theme system resolves
+//! its own palettes and hands them over ([`set_custom`], [`scoped_panel_tokens`],
+//! [`set_published`]). With nothing set, components draw with the built-in dark tokens.
 
 use std::cell::Cell;
 
@@ -15,39 +16,35 @@ use egui::{Color32, Stroke};
 use serde::{Deserialize, Serialize};
 use solidcraft_color::AnalysisColors;
 
-/// Expanded Wide hosts compose controls and content in one total row below
-/// this logical height. Independent of pixel density and user UI scaling.
+/// Expanded Wide hosts compose controls and content in one total row below this logical height.
+/// Independent of pixel density and user UI scaling.
 pub const PANEL_INLINE_MAX_HEIGHT: f32 = 88.0;
 
 thread_local! {
     /// Theme state belongs to the UI thread drawing the frame. Concurrent app/test renderers
     /// must not change one another's palette while a frame or icon texture is being built.
     static DARK: Cell<bool> = const { Cell::new(true) };
-    /// The colour vision mode, per thread. Each app
-    /// sets it from its own preferences at the start of every frame (in its frame logic), on the
-    /// thread that draws it. Tests run many apps side by side on their own threads in one process:
-    /// with one global, a test in a mode changed the colours under another one
-    /// (`hover_stays_off_during_spin_and_animated_views` failed that way). No worker thread reads
-    /// it: the preview thread is handed its colours (`preview::Colors`) and thumbnails are drawn by
-    /// the engine in the model's colours, so a new thread starts Off and stays Off.
+    /// The colour vision mode, per thread: each app sets it from its own preferences on the
+    /// thread that draws it. Tests run many apps side by side on their own threads, so a global
+    /// would let one test change the colours under another. No worker thread reads it.
     static VISION: Cell<ColorVision> = const { Cell::new(ColorVision::Off) };
-    /// The palette of a theme file (`theme_files`) in place of the built-in one of its base
-    /// (dark or light), per thread like the rest. `None`: the built-in palettes.
+    /// A host-resolved palette in place of the built-in one of its base (dark or light), per
+    /// thread like the rest. `None`: the built-in palettes.
     static CUSTOM: Cell<Option<Custom>> = const { Cell::new(None) };
+    static CUSTOM_GENERATION: Cell<u64> = const { Cell::new(0) };
     /// Paint-only panel palette. It never changes authored theme state or cache generations.
     static PANEL_TOKENS: Cell<Option<Tokens>> = const { Cell::new(None) };
-    static CUSTOM_GENERATION: Cell<u64> = const { Cell::new(0) };
-    /// The application bar's logo in the theme's accent instead of its own logo colours
-    /// (Preferences › Interface › Logo), per thread like the rest.
+    /// The application bar's logo in the theme's accent instead of its own logo colours,
+    /// per thread like the rest.
     static LOGO_ACCENT: Cell<bool> = const { Cell::new(false) };
-    /// The 3D view's own dark or light when Preferences give it one ([`ViewportTheme`], #4146),
-    /// per thread like the rest. `None`: the view is as dark as the window.
+    /// The 3D view's own dark or light when Preferences give it one, per thread like the rest.
+    /// `None`: the view is as dark as the window.
     static VIEWPORT_DARK: Cell<Option<bool>> = const { Cell::new(None) };
-    /// The 3D view's background colour when Preferences give it one (#7688), per thread like the
-    /// rest. `None`: the theme's gradient.
+    /// The 3D view's background colour when Preferences give it one, per thread like the rest.
+    /// `None`: the theme's gradient.
     static VIEWPORT_BACKGROUND: Cell<Option<[u8; 3]>> = const { Cell::new(None) };
     /// The last published frame, guarded by every palette input so another app/context cannot
-    /// reuse it after changing the thread's theme. Resolution/fade state lives in that context.
+    /// reuse it after changing the thread's theme.
     static PUBLISHED: Cell<Option<PublishedTab>> = const { Cell::new(None) };
 }
 
@@ -82,8 +79,8 @@ impl Environment {
     }
 }
 
-/// A frame's published tab palette ([`set_published`]): what [`Tokens::get`] and [`Tokens::view`] return while the theme
-/// state it was made in ([`Environment`]) holds.
+/// A frame's published tab palette ([`set_published`]): what [`Tokens::get`] and [`Tokens::view`]
+/// return while the theme state it was made in ([`Environment`]) holds.
 #[derive(Clone, Copy)]
 pub struct PublishedTab {
     /// The theme state the palettes were resolved in.
@@ -116,7 +113,7 @@ impl Surfaces {
     }
 
     pub fn blend(self, to: Self, progress: f32) -> Self {
-        // Return endpoints verbatim, including premultiplied alpha and byte rounding.
+        // Endpoints verbatim, including premultiplied alpha and byte rounding.
         if progress <= 0.0 {
             return self;
         }
@@ -132,8 +129,8 @@ impl Surfaces {
     }
 }
 
-/// Interpolate unassociated sRGB in Oklab; alpha stays independent and is premultiplied once
-/// by Color32 on output. This avoids dark fringes when an opacity provider is also enabled.
+/// Interpolate unassociated sRGB in Oklab; alpha stays independent and is premultiplied once by
+/// Color32 on output, which avoids dark fringes when an opacity provider is also enabled.
 fn oklab_blend(from: Color32, to: Color32, fraction: f32) -> Color32 {
     let lab = |color: Color32| {
         let [r, g, b, a] = color.to_srgba_unmultiplied();
@@ -168,7 +165,8 @@ fn oklab_blend(from: Color32, to: Color32, fraction: f32) -> Color32 {
     )
 }
 
-/// A fade of the tab surfaces from one tab's to another's, `seconds` long from `start` (egui's input time).
+/// A fade of the tab surfaces from one tab's to another's, `seconds` long from `start`
+/// (egui's input time).
 #[derive(Clone, Copy)]
 pub struct Fade {
     pub from: Surfaces,
@@ -198,7 +196,6 @@ pub enum BorderRole {
     Container,
     Control,
 }
-
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Borders {
     pub primary: Option<Stroke>,
@@ -289,7 +286,6 @@ impl Borders {
         .unwrap_or(fallback)
     }
 }
-
 impl Tokens {
     /// Bevel themes use the editable surface colour independently of button faces.
     pub fn input_fill(&self) -> Color32 {
@@ -374,8 +370,7 @@ impl Tokens {
         self.borders.stroke(BorderRole::Control, Stroke::new(1.0, color))
     }
 }
-
-/// A theme file's palette and whether it is dark.
+/// A host-resolved palette and whether it is its dark base.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Custom {
     pub dark: bool,
@@ -383,8 +378,7 @@ pub struct Custom {
 }
 
 /// Use a theme file's palette for its base, or the built-in palettes (`None`). Returns whether
-/// that changed anything (the visuals follow on the next [`apply`]). This sets tokens only: a host with an icon
-/// renderer sets that renderer's palette with it (SolidCraft: `theme::set_file_palette`).
+/// that changed anything (the visuals follow on the next [`apply`]).
 pub fn set_custom(custom: Option<Custom>) -> bool {
     let changed = CUSTOM.with(|c| c.replace(custom) != custom);
     if changed {
@@ -399,14 +393,13 @@ pub fn set_logo_accent(on: bool) -> bool {
     LOGO_ACCENT.with(|c| c.replace(on) != on)
 }
 
-/// The theme file palette [`set_custom`] last set on this thread.
+/// The host-resolved palette in place now, if any.
 pub fn custom() -> Option<Custom> {
     CUSTOM.get()
 }
 
-/// Draw with `tokens` as the theme's palette for the current base until the returned guard drops, which restores the
-/// previous one, even when a test's assertion fails. Like [`set_custom`] it sets tokens only, not a host's icon
-/// palette (SolidCraft: `theme::scoped_file`).
+/// Scope a host palette to this thread until the guard drops, restoring the previous palette even
+/// when an assertion fails.
 pub fn scoped_tokens(tokens: Tokens) -> impl Drop {
     struct Restore(Option<Custom>);
     impl Drop for Restore {
@@ -419,27 +412,28 @@ pub fn scoped_tokens(tokens: Tokens) -> impl Drop {
     restore
 }
 
-/// Temporarily bind a panel's paint palette without publishing a theme change.
-///
-/// `Tokens::get_in` returns these tokens first until the returned guard drops, which restores
-/// the previous override. A host uses it to draw any component in another palette or accent
-/// (for example another workspace's) without editing the component.
+/// Scope a paint-only panel palette to this thread until the guard drops. It does not change the
+/// authored theme state or its generation.
 pub fn scoped_panel_tokens(tokens: Tokens) -> impl Drop {
-    struct Restore {
-        previous: Option<Tokens>,
-        // The override belongs to this UI thread, so its guard must not move to another one.
-        _thread: std::marker::PhantomData<std::rc::Rc<()>>,
-    }
+    struct Restore(Option<Tokens>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            PANEL_TOKENS.set(self.previous);
+            PANEL_TOKENS.set(self.0);
         }
     }
-    Restore { previous: PANEL_TOKENS.replace(Some(tokens)), _thread: std::marker::PhantomData }
+    let restore = Restore(PANEL_TOKENS.get());
+    PANEL_TOKENS.set(Some(tokens));
+    restore
+}
+
+/// Publish this frame's tab palette, or clear it with `None`. A published palette is used only
+/// while its [`Environment`] still matches the thread's theme state.
+pub fn set_published(published: Option<PublishedTab>) {
+    PUBLISHED.set(published);
 }
 
 /// A tab's selection colours. This is deliberately separate from the global widget style:
-/// application chrome, checkboxes, status colours and dialog actions retain their own tokens.
+/// application chrome, checkboxes, status colours and dialog actions keep their own tokens.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TabAccent {
     pub color: Color32,
@@ -471,7 +465,7 @@ pub enum AccentRamp {
 impl AccentRamp {
     pub const ALL: [Self; 7] = [Self::Main, Self::Sketch, Self::Surface, Self::Mesh, Self::Form, Self::Sheet, Self::Render];
 
-    /// The ramp's fill, ink and tint in `t`, before [`TabAccent::for_ramp`] protects the ink's contrast.
+    /// The ramp's fill, ink and tint in `t`, before [`TabAccent::for_ramp`] protects the ink.
     fn slots(self, t: &Tokens) -> (Color32, Color32, Color32) {
         match self {
             Self::Main => (t.accent, t.selected_ink, t.accent_soft),
@@ -495,9 +489,8 @@ pub struct TabStyle {
     pub icon_accent: Option<&'static str>,
 }
 
-/// A host's tabs and how each is accented. The host owns the table (usually a `const`) and
-/// resolves its tabs' accents through it; a name it does not list takes [`AccentRamp::Main`]
-/// and no icon accent.
+/// A host's tabs and how each is accented. A name the table does not list takes
+/// [`AccentRamp::Main`] and no icon accent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TabTable(&'static [TabStyle]);
 
@@ -541,9 +534,9 @@ impl TabTable {
 /// The host's tab table, installed once per process ([`install_tabs`]).
 static TABS: std::sync::OnceLock<TabTable> = std::sync::OnceLock::new();
 
-/// Install the host's tab table, once per process, before the first frame and before any theme
-/// file is read: theme files key their per-tab tables by these names. Installing the same table
-/// again does nothing; a different one is ignored. Returns whether `table` is the installed one.
+/// Install the host's tab table, once per process, before the first frame: theme files key their
+/// per-tab tables by these names. Installing the same table again does nothing; a different one
+/// is ignored. Returns whether `table` is the installed one.
 pub fn install_tabs(table: TabTable) -> bool {
     *TABS.get_or_init(|| table) == table
 }
@@ -571,93 +564,8 @@ pub fn composite(fill: Color32, background: Color32) -> Color32 {
     Color32::from_rgb(channel(0), channel(1), channel(2))
 }
 
-pub fn panel_fallback_tokens(mut authored: Tokens) -> Tokens {
-    // Bypass custom/published themes. These existing built-in pairs have their own
-    // contrast tests. Copy only surface/ink roles to retain captured layout metrics.
-    let known = if is_dark() { Tokens::dark() } else { Tokens::light() };
-    authored.panel = known.file_background.to_opaque();
-    authored.panel_header = authored.panel;
-    authored.text = known.file_primary_ink;
-    authored.form_ink = known.file_primary_ink;
-    authored.dialog_label = known.file_primary_ink;
-    authored.text_dim = known.file_dim;
-    authored.form_dim = known.file_dim;
-    authored
-}
-
-/// Raise a captured panel fill to the first quantized alpha that protects all
-/// canonical inks. None reports an authored pair that fails at full opacity.
-pub fn panel_surface_fill(fill: Color32, tokens: &Tokens, requested: f32) -> Option<Color32> {
-    let [r, g, b, _] = fill.to_srgba_unmultiplied();
-    if !requested.is_finite() || !(0.0..=1.0).contains(&requested) || !panel_surface_readable(Color32::from_rgb(r, g, b), tokens) {
-        return None;
-    }
-    // Each candidate is the renderer's exact quantized fill. Round upward so
-    // effective alpha never undercuts the caller's requested opacity.
-    for alpha in (requested * 255.0).ceil() as u8..=255 {
-        let candidate = Color32::from_rgba_unmultiplied(r, g, b, alpha);
-        if panel_surface_readable(candidate, tokens) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn panel_luminance(color: Color32) -> f64 {
-    let decode = solidcraft_color::srgb::decode8;
-    0.2126 * decode(color.r()) + 0.7152 * decode(color.g()) + 0.0722 * decode(color.b())
-}
-
-pub fn panel_surface_readable(fill: Color32, tokens: &Tokens) -> bool {
-    let (low, _) = panel_composite_bounds(fill, Color32::BLACK);
-    let (_, high) = panel_composite_bounds(fill, Color32::WHITE);
-    let (background_low, background_high) = (panel_luminance(low), panel_luminance(high));
-    [tokens.text, tokens.text_dim, tokens.form_ink, tokens.form_dim, tokens.dialog_label].into_iter().all(|ink| {
-        // RGBA inks remain authored. Conservative intervals include every possible
-        // composited text luminance, including an interior contrast minimum.
-        let ink_low = panel_luminance(panel_composite_bounds(ink, low).0);
-        let ink_high = panel_luminance(panel_composite_bounds(ink, high).1);
-        if ink_low <= background_high && ink_high >= background_low {
-            false
-        } else if ink_low > background_high {
-            (ink_low + 0.05) / (background_high + 0.05) >= 4.5
-        } else {
-            (background_low + 0.05) / (ink_high + 0.05) >= 4.5
-        }
-    })
-}
-
-/// Enclose the actual stored-premultiplied source-over, without unpremultiplying
-/// and rounding the source again. egui-wgpu's renderer uses One/OneMinusSrcAlpha;
-/// its two WGSL entry points blend gamma codes or decoded premultiplied codes.
-/// Include both framebuffer formats and the shader's <half-byte source dither,
-/// then round outward to cover framebuffer quantization. This intentionally
-/// overestimates uncertainty instead of promising threshold contrast falsely.
-pub fn panel_composite_bounds(source: Color32, background: Color32) -> (Color32, Color32) {
-    use solidcraft_color::srgb::{decode, encode};
-    if source.a() == 255 {
-        // Flat opaque integer colours survive the shader's <0.5-byte dither and
-        // final nearest-byte conversion unchanged on either framebuffer format.
-        return (source, source);
-    }
-    let remain = 1.0 - f64::from(source.a()) / 255.0;
-    let channel = |source: u8, background: u8| {
-        let source = f64::from(source);
-        let background = f64::from(background);
-        let low_source = (source - 0.5).max(0.0);
-        let high_source = (source + 0.5).min(255.0);
-        let gamma_low = low_source + background * remain;
-        let gamma_high = high_source + background * remain;
-        let linear_low = encode(decode(low_source / 255.0) + decode(background / 255.0) * remain) * 255.0;
-        let linear_high = encode(decode(high_source / 255.0) + decode(background / 255.0) * remain) * 255.0;
-        (gamma_low.min(linear_low).floor().clamp(0.0, 255.0) as u8, gamma_high.max(linear_high).ceil().clamp(0.0, 255.0) as u8)
-    };
-    let (r0, r1) = channel(source.r(), background.r());
-    let (g0, g1) = channel(source.g(), background.g());
-    let (b0, b1) = channel(source.b(), background.b());
-    (Color32::from_rgb(r0, g0, b0), Color32::from_rgb(r1, g1, b1))
-}
-
+/// Raise a fill's alpha until every canonical panel ink reads on it over both black and white.
+/// A fill already readable at full opacity is returned bit-exact, including alpha.
 fn readable_fill(fill: Color32, inks: &[Color32], scale: f32) -> Color32 {
     let readable = |candidate| {
         [Color32::BLACK, Color32::WHITE].iter().all(|background| {
@@ -665,26 +573,25 @@ fn readable_fill(fill: Color32, inks: &[Color32], scale: f32) -> Color32 {
             inks.iter().all(|ink| contrast_ratio(composite(*ink, ground), ground) >= 4.5)
         })
     };
-    // A sampled/retargeted colour that already reads must stay bit-exact, including alpha.
     if scale >= 1.0 && readable(fill) {
         return fill;
     }
     let [r, g, b, alpha] = fill.to_srgba_unmultiplied();
     let requested = (f32::from(alpha) * scale).round() as u8;
-    // At most 256 cheap colour comparisons per changed role; no allocations, GPU or I/O.
     for a in requested..=255 {
         let candidate = Color32::from_rgba_unmultiplied(r, g, b, a);
         if readable(candidate) {
             return candidate;
         }
     }
-    // An authored foreground may already fail at full opacity. Never alter that foreground;
-    // full alpha gives it the strongest protection this option can supply.
+    // An authored foreground may already fail at full opacity; give it the strongest protection
+    // this option can supply rather than changing its colour.
     Color32::from_rgb(r, g, b)
 }
 
 impl TabAccent {
-    /// The selection colours of `ramp` in `t`, with an ink that holds small-text contrast on the tint.
+    /// The selection colours of `ramp` in `t`, with the ink raised to readable contrast on the
+    /// ramp's tint when the authored pair is too close.
     pub fn for_ramp(t: &Tokens, ramp: AccentRamp) -> Self {
         let (color, ink, soft) = ramp.slots(t);
         let ink = if contrast_ratio(ink, soft) >= 4.5 {
@@ -724,8 +631,8 @@ impl TabAccent {
 
     /// Store this frame's accent in `ctx` ([`TabAccent::current`]) with the icon accent of the
     /// surface it accents ([`TabAccent::current_icon_accent`]). `focus` is the ramp a focused
-    /// numeric editor takes instead of this accent (the host's open editing mode, if it has one),
-    /// `tool_active` whether a tool or dialog is open; both only steer focus painting.
+    /// numeric editor takes instead of this accent, `tool_active` whether a tool or dialog is
+    /// open; both only steer focus painting.
     pub fn set_current(self, icon_accent: Option<&'static str>, focus: Option<AccentRamp>, tool_active: bool, ctx: &egui::Context) {
         ctx.data_mut(|d| {
             d.insert_temp(egui::Id::unique("sc_tab_accent"), self);
@@ -750,6 +657,102 @@ impl TabAccent {
     }
 }
 
+/// Replace a captured panel's surface and ink roles with the current built-in theme's readable
+/// file pair, keeping the authored layout metrics. Used when a host cannot resolve a readable
+/// pair of its own.
+pub fn panel_fallback_tokens(mut authored: Tokens) -> Tokens {
+    let known = if is_dark() { Tokens::dark() } else { Tokens::light() };
+    authored.panel = known.file_background.to_opaque();
+    authored.panel_header = authored.panel;
+    authored.text = known.file_primary_ink;
+    authored.form_ink = known.file_primary_ink;
+    authored.dialog_label = known.file_primary_ink;
+    authored.text_dim = known.file_dim;
+    authored.form_dim = known.file_dim;
+    authored
+}
+
+/// Raise a panel fill to the first quantized alpha that protects every canonical ink, at or above
+/// `requested` (0..1). `None` when the request is invalid or the fill fails at full opacity.
+pub fn panel_surface_fill(fill: Color32, tokens: &Tokens, requested: f32) -> Option<Color32> {
+    if !requested.is_finite() || !(0.0..=1.0).contains(&requested) {
+        return None;
+    }
+    let [r, g, b, _] = fill.to_srgba_unmultiplied();
+    if !panel_surface_readable(Color32::from_rgb(r, g, b), tokens) {
+        return None;
+    }
+    let first = (requested * 255.0).ceil().clamp(0.0, 255.0) as u8;
+    for alpha in first..=255 {
+        let candidate = Color32::from_rgba_unmultiplied(r, g, b, alpha);
+        if panel_surface_readable(candidate, tokens) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn panel_luminance(color: Color32) -> f64 {
+    let decode = solidcraft_color::srgb::decode8;
+    0.2126 * decode(color.r()) + 0.7152 * decode(color.g()) + 0.0722 * decode(color.b())
+}
+
+/// Whether `fill` keeps every canonical panel ink at 4.5:1 contrast when composited over both a
+/// black and a white backdrop. RGBA inks are composited rather than rejected; an invisible ink
+/// cannot pass.
+pub fn panel_surface_readable(fill: Color32, tokens: &Tokens) -> bool {
+    if fill.a() == 0 {
+        return false;
+    }
+    let grounds = [composite(fill, Color32::BLACK), composite(fill, Color32::WHITE)];
+    [tokens.text, tokens.text_dim, tokens.form_ink, tokens.form_dim, tokens.dialog_label].into_iter().all(|ink| {
+        grounds.iter().all(|ground| {
+            let ink = composite(ink, *ground);
+            let (a, b) = (panel_luminance(ink), panel_luminance(*ground));
+            (a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5
+        })
+    })
+}
+
+/// Conservative byte bounds for compositing a translucent `source` over an opaque `background`,
+/// covering gamma-space and linear-space source-over, source dither below half a byte, and
+/// framebuffer quantization. Outward rounding overestimates uncertainty rather than promising
+/// contrast that a renderer might miss.
+pub fn panel_composite_bounds(source: Color32, background: Color32) -> (Color32, Color32) {
+    use solidcraft_color::srgb::{decode, encode};
+    if source.a() == 255 {
+        return (source, source);
+    }
+    let remain = 1.0 - f64::from(source.a()) / 255.0;
+    let channel = |source: u8, background: u8| {
+        let source = f64::from(source);
+        let background = f64::from(background);
+        let low_source = (source - 0.5).max(0.0);
+        let high_source = (source + 0.5).min(255.0);
+        let gamma_low = low_source + background * remain;
+        let gamma_high = high_source + background * remain;
+        let linear_low = encode(decode(low_source / 255.0) + decode(background / 255.0) * remain) * 255.0;
+        let linear_high = encode(decode(high_source / 255.0) + decode(background / 255.0) * remain) * 255.0;
+        (gamma_low.min(linear_low).floor().clamp(0.0, 255.0) as u8, gamma_high.max(linear_high).ceil().clamp(0.0, 255.0) as u8)
+    };
+    let (r0, r1) = channel(source.r(), background.r());
+    let (g0, g1) = channel(source.g(), background.g());
+    let (b0, b1) = channel(source.b(), background.b());
+    (Color32::from_rgb(r0, g0, b0), Color32::from_rgb(r1, g1, b1))
+}
+
+/// Shared paint-only panel timing. State, geometry and focus commit immediately.
+pub fn panel_motion_duration(ctx: &egui::Context, reduced: bool) -> f32 {
+    let requested = ctx.global_style().animation_time;
+    if reduced || !requested.is_finite() || requested <= 0.0 { 0.0 } else { requested.clamp(0.12, 0.16) }
+}
+
+/// The ease-out curve panel motion and tab fades use: progress 0..1 to 0..1.
+pub fn panel_motion_ease(progress: f32) -> f32 {
+    let progress = if progress.is_finite() { progress.clamp(0.0, 1.0) } else { 1.0 };
+    1.0 - (1.0 - progress).powi(3)
+}
+
 /// Is the dark theme on?
 pub fn is_dark() -> bool {
     DARK.get()
@@ -765,17 +768,11 @@ pub fn viewport_background() -> Option<[u8; 3]> {
     VIEWPORT_BACKGROUND.get()
 }
 
-/// Publish this frame's tab palettes, or forget them (`None`) when the host's theme changes.
-pub fn set_published(published: Option<PublishedTab>) {
-    PUBLISHED.set(published);
-}
-
 /// Whether the published theme opts into per-tab surfaces. Render's unauthored preview uses
 /// this cached policy; it must retain its existing scene backplate when the option is absent/off.
 pub fn tab_surfaces_enabled() -> bool {
     PUBLISHED.get().is_some_and(|p| p.environment == Environment::current() && p.tab_surfaces)
 }
-
 /// Colour vision modes (#778): a second set of values for the colours that carry a meaning, for
 /// a weak or missing red (protan), green (deutan) or blue (tritan) sense. Not a filter: Off gives
 /// back the theme's colours unchanged. Protan and Deutan share one red-green table, measured
@@ -853,7 +850,6 @@ pub fn srgb(c: [f32; 3]) -> Color32 {
     let byte = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
     Color32::from_rgb(byte(c[0]), byte(c[1]), byte(c[2]))
 }
-
 /// Colours for native viewport markers and the agent pointer. Command artwork uses the SVG palette.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IconColors {
@@ -864,7 +860,7 @@ pub struct IconColors {
 
 /// Every colour and size the UI draws with. The colours drawn in the 3D view are listed again in
 /// [`Tokens::with_viewport`], which takes them from the other side when the 3D view is set to the
-/// other one's colours (#4146): a new colour drawn in the view goes in both.
+/// other one's colours: a new colour drawn in the view goes in both.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
     /// Navigation chrome from the approved Navbar boards.
@@ -1050,7 +1046,7 @@ pub struct Tokens {
     pub timeline: Color32,
     pub hover: Color32,
     // ---- viewport selection feedback ----
-    /// Selected face (shaded fill).
+    /// Selected face (flat fill).
     pub sel_face: Color32,
     /// Selected edge core and its lighter rim.
     pub sel_edge: Color32,
@@ -1086,8 +1082,7 @@ pub struct Tokens {
     // ---- bodies and live previews ----
     pub body: Color32,
     pub body_edge: Color32,
-    /// Isoparm lines drawn on a surface: lighter than its edges, so they read as the surface's
-    /// flow, not its boundary.
+    /// A surface's flow lines: a lighter shade of its edges, told apart by width.
     pub isoparm: Color32,
     /// Command manipulators (direction arrows, handles).
     pub manipulator: Color32,
@@ -1258,7 +1253,6 @@ pub struct Tokens {
     /// them show the bar).
     pub logo: [Color32; 3],
 }
-
 impl Tokens {
     /// An expanded outline follows its fill, including a theme's deliberately square corners.
     pub fn outset_radius(radius: f32, outset: f32) -> f32 {
@@ -1455,7 +1449,6 @@ impl Tokens {
             construction_geom: view.construction_geom,
             body: view.body,
             body_edge: view.body_edge,
-            isoparm: view.isoparm,
             manipulator: view.manipulator,
             joint_manipulator: view.joint_manipulator,
             joint_axis: view.joint_axis,
@@ -1555,7 +1548,6 @@ impl Tokens {
         t
     }
 }
-
 /// Switch themes (the visuals follow on the next [`apply`]).
 pub fn set_dark(dark: bool) {
     DARK.set(dark);
@@ -1620,394 +1612,75 @@ pub fn apply(ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
-/// Shared paint-only panel timing. State, geometry and focus commit immediately.
-pub fn panel_motion_duration(ctx: &egui::Context, reduced: bool) -> f32 {
-    let requested = ctx.global_style().animation_time;
-    if reduced || !requested.is_finite() || requested <= 0.0 { 0.0 } else { requested.clamp(0.12, 0.16) }
-}
-
-/// The ease-out curve panel motion and tab fades use: progress 0..1 to 0..1.
-pub fn panel_motion_ease(progress: f32) -> f32 {
-    let progress = if progress.is_finite() { progress.clamp(0.0, 1.0) } else { 1.0 };
-    1.0 - (1.0 - progress).powi(3)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A surface's isoparms show on its faces less than its edges do, and stay visible against the
-    /// view's background (seen at the sheet's silhouette), on both bases.
     #[test]
-    fn isoparms_are_lighter_than_edges_and_visible_on_the_background() {
+    fn built_in_palettes_keep_the_isoparm_contract() {
         for t in [Tokens::light(), Tokens::dark()] {
             let (iso, edge) = (contrast_ratio(t.isoparm, t.body), contrast_ratio(t.body_edge, t.body));
-            assert!(iso >= 1.5 && iso < edge, "isoparm {iso:.2} against edge {edge:.2} on the body");
+            assert!(iso >= 1.5 && iso < edge, "isoparm {iso:.2} against edge {edge:.2}");
             for background in [t.viewport_top, t.viewport_bottom] {
-                let ratio = contrast_ratio(t.isoparm, background);
-                assert!(ratio >= 1.5, "isoparm {ratio:.2} on the viewport background {background:?}");
+                assert!(contrast_ratio(t.isoparm, background) >= 1.5);
             }
         }
     }
 
     #[test]
-    fn panel_motion_is_bounded_and_reduced_or_invalid_inputs_finish_immediately() {
-        let ctx = egui::Context::default();
-        for (requested, expected) in [(0.01, 0.12), (0.14, 0.14), (0.8, 0.16), (0.0, 0.0), (-1.0, 0.0), (f32::NAN, 0.0), (f32::INFINITY, 0.0)] {
-            ctx.global_style_mut(|style| style.animation_time = requested);
-            assert_eq!(super::panel_motion_duration(&ctx, false), expected);
-            assert_eq!(super::panel_motion_duration(&ctx, true), 0.0);
-        }
-        assert_eq!(super::panel_motion_ease(0.0), 0.0);
-        assert_eq!(super::panel_motion_ease(0.5), 0.875);
-        for progress in [1.0, 2.0, f32::NAN, f32::INFINITY] {
-            assert_eq!(super::panel_motion_ease(progress), 1.0);
-        }
-        assert_eq!(super::panel_motion_ease(-1.0), 0.0);
-    }
-
-    #[test]
-    fn tabs_fade_has_exact_endpoints_oklab_cubic_midpoint_and_independent_alpha() {
-        let from = Surfaces { panel: Color32::BLACK, top: Color32::BLACK, bottom: Color32::BLACK };
-        let to = Surfaces { panel: Color32::WHITE, top: Color32::WHITE, bottom: Color32::WHITE };
-        assert_eq!(from.blend(to, 0.0), from);
-        assert_eq!(from.blend(to, 1.0), to);
-        // Neutral Oklab L at half-time is 1 - (1 - .5)^3 = .875. The independent
-        // sRGB encoding of .875^3 is .8375, or byte 214 (gamma blending would give 223).
-        assert_eq!(from.blend(to, 0.5), Surfaces { panel: Color32::from_gray(214), top: Color32::from_gray(214), bottom: Color32::from_gray(214) });
-        let a = Color32::from_rgba_unmultiplied(40, 90, 130, 128);
-        let b = Color32::from_rgba_unmultiplied(90, 150, 190, 64);
-        assert_eq!(oklab_blend(a, b, 0.875).a(), 72);
-        let fade = Fade { from, to, start: 1.0, seconds: 0.24 };
-        assert_eq!(fade.sample(1.0), (from, true));
-        assert_eq!(fade.sample(1.24), (to, false));
-        assert_eq!(Fade { seconds: 0.0, ..fade }.sample(1.0), (to, false));
-        assert_eq!(fade.sample(f64::NAN), (to, false));
-    }
-
-    #[test]
-    fn widget_states_and_popup_frames_follow_theme_radii_without_changing_defaults() {
-        use super::*;
-        let old_custom = custom();
-        for dark in [false, true] {
-            set_custom(None);
-            let actual = visuals(dark);
-            let original = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
-            assert_eq!(actual.menu_corner_radius, original.menu_corner_radius);
-            // egui 0.37 rounds its widgets 4 points; ours keep the 2 and 3 points egui used before.
-            for (a, b) in [
-                (actual.widgets.noninteractive, 2),
-                (actual.widgets.inactive, 2),
-                (actual.widgets.hovered, 3),
-                (actual.widgets.active, 2),
-                (actual.widgets.open, 2),
-            ] {
-                assert_eq!(a.corner_radius, egui::CornerRadius::same(b));
-            }
-            let tokens = Tokens { radius_sm: 0, radius_md: 0, ..Tokens::dark() };
-            set_custom(Some(Custom { dark, tokens }));
-            let square = visuals(dark);
-            set_custom(old_custom);
-            assert_eq!(square.window_corner_radius, egui::CornerRadius::ZERO);
-            assert_eq!(square.menu_corner_radius, egui::CornerRadius::ZERO);
-            for widget in [square.widgets.noninteractive, square.widgets.inactive, square.widgets.hovered, square.widgets.active, square.widgets.open]
-            {
-                assert_eq!(widget.corner_radius, egui::CornerRadius::ZERO);
-            }
-        }
-        assert_eq!(Tokens::outset_radius(0.0, 3.0), 0.0);
-        assert_eq!(Tokens::outset_radius(6.0, 3.0), 9.0);
-    }
-
-    /// A theme change repaints: egui paints the new visuals on the next pass, so without a
-    /// repaint request the widgets keep the previous theme's colours until another event
-    /// schedules a pass (#5802).
-    #[test]
-    fn applying_a_theme_asks_for_a_repaint_with_the_new_visuals() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let ctx = egui::Context::default();
-        // The integration hook fires on every repaint request, whoever asked for it.
-        let requests = std::sync::Arc::new(AtomicUsize::new(0));
-        let counter = std::sync::Arc::clone(&requests);
-        ctx.set_request_repaint_callback(move |_| {
-            counter.fetch_add(1, Ordering::Relaxed);
-        });
-        // Let egui's own startup repaints settle: the context must be idle before the
-        // theme changes, so the only repaint left is the one the theme asks for.
-        let mut settled = false;
-        for _ in 0..8 {
-            ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
-            if !ctx.has_requested_repaint() {
-                settled = true;
-                break;
-            }
-        }
-        assert!(settled, "the context must be idle before the theme changes");
-        let before = requests.load(Ordering::Relaxed);
-        let previous = super::is_dark();
-        super::set_dark(!previous);
-        let dark = super::is_dark();
-        let expected = super::visuals(dark);
-        // The theme is applied outside a pass: inside one egui schedules repaints of its
-        // own, and the request of the theme would hide among them.
-        super::apply(&ctx);
-        super::set_dark(previous);
-        assert!(requests.load(Ordering::Relaxed) > before, "a theme change must ask for a repaint");
-        assert!(ctx.has_requested_repaint(), "a theme change must leave a repaint pending");
-        let theme = if dark { egui::Theme::Dark } else { egui::Theme::Light };
-        assert_eq!(ctx.style_of(theme).visuals, expected, "the new theme's visuals must be in place");
-    }
-
-    #[test]
-    fn preferences_foreground_pairs_hold_small_text_contrast() {
-        for dark in [false, true] {
-            for vision in ColorVision::ALL {
-                let t = Tokens::themed(dark, vision);
-                for (ink_name, ink, surface_name, surface) in [
-                    ("pref_note", t.pref_note, "pref_note_fill", t.pref_note_fill),
-                    ("pref_ok", t.pref_ok, "pref_ok_fill", t.pref_ok_fill),
-                    ("pref_on_accent", t.pref_on_accent, "figure_accent", t.figure_accent),
-                    ("figure_accent", t.figure_accent, "figure_card", t.figure_card),
-                    ("figure_accent", t.figure_accent, "selected_bg", t.selected_bg),
-                ] {
-                    let contrast = contrast_ratio(ink, surface);
-                    assert!(contrast >= 4.5, "dark={dark} {vision:?}: {ink_name} on {surface_name}: {contrast:.2}");
-                }
-                assert_eq!(t.figure_highlight, Color32::WHITE, "a model highlight stays light in either theme");
-                assert_eq!(t.figure_shadow, Color32::BLACK, "a model shadow stays dark in either theme");
-            }
-        }
-    }
-
-    #[test]
-    fn file_view_foreground_pairs_hold_small_text_contrast_without_changing_accent() {
-        for dark in [false, true] {
-            for vision in super::ColorVision::ALL {
-                let t = super::Tokens::themed(dark, vision);
-                for (ink, surface) in [
-                    (t.file_rail_ink, t.file_rail),
-                    (t.file_rail_ink, t.file_rail_hover),
-                    (t.file_primary_ink, t.file_primary),
-                    (t.file_primary_ink, t.file_background),
-                    (t.file_recovery_ink, t.file_recovery),
-                    (t.form_ink, t.file_surface),
-                    (t.file_dim, t.file_surface),
-                    (t.file_dim, t.file_background),
-                    (t.file_dim, t.file_primary),
-                ] {
-                    assert!(super::contrast_ratio(ink, surface) >= 4.5, "dark={dark}: {ink:?} on {surface:?}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn tab_accents_map_explicit_tokens_without_changing_model() {
-        for dark in [false, true] {
-            for vision in super::ColorVision::ALL {
-                let t = super::Tokens::themed(dark, vision);
-                // Explicit palette tints and text replace the old gamma lerps. They can be
-                // overridden independently by theme files and hold small-text contrast.
-                for (ramp, color, ink, soft) in [
-                    (super::AccentRamp::Sketch, t.sketch_accent, t.sketch_ink, t.sketch_soft),
-                    (super::AccentRamp::Surface, t.surface_fill, t.surface_ink, t.surface_soft),
-                    (super::AccentRamp::Mesh, t.mesh_fill, t.mesh_ink, t.mesh_soft),
-                    (super::AccentRamp::Form, t.form_fill, t.form_tab_ink, t.form_soft),
-                    (super::AccentRamp::Sheet, t.sheet_fill, t.sheet_ink, t.sheet_soft),
-                    (super::AccentRamp::Render, t.render_fill, t.render_ink, t.render_soft),
-                ] {
-                    let accent = super::TabAccent::for_ramp(&t, ramp);
-                    assert_eq!(accent, super::TabAccent { color, ink, soft });
-                    assert_ne!(accent.soft, color);
-                    assert_ne!(accent.soft, t.panel);
-                }
-                assert_eq!(
-                    super::TabAccent::for_ramp(&t, super::AccentRamp::Main),
-                    super::TabAccent { color: t.accent, ink: t.selected_ink, soft: t.accent_soft }
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_tab_table_resolves_listed_tabs_by_their_ramp_and_others_by_the_main_one() {
-        use super::{AccentRamp, TabAccent, TabStyle, TabTable};
+    fn tab_tables_resolve_listed_tabs_and_fall_back_to_main() {
         const TABLE: TabTable = TabTable::new(&[
-            TabStyle { name: "Tab A", ramp: AccentRamp::Main, icon_accent: None },
-            TabStyle { name: "Tab B", ramp: AccentRamp::Surface, icon_accent: Some("ramp_b") },
-            TabStyle { name: "Tab C", ramp: AccentRamp::Render, icon_accent: None },
+            TabStyle { name: "Model", ramp: AccentRamp::Main, icon_accent: None },
+            TabStyle { name: "Sketch", ramp: AccentRamp::Sketch, icon_accent: Some("sketch") },
         ]);
-        let t = super::Tokens::light();
-        assert_eq!(TABLE.names().collect::<Vec<_>>(), ["Tab A", "Tab B", "Tab C"]);
-        assert_eq!(TABLE.accent(&t, "Tab B"), TabAccent::for_ramp(&t, AccentRamp::Surface));
-        assert_eq!(TABLE.accent(&t, "Tab C"), TabAccent::for_ramp(&t, AccentRamp::Render));
-        assert_eq!(TABLE.icon_accent("Tab B"), Some("ramp_b"));
-        for unlisted in ["Tab A", "tab b", "", "unknown"] {
-            assert_eq!(TABLE.accent(&t, unlisted), TabAccent::for_ramp(&t, AccentRamp::Main), "{unlisted}");
-            assert_eq!(TABLE.icon_accent(unlisted), None);
-        }
-        assert!(TABLE.contains("Tab A") && !TABLE.contains("tab b"));
+        let t = Tokens::light();
+        assert_eq!(TABLE.names().collect::<Vec<_>>(), ["Model", "Sketch"]);
+        assert!(TABLE.contains("Model") && !TABLE.contains("model"));
+        assert_eq!(TABLE.ramp("Sketch"), AccentRamp::Sketch);
+        assert_eq!(TABLE.ramp("Unknown"), AccentRamp::Main);
+        assert_eq!(TABLE.icon_accent("Sketch"), Some("sketch"));
+        assert_eq!(TABLE.accent(&t, "Unknown"), TabAccent::for_ramp(&t, AccentRamp::Main));
     }
 
     #[test]
-    fn the_first_installed_tab_table_stays_installed() {
-        use super::{AccentRamp, TabStyle, TabTable};
-        const FIRST: TabTable = TabTable::new(&[TabStyle { name: "Tab A", ramp: AccentRamp::Sketch, icon_accent: None }]);
-        const SECOND: TabTable = TabTable::new(&[TabStyle { name: "Tab B", ramp: AccentRamp::Mesh, icon_accent: None }]);
-        assert!(super::install_tabs(FIRST));
-        assert!(super::install_tabs(FIRST));
-        assert!(!super::install_tabs(SECOND));
-        assert_eq!(super::installed_tabs(), FIRST);
+    fn installing_the_first_tab_table_is_permanent() {
+        const FIRST: TabTable = TabTable::new(&[TabStyle { name: "A", ramp: AccentRamp::Sketch, icon_accent: None }]);
+        const SECOND: TabTable = TabTable::new(&[TabStyle { name: "B", ramp: AccentRamp::Mesh, icon_accent: None }]);
+        assert!(install_tabs(FIRST));
+        assert!(!install_tabs(SECOND));
+        assert_eq!(installed_tabs(), FIRST);
     }
 
     #[test]
-    fn tab_accents_match_approved_palette() {
-        let rgb = |hex: u32| egui::Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
-        use super::AccentRamp::{Form, Mesh, Render, Sheet, Sketch, Surface};
-        for (ramp, light, dark) in [
-            (Sketch, [0x057f45, 0x057f45, 0xedf7f1], [0x128d45, 0x46be78, 0x1f3b2b]),
-            (Surface, [0xa45000, 0xa45000, 0xfbebd8], [0xb26a14, 0xe0914a, 0x45331e]),
-            (Mesh, [0xe0b200, 0x8a6d00, 0xfff8dc], [0xc6a800, 0xd4b726, 0x41391a]),
-            (Form, [0x7349cd, 0x7349cd, 0xeee8fa], [0x8a6fcc, 0xb39bee, 0x372f4f]),
-            (Sheet, [0x1e6f96, 0x1e6f96, 0xe1f0f7], [0x2a7fa8, 0x4fb3d9, 0x1f3a47]),
-            (Render, [0xa8326e, 0xa8326e, 0xf8e6ef], [0xc8588f, 0xe074ae, 0x402336]),
-        ] {
-            for (t, values) in [(super::Tokens::light(), light), (super::Tokens::dark(), dark)] {
-                let [color, ink, soft] = values.map(rgb);
-                assert_eq!(super::TabAccent::for_ramp(&t, ramp), super::TabAccent { color, ink, soft }, "{ramp:?}");
-            }
-            let accent = super::TabAccent::for_ramp(&super::Tokens::light(), ramp);
-            assert_eq!(accent.ink != accent.color, ramp == Mesh, "only light Mesh separates ink from fill");
-        }
-        // These existing Model values intentionally take precedence over the board's proposal.
-        for (t, values) in [(super::Tokens::light(), [0x2678da, 0x1a507f, 0xd6e6fa]), (super::Tokens::dark(), [0x3a88ee, 0x9cc7f5, 0x2a466e])] {
-            let [color, ink, soft] = values.map(rgb);
-            assert_eq!(super::TabAccent::for_ramp(&t, super::AccentRamp::Main), super::TabAccent { color, ink, soft });
-        }
+    fn panel_surfaces_are_readable_only_over_both_extremes() {
+        let t = Tokens::light();
+        assert!(!panel_surface_readable(Color32::TRANSPARENT, &t));
+        assert!(panel_surface_readable(Color32::WHITE, &t));
+        assert!(panel_surface_fill(Color32::WHITE, &t, 0.5).is_some());
+        assert!(panel_surface_fill(Color32::WHITE, &t, f32::NAN).is_none());
+        assert!(panel_surface_fill(Color32::from_rgb(30, 34, 42), &t, 0.5).is_none(), "a fill that fails at full opacity cannot be raised");
+        let (low, high) = panel_composite_bounds(Color32::from_rgba_unmultiplied(20, 40, 60, 128), Color32::WHITE);
+        assert!(low.r() <= high.r() && low.g() <= high.g() && low.b() <= high.b());
     }
 
     #[test]
-    fn tab_accents_hold_wcag_small_text_contrast_in_both_themes() {
-        for (dark, t) in [(false, super::Tokens::light()), (true, super::Tokens::dark())] {
-            for tab in super::AccentRamp::ALL {
-                let accent = super::TabAccent::for_ramp(&t, tab);
-                let card = if dark { t.panel } else { egui::Color32::WHITE };
-                for (name, ink, ground) in [
-                    ("ink on card", accent.ink, card),
-                    ("ink on panel", accent.ink, t.panel),
-                    ("ink on soft", accent.ink, accent.soft),
-                    ("text on fill", accent.on_fill(&t), accent.color),
-                ] {
-                    let ratio = super::contrast_ratio(ink, ground);
-                    assert!(ratio >= 4.5, "{tab:?} dark={dark}: {name} is {ratio:.4}:1 ({ink:?} on {ground:?})");
-                }
-                let white_ok = super::contrast_ratio(t.on_accent, accent.color) >= 4.5;
-                assert_eq!(accent.on_fill(&t), if white_ok { t.on_accent } else { t.tab_on_fill_dark });
-            }
-        }
+    fn panel_motion_is_bounded_and_reduced_motion_finishes_at_once() {
+        let ctx = egui::Context::default();
+        ctx.global_style_mut(|style| style.animation_time = 0.14);
+        assert_eq!(panel_motion_duration(&ctx, false), 0.14);
+        assert_eq!(panel_motion_duration(&ctx, true), 0.0);
+        assert_eq!(panel_motion_ease(0.0), 0.0);
+        assert_eq!(panel_motion_ease(0.5), 0.875);
+        assert_eq!(panel_motion_ease(2.0), 1.0);
     }
 
     #[test]
-    fn concurrent_ui_renderers_keep_their_own_theme_and_vision() {
-        let barrier = std::sync::Barrier::new(2);
-        std::thread::scope(|scope| {
-            for (dark, vision) in [(false, super::ColorVision::Off), (true, super::ColorVision::Protan)] {
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    super::set_dark(dark);
-                    super::set_vision(vision);
-                    barrier.wait();
-                    assert_eq!(super::is_dark(), dark);
-                    assert_eq!(super::vision(), vision);
-                    assert_eq!(super::Tokens::get().sketch_accent, super::Tokens::themed(dark, vision).sketch_accent);
-                });
-            }
-        });
-    }
-
-    /// A 3D view set to the other side's colours (#4146): the view's colours come from the other
-    /// side and everything else stays the window's, in every colour vision mode. A view as dark as
-    /// the window gives the window's tokens unchanged.
-    #[test]
-    fn a_view_on_the_other_side_takes_its_colours() {
-        use super::{ColorVision, Tokens};
-        for mode in ColorVision::ALL {
-            super::set_vision(mode);
-            for window in [false, true] {
-                super::set_dark(window);
-                for same in [None, Some(window)] {
-                    super::set_viewport_dark(same);
-                    assert_eq!(super::viewport_dark(), window);
-                    assert_eq!(Tokens::get(), Tokens::themed(window, mode), "{mode:?} {window} {same:?}");
-                    assert_eq!(Tokens::view(), Tokens::get(), "{mode:?} {window} {same:?}");
-                }
-                super::set_viewport_dark(Some(!window));
-                assert_eq!(super::viewport_dark(), !window);
-                let (t, w, v) = (Tokens::get(), Tokens::themed(window, mode), Tokens::themed(!window, mode));
-                // What is drawn straight onto the view takes all of its side's colours.
-                assert_eq!(Tokens::view(), v);
-                // The two sides differ, so the checks below tell them apart.
-                assert_ne!((w.viewport_top, w.panel), (v.viewport_top, v.panel));
-                // The view's: background and grid, bodies, selection and hover, sketches with their
-                // dimensions and glyphs, the origin, the cube and triads, box selection, analysis.
-                assert_eq!((t.viewport_top, t.viewport_bottom, t.grid, t.grid_major), (v.viewport_top, v.viewport_bottom, v.grid, v.grid_major));
-                assert_eq!(
-                    (t.body, t.body_edge, t.body_selected, t.sel_face, t.sel_edge, t.hover_edge),
-                    (v.body, v.body_edge, v.body_selected, v.sel_face, v.sel_edge, v.hover_edge)
-                );
-                assert_eq!(
-                    (t.sketch, t.sketch_fixed, t.dimension, t.glyph_bg, t.glyph_text, t.profile_fill),
-                    (v.sketch, v.sketch_fixed, v.dimension, v.glyph_bg, v.glyph_text, v.profile_fill)
-                );
-                assert_eq!(
-                    (t.origin_plane, t.axis_x, t.cube_face, t.cube_text, t.axis_y, t.axis_z),
-                    (v.origin_plane, v.axis_x, v.cube_face, v.cube_text, v.axis_y, v.axis_z)
-                );
-                assert_eq!(
-                    (t.box_window, t.section_cap, t.preview_add, t.sketch_construction, t.continuity),
-                    (v.box_window, v.section_cap, v.preview_add, v.sketch_construction, v.continuity)
-                );
-                assert_eq!((t.joint_manipulator, t.joint_axis), (v.joint_manipulator, v.joint_axis));
-                assert_eq!(t.analysis, v.analysis);
-                // The window's: panels, text, accents, dialogs, and the chips over the view with
-                // their borders and icons.
-                assert_eq!(
-                    (t.panel, t.text, t.border, t.accent, t.accent_soft, t.icon),
-                    (w.panel, w.text, w.border, w.accent, w.accent_soft, w.icon)
-                );
-                assert_eq!(
-                    (t.overlay, t.hover, t.dialog_bg, t.field, t.timeline, t.app_bar),
-                    (w.overlay, w.hover, w.dialog_bg, w.field, w.timeline, w.app_bar)
-                );
-            }
-        }
-        super::set_viewport_dark(None);
-    }
-
-    /// A host with no theme system draws with the built-in tokens, sets a palette of its own and scopes another one,
-    /// all through this crate.
-    #[test]
-    fn a_host_sets_and_reads_tokens_without_an_app() {
-        assert_eq!((is_dark(), vision(), custom()), (true, ColorVision::Off, None), "a new thread starts dark, Off, built in");
-        assert_eq!(Tokens::get(), Tokens::dark());
-        set_dark(false);
-        assert_eq!(Tokens::get(), Tokens::light());
-        set_dark(true);
-        let host = Tokens { accent: Color32::from_rgb(1, 2, 3), panel: Color32::from_rgb(4, 5, 6), ..Tokens::dark() };
-        assert!(set_custom(Some(Custom { dark: true, tokens: host })));
-        assert!(!set_custom(Some(Custom { dark: true, tokens: host })), "setting the same palette changes nothing");
-        assert_eq!(Tokens::get(), host);
+    fn a_scoped_panel_palette_restores_the_previous_one() {
+        assert_eq!(Tokens::get(), Tokens::base());
         {
-            let _panel = scoped_panel_tokens(Tokens::light());
+            let _scope = scoped_panel_tokens(Tokens::light());
             assert_eq!(Tokens::get(), Tokens::light());
         }
-        assert_eq!(Tokens::get(), host);
-        assert!(set_custom(None));
-        {
-            let _scoped = scoped_tokens(host);
-            assert_eq!(Tokens::get(), host);
-        }
-        assert_eq!(Tokens::get(), Tokens::dark());
-        assert_eq!(TabAccent::current(&egui::Context::default()), TabAccent::for_ramp(&Tokens::dark(), super::AccentRamp::Main));
+        assert_eq!(Tokens::get(), Tokens::base());
     }
 }

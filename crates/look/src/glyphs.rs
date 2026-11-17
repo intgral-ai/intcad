@@ -1,4 +1,5 @@
-//! Collected glyph artwork. Caption geometry adapted from VectorCraft (MIT OR Apache-2.0).
+//! Intcad's code-drawn glyphs: transport, window captions, status badges, pins, breadcrumbs,
+//! crosses and the Intgral mark. Caption geometry adapted from VectorCraft (MIT OR Apache-2.0).
 use egui::{Color32, Pos2, Rect, Stroke, Ui, pos2, vec2};
 use solidcraft_ui_kit::icons::glyphs::Glyphs;
 use solidcraft_ui_kit::window_chrome::Caption;
@@ -17,8 +18,7 @@ pub fn transport_glyph(p: &egui::Painter, c: egui::Pos2, what: &str, col: Color3
         }
         "back" => tri(-1.0, 0.0),
         "forward" => tri(1.0, 0.0),
-        // Play History: larger than the step arrows so it doesn't read as Forward, and two bars
-        // while it plays.
+        // Play History: larger than the step arrows so it does not read as Forward.
         "play" => {
             let pts = vec![pos2(c.x - 4.5, c.y - 7.0), pos2(c.x + 6.5, c.y), pos2(c.x - 4.5, c.y + 7.0)];
             p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
@@ -114,17 +114,17 @@ pub fn breadcrumb(p: &egui::Painter, c: egui::Pos2, col: Color32) {
     p.line_segment([pos2(c.x + 1.5, c.y), pos2(c.x - 1.5, c.y + 3.0)], s);
 }
 
-/// The Intcad mark in its colours, 18 points high, centred on `c` (the application bar).
+/// The Intgral mark in its colours, 18 points high, centred on `c` (the application bar).
 pub fn brand_mark(p: &egui::Painter, c: Pos2) {
-    brand_mark_styled(p, c, 18.0, solidcraft_theme::Tokens::get().logo, false);
+    brand_mark_styled(p, c, 18.0, solidcraft_theme::Tokens::get().logo);
 }
 
-/// The same original mark as a single quiet silhouette, without face seams or outlines.
+/// The same Intgral mark as a single quiet silhouette, without face seams or outlines.
 pub fn brand_mark_silhouette(p: &egui::Painter, c: Pos2, height: f32, ink: Color32) {
-    brand_mark_styled(p, c, height, [ink; 3], false);
+    brand_mark_styled(p, c, height, [ink; 3]);
 }
 
-fn brand_mark_styled(p: &egui::Painter, c: Pos2, height: f32, colours: [Color32; 3], _edges: bool) {
+fn brand_mark_styled(p: &egui::Painter, c: Pos2, height: f32, colours: [Color32; 3]) {
     // Intgral's V22 compact-integrated "I" mark: the same seven faces as
     // `assets/branding/logo/open-skyfall-mark.svg`, fitted to the application bar.
     // Its drawing box is 104.5 x 244.5 SVG units; the faces are filled polygons.
@@ -134,7 +134,7 @@ fn brand_mark_styled(p: &egui::Painter, c: Pos2, height: f32, colours: [Color32;
         p.add(egui::Shape::convex_polygon(m(pts), col, Stroke::NONE));
     };
     let [front, mid, dark] = colours;
-    // The isometric top and side faces, then the white front face over them.
+    // The isometric top and side faces, then the front face over them.
     face(dark, &[(547.1514, 436.0), (573.1514, 436.0), (581.6514, 431.0925), (555.6514, 431.0925)]);
     face(dark, &[(617.1514, 436.0), (643.1514, 436.0), (651.6514, 431.0925), (625.6514, 431.0925)]);
     face(dark, &[(643.1514, 436.0), (643.1514, 467.0), (651.6514, 462.0925), (651.6514, 431.0925)]);
@@ -142,7 +142,7 @@ fn brand_mark_styled(p: &egui::Painter, c: Pos2, height: f32, colours: [Color32;
     face(mid, &[(547.1514, 227.4075), (643.1514, 227.4075), (651.6514, 222.5), (555.6514, 222.5)]);
     face(dark, &[(643.1514, 227.4075), (643.1514, 258.4075), (651.6514, 253.5), (651.6514, 222.5)]);
     // egui fills convex polygons only: the I front is three convex pieces, not one concave
-    // twelve-point outline. Otherwise the right halves of the top and bottom bars disappear.
+    // twelve-point outline, or the right halves of the top and bottom bars disappear.
     face(front, &[(547.1514, 227.4075), (643.1514, 227.4075), (643.1514, 258.4075), (547.1514, 258.4075)]);
     face(front, &[(573.1514, 258.4075), (617.1514, 258.4075), (617.1514, 436.0), (573.1514, 436.0)]);
     face(front, &[(547.1514, 436.0), (643.1514, 436.0), (643.1514, 467.0), (547.1514, 467.0)]);
@@ -154,7 +154,7 @@ pub fn cross(p: &egui::Painter, r: Rect, s: Stroke) {
     p.line_segment([r.right_top(), r.left_bottom()], s);
 }
 
-/// SolidCraft's code-drawn glyphs, as the kit draws them ([`solidcraft_ui_kit::icons::glyphs`]).
+/// Intcad's code-drawn glyphs, as the kit draws them ([`solidcraft_ui_kit::icons::glyphs`]).
 pub static GLYPHS: Glyphs = Glyphs {
     transport: transport_glyph,
     caption: paint_glyph,
