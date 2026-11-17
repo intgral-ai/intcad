@@ -688,9 +688,9 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
     if app.file_tree.editing.is_some() {
         return;
     }
-    // Keys belong to the tree after a click in it, and to any real widget (a dialog, a text
-    // field) that holds keyboard focus instead.
-    if !app.file_tree.focused || ui.memory(|m| m.focused().is_some()) {
+    // Keys belong to the tree after a click in it; a click elsewhere clears that, and the name
+    // field's own typing is handled before this runs (the edit is open then).
+    if !app.file_tree.focused {
         return;
     }
     let command = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
