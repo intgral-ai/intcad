@@ -222,6 +222,8 @@ pub(crate) struct FileTree {
     adopted_root: bool,
     /// The pointer pressed on a row, to tell a click from a drag.
     pub(crate) press: Option<PathBuf>,
+    /// The tree had the last click inside it, so its keys act until a click lands elsewhere.
+    pub(crate) focused: bool,
     /// Moves the panel made that open designs must follow, drained after each action.
     retargets: Vec<(PathBuf, PathBuf)>,
     /// What each folder browsed in this session had open and selected, so switching back finds
@@ -363,6 +365,7 @@ impl FileTree {
             last_docs: 0.0,
             adopted_root: false,
             press: None,
+            focused: false,
             retargets: Vec::new(),
             roots: BTreeMap::new(),
         }

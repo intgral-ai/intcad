@@ -19,14 +19,14 @@ const FOLD: f32 = 12.0;
 const ICON: f32 = 14.0;
 const HEADER: f32 = 30.0;
 
-/// The id the tree takes keyboard focus under.
-fn tree_id() -> egui::Id {
-    egui::Id::new("sc_file_tree")
-}
-
 /// Draw the Files panel into `area` (the panel's body, below its title).
 pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
     crate::file_tree::tick(app, ui.ctx(), app.now);
+    // A click anywhere else (the ribbon, the view, another panel) takes the tree's keys away.
+    let clicked_outside = ui.input(|i| i.pointer.any_click() && !i.pointer.interact_pos().is_some_and(|pos| area.contains(pos)));
+    if clicked_outside {
+        app.file_tree.focused = false;
+    }
     let t = Tokens::get();
     let mut child = ui.new_child(UiBuilder::new().max_rect(area.shrink2(vec2(t.space_8, t.space_6))).layout(Layout::top_down(Align::Min)));
     let ui = &mut child;
@@ -464,8 +464,8 @@ fn row_ui(
         paint_fold(ui.painter(), fold, row.expanded, dim);
         let fold_response = ui.interact(fold, egui::Id::new(("files_fold", &row.path)), Sense::click());
         if fold_response.clicked() {
+            app.file_tree.focused = true;
             app.file_tree.focus = Some(row.path.clone());
-            ui.memory_mut(|m| m.request_focus(tree_id()));
             app.file_tree.toggle_dir(&row.path);
             return;
         }
@@ -518,7 +518,7 @@ fn row_ui(
 
     let modifiers = ui.input(|i| i.modifiers);
     if response.clicked() {
-        ui.memory_mut(|m| m.request_focus(tree_id()));
+        app.file_tree.focused = true;
         app.file_tree.press = Some(row.path.clone());
         app.file_tree.click(&row.path, modifiers, visible);
     }
@@ -544,7 +544,7 @@ fn row_ui(
         if !app.file_tree.selection.contains(&row.path) {
             app.file_tree.select_only(&row.path);
         }
-        ui.memory_mut(|m| m.request_focus(tree_id()));
+        app.file_tree.focused = true;
         context_menu(app, &response, row);
     }
 }
@@ -627,11 +627,12 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
     if app.file_tree.editing.is_some() {
         return;
     }
-    let focused = ui.memory(|m| m.has_focus(tree_id()));
-    let command = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
-    if !focused {
+    // Keys belong to the tree after a click in it, and to any real widget (a dialog, a text
+    // field) that holds keyboard focus instead.
+    if !app.file_tree.focused || ui.memory(|m| m.focused().is_some()) {
         return;
     }
+    let command = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
         app.file_tree.find = Some(String::new());
         return;
