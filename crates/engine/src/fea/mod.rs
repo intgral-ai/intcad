@@ -7,6 +7,7 @@
 //! never pass or fail anything; verdicts come only from exact deterministic checks.
 
 pub mod formats;
+pub mod materials;
 pub mod model;
 
 use std::path::{Path, PathBuf};
