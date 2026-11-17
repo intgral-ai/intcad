@@ -527,3 +527,29 @@ fn the_enter_that_renames_a_design_does_not_open_it_again() {
     assert!(names.iter().any(|name| name == "bracket-v2"), "{names:?}");
     assert!(!names.iter().any(|name| name == "bracket"), "the old tab was renamed, not kept: {names:?}");
 }
+
+/// Cancel is an answer: it closes a file question and changes nothing. Before the fix the
+/// confirmation put the same question back, so Cancel appeared to do nothing.
+#[test]
+fn cancel_closes_the_conflict_question() {
+    use crate::scenario::{Harness, rect_of};
+    use serde_json::json;
+    let scratch = Scratch::new();
+    scratch.file("bracket.sc", "");
+    scratch.file("notes.txt", "");
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.call("ui.files", json!({"root": scratch.path().to_string_lossy()}));
+    h.frames(20);
+    h.step(&json!({"click": {"handle": "files:row:bracket.sc"}})).unwrap();
+    h.step(&json!({"key": "C", "ctrl": true})).unwrap();
+    h.step(&json!({"click": {"handle": "files:row:notes.txt"}})).unwrap();
+    h.step(&json!({"key": "V", "ctrl": true})).unwrap();
+    h.frames(2);
+    assert!(rect_of("dialog:Keep Both").is_some() || crate::scenario::handle_at("dialog:Keep Both").is_some(), "the conflict question is open");
+    h.step(&json!({"click": {"handle": "dialog:Cancel"}})).unwrap();
+    h.frames(2);
+    assert!(crate::scenario::handle_at("dialog:Keep Both").is_none(), "Cancel closes the question");
+    assert!(!scratch.path().join("bracket (copy).sc").exists(), "Cancel copies nothing");
+}

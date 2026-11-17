@@ -911,6 +911,7 @@ fn delete_modal(app: &mut SolveApp, ctx: &egui::Context, paths: Vec<std::path::P
                 app.file_tree.modal = Some(Modal::Delete { paths, dirty });
             }
         },
+        ui_kit::Action::Cancel => {}
         _ if !closed => app.file_tree.modal = Some(Modal::Delete { paths, dirty }),
         _ => {}
     }
@@ -929,6 +930,7 @@ fn permanent_modal(app: &mut SolveApp, ctx: &egui::Context, paths: Vec<std::path
         });
     match action {
         ui_kit::Action::Ok => app.file_tree.delete_permanently(paths),
+        ui_kit::Action::Cancel => {}
         _ if !closed => app.file_tree.modal = Some(Modal::Permanent { paths, reason }),
         _ => {}
     }
@@ -969,6 +971,8 @@ fn conflict_modal(
     match action {
         ui_kit::Action::Apply if files_only => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Replace),
         ui_kit::Action::Ok => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::KeepBoth),
+        // Cancel is an answer: the question closes and nothing changes.
+        ui_kit::Action::Cancel => {}
         _ if !closed => restore(app),
         _ => {}
     }
@@ -1002,6 +1006,8 @@ fn replace_open_modal(
                 restore(app);
             }
         },
+        // Cancel is an answer: the question closes and nothing changes.
+        ui_kit::Action::Cancel => {}
         _ if !closed => restore(app),
         _ => {}
     }
@@ -1018,6 +1024,7 @@ fn discard_reload_modal(app: &mut SolveApp, ctx: &egui::Context, path: String) {
         });
     match action {
         ui_kit::Action::Ok => crate::file_tree::reload_now(app, &path),
+        ui_kit::Action::Cancel => {}
         _ if !closed => app.file_tree.modal = Some(Modal::DiscardReload { path }),
         _ => {}
     }
