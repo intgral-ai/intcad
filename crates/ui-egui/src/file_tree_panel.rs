@@ -44,6 +44,7 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
     let footer = footer_height(app);
     let list_height = (ui.available_height() - footer).max(ROW * 4.0);
     rows(app, ui, list_height);
+    show_context_menu(app, ui);
     footer_rows(app, ui);
     modals(app, ui.ctx());
 }
@@ -552,73 +553,122 @@ fn row_ui(
             app.file_tree.select_only(&row.path);
         }
         app.file_tree.focused = true;
-        context_menu(app, &response, row);
+        let at = ui.input(|i| i.pointer.interact_pos()).unwrap_or(rect.center());
+        app.file_tree.context = Some(super::ContextMenu { path: row.path.clone(), at });
+        app.file_tree.context_opening = true;
     }
 }
 
-/// The row's context menu: open, the clipboard, rename, delete, and where the file is.
-fn context_menu(app: &mut SolveApp, response: &egui::Response, row: &Row) {
-    let root = app.file_tree.root.clone();
-    ui_kit::Menu::context(response, |ui| {
-        let is_dir = row.kind.is_dir();
-        let mut open = ui_kit::MenuItem::new("files_open", tr("ui.files_open"), if is_dir { "folder" } else { "open" });
-        open.shortcut = "Enter";
-        if open.show(ui).clicked() {
-            if let Some(path) = app.file_tree.activate(&row.path) {
-                crate::file_tree::open_path(app, &path);
-            }
-            ui.close();
+/// What the row menu asks for, applied after its popup has closed its borrow of the panel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuAction {
+    Open,
+    PasteInto,
+    Copy,
+    Cut,
+    Rename,
+    Delete,
+    CopyPath,
+    CopyRelative,
+    Reveal,
+}
+
+/// The row menu, opened by the secondary button. It is drawn from the panel, not from the row,
+/// because the rows of a long list are only built for the visible range.
+fn show_context_menu(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let Some(menu) = app.file_tree.context.clone() else { return };
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        app.file_tree.context = None;
+        return;
+    }
+    let anchor_rect = Rect::from_center_size(menu.at, vec2(1.0, 1.0));
+    let anchor = ui.interact(anchor_rect, egui::Id::new("sc_files_menu_anchor"), Sense::hover());
+    let mut action = None;
+    let shown = ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Popup).menu(&anchor).open(true).show(|ui| {
+        let is_dir = menu.path.is_dir();
+        let mut item = ui_kit::MenuItem::new("files_open", tr("ui.files_open"), if is_dir { "folder" } else { "open" });
+        item.shortcut = "Enter";
+        if item.show(ui).clicked() {
+            action = Some(MenuAction::Open);
         }
         if is_dir {
             let mut paste = ui_kit::MenuItem::new("files_paste_here", tr("ui.files_paste_into"), "paste");
             paste.shortcut = shortcut("V");
             if paste.show(ui).clicked() {
-                app.file_tree.paste(&row.path);
-                ui.close();
+                action = Some(MenuAction::PasteInto);
             }
         }
         ui.separator();
         let mut copy = ui_kit::MenuItem::new("files_copy", tr("ui.files_copy"), "copy");
         copy.shortcut = shortcut("C");
         if copy.show(ui).clicked() {
-            app.file_tree.copy_selection(false);
-            ui.close();
+            action = Some(MenuAction::Copy);
         }
         let mut cut = ui_kit::MenuItem::new("files_cut", tr("ui.files_cut"), "cut");
         cut.shortcut = shortcut("X");
         if cut.show(ui).clicked() {
-            app.file_tree.copy_selection(true);
-            ui.close();
+            action = Some(MenuAction::Cut);
         }
         ui.separator();
         let mut rename = ui_kit::MenuItem::new("files_rename", tr("ui.files_rename"), "rename");
         rename.shortcut = "F2";
         if rename.show(ui).clicked() {
-            app.file_tree.start_rename(&row.path);
-            ui.close();
+            action = Some(MenuAction::Rename);
         }
         let mut delete = ui_kit::MenuItem::new("files_delete", tr("ui.files_delete"), "delete");
         delete.danger = true;
         delete.shortcut = "Del";
         if delete.show(ui).clicked() {
-            request_delete(app);
-            ui.close();
+            action = Some(MenuAction::Delete);
         }
         ui.separator();
         if ui_kit::MenuItem::new("files_copy_path", tr("ui.files_copy_path"), "copy").show(ui).clicked() {
-            app.clipboard_text = Some(row.path.display().to_string());
-            ui.close();
+            action = Some(MenuAction::CopyPath);
         }
         if ui_kit::MenuItem::new("files_copy_relative", tr("ui.files_copy_relative_path"), "copy").show(ui).clicked() {
-            let relative = root.as_deref().and_then(|root| row.path.strip_prefix(root).ok()).map(|p| p.display().to_string()).unwrap_or_default();
-            app.clipboard_text = Some(relative);
-            ui.close();
+            action = Some(MenuAction::CopyRelative);
         }
         if ui_kit::MenuItem::new("files_reveal_row", tr("ui.files_reveal"), "folder").show(ui).clicked() {
-            report_error(app, files::reveal(&row.path), tr("ui.files_reveal"));
-            ui.close();
+            action = Some(MenuAction::Reveal);
         }
     });
+    if let Some(action) = action {
+        app.file_tree.context = None;
+        apply_menu_action(app, &menu.path, action);
+        return;
+    }
+    if app.file_tree.context_opening {
+        app.file_tree.context_opening = false;
+    } else if let Some(shown) = shown {
+        let outside = ui.input(|i| i.pointer.any_click() && !i.pointer.interact_pos().is_some_and(|pos| shown.response.rect.contains(pos)));
+        if outside {
+            app.file_tree.context = None;
+        }
+    } else {
+        app.file_tree.context = None;
+    }
+}
+
+fn apply_menu_action(app: &mut SolveApp, path: &std::path::Path, action: MenuAction) {
+    match action {
+        MenuAction::Open => {
+            if let Some(path) = app.file_tree.activate(path) {
+                crate::file_tree::open_path(app, &path);
+            }
+        }
+        MenuAction::PasteInto => app.file_tree.paste(path),
+        MenuAction::Copy => app.file_tree.copy_selection(false),
+        MenuAction::Cut => app.file_tree.copy_selection(true),
+        MenuAction::Rename => app.file_tree.start_rename(path),
+        MenuAction::Delete => request_delete(app),
+        MenuAction::CopyPath => app.clipboard_text = Some(path.display().to_string()),
+        MenuAction::CopyRelative => {
+            let relative =
+                app.file_tree.root.as_deref().and_then(|root| path.strip_prefix(root).ok()).map(|p| p.display().to_string()).unwrap_or_default();
+            app.clipboard_text = Some(relative);
+        }
+        MenuAction::Reveal => report_error(app, files::reveal(path), tr("ui.files_reveal")),
+    }
 }
 
 /// Ask about deleting the selection. The caller gathered the open designs' unsaved state.

@@ -224,11 +224,22 @@ pub(crate) struct FileTree {
     pub(crate) press: Option<PathBuf>,
     /// The tree had the last click inside it, so its keys act until a click lands elsewhere.
     pub(crate) focused: bool,
+    /// The row menu the person opened with the secondary button.
+    pub(crate) context: Option<ContextMenu>,
+    /// The click that opened the row menu is not a click outside it.
+    pub(crate) context_opening: bool,
     /// Moves the panel made that open designs must follow, drained after each action.
     retargets: Vec<(PathBuf, PathBuf)>,
     /// What each folder browsed in this session had open and selected, so switching back finds
     /// the tree as it was left.
     roots: BTreeMap<PathBuf, RootMemory>,
+}
+
+/// The row menu and the screen point it opened at.
+#[derive(Clone)]
+pub(crate) struct ContextMenu {
+    pub(crate) path: PathBuf,
+    pub(crate) at: egui::Pos2,
 }
 
 #[derive(Clone, Default)]
@@ -366,6 +377,8 @@ impl FileTree {
             adopted_root: false,
             press: None,
             focused: false,
+            context: None,
+            context_opening: false,
             retargets: Vec::new(),
             roots: BTreeMap::new(),
         }
