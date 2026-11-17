@@ -10,6 +10,13 @@ struct Skill {
 // Exact names only: these are embedded documents, never filesystem paths to open.
 const SKILLS: &[Skill] = &[
     Skill {
+        name: "solidcraft-analysis",
+        files: &[
+            ("SKILL.md", include_str!("../../../skills/solidcraft-analysis/SKILL.md")),
+            ("reference.md", include_str!("../../../skills/solidcraft-analysis/reference.md")),
+        ],
+    },
+    Skill {
         name: "solidcraft-checking",
         files: &[
             ("SKILL.md", include_str!("../../../skills/solidcraft-checking/SKILL.md")),

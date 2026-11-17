@@ -57,3 +57,4 @@ See [docs/agent-development.md](docs/agent-development.md) for standard commands
 | A bug report, a crash, a wrong result | `skills/solidcraft-reporting/SKILL.md` |
 | Checking, porting, designs in git | `skills/solidcraft-checking/SKILL.md` |
 | Assemblies, joints, motion | `skills/solidcraft-mechanisms/SKILL.md` |
+| FEA | `skills/solidcraft-analysis/SKILL.md` |
