@@ -103,8 +103,7 @@ pub const CHINESE_FALLBACK: &str = "chinese_fallback";
 /// family when one is set (#1290).
 pub const UI_FONT: &str = "ui_font";
 
-/// Name of the Hangul fallback entry in [`egui::FontDefinitions`], after the CJK ones. On the web
-/// it holds the bundled Korean face (Craft UI KR); on the desktop a system Hangul font.
+/// Name of the Hangul fallback entry in [`egui::FontDefinitions`], after the CJK ones.
 pub const HANGUL_FALLBACK: &str = "hangul_fallback";
 
 /// Name of the Thai fallback entry in [`egui::FontDefinitions`], after the CJK ones (#1902).
@@ -130,8 +129,7 @@ pub fn needs_cjk_font(language: &str) -> bool {
 }
 
 /// Whether `text` has characters only the CJK fallback draws: kana, CJK ideographs and their
-/// punctuation, and full-width forms. Hangul is left out: it needs the Korean face, not the
-/// Japanese one this check asks for.
+/// punctuation, and full-width forms. Hangul is left out: the web app's font has none.
 pub fn has_cjk(text: &str) -> bool {
     text.chars().any(|c| {
         matches!(u32::from(c),

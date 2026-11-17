@@ -23,19 +23,8 @@ const TABS_KEPT: f32 = 124.0;
 pub const REPORT_TEXT_X: f32 = 29.0;
 /// Space between the search field and Settings.
 pub const SEARCH_GAP: f32 = 4.0;
-/// Home's least place from the bar's left edge, and the least gap between the app's name and
-/// Home's button. 128 was Home's fixed place, sized for "SolidCraft": the name starts at 36 and is
-/// 65.1 wide in Plex Sans semibold at the theme's heading size (14), so it ends at 101.1, and Home's
-/// button starts at 108 (20 before its place), 6.9 after it. A longer name moves Home right by
-/// the same gap, rounded down so SolidCraft's bar stays put: 36 + 65.1 + 6 + 20 = 127.1, under 128.
-const HOME_MIN: f32 = 128.0;
-const NAME_GAP: f32 = 6.0;
 /// A bar narrower than this shows no product name, no Undo and Redo, and narrower file actions.
 const COMPACT: f32 = 640.0;
-/// Space the File menu keeps below its rows for its frame and a gap above the window's bottom.
-const FILE_MENU_BOTTOM_GAP: f32 = 24.0;
-/// The least height the File menu's rows get, about three rows, however short the window.
-const FILE_MENU_MIN_ROOM: f32 = 100.0;
 
 /// Where the bar publishes its parts in the widget registry.
 #[derive(Clone, Copy, Debug)]
@@ -46,8 +35,6 @@ pub struct Handles<'a> {
     /// The File button, likewise.
     pub file: &'a [&'a str],
     pub file_rect: &'a [&'a str],
-    /// The Plugins button's rect and centre, when the bar has one.
-    pub plugins: &'a str,
     /// A button's rect as a target, under each prefix followed by its id.
     pub button: &'a [&'a str],
     /// A separator's rect, this prefix followed by its group.
@@ -98,10 +85,6 @@ pub struct AppBar<'a> {
     /// The File button's label; it is enabled with `home`, and drawn held while its menu is open.
     pub file: &'a str,
     pub file_open: bool,
-    /// The Plugins menu's text button after File, and whether its menu is open; `None` leaves it
-    /// out (the web build, which runs no plugins). Its accessible name is the third member
-    /// ("Plugins menu"), which contains the visible label but is not the Preferences page's name.
-    pub plugins: Option<(&'a str, bool, &'a str)>,
     /// The file actions after File.
     pub actions: Vec<BarButton<'a>>,
     /// How many quick-access buttons the app draws after them (one `step` each).
@@ -120,33 +103,12 @@ pub struct AppBar<'a> {
     pub handles: Handles<'a>,
 }
 
-/// A menu's text button (File, Plugins), its label starting 5 before `x`: its rect, and whether it
-/// was clicked while `idle`. Drawn held while its menu is `open`.
-/// It shows `label`; `name` is its accessible name.
-fn text_button(ui: &mut egui::Ui, r: Rect, x: f32, (label, name): (&str, &str), open: bool, idle: bool, salt: &str) -> (Rect, bool) {
-    let t = Tokens::get();
-    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(t.font_button), t.app_bar_text);
-    let rect = Rect::from_min_size(pos2(x - 13.0, r.center().y - 13.0), vec2(galley.size().x + 16.0, 26.0));
-    let resp = ui.interact(rect, ui.scope_id().with(("ab", salt)), if idle { Sense::click() } else { Sense::hover() });
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, idle, name));
-    if idle && (resp.hovered() || resp.has_focus() || open) {
-        ui.painter().rect_filled(rect, t.radius_sm, t.app_bar_hover);
-    }
-    let ink = if idle { t.app_bar_text } else { t.app_bar_text.gamma_multiply(0.35) };
-    ui.painter().galley(pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0), galley, ink);
-    (rect, idle && resp.clicked())
-}
-
 /// What the user chose on the bar this frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BarAction {
     Home,
     /// The File button, at `rect`.
     File {
-        rect: Rect,
-    },
-    /// The Plugins button, at `rect`.
-    Plugins {
         rect: Rect,
     },
     /// A file action or Settings, by its id.
@@ -266,28 +228,19 @@ pub fn show(ui: &mut egui::Ui, data: &AppBar, bar: Rect, content: Rect) -> BarOu
     let h = &data.handles;
     let r = bar;
     let left = content.left();
-    // The Plugins button takes its width from the room the rest of the bar had, so the bar turns
-    // compact that much sooner and the document tabs keep their room.
-    let plugins_width = data.plugins.map_or(0.0, |(label, _, _)| {
-        ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(t.font_button), t.app_bar_text).size().x + 18.0
-    });
-    let compact = r.right() - left < COMPACT + plugins_width;
+    let compact = r.right() - left < COMPACT;
     let mut actions = Vec::new();
     (data.mark)(ui.painter(), pos2(left + 20.0, r.center().y));
-    // Home's place: after the name as drawn, and never before HOME_MIN.
-    let mut x = if compact {
-        left + 56.0
-    } else {
-        let name = ui.painter().text(
+    if !compact {
+        ui.painter().text(
             pos2(left + 36.0, r.center().y),
             Align2::LEFT_CENTER,
             data.name,
             crate::type_face::semibold(t.font_heading),
             t.app_bar_text,
         );
-        // Home's button starts 20 before its place (32 wide, centred 4 before it).
-        (left + HOME_MIN).max(name.right() + NAME_GAP + 20.0)
-    };
+    }
+    let mut x = left + if compact { 56.0 } else { 128.0 };
     // Home.
     let home = Rect::from_center_size(pos2(x - 4.0, r.center().y), vec2(32.0, 32.0));
     let idle = data.home.enabled;
@@ -309,26 +262,25 @@ pub fn show(ui: &mut egui::Ui, data: &AppBar, bar: Rect, content: Rect) -> BarOu
     x = home.right() + 8.0;
     separator(ui, r, x, "brand", h);
     x += 16.0;
-    // The File menu's text button, then the Plugins menu's.
-    let (file, clicked) = text_button(ui, r, x, (data.file, data.file), data.file_open, idle, "file");
+    // The File menu's text button.
+    let galley = ui.painter().layout_no_wrap(data.file.to_string(), FontId::proportional(t.font_button), t.app_bar_text);
+    let file = Rect::from_min_size(pos2(x - 13.0, r.center().y - 13.0), vec2(galley.size().x + 16.0, 26.0));
     x = file.right() + 17.0;
+    let resp = ui.interact(file, ui.scope_id().with(("ab", "file")), if idle { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, idle, data.file));
     for name in h.file {
         solidcraft_ui_registry::publish_handle(name, file.center());
     }
     for name in h.file_rect {
         solidcraft_ui_registry::publish_rect(name, file);
     }
-    if clicked {
-        actions.push(BarAction::File { rect: file });
+    if idle && (resp.hovered() || resp.has_focus() || data.file_open) {
+        ui.painter().rect_filled(file, t.radius_sm, t.app_bar_hover);
     }
-    if let Some((label, open, name)) = data.plugins {
-        let (plugins, clicked) = text_button(ui, r, x - 2.0, (label, name), open, idle, "plugins");
-        x = plugins.right() + 17.0;
-        solidcraft_ui_registry::publish_rect(h.plugins, plugins);
-        solidcraft_ui_registry::publish_handle(h.plugins, plugins.center());
-        if clicked {
-            actions.push(BarAction::Plugins { rect: plugins });
-        }
+    let ink = if idle { t.app_bar_text } else { t.app_bar_text.gamma_multiply(0.35) };
+    ui.painter().galley(pos2(file.left() + 8.0, file.center().y - galley.size().y / 2.0), galley, ink);
+    if idle && resp.clicked() {
+        actions.push(BarAction::File { rect: file });
     }
     // The file actions, then the app's quick-access buttons.
     let step = if compact { 22.0 } else { 34.0 };
@@ -954,24 +906,17 @@ fn file_rows(ui: &mut egui::Ui, rows: &[FileRow], chosen: &mut Option<String>, i
 }
 
 /// Draws the File menu's `rows` at `at` (under the File button) in the area `id`. `just_opened`:
-/// the click that opened it this pass is not a click elsewhere. The rows scroll when the menu would
-/// run past the window's bottom, so every row stays reachable in a short window.
+/// the click that opened it this pass is not a click elsewhere.
 pub fn file_menu(ctx: &egui::Context, rows: &[FileRow], at: Pos2, id: egui::Id, just_opened: bool) -> FileMenuOut {
     use crate::{Container, Surface};
     let mut chosen = None;
-    // Room below `at` for the rows, less the menu frame's margins; never under three rows.
-    let room = (ctx.content_rect().bottom() - at.y - FILE_MENU_BOTTOM_GAP).max(FILE_MENU_MIN_ROOM);
     let resp = Container::new(ctx, Surface::Popup).area(id).fixed_pos(at).order(egui::Order::Foreground).show(ctx, |ui| {
         crate::Menu::show_frame(ui, crate::Menu::frame(), |ui| {
             ui.set_min_width(190.0);
             ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
             ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
             ui.visuals_mut().widgets.hovered.weak_bg_fill = Tokens::get().hover;
-            // `min_scrolled_height` lets the rows grow past the size the area kept from an earlier,
-            // shorter list, as the panel drop-downs do (#874); they still shrink to fit their content.
-            egui::ScrollArea::vertical().id_salt("file_menu_rows").max_height(room).min_scrolled_height(room).show(ui, |ui| {
-                file_rows(ui, rows, &mut chosen, false);
-            });
+            file_rows(ui, rows, &mut chosen, false);
         });
     });
     let close = chosen.is_some() || (!just_opened && resp.response.clicked_elsewhere());

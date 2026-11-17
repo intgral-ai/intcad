@@ -273,7 +273,7 @@ fn radius_slot<'a>(t: &'a mut Tokens, key: &str) -> Option<&'a mut u8> {
 impl ThemeFile {
     /// Shared by import and preference restoration; invalid saved maps are dropped as a unit.
     pub fn set_tabs(&mut self, source: &Value) -> Result<(), String> {
-        self.tabs = parse_tabs(source.get("tabs"), UnknownTabs::Refuse)?;
+        self.tabs = parse_tabs(source.get("tabs"))?;
         Ok(())
     }
 
@@ -486,6 +486,9 @@ macro_rules! theme_keys {
                 form_checkbox_height: _, form_button_height: _, sketch_palette_width: _, sketch_mode_size: _, sketch_mode_radius: _, sketch_mode_border: _,
                 sketch_palette_alpha: _, sketch_mode_tint: _, sketch_footer_icon_size: _, font_section_tracking: _,
                 figure_ground: _, figure_line: _, figure_highlight: _, figure_shadow: _, figure_face_top: _, figure_face_left: _, figure_face_right: _, figure_card: _, figure_white: _, figure_black: _, figure_accent: _, figure_reference: _, figure_axis_x: _, figure_axis_y: _, figure_axis_z: _, figure_ok: _, figure_warn: _, figure_conflict: _, pref_well: _, pref_note: _, pref_note_fill: _, pref_on_accent: _, pref_ok: _, pref_ok_fill: _, pref_disabled: _,
+                // Intcad's theme crate keeps further fields private to itself; the kit only needs
+                // that every *visible* field is named here.
+                ..
             } = t;
             let IconColors { $($ione: _,)* } = &t.icons;
         }
@@ -500,8 +503,8 @@ theme_keys! {
         app_bar, toolbar, panel, panel_header, border, text, text_dim, accent, accent_soft, sketch_accent, error, warning,
         icon, timeline, hover, sel_face, sel_edge, sel_edge_rim, hover_edge, hover_edge_halo, sel_profile,
         sel_profile_edge, hover_profile, hover_profile_edge, sel_vertex, origin_plane, origin_plane_edge, origin_plane_hover,
-        origin_point, axis_x, axis_y, axis_z, construction_plane, construction_geom, body, body_edge, isoparm, manipulator, joint_manipulator,
-        joint_axis, preview_add, preview_new, preview_sketch, preview_cut, cube_face, cube_border, cube_text, cube_hover, viewport_top,
+        origin_point, axis_x, axis_y, axis_z, construction_plane, construction_geom, body, body_edge, manipulator, joint_manipulator, joint_axis,
+        preview_add, preview_new, preview_sketch, preview_cut, cube_face, cube_border, cube_text, cube_hover, viewport_top,
         viewport_bottom, grid, grid_major, body_selected, sketch, sketch_fixed, sketch_halo, sketch_locked, sketch_conflict, dimension, dimension_driven,
         sketch_point, sketch_point_free, dialog_bg, dialog_border, chip, section_cap,
         profile_fill, glyph_bg, glyph_edge, glyph_text, overlay, rubber_band, app_bar_text, app_bar_hover, timeline_item,
@@ -575,20 +578,6 @@ pub fn parse(text: &str) -> Result<ThemeFile, String> {
 
 /// [`parse`] for JSON already read (`ui.prefs` `theme_import`).
 pub fn from_value(v: &Value) -> Result<ThemeFile, String> {
-    read_value(v, UnknownTabs::Refuse)
-}
-
-/// What reading a theme does with a `tabs` entry naming a tab the host's table lacks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UnknownTabs {
-    /// Refuse the file, naming the entry: a file a user wrote, imported or saved.
-    Refuse,
-    /// Leave the entry out once its surfaces are checked: a built-in file, which is the look's,
-    /// keyed by the look's tab names, and is read under whichever host installed the look.
-    LeaveOut,
-}
-
-fn read_value(v: &Value, unknown: UnknownTabs) -> Result<ThemeFile, String> {
     if v.get("format").and_then(Value::as_str) != Some(FORMAT) {
         return Err(format!("not a theme file: `format` must be \"{FORMAT}\""));
     }
@@ -606,7 +595,7 @@ fn read_value(v: &Value, unknown: UnknownTabs) -> Result<ThemeFile, String> {
         Some(value) => value.as_u64().ok_or("`requires` must be a nonnegative integer")?,
     };
     let layer = parse_layer(v)?;
-    let tabs = parse_tabs(v.get("tabs"), unknown)?;
+    let tabs = parse_tabs(v.get("tabs"))?;
     let options = if requires > REQUIREMENTS_LEVEL { Vec::new() } else { parse_options(v.get("options"))? };
     if requires < 2 && options.iter().any(|option| option.effect.is_some()) {
         return Err("option effects require `requires` of at least 2".into());
@@ -627,19 +616,17 @@ fn read_value(v: &Value, unknown: UnknownTabs) -> Result<ThemeFile, String> {
     })
 }
 
-/// Keep the accepted vocabulary at the same boundary as the existing accent mapping: the host's
-/// tab table. `unknown` says what a tab the table lacks does.
-fn parse_tabs(v: Option<&Value>, unknown: UnknownTabs) -> Result<BTreeMap<String, BTreeMap<String, Value>>, String> {
+/// Keep the accepted vocabulary at the same boundary as the existing accent mapping.
+fn parse_tabs(v: Option<&Value>) -> Result<BTreeMap<String, BTreeMap<String, Value>>, String> {
     let Some(v) = v else { return Ok(BTreeMap::new()) };
     let tabs = v.as_object().ok_or("`tabs` must be an object")?;
     let known = solidcraft_theme::installed_tabs();
-    if unknown == UnknownTabs::Refuse && tabs.len() > known.names().len() {
+    if tabs.len() > known.names().len() {
         return Err("`tabs` has too many entries".into());
     }
     let mut parsed = BTreeMap::new();
     for (tab, surfaces) in tabs {
-        let hosts = known.contains(tab);
-        if !hosts && unknown == UnknownTabs::Refuse {
+        if !known.contains(tab) {
             return Err(format!("`tabs.{tab}` is not a ribbon tab"));
         }
         let surfaces = surfaces.as_object().ok_or_else(|| format!("`tabs.{tab}` must be an object"))?;
@@ -653,9 +640,7 @@ fn parse_tabs(v: Option<&Value>, unknown: UnknownTabs) -> Result<BTreeMap<String
             }
             values.insert(key.clone(), value.clone());
         }
-        if hosts {
-            parsed.insert(tab.clone(), values);
-        }
+        parsed.insert(tab.clone(), values);
     }
     Ok(parsed)
 }
@@ -1111,7 +1096,7 @@ pub fn resolve_for_tab(theme: &ThemeFile, saved: &BTreeMap<String, OptionValue>,
     let mut tab_panel = false;
     if crate::theme_options::tab_settings(theme, &values).0
         && let Some(tab) = tab
-        && let Ok(tabs) = serde_json::to_value(&theme.tabs).map_err(|e| e.to_string()).and_then(|v| parse_tabs(Some(&v), UnknownTabs::Refuse))
+        && let Ok(tabs) = serde_json::to_value(&theme.tabs).map_err(|e| e.to_string()).and_then(|v| parse_tabs(Some(&v)))
         && let Some(surfaces) = tabs.get(tab)
     {
         for (key, value) in surfaces {
@@ -1217,11 +1202,6 @@ pub fn resolve_base(theme: &ThemeFile) -> Tokens {
     // its own (#7244).
     if !theme.colors.contains_key("sketch_conflict") {
         t.sketch_conflict = t.error;
-    }
-    // A surface's isoparms follow the theme's own body and edges unless it sets their colour:
-    // halfway from the edge colour to the body's, about half the edges' contrast.
-    if !theme.colors.contains_key("isoparm") && (theme.colors.contains_key("body") || theme.colors.contains_key("body_edge")) {
-        t.isoparm = t.body_edge.lerp_to_gamma(t.body, 0.5);
     }
     // A file that sets no colours is its base palette, exactly.
     if !theme.colors.is_empty() {
@@ -1390,9 +1370,6 @@ pub fn builtin() -> &'static [ThemeFile] {
     })
 }
 
-/// The host's built-in theme files, checked as a user's file is, except that a `tabs` entry for a
-/// tab the installed tab table lacks is left out: built-ins come with a look, keyed by its tab
-/// names, and every host that installs the look reads them.
 pub fn read_builtin(sources: &[(&str, &str)]) -> Result<Vec<ThemeFile>, String> {
     let mut orders = std::collections::BTreeSet::new();
     let mut ids = std::collections::BTreeSet::new();
@@ -1412,7 +1389,7 @@ pub fn read_builtin(sources: &[(&str, &str)]) -> Result<Vec<ThemeFile>, String> 
         if value.get("provenance").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
             return Err(format!("theme {id}: missing provenance"));
         }
-        let theme = read_value(&value, UnknownTabs::LeaveOut).map_err(|e| format!("theme {id}: {e}"))?;
+        let theme = from_value(&value).map_err(|e| format!("theme {id}: {e}"))?;
         themes.push((order, ThemeFile { id: id.into(), ..theme }));
     }
     if themes.is_empty() {
@@ -2196,28 +2173,6 @@ mod tests {
         assert!(read_builtin(&[]).is_err());
     }
 
-    /// A built-in file is the look's, its per-tab surfaces keyed by the look's tab names: under a
-    /// host without a tab it names, it loads and that tab's surfaces are left out. A file a user
-    /// imports or saves that names such a tab is still refused, and a built-in's surfaces are
-    /// still checked. The kit's tests install no tab table, so no tab is the host's here.
-    #[test]
-    fn a_builtin_keeps_only_the_hosts_tabs_and_a_users_file_is_still_refused() {
-        let theme = |surfaces: Value| {
-            json!({"format": FORMAT, "name": "Tinted", "base": "dark", "provenance": "Original", "order": 1,
-                "tabs": {"SKETCH": surfaces, "RENDER": {"viewport_top": "#202020"}}})
-        };
-        let good = theme(json!({"panel": "#102030"}));
-        let read = read_builtin(&[("tinted", &good.to_string())]).unwrap();
-        assert_eq!(read.len(), 1);
-        assert!(read[0].tabs.is_empty(), "no tab of the host's is named");
-        assert_eq!(resolve_for_tab(&read[0], &BTreeMap::new(), Some("SKETCH")), resolve(&read[0]));
-        assert!(from_value(&good).unwrap_err().contains("`tabs`"), "a user's file is refused as before");
-        let mut saved = ThemeFile::default();
-        assert!(saved.set_tabs(&good).is_err(), "a saved theme's tabs are read as before");
-        let bad = theme(json!({"panle": "#102030"}));
-        assert!(read_builtin(&[("tinted", &bad.to_string())]).unwrap_err().contains("`tabs.SKETCH.panle` is not a tab surface"));
-    }
-
     #[test]
     fn a_short_file_sets_only_its_colours() {
         let t = parse(r##"{"format":"solidcraft-theme/1","name":"My Theme!","base":"light","colors":{"panel":"#102030","axis_z":"#0000ff80"}}"##)
@@ -2291,23 +2246,6 @@ mod tests {
         }
         for c in ["#12345", "#1234567", "#gggggg", "282828", "#2828281"] {
             assert!(parse_color(c).is_none(), "{c}");
-        }
-    }
-
-    /// A theme that sets its own body or edge colours without an isoparm colour gets isoparms
-    /// halfway between them; one that sets none keeps its base's; one that sets it, its own.
-    #[test]
-    fn isoparms_follow_a_themes_body_and_edges_unless_it_sets_them() {
-        for base in [Base::Dark, Base::Light] {
-            let defaults = if base.is_dark() { Tokens::dark() } else { Tokens::light() };
-            let bare = from_value(&json!({"format": FORMAT, "name": "Bare", "base": base})).unwrap();
-            assert_eq!(resolve(&bare).isoparm, defaults.isoparm);
-            let edged =
-                from_value(&json!({"format": FORMAT, "name": "Edged", "base": base, "colors": {"body": "#c0c0c0", "body_edge": "#000000"}})).unwrap();
-            assert_eq!(resolve(&edged).isoparm, Color32::from_rgb(96, 96, 96));
-            let own = from_value(&json!({"format": FORMAT, "name": "Own", "base": base, "colors": {"body_edge": "#000000", "isoparm": "#123456"}}))
-                .unwrap();
-            assert_eq!(resolve(&own).isoparm, Color32::from_rgb(0x12, 0x34, 0x56));
         }
     }
 
