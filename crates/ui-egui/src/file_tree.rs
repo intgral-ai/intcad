@@ -1273,6 +1273,10 @@ pub(crate) fn tick(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
     }
     if app.file_tree.wants_frames() {
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
+    } else if app.file_tree.root.is_some() {
+        // The watcher runs on its own clock; a frame now and then lets its events reach the tree
+        // even while the person is not touching the window.
+        ctx.request_repaint_after(std::time::Duration::from_millis(700));
     }
 }
 
