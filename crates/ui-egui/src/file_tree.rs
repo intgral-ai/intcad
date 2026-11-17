@@ -1225,6 +1225,12 @@ pub(crate) fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde
         "root": app.file_tree.root.as_ref().map(|root| root.to_string_lossy()),
         "rows": rows,
         "selection": app.file_tree.selection.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+        "focused": app.file_tree.focused,
+        "clipboard": app.file_tree.clip.as_ref().map(|clip| json!({
+            "paths": clip.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+            "cut": clip.cut,
+        })),
+        "notice": app.file_tree.notice.as_ref().map(|(text, error)| json!({"text": text, "error": error})),
         "busy": app.file_tree.busy,
         "report": app.file_tree.report.as_ref().map(|report| json!({"done": report.succeeded(), "failed": report.failed(), "skipped": report.skipped()})),
     }))
