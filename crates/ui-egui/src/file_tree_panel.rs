@@ -302,10 +302,12 @@ fn rows(app: &mut SolveApp, ui: &mut egui::Ui, height: f32) {
     let open: std::collections::BTreeMap<String, bool> =
         crate::documents::open_sessions(app).into_iter().filter_map(|s| s.path.clone().map(|p| (p, s.is_dirty()))).collect();
     let mut edit = app.file_tree.editing.take();
+    let mut edit_finished = false;
     if let Some(draft) = edit.as_mut() {
         let depth = edit_depth(draft.parent.as_path(), &visible);
         match editing_row(ui, draft, depth) {
             Edited::Commit => {
+                edit_finished = true;
                 app.file_tree.editing = edit.take();
                 let open = app.file_tree.commit_edit();
                 if let Some(path) = open {
@@ -313,6 +315,7 @@ fn rows(app: &mut SolveApp, ui: &mut egui::Ui, height: f32) {
                 }
             }
             Edited::Cancel => {
+                edit_finished = true;
                 app.file_tree.cancel_edit();
                 edit = None;
             }
@@ -345,7 +348,9 @@ fn rows(app: &mut SolveApp, ui: &mut egui::Ui, height: f32) {
         if let Some(draft) = edit {
             app.file_tree.editing = Some(draft);
         }
-        keys(app, ui, &visible);
+        if !edit_finished {
+            keys(app, ui, &visible);
+        }
         return;
     }
     let root = app.file_tree.root.clone().map(|root| root.to_string_lossy().into_owned()).unwrap_or_default();
@@ -540,7 +545,9 @@ fn row_ui(
         ui.scroll_to_rect(rect, Some(Align::Center));
         app.file_tree.scroll_to = None;
     }
-    if response.secondary_clicked() || (response.clicked() && modifiers.command && cfg!(target_os = "macos")) {
+    let secondary =
+        response.secondary_clicked() || (response.contains_pointer() && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)));
+    if secondary || (response.clicked() && modifiers.command && cfg!(target_os = "macos")) {
         if !app.file_tree.selection.contains(&row.path) {
             app.file_tree.select_only(&row.path);
         }
