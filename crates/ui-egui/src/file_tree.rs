@@ -228,6 +228,8 @@ pub(crate) struct FileTree {
     pub(crate) context: Option<ContextMenu>,
     /// The click that opened the row menu is not a click outside it.
     pub(crate) context_opening: bool,
+    /// Openers still running: a file handed to the system answers here when it is done.
+    open_jobs: Vec<std::sync::mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     /// Moves the panel made that open designs must follow, drained after each action.
     retargets: Vec<(PathBuf, PathBuf)>,
     /// What each folder browsed in this session had open and selected, so switching back finds
@@ -379,6 +381,7 @@ impl FileTree {
             focused: false,
             context: None,
             context_opening: false,
+            open_jobs: Vec::new(),
             retargets: Vec::new(),
             roots: BTreeMap::new(),
         }
@@ -1292,11 +1295,21 @@ pub(crate) fn open_path(app: &mut SolveApp, path: &Path) {
         }
         return;
     }
-    if let Err(e) = files::open_default(path) {
-        let message = trf("ui.files_open_failed", &[("name", &path.display().to_string()), ("reason", &e)]);
-        app.file_tree.notice = Some((message.clone(), true));
-        app.file_tree.notice_reveal = Some(path.to_path_buf());
-        app.set_status(message, true);
+    // The opener may stay attached to the program it starts, so it answers on a worker.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let file = path.to_path_buf();
+    let opened = std::thread::Builder::new().name("intcad-files-open".into()).spawn(move || {
+        let answer = files::open_default_waiting(&file);
+        let _ = sender.send((file, answer));
+    });
+    match opened {
+        Ok(_) => app.file_tree.open_jobs.push(receiver),
+        Err(e) => {
+            let message = trf("ui.files_open_failed", &[("name", &path.display().to_string()), ("reason", &e.to_string())]);
+            app.file_tree.notice = Some((message.clone(), true));
+            app.file_tree.notice_reveal = Some(path.to_path_buf());
+            app.set_status(message, true);
+        }
     }
 }
 

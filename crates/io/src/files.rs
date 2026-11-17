@@ -672,6 +672,29 @@ fn percent_encode(path: &str) -> String {
     encoded
 }
 
+/// Open a file (or folder) with the system's default program, waiting for the opener to answer.
+/// Some systems start a program that stays attached for its lifetime; call this on a worker so
+/// the window keeps drawing. An answer here is the opener's: a missing association is an error.
+pub fn open_default_waiting(path: &Path) -> Result<(), String> {
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    {
+        wait_for("xdg-open", &[path.as_os_str()])
+    }
+    #[cfg(all(windows, not(target_arch = "wasm32")))]
+    {
+        wait_for("cmd", &[OsStr::new("/C"), OsStr::new("start"), OsStr::new(""), path.as_os_str()])
+    }
+    #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
+    {
+        wait_for("open", &[path.as_os_str()])
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err("this build cannot open files with the system".into())
+    }
+}
+
 /// Open a file (or folder) with the system's default program.
 pub fn open_default(path: &Path) -> Result<(), String> {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
@@ -737,6 +760,23 @@ pub fn reveal(path: &Path) -> Result<(), String> {
 }
 
 /// Start a program without waiting for it; a program that is missing is reported, not hidden.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
+fn wait_for(program: &str, args: &[&OsStr]) -> Result<(), String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("{program}: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if reason.is_empty() { format!("{program}: no program is associated with this file") } else { reason })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn_detached(program: &str, args: &[&OsStr]) -> Result<(), String> {
     let mut command = std::process::Command::new(program);
