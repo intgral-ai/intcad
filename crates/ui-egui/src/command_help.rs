@@ -80,6 +80,7 @@ pub const DOCUMENTED: &[&str] = &[
     "inspect.measure",
     "inspect.minimum_radius",
     "inspect.section",
+    "inspect.stress_estimate",
     "inspect.zebra",
     "joint.as_built",
     "joint.cam",

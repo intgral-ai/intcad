@@ -1,0 +1,42 @@
+{
+  "ar": {
+    "cmd.inspect.stress_estimate": "تقدير الإجهاد",
+    "cmd.inspect.stress_estimate.show": "عرض تقدير الإجهاد",
+    "help.inspect.stress_estimate": "يقدّر الإجهاد والانحراف في القطعة تحت أحمال تصفها، ويعرضهما على النموذج. يفتح الدردشة لإعداده: أي الأوجه مثبّتة، وأين الحمل، وما المادة. تقدير لمعرفة الحجم، وليس فحصًا."
+  },
+  "de": {
+    "cmd.inspect.stress_estimate": "Spannungsabschätzung",
+    "cmd.inspect.stress_estimate.show": "Spannungsabschätzung anzeigen",
+    "help.inspect.stress_estimate": "Schätzt Spannung und Durchbiegung eines Teils unter Lasten, die du beschreibst, und zeigt sie auf dem Modell. Öffnet den Chat zum Einrichten: welche Flächen gehalten werden, wo die Last angreift und welches Material. Eine Abschätzung für die Größenordnung, keine Prüfung."
+  },
+  "en": {
+    "cmd.inspect.stress_estimate": "Stress Estimate",
+    "cmd.inspect.stress_estimate.show": "Show Stress Estimate",
+    "help.inspect.stress_estimate": "Estimates the stress and deflection of a part under loads you describe, and paints them on the model. Opens the chat to set it up: which faces are held, where the load goes, and the material. An estimate for a sense of size, not a check."
+  },
+  "he": {
+    "cmd.inspect.stress_estimate": "הערכת מאמצים",
+    "cmd.inspect.stress_estimate.show": "הצגת הערכת מאמצים",
+    "help.inspect.stress_estimate": "מעריך את המאמץ והשקיעה של חלק תחת עומסים שתתאר, ומציג אותם על המודל. פותח את הצ'אט להגדרה: אילו פאות מקובעות, היכן העומס ומה החומר. הערכה לתחושת גודל, לא בדיקה."
+  },
+  "ja": {
+    "cmd.inspect.stress_estimate": "応力の概算",
+    "cmd.inspect.stress_estimate.show": "応力の概算を表示",
+    "help.inspect.stress_estimate": "指定した荷重での部品の応力と変形量を概算し、モデル上に色で表示します。チャットを開いて、固定する面、荷重の位置、材料を設定します。大きさをつかむための概算で、チェックではありません。"
+  },
+  "ko": {
+    "cmd.inspect.stress_estimate": "응력 추정",
+    "cmd.inspect.stress_estimate.show": "응력 추정 표시",
+    "help.inspect.stress_estimate": "설명한 하중에서 부품의 응력과 처짐을 추정해 모델 위에 표시합니다. 채팅을 열어 고정할 면, 하중 위치, 재료를 설정합니다. 크기를 가늠하기 위한 추정이며 검사가 아닙니다."
+  },
+  "vi": {
+    "cmd.inspect.stress_estimate": "Ước tính ứng suất",
+    "cmd.inspect.stress_estimate.show": "Hiện ước tính ứng suất",
+    "help.inspect.stress_estimate": "Ước tính ứng suất và độ võng của chi tiết dưới tải bạn mô tả, rồi tô lên mô hình. Mở khung chat để thiết lập: mặt nào được giữ cố định, tải đặt ở đâu, vật liệu gì. Chỉ là ước tính để hình dung độ lớn, không phải kiểm tra."
+  },
+  "zh": {
+    "cmd.inspect.stress_estimate": "应力估算",
+    "cmd.inspect.stress_estimate.show": "显示应力估算",
+    "help.inspect.stress_estimate": "估算零件在你描述的载荷下的应力和挠度，并画在模型上。会打开聊天来设置：哪些面固定、载荷加在哪里、用什么材料。只是用来了解大致量级的估算，不是检查。"
+  }
+}
