@@ -757,12 +757,9 @@ impl FileTree {
 
     /// Start a new entry in `parent`.
     pub(crate) fn start_new(&mut self, parent: &Path, kind: EditKind) {
-        let name = match kind {
-            EditKind::Folder => "New folder".to_string(),
-            EditKind::Model => "Part.sc".to_string(),
-            _ => "New file".to_string(),
-        };
-        self.editing = Some(Edit { parent: parent.to_path_buf(), path: None, kind, name, error: None, focus: true });
+        // The field starts empty: the hint names what is being made, and the typed text is the
+        // whole name rather than something to erase first.
+        self.editing = Some(Edit { parent: parent.to_path_buf(), path: None, kind, name: String::new(), error: None, focus: true });
         self.expanded.insert(parent.to_path_buf());
         self.ensure(parent);
     }
@@ -790,6 +787,9 @@ impl FileTree {
                         self.follow_move(&path, &target);
                         self.refresh(&edit.parent);
                         self.request_retarget(&path, &target);
+                        if solidcraft_engine::io::is_design_path(&path.to_string_lossy()) || target.is_dir() {
+                            self.notice = Some((tr("ui.files_reference_warning").to_string(), false));
+                        }
                     }
                     Outcome::Skipped => {
                         edit.error = Some(tr("ui.files_name_taken").to_string());
@@ -1049,6 +1049,13 @@ impl FileTree {
             if dir.is_dir() {
                 self.refresh(&dir);
             }
+        }
+        if matches!(answer.action, Action::Copy | Action::Move)
+            && answer.results.iter().any(|result| {
+                result.succeeded() && (solidcraft_engine::io::is_design_path(&result.source.to_string_lossy()) || result.target.is_dir())
+            })
+        {
+            self.notice = Some((tr("ui.files_reference_warning").to_string(), false));
         }
         if !effect.closed.is_empty() {
             self.selection.retain(|p| !effect.closed.iter().any(|d| files::is_within(Path::new(d), p)));

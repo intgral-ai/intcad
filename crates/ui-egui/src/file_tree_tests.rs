@@ -401,3 +401,75 @@ fn the_control_channel_reads_the_panels_rows() {
     let refused = h.call("ui.files", json!({"root": scratch.path().join("missing")}));
     assert_eq!(refused["ok"], false, "a missing folder is refused");
 }
+
+/// The `+` menu opens on a click and its New File asks for a name in the tree; Enter makes the
+/// file with exactly the typed name.
+#[test]
+fn the_new_menu_makes_a_file_with_the_typed_name() {
+    use crate::scenario::{Harness, rect_of};
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.call("ui.files", json!({"root": scratch.path().to_string_lossy()}));
+    h.frames(20);
+    h.step(&json!({"click": {"handle": "files:new"}})).unwrap();
+    h.frames(3);
+    assert!(rect_of("menu:files_new_file").is_some(), "the new menu opens on a click");
+    h.step(&json!({"click": {"handle": "menu:files_new_file"}})).unwrap();
+    h.frames(3);
+    assert!(rect_of("files:edit").is_some(), "the name field is in the tree");
+    h.step(&json!({"text": "notes.txt"})).unwrap();
+    h.step(&json!({"key": "Enter"})).unwrap();
+    h.frames(5);
+    assert!(scratch.path().join("notes.txt").is_file(), "the typed name made the file");
+}
+
+/// Moving a folder that holds two open designs moves both tabs, and both keep their unsaved
+/// work: the second test of AC-09, which a single open design cannot prove.
+#[test]
+fn moving_a_folder_moves_every_open_design_inside_it() {
+    let scratch = Scratch::new();
+    let folder = scratch.dir("parts");
+    let first = folder.join("a.sc");
+    let second = folder.join("b.sc");
+    let mut one = Session::default();
+    one.execute("file.save_as", &serde_json::json!({"path": first.to_string_lossy(), "cache": false})).unwrap();
+    one.execute("solid.box", &serde_json::json!({"length": 3, "width": 3, "height": 3})).unwrap();
+    let mut two = Session::default();
+    two.execute("file.save_as", &serde_json::json!({"path": second.to_string_lossy(), "cache": false})).unwrap();
+    two.execute("solid.box", &serde_json::json!({"length": 5, "width": 5, "height": 5})).unwrap();
+    let mut app = crate::SolveApp::new(one, Default::default());
+    crate::documents::open_tab(&mut app, two).unwrap();
+    let moved = scratch.dir("moved");
+    fs::rename(&folder, &moved).unwrap();
+    assert_eq!(documents::retarget_paths(&mut app, &folder, &moved), 2);
+    assert_eq!(app.session.path, Some(moved.join("b.sc").to_string_lossy().into_owned()));
+    let open = documents::open_sessions(&app);
+    let other = open.iter().find(|session| session.path.as_deref() == Some(moved.join("a.sc").to_string_lossy().as_ref()));
+    assert!(other.is_some(), "the design in the other tab followed the folder");
+    assert!(open.iter().all(|session| session.is_dirty()), "both keep their edits");
+}
+
+/// A batch reports each item: the good copy is made and the missing source is a failure, so a
+/// partial success is never shown as one success.
+#[test]
+fn a_batch_reports_the_good_item_and_the_failed_one() {
+    let scratch = Scratch::new();
+    let good = scratch.file("good.sc", "good");
+    let missing = scratch.path().join("missing.sc");
+    let into = scratch.dir("parts");
+    let mut tree = listing(scratch.path());
+    tree.place(vec![good, missing], &into, false, None);
+    let answer = wait_for_answer(&mut tree);
+    assert_eq!(answer.results.len(), 2);
+    assert_eq!(answer.results.iter().filter(|r| r.succeeded()).count(), 1);
+    assert_eq!(answer.results.iter().filter(|r| matches!(r.outcome, files::Outcome::Failed(_))).count(), 1);
+    assert!(into.join("good.sc").is_file());
+    let report = tree.apply_answer(answer);
+    let _ = report;
+    let report = tree.report.as_ref().unwrap();
+    assert_eq!((report.succeeded(), report.failed()), (1, 1));
+    assert_eq!(report.retry.len(), 1, "only the failed item can run again");
+}

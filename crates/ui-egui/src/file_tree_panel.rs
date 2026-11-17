@@ -94,8 +94,9 @@ fn header(app: &mut SolveApp, ui: &mut egui::Ui) {
     let Some(root) = app.file_tree.root.clone() else { return };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEADER), Sense::hover());
     crate::scenario::publish_target("files:root", rect);
-    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
-    let tooltip = root.display().to_string();
+    // The panel's title is the folder's name; the row under it shows where that folder is.
+    let name = root.display().to_string();
+    let tooltip = name.clone();
     let mut right = rect.right();
     let more = Rect::from_center_size(pos2(right - t.space_8, rect.center().y), vec2(20.0, 20.0));
     let more_response = ui_kit::button_at(ui, "files_more", more, "⋯", Button::Ghost).on_hover_text(tr("ui.files_root_menu"));
@@ -122,7 +123,7 @@ fn header(app: &mut SolveApp, ui: &mut egui::Ui) {
         app.file_tree.refresh(&root);
         app.file_tree.notice = None;
     }
-    ui_kit::Menu::context(&plus_response, |ui| {
+    ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Popup).menu(&plus_response).show(|ui| {
         if ui_kit::MenuItem::new("files_new_file", tr("ui.files_new_file"), "new").show(ui).clicked() {
             let folder = app.file_tree.target_folder().unwrap_or_else(|| root.clone());
             app.file_tree.start_new(&folder, EditKind::File);
@@ -148,7 +149,7 @@ fn header(app: &mut SolveApp, ui: &mut egui::Ui) {
             ui.close();
         }
     });
-    ui_kit::Menu::context(&more_response, |ui| {
+    ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Popup).menu(&more_response).show(|ui| {
         let mut hidden = ui_kit::MenuItem::new("files_hidden", tr("ui.files_show_hidden"), "eye");
         hidden.checked = Some(app.file_tree.show_hidden);
         if hidden.show(ui).clicked() {
@@ -397,10 +398,16 @@ fn editing_row(ui: &mut egui::Ui, draft: &mut super::Edit, depth: usize) -> Edit
     ui.painter().rect_filled(rect, t.radius_sm, t.control_fill);
     let left = rect.left() + (depth as f32) * INDENT + FOLD + t.space_6;
     let field = Rect::from_min_max(pos2(left, rect.top() + 1.0), pos2(rect.right() - t.space_4, rect.bottom() - 1.0));
+    let hint = match draft.kind {
+        EditKind::File => tr("ui.files_new_file"),
+        EditKind::Folder => tr("ui.files_new_folder"),
+        EditKind::Model => "Part.sc",
+        EditKind::Rename => "",
+    };
     let mut name = draft.name.clone();
     let response = ui
         .scope_builder(UiBuilder::new().max_rect(field).layout(Layout::left_to_right(Align::Center)), |ui| {
-            ui_kit::cell_editor(ui, egui::Id::new(("files_edit", &draft.parent)), &mut name, "", draft.error.is_some())
+            ui_kit::cell_editor(ui, egui::Id::new(("files_edit", &draft.parent)), &mut name, hint, draft.error.is_some())
         })
         .inner;
     if draft.focus {

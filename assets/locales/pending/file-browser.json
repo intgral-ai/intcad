@@ -74,7 +74,8 @@
     "ui.files_save_copies_replace": "Save Copies and Replace",
     "ui.files_locate": "Locate Open Design",
     "ui.files_not_in_root": "The open design is not inside this folder.",
-    "ui.files_select_all": "Select All"
+    "ui.files_select_all": "Select All",
+    "ui.files_reference_warning": "Other designs that refer to this model or folder may need their links updated. Intcad does not change those references."
   },
   "zh": {
     "ui.files_no_folder": "未打开文件夹",
@@ -151,7 +152,8 @@
     "ui.files_save_copies_replace": "另存副本并替换",
     "ui.files_locate": "在文件树中定位",
     "ui.files_not_in_root": "已打开的模型不在这个文件夹内。",
-    "ui.files_select_all": "全选"
+    "ui.files_select_all": "全选",
+    "ui.files_reference_warning": "其他引用了此模型或文件夹的模型可能需要更新链接。Intcad 不会自动修改这些引用。"
   },
   "ja": {
     "ui.files_no_folder": "フォルダーが開かれていません",
@@ -228,7 +230,8 @@
     "ui.files_save_copies_replace": "コピーを保存して置き換え",
     "ui.files_locate": "開いている設計を表示",
     "ui.files_not_in_root": "開いている設計はこのフォルダーの中にありません。",
-    "ui.files_select_all": "すべて選択"
+    "ui.files_select_all": "すべて選択",
+    "ui.files_reference_warning": "このモデルまたはフォルダーを参照している他の設計は、リンクの更新が必要な場合があります。Intcad はその参照を変更しません。"
   },
   "de": {
     "ui.files_no_folder": "Kein Ordner geöffnet",
@@ -305,7 +308,8 @@
     "ui.files_save_copies_replace": "Kopien speichern und ersetzen",
     "ui.files_locate": "Offenes Modell anzeigen",
     "ui.files_not_in_root": "Das offene Modell liegt nicht in diesem Ordner.",
-    "ui.files_select_all": "Alles auswählen"
+    "ui.files_select_all": "Alles auswählen",
+    "ui.files_reference_warning": "Andere Modelle, die auf dieses Modell oder diesen Ordner verweisen, brauchen möglicherweise aktualisierte Verknüpfungen. Intcad ändert diese Verweise nicht."
   },
   "ko": {
     "ui.files_no_folder": "폴더가 열려 있지 않습니다",
@@ -382,6 +386,7 @@
     "ui.files_save_copies_replace": "사본을 저장하고 바꾸기",
     "ui.files_locate": "열린 모델 위치로 이동",
     "ui.files_not_in_root": "열린 모델이 이 폴더 안에 없습니다.",
-    "ui.files_select_all": "모두 선택"
+    "ui.files_select_all": "모두 선택",
+    "ui.files_reference_warning": "이 모델이나 폴더를 참조하는 다른 모델은 링크를 업데이트해야 할 수 있습니다. Intcad는 해당 참조를 변경하지 않습니다."
   }
 }
