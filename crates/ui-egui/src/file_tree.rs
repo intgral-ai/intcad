@@ -995,6 +995,7 @@ impl FileTree {
             }
         }
         self.select_only(path);
+        self.focused = true;
         self.scroll_to = Some(path.to_path_buf());
         if let Some(parent) = path.parent() {
             self.refresh(parent);

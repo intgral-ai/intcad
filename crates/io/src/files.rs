@@ -678,6 +678,9 @@ fn percent_encode(path: &str) -> String {
 pub fn open_default_waiting(path: &Path) -> Result<(), String> {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
+        if !has_association(path) {
+            return Err("no program is associated with this file".into());
+        }
         wait_for("xdg-open", &[path.as_os_str()])
     }
     #[cfg(all(windows, not(target_arch = "wasm32")))]
@@ -761,6 +764,24 @@ pub fn reveal(path: &Path) -> Result<(), String> {
 
 /// Start a program without waiting for it; a program that is missing is reported, not hidden.
 #[cfg(not(target_arch = "wasm32"))]
+/// Does the system name a program for this file's type? A desktop without `xdg-mime` is given
+/// the benefit of the doubt: `xdg-open` answers for itself then.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn has_association(path: &Path) -> bool {
+    let query = |args: &[&str]| -> Option<String> {
+        let output = std::process::Command::new("xdg-mime").args(args).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let Some(mime) = query(&["query", "filetype", &path.to_string_lossy()]) else { return true };
+    if mime.is_empty() {
+        return false;
+    }
+    query(&["query", "default", &mime]).is_none_or(|default| !default.is_empty())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn wait_for(program: &str, args: &[&OsStr]) -> Result<(), String> {
     let output = std::process::Command::new(program)
