@@ -507,7 +507,8 @@ fn row_ui(
             let galley = ui.painter().layout_no_wrap(error.clone(), FontId::proportional(t.font_small), t.form_error);
             ui.painter().with_clip_rect(name_rect).galley(pos2(name_rect.left(), name_rect.center().y - galley.size().y / 2.0), galley, t.form_error);
             let retry = Rect::from_center_size(pos2(rect.right() - t.space_16, rect.center().y), vec2(44.0, ROW - 4.0));
-            if ui_kit::button_at(ui, "files_retry", retry, tr("ui.files_retry"), Button::Small).clicked() {
+            let retry_id = format!("files_retry:{}", row.path.display());
+            if ui_kit::button_at(ui, &retry_id, retry, tr("ui.files_retry"), Button::Small).clicked() {
                 let dir = row.path.clone();
                 app.file_tree.refresh(&dir);
             }
