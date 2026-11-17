@@ -387,7 +387,11 @@ fn rows(app: &mut SolveApp, ui: &mut egui::Ui, height: f32) {
             app.file_tree.drop_target = None;
         }
     }
-    keys(app, ui, &visible);
+    // The Enter that named an entry belongs to the field, not to the row it names: without this
+    // it would also open the renamed design in a second tab.
+    if !edit_finished {
+        keys(app, ui, &visible);
+    }
 }
 
 enum Edited {
