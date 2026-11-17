@@ -687,7 +687,19 @@ impl FileTree {
     fn system_files(&self) -> Vec<PathBuf> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get().file_list()).unwrap_or_default()
+            // Some file managers end every URI with CRLF; arboard keeps the CR, which would make
+            // the path a different (missing) file.
+            arboard::Clipboard::new()
+                .and_then(|mut clipboard| clipboard.get().file_list())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|path| {
+                    let text = path.to_string_lossy();
+                    let trimmed = text.trim_end_matches(['\r', '\n']);
+                    if trimmed.len() == text.len() { path } else { PathBuf::from(trimmed) }
+                })
+                .filter(|path| path.exists())
+                .collect()
         }
         #[cfg(target_arch = "wasm32")]
         {
