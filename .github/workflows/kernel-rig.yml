@@ -31,7 +31,8 @@ on:
       - "crates/kernel/**"
       - "crates/geom/**"
       - "crates/smlib/**"
-      - "crates/step/**"
+      # The vendored kernel: STEP reader, mesher and the kernel they build on.
+      - "solidcore/crates/**"
       - "crates/io/src/**"
       - "crates/doc/src/**"
       - "crates/engine/src/**"
@@ -54,7 +55,7 @@ on:
       - "crates/kernel/**"
       - "crates/geom/**"
       - "crates/smlib/**"
-      - "crates/step/**"
+      - "solidcore/crates/**"
       - "crates/io/src/**"
       - "crates/doc/src/**"
       - "crates/engine/src/**"
