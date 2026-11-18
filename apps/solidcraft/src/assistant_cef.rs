@@ -21,7 +21,6 @@ use welding::{
     KeyEventKind, MouseAction, MouseButton, MouseEvent, WebRequestId,
 };
 
-use crate::assistant_web;
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
 
@@ -29,17 +28,10 @@ use solidcraft_ui_egui::agent_chat::web;
 /// custom-scheme handler here and the page's ES modules need a real origin.
 const PAGE_HOST: &str = "127.0.0.1";
 
-/// Read by `main` before eframe starts: CEF must dispatch its own subprocesses first.
-pub fn enabled() -> bool {
-    std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF").is_some()
-}
 
 /// CEF re-executes this binary for its renderer, GPU and utility processes. Must run before
 /// any thread is started (winit, wgpu, the app's pools).
 pub fn subprocess_entry() -> Option<i32> {
-    if !enabled() {
-        return None;
-    }
     let cef_path = std::env::var("CEF_PATH").ok()?;
     match CefRuntime::execute_process_from(std::path::Path::new(&cef_path), sandbox()) {
         Ok(code) => code,
@@ -63,9 +55,6 @@ fn sandbox() -> CefSandboxMode {
 /// has to be opened with `VK_EXT_queue_family_foreign`, which `adapter.request_device` cannot
 /// add. `None` leaves eframe's own device creation alone.
 pub fn interop_setup() -> Option<eframe::egui_wgpu::WgpuSetup> {
-    if !enabled() {
-        return None;
-    }
     // Test only: pretend the device cannot import DMA-BUF, to check what the app does when a
     // machine's GPU interop is missing. The Assistant must say so and CAD must keep working.
     if std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP").is_some() {
@@ -373,15 +362,15 @@ impl CefAssistant {
         }
         self.popup = self.take_popup(frame);
 
-        if let Some((id, size)) = self.texture {
+        if let Some((id, _size)) = self.texture {
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
                 egui::Id::new("assistant-cef-page"),
             ));
-            let draw = egui::Rect::from_min_size(
-                rect.min,
-                egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
-            );
+            // The panel's rectangle, not the last texture's size: a frame painted before a
+            // resize arrives a frame later, and drawing it at its own size left the panel's
+            // edge black on a fractional-scale Wayland window.
+            let draw = rect;
             painter.image(
                 id,
                 draw,
@@ -789,14 +778,14 @@ fn serve_pages(pictures: Pictures, inbox: Sender<String>) -> std::io::Result<u16
                     (200, "text/javascript; charset=utf-8", "default-src 'none'", IPC_SHIM.as_bytes().to_vec())
                 } else {
                     let name = path.trim_start_matches('/');
-                    match assistant_web::page_file(if name.is_empty() { "index.html" } else { name }) {
+                    match crate::assistant_page::page_file(if name.is_empty() { "index.html" } else { name }) {
                         Some((kind, bytes)) => {
                             if name.is_empty() || name == "index.html" {
                                 // The page asks its own host for `POST /ipc` (the ipc shim);
                                 // the shipped policy forbids every connection.
                                 policy_override = Some("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'");
                             }
-                            (200, kind, assistant_web::page_policy(), bytes.to_vec())
+                            (200, kind, crate::assistant_page::page_policy(), bytes.to_vec())
                         }
                         None => (404, "text/plain", "default-src 'none'", b"not found".to_vec()),
                     }

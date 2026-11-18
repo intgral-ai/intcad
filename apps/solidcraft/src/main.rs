@@ -22,7 +22,7 @@
 mod app_icon;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod assistant_cef;
-mod assistant_web;
+mod assistant_page;
 mod come_forward;
 mod control_server;
 #[cfg(target_os = "linux")]
@@ -104,7 +104,6 @@ struct App {
     native_menu: Option<native_menu::NativeMenu>,
     /// The Assistant's conversation as a web view over its panel.
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    assistant_web: assistant_web::AssistantWeb,
     assistant_cef: Option<assistant_cef::CefAssistant>,
     /// A device's own app moving the view (Preferences › Navigation, off by default).
     nav_bridge: nav_bridge::NavBridge,
@@ -256,7 +255,8 @@ impl eframe::App for App {
         if let Some(cef) = self.assistant_cef.as_mut() {
             cef.logic(&mut self.solve, ctx);
         } else {
-            self.assistant_web.logic(&mut self.solve, ctx);
+            // No page: the conversation still moves, wherever the window is.
+            solidcraft_ui_egui::agent_chat::web::advance(&mut self.solve, ctx);
         }
         // The file chooser that opened is not the desktop's own: the user has to be told (#10159).
         #[cfg(target_os = "linux")]
@@ -296,8 +296,6 @@ impl eframe::App for App {
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if let Some(cef) = self.assistant_cef.as_mut() {
             cef.tick(&mut self.solve, ui.ctx(), frame);
-        } else {
-            self.assistant_web.tick(&mut self.solve, ui.ctx(), frame);
         }
         #[cfg(target_os = "macos")]
         {
@@ -307,14 +305,12 @@ impl eframe::App for App {
                 for redo in menu.take_text_edits() {
                     if let Some(cef) = self.assistant_cef.as_mut() {
                         cef.edit_text(redo);
-                    } else {
-                        self.assistant_web.edit_text(redo);
                     }
                 }
                 let editing = self
                     .assistant_cef
                     .as_ref()
-                    .map_or_else(|| self.assistant_web.focused(), assistant_cef::CefAssistant::focused);
+                    .is_some_and(assistant_cef::CefAssistant::focused);
                 menu.set_text_editing(&self.solve, editing);
             }
         }
@@ -337,8 +333,6 @@ impl eframe::App for App {
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if let Some(cef) = self.assistant_cef.as_mut() {
             cef.close();
-        } else {
-            self.assistant_web.close();
         }
         // The agent chat's agent and everything it started end with the app.
         solidcraft_ui_egui::agent_chat::shutdown(&mut self.solve);
@@ -1442,35 +1436,26 @@ fn main() -> eframe::Result {
                 app.native_file_menu = native_menu.is_some();
             }
             // The Assistant's conversation is a web view where the host has one.
-            // CEF for the Assistant, while the migration is under test: the panel keeps its
-            // contract either way, so the two hosts are interchangeable for a run.
+            // The Assistant's page lives in this window: CEF paints it into a texture the
+            // app's own renderer draws. Which display protocol the window uses does not
+            // matter to it.
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-            let assistant_cef = if assistant_cef::enabled() {
-                match cc
-                    .wgpu_render_state
-                    .as_ref()
-                    .and_then(assistant_cef::CefAssistant::new)
-                {
-                    Some(cef) => {
-                        solidcraft_ui_egui::agent_chat::web::set_host(&mut app, true);
-                        Some(cef)
-                    }
-                    None => {
-                        solidcraft_ui_egui::agent_chat::web::set_problem(
-                            &mut app,
-                            solidcraft_ui_egui::agent_chat::web::Problem::Failed,
-                        );
-                        None
-                    }
+            let assistant_cef = match cc
+                .wgpu_render_state
+                .as_ref()
+                .and_then(assistant_cef::CefAssistant::new)
+            {
+                Some(cef) => {
+                    solidcraft_ui_egui::agent_chat::web::set_host(&mut app, true);
+                    Some(cef)
                 }
-            } else {
-                None
-            };
-            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-            let assistant_web = if assistant_cef.is_some() {
-                assistant_web::AssistantWeb::default()
-            } else {
-                assistant_web::AssistantWeb::new(&mut app)
+                None => {
+                    solidcraft_ui_egui::agent_chat::web::set_problem(
+                        &mut app,
+                        solidcraft_ui_egui::agent_chat::web::Problem::Failed,
+                    );
+                    None
+                }
             };
             mark("app created");
             solidcraft_engine::crash::phase("first frame");
@@ -1488,7 +1473,6 @@ fn main() -> eframe::Result {
                 #[cfg(target_os = "macos")]
                 native_menu,
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-                assistant_web,
                 assistant_cef,
                 nav_bridge,
                 dialog_folder,

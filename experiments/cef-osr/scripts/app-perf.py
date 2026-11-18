@@ -190,6 +190,10 @@ def main():
             "p50_ms": percentile(idle2_gaps, 0.5),
             "p95_ms": percentile(idle2_gaps, 0.95),
             "max_ms": max(idle2_gaps) if idle2_gaps else None,
+            # The list is oldest-first: its tail is the cadence now, not the
+            # page's loading burst.
+            "tail20_p50_ms": percentile(idle2_gaps[-20:], 0.5),
+            "tail20_p95_ms": percentile(idle2_gaps[-20:], 0.95),
         },
         "drag": {
             "frames": len(busy_gaps),

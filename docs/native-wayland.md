@@ -1,5 +1,11 @@
 # Native Wayland and the Assistant's web view
 
+> **Update (CEF cutover, `probe/cef-welding-osr`):** the Assistant no longer uses a native
+> child window. CEF paints the page into a GPU texture the app's own renderer draws, so native
+> Wayland and X11 both show the page. The options and evidence below are the record that led to
+> that decision; the shipping path is described in `cef-welding-cutover.md`. On the migration
+> branch, `SOLIDCRAFT_WAYLAND=1` shows the Assistant instead of the diagnostic.
+
 **Status: decision needed before a host replacement. The Assistant currently runs on X11 and
 XWayland only; native Wayland shows a diagnostic instead of a second chat UI.** This page records
 what was checked, why the obvious patch does not work, and the two viable paths with their cost.

@@ -19,6 +19,8 @@ This file is only *how to run it again*.
 | `poc/fixtures/probe.html` | Test page: solid `#1e90ff` background, an input, a `<select>`, and a log that mirrors every gesture into `document.title` (which comes back as a navigation event). |
 | `nix/runtime.nix` | The CEF runtime libraries as one `cef-osr-env` wrapper (NixOS has no `/usr/lib`). |
 | `scripts/matrix.sh` | The Wayland/X11/headless matrix. |
+| `scripts/app-perf.py` | Runs the real app (WRY or CEF host), opens the Assistant and drags in the 3D view, reading `ui.inspect.frame_gaps_ms`. |
+| `scripts/app-shot.py` | Opens the Assistant and saves the app's own screenshot (with CEF, the page is in it). |
 | `scripts/panel-x11-input.sh` | Clipboard both ways, focus handover, wheel, `<select>` popup and context menu on a real X11 seat. |
 | `scripts/panel-headless.sh` | The panel on a headless sway (wlroots) compositor, with `grim` screenshots and a CPU sample. |
 | `scripts/tree_cpu.py` | CPU of a process **and its descendants** (CEF renders in child processes). |

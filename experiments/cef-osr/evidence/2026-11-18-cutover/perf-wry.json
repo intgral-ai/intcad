@@ -1,0 +1,32 @@
+{
+ "mode": "wry",
+ "page_ready_s": 0.59,
+ "webView": {
+  "host": true,
+  "page": true
+ },
+ "idle": {
+  "frames": 116,
+  "p50_ms": 84.213,
+  "p95_ms": 84.429,
+  "max_ms": 91.291
+ },
+ "idle_late": {
+  "frames": 154,
+  "p50_ms": 84.254,
+  "p95_ms": 84.424,
+  "max_ms": 91.291
+ },
+ "drag": {
+  "frames": 240,
+  "p50_ms": 1.626,
+  "p95_ms": 30.194,
+  "p99_ms": 30.613,
+  "max_ms": 40.427,
+  "over_50ms": 0,
+  "cpu_percent": 12.9,
+  "rss_mib": 314.7,
+  "processes": 3
+ },
+ "total_s": 28.8
+}

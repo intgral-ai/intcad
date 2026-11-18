@@ -1,0 +1,8 @@
+solidcraft: assistant (CEF): CEF: interop disabled by SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+SolidCraft graphics: Vulkan, MSAA 4x (requested 4x)
+solidcraft: control server listening on 127.0.0.1:18098 (token in /tmp/nointerop/control/18098.token)
+solidcraft: assistant (CEF): page server on http://127.0.0.1:42331/index.html
+solidcraft: assistant (CEF): CEF: the app's device has no VULKAN_EXTERNAL_MEMORY_DMA_BUF; the page cannot be shown
+SolidCraft graphics: GPU tessellation ready; bodies are evaluated on the GPU from now on

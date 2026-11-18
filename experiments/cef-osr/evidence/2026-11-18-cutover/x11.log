@@ -1,0 +1,13 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+SolidCraft graphics: Vulkan, MSAA 4x (requested 4x)
+solidcraft: control server listening on 127.0.0.1:18095 (token in /tmp/cutover/control/18095.token)
+solidcraft: assistant (CEF): page server on http://127.0.0.1:43149/index.html
+SolidCraft graphics: GPU tessellation ready; bodies are evaluated on the GPU from now on
+solidcraft: assistant (CEF): TitleChanged { title: "Assistant" }
+solidcraft: assistant (CEF): LoadEnd { url: "http://127.0.0.1:43149/index.html", http_status: 200 }
+solidcraft: assistant (CEF): TitleChanged { title: "Assistant" }
+solidcraft: assistant (CEF): page said {"type":"ready"}
+solidcraft: assistant (CEF): page said {"type":"surface","color":"#0d0d0d"}
+solidcraft: assistant (CEF): stats over 2 s: ticks=1 state_pushes=0 cef_frames=0
+solidcraft: assistant (CEF): CEF: first frame; replaying 0 held input event(s)
+solidcraft: assistant (CEF): stats over 2 s: ticks=71 state_pushes=2 cef_frames=6
