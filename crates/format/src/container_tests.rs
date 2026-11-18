@@ -46,6 +46,24 @@ fn budgets_are_kept_when_writing() {
     assert!(!writer.room(1, 0, 1 << 20), "no room for an entry past the limit");
 }
 
+/// A writer given a budget refuses a part that would pass it, and a finished file past it.
+#[test]
+fn a_budget_bounds_the_finished_container() {
+    let mut writer = Writer::new(LIMITS).within(4096);
+    writer.part("document.json", &[0; 8], false).unwrap();
+    writer.part("small.json", &[0; 8], false).unwrap();
+    let bytes = writer.finish().unwrap();
+    assert!(bytes.len() <= 4096, "{} bytes", bytes.len());
+    // A part whose bytes would pass the budget is refused as it is written.
+    let mut writer = Writer::new(LIMITS).within(32);
+    assert_eq!(writer.part("document.json", &[0; 33], false), Err(FormatError::Invalid("package too large".into())));
+    // The bytes a container takes past its parts (its directory) count too: it is refused when
+    // finished rather than written past the budget.
+    let mut writer = Writer::new(LIMITS).within(16);
+    writer.part("document.json", &[0; 8], false).unwrap();
+    assert_eq!(writer.finish(), Err(FormatError::Invalid("the container exceeds the remaining budget".into())));
+}
+
 /// A thumbnail is kept only for the file it shows.
 #[test]
 fn a_thumbnail_is_keyed_to_its_file() {

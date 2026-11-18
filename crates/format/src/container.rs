@@ -91,11 +91,30 @@ pub struct Writer {
     limits: Limits,
     /// Which written parts to record for a signature, and the records so far.
     tracked: Option<(fn(&str) -> bool, Vec<PartDigest>)>,
+    /// The most bytes the finished container may hold, when the caller sets one (a snapshot's
+    /// remaining input budget): no part may take it past it, nor may its directory.
+    budget: Option<usize>,
 }
 
 impl Writer {
     pub fn new(limits: Limits) -> Writer {
-        Writer { zip: zip::ZipWriter::new(Cursor::new(Vec::new())), names: BTreeSet::new(), expanded: 0, resolved: 0, limits, tracked: None }
+        Writer {
+            zip: zip::ZipWriter::new(Cursor::new(Vec::new())),
+            names: BTreeSet::new(),
+            expanded: 0,
+            resolved: 0,
+            limits,
+            tracked: None,
+            budget: None,
+        }
+    }
+
+    /// Cap the container's own size at `budget` bytes: a part whose parts would pass it, and a
+    /// finished file past it, are refused rather than written (a caller saving within a ceiling
+    /// keeps its remaining room).
+    pub fn within(mut self, budget: usize) -> Writer {
+        self.budget = Some(budget);
+        self
     }
 
     /// Record the parts written from now on whose name `include` accepts, with their SHA-256, for
@@ -109,9 +128,14 @@ impl Writer {
         self.tracked.take().map(|(_, parts)| parts)
     }
 
-    /// The container's bytes.
+    /// The container's bytes, if they fit the budget [`Writer::within`] set.
     pub fn finish(self) -> Result<Vec<u8>, FormatError> {
-        Ok(self.zip.finish().map_err(invalid)?.into_inner())
+        let budget = self.budget;
+        let bytes = self.zip.finish().map_err(invalid)?.into_inner();
+        if budget.is_some_and(|budget| bytes.len() > budget) {
+            return Err(invalid("the container exceeds the remaining budget"));
+        }
+        Ok(bytes)
     }
 
     /// Add a part, compressed or stored. A name already written is written once.
@@ -129,7 +153,10 @@ impl Writer {
             return Ok(());
         }
         self.expanded = self.expanded.checked_add(bytes.len()).ok_or_else(|| invalid("expanded size overflow"))?;
-        if self.expanded > (self.limits.max_expanded)() || self.names.len() > self.limits.max_entries {
+        if self.expanded > (self.limits.max_expanded)()
+            || self.names.len() > self.limits.max_entries
+            || self.budget.is_some_and(|budget| self.expanded > budget)
+        {
             return Err(invalid("package too large"));
         }
         if let Some((include, parts)) = &mut self.tracked
