@@ -17934,7 +17934,7 @@ fn every_word_of_the_connections_page_is_sent_in_each_complete_language() {
     let chinese = words(&mut app, "zh");
     assert_eq!(
         (&chinese["connTitle"], &chinese["connUse"], &chinese["planGithubCopilot"]),
-        (&json!("连接与登录"), &json!("用这个"), &json!("GitHub Copilot"))
+        (&json!("连接与登录"), &json!("切换"), &json!("GitHub Copilot"))
     );
     for language in ["en", "zh", "ar", "he", "ja", "vi"] {
         let told = words(&mut app, language);

@@ -848,9 +848,10 @@ function effortOf(state: AssistantState) {
 /**
  * The built-in agent's model and its reasoning effort, at the composer's lower right, as Mastra
  * groups the two (its story "ThinkingLevel / Picker / Grouped With Model Picker"). The model is
- * in Mastra's own model picker: the models of every connection, a group to a connection, newest
- * first, searched across all of them, with the row that opens the connections, where another
- * provider is added. The effort is Mastra's thinking-level picker beside it.
+ * in Mastra's own model picker, and the list is the models of the connection in use, newest
+ * first: a user who switched to one provider is not shown another's models. Another provider is
+ * switched to on the Connections page, which the picker's last row opens. The effort is Mastra's
+ * thinking-level picker beside it.
  */
 function ProviderPicker({ state, connect, onConnections }: { state: AssistantState; connect: Connect; onConnections: () => void }) {
   const { strings } = state;
@@ -868,8 +869,10 @@ function ProviderPicker({ state, connect, onConnections }: { state: AssistantSta
   // The connections in their own order; what no connection gives comes last.
   const order = liveOf(connect).map(entry => entry.prefix);
   const rank = (group: string) => (order.includes(group) ? order.indexOf(group) : order.length);
-  const providers = [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
   const at = current ? placeOf(connect, current) : null;
+  const inUse = at ? groups.get(at.group) : undefined;
+  // Before the agent has a model there is no connection in use to keep to: every connection's models, a group each.
+  const providers = inUse ? [inUse] : [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
   const effort = effortOf(state);
   const mark = (group: string) => <Mark name={names.get(group) ?? group} size={14} />;
   const model = (

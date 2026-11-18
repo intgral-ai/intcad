@@ -514,8 +514,9 @@ one conversation reaches another's agent when that conversation is next shown: i
 everything again.
 
 The model is picked at the lower right of the message box, in Mastra's own model picker: the
-models of every connection, a group to a connection, newest first, with a search box and a row that
-opens the Connections page. The agent's reasoning effort is the button beside it, Mastra's
+models of the connection in use, newest first, with a search box and a row that opens the
+Connections page. Another provider is taken with **Switch** on its row there; the model list then
+holds that provider's models. The agent's reasoning effort is the button beside it, Mastra's
 thinking-level picker: the levels the agent names, **Off** to **Max**, in the app's language.
 
 While nothing is connected the agent has no session and the panel reads **Sign-in needed**. A turn
