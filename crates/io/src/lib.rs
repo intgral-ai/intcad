@@ -1071,10 +1071,15 @@ mod tests {
         let o = String::from_utf8(export(&st, &[], Format::Obj, "t").unwrap()).unwrap();
         let count = |p: &str| o.lines().filter(|l| l.starts_with(p)).count();
         assert!(o.contains("\no Red Block\n"), "{o}");
-        assert_eq!((count("v "), count("vn "), count("f ")), (64, 6, 124), "{o}");
+        // The tessellator's density is a display choice (the vendored one meshes a planar face
+        // with two triangles); welding and one normal per face are the contract, and the mesh
+        // stays closed and of genus 0.
+        let (v, f) = (count("v "), count("f "));
+        assert_eq!(count("vn "), 6, "{o}");
+        assert_eq!(f, 2 * v - 4, "closed and of genus 0: {v} vertices, {f} triangles");
         let ids: Vec<usize> =
             o.lines().filter(|l| l.starts_with("f ")).flat_map(|l| l.split([' ', '/']).skip(1)).filter_map(|x| x.parse().ok()).collect();
-        assert!(ids.iter().all(|i| (1..=64).contains(i)));
+        assert!(ids.iter().all(|i| (1..=v).contains(i)));
     }
 
     /// The OBJ export carries the colours of the bodies: the mesh file names the material

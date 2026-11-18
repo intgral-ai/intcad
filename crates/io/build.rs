@@ -13,7 +13,10 @@ use std::process::Command;
 
 /// The workspace crates a design's model is computed from: `doc` and every workspace crate it
 /// depends on (a test checks the list against their manifests).
-const EVALUATION_CRATES: [&str; 9] = ["geom", "profile", "smlib", "step", "sketch", "kernel", "render", "derive", "doc"];
+const EVALUATION_CRATES: [&str; 8] = ["geom", "profile", "smlib", "sketch", "kernel", "render", "derive", "doc"];
+/// The committed trees whose every file computes models, hashed as one tree id each: the vendored
+/// kernel, so any change under `solidcore/` invalidates the models the old kernel computed.
+const EVALUATION_TREES: [&str; 1] = ["solidcore"];
 /// The other files the saved model depends on, relative to the workspace root.
 const EVALUATION_FILES: [&str; 3] = ["crates/io/build.rs", "crates/io/src/design/native_cache.rs", ".cargo/config.toml"];
 /// What under `vendor/` does not compute models: notes, and the interface's renderer.
@@ -49,6 +52,7 @@ fn workspace_settings(manifest: &str) -> String {
 /// a part of it is not in the commit.
 fn evaluation_source(root: &Path) -> Option<String> {
     let mut paths: Vec<String> = EVALUATION_CRATES.iter().map(|c| format!("crates/{c}")).collect();
+    paths.extend(EVALUATION_TREES.iter().map(|t| t.to_string()));
     paths.extend(EVALUATION_FILES.iter().map(|f| f.to_string()));
     let specs: Vec<String> = paths.iter().map(|p| format!("HEAD:./{p}")).collect();
     let mut args = vec!["rev-parse"];
