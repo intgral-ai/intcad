@@ -40,6 +40,12 @@ pub const TABLE: &[(&str, Class)] = &[
     ("agent-task", Class::Layer(0)),
     // the pure DFM rule layer translated from intdfm (no workspace dependencies, no OCP)
     ("dfm-rules", Class::Layer(0)),
+    // colour rules and data any crate may share (no workspace dependencies)
+    ("color", Class::Layer(0)),
+    // a length in a design unit with its decimal places (no workspace dependencies)
+    ("display-units", Class::Layer(0)),
+    // versioned file formats: the tag, the version registry and its container (no app types)
+    ("format", Class::Layer(0)),
     // 3D mouse descriptors and reports (no workspace dependencies; the apps read the device)
     ("space-mouse", Class::Layer(0)),
     // the derive macros (proc-macro, no workspace dependencies)
@@ -52,6 +58,8 @@ pub const TABLE: &[(&str, Class)] = &[
     // the B-rep kernel, solidcore (the Rust port of NVIDIA's SMLib, ADR 0002); only the kernel uses it
     ("smlib", Class::Layer(1)),
     ("kernel", Class::Layer(1)),
+    // the shared viewport math and headless picture the renderer and the document use
+    ("viewport", Class::Layer(1)),
     ("render", Class::Layer(1)),
     // multibody dynamics (rigid bodies, joints, forces, time integration; geom only)
     ("dynamics", Class::Layer(1)),
@@ -80,6 +88,8 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     // The UI hosts the chat MCP server over the Mastra bridge lane (#9); the server never
     // depends on the UI.
     &["mcp", "ui-egui"],
+    // The renderer draws the viewport's camera, pictures and shading; it builds on them.
+    &["viewport", "render"],
     // The task controller's real engine ports sit beside the engine, below the UI.
     &["engine", "agent-task-engine"],
     &["smlib", "kernel"],
