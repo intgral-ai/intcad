@@ -121,7 +121,7 @@ pub fn install(
     });
     #[cfg(target_arch = "wasm32")]
     let tess = if gpu_meshing {
-        solidcraft_viewport_gpu::view::tessellation(&rs.adapter, &rs.device, &rs.queue, solidcraft_viewport_gpu::SHADER)
+        solidcraft_viewport_gpu::view::tessellation(&rs.adapter, &rs.device, &rs.queue, solidcraft_viewport_gpu::SHADER, false)
     } else {
         None
     };
