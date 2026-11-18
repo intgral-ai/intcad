@@ -685,6 +685,12 @@ pub fn open_default_waiting(path: &Path) -> Result<(), String> {
     }
     #[cfg(all(windows, not(target_arch = "wasm32")))]
     {
+        // `start` returns success even when Windows only shows its own "how do you want to open
+        // this file?" picker. Ask the registry first, so the panel can give the reason and the
+        // folder instead of a picker the application cannot see.
+        if !has_association(path) {
+            return Err("no program is associated with this file".into());
+        }
         wait_for("cmd", &[OsStr::new("/C"), OsStr::new("start"), OsStr::new(""), path.as_os_str()])
     }
     #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
@@ -780,6 +786,54 @@ fn has_association(path: &Path) -> bool {
         return false;
     }
     query(&["query", "default", &mime]).is_none_or(|default| !default.is_empty())
+}
+
+/// Does Windows name a program for this file's type? A type may be claimed by the user (the
+/// Explorer `UserChoice`), by a per-user class, or by a machine class whose `open` command is
+/// present. An extension with none of these has no program, and the caller shows the reason.
+#[cfg(all(windows, not(target_arch = "wasm32")))]
+fn has_association(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(OsStr::to_str).map(|extension| extension.to_ascii_lowercase()) else { return true };
+    let choice = format!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{extension}\UserChoice");
+    if reg_value(&choice, Some("ProgId")).is_some_and(|progid| !progid.is_empty()) {
+        return true;
+    }
+    let progid = reg_value(&format!(r"HKCU\Software\Classes\.{extension}"), None)
+        .filter(|value| !value.is_empty())
+        .or_else(|| reg_value(&format!(r"HKCR\.{extension}"), None).filter(|value| !value.is_empty()));
+    let Some(progid) = progid else { return false };
+    reg_value(&format!(r"HKCR\{progid}\shell\open\command"), None)
+        .or_else(|| reg_value(&format!(r"HKCU\Software\Classes\{progid}\shell\open\command"), None))
+        .is_some_and(|command| !command.is_empty())
+}
+
+/// The default value of a registry key, or one named value, as text; `None` when the key is not
+/// there (an unassociated extension has no key).
+#[cfg(all(windows, not(target_arch = "wasm32")))]
+fn reg_value(key: &str, value: Option<&str>) -> Option<String> {
+    let mut command = std::process::Command::new("reg");
+    command.args(["query", key]);
+    match value {
+        Some(value) => {
+            command.args(["/v", value]);
+        }
+        None => {
+            command.arg("/ve");
+        }
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        for kind in ["REG_EXPAND_SZ", "REG_SZ"] {
+            if let Some(at) = line.find(kind) {
+                return Some(line[at + kind.len()..].trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(not(target_arch = "wasm32"))]
