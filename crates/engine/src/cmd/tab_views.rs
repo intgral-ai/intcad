@@ -20,21 +20,25 @@ const RENAME_CONTRACT: TypedContract<TabViewRenameParams> = TypedContract::new()
 const MOVE_CONTRACT: TypedContract<TabViewMoveParams> = TypedContract::new();
 const NO_PARAMS_CONTRACT: TypedContract<TabViewNoParams> = TypedContract::new();
 
+/// Views are commands, but this fork has no view-tab UI yet, and Intcad's own keys keep Ctrl+T,
+/// Ctrl+Shift+T and F2 (keymap's reserved list and its bindings). These commands carry no default
+/// key so nobody inherits a shortcut for a surface the window does not show; they stay callable
+/// through the control channel and MCP until a view-tab UI claims keys of its own.
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("tab.view.open", "Open Another View", crate::checked!("tab.view.open", open))
-        .icon("new").noundo().doc_only().key("Ctrl+T").contract(&OPEN_CONTRACT).output(output_schema_for::<TabViewReply>)
+        .icon("new").noundo().doc_only().contract(&OPEN_CONTRACT).output(output_schema_for::<TabViewReply>)
         .params("kind?: model|sketch|sheet|render|animation (default: the active view's kind); subject?: the sketch or sheet id; reuse?: bool (default: true with a subject) → the request, id: the view now shown; the window opens a sub-tab of the shown design; never edits the design or opens a dialog"),
     CommandSpec::new("tab.view.close", "Close View", crate::checked!("tab.view.close", close))
         .icon("close").noundo().doc_only().contract(&ID_CONTRACT).output(output_schema_for::<TabViewReply>)
         .params("id?: the view (default: the active one) → id; closes it, which Reopen Closed View undoes; the last view of a design never closes (an error); never opens a dialog"),
     CommandSpec::new("tab.view.reopen", "Reopen Closed View", crate::checked!("tab.view.reopen", reopen))
-        .icon("undo").noundo().doc_only().key("Ctrl+Shift+T").contract(&NO_PARAMS_CONTRACT).output(output_schema_for::<TabViewReply>)
+        .icon("undo").noundo().doc_only().contract(&NO_PARAMS_CONTRACT).output(output_schema_for::<TabViewReply>)
         .params("no parameters → id of the view brought back, which is shown again; an error when none was closed"),
     CommandSpec::new("tab.view.activate", "Show View", crate::checked!("tab.view.activate", activate))
         .icon("list").noundo().doc_only().contract(&ACTIVATE_CONTRACT).output(output_schema_for::<TabViewReply>)
         .params("id: the view, or index: its place in tab order (0 first) → id; shows it"),
     CommandSpec::new("tab.view.rename", "Rename View", crate::checked!("tab.view.rename", rename))
-        .icon("rename").noundo().doc_only().key("F2").contract(&RENAME_CONTRACT).output(output_schema_for::<TabViewReply>)
+        .icon("rename").noundo().doc_only().contract(&RENAME_CONTRACT).output(output_schema_for::<TabViewReply>)
         .params("name?: 1 to 64 characters after trimming, no control characters (left out, the window opens the view's name field for typing); id?: the view (default: the active one) → id, name"),
     CommandSpec::new("tab.view.duplicate", "Duplicate View", crate::checked!("tab.view.duplicate", duplicate))
         .icon("copy").noundo().doc_only().contract(&ID_CONTRACT).output(output_schema_for::<TabViewReply>)
