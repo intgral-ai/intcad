@@ -90,7 +90,6 @@ crates/engine/src/cmd/compare.rs:compare_bodies compares two B-rep bodies by mes
 crates/engine/src/cmd/compare.rs:enclosed_volume measures a B-rep body's volume from mesh triangles
 crates/engine/src/cmd/component_clone.rs:build places pasted bodies by meshes
 crates/engine/src/cmd/component_clone.rs:mesh_distance compares pasted bodies by mesh triangles
-crates/engine/src/cmd/component_properties.rs:measure_placed measures a placed component by its display mesh
 crates/engine/src/cmd/contact_sweep.rs:ContactGeometry::depth finds bodies passing through each other by mesh triangles
 crates/engine/src/cmd/contact_sweep.rs:ContactGeometry::gap measures gaps by mesh triangles
 crates/engine/src/cmd/contact_sweep.rs:ContactGeometry::gaps measures gaps by mesh triangles
@@ -105,29 +104,16 @@ crates/engine/src/cmd/face.rs:in_a_planar_face_outline decides whether a point l
 crates/engine/src/cmd/face.rs:on_a_face decides whether a point lies on a face by the display mesh
 crates/engine/src/cmd/face.rs:sketch_of_face finds the planar face a sketch starts on by mesh triangles
 crates/engine/src/cmd/face.rs:sketch_of_faces groups coplanar picked faces by mesh triangles
-crates/engine/src/cmd/features.rs:auto_operation_in chooses a feature's operation by probing the display mesh
 crates/engine/src/cmd/features.rs:edge_points turns edge references into points on a mesh
-crates/engine/src/cmd/features.rs:through_all_reach sizes a Through All reach by the display mesh
 crates/engine/src/cmd/features_more.rs:emboss places an emboss by the display mesh
 crates/engine/src/cmd/features_more.rs:snap_point snaps a feature's point by the display mesh
-crates/engine/src/cmd/inspect.rs:dist_to measures a distance on the display mesh
-crates/engine/src/cmd/interference.rs:face_points takes a point per face from mesh triangles
-crates/engine/src/cmd/interference.rs:interference finds interference between B-rep bodies by display meshes
-crates/engine/src/cmd/interference.rs:meshes_apart decides two bodies are apart by mesh triangles
-crates/engine/src/cmd/join_pieces.rs:adds_nothing decides a join adds no material by display mesh volumes
-crates/engine/src/cmd/join_pieces.rs:mesh_volume measures the volume a closed mesh encloses
-crates/engine/src/cmd/joints.rs:body_centre centres an occurrence by the display mesh's box
 crates/engine/src/cmd/joints.rs:cam_profile samples a cam's picked edges from the display mesh
-crates/engine/src/cmd/joints.rs:occurrence_at picks the occurrence nearest a point by the display mesh
-crates/engine/src/cmd/measure_sel.rs:closest measures closest points on mesh triangles
 crates/engine/src/cmd/measure_sel.rs:describe measures a selection on the display mesh
 crates/engine/src/cmd/measure_sel.rs:face_slot finds a slot from mesh triangles
 crates/engine/src/cmd/measure_sel.rs:face_tris reads a face's mesh triangles for measuring
 crates/engine/src/cmd/measure_sel.rs:resolve_pick resolves a face or edge pick by the display mesh
-crates/engine/src/cmd/motion.rs:centres centres occurrences by meshes
 crates/engine/src/cmd/motion.rs:overlap measures how deep bodies overlap by meshes
 crates/engine/src/cmd/motion.rs:tris reads mesh triangles for motion contact
-crates/engine/src/cmd/motion_analysis.rs:shared_volume measures the volume parts share by the display mesh
 crates/engine/src/cmd/sketch.rs:face_contains decides whether a face contains a point by mesh triangles
 crates/engine/src/cmd/sketch.rs:face_triangles groups mesh triangles by face for sketch picks
 crates/engine/src/cmd/sketch_face.rs:capture_impl captures a face for a sketch by a mesh

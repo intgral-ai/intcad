@@ -1305,6 +1305,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-plugin"
+version = "0.1.1"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "crc24"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6261,6 +6271,15 @@ name = "solidcraft-color"
 version = "0.1.1"
 
 [[package]]
+name = "solidcraft-control"
+version = "0.1.1"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "solidcraft-derive"
 version = "0.1.1"
 dependencies = [
@@ -6323,14 +6342,19 @@ dependencies = [
 name = "solidcraft-engine"
 version = "0.1.1"
 dependencies = [
+ "craft-plugin",
  "image",
  "log",
+ "png",
  "schemars",
  "serde",
  "serde_json",
  "serde_path_to_error",
  "sha2 0.10.9",
+ "solidcore-ops",
  "solidcore-record",
+ "solidcraft-color",
+ "solidcraft-control",
  "solidcraft-dfm-rules",
  "solidcraft-doc",
  "solidcraft-geom",
@@ -6339,7 +6363,9 @@ dependencies = [
  "solidcraft-profile",
  "solidcraft-render",
  "solidcraft-sketch",
+ "solidcraft-viewport",
  "thiserror 2.0.21",
+ "tiny-skia",
  "toml 1.1.8+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "web-time",

@@ -39,9 +39,10 @@ pub fn default_dir() -> Option<PathBuf> {
         env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))?
     };
     let (dir, legacy) = dirs_under(&long_names(&root), cfg!(windows) || cfg!(target_os = "macos"));
-    // Compatibility shim (docs/compatibility.md): autosaves made before the rename (or, in the
-    // Flatpak sandbox, under an earlier app id) are copied to the new folder on first launch; the
-    // old folder is left as it was.
+    // Compatibility shim (docs/compatibility.md): autosaves made before Intcad had folders of its
+    // own (`solvecraft`), and in the Flatpak sandbox under an earlier app id, are copied to the
+    // new folder on first launch; the old folder is left as it was. An upstream `SolidCraft`
+    // folder is another product's and is never a source.
     for old in solidcraft_io::legacy_flatpak_paths(&dir).into_iter().chain([legacy]) {
         if let Err(e) = solidcraft_io::adopt_legacy_dir(&dir, &old) {
             log::warn!("recovery: could not copy {} to {}: {e}", old.display(), dir.display());
@@ -62,6 +63,21 @@ pub fn data_dir() -> Option<PathBuf> {
         Some(env("HOME")?.join("Library/Application Support/Intcad"))
     } else {
         Some(env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))?.join("intcad"))
+    }
+}
+
+/// Intcad's per-user cache folder, for files it can make again (Home's pictures, files sent to
+/// a slicer): `%LOCALAPPDATA%\Intcad`, `~/Library/Caches/Intcad`, or
+/// `$XDG_CACHE_HOME/intcad` (`~/.cache/intcad`). Unlike the system's temporary folder, it
+/// is still there after a restart.
+pub fn cache_dir() -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).filter(|d| !d.is_empty()).map(PathBuf::from);
+    if cfg!(windows) {
+        Some(env("LOCALAPPDATA")?.join("Intcad"))
+    } else if cfg!(target_os = "macos") {
+        Some(env("HOME")?.join("Library/Caches/Intcad"))
+    } else {
+        Some(env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|h| h.join(".cache")))?.join("intcad"))
     }
 }
 
@@ -116,8 +132,7 @@ fn read_entry(path: &Path) -> Option<Entry> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// An entry's design: `<id>.sc`, or `<id>.solidcraft` / `<id>.solvecraft` for an autosave an
-/// earlier release wrote (compatibility shim, docs/compatibility.md).
+/// An entry's design: `<id>.sc`, or `<id>.solidcraft` for an autosave an earlier release wrote (compatibility shim, docs/compatibility.md).
 fn design_file(dir: &Path, id: &str) -> PathBuf {
     solidcraft_io::DESIGN_EXTS.iter().map(|ext| file(dir, id, ext)).find(|p| p.is_file()).unwrap_or_else(|| file(dir, id, solidcraft_io::DESIGN_EXT))
 }
@@ -465,8 +480,7 @@ impl Autosaver {
 mod tests {
     #[test]
     fn autosave_from_a_legacy_folder_is_listed_and_loads() {
-        // Autosaves written by earlier releases: `.solvecraft` (before the rename) and
-        // `.solidcraft` (before designs were saved as `.sc`).
+        // Autosaves written by earlier releases: `.solidcraft` (before designs were saved as `.sc`).
         for ext in solidcraft_io::LEGACY_DESIGN_EXTS {
             let d = std::env::temp_dir().join(format!("solidcraft-recovery-legacy-{ext}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&d);
