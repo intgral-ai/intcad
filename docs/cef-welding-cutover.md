@@ -129,6 +129,26 @@ Framework” 15 次。仍需人工法律审查（非工程阻断）。
 | macOS（Apple Silicon + Intel） | macOS 维护者 | framework + helper app 打包、`try_run_subprocess`、公证；同一组脚本 | IOSurface/Metal 导入、输入法（NSTextInputClient）、打包与公证 |
 | OS 输入法（Linux） | Linux 维护者 | ~~未验证~~ 已在本机 fcitx5（X11/XIM）完成：提交 `你哈哦`、Esc 取消不改字段；Wayland text-input 路径交由维护者在 niri 会话复核 | 中文上屏、取消；候选窗由 IME 自绘 |
 
+## 7.2 构建与检查（本轮）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo build -p solidcraft --release`（Linux，CEF） | **PASS** |
+| `cargo check -p solidcraft --tests` | **PASS**（仅 2 个未用告警） |
+| `cargo test -p solidcraft-ui-egui --lib -- help` | **PASS**（25 passed, 0 failed；4997 filtered） |
+| `cargo xtask lists` / `cargo xtask layers` | **PASS**（25 crates，无越层；pending locale 正常折叠） |
+| `cargo check -p solidcraft --target x86_64-pc-windows-msvc` | **BLOCKED（工具链/依赖，不是本模块）**：rustup 1.99.1 + windows-msvc std（FHS 环境内）已就绪，检查可把依赖图编译到 Windows 目标，但在 `ring` 的原生归档步骤失败（宿主机没有 MSVC 的 `lib.exe`/`llvm-lib`），尚未到达应用 crate；即使补上，`cef-dll-sys` 仍需 Windows CEF 与 MSVC 才能生成 wrapper。因此 Windows 构建验收必须在 Windows runner 上做 |
+| `cargo check -p solidcraft --target aarch64-apple-darwin` | **未运行（缺 Apple SDK）**：依赖的原生 C 与 CEF framework 都需要 macOS SDK/工具链；交给 macOS runner |
+
+`assistant_cef.rs` 已改为平台无关：Linux 只用 `cfg(target_os = "linux")` 包住 DMA-BUF 设备创建与
+`Vulkan` 能力检查，Windows/macOS 走 `welding::windows_cef` / `macos_cef` 的 producer（Windows 的
+producer 在创建时需要宿主 device，已按签名传入），纹理导入统一由 `WgpuTextureImporter` 按后端处理。
+因此 Linux 之外不再引用 `linux_cef` 或 `build_dmabuf_capable_device`。
+
+Windows 沙箱的已知缺口写在 `sandbox()`：CEF 的 Windows 沙箱需要 `bootstrap.exe` 创建上下文，
+`execute_process_from` 拒绝 `Sandboxed`，在 MSI 提供该形态之前，Windows 运行会显示“页面不可用”
+而不是以无沙箱方式启动 Chromium。
+
 ## 8. 回滚
 
 - 迁移提交在独立分支；`git revert` 迁移提交即可回到 WRY（`assistant_web.rs` 与依赖在历史中）。

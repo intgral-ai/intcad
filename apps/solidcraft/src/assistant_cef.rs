@@ -13,7 +13,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use egui::Context;
+#[cfg(target_os = "linux")]
 use welding::linux_cef::{LinuxCefConfig, LinuxCefProducer};
+#[cfg(target_os = "macos")]
+use welding::macos_cef::{MacosCefConfig, MacosCefProducer};
+#[cfg(windows)]
+use welding::windows_cef::{WindowsCefConfig, WindowsCefProducer};
 use welding::wgpu;
 use welding::{
     CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent,
@@ -45,6 +50,12 @@ pub fn subprocess_entry() -> Option<i32> {
 fn sandbox() -> CefSandboxMode {
     // The sandbox is the production setting; the unsandboxed mode is only for a run that asks
     // for it explicitly while the migration is being brought up.
+    //
+    // Windows is the exception that packaging has to close: CEF's Windows sandbox runs its
+    // subprocesses through `bootstrap.exe`, which creates the sandbox context and calls an
+    // exported entry point in the app; `execute_process_from` cannot manufacture that context
+    // and refuses `Sandboxed` there. Until the MSI ships that shape, a Windows run reports the
+    // page as unavailable rather than starting Chromium unsandboxed.
     match std::env::var("SOLIDCRAFT_ASSISTANT_CEF_SANDBOX").ok().as_deref() {
         Some("off") => CefSandboxMode::UnsandboxedTrustedContent,
         _ => CefSandboxMode::Sandboxed,
@@ -55,6 +66,15 @@ fn sandbox() -> CefSandboxMode {
 /// has to be opened with `VK_EXT_queue_family_foreign`, which `adapter.request_device` cannot
 /// add. `None` leaves eframe's own device creation alone.
 pub fn interop_setup() -> Option<eframe::egui_wgpu::WgpuSetup> {
+    // Only Linux shares memory through a device extension that has to be enabled at creation
+    // (Vulkan DMA-BUF). Windows' D3D12 shared handles and macOS' IOSurfaces are imported on the
+    // device eframe makes, so those platforms leave device creation alone.
+    #[cfg(not(target_os = "linux"))]
+    {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
     // Test only: pretend the device cannot import DMA-BUF, to check what the app does when a
     // machine's GPU interop is missing. The Assistant must say so and CAD must keep working.
     if std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP").is_some() {
@@ -90,6 +110,40 @@ pub fn interop_setup() -> Option<eframe::egui_wgpu::WgpuSetup> {
             queue,
         },
     ))
+    }
+}
+
+/// The platform's producer: every platform paints into its own kind of texture, and
+/// `WgpuTextureImporter` imports that kind into the device the app already has.
+#[cfg(target_os = "linux")]
+type Producer = LinuxCefProducer;
+#[cfg(windows)]
+type Producer = WindowsCefProducer;
+#[cfg(target_os = "macos")]
+type Producer = MacosCefProducer;
+
+/// Create the browser on this platform. Windows needs the host device at creation to make its
+/// D3D11 copy of CEF's shared texture; Linux and macOS take it at import time.
+fn create_producer(
+    runtime: &CefRuntime,
+    surface: CefSurfaceConfig,
+    host: &HostWgpuContext,
+) -> Result<Producer, welding::WeldError> {
+    #[cfg(target_os = "linux")]
+    let _ = host;
+    #[cfg(target_os = "linux")]
+    {
+        LinuxCefProducer::new(runtime, LinuxCefConfig { surface })
+    }
+    #[cfg(windows)]
+    {
+        WindowsCefProducer::new(runtime, WindowsCefConfig { surface }, host)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = host;
+        MacosCefProducer::new(runtime, MacosCefConfig { surface })
+    }
 }
 
 /// Bounded input queue: CEF drops input until the browser has painted its first frame.
@@ -157,7 +211,7 @@ type Pictures = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
 
 pub struct CefAssistant {
     runtime: CefRuntime,
-    producer: LinuxCefProducer,
+    producer: Producer,
     host: HostWgpuContext,
     queue: InputQueue,
     texture: Option<(egui::TextureId, [u32; 2])>,
@@ -222,6 +276,7 @@ impl CefAssistant {
             }
         };
         let host = HostWgpuContext::new(render_state.device.clone(), render_state.queue.clone());
+        #[cfg(target_os = "linux")]
         if !host
             .device
             .features()
@@ -231,18 +286,14 @@ impl CefAssistant {
             return None;
         }
         let url = format!("http://{PAGE_HOST}:{port}/index.html");
-        let producer = match LinuxCefProducer::new(
-            &runtime,
-            LinuxCefConfig {
-                surface: CefSurfaceConfig {
-                    initial_url: url,
-                    initial_size: dpi::PhysicalSize::new(900, 600),
-                    scale_factor: 1.0,
-                    prefer_accelerated: true,
-                    ..Default::default()
-                },
-            },
-        ) {
+        let surface = CefSurfaceConfig {
+            initial_url: url,
+            initial_size: dpi::PhysicalSize::new(900, 600),
+            scale_factor: 1.0,
+            prefer_accelerated: true,
+            ..Default::default()
+        };
+        let producer = match create_producer(&runtime, surface, &host) {
             Ok(producer) => producer,
             Err(error) => {
                 note(&format!("CEF: the page could not be created: {error}"));
