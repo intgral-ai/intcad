@@ -1308,18 +1308,23 @@ pub(crate) fn tick(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
         // even while the person is not touching the window.
         ctx.request_repaint_after(std::time::Duration::from_millis(700));
     }
+    let mut finished = Vec::new();
     app.file_tree.open_jobs.retain_mut(|job| match job.try_recv() {
-        Ok((path, Err(error))) => {
+        Ok((path, answer)) => {
+            finished.push((path, answer));
+            false
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => true,
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+    });
+    for (path, answer) in finished {
+        if let Err(error) = answer {
             let message = trf("ui.files_open_failed", &[("name", &path.display().to_string()), ("reason", &error)]);
             app.file_tree.notice = Some((message.clone(), true));
             app.file_tree.notice_reveal = Some(path);
             app.set_status(message, true);
-            false
         }
-        Ok((_, Ok(()))) => false,
-        Err(std::sync::mpsc::TryRecvError::Empty) => true,
-        Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
-    });
+    }
 }
 
 /// Open one file from the tree: a design in a tab (a path already open focuses its tab), any
