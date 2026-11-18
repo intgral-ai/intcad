@@ -40,6 +40,7 @@ const READ_METHODS: &[&str] = &[
     "ui.at",
     "ui.handles",
     "ui.inspect",
+    "ui.rects",
     "ui.selection",
     "ui.sketchToScreen",
     "ui.triad",

@@ -100,8 +100,8 @@ pub fn rect_of(name: &str) -> Option<egui::Rect> {
     RECTS.with(|h| h.borrow().iter().rfind(|(n, _)| n == name).map(|x| x.1))
 }
 
-#[cfg(test)]
-pub(crate) fn rects(prefix: &str) -> Vec<(String, egui::Rect)> {
+/// Every painted part's rect from this frame whose name starts with `prefix`.
+pub fn rects(prefix: &str) -> Vec<(String, egui::Rect)> {
     RECTS.with(|r| r.borrow().iter().filter(|(name, _)| name.starts_with(prefix)).cloned().collect())
 }
 
