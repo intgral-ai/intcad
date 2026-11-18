@@ -56,8 +56,17 @@ Assistant 只剩 CEF 一套实现。** Linux 原生 Wayland 与 X11（XWayland�
 | GPU 互操作缺失时的行为 | **PASS** | `SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP=1`：面板给出说明，CAD 正常 |
 | 应用内剪贴板：页面→系统 | **PASS** | `app-input.py`：`typed_copied_out="clip-abc"`、`copied_out="你好，世界"`（X 剪贴板读回） |
 | 应用内 popup | **PASS** | 实页注入原生 `<select>` 后，应用日志 `popup surface 150x138 at 10,43` |
-| 应用内 OS 输入法引擎（fcitx5 候选窗） | **UNTESTED** | CEF 侧组合/提交/取消已在探针验证；真实 IME 会话未在 CEF 路径重跑 |
+| 仓库检查 | **PASS** | `cargo xtask lists`（目录/消息排序、pending locale 正常折叠）、`cargo xtask layers`（25 crates 无越层）、`cargo check -p solidcraft --tests`（WRY 删除后测试目标可编译） |
+| 应用内 fcitx5 中文输入（提交/取消） | **PASS** | `scripts/app-ime.sh`：X11+XIM 下输入 `nihao` 提交为 `你哈哦`（页面读回、应用日志 `IME commit`）；再组合 `zhong` 后 Esc 取消，字段不变 |
+| 候选窗/preedit 显示 | **PASS（由 IME 自绘）** | fcitx5 自带候选与 preedit，客户端只收到空 preedit + 提交文本（egui-winit 记录的 Linux+fcitx5 行为）；候选窗不属于应用窗口 |
 | 原生 Xorg | **UNTESTED** | 本机无 root/VT，`Xorg` 在 `parse_vt_settings` 失败 |
+
+### 3.1 本轮修掉的集成缺口
+
+egui 只在自身 TextEdit 获得焦点时才让 winit 打开输入法；页面编辑器在 CEF 里，所以
+fcitx5 的按键最初全部以拉丁字符直达页面（提交出 `nihao`）。现在页面获得焦点时宿主发送
+`ViewportCommand::IMEAllowed(true)`（失焦/隐藏/关闭时关闭），fcitx5 才真正接管输入法，
+同一次按键序列提交出中文。这是“CEF 嵌入后必须由宿主显式开启 IME”的硬约束。
 
 ## 4. 真实 CAD 性能（同机、同模型、同窗口协议）
 
@@ -118,7 +127,7 @@ Framework” 15 次。仍需人工法律审查（非工程阻断）。
 | Linux 原生 Xorg | Linux 维护者 | 在带 AMD/Intel 的 Xorg 会话构建本分支，`XDG_SESSION_TYPE=x11 DISPLAY=:N`、`SOLIDCRAFT_WAYLAND=0`，跑 `scripts/app-perf.py` 与 `scripts/app-input.py` | `webView.page=true`；拖拽 p95 与 Wayland 同量级；剪贴板/IME/popup 与应用内一致 |
 | Windows 11 | Windows 维护者 | MSVC + cmake 构建，CEF 154 DLL/`bootstrap.exe` 打进 MSI，务必 `CefSandboxMode::Sandboxed`；跑同一组脚本（`app-perf.py` 的拖拽换成 UI 自动化） | D3D12 共享纹理导入、页面就绪、输入、生命周期、沙箱、安装包体积 |
 | macOS（Apple Silicon + Intel） | macOS 维护者 | framework + helper app 打包、`try_run_subprocess`、公证；同一组脚本 | IOSurface/Metal 导入、输入法（NSTextInputClient）、打包与公证 |
-| OS 输入法（Linux） | Linux 维护者 | 在真实 fcitx5 会话里对 CEF 面板做候选/上屏验收（探针只验证了 CEF 侧 API） | 候选窗出现、中文上屏、取消与切换焦点 |
+| OS 输入法（Linux） | Linux 维护者 | ~~未验证~~ 已在本机 fcitx5（X11/XIM）完成：提交 `你哈哦`、Esc 取消不改字段；Wayland text-input 路径交由维护者在 niri 会话复核 | 中文上屏、取消；候选窗由 IME 自绘 |
 
 ## 8. 回滚
 

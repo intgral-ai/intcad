@@ -178,6 +178,8 @@ pub struct CefAssistant {
     last_stats: Instant,
     /// Test-only: a native `<select>` was added to the real page to exercise the popup path.
     test_select: bool,
+    /// The window's input method is on because the page has the keyboard.
+    ime_on: bool,
 }
 
 impl CefAssistant {
@@ -269,6 +271,7 @@ impl CefAssistant {
             frames: 0,
             last_stats: Instant::now(),
             test_select: false,
+            ime_on: false,
         })
     }
 
@@ -409,6 +412,10 @@ impl CefAssistant {
                 "",
             );
         }
+        // egui only tells winit to open an input method while one of its own text widgets has
+        // the keyboard. The page's editor is inside CEF, so the host asks for it itself, and
+        // without this every IME key arrived as plain Latin text.
+        self.set_ime(ctx, self.focused);
         self.input(solve, ctx, rect, ppp);
         // The page paints on change; the host only has to ask soon while it is working.
         let working = self.last_frame.elapsed() < Duration::from_millis(400);
@@ -537,6 +544,7 @@ impl CefAssistant {
                     if pressed && !rect.contains(pos) {
                         // The CAD side takes the keyboard back.
                         self.focused = false;
+                        self.set_ime(ctx, false);
                         self.queue.clear();
                         continue;
                     }
@@ -548,6 +556,7 @@ impl CefAssistant {
                     };
                     if pressed {
                         self.focused = true;
+                        self.set_ime(ctx, true);
                         let _ = self.producer.move_focus(FocusDirection::Forward);
                     }
                     let local = (pos - rect.min) * ppp;
@@ -631,6 +640,9 @@ impl CefAssistant {
                     self.queue.push(Queued::ImeCommit(text));
                 }
                 egui::Event::Ime(egui::ImeEvent::Preedit { text, active_range_chars }) => {
+                    if !text.is_empty() {
+                        note(&format!("IME composition {}", text.chars().take(40).collect::<String>()));
+                    }
                     if text.is_empty() {
                         self.queue.push(Queued::ImeCancel);
                     } else {
@@ -639,6 +651,10 @@ impl CefAssistant {
                     }
                 }
                 egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                    note(&format!(
+                        "IME commit {}",
+                        text.chars().take(40).collect::<String>()
+                    ));
                     self.queue.push(Queued::ImeCommit(text));
                 }
                 _ => {}
@@ -646,6 +662,13 @@ impl CefAssistant {
         }
         let _ = solve;
         self.flush();
+    }
+
+    fn set_ime(&mut self, ctx: &Context, on: bool) {
+        if self.ime_on != on {
+            self.ime_on = on;
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(on));
+        }
     }
 
     fn request_copy(&mut self) {

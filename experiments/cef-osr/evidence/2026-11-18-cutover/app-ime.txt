@@ -1,0 +1,7 @@
+ime before=shuangpin now=shuangpin
+{"clicked": [896, 1199], "web": {"height": 896.59375, "name": "agent_chat:web", "width": 370.0, "x": 550.59375, "y": 165.8125}}
+committed_from_page: 你哈哦
+ime_commit: PASS (non-ASCII text reached the page)
+after_cancel_from_page: 你哈哦
+ime_cancel: PASS (a dismissed composition added nothing)
+solidcraft: assistant (CEF): IME commit 你哈哦
