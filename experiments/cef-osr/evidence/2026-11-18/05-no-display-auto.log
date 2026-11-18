@@ -1,0 +1,10 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+RECEIPT {"tag":"adapter","name":"AMD Radeon RX 9060 XT (RADV GFX1200)","backend":Vulkan,"device_type":DiscreteGpu,"driver":"radv","driver_info":"Mesa 26.3.0","dma_buf_feature":true,"extensions":"Mesa 26.3.0"}
+RECEIPT {"tag":"host","interop":Vulkan,"device_features_dma_buf":true}
+RECEIPT {"tag":"switches","list":[("no-first-run", None), ("no-default-browser-check", None)],"display_set":false,"wayland_display_set":false,"session_type":Some("wayland")}
+[3632240:3632240:1118/142948.245169:ERROR:ui/ozone/platform/wayland/host/wayland_connection.cc:206] Failed to connect to Wayland display: No such file or directory (2)
+[3632240:3632240:1118/142948.245239:ERROR:ui/ozone/platform/wayland/ozone_platform_wayland.cc:290] Failed to initialize Wayland platform
+[3632240:3632240:1118/142948.246446:ERROR:ui/aura/env.cc:246] The platform failed to initialize.  Exiting.
+[3632240:3632240:1118/142948.246503:ERROR:cef/libcef/browser/main_runner.cc:77] ContentMainRun failed with exit code 1
+CEF initialize failed: CEF initialization failed (code 0)
+exit=4

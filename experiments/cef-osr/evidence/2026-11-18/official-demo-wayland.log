@@ -1,0 +1,19 @@
+weld demo: switches [("no-first-run", None), ("no-default-browser-check", None), ("ozone-platform", Some("wayland")), ("use-angle", Some("gl-egl"))]
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+[2026-11-18T20:50:11Z INFO  wgpu_hal::vulkan::adapter] Found 2 cooperative matrix configurations supported by wgpu
+[2026-11-18T20:50:11Z INFO  wgpu_hal::vulkan::adapter] Found 2 cooperative matrix configurations supported by wgpu
+[2026-11-18T20:50:11Z INFO  wgpu_hal::vulkan::adapter] Found 2 cooperative matrix configurations supported by wgpu
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] adapter DMA-BUF import feature: true
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] wgpu interop backend: Vulkan
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] creating CEF browser (1280x800)
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] CEF browser created
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] nav: LoadStart { url: "data:text/html;base64,PHN0eWxlPmh0bWwsYm9keXttYXJnaW46MDt3aWR0aDoxMDAlO2hlaWdodDoxMDAlO2JhY2tncm91bmQ6IzFlOTBmZn1pe3Bvc2l0aW9uOmZpeGVkO3dpZHRoOjFweDtoZWlnaHQ6MXB4fTwvc3R5bGU+PGk+PC9pPjxzY3JpcHQ+bGV0IG49MDtzZXRJbnRlcnZhbCgoKT0+ZG9jdW1lbnQucXVlcnlTZWxlY3RvcignaScpLnN0eWxlLmJhY2tncm91bmQ9bisrJTI/JyMwMDAnOicjZmZmJywxNik8L3NjcmlwdD4=" }
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] nav: AddressChanged { url: "data:text/html;base64,PHN0eWxlPmh0bWwsYm9keXttYXJnaW46MDt3aWR0aDoxMDAlO2hlaWdodDoxMDAlO2JhY2tncm91bmQ6IzFlOTBmZn1pe3Bvc2l0aW9uOmZpeGVkO3dpZHRoOjFweDtoZWlnaHQ6MXB4fTwvc3R5bGU+PGk+PC9pPjxzY3JpcHQ+bGV0IG49MDtzZXRJbnRlcnZhbCgoKT0+ZG9jdW1lbnQucXVlcnlTZWxlY3RvcignaScpLnN0eWxlLmJhY2tncm91bmQ9bisrJTI/JyMwMDAnOicjZmZmJywxNik8L3NjcmlwdD4=" }
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] nav: LoadEnd { url: "data:text/html;base64,PHN0eWxlPmh0bWwsYm9keXttYXJnaW46MDt3aWR0aDoxMDAlO2hlaWdodDoxMDAlO2JhY2tncm91bmQ6IzFlOTBmZn1pe3Bvc2l0aW9uOmZpeGVkO3dpZHRoOjFweDtoZWlnaHQ6MXB4fTwvc3R5bGU+PGk+PC9pPjxzY3JpcHQ+bGV0IG49MDtzZXRJbnRlcnZhbCgoKT0+ZG9jdW1lbnQucXVlcnlTZWxlY3RvcignaScpLnN0eWxlLmJhY2tncm91bmQ9bisrJTI/JyMwMDAnOicjZmZmJywxNik8L3NjcmlwdD4=", http_status: 200 }
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] nav: TitleChanged { title: "data:text/html;base64,PHN0eWxlPmh0bWwsYm9keXttYXJnaW46MDt3aWR0aDoxMDAlO2hlaWdodDoxMDAlO2JhY2tncm91bmQ6IzFlOTBmZn1pe3Bvc2l0aW9uOmZpeGVkO3dpZHRoOjFweDtoZWlnaHQ6MXB4fTwvc3R5bGU+PGk+PC9pPjxzY3JpcHQ+bGV0IG49MDtzZXRJbnRlcnZhbCgoKT0+ZG9jdW1lbnQucXVlcnlTZWxlY3RvcignaScpLnN0eWxlLmJhY2tncm91bmQ9bisrJTI/JyMwMDAnOicjZmZmJywxNik8L3NjcmlwdD4=" }
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] imported frame #1 (1280x800 Bgra8UnormSrgb)
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] imported frame #2 (1280x800 Bgra8UnormSrgb)
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] imported frame #3 (1280x800 Bgra8UnormSrgb)
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] imported frame #4 (1280x800 Bgra8UnormSrgb)
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] texture dump -> /tmp/cef-evidence/official-demo-wayland.ppm
+[2026-11-18T20:50:11Z INFO  demo_weld_linux] PIXEL FIXTURE PASS: 4096/4096 center pixels at (608, 368) matched [255, 144, 30, 255] ±8

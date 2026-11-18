@@ -1,0 +1,15 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+RECEIPT {"tag":"adapter","name":"AMD Radeon RX 9060 XT (RADV GFX1200)","backend":Vulkan,"device_type":DiscreteGpu,"driver":"radv","driver_info":"Mesa 26.3.0","dma_buf_feature":true,"extensions":"Mesa 26.3.0"}
+RECEIPT {"tag":"host","interop":Vulkan,"device_features_dma_buf":true}
+RECEIPT {"tag":"switches","list":[("no-first-run", None), ("no-default-browser-check", None), ("ozone-platform", Some("headless")), ("use-angle", Some("gl-egl"))],"display_set":false,"wayland_display_set":false,"session_type":Some("wayland")}
+RECEIPT {"tag":"browser","url":"file:///home/hyjing/Code/intgral/intcad/worktrees/cef-osr/experiments/cef-osr/poc/fixtures/probe.html","size":"1024x720","scale":1,"browser_id":1}
+[3632930:3632996:1118/143005.475326:ERROR:components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc:935] Unable to allocate frame for first frame capture: OOM?
+RECEIPT {"tag":"frames","imported":0,"import_errors":0,"seconds":8,"interval_p50_ms":null,"interval_max_ms":0}
+RECEIPT {"tag":"native_frame",}
+RECEIPT {"tag":"load_end_ms",26.3}
+RECEIPT {"tag":"nav","event":"Navigation(TitleChanged { title: \"cef-osr-probe\" })"}
+RECEIPT {"tag":"nav","event":"Navigation(TitleChanged { title: \"probe: loaded 1024x720 dpr 1\" })"}
+RECEIPT {"tag":"nav","event":"Navigation(LoadEnd { url: \"file:///home/hyjing/Code/intgral/intcad/worktrees/cef-osr/experiments/cef-osr/poc/fixtures/probe.html\", http_status: 200 })"}
+RECEIPT {"tag":"nav","event":"Navigation(TitleChanged { title: \"probe: loaded 1024x720 dpr 1\" })"}
+RECEIPT {"tag":"result","ok":false}
+exit=1

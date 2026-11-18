@@ -1,0 +1,16 @@
+# Standalone workspace: this experiment must never join the IntCAD workspace,
+# and must never change the production Cargo.lock (feasibility probe only).
+[workspace]
+members = ["poc"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[profile.dev]
+# Frame timing is measured with the release profile; keep debug builds
+# compiling quickly.
+opt-level = 1

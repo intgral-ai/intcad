@@ -1,0 +1,5 @@
+webView: {"host": true, "page": true} after 1.3 s
+inspect keys: ['adapter', 'build_ms', 'camera', 'dialog', 'display_lod', 'documents', 'draw', 'file_busy', 'file_dialog_open', 'file_picker_busy', 'frame_gaps_ms', 'frame_ms']
+app pid 3709521
+BASELINE_PID 3709521
+inspect: {"adapter": "Vulkan \u00b7 llvmpipe (LLVM 21.1.8, 256 bits)", "build_ms": 0.028564453125, "camera": {"distance": 150.0, "fov": 0.0, "pitch": 0.6154797086703874, "roll": 0.0, "target": [0.0, 0.0, 0.0], "up": "z", "yaw": -0.7853981633974483}, "dialog": null, "display_lod": {"cache_bytes": 0, "cached": 0, "choose_ms": 0.00341796875, "planned": 0, "planning": 0, "planning_ms": 0.0, "refined_bodies": 0, "refined_triangles": 0}, "documents": 1, "draw": {"draw_calls": 1, "line_segments": 0, "supersampled": false, "triangles": 0}, "file_busy": false, "file_dialog_open": false, "file_picker_busy": fals
