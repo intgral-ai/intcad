@@ -5,14 +5,16 @@
 # pull request. Never add a line: decide with exact geometry (`Body::exact_bounds`,
 # `kernel::apart`, the B-rep's faces and edges). These are truck-era uses SMLib answers exactly.
 crates/doc/src/appearance.rs:nearest_face picks the face nearest a point by the display mesh's triangles
-crates/doc/src/document.rs:MeshData::eq compares imported mesh payloads by their triangles
 crates/doc/src/eval.rs:blend_edges_on finds a blend's edges on the display mesh
 crates/doc/src/eval.rs:edge_refs turns edge picks into references through the display mesh
+crates/doc/src/eval.rs:eval_feature_kind places features by the display mesh (faces, edges, nearness)
 crates/doc/src/eval.rs:face_plane finds a sketch's face plane again on a mesh
 crates/doc/src/eval.rs:face_samples takes a point on each face from its mesh triangles
+crates/doc/src/eval.rs:faces_near finds the faces near a point by the display mesh
 crates/doc/src/eval.rs:feature_tools_with_constructor reaches a To Object extent by the display mesh
 crates/doc/src/eval.rs:height_at measures a point's height on a face by the display mesh
 crates/doc/src/eval.rs:hole_depth_to works out a hole's To Object depth on the display mesh
+crates/doc/src/eval.rs:hole_on_surface_in moves a hole back onto its face by the display mesh
 crates/doc/src/eval.rs:hole_reaches decides whether a drill reaches material by the display mesh
 crates/doc/src/eval.rs:nearest_object_face picks an extrusion's To Object face by the display mesh
 crates/doc/src/eval.rs:off_the_ends moves an edge point off the edge's ends by the display mesh
@@ -63,7 +65,6 @@ crates/doc/src/naming.rs:geometric_names names faces from sample points on the d
 crates/doc/src/naming.rs:normals takes face normals from mesh triangles
 crates/doc/src/naming.rs:roomiest takes a sample point per face from mesh triangles
 crates/doc/src/naming.rs:samples_up_to takes sample points per face from mesh triangles
-crates/doc/src/placement_reuse.rs:same_feature compares imported mesh payloads by their triangles
 crates/doc/src/project.rs:body_mesh finds a projection's body nearest a point by the display mesh
 crates/doc/src/project.rs:cache_key keys projections by the display mesh
 crates/doc/src/project.rs:exact_edges finds the picked edges by the display mesh
