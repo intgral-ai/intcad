@@ -209,6 +209,6 @@ pub fn import_file(session: &mut Session, importer: &Importer, path: &str, optio
     }
     {
         let _ = (package, input_folder, file);
-        Err(error("opening a file with an importer plugin needs the desktop app"))
+        Err(error("opening a file with an importer plugin needs the wasm plugin runtime, which this build does not include (CD-5)"))
     }
 }

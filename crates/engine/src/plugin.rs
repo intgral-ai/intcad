@@ -246,7 +246,7 @@ pub fn run(session: &mut Session, package: Package, entry: &str, params: &serde_
     }
     {
         let _ = params;
-        Err(error("plugin execution requires an x86-64 or AArch64 native build with the plugins feature"))
+        Err(error("plugin execution needs the wasm plugin runtime, which this build does not include (CD-5)"))
     }
 }
 

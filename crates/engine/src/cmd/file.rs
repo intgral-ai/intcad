@@ -1361,9 +1361,7 @@ fn unreadable_design(path: &str, reason: &str) -> EngineError {
         return EngineError::Other(format!("{path}: {reason}"));
     }
     let kind = if extension.is_empty() { "this file".to_string() } else { format!(".{extension} files") };
-    EngineError::Other(format!(
-        "{path}: Intcad can't open {kind}; export STEP (or another format it opens) from the program that made it ({reason})"
-    ))
+    EngineError::Other(format!("{path}: Intcad can't open {kind}; export STEP (or another format it opens) from the program that made it ({reason})"))
 }
 
 /// Read the design file at `path` for `doc.open`, under its file's name if it has none of its own.

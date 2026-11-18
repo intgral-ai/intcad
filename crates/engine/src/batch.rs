@@ -16,9 +16,10 @@ impl Session {
         if steps.len() > 10_000 {
             return Err(ConditionedError::Command(EngineError::Other("engine.batch: commands must be an array of at most 10000 steps".into())));
         }
-        let rollback = options.get("rollback").and_then(Value::as_bool).unwrap_or(true);
         let result = match batch_preflight::check(steps, self.param_check, &[]) {
-            Some(refusal) => refusal.reply(steps.len(), rollback),
+            // Nothing ran, so nothing was undone: Intcad's reply says `rolled_back: false` even
+            // when the batch asked for a rollback (upstream's #10749 reports the request instead).
+            Some(refusal) => refusal.reply(steps.len(), false),
             None => run_document_steps(self, steps, options, execute_session, execute_session, CheckpointPolicy::Required),
         };
         Ok((result, self.document_stamp()))
