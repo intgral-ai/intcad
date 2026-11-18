@@ -532,6 +532,15 @@ app's own viewer, as a picture sent with a message. The bytes are served to the 
 and are never part of the page's state; a picture over 4 MiB is not kept (its row still names
 it), and only the newest 16 are.
 
+A file the agent reads from its own working folder has a card under the row too, with its name
+and type. A click on a text file's card (Markdown, plain text, CSV, JSON, YAML, XML, HTML, a log)
+shows the start of the file in the panel, at most 64 KiB of it as it is on disk now: Markdown is
+drawn as an answer's is, and anything else, HTML too, is shown as it is written. A click on a
+document's card (PDF, Word, Excel, PowerPoint, RTF, OpenDocument) opens it in the program the
+system has for it. No other kind of file has a card, so nothing the system would run is opened;
+and a file outside the agent's folder, or a link that leads out of it, has none either. The page
+names only the row: the app looks the file up again on each click.
+
 The agent's reasoning effort is the button beside the model picker, Mastra's
 thinking-level picker: the levels the agent names, **Off** to **Max**, in the app's language.
 The agent's session mode (**Build**, **Plan**, **Explore**, by the agent's own names) is a select at

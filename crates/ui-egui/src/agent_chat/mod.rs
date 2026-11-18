@@ -48,6 +48,7 @@ mod panel;
 pub mod paste;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
+pub mod read_file;
 pub mod review;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime_client;
@@ -90,6 +91,8 @@ const MAX_PICTURE_BYTES: usize = 4 << 20;
 const MAX_TOOL_INPUT: usize = 64 << 10;
 /// How many pictures handed back by tool calls are kept, the newest ones.
 const MAX_TOOL_PICTURES: usize = 16;
+/// How many files read by tool calls keep a card, the newest ones.
+const MAX_TOOL_FILES: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -232,6 +235,15 @@ impl std::fmt::Debug for Picture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Picture({} bytes, {:?})", self.bytes.len(), self.note)
     }
+}
+
+/// A text file open in the panel: its name, the start of its text, and whether that is drawn as
+/// Markdown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilePreview {
+    pub name: String,
+    pub text: String,
+    pub markdown: bool,
 }
 
 /// The viewer: the pictures of one message, and the one shown.
@@ -412,6 +424,13 @@ pub struct AgentChat {
     /// The pictures tool calls handed back (files the agent read), by the call's id, oldest
     /// first. Only the newest [`MAX_TOOL_PICTURES`] are kept: an older call keeps its line.
     tool_pictures: Vec<(String, Picture)>,
+    /// The folder the agent was started in: its own files are those inside it.
+    work_dir: Option<std::path::PathBuf>,
+    /// The files tool calls read that get a card ([`read_file`]), by the call's id, oldest first;
+    /// the newest [`MAX_TOOL_FILES`] are kept.
+    tool_files: Vec<(String, std::path::PathBuf, read_file::Act)>,
+    /// A text file open in the panel, from one of those cards.
+    file_preview: Option<FilePreview>,
     state: Option<State>,
     agent: String,
     images: bool,
@@ -762,6 +781,30 @@ impl AgentChat {
             pictures.push(Picture::shared(Arc::new(png), "", true));
         }
     }
+    /// A read that has finished keeps a card for its file, when that is one of the agent's own
+    /// files that has one ([`read_file`]). A call that handed a picture back has that card instead.
+    fn keep_read_file(&mut self, id: &str) {
+        let file = self.items.iter().rev().find_map(|item| match item {
+            Item::Tool { id: shown, kind, status, input, .. } if shown == id => {
+                Some(read_file::named(kind, *status == Some(ToolStatus::Completed), input.as_ref()).map(str::to_string))
+            }
+            _ => None,
+        });
+        let Some(Some(path)) = file else { return };
+        let Some((file, act)) = self.work_dir.as_deref().and_then(|work| read_file::resolve(work, &path)) else { return };
+        self.tool_files.retain(|(shown, ..)| shown != id);
+        self.tool_files.push((id.to_string(), file, act));
+        let over = self.tool_files.len().saturating_sub(MAX_TOOL_FILES);
+        self.tool_files.drain(..over);
+    }
+    /// The file a tool call read that has a card, and what a click on it does. A call with a
+    /// picture has none: the picture is its card.
+    pub(crate) fn read_file_of(&self, id: &str) -> Option<(&std::path::Path, read_file::Act)> {
+        if self.tool_pictures.iter().any(|(call, _)| call == id) {
+            return None;
+        }
+        self.tool_files.iter().find(|(call, ..)| call == id).map(|(_, file, act)| (file.as_path(), *act))
+    }
     /// Say that the agent refused a model, and in its words why.
     fn model_refused(&mut self, model: &str, error: &str) {
         let text = trf("ui.agent_chat_model_rejected", &[("model", model), ("error", error)]);
@@ -942,8 +985,9 @@ impl AgentChat {
                         *o = output;
                     }
                 } else {
-                    self.push(Item::Tool { id, title: title.unwrap_or_default(), kind: kind.unwrap_or_default(), status, input, output });
+                    self.push(Item::Tool { id: id.clone(), title: title.unwrap_or_default(), kind: kind.unwrap_or_default(), status, input, output });
                 }
+                self.keep_read_file(&id);
             }
             Event::ToolPicture { id, bytes } => {
                 // Named as the first line of the call's result names the file: "<path> (<n> bytes, <type>)".
@@ -1345,6 +1389,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     chat.tools_available = Some(bridge.is_some());
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
+    chat.work_dir = Some(start.cwd.clone());
     let started: Result<Box<dyn ChatBackend>, String> = match (execution, entry.kind) {
         (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_acp_tasks_unavailable").to_string()),
         (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic) => (|| -> Result<Box<dyn ChatBackend>, String> {
@@ -2094,6 +2139,8 @@ pub fn new_chat(app: &mut SolveApp) {
     chat.confirm_new = false;
     chat.items.clear();
     chat.tool_pictures.clear();
+    chat.tool_files.clear();
+    chat.file_preview = None;
     chat.turn_warning = None;
     chat.gallery = None;
     chat.picked.clear();

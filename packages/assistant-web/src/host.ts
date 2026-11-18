@@ -96,8 +96,11 @@ export type Item =
   | { kind: 'user'; index: number; text: string; image: boolean; pictures: PictureRef[]; files: string[]; context: ContextGroups }
   /** `objects`: the names in this answer that the app can select, in the order a click names them by. */
   | { kind: 'text'; index: number; text: string; thought: boolean; objects: string[] }
-  /** `pictures`: what the call handed back as pictures (a file the agent read); `index` opens one, as a message's. */
-  | { kind: 'tool'; id: string; index: number; title: string; toolKind: string; status: ToolStatus; words: string | null; input: string | null; output: string | null; pictures: PictureRef[] }
+  /**
+   * `pictures`: what the call handed back as pictures (a file the agent read); `index` opens one, as a message's.
+   * `file`: a file the call read that has a card; a click (`file` with `index`) previews its text here or opens it with the system's program.
+   */
+  | { kind: 'tool'; id: string; index: number; title: string; toolKind: string; status: ToolStatus; words: string | null; input: string | null; output: string | null; pictures: PictureRef[]; file: { name: string; act: 'preview' | 'open' } | null }
   | { kind: 'plan'; steps: { text: string; status: string }[] }
   | { kind: 'skill'; line: string; warnings: string[]; terminal: string | null; revalidate: boolean }
   | { kind: 'permission'; index: number; heading: string; answered: string | null; options: PermissionOption[] }
@@ -156,6 +159,8 @@ export interface MissingAgent {
 
 export interface AssistantState {
   items: Item[];
+  /** A text file open from a file card: the start of its text; `markdown`: drawn as Markdown. */
+  filePreview: { name: string; text: string; markdown: boolean } | null;
   /** off, starting, ready, busy, auth, failed, exited */
   state: string;
   waiting: number;
@@ -257,6 +262,8 @@ export type Action =
   | { type: 'edit_pending'; index: number; was: string; text: string }
   | { type: 'object'; index: number; ref: number; label: string }
   | { type: 'picture'; index: number; at: number }
+  | { type: 'file'; index: number }
+  | { type: 'file_close' }
   | { type: 'revalidate' }
   | { type: 'stop' }
   | { type: 'approve'; id: number; allow: boolean | 'always' }

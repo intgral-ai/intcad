@@ -15983,6 +15983,102 @@ fn a_picture_a_tool_call_hands_back_is_shown_under_the_call_and_opens_in_the_vie
     assert!(!h.app.agent_chat.tool_pictures.iter().any(|(id, _)| id == "t1"), "the oldest went");
 }
 
+/// A file the agent read gets a card under its call when it is one of the agent's own files: the
+/// state names it and says what a click does, never its path or its text. A click previews a text
+/// file in the panel, and hands a document to the system's program; the page only names the row.
+#[test]
+fn a_file_a_tool_call_read_has_a_card_that_previews_or_opens_it() {
+    let mut h = app_with_cover_and_base();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    let root = std::env::temp_dir().join(format!("intcad-file-card-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let work = root.join("work");
+    std::fs::create_dir_all(work.join("display-tests")).unwrap();
+    std::fs::write(work.join("display-tests/test.md"), "# Title\n\n**bold**\n").unwrap();
+    std::fs::write(work.join("display-tests/test.pdf"), b"%PDF-1.4").unwrap();
+    std::fs::write(work.join("display-tests/test.docx"), b"PK").unwrap();
+    std::fs::write(work.join("display-tests/test.png"), test_png([200, 30, 30, 255], 8)).unwrap();
+    std::fs::write(root.join("outside.md"), "secret").unwrap();
+    h.app.agent_chat.work_dir = Some(work.clone());
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::<std::path::PathBuf>::new()));
+    let seen = opened.clone();
+    h.app.services.open_file = Some(Box::new(move |path| seen.borrow_mut().push(std::path::PathBuf::from(path))));
+
+    // The rows as the built-in agent sends them: `view` with a path in the agent's folder.
+    let read = |id: &str, path: &str, output: &str, status: ToolStatus| Event::Tool {
+        id: id.into(),
+        title: Some("view".into()),
+        kind: Some("read".into()),
+        status: Some(status),
+        input: Some(json!({"path": path})),
+        output: Some(output.into()),
+    };
+    let chat = &mut h.app.agent_chat;
+    chat.on_event(read("md", "display-tests/test.md", "display-tests/test.md (18 bytes)", ToolStatus::Completed));
+    chat.on_event(read("pdf", "display-tests/test.pdf", "display-tests/test.pdf (8 bytes, application/pdf)", ToolStatus::Completed));
+    chat.on_event(read(
+        "docx",
+        "display-tests/test.docx",
+        "display-tests/test.docx (2 bytes) — binary file not readable as text.",
+        ToolStatus::Completed,
+    ));
+    chat.on_event(read("png", "display-tests/test.png", "display-tests/test.png (99 bytes, image/png)", ToolStatus::Completed));
+    chat.on_event(Event::ToolPicture { id: "png".into(), bytes: test_png([200, 30, 30, 255], 8) });
+    chat.on_event(read("out", "../outside.md", "../outside.md (6 bytes)", ToolStatus::Completed));
+    chat.on_event(read("gone", "display-tests/gone.md", "no such file", ToolStatus::Failed));
+    chat.on_event(read("running", "display-tests/test.md", "", ToolStatus::InProgress));
+
+    let state = |h: &mut crate::scenario::Harness| -> Value { serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON") };
+    let first = state(&mut h);
+    let row = |id: &str| first["items"].as_array().expect("items").iter().find(|item| item["id"] == id).cloned().expect("the call");
+    assert_eq!(row("md")["file"], json!({"name": "test.md", "act": "preview"}));
+    assert_eq!(row("pdf")["file"], json!({"name": "test.pdf", "act": "open"}));
+    assert_eq!(row("docx")["file"], json!({"name": "test.docx", "act": "open"}), "unreadable as text, and still a file to open");
+    for none in ["png", "out", "gone", "running"] {
+        assert_eq!(row(none)["file"], Value::Null, "{none}: a picture has its own card, the others no file of the agent's");
+    }
+    assert_eq!(first["filePreview"], Value::Null);
+    let text = first.to_string();
+    assert!(!text.contains("intcad-file-card") && !text.contains("**bold**"), "neither where the file is nor what it holds");
+
+    // A text file: the start of its text, as Markdown; closed again by the page.
+    let index = |id: &str| row(id)["index"].as_u64().expect("its index");
+    web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index("md")}).to_string()).expect("the card's click");
+    assert_eq!(state(&mut h)["filePreview"], json!({"name": "test.md", "text": "# Title\n\n**bold**\n", "markdown": true}));
+    assert!(opened.borrow().is_empty(), "a text file is not handed to the system");
+    web::act(&mut h.app, &ctx, &json!({"type": "file_close"}).to_string()).expect("closing it");
+    assert_eq!(state(&mut h)["filePreview"], Value::Null);
+
+    // A document: the system's program, with the file's real place; nothing shown in the panel.
+    web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index("pdf")}).to_string()).expect("the card's click");
+    assert_eq!(*opened.borrow(), vec![std::fs::canonicalize(work.join("display-tests/test.pdf")).unwrap()]);
+    assert_eq!(state(&mut h)["filePreview"], Value::Null);
+
+    // Rows without a card are refused, whatever the page says.
+    for none in ["png", "out", "gone"] {
+        assert!(web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index(none)}).to_string()).is_err(), "{none}");
+    }
+    assert!(web::act(&mut h.app, &ctx, &json!({"type": "file", "index": 9999}).to_string()).is_err());
+
+    // A file that has gone since it was read: said in the conversation, nothing opened or shown.
+    std::fs::remove_file(work.join("display-tests/test.md")).unwrap();
+    let before = h.app.agent_chat.items.len();
+    web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index("md")}).to_string()).expect("answered with a notice");
+    assert_eq!(h.app.agent_chat.items.len(), before + 1, "one notice");
+    assert_eq!(state(&mut h)["filePreview"], Value::Null);
+    assert_eq!(opened.borrow().len(), 1);
+
+    // A new chat forgets the cards and an open preview.
+    std::fs::write(work.join("display-tests/test.md"), "again").unwrap();
+    web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index("md")}).to_string()).expect("the card's click");
+    assert!(h.app.agent_chat.file_preview.is_some());
+    new_chat(&mut h.app);
+    assert!(h.app.agent_chat.file_preview.is_none() && h.app.agent_chat.tool_files.is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Send now from the page steers as the panel's own does: the running step is stopped and the
 /// queue goes once the agent has ended it. A message sent with Ctrl+Enter goes the same way,
 /// with what was typed.

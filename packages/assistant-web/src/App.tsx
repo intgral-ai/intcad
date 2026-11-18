@@ -218,6 +218,31 @@ function HandedPicture({ picture, name, open }: { picture: PictureRef; name: str
   );
 }
 
+/**
+ * A text file opened from a file card, as Mastra's text preview: its name and its text. Markdown is
+ * drawn as an answer's is, so a link in it opens in the browser and nothing loads from the network;
+ * any other text, HTML too, is shown as it is written.
+ */
+function FilePreviewDialog({ file }: { file: AssistantState['filePreview'] }) {
+  return (
+    <Dialog open={file !== null} onOpenChange={open => !open && post({ type: 'file_close' })}>
+      <DialogContent size="xl">
+        <DialogHeader>
+          <DialogTitle>{file?.name}</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          {file &&
+            (file.markdown ? (
+              <MarkdownRenderer streaming={false}>{file.text}</MarkdownRenderer>
+            ) : (
+              <div className="wrap-anywhere whitespace-pre-wrap">{file.text}</div>
+            ))}
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ToolRow({ tool, approval, strings, own }: { tool: Tool; approval?: Approval; strings: Strings; own: boolean }) {
   const { name, detail } = nameOf(tool.title);
   const waiting = approval?.answer === null;
@@ -262,6 +287,18 @@ function ToolRow({ tool, approval, strings, own }: { tool: Tool; approval?: Appr
           {tool.pictures.map((picture, at) => (
             <HandedPicture key={picture.key} picture={picture} name={picture.note || strings.viewAttached} open={() => post({ type: 'picture', index: tool.index, at })} />
           ))}
+        </div>
+      )}
+      {/* A file the call read, as Mastra's attachment card: a text file is previewed here, a document
+          opens in the system's program for it. */}
+      {tool.file && (
+        <div className="flex min-w-0 flex-wrap gap-2 pl-7">
+          <AttachmentCard
+            name={tool.file.name}
+            typeLabel={typeOf(tool.file.name)}
+            icon={<FileText aria-hidden />}
+            onClick={() => post({ type: 'file', index: tool.index })}
+          />
         </div>
       )}
       {/* Outside the row's fold: a request that arrives after the row is drawn must still be seen. */}
@@ -2254,6 +2291,7 @@ export function App({ state }: { state: AssistantState | null }) {
   }));
   return (
     <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
+      <FilePreviewDialog file={state.filePreview ?? null} />
       <ChatShell className="h-full" style={ROOM} scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}>
         <AssistantBar state={state} onSetup={setSetup} onConnections={openConn} />
         {connect && showConn && (

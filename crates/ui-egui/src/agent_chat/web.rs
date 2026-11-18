@@ -289,6 +289,12 @@ pub fn state(app: &mut SolveApp) -> String {
                     // A picture the call handed back, opened as a message's picture is (`picture`).
                     "index": index,
                     "pictures": chat.tool_pictures.iter().filter(|(call, _)| call == id).map(|(_, picture)| json!({"key": picture_key(&picture.bytes), "note": picture.note, "view": false})).collect::<Vec<_>>(),
+                    // A file the call read, as a card: `preview` shows its text in the panel
+                    // (`markdown`: drawn), `open` hands it to the system's program for it (`file`).
+                    "file": chat.read_file_of(id).map(|(file, act)| json!({
+                        "name": file.file_name().map(|name| name.to_string_lossy()),
+                        "act": match act { read_file::Act::Preview { .. } => "preview", read_file::Act::Open => "open" },
+                    })),
                 })
             }
             Item::Plan(steps) => {
@@ -595,6 +601,8 @@ pub fn state(app: &mut SolveApp) -> String {
     .collect();
     json!({
         "items": items,
+        // A text file open from a file card: the start of its text, read when the card was clicked.
+        "filePreview": chat.file_preview.as_ref().map(|file| json!({"name": file.name, "text": file.text, "markdown": file.markdown})),
         "state": state.id(),
         "waiting": chat.waiting(),
         "stopped": chat.stopped,
@@ -659,7 +667,9 @@ pub fn state(app: &mut SolveApp) -> String {
 /// queued, stopping the running step), `stop`, `approve` (`id`, `allow`: true, false or
 /// `"always"`), `permission` (`index`, `option`), `undo` (`index`), `new_chat`, `confirm_new`
 /// (`yes`), `object` (`index`, `ref`, `label`: select the object an answer names), `picture`
-/// (`index`, `at`: open a message's picture in the viewer), `revalidate`. The queue: `send_now`,
+/// (`index`, `at`: open a message's picture in the viewer), `file` (`index`: the card of a file a
+/// tool call read: preview its text in the panel, or open it with the system's program) and
+/// `file_close`, `revalidate`. The queue: `send_now`,
 /// `remove_pending` (`index`, `text`), `edit_pending` (`index`, `was`, `text`); a queued message
 /// has no name of its own, so the page says which text it means and a queue that has moved on
 /// refuses. The composer: `permissions` (`mode`), `attach_view` / `attach_selection` (`on`),
@@ -776,6 +786,30 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             };
             app.agent_chat.gallery = Some(Gallery { pictures, at: shown });
         }
+        "file" => {
+            // The page names the row; the file is the one the app kept for that row, looked at
+            // again now: it may have gone, or been replaced by a link, since the agent read it.
+            let at = index("index").ok_or("file: no index")?;
+            let Some(Item::Tool { id, .. }) = app.agent_chat.items.get(at) else { return Err("file: no such tool call".into()) };
+            let (kept, _) = app.agent_chat.read_file_of(id).ok_or("file: that call has no file")?;
+            let name = kept.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            let kept = kept.to_string_lossy().into_owned();
+            let gone =
+                || trf("ui.agent_chat_file_error", &[("name", &name), ("error", &std::io::Error::from(std::io::ErrorKind::NotFound).to_string())]);
+            let now = app.agent_chat.work_dir.as_deref().and_then(|work| read_file::resolve(work, &kept));
+            match now {
+                None => app.agent_chat.notice(gone(), true),
+                Some((file, read_file::Act::Preview { markdown })) => match read_file::preview(&file) {
+                    Ok(text) => app.agent_chat.file_preview = Some(FilePreview { name, text, markdown }),
+                    Err(error) => app.agent_chat.notice(trf("ui.agent_chat_file_error", &[("name", &name), ("error", &error.to_string())]), true),
+                },
+                Some((file, read_file::Act::Open)) => match &app.services.open_file {
+                    Some(open) => open(&file.to_string_lossy()),
+                    None => return Err("file: this build cannot open a file with the system".into()),
+                },
+            }
+        }
+        "file_close" => app.agent_chat.file_preview = None,
         "revalidate" => {
             let offered =
                 app.agent_chat.task.is_some() && app.agent_chat.items.iter().any(|item| matches!(item, Item::Skill { terminal: Some(_), .. }));
