@@ -40,14 +40,14 @@ pub static COMMANDS: &[CommandSpec] = &[
              pulls out)}]; supports: [{face, type?: fixed|roller|symmetry|slider}] (fixed: held still, the default; roller, symmetry, \
              slider: a flat face facing along X, Y or Z held only along that axis, free to slide in its plane); face: a name or index from \
              model.faces, a point [x,y,z] within 1 mm of it, or a list; direction: any length; picking one half of a hole takes the whole hole); material: a grade by name (6061-T6, \
-             6082-T6, 5052-H32, S235, S355, 304: sourced, at the standard's minimum yield) or {name, youngs_modulus: MPa, poisson_ratio, \
+             6082-T6, 5052-H32, S235, S355, 304, 304L: sourced, at the standard's minimum yield) or {name, youngs_modulus: MPa, poisson_ratio, \
              yield_strength: MPa, source}; body?; thickness?: mm (sheet metal: its rule's); mesh_size?: mm; elements?: \
              shell|solid|both (default: shell for sheet metal, solid otherwise); show?: stress|deflection; scale?: yield|auto; mesh_check?: \
-             bool (default true: the first model is solved again with a 1.5x finer mesh, and each number is reported settled (moved 5% or \
-             less) or still changing; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
+             bool (default true: the first model is solved again with a 1.5x finer mesh, and each number is reported settled (moved 2.5% or \
+             less) or still changing, with how far off it may still be; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
              this computer can spare: the smaller of 6 GB and half the memory available; SOLIDCRAFT_FEA_MAX_NODES caps its nodes instead); \
              keep_files?; dry_run?: true (check the setup, describe it and draw its supports and loads on the model; solves nothing: run \
-             it first so the user can see the faces) → estimate: true, setup, summary, runs, fraction_of_yield, peak_at_support, peak_away (the highest stress \
+             it first so the user can see the faces) → estimate: true, setup, summary, runs, fraction_of_yield (of the number the summary leads with), fraction_of_yield_overall, peak_at_support, peak_away (the highest stress \
              away from fixed supports and loads), equilibrium (supports carry vs loads applied), mesh_check, warnings, assumptions, \
              how_to_report. Meshes with gmsh and solves with CalculiX on this computer and paints the estimate on the body. Report it as \
              how_to_report says. skill_reference solidcraft-analysis has the workflow and worked setups",
@@ -76,7 +76,7 @@ pub(crate) const HOW_TO_REPORT: &[&str] = &[
      shape, change the design and run the estimate again; do not scale or guess numbers for designs that were not solved.",
     "Tell the user the material values used and where they came from; if you chose them, say so.",
     "If `warnings` is not empty, say what each means before the numbers.",
-    "State the mesh check's result for every number you quote: settled or still changing, with its % change (`mesh_check`); if the mesh \
+    "State the mesh check's result for every number you quote: settled or still changing, with its % change and how far off it may still be (`may_be_off_percent`, `mesh_check`); if the mesh \
      check was skipped or off, say that whether the numbers have settled is unknown, and why (its `reason`). The mesh check is about the \
      numbers, not the part.",
     "If `peak_at_support` is set, the highest stress sits at that support or load, where an idealised hold concentrates stress: lead with \
@@ -108,6 +108,8 @@ struct BodyFaces<'a> {
     normals: Vec<Option<P>>,
     count: usize,
     display: Faces<'a>,
+    /// The display mesh's vertex normals (outward), beside `display.positions`.
+    vertex_normals: &'a [P],
 }
 
 /// A cylinder face's (radius, axis, origin), if it is one.
@@ -206,10 +208,17 @@ impl BodyFaces<'_> {
         let mut holes: Vec<(f64, Vec<u32>)> = Vec::new();
         for f in faces {
             if let Some((r, ..)) = cylinder(self.spots.get(*f as usize).and_then(Option::as_ref)) {
-                if !holes.iter().any(|(_, h)| h.contains(f)) {
-                    holes.push((r, self.hole_of(*f)));
+                if holes.iter().any(|(_, h)| h.contains(f)) {
+                    continue;
                 }
-                continue;
+                let group = self.hole_of(*f);
+                // A sheet's bend is part of a turn with a name of its own ("flange 1, bend"):
+                // that name says more than "a fillet". A hole or a round outside keeps its size.
+                let named = self.sheet.get(*f as usize).is_some_and(Option::is_some);
+                if !named || matches!(self.round_of(&group), Round::Hole | Round::Outside) {
+                    holes.push((r, group));
+                    continue;
+                }
             }
             let words = self.sheet.get(*f as usize).and_then(|n| n.as_deref()).map(sheet_words).unwrap_or_else(|| {
                 match self.normals.get(*f as usize).copied().flatten() {
@@ -221,20 +230,111 @@ impl BodyFaces<'_> {
                 parts.push(words);
             }
         }
-        let mut by_size: Vec<(f64, usize)> = Vec::new();
-        for (r, _) in &holes {
-            match by_size.iter_mut().find(|(r2, _)| (r2 - r).abs() < 1e-6) {
-                Some(x) => x.1 += 1,
-                None => by_size.push((*r, 1)),
+        // Each round group in words by what it is (a hole, a boss's outside, a fillet, a rounded
+        // edge), counted by kind and size: a fillet is not "a hole" (PIL-294 D7).
+        let mut by_size: Vec<(Round, f64, usize)> = Vec::new();
+        for (r, group) in &holes {
+            let kind = self.round_of(group);
+            match by_size.iter_mut().find(|(k, r2, _)| *k == kind && (r2 - r).abs() < 1e-6) {
+                Some(x) => x.2 += 1,
+                None => by_size.push((kind, *r, 1)),
             }
         }
-        for (r, n) in by_size {
-            let d = sig(2.0 * r);
-            parts.insert(0, if n == 1 { format!("a hole Ø{d}") } else { format!("{n} holes Ø{d}") });
+        for (kind, r, n) in by_size.into_iter().rev() {
+            parts.insert(0, kind.words(n, r));
         }
         if parts.is_empty() { "no face".into() } else { parts.join(", ") }
     }
 
+    /// What the round faces `group` (one cylinder's) are, from their display points.
+    fn round_of(&self, group: &[u32]) -> Round {
+        let Some((_, axis, origin)) = group.first().and_then(|f| cylinder(self.spots.get(*f as usize).and_then(Option::as_ref))) else {
+            return Round::Hole;
+        };
+        let mut points: Vec<(P, P)> = Vec::new();
+        for (t, tri) in self.display.triangles.iter().enumerate() {
+            if !self.display.tri_face.get(t).is_some_and(|f| group.contains(f)) {
+                continue;
+            }
+            for v in tri {
+                if let (Some(p), Some(n)) = (self.display.positions.get(*v as usize), self.vertex_normals.get(*v as usize)) {
+                    points.push((*p, *n));
+                }
+            }
+        }
+        round_kind(&points, axis, origin)
+    }
+}
+
+/// What a group of faces on one cylinder is, for words.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Round {
+    /// A full turn, the part outside it: a hole.
+    Hole,
+    /// A full turn, the part inside it: the outside of a boss, a shaft or a disc's rim.
+    Outside,
+    /// Part of a turn, at most a quarter or so, the part outside it: a fillet in an inside corner.
+    Fillet,
+    /// Part of a turn, at most a quarter or so, the part inside it: a rounded outside edge.
+    Rounded,
+    /// More of a turn, the part outside it (a slot's end, a part-hole).
+    InsideCurve,
+    /// More of a turn, the part inside it.
+    OutsideCurve,
+}
+
+impl Round {
+    /// `n` of them of radius `r`, in words.
+    pub(crate) fn words(self, n: usize, r: f64) -> String {
+        let (one, many, size) = match self {
+            Round::Hole => ("a hole", "holes", format!("Ø{}", sig(2.0 * r))),
+            Round::Outside => ("a round outside face", "round outside faces", format!("Ø{}", sig(2.0 * r))),
+            Round::Fillet => ("a fillet", "fillets", format!("R{}", sig(r))),
+            Round::Rounded => ("a rounded edge", "rounded edges", format!("R{}", sig(r))),
+            Round::InsideCurve => ("a curved inside face", "curved inside faces", format!("R{}", sig(r))),
+            Round::OutsideCurve => ("a curved outside face", "curved outside faces", format!("R{}", sig(r))),
+        };
+        if n == 1 { format!("{one} {size}") } else { format!("{n} {many} {size}") }
+    }
+}
+
+/// What the cylinder of `axis` through `origin` is, from points on its faces with their outward
+/// normals: whether the faces go all the way round (no gap over 60° between their points around
+/// the axis), and whether their normals face the axis (the part is outside them: a hole, a fillet)
+/// or away from it. Part of a turn up to 100° is a fillet or a rounded edge.
+pub(crate) fn round_kind(points: &[(P, P)], axis: P, origin: P) -> Round {
+    let Some(a) = fea::model::unit(axis) else { return Round::Hole };
+    let helper = if a[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let Some(e1) = fea::model::unit(fea::model::cross(a, helper)) else { return Round::Hole };
+    let e2 = fea::model::cross(a, e1);
+    let (mut angles, mut facing) = (Vec::new(), 0.0);
+    for (p, n) in points {
+        let d = fea::model::sub(*p, origin);
+        let radial = fea::model::sub(d, fea::model::mul(a, fea::model::dot(d, a)));
+        let Some(u) = fea::model::unit(radial) else { continue };
+        facing += fea::model::dot(*n, u);
+        angles.push(fea::model::dot(radial, e2).atan2(fea::model::dot(radial, e1)));
+    }
+    if angles.is_empty() {
+        return Round::Hole;
+    }
+    angles.sort_by(f64::total_cmp);
+    let wrap = angles.first().copied().unwrap_or(0.0) + std::f64::consts::TAU - angles.last().copied().unwrap_or(0.0);
+    let gap = angles.windows(2).map(|w| w[1] - w[0]).fold(wrap, f64::max);
+    let span = std::f64::consts::TAU - gap;
+    let inside = facing < 0.0;
+    if gap < 60f64.to_radians() {
+        if inside { Round::Hole } else { Round::Outside }
+    } else if span <= 100f64.to_radians() {
+        if inside { Round::Fillet } else { Round::Rounded }
+    } else if inside {
+        Round::InsideCurve
+    } else {
+        Round::OutsideCurve
+    }
+}
+
+impl BodyFaces<'_> {
     /// Where a marker for `faces` goes: the mean of their centres.
     fn centre(&self, faces: &[u32]) -> P {
         let pts: Vec<P> = faces.iter().filter_map(|f| self.centroids.get(*f as usize).copied()).collect();
@@ -505,6 +605,30 @@ pub(crate) const SOLID_MEMORY: (f64, f64, f64) = (18_500.0, 130_000.0, 0.2);
 /// The same for shells, per node of the mid-surface (the solver expands each into three through
 /// the thickness).
 pub(crate) const SHELL_MEMORY: (f64, f64, f64) = (44_500.0, 60_000.0, 0.1);
+/// Nodes of a second-order tetrahedral mesh per mm³ of part with 1 mm elements: a mesh of `h` mm
+/// has about this × volume / h³ nodes. Measured with curvature sizing on R2's plate (200 x 50 x
+/// 2 mm, a Ø10 hole): 11.3 at 1.5 mm, 10.1 at 1.0 mm, 8.5 at 0.7 mm.
+pub(crate) const SOLID_NODES_PER_MM3: f64 = 10.0;
+/// The most nodes a default solid mesh is sized for: a first run whose mesh check's finer run
+/// still fits [`MEMORY_CEILING`] (a first run of about 93 000 nodes, see there). The mesh is sized
+/// at [`SOLID_NODES_PER_MM3`], but a real mesh has up to 13 % more (11.3 per mm³ measured), so
+/// 80 000 at the nominal density lands at or under about 90 000. At 90 000 there was no margin: at
+/// 11.3 per mm³ a first run has about 102 000 nodes, its finer run is predicted over the ceiling and
+/// the mesh check is skipped (PIL-294 D9, the review's Ø100 x 2 mm disc).
+pub(crate) const DEFAULT_SOLID_NODES: f64 = 80_000.0;
+
+/// The default element size for a solid part that is not sheet metal, mm: about 25 elements
+/// across and two through its thinnest side, but no finer than a mesh of about
+/// [`DEFAULT_SOLID_NODES`] for its `volume` (mm³). Without that, a large thin part got a mesh too
+/// big for this computer: R2's 200 x 50 x 2 mm plate was meshed at 1.0 mm (199 504 nodes), so the
+/// mesh check's finer run (595 186 nodes, 14 GB measured) never fitted; it is meshed at about
+/// 1.35 mm now. Under 0.3 mm only when given.
+pub(crate) fn default_solid_size(diag: f64, smallest: f64, volume: Option<f64>) -> f64 {
+    let detail = (diag / 25.0).min(smallest / 2.0);
+    let budget = volume.filter(|v| v.is_finite() && *v > 0.0).map_or(0.0, |v| (SOLID_NODES_PER_MM3 * v / DEFAULT_SOLID_NODES).cbrt());
+    detail.max(budget).max(0.3)
+}
+
 /// The most memory the mesh check's finer run may need, bytes, wherever the computer has more to
 /// spare. 6 GB: a finer run of about 278 000 solid nodes (a first run of about 93 000) or
 /// 125 000 shell nodes (a first run of about 55 000), about a minute and a half of solving for
@@ -513,8 +637,65 @@ pub(crate) const SHELL_MEMORY: (f64, f64, f64) = (44_500.0, 60_000.0, 0.1);
 pub(crate) const MEMORY_CEILING: f64 = 6.0e9;
 /// A node cap for the finer run that replaces the memory limit (for tests and power users).
 pub(crate) const MAX_NODES_VAR: &str = "SOLIDCRAFT_FEA_MAX_NODES";
-/// A number that moves by at most this much (%) with the finer mesh has settled.
-pub(crate) const SETTLED_PERCENT: f64 = 5.0;
+/// A number that moves by at most this much (%) with the finer mesh has settled. One step of
+/// [`MESH_CHECK_RATIO`] says how far the number moved, not how far it still has to go: for an
+/// error that falls as the element size to the power `p`, what is left on the finer mesh is about
+/// change / (1.5^p − 1), twice the change for `p` = 1 (the slowest a smooth stress converges with
+/// these elements), 0.8 times for `p` = 2. 2.5 % keeps a settled number within about 5 % even at
+/// `p` = 1. At 5 %, a fillet's peak that moved 4.4 % was called settled while it was 5 to 6 % low
+/// (PIL-294 D4, Peterson's stepped bar).
+pub(crate) const SETTLED_PERCENT: f64 = 2.5;
+/// What may be left of a number's error on the finer mesh, per % it moved: 1 / (1.5 − 1), the
+/// first-order bound (see [`SETTLED_PERCENT`]).
+pub(crate) const REMAINING_PER_CHANGE: f64 = 2.0;
+
+/// The setup's keys, by where they go: one the estimate does not know is refused, not ignored,
+/// because a dropped load or support changes the answer without a word (PIL-294 D6). Kept equal
+/// to the contracts in `schema/stress.rs` by a test.
+pub(crate) const ESTIMATE_KEYS: &[&str] =
+    &["body", "loads", "supports", "material", "thickness", "mesh_size", "elements", "show", "scale", "mesh_check", "keep_files", "dry_run"];
+pub(crate) const LOAD_KEYS: &[&str] = &["face", "type", "pressure", "force", "direction", "magnitude"];
+pub(crate) const SUPPORT_KEYS: &[&str] = &["face", "type"];
+pub(crate) const MATERIAL_KEYS: &[&str] = &["name", "youngs_modulus", "poisson_ratio", "yield_strength", "source"];
+
+/// What a key the estimate does not take means, where it says more than "unknown".
+fn unknown_key_hint(key: &str) -> &'static str {
+    match key {
+        "at" | "point" | "remote" | "moment" | "torque" | "couple" => {
+            ": a remote force, a moment or a torque is not supported yet; put the force on the faces it goes in through"
+        }
+        "load_cases" | "cases" | "load_case" | "combinations" => ": one estimate takes one set of loads; run it once for each load case",
+        "gravity" | "acceleration" | "self_weight" | "density" => ": gravity and other body loads are not supported yet",
+        "units" | "unit" => ": forces are N, lengths mm and pressures MPa (or text with its unit, such as \"250 kPa\")",
+        "preload" | "bolt" | "contact" | "bearing" => ": bolts, bearing loads and contact are not supported yet",
+        _ => "",
+    }
+}
+
+/// Refuses any key of the setup the estimate does not take: at the top, in a load, a support or a
+/// material given as an object.
+pub(crate) fn check_keys(p: &Value) -> Result<()> {
+    fn check(v: &Value, allowed: &[&str], what: &str) -> Result<()> {
+        let Some(obj) = v.as_object() else { return Ok(()) };
+        if let Some(key) = obj.keys().find(|k| !allowed.contains(&k.as_str())) {
+            return Err(bad(
+                CMD,
+                format!("{what}: `{key}` is not a setting of the estimate{} (it takes: {})", unknown_key_hint(key), allowed.join(", ")),
+            ));
+        }
+        Ok(())
+    }
+    check(p, ESTIMATE_KEYS, "the setup")?;
+    for (list, allowed, name) in [("loads", LOAD_KEYS, "loads"), ("supports", SUPPORT_KEYS, "supports")] {
+        for (i, v) in p.get(list).and_then(Value::as_array).into_iter().flatten().enumerate() {
+            check(v, allowed, &format!("{name}[{i}]"))?;
+        }
+    }
+    if let Some(m) = p.get("material") {
+        check(m, MATERIAL_KEYS, "material")?;
+    }
+    Ok(())
+}
 /// The peak "away from supports and loads" is looked for at nodes farther than this many
 /// element sizes (of the first mesh) from every fixed support's and force's node (a roller or a
 /// pressure concentrates nothing, see `fea::solve`). A node's stress
@@ -807,6 +988,7 @@ fn support_words(s: &Support) -> String {
 }
 
 fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
+    check_keys(p)?;
     // What to analyse, and its faces.
     let st = s.world_state()?;
     let visible: Vec<&solidcraft_doc::ModelBody> = st.bodies.iter().filter(|b| s.body_visible(&b.name)).collect();
@@ -849,6 +1031,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         normals: face_normals,
         count: body.body.face_count(),
         display: Faces { positions: &positions, triangles: &mesh.triangles, tri_face: &mesh.tri_face },
+        vertex_normals: &normals,
     };
     let plan = plan(p, &faces, body, sheet_t, &s.doc.body_material(&body.name))?;
     let (lo, hi) = positions.iter().fold(([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]), |(mut lo, mut hi), p| {
@@ -882,6 +1065,17 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             sig(diag)
         ));
     }
+    // The thickness asked for against the sheet's own (PIL-294 D11).
+    if let Some(own) = sheet_t
+        && p.get("thickness").is_some()
+        && let Some(w) = thickness_mismatch(plan.thickness, own, plan.runs.contains(&Elements::Solid))
+    {
+        warnings.push(w);
+    }
+    // A grade's yield holds up to a thickness (PIL-294 D10). A solid's stock was at least as thick
+    // as its bounding box's thinnest side.
+    let stock = if plan.sheet || !plan.runs.contains(&Elements::Solid) { plan.thickness } else { smallest };
+    warnings.extend(grade_thickness_warning(&plan.material, stock, plan.sheet || !plan.runs.contains(&Elements::Solid)));
     if p.get("dry_run").and_then(Value::as_bool).unwrap_or(false) {
         // Drawn on the model until the estimate runs or is declined: the user sees the faces.
         let (loads, supports) = markers_of(&plan, &faces);
@@ -902,6 +1096,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 summary: "Not solved: a dry run checks the setup and describes it.".into(),
                 runs: Vec::new(),
                 fraction_of_yield: 0.0,
+                fraction_of_yield_overall: 0.0,
                 shell_vs_solid: None,
                 peak_at_support: None,
                 peak_away: None,
@@ -952,6 +1147,9 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
     let mut finer: Option<fea::Run> = None;
     let mut check = Check::Off;
     let mut k = 0usize;
+    // Half the memory free when the estimate starts (D1).
+    let run_cap = first_run_limit(memory_available_here());
+    let fits = |nodes: usize, elements: Elements, h: f64| memory_refusal(nodes as f64, elements, h, run_cap, true);
     for (i, elements) in plan.runs.iter().enumerate() {
         let h = match (plan.mesh_size, elements, plan.sheet) {
             (Some(h), Elements::Shell, _) => h,
@@ -959,8 +1157,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             (Some(h), Elements::Solid, false) => h,
             (None, Elements::Shell, _) => (diag / 30.0).clamp(1.5 * plan.thickness, 8.0 * plan.thickness),
             (None, Elements::Solid, true) => plan.thickness.max(0.3),
-            // A solid part: about 25 elements across, at least two through its thinnest side.
-            (None, Elements::Solid, false) => (diag / 25.0).min(smallest / 2.0).max(0.3),
+            (None, Elements::Solid, false) => default_solid_size(diag, smallest, volume),
         };
         // The finer run looks at the same region away from supports and loads as this one.
         let setup = |size: f64| Setup {
@@ -971,9 +1168,17 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             supports: plan.supports.clone(),
             away_distance: away_distance(h, section_size(*elements, plan.sheet, plan.thickness, volume, area)),
         };
+        // A solid's mesh is predicted from its volume before meshing, which takes time and memory
+        // of its own at a size far too fine; every mesh is counted again before the solver runs.
+        if *elements == Elements::Solid
+            && let Some(v) = volume.filter(|v| v.is_finite() && *v > 0.0)
+            && let Some(refusal) = memory_refusal(SOLID_NODES_PER_MM3 * v / h.powi(3), Elements::Solid, h, run_cap, false)
+        {
+            return Err(failed(refusal));
+        }
         k += 1;
-        let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0 };
-        let run = fea::solve(&setup(h), &step, &faces.display, &dir, *elements, &ctx).map_err(failed)?;
+        let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0, fits: Some(&fits) };
+        let run = fea::solve(&setup(h), &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
         if i == 0 && plan.mesh_check {
             // Gated on the finer run's predicted size, not the first run's time: memory is what
             // runs out (R2's finer run took 14 GB), and a solid run that fits solves in about a
@@ -987,8 +1192,8 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 k += 1;
                 let fine_h = h / MESH_CHECK_RATIO;
                 let fine_setup = setup(fine_h);
-                let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0 };
-                let fine = fea::solve(&fine_setup, &step, &faces.display, &dir, *elements, &ctx).map_err(failed)?;
+                let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0, fits: Some(&fits) };
+                let fine = fea::solve(&fine_setup, &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
                 check = Check::Ran { first_h: h, finer_h: fine_h, items: settling(&run, &fine) };
                 finer = Some(fine);
             }
@@ -1008,14 +1213,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     warnings.extend(check_warnings(&check, shown, &near));
-    if shown.max_stress > plan.material.yield_mpa {
-        warnings.push(format!(
-            "The highest stress ({} MPa) is above the yield strength given ({} MPa): past yield the material no longer behaves linearly, so \
-             this estimate does not hold there; the real part would yield and the stress would spread",
-            sig(shown.max_stress),
-            sig(plan.material.yield_mpa)
-        ));
-    }
+    warnings.extend(yield_warning(shown.max_stress, &shown.peaks, plan.material.yield_mpa, &near));
     let span = if plan.sheet { (5.0 * plan.thickness).min(0.1 * diag) } else { 0.05 * diag };
     if shown.max_disp > span {
         warnings.push(format!(
@@ -1050,7 +1248,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             solver_threads: r.threads,
         })
         .collect();
-    let fraction = shown.max_stress / plan.material.yield_mpa;
+    let fraction = lead_stress(shown.max_stress, &shown.peaks) / plan.material.yield_mpa;
     let isolated = done.iter().chain(finer.iter()).all(|r| r.isolated);
     let network = if isolated {
         "Meshed and solved on this computer, with the solver's networking switched off; the part was not uploaded".to_string()
@@ -1120,6 +1318,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             summary,
             runs: run_json,
             fraction_of_yield: round_to(fraction, 3),
+            fraction_of_yield_overall: round_to(shown.max_stress / plan.material.yield_mpa, 3),
             shell_vs_solid,
             peak_at_support: shown.peaks.at.clone(),
             peak_away,
@@ -1279,6 +1478,11 @@ impl Settling {
     pub(crate) fn settled(&self) -> bool {
         self.change().abs() <= SETTLED_PERCENT
     }
+    /// How far off the finer value may still be, %: [`REMAINING_PER_CHANGE`] times its change.
+    /// None at a support or load, where the value has no limit to settle on.
+    pub(crate) fn may_be_off(&self) -> Option<f64> {
+        (!self.at_support).then(|| REMAINING_PER_CHANGE * self.change().abs())
+    }
     pub(crate) fn status(&self) -> &'static str {
         if self.at_support {
             "at a support or load: depends on the mesh"
@@ -1329,20 +1533,111 @@ pub(crate) fn mem_available(meminfo: &str) -> Option<f64> {
 }
 
 /// The finer run's limit: the node cap in `max_nodes` (the variable's text) when it is a whole
-/// number above 0; otherwise the smaller of `ceiling` and half the available memory in
-/// `meminfo` (the ceiling alone where that cannot be read).
-pub(crate) fn finer_limit(max_nodes: Option<&str>, meminfo: Option<&str>, ceiling: f64) -> Limit {
+/// number above 0; otherwise the smaller of `ceiling` and half the memory `available`, bytes (the
+/// ceiling alone where that is not known).
+pub(crate) fn finer_limit(max_nodes: Option<&str>, available: Option<f64>, ceiling: f64) -> Limit {
     if let Some(n) = max_nodes.and_then(|v| v.trim().parse::<u64>().ok()).filter(|n| *n > 0) {
         return Limit::Nodes(n as f64);
     }
-    Limit::Memory(meminfo.and_then(mem_available).map_or(ceiling, |a| ceiling.min(a / 2.0)))
+    Limit::Memory(available.map_or(ceiling, |a| ceiling.min(a / 2.0)))
 }
 
 /// The finer run's limit on this computer now.
 pub(crate) fn finer_limit_here() -> Limit {
     let var = std::env::var(MAX_NODES_VAR).ok();
-    let meminfo = if cfg!(target_os = "linux") { std::fs::read_to_string("/proc/meminfo").ok() } else { None };
-    finer_limit(var.as_deref(), meminfo.as_deref(), MEMORY_CEILING)
+    finer_limit(var.as_deref(), memory_available_here(), MEMORY_CEILING)
+}
+
+/// What a control group (Linux cgroup v2: a container, or `systemd-run -p MemoryMax=`) leaves
+/// this process, bytes: the least, over the group in `cgroup` (`/proc/self/cgroup`'s text) and
+/// each group above it, of its `memory.max` less its `memory.current`, as `read` gives those
+/// files' text for a group's path under `/sys/fs/cgroup`. `None` where no group sets a limit.
+pub(crate) fn cgroup_room(cgroup: &str, read: impl Fn(&str, &str) -> Option<String>) -> Option<f64> {
+    let path = cgroup.lines().find_map(|l| l.strip_prefix("0::"))?.trim();
+    let mut room: Option<f64> = None;
+    let mut at = path.trim_end_matches('/').to_string();
+    loop {
+        let number = |file: &str| read(&at, file).and_then(|t| t.trim().parse::<f64>().ok());
+        if let (Some(max), Some(used)) = (number("memory.max"), number("memory.current")) {
+            let left = (max - used).max(0.0);
+            room = Some(room.map_or(left, |r: f64| r.min(left)));
+        }
+        match at.rfind('/') {
+            Some(i) if !at.is_empty() => at.truncate(i),
+            _ => break,
+        }
+    }
+    room
+}
+
+/// The memory this process may use now, bytes: Linux's MemAvailable, no more than its control
+/// group leaves it ([`cgroup_room`]). `None` where it cannot be read (Windows, macOS).
+pub(crate) fn memory_available_here() -> Option<f64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let free = std::fs::read_to_string("/proc/meminfo").ok().as_deref().and_then(mem_available);
+    let group = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|c| cgroup_room(&c, |path, file| std::fs::read_to_string(format!("/sys/fs/cgroup{path}/{file}")).ok()));
+    match (free, group) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The memory a run may use where this computer's free memory cannot be read: half a 16 GB
+/// laptop's.
+pub(crate) const FIRST_RUN_FALLBACK: f64 = 8.0e9;
+
+/// The most memory a run may need, bytes: half the memory available (`available`), or
+/// [`FIRST_RUN_FALLBACK`] where that is not known. The mesh check's finer run has the smaller
+/// [`finer_limit`] besides.
+pub(crate) fn first_run_limit(available: Option<f64>) -> f64 {
+    available.filter(|a| a.is_finite() && *a > 0.0).map_or(FIRST_RUN_FALLBACK, |a| a / 2.0)
+}
+
+/// The most nodes whose solve fits in `bytes` ([`solver_bytes`] turned round).
+pub(crate) fn nodes_for_bytes(bytes: f64, elements: Elements) -> f64 {
+    let (per_node, at, extra) = match elements {
+        Elements::Solid => SOLID_MEMORY,
+        Elements::Shell => SHELL_MEMORY,
+    };
+    (bytes.max(0.0) * at.powf(extra) / per_node).powf(1.0 / (1.0 + extra))
+}
+
+/// Whether a run of `nodes` nodes (the mid-surface's for shells) at `h` mm fits `cap` bytes: `None`
+/// when it does, else the words that refuse it, with the predicted memory and a `mesh_size` that
+/// fits. `meshed`: the count is the mesh's own; otherwise it is predicted from the part's volume
+/// ([`SOLID_NODES_PER_MM3`], which can be 20 % high at fine sizes), and refused only when twice
+/// over (PIL-294 D1: R2's plate at 0.7 mm was killed by the system after 115 s).
+pub(crate) fn memory_refusal(nodes: f64, elements: Elements, h: f64, cap: f64, meshed: bool) -> Option<String> {
+    let bytes = solver_bytes(nodes, elements);
+    let over = if meshed { bytes > cap } else { bytes > 2.0 * cap };
+    if !over || !(nodes.is_finite() && nodes > 0.0 && h.is_finite() && h > 0.0) {
+        return None;
+    }
+    let fit = nodes_for_bytes(cap, elements);
+    let dims = match elements {
+        Elements::Solid => 3.0,
+        Elements::Shell => 2.0,
+    };
+    // A tenth over, then up to two significant figures: a size that fits, not one at the edge.
+    let size = h * (nodes / fit).powf(1.0 / dims) * 1.1;
+    let k = 10f64.powf(size.log10().floor() - 1.0);
+    let size = (size / k).ceil() * k;
+    let has = if meshed { "has" } else { "would have" };
+    let mm = |x: f64| format!("{}", (x * 1000.0).round() / 1000.0);
+    Some(format!(
+        "not solved: the {} mesh at about {} mm {has} about {} nodes, and the solver would need about {} of memory; this computer has about {} \
+         to spare for one run (half the memory free now). Use a larger `mesh_size`, such as {} mm, or free some memory",
+        elements.word(),
+        mm(h),
+        about_count(nodes),
+        about_bytes(bytes),
+        about_bytes(cap),
+        mm(size)
+    ))
 }
 
 /// The mesh check's finer run from the first's node count: its predicted nodes and memory, bytes.
@@ -1435,7 +1730,10 @@ pub(crate) fn check_line(check: &Check) -> String {
         Check::Ran { first_h, finer_h, items } => {
             let parts: Vec<String> = items
                 .iter()
-                .map(|s| format!("{} {} → {} {} ({:+.1}%, {})", s.quantity, sig(s.first), sig(s.finer), s.unit, s.change(), s.status()))
+                .map(|s| {
+                    let off = s.may_be_off().map_or_else(String::new, |r| format!(", may be off by about {r:.1}%"));
+                    format!("{} {} → {} {} ({:+.1}%, {}{off})", s.quantity, sig(s.first), sig(s.finer), s.unit, s.change(), s.status())
+                })
                 .collect();
             format!("mesh {} → {} mm: {}", sig(*first_h), sig(*finer_h), parts.join("; "))
         }
@@ -1463,6 +1761,7 @@ fn mesh_check_json(check: &Check) -> StressMeshCheck {
                     finer: round_to(s.finer, 4),
                     change_percent: round_to(s.change(), 2),
                     status: s.status().into(),
+                    may_be_off_percent: s.may_be_off().map(|r| round_to(r, 1)),
                 })
                 .collect(),
             line,
@@ -1514,10 +1813,11 @@ pub(crate) fn check_warnings(check: &Check, shown: &fea::Run, face_label: &dyn F
         let at = shown.peaks.away.map_or_else(String::new, |(_, p)| format!(" near {}", face_label(p)));
         out.push(format!(
             "The highest stress away from supports and loads ({} MPa{at}) moved by {:+.1}% with a finer mesh, so it has not settled: it may be \
-             a sharp inside corner, where the stress keeps rising as the mesh is refined. It needs a finer mesh there, or a fillet on that \
-             corner, before it can be read",
+             a sharp inside corner, where the stress keeps rising as the mesh is refined, or a fillet or hole the mesh is coarse for, where \
+             it may still be {:.0}% or more off. It needs a finer mesh there (or, at a sharp corner, a fillet) before it can be read",
             sig(a.finer),
-            a.change()
+            a.change(),
+            a.may_be_off().unwrap_or(0.0)
         ));
     } else if away.is_none()
         && let Some(o) = item(OVERALL)
@@ -1550,6 +1850,89 @@ pub(crate) struct Outcome<'a> {
     pub done: &'a [fea::Run],
     pub shown: &'a fea::Run,
     pub check: &'a Check,
+}
+
+/// The warning when the part is thicker than its grade's yield is specified for (PIL-294 D10):
+/// thicker stock is specified lower, or not at all. `thickness`: a sheet's or shell's thickness
+/// (`sheet`), or a solid's thinnest side across, the least its stock can have been. Only for a
+/// grade from the table; numbers given with the request are the user's.
+pub(crate) fn grade_thickness_warning(material: &Material, thickness: f64, sheet: bool) -> Option<String> {
+    let g = fea::materials::GRADES.iter().find(|g| g.name == material.name && g.source == material.source)?;
+    let limit = g.up_to_mm?;
+    (thickness > limit * 1.001).then(|| {
+        let part = if sheet { format!("The part is {} mm thick", sig(thickness)) } else { format!("The part is {} mm across its thinnest side", sig(thickness)) };
+        format!(
+            "{part}, but {}'s yield ({} MPa) is specified only up to {} mm: thicker material is specified lower or not at all, so the              yield used may be too high; take it from the material's certificate (`material` with `yield_strength` and its `source`)",
+            g.name,
+            sig(g.yield_mpa),
+            limit
+        )
+    })
+}
+
+/// The warning when the `thickness` asked for is not the sheet's own (PIL-294 D11): more than 5 %
+/// apart. `solid_run`: a solid run is also asked for, which meshes the part as drawn.
+pub(crate) fn thickness_mismatch(given: f64, own: f64, solid_run: bool) -> Option<String> {
+    if !(own > 0.0) || (given - own).abs() <= 0.05 * own {
+        return None;
+    }
+    let solid = if solid_run {
+        format!("; the solid run meshes the part as drawn, {} mm thick, so the two runs are of different parts", sig(own))
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "The thickness given ({} mm) is not this sheet's own ({} mm): the shells are of a {} mm sheet, not the part as drawn{solid}",
+        sig(given),
+        sig(own),
+        sig(given)
+    ))
+}
+
+/// The stress the summary leads with, and the one `fraction_of_yield` shares (PIL-294 D8): the
+/// highest away from supports and loads when the highest overall sits at one of them (that peak
+/// depends on the mesh, not the part), otherwise the highest overall.
+pub(crate) fn lead_stress(max_stress: f64, peaks: &fea::Peaks) -> f64 {
+    match (&peaks.at, peaks.away) {
+        (Some(_), Some((away, _))) => away,
+        _ => max_stress,
+    }
+}
+
+/// The past-yield warning, naming which peak passed yield (PIL-294 D8). A peak at an idealised
+/// support or load grows without limit as the mesh is refined, so on its own it is not read as
+/// the part yielding.
+pub(crate) fn yield_warning(max_stress: f64, peaks: &fea::Peaks, yield_mpa: f64, near: &dyn Fn(P) -> String) -> Option<String> {
+    if max_stress <= yield_mpa {
+        return None;
+    }
+    const PAST: &str = "past yield the material no longer behaves linearly, so this estimate does not hold there; the real part would \
+                        yield and the stress would spread";
+    Some(match (&peaks.at, peaks.away) {
+        (Some(at), Some((away, _))) if away <= yield_mpa => format!(
+            "The highest stress ({} MPa) is above the yield strength given ({} MPa) only at {at}, where an idealised support or load \
+             concentrates stress without limit as the mesh is refined; away from it the highest is {} MPa, {}% of yield. A real clamp or \
+             fixture spreads its load, though the material right at it may yield locally; this estimate cannot say how much",
+            sig(max_stress),
+            sig(yield_mpa),
+            sig(away),
+            sig(100.0 * away / yield_mpa)
+        ),
+        (Some(_), Some((away, away_at))) => format!(
+            "Away from the supports and loads, the highest stress ({} MPa, near {}) is above the yield strength given ({} MPa): {PAST}",
+            sig(away),
+            near(away_at),
+            sig(yield_mpa)
+        ),
+        (Some(at), None) => format!(
+            "The highest stress ({} MPa) is above the yield strength given ({} MPa) at {at}, where an idealised support or load \
+             concentrates stress; no node lies away from the supports and loads, so whether the part itself passes yield cannot be read \
+             from this mesh",
+            sig(max_stress),
+            sig(yield_mpa)
+        ),
+        (None, _) => format!("The highest stress ({} MPa) is above the yield strength given ({} MPa): {PAST}", sig(max_stress), sig(yield_mpa)),
+    })
 }
 
 /// The reply's words: a summary, every assumption, and the shell and solid side by side. They

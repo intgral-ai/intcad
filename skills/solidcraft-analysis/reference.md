@@ -52,3 +52,4 @@ Give all four numbers and where they come from; the reply repeats the source.
 - "is also held by a support": a load on a held face does nothing; move it.
 - "this body is Aluminum, so say which grade": the body's material is generic; pick a grade or give numbers.
 - "the finer mesh would need about … GB": the mesh check was skipped; say the numbers' settling is unknown.
+- "`…` is not a setting of the estimate": the estimate does not take it (a remote force, a moment, load cases, gravity, bolts, contact); tell the user what it cannot model rather than dropping it, and run what it can.

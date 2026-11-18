@@ -394,10 +394,11 @@ fn the_reaction_is_quoted_against_the_loads_and_a_gap_over_one_percent_is_a_warn
 
 /// U3: the mesh check's statuses and what they mean.
 /// Input: fake first and finer runs (no programs): the overall peak 100 MPa at "the clamp", the
-/// peak away from it 50 MPa, deflection 8 mm; finer runs that move by 3 % and by 12 %.
+/// peak away from it 50 MPa, deflection 8 mm; finer runs that move by 2 % and by 12 %.
 /// Action: `settling`, `check_warnings`, `check_line`, `wording`.
 /// Observable: each quantity's status and change; the warnings; the summary's first numbers.
-/// Pass: 3 % reads "settled" and 12 % "still changing"; the warning that the value at the
+/// Pass: 2 % reads "settled" (3 % no longer does: one step's change can leave twice as much)
+/// and 12 % "still changing", each with how far off it may be; the warning that the value at the
 /// support depends on the mesh appears only when the overall peak is at a support, still
 /// changing, and the away peak settled; an away peak still changing gets the sharp-corner
 /// warning; a skipped or switched-off check says the settling is unknown and warns nothing; when
@@ -410,23 +411,25 @@ fn the_mesh_check_says_settled_or_still_changing_and_flags_a_peak_held_up_by_a_s
         let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, finer) };
         check_warnings(&check, finer, &near).join("\n")
     };
-    // Everything 3 %: settled, no warnings.
-    let calm = peaked_run(103.0, Some("the clamp"), Some(51.5), 8.24);
+    // Everything 2 %: settled, no warnings.
+    let calm = peaked_run(102.0, Some("the clamp"), Some(51.0), 8.16);
     let items = settling(&first, &calm);
     assert_eq!(items.iter().map(|s| s.quantity).collect::<Vec<_>>(), [OVERALL, AWAY, DEFLECTION]);
     for s in &items {
         // The overall peak sits at the clamp, so it is never labelled settled, however little it moved.
         let label = if s.quantity == OVERALL { "at a support or load: depends on the mesh" } else { "settled" };
-        assert!((s.change() - 3.0).abs() < 1e-9 && s.settled() && s.status() == label, "{s:?}");
+        assert!((s.change() - 2.0).abs() < 1e-9 && s.settled() && s.status() == label, "{s:?}");
+        let off = if s.quantity == OVERALL { None } else { Some(4.0) };
+        assert!(s.may_be_off().map(|r| (r * 1e6).round() / 1e6) == off, "{s:?}");
     }
     assert_eq!(warnings(&calm), "");
-    // The peak at the clamp moves 12 %, the away peak 3 %: the singular-support warning.
-    let singular = peaked_run(112.0, Some("the clamp"), Some(51.5), 8.24);
+    // The peak at the clamp moves 12 %, the away peak 2 %: the singular-support warning.
+    let singular = peaked_run(112.0, Some("the clamp"), Some(51.0), 8.16);
     let items = settling(&first, &singular);
     assert!((items[0].change() - 12.0).abs() < 1e-9 && items[0].status() == "at a support or load: depends on the mesh");
     let w = warnings(&singular);
     for needed in
-        ["The value at the clamp depends on the mesh", "100 to 112 MPa", "+12.0%", "Lead with the stress away from it: 51.5 MPa", "settled (+3.0%)"]
+        ["The value at the clamp depends on the mesh", "100 to 112 MPa", "+12.0%", "Lead with the stress away from it: 51.0 MPa", "settled (+2.0%)"]
     {
         assert!(w.contains(needed), "`{needed}` missing: {w}");
     }
@@ -438,7 +441,7 @@ fn the_mesh_check_says_settled_or_still_changing_and_flags_a_peak_held_up_by_a_s
     let w = warnings(&peaked_run(112.0, Some("the clamp"), Some(56.0), 8.24));
     assert!(!w.contains("depends on the mesh") && w.contains("sharp inside corner") && w.contains("fillet"), "{w}");
     // At the clamp, settled: nothing.
-    assert_eq!(warnings(&peaked_run(104.0, Some("the clamp"), Some(51.0), 8.0)), "");
+    assert_eq!(warnings(&peaked_run(102.0, Some("the clamp"), Some(51.0), 8.0)), "");
     // A deflection still changing says so.
     assert!(warnings(&peaked_run(103.0, Some("the clamp"), Some(51.5), 9.0)).contains("largest deflection moved by +12.5%"));
     // Skipped or off: unknown, no warnings.
@@ -450,28 +453,29 @@ fn the_mesh_check_says_settled_or_still_changing_and_flags_a_peak_held_up_by_a_s
     assert!(check_line(&skipped).contains("about 670,000 nodes (about 11 GB)"), "{}", check_line(&skipped));
     let line = check_line(&Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &singular) });
     assert!(line.starts_with("mesh 1.50 → 1.00 mm: highest stress 100 → 112 MPa (+12.0%, at a support or load: depends on the mesh)"), "{line}");
-    // At the clamp and moved only 3 %: the line still never says settled for it (R1's clamp moved
+    // At the clamp and moved only 2 %: the line still never says settled for it (R1's clamp moved
     // +0.4 % over one step yet climbs to 151 MPa at 0.35 mm).
     let calm_line = check_line(&Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &calm) });
-    assert!(calm_line.contains("(+3.0%, at a support or load: depends on the mesh)"), "{calm_line}");
+    assert!(calm_line.contains("(+2.0%, at a support or load: depends on the mesh)"), "{calm_line}");
+    assert!(calm_line.contains("(+2.0%, settled, may be off by about 4.0%)"), "{calm_line}");
     // The words lead with the stress away from the clamp.
     let material = Material { name: "6061-T6".into(), e_mpa: 69000.0, nu: 0.33, yield_mpa: 240.0, source: "a handbook".into() };
     let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &singular) };
     let done = [first.clone_run()];
     let outcome = Outcome { done: &done, shown: &singular, check: &check };
     let (summary, assumptions, _) = wording(&material, &[], &[], &outcome, 1.5, &near);
-    assert!(summary.contains("away from the supports and loads, the highest von Mises stress is about 51.5 MPa"), "{summary}");
-    assert!(summary.find("51.5").unwrap_or(usize::MAX) < summary.find("112").unwrap_or(0), "the away peak comes first: {summary}");
+    assert!(summary.contains("away from the supports and loads, the highest von Mises stress is about 51.0 MPa"), "{summary}");
+    assert!(summary.find("51.0").unwrap_or(usize::MAX) < summary.find("112").unwrap_or(0), "the away peak comes first: {summary}");
     assert!(summary.contains("sits at the clamp") && summary.contains("still changing with the mesh"), "{summary}");
     assert!(summary.contains("Mesh check: mesh 1.50 → 1.00 mm"), "{summary}");
     assert!(assumptions.iter().any(|a| a.starts_with("Shown: the mesh check's finer mesh")), "{assumptions:?}");
-    // A peak at the clamp that moved only 3 % is still never called settled in the words: one
+    // A peak at the clamp that moved only 2 % is still never called settled in the words: one
     // step of refinement misses its slow climb (R1's clamp: +0.4 % from 1.5 to 1.0 mm, yet 151
     // MPa at 0.35 mm against 145).
     let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &calm) };
     let outcome = Outcome { done: &done, shown: &calm, check: &check };
     let (summary, _, _) = wording(&material, &[], &[], &outcome, 1.5, &near);
-    assert!(summary.contains("moved +3.0% with a finer mesh, but a value at an idealised support or load can keep creeping up"), "{summary}");
+    assert!(summary.contains("moved +2.0% with a finer mesh, but a value at an idealised support or load can keep creeping up"), "{summary}");
     assert!(!summary.contains("it settled"), "{summary}");
 }
 
@@ -739,8 +743,9 @@ fn plate_with_hole(s: &mut Session) -> (u64, u64) {
 /// Hall 1952; as given in W. D. Pilkey and D. F. Pilkey, Peterson's Stress Concentration Factors,
 /// 3rd ed., Wiley 2008, ch. 4), so the peak at the hole's edge is Kt σ_nom = 25.1 MPa.
 /// Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
-/// Mesh: 1.5 mm (the default here is 1.0 mm: 199 504 nodes, whose mesh check's finer run,
-/// 595 186 nodes and 14 GB measured, is over the 6 GB limit and skipped). At 1.5 mm the finer run
+/// Mesh: 1.5 mm (the default was 1.0 mm before `default_solid_size` capped its nodes: 199 504
+/// nodes, whose mesh check's finer run, 595 186 nodes and 14 GB measured, is over the 6 GB limit
+/// and skipped). At 1.5 mm the finer run
 /// is predicted at about 4 GB, so the check runs on a computer with at least 8 GB available.
 /// Run with SOLIDCRAFT_FEA_MAX_NODES set below its finer run (100000), the check is skipped and
 /// says why, and everything but "settled" is still checked.
@@ -1151,13 +1156,13 @@ fn g2_the_memory_limit_is_the_smaller_of_the_ceiling_and_half_the_memory_availab
     let sample =
         |kb: &str| format!("MemTotal:       32617284 kB\nMemFree:        15938128 kB\nMemAvailable:   {kb} kB\nBuffers:          402312 kB\n");
     assert_eq!(mem_available(&sample("8000000")), Some(8_192_000_000.0));
-    assert_eq!(finer_limit(None, Some(&sample("8000000")), 6.0e9), Limit::Memory(4_096_000_000.0));
-    assert_eq!(finer_limit(None, Some(&sample("30000000")), 6.0e9), Limit::Memory(6.0e9));
-    assert_eq!(finer_limit(None, Some("MemTotal: 32617284 kB\n"), 6.0e9), Limit::Memory(6.0e9));
-    assert_eq!(finer_limit(None, Some(&sample("lots")), 6.0e9), Limit::Memory(6.0e9));
+    assert_eq!(finer_limit(None, mem_available(&sample("8000000")), 6.0e9), Limit::Memory(4_096_000_000.0));
+    assert_eq!(finer_limit(None, mem_available(&sample("30000000")), 6.0e9), Limit::Memory(6.0e9));
+    assert_eq!(finer_limit(None, mem_available("MemTotal: 32617284 kB\n"), 6.0e9), Limit::Memory(6.0e9));
+    assert_eq!(finer_limit(None, mem_available(&sample("lots")), 6.0e9), Limit::Memory(6.0e9));
     assert_eq!(finer_limit(None, None, 6.0e9), Limit::Memory(6.0e9));
     // The cap, when set, replaces the memory limit.
-    assert_eq!(finer_limit(Some("250000"), Some(&sample("8000000")), 6.0e9), Limit::Nodes(250_000.0));
+    assert_eq!(finer_limit(Some("250000"), mem_available(&sample("8000000")), 6.0e9), Limit::Nodes(250_000.0));
 }
 
 /// Holds at `points`, fixed (X, Y and Z) or along one axis.
@@ -1397,4 +1402,486 @@ fn g3_the_memory_and_node_predictions_cover_what_was_measured() {
     let (r1, _) = predict_finer(14_555, Elements::Solid);
     eprintln!("G3 R1: finer nodes predicted {r1:.0}, measured 30447 ({:+.1}%)", 100.0 * (r1 / 30_447.0 - 1.0));
     assert!((30_447.0..=1.5 * 30_447.0).contains(&r1), "R1: {r1}");
+}
+
+/// A2: a solid part's default element size is about a 25th of it and half its thinnest side,
+/// but no finer than a mesh of about 80 000 nodes for its volume, so that its mesh check's finer
+/// run fits even at the densest mesh measured (D9). R2's plate (200 x 50 x 2 mm, a
+/// Ø10 hole) was meshed at 1.0 mm, too fine for its mesh check to fit; a compact part keeps its
+/// detail size; with no volume known the detail size stands.
+#[test]
+fn a_solid_parts_default_mesh_is_no_finer_than_about_eighty_thousand_nodes() {
+    let plate_volume = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
+    let plate_diag = (200.0f64 * 200.0 + 50.0 * 50.0 + 4.0).sqrt();
+    let h = default_solid_size(plate_diag, 2.0, Some(plate_volume));
+    assert!((h - (SOLID_NODES_PER_MM3 * plate_volume / DEFAULT_SOLID_NODES).cbrt()).abs() < 1e-12 && h > 1.3 && h < 1.4, "{h}");
+    // The finer run fits at the densest mesh measured, for the plate and for D9's thin disc
+    // (Ø100 x 2 mm), whose mesh check the ship review found skipped.
+    // The most nodes per mm³ measured of a curvature-sized mesh (see `SOLID_NODES_PER_MM3`).
+    const SOLID_NODES_PER_MM3_MOST: f64 = 11.3;
+    let disc_volume = std::f64::consts::PI * 50.0 * 50.0 * 2.0;
+    let disc_diag = (100.0f64 * 100.0 + 100.0 * 100.0 + 4.0).sqrt();
+    for (what, v, diag) in [("plate", plate_volume, plate_diag), ("disc", disc_volume, disc_diag)] {
+        let h = default_solid_size(diag, 2.0, Some(v));
+        let nodes = SOLID_NODES_PER_MM3_MOST * v / h.powi(3);
+        let (finer_nodes, finer_bytes) = predict_finer(nodes as usize, Elements::Solid);
+        assert!(finer_bytes <= MEMORY_CEILING, "{what}: the finer run fits: {finer_nodes} nodes, {finer_bytes} bytes");
+    }
+    let bar = default_solid_size((140.0f64 * 140.0 + 28.0 * 28.0 + 16.0).sqrt(), 4.0, Some(13_120.0));
+    assert_eq!(bar, 2.0, "the Peterson bar keeps two elements through its 4 mm");
+    assert_eq!(default_solid_size(plate_diag, 2.0, None), 1.0);
+    assert_eq!(default_solid_size(1.0, 0.1, Some(0.01)), 0.3, "never under 0.3 mm by default");
+    for v in [Some(f64::NAN), Some(-1.0), Some(f64::INFINITY), Some(0.0)] {
+        assert_eq!(default_solid_size(plate_diag, 2.0, v), 1.0, "{v:?}");
+    }
+}
+
+/// A bar 100 x 20 x `t` mm along X with a Ø`d` hole through its middle (along Z), made with the
+/// app's commands: its end faces at x = 0 and x = 100.
+fn bar_with_hole(s: &mut Session, t: f64, d: f64) -> (u64, u64) {
+    run(s, "solid.box", json!({"length": 100, "width": 20, "height": t, "body_name": "Bar"}));
+    run(s, "solid.cylinder", json!({"diameter": d, "height": t, "base": [50, 10, 0], "operation": "cut", "targets": ["Bar"]}));
+    let faces = run(s, "model.faces", json!({"body": "Bar"}));
+    let end = |x: f64| {
+        faces["faces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|f| {
+                (f["centroid"][0].as_f64().unwrap_or(f64::NAN) - x).abs() < 1e-6 && f["plane_normal"][0].as_f64().is_some_and(|n| n.abs() > 0.99)
+            })
+            .and_then(|f| f["index"].as_u64())
+            .unwrap_or_else(|| panic!("no end face at x = {x}: {faces}"))
+    };
+    (end(0.0), end(100.0))
+}
+
+/// V-A2, real: bars 100 x 20 x T mm (T 5 and 10) with one hole of Ø1, 2, 3, 4 or 6 mm through
+/// the middle, clamped at one end with 10 N down at the other, 6061-T6, at the default settings
+/// (the mesh check off, to keep it short). Before curvature sizing 5 of the 10 failed: gmsh's
+/// "overlapping facets" or CalculiX's "nonpositive jacobian" (PIL-294 ship review).
+/// Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Pass: all 10 solve, and the forces balance within 1 %.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn va2_bars_with_small_holes_all_mesh_and_solve_at_the_default_settings() {
+    let mut failed = Vec::new();
+    for t in [5.0, 10.0] {
+        for d in [1.0, 2.0, 3.0, 4.0, 6.0] {
+            let mut s = Session::default();
+            let (held, end) = bar_with_hole(&mut s, t, d);
+            let p = json!({"loads": [{"face": end, "force": [0, 0, -10]}], "supports": [{"face": held}], "material": "6061-T6", "mesh_check": false});
+            match s.execute(CMD, &p) {
+                Ok(r) => {
+                    eprintln!(
+                        "VA2 T{t} Ø{d}: {} nodes at {} mm, away peak {} MPa, {}",
+                        r["runs"][0]["nodes"], r["runs"][0]["mesh_size_mm"], r["peak_away"]["von_mises_mpa"], r["equilibrium"]["line"]
+                    );
+                    if number(&r["equilibrium"]["mismatch_percent"]) >= 1.0 {
+                        failed.push(format!("T{t} Ø{d}: {}", r["equilibrium"]));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("VA2 T{t} Ø{d}: {e}");
+                    failed.push(format!("T{t} Ø{d}: {e}"));
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{} of 10 failed:\n{}", failed.len(), failed.join("\n"));
+}
+
+/// V-A3, real: a hole too small for even the smallest element (a Ø0.02 mm hole in a 100 x 20 x
+/// 10 mm bar meshed at 4 mm, whose smallest element is 0.08 mm). A solver the system kills is
+/// `fea::fea_tests::a_program_the_system_kills_reads_as_out_of_memory`.
+/// Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Pass: it fails with plain advice that names a `mesh_size` to try, without the programs' own
+/// text (no "gpl.htm", "*ERROR", "Error   :", "signal"); or it meshes after all, which is said.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn va3_failures_read_as_plain_advice_without_the_programs_text() {
+    let clean = |e: &str| {
+        for raw in ["gpl.htm", "*ERROR", "Error   :", "signal", "exit status", "WARRANTY"] {
+            assert!(!e.contains(raw), "`{raw}` in: {e}");
+        }
+    };
+    let mut s = Session::default();
+    let (held, end) = bar_with_hole(&mut s, 10.0, 0.02);
+    let p = json!({"loads": [{"face": end, "force": [0, 0, -10]}], "supports": [{"face": held}], "material": "6061-T6", "mesh_check": false, "mesh_size": 4});
+    match s.execute(CMD, &p) {
+        Ok(r) => eprintln!("VA3 the Ø0.02 mm hole meshed after all: {} nodes", r["runs"][0]["nodes"]),
+        Err(e) => {
+            let e = e.to_string();
+            eprintln!("VA3 tiny hole: {e}");
+            clean(&e);
+            assert!(e.contains("`mesh_size`, such as"), "{e}");
+        }
+    }
+}
+
+/// D1: the memory a run may use is half the memory free, or 8 GB where that is unknown; a
+/// control group's limit (a container, `systemd-run -p MemoryMax=8G`) counts as what is free.
+#[test]
+fn d1_a_runs_memory_limit_is_half_the_memory_free_within_its_control_group() {
+    let files = |path: &str, file: &str| -> Option<String> {
+        match (path, file) {
+            ("/user.slice/run-1.service", "memory.max") => Some("8000000000\n".into()),
+            ("/user.slice/run-1.service", "memory.current") => Some("1000000000\n".into()),
+            ("/user.slice", "memory.max") => Some("max\n".into()),
+            ("/user.slice", "memory.current") => Some("3000000000\n".into()),
+            _ => None,
+        }
+    };
+    assert_eq!(cgroup_room("0::/user.slice/run-1.service\n", files), Some(7.0e9));
+    assert_eq!(cgroup_room("0::/user.slice\n", files), None, "max: no limit");
+    assert_eq!(cgroup_room("0::/\n", files), None);
+    assert_eq!(cgroup_room("12:memory:/x\n", files), None, "cgroup v1 is not read");
+    assert_eq!(first_run_limit(Some(8.0e9)), 4.0e9);
+    for unknown in [None, Some(f64::NAN), Some(-1.0), Some(0.0)] {
+        assert_eq!(first_run_limit(unknown), FIRST_RUN_FALLBACK, "{unknown:?}");
+    }
+    for e in [Elements::Solid, Elements::Shell] {
+        for b in [1.0e9, 4.0e9, 12.0e9] {
+            let back = solver_bytes(nodes_for_bytes(b, e), e);
+            assert!((back / b - 1.0).abs() < 1e-9, "{e:?} {b}: {back}");
+        }
+    }
+}
+
+/// D1 and V-A1: a run too big for the memory is refused before the solver starts, naming the
+/// memory it would need and a `mesh_size` that fits. R2's plate (200 x 50 x 2 mm, a Ø10 hole) at
+/// 0.7 mm under an 8 GB cap (4 GB a run) is refused from its volume, before meshing; its mesh
+/// (493 468 nodes with curvature sizing) is refused too; at the suggested size it fits.
+#[test]
+fn d1_a_run_too_big_for_the_memory_is_refused_with_a_mesh_size_that_fits() {
+    let v = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
+    let cap = 4.0e9;
+    let predicted = SOLID_NODES_PER_MM3 * v / 0.7f64.powi(3);
+    let words = memory_refusal(predicted, Elements::Solid, 0.7, cap, false).unwrap_or_else(|| panic!("0.7 mm under 4 GB is refused"));
+    eprintln!("D1 R2 at 0.7 mm: {words}");
+    assert!(words.starts_with("not solved: the solid mesh at about 0.7 mm would have about "), "{words}");
+    assert!(words.contains("GB of memory; this computer has about 4 GB to spare") && words.contains("`mesh_size`, such as "), "{words}");
+    let size: f64 = words
+        .split("such as ")
+        .nth(1)
+        .and_then(|t| t.split(" mm").next())
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("no size in: {words}"));
+    assert!(solver_bytes(SOLID_NODES_PER_MM3 * v / size.powi(3), Elements::Solid) <= cap, "{size} mm fits");
+    assert!(size < 1.3, "not far coarser than needed: {size}");
+    let meshed = memory_refusal(493_468.0, Elements::Solid, 0.7, cap, true).unwrap_or_else(|| panic!("the mesh is refused"));
+    assert!(meshed.contains(" has about 490,000 nodes"), "{meshed}");
+    assert_eq!(memory_refusal(493_468.0, Elements::Solid, 0.7, 13.0e9, true), None, "half of 26 GB free: it fits");
+    assert_eq!(memory_refusal(predicted, Elements::Solid, 0.7, 13.0e9, false), None, "a prediction is refused only when twice over");
+    let shell = memory_refusal(150_000.0, Elements::Shell, 1.0, 2.0e9, true).unwrap_or_else(|| panic!("150 000 shell nodes under 2 GB"));
+    assert!(shell.starts_with("not solved: the shell mesh"), "{shell}");
+    for raw in ["gpl.htm", "signal", "*ERROR"] {
+        assert!(!words.contains(raw) && !shell.contains(raw));
+    }
+    for junk in [f64::NAN, 0.0, -5.0] {
+        assert_eq!(memory_refusal(junk, Elements::Solid, 1.0, cap, true), None);
+        assert_eq!(memory_refusal(1.0e7, Elements::Solid, junk, cap, true), None);
+    }
+}
+
+/// V-A1, real: R2's plate at 0.7 mm with a run limit of 4 GB (an 8 GB computer) is refused before
+/// anything is meshed. Run it under `systemd-run --user -p MemoryMax=8G -p MemorySwapMax=0` to see
+/// the control group read; without it the limit is half the memory free here, and the case is
+/// refused only on a computer with less than about 29 GB free.
+/// Real: the app's modelling and memory reading. Faked: nothing.
+/// Pass: refused naming a `mesh_size`, within 15 s when the volume alone shows the mesh too big
+/// (and within the meshing time when the mesh must be counted first), or (with much memory free)
+/// it says so.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn va1_a_mesh_too_big_for_the_memory_is_refused_before_solving() {
+    let cap = first_run_limit(memory_available_here());
+    eprintln!("VA1 run limit here: {:.1} GB", cap / 1.0e9);
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 200, "width": 50, "height": 2, "body_name": "Plate"}));
+    run(&mut s, "solid.cylinder", json!({"diameter": 10, "height": 2, "base": [100, 25, 0], "operation": "cut", "targets": ["Plate"]}));
+    let p = json!({"supports": [{"face": [0, 25, 1]}], "loads": [{"face": [200, 25, 1], "force": [800, 0, 0]}], "material": "6061-T6", "mesh_size": 0.7, "mesh_check": false});
+    let started = std::time::Instant::now();
+    let r = s.execute(CMD, &p);
+    let took = started.elapsed().as_secs_f64();
+    match r {
+        Err(e) => {
+            let e = e.to_string();
+            eprintln!("VA1 refused in {took:.1} s: {e}");
+            assert!(e.contains("not solved: the solid mesh") && e.contains("`mesh_size`, such as"), "{e}");
+            // Refused from the volume alone when the prediction is over twice the limit; between
+            // one and two times it, the mesh is made and counted first, which takes longer.
+            let volume = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
+            let before = memory_refusal(SOLID_NODES_PER_MM3 * volume / 0.7f64.powi(3), Elements::Solid, 0.7, cap, false).is_some();
+            assert!(took < if before { 15.0 } else { 180.0 }, "{took} s (refused before meshing: {before})");
+        }
+        Ok(r) => {
+            eprintln!("VA1 solved in {took:.0} s ({} nodes): this computer has the memory", r["runs"][0]["nodes"]);
+            assert!(cap > 8.0e9, "solved under a {cap} limit");
+        }
+    }
+}
+
+/// D5: 304L is its own grade at the ASTM A240 minimum for 304L (170 MPa), not 304's 205.
+/// Input: the grade names "304L", "1.4307", "304" and "1.4301". Action: `fea::materials::grade`.
+/// Pass: the L names find 304L at 170 MPa with an ASTM source; the plain names find 304 at 205.
+#[test]
+fn d5_304l_is_its_own_grade_at_its_own_minimum_yield() {
+    for name in ["304L", "304 L", "1.4307", "AISI 304L"] {
+        let g = fea::materials::grade(name).unwrap_or_else(|| panic!("{name} is a grade"));
+        assert!(g.name == "304L stainless steel" && g.yield_mpa == 170.0 && g.source.contains("ASTM A240"), "{name}: {}", g.name);
+    }
+    for name in ["304", "1.4301"] {
+        assert_eq!(fea::materials::grade(name).map(|g| (g.name, g.yield_mpa)), Some(("304 stainless steel", 205.0)), "{name}");
+    }
+}
+
+/// D6: a setting the estimate does not take is refused, not dropped.
+/// Input: a valid setup with one extra key at a time: a remote load's `at`, top-level
+/// `load_cases`, a support's `pin`, a material's `density`. Action: `check_keys`, and the
+/// command as a dry run. Observable: the error. Pass: each is refused, naming the key and where it
+/// was, with what it means where that says more (a remote load, load cases); the setup without
+/// the extra key passes.
+#[test]
+fn d6_a_setting_the_estimate_does_not_take_is_refused_not_dropped() {
+    let base = json!({"loads": [{"face": 1, "force": [0, 0, -5]}], "supports": [{"face": 0, "type": "fixed"}],
+        "material": {"name": "x", "youngs_modulus": 70000, "poisson_ratio": 0.33, "yield_strength": 200, "source": "s"},
+        "mesh_size": 1.0, "dry_run": true});
+    assert!(check_keys(&base).is_ok());
+    let with = |path: &[&str], key: &str| {
+        let mut v = base.clone();
+        let mut at = &mut v;
+        for p in path {
+            at = match p.parse::<usize>() {
+                Ok(i) => &mut at[i],
+                Err(_) => &mut at[*p],
+            };
+        }
+        at[key] = json!(1);
+        check_keys(&v).map(|_| ()).unwrap_err().to_string()
+    };
+    let e = with(&["loads", "0"], "at");
+    assert!(e.contains("loads[0]: `at`") && e.contains("remote force"), "{e}");
+    let e = with(&[], "load_cases");
+    assert!(e.contains("`load_cases`") && e.contains("once for each load case"), "{e}");
+    let e = with(&["supports", "0"], "pin");
+    assert!(e.contains("supports[0]: `pin`") && e.contains("face, type"), "{e}");
+    let e = with(&["material"], "density");
+    assert!(e.contains("material: `density`"), "{e}");
+    // Through the command too, before anything else is looked at.
+    let mut s = Session::default();
+    let (_, held, tip) = strip(&mut s, 100.0);
+    let e = s
+        .execute(
+            CMD,
+            &json!({"loads": [{"face": tip, "force": [0, 0, -10], "at": [200, 0, 0]}], "supports": [{"face": held}], "material": aluminium(), "dry_run": true}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("`at`"), "{e}");
+}
+
+/// The keys `check_keys` takes are the contracts' own: none missing, none extra.
+#[test]
+fn d6_the_known_keys_are_the_contracts_fields() {
+    let schema = schemars::schema_for!(crate::schema::stress::StressEstimateParams);
+    let v = schema.as_value();
+    let props = |o: &Value| -> Vec<String> {
+        let mut k: Vec<String> = o["properties"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
+        k.sort();
+        k
+    };
+    let sorted = |k: &[&str]| -> Vec<String> {
+        let mut k: Vec<String> = k.iter().map(|x| x.to_string()).collect();
+        k.sort();
+        k
+    };
+    let defs = if v["$defs"].is_object() { &v["$defs"] } else { &v["definitions"] };
+    assert_eq!(props(v), sorted(ESTIMATE_KEYS));
+    assert_eq!(props(&defs["LoadParam"]), sorted(LOAD_KEYS));
+    assert_eq!(props(&defs["SupportParam"]), sorted(SUPPORT_KEYS));
+    assert_eq!(props(&defs["GivenMaterial"]), sorted(MATERIAL_KEYS));
+}
+
+/// D7: points on a cylinder (radius 2 about Z) with their outward normals, over `span` degrees.
+fn round_points(span: f64, part_outside: bool) -> Vec<(P, P)> {
+    (0..=40)
+        .map(|i| {
+            let t = (span * f64::from(i) / 40.0).to_radians();
+            let (c, s) = (t.cos(), t.sin());
+            let n = if part_outside { [-c, -s, 0.0] } else { [c, s, 0.0] };
+            ([2.0 * c, 2.0 * s, f64::from(i % 3)], n)
+        })
+        .collect()
+}
+
+/// D7: a round face is named for what it is, not always "a hole".
+/// Input: points on a cylinder over 360°, 90° and 180°, with normals toward the axis (the part
+/// outside it) or away (the part inside). Action: `round_kind`, `Round::words`. Pass: a full turn
+/// toward the axis is a hole, away a round outside face; a quarter turn is a fillet or a rounded
+/// edge; half a turn a curved inside or outside face; holes keep Ø and the rest R.
+#[test]
+fn d7_a_round_face_is_named_for_what_it_is() {
+    let kind = |span: f64, inside: bool| round_kind(&round_points(span, inside), [0.0, 0.0, 1.0], [0.0; 3]);
+    assert_eq!(kind(360.0, true), Round::Hole);
+    assert_eq!(kind(360.0, false), Round::Outside);
+    assert_eq!(kind(90.0, true), Round::Fillet);
+    assert_eq!(kind(90.0, false), Round::Rounded);
+    assert_eq!(kind(180.0, true), Round::InsideCurve);
+    assert_eq!(kind(180.0, false), Round::OutsideCurve);
+    assert_eq!(Round::Hole.words(2, 3.3), "2 holes Ø6.60");
+    assert_eq!(Round::Outside.words(1, 50.0), "a round outside face Ø100");
+    assert_eq!(Round::Fillet.words(1, 2.0), "a fillet R2.00");
+    assert_eq!(Round::Rounded.words(3, 2.0), "3 rounded edges R2.00");
+}
+
+/// D7 in the app: a sheet's bend is not called a hole, and a hole still is.
+/// Input: the angle bracket (a base, a flange bent up, two Ø6.6 holes). Action: dry runs held at
+/// a hole, and at the bend's round faces. Observable: `setup`. Pass: the hole reads "a hole
+/// Ø6.60"; the bend never reads as a hole.
+#[test]
+fn d7_a_bend_is_not_called_a_hole() {
+    let mut s = Session::default();
+    let hole = angle(&mut s);
+    let body = s.model.state().bodies.first().map(|b| b.name.clone()).unwrap_or_default();
+    let faces = run(&mut s, "model.faces", json!({"body": body}));
+    let bend: Vec<u64> = faces["faces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["cylinder"]["radius"].as_f64().is_some_and(|r| (r - 3.3).abs() > 1e-6))
+        .filter_map(|f| f["index"].as_u64())
+        .collect();
+    assert!(!hole.is_empty() && !bend.is_empty(), "a hole and a bend: {faces}");
+    let mut setup = |held: Value| {
+        run(
+            &mut s,
+            CMD,
+            json!({"loads": [{"face": [5.0, 5.0, 1.5], "force": [0, 0, -5]}], "supports": [{"face": held}], "material": aluminium(), "dry_run": true}),
+        )["setup"]
+            .to_string()
+    };
+    let at_hole = setup(json!(hole[0]));
+    assert!(at_hole.contains("Held still: a hole Ø6.60"), "{at_hole}");
+    let at_bend = setup(json!(bend));
+    assert!(!at_bend.contains("hole"), "{at_bend}");
+}
+
+/// D8: one share of yield, the one the summary leads with, and a past-yield warning that names the
+/// peak that passed it.
+/// Input: peaks at 300 MPa overall against a 240 MPa yield, with the overall peak at a support or
+/// not, and the away peak under or over yield, or none. Action: `lead_stress`, `yield_warning`.
+/// Pass: the lead is the away peak only when the overall sits at a support; the warning says
+/// "only at" the support when the away peak is under yield, quotes the away peak when it is over,
+/// says nothing can be read with no away node, and keeps the plain words without a support peak;
+/// no warning under yield.
+#[test]
+fn d8_one_share_of_yield_and_the_warning_names_the_peak_that_passed_it() {
+    let peaks = |at: bool, away: Option<f64>| fea::Peaks {
+        at: at.then(|| "the fixed face".to_string()),
+        away: away.map(|v| (v, [1.0, 2.0, 3.0])),
+        distance: 3.0,
+    };
+    let near = |_: P| "the hole".to_string();
+    assert_eq!(lead_stress(300.0, &peaks(true, Some(120.0))), 120.0);
+    assert_eq!(lead_stress(300.0, &peaks(false, Some(120.0))), 300.0);
+    assert_eq!(lead_stress(300.0, &peaks(true, None)), 300.0);
+    let w = |at, away| yield_warning(300.0, &peaks(at, away), 240.0, &near).unwrap_or_default();
+    let only = w(true, Some(120.0));
+    assert!(only.contains("only at the fixed face") && only.contains("120 MPa, 50.0% of yield") && !only.contains("would yield and"), "{only}");
+    let over = w(true, Some(250.0));
+    assert!(over.starts_with("Away from the supports and loads, the highest stress (250 MPa, near the hole)"), "{over}");
+    assert!(w(true, None).contains("cannot be read from this mesh"));
+    let plain = w(false, Some(250.0));
+    assert!(plain.starts_with("The highest stress (300 MPa) is above") && plain.contains("would yield"), "{plain}");
+    assert_eq!(yield_warning(200.0, &peaks(true, Some(120.0)), 240.0, &near), None);
+}
+
+/// D9, real: a thin solid part gets its mesh check at the default settings.
+/// Input: a Ø100 x 2 mm disc, held at its rim, 100 N down on its top face, 6061-T6, no mesh size
+/// given. Action: the estimate. Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Pass: the mesh check ran (where this computer allows a 6 GB finer run and no node cap is set);
+/// `fraction_of_yield` is the share of the number the summary leads with and
+/// `fraction_of_yield_overall` the overall peak's.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn d9_a_thin_disc_gets_its_mesh_check_at_the_default_settings() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"diameter": 100, "height": 2, "body_name": "Disc"}));
+    let p = json!({"supports": [{"face": [50, 0, 1]}], "loads": [{"face": [0, 0, 2], "force": [0, 0, -100]}], "material": "6061-T6"});
+    let r = run(&mut s, CMD, p);
+    let line = r["mesh_check"]["line"].as_str().unwrap_or("");
+    eprintln!(
+        "D9 disc: {} nodes at {} mm, mesh check {line}; fraction {} (overall {}); times {:?} s",
+        r["runs"][r["runs"].as_array().map_or(0, |a| a.len().saturating_sub(1))]["nodes"],
+        r["runs"][r["runs"].as_array().map_or(0, |a| a.len().saturating_sub(1))]["mesh_size_mm"],
+        r["fraction_of_yield"],
+        r["fraction_of_yield_overall"],
+        r["runs"].as_array().map(|a| a.iter().map(|x| number(&x["seconds"])).collect::<Vec<_>>())
+    );
+    let roomy = matches!(finer_limit_here(), Limit::Memory(cap) if cap >= MEMORY_CEILING);
+    if roomy {
+        assert_eq!(r["mesh_check"]["status"], "ran", "{line}");
+    }
+    let yield_mpa = 240.0;
+    let overall = number(&r["runs"][0]["max_von_mises_mpa"]);
+    // The away peak leads only when there is one: a load over the whole top face leaves no node
+    // away from supports and loads.
+    let lead = if r["peak_at_support"].is_string() && r["peak_away"].is_object() { number(&r["peak_away"]["von_mises_mpa"]) } else { overall };
+    assert!((number(&r["fraction_of_yield"]) - lead / yield_mpa).abs() < 2e-3, "{r}");
+    assert!((number(&r["fraction_of_yield_overall"]) - overall / yield_mpa).abs() < 2e-3, "{r}");
+}
+
+/// D10: a grade's yield is warned about past the thickness its standard specifies it for.
+/// Input: 6061-T6 (to 6.3 mm), S235 (to 16 mm), 304 (no limit) and a material given with the
+/// request, at thicknesses inside and outside; then a 100 x 50 x 10 mm 6061-T6 block as a dry run.
+/// Action: `grade_thickness_warning`, the command. Pass: a warning naming the limit only for a
+/// table grade past its limit; the block's dry run carries it.
+#[test]
+fn d10_a_grade_past_the_thickness_its_yield_holds_for_is_warned() {
+    let g = |n: &str| fea::materials::grade(n).map(|g| g.material()).unwrap_or_else(|| panic!("{n}"));
+    let w = grade_thickness_warning(&g("6061-T6"), 10.0, false).unwrap_or_default();
+    assert!(w.contains("10.0 mm across its thinnest side") && w.contains("specified only up to 6.3 mm") && w.contains("certificate"), "{w}");
+    assert_eq!(grade_thickness_warning(&g("6061-T6"), 6.3, true), None);
+    assert!(grade_thickness_warning(&g("S235"), 20.0, true).is_some_and(|w| w.contains("20.0 mm thick") && w.contains("up to 16 mm")));
+    assert_eq!(grade_thickness_warning(&g("S355"), 12.0, false), None);
+    assert_eq!(grade_thickness_warning(&g("304"), 80.0, false), None);
+    let given = Material { name: "x".into(), e_mpa: 70_000.0, nu: 0.33, yield_mpa: 240.0, source: "s".into() };
+    assert_eq!(grade_thickness_warning(&given, 80.0, false), None);
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 50, "height": 10, "body_name": "Block"}));
+    let r = run(
+        &mut s,
+        CMD,
+        json!({"supports": [{"face": [0, 25, 5]}], "loads": [{"face": [100, 25, 5], "force": [0, 0, -10]}], "material": "6061-T6", "dry_run": true}),
+    );
+    assert!(r["warnings"].to_string().contains("specified only up to 6.3 mm"), "{}", r["warnings"]);
+}
+
+/// D11: a `thickness` that is not the sheet's own is warned about.
+/// Input: the angle bracket (a 1.5 mm sheet) as dry runs with `thickness` 3, 1.5 and 1.55, and
+/// 3 with both shells and solids. Action: the command, `thickness_mismatch`. Pass: 3 mm warns,
+/// naming both thicknesses, and with a solid run says the two runs are of different parts; 1.5
+/// and 1.55 (within 5 %) do not.
+#[test]
+fn d11_a_thickness_that_is_not_the_sheets_own_is_warned() {
+    let mut s = Session::default();
+    let hole = angle(&mut s);
+    let mut warnings = |t: f64, elements: &str| {
+        run(
+            &mut s,
+            CMD,
+            json!({"loads": [{"face": [5.0, 5.0, 1.5], "force": [0, 0, -5]}], "supports": [{"face": hole[0]}], "material": "6061-T6",
+                   "thickness": t, "elements": elements, "dry_run": true}),
+        )["warnings"]
+            .to_string()
+    };
+    let w = warnings(3.0, "shell");
+    assert!(w.contains("The thickness given (3.00 mm) is not this sheet's own (1.50 mm)") && !w.contains("two runs"), "{w}");
+    assert!(warnings(3.0, "both").contains("the two runs are of different parts"));
+    for t in [1.5, 1.55] {
+        let w = warnings(t, "shell");
+        assert!(!w.contains("not this sheet's own"), "{t}: {w}");
+    }
+    assert_eq!(thickness_mismatch(1.0, 0.0, false), None);
 }
