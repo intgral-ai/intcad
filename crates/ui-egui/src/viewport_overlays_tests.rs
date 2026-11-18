@@ -70,7 +70,8 @@ fn section_details_live_fields_reconstruct_arbitrary_plane_without_losing_compan
     let effect = h.app.session.status_items().remove(0);
     let params =
         crate::viewport_details::edit_params(&h.app, &effect, "offset", &V::Length { value: -25.4, units: "in".into(), decimals: 2 }).unwrap();
-    assert_eq!(params["offset"], "-25.4 mm");
+    // The field is the cut 's distance along the normal; the command measures it against it.
+    assert_eq!(params["offset"], "25.4 mm");
     assert_eq!(params["hatch"], true);
     assert_eq!(params["flip"], !current_flip);
     h.app.run("inspect.section", params).unwrap();
@@ -199,7 +200,10 @@ fn details_native_value_edits_run_real_commands_without_design_history() {
             _ => panic!("real edited setting expected"),
         };
         assert!((value - expected).abs() < 1e-9, "native {field}: {value} instead of {expected}");
-        assert_eq!((h.app.session.doc.to_json(), h.app.session.undo.len()), before);
+        // View state, so the design is untouched. Only `inspect.section` records its change as
+        // an undo step of its own (`Snapshot::section`).
+        assert_eq!(h.app.session.doc.to_json(), before.0);
+        assert_eq!(h.app.session.undo.len(), before.1 + usize::from(command == "inspect.section"));
         assert!(h.app.dialog.is_none());
     }
 }

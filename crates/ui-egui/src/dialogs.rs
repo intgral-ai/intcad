@@ -5494,6 +5494,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 }
                 _ => return Err("pick a plane or a planar face".into()),
             };
+            // The engine measures `offset` against the plane's normal (a positive distance cuts
+            // more away); this dialog's distance is along the normal, so it is given negated.
+            let offset = if offset.trim().is_empty() { offset.clone() } else { format!("-({offset})") };
             ("inspect.section", json!({"plane": plane, "offset": offset, "flip": flip, "hatch": hatch}))
         }
         Kind::Move { .. } => return Ok(vec![("solid.move".into(), crate::dialogs_move::params(app, d)?)]),

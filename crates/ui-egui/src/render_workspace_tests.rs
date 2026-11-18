@@ -1811,7 +1811,8 @@ fn product_gpu_buffers_preserve_opacity_and_never_contain_overlays() {
     assert!(gpu.tris.is_empty());
     assert!(!gpu.glass.is_empty());
     let color = |v: &[u8]| {
-        let i = v.get(crate::gpu::TRI_SIZE - 4..).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes)?;
+        // The palette index sits at TRI_COLOR_AT; after it comes the analysis value word.
+        let i = v.get(crate::gpu::TRI_COLOR_AT..crate::gpu::TRI_COLOR_AT + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes)?;
         gpu.palette.get(crate::gpu::PaletteIndex(i))
     };
     assert!(gpu.glass.as_chunks::<{ crate::gpu::TRI_SIZE }>().0.iter().all(|v| color(v) == Some([51, 102, 153, 102])));

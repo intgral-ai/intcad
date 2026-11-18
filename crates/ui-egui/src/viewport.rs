@@ -8483,7 +8483,10 @@ mod tests {
         assert!(whole.iter().zip(&preview).filter(|(a, b)| a != b).count() > 100, "the picture ignored the uncommitted section preview");
         assert!(std::sync::Arc::ptr_eq(&before, &h.app.session.doc));
         assert_eq!(h.app.session.undo.len(), undo);
-        h.app.run("inspect.section", json!({"plane":"XZ","offset":15})).unwrap();
+        // The dialog's own command: its 15 mm is along the plane's normal, which the engine
+        // measures its `offset` against.
+        let cmds = crate::dialogs::apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+        h.app.run(&cmds[0].0, cmds[0].1.clone()).unwrap();
         h.app.dialog = None;
         assert_eq!(preview, pixels(&mut h, cam), "preview and committed section must draw identically");
 

@@ -1110,6 +1110,8 @@ fn snapshot_native_transitions_stage_effects_without_canceling_editors() {
     let key = editor_key(&h);
     h.probe.edit(&key, |s| s.reject_cancel = true).unwrap();
     let mut native_layout = h.runtime.layout().layout().clone();
+    // A native window is no side column's section, so the column it remembered goes.
+    native_layout.sections.first_mut().unwrap().column = None;
     native_layout.sections.first_mut().unwrap().location = SectionLocation::Window {
         host: HostId::new("snapshot-host").unwrap(),
         origin: Point { x: 0.0, y: 0.0 },

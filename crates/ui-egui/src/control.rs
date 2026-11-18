@@ -2699,8 +2699,9 @@ mod tests {
         assert!(app.session.cut().is_none() && crate::viewport::section_plane(&app).is_some());
         let preview = render(&mut app, &dir.join("preview.png"));
         assert!(whole != preview, "the model render ignores the section the window shows");
-        // Committed, it renders the same.
-        app.run("inspect.section", json!({"plane": "XZ", "offset": 15})).unwrap();
+        // Committed, it renders the same: run the command the dialog's OK makes.
+        let cmds = crate::dialogs::apply_commands(&app, app.dialog.as_ref().unwrap()).unwrap();
+        app.run(&cmds[0].0, cmds[0].1.clone()).unwrap();
         app.dialog = None;
         assert!(render(&mut app, &dir.join("committed.png")) == preview, "the committed section renders differently");
         let _ = std::fs::remove_dir_all(&dir);

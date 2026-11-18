@@ -116,7 +116,8 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                             environment: studio.ambient,
                             sun: studio.sun_enabled.then_some(studio.sun),
                             area_lights: AreaLights::new(&studio.area_lights).map_err(|error| error.to_string())?,
-                            ..Default::default()
+                            directional_lights: studio.directional_lights,
+                            punctual_lights: studio.punctual_lights.clone(),
                         })
                     } else {
                         None
@@ -272,6 +273,8 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
                     view.studio.sun = sun;
                 }
                 view.studio.area_lights = lighting.area_lights.iter().copied().collect();
+                view.studio.directional_lights = lighting.directional_lights;
+                view.studio.punctual_lights = lighting.punctual_lights;
             }
             if let Some(SkyEnvironment::Sky { gradient, rotation_rad, intensity }) = &options.environment {
                 view.studio.environment = studio::Environment::Sky;
