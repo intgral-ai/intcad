@@ -495,6 +495,212 @@ pub fn solver_threads() -> (Vec<(&'static str, String)>, usize) {
     (env, used)
 }
 
+/// Elements per full turn of a curved face (gmsh `-clcurv`): a Ø1 mm hole in a part meshed at
+/// 4 mm gets elements of about 0.13 mm around it instead of one element across it. Without it,
+/// 5 of 6 bars 100 x 20 mm with a Ø1 to 4 mm hole failed to mesh or solve at the default size;
+/// with 24, all 6 solved, and the Peterson shoulder-fillet bar came within 2.1 % of its chart
+/// (4.8 % low before). The plate with a Ø10 hole (R2) was unchanged (measured on gmsh 4.12.1 and
+/// CalculiX 2.21, PIL-294).
+pub const CURVATURE_ELEMENTS: u32 = 24;
+
+/// The smallest element as a share of the largest (gmsh `-clmin`): curvature sizing stops at
+/// 1/50 of `mesh_size`, so a tiny round feature cannot make the mesh explode. A feature smaller
+/// than that fails to mesh and is reported as such ([`Trouble::Overlap`]).
+pub const MIN_SIZE_SHARE: f64 = 50.0;
+
+/// The mesher's arguments for `part.step`, elements of at most `h` mm (`-clmax`), written to
+/// `out`: second order; sized from curvature down to `h / MIN_SIZE_SHARE`; second-order elements
+/// straightened where their curved edges would turn them inside out (`-optimize_ho`: alone it left
+/// 3 of the 6 bars failing; with curvature sizing it adds nothing measurable to the time).
+pub fn mesher_args(elements: Elements, h: f64, out: &str) -> Vec<String> {
+    [
+        "part.step",
+        if elements == Elements::Solid { "-3" } else { "-2" },
+        "-order",
+        "2",
+        "-clmax",
+        &format!("{h}"),
+        "-clmin",
+        &format!("{}", h / MIN_SIZE_SHARE),
+        "-clcurv",
+        &CURVATURE_ELEMENTS.to_string(),
+        "-optimize_ho",
+        "-format",
+        "msh22",
+        "-save_all",
+        "-o",
+        out,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// How a mesher's or solver's run ended without a result.
+#[derive(Debug)]
+pub enum Ended {
+    /// It could not start, or Stop was pressed: the message as it stands.
+    Said(String),
+    /// It ran longer than this many seconds and was stopped.
+    Timeout(u64),
+    /// It stopped by itself without a result: its exit code, or the signal that ended it, and its
+    /// whole output (which stays in its log file).
+    Failed { code: Option<i32>, signal: Option<i32>, log: String },
+}
+
+/// What a failed run comes to, read from how it ended and its output.
+#[derive(Debug, PartialEq)]
+pub enum Trouble {
+    /// The mesher's surface mesh crossed itself and no volume mesh came of it (gmsh: "Invalid
+    /// boundary mesh (overlapping facets) on surface 7 surface 7", "No elements in volume 1"): a
+    /// feature small next to the elements. The mesher's surface tag, when it named one.
+    Overlap(Option<i64>),
+    /// An element turned inside out, which the solver refuses (CalculiX: "*ERROR in e_c3d:
+    /// nonpositive jacobian" and on the next line "determinant in element 1234"). The element's
+    /// number in the job, from 1, when given.
+    InsideOut(Option<usize>),
+    /// The system ended it for lack of memory: killed (signal 9, which is what Linux's
+    /// out-of-memory killer sends), Windows' "not enough memory" status, or the program saying so.
+    OutOfMemory,
+    /// It ran past its time limit, seconds.
+    Timeout(u64),
+    /// Anything else: the program's first error line, when it printed one.
+    Other(Option<String>),
+}
+
+/// Windows' STATUS_NO_MEMORY (0xC0000017), as a process exit code.
+const WINDOWS_NO_MEMORY: i32 = 0xC000_0017_u32 as i32;
+
+/// The first whole number in `text`.
+fn first_number(text: &str) -> Option<u64> {
+    let digits: String = text.chars().skip_while(|c| !c.is_ascii_digit()).take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Read what went wrong from how a run ended (see [`Trouble`]).
+pub fn trouble(ended: &Ended) -> Trouble {
+    let (code, signal, log) = match ended {
+        Ended::Timeout(limit) => return Trouble::Timeout(*limit),
+        Ended::Said(text) => return Trouble::Other(Some(text.clone())),
+        Ended::Failed { code, signal, log } => (*code, *signal, log.as_str()),
+    };
+    let lower = log.to_lowercase();
+    let says_memory = ["out of memory", "bad_alloc", "could not allocate", "error allocating", "not enough memory", "cannot allocate memory"]
+        .iter()
+        .any(|w| lower.contains(w));
+    if signal == Some(9) || code == Some(WINDOWS_NO_MEMORY) || says_memory {
+        return Trouble::OutOfMemory;
+    }
+    if let Some(i) = lower.find("nonpositive jacobian") {
+        let after = lower.get(i..).unwrap_or("");
+        let element = after.find("element").and_then(|j| after.get(j..)).and_then(first_number).and_then(|n| usize::try_from(n).ok());
+        return Trouble::InsideOut(element);
+    }
+    if lower.contains("overlapping facets") || lower.contains("no elements in volume") {
+        let surface = lower
+            .find("overlapping facets")
+            .and_then(|i| lower.get(i..))
+            .and_then(|t| t.find("on surface").and_then(|j| t.get(j..)))
+            .and_then(first_number)
+            .and_then(|n| i64::try_from(n).ok());
+        return Trouble::Overlap(surface);
+    }
+    let line = log
+        .lines()
+        .map(str::trim)
+        .find(|l| (l.starts_with("Error") || l.starts_with("*ERROR")) && l.chars().any(char::is_alphanumeric) && !l.contains("---"))
+        .map(|l| l.chars().take(200).collect::<String>());
+    Trouble::Other(line)
+}
+
+/// A number to two significant figures, for advice ("such as 0.75 mm").
+fn about(x: f64) -> String {
+    if !(x.is_finite() && x > 0.0) {
+        return "?".into();
+    }
+    let k = 10f64.powi(1 - x.log10().floor() as i32);
+    let r = (x * k).round() / k;
+    format!("{r}")
+}
+
+/// Why a mesher's or solver's run gave no result, in plain words: what happened and what to change,
+/// and where on the part when the trouble can be placed. The programs' own output stays in their
+/// log files (kept with `keep_files: true`), never in the reply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Failure {
+    /// What happened, up to where the place goes.
+    pub head: String,
+    /// The rest: why, and what to change.
+    pub tail: String,
+    /// A point at the trouble, mm, when it can be placed.
+    pub at: Option<P>,
+}
+
+impl From<String> for Failure {
+    fn from(head: String) -> Self {
+        Failure { head, tail: String::new(), at: None }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(head: &str) -> Self {
+        head.to_string().into()
+    }
+}
+
+impl Failure {
+    /// The whole message, with `near` naming the face at the trouble's point.
+    pub fn words(&self, near: impl Fn(P) -> String) -> String {
+        match self.at {
+            Some(p) => format!("{} near {}{}", self.head, near(p), self.tail),
+            None => format!("{}{}", self.head, self.tail),
+        }
+    }
+
+    /// The failure a run's [`Trouble`] comes to, for the `what` ("mesher" or "solver") `program`
+    /// with elements of about `h` mm.
+    pub fn of(trouble: &Trouble, what: &str, program: &str, h: f64) -> Failure {
+        let finer = about(h / 2.0);
+        let coarser = about(h * 1.5);
+        let (head, tail) = match trouble {
+            Trouble::Overlap(_) => (
+                "the mesher could not fill the part with elements".to_string(),
+                format!(
+                    ": the mesh of its surface crosses itself at a feature that is small next to the elements, about {} mm here (a small \
+                     hole or fillet, a thin wall, or a sliver of a face). Give a smaller `mesh_size`, such as {finer} mm, or leave the \
+                     feature out of the body that is analysed",
+                    about(h)
+                ),
+            ),
+            Trouble::InsideOut(_) => (
+                "the mesh has an element turned inside out".to_string(),
+                format!(", at a tightly curved or thin spot, so the solver could not use it. Give a smaller `mesh_size`, such as {finer} mm"),
+            ),
+            Trouble::OutOfMemory => (
+                format!("the {what} ran out of memory on this computer"),
+                format!(
+                    " with elements of about {} mm. Give a larger `mesh_size`, such as {coarser} mm, or close other programs and run it \
+                     again",
+                    about(h)
+                ),
+            ),
+            Trouble::Timeout(limit) => (
+                format!("the {what} took longer than {} minutes and was stopped", limit.div_ceil(60)),
+                format!(": the model is too large to finish in that time here. Give a larger `mesh_size`, such as {coarser} mm"),
+            ),
+            Trouble::Other(Some(line)) => (
+                format!("the {what} `{program}` stopped without a result ({line})"),
+                ". Run the estimate again with `keep_files: true` to keep its log".to_string(),
+            ),
+            Trouble::Other(None) => (
+                format!("the {what} `{program}` stopped without a result and gave no reason"),
+                ". Run the estimate again with `keep_files: true` to keep its log".to_string(),
+            ),
+        };
+        Failure { head, tail, at: None }
+    }
+}
+
 /// Run `program` with `args` (and `env` set) in `dir`, its output to `<log>.log`, at most
 /// `limit` seconds; with networking switched off where this computer allows it. Returns its
 /// output and whether it ran isolated.
@@ -509,7 +715,7 @@ fn run_program(
     limit: u64,
     what: &str,
     generation: u64,
-) -> Result<(String, bool), String> {
+) -> Result<(String, bool), Ended> {
     use std::process::{Command, Stdio};
     let isolated = can_isolate();
     let mut cmd = if isolated {
@@ -520,11 +726,11 @@ fn run_program(
         Command::new(program)
     };
     let log_path = dir.join(format!("{log}.log"));
-    let out = std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
-    let err = out.try_clone().map_err(|e| e.to_string())?;
+    let out = std::fs::File::create(&log_path).map_err(|e| Ended::Said(format!("{}: {e}", log_path.display())))?;
+    let err = out.try_clone().map_err(|e| Ended::Said(e.to_string()))?;
     cmd.args(args).envs(env.iter().map(|(k, v)| (*k, v.as_str()))).current_dir(dir).stdin(Stdio::null()).stdout(out).stderr(err);
     let mut child = cmd.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
+        Ended::Said(if e.kind() == std::io::ErrorKind::NotFound {
             format!(
                 "stress estimates need two free programs on this computer, the mesher gmsh and the solver CalculiX, and `{program}` was \
                  not found. Install them (on Ubuntu or Debian: sudo apt install gmsh calculix-ccx; elsewhere from gmsh.info and \
@@ -533,7 +739,7 @@ fn run_program(
             )
         } else {
             format!("could not start the {what} `{program}`: {e}")
-        }
+        })
     })?;
     let start = std::time::Instant::now();
     loop {
@@ -541,79 +747,47 @@ fn run_program(
             Ok(Some(status)) => {
                 let text = std::fs::read_to_string(&log_path).unwrap_or_default();
                 if !status.success() {
-                    let tail: Vec<&str> = text.lines().rev().take(6).collect();
-                    let tail: Vec<&str> = tail.into_iter().rev().collect();
-                    return Err(format!("the {what} `{program}` stopped with {status}: {}", tail.join(" | ")));
+                    #[cfg(unix)]
+                    let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+                    #[cfg(not(unix))]
+                    let signal = None;
+                    return Err(Ended::Failed { code: status.code(), signal, log: text });
                 }
                 return Ok((text, isolated));
             }
             Ok(None) if CANCEL.load(Ordering::Relaxed) != generation => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(STOPPED.into());
+                return Err(Ended::Said(STOPPED.into()));
             }
             Ok(None) if start.elapsed().as_secs() > limit => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("the {what} `{program}` took longer than {limit} s and was stopped"));
+                return Err(Ended::Timeout(limit));
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            Err(e) => return Err(format!("the {what} `{program}`: {e}")),
+            Err(e) => return Err(Ended::Said(format!("the {what} `{program}`: {e}"))),
         }
     }
 }
 
-/// Where one solve stands in an estimate: for the status line and Stop.
-pub struct RunCtx<'a> {
-    pub document_id: &'a str,
-    pub run: usize,
-    pub runs: usize,
-    pub generation: u64,
-    pub started: f64,
-}
-
-/// Mesh `step` (the body, mm) and solve it with `elements`, in `dir`.
-#[cfg(target_arch = "wasm32")]
-pub fn solve(_setup: &Setup, _step: &[u8], _faces: &Faces, _dir: &Path, _elements: Elements, _ctx: &RunCtx) -> Result<Run, String> {
-    Err("the stress estimate needs the desktop app: it runs a mesher and a solver on this computer".into())
-}
-
-/// Mesh `step` (the body, mm) and solve it with `elements`, in `dir`.
+/// A failed run's [`Failure`] and its [`Trouble`]: a start failure or Stop as it stands, anything
+/// else read for what went wrong.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: Elements, ctx: &RunCtx) -> Result<Run, String> {
-    let started = std::time::Instant::now();
-    let stage = |stage: Stage| {
-        set_progress(Some(Progress { document_id: ctx.document_id.to_string(), stage, elements, run: ctx.run, runs: ctx.runs, since: ctx.started }))
-    };
-    stage(Stage::Meshing);
-    let (gmsh, ccx) = programs();
-    let word = elements.word();
-    // Each run of an estimate has files of its own (the mesh check solves the same model again).
-    let tag = format!("{word}-{}", ctx.run);
-    let step_path = dir.join("part.step");
-    std::fs::write(&step_path, step).map_err(|e| format!("{}: {e}", step_path.display()))?;
-    let h = setup.mesh_size;
-    let msh_name = format!("{tag}.msh");
-    let args: Vec<String> = [
-        "part.step",
-        if elements == Elements::Solid { "-3" } else { "-2" },
-        "-order",
-        "2",
-        "-clmax",
-        &format!("{h}"),
-        "-format",
-        "msh22",
-        "-save_all",
-        "-o",
-        &msh_name,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    let (_, mesher_isolated) = run_program(&gmsh, &args, &[], dir, &format!("{tag}-mesher"), 600, "mesher", ctx.generation)?;
-    let text = std::fs::read_to_string(dir.join(&msh_name)).map_err(|e| format!("the mesher wrote no mesh ({e})"))?;
-    let mut msh = formats::read_msh(&text)?;
-    // The mesh in mm, as the body: a STEP reader that converted to metres is scaled back.
+fn failure(ended: Ended, what: &str, program: &str, h: f64) -> (Failure, Trouble) {
+    match ended {
+        Ended::Said(text) => (text.into(), Trouble::Other(None)),
+        e => {
+            let t = trouble(&e);
+            (Failure::of(&t, what, program, h), t)
+        }
+    }
+}
+
+/// Scale `msh` to mm to match the body (`faces`), whose diagonal it is checked against: a STEP
+/// reader that converted to metres is scaled back.
+#[cfg(not(target_arch = "wasm32"))]
+fn mesh_in_mm(msh: &mut formats::Msh, faces: &Faces) -> Result<(), String> {
     let diag = |pts: &mut dyn Iterator<Item = P>| {
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
         for p in pts {
@@ -637,12 +811,84 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     } else if (ratio - 1.0).abs() > 0.05 {
         return Err(format!("the mesh is {mesh_diag:.3} across where the body is {body_diag:.3} mm: its units are not mm"));
     }
+    Ok(())
+}
+
+/// Where the mesher's surface `tag` lies, mm: a surface-only mesh of the same part (quick: no
+/// volume) gives the surface's triangles, and the first one's middle is the place. `None` when
+/// that mesh fails too.
+#[cfg(not(target_arch = "wasm32"))]
+fn surface_point(gmsh: &str, h: f64, tag: i64, faces: &Faces, dir: &Path, generation: u64) -> Option<P> {
+    let name = "locate.msh";
+    run_program(gmsh, &mesher_args(Elements::Shell, h, name), &[], dir, "locate-mesher", 120, "mesher", generation).ok()?;
+    let mut msh = formats::read_msh(&std::fs::read_to_string(dir.join(name)).ok()?).ok()?;
+    mesh_in_mm(&mut msh, faces).ok()?;
+    let (_, tri) = msh.tri6.iter().find(|(s, _)| *s == tag)?;
+    let corners: Vec<P> = tri.iter().take(3).filter_map(|n| msh.nodes.get(n).copied()).collect();
+    let [a, b, c] = corners[..] else { return None };
+    Some(model::mul(model::add(model::add(a, b), c), 1.0 / 3.0))
+}
+
+/// Where one solve stands in an estimate: for the status line and Stop.
+pub struct RunCtx<'a> {
+    pub document_id: &'a str,
+    pub run: usize,
+    pub runs: usize,
+    pub generation: u64,
+    pub started: f64,
+    /// Whether the solver has the memory for a mesh of this many nodes (the mid-surface's for
+    /// shells) of these elements at this size: `None` when it does, else the words that refuse
+    /// the run. Asked after meshing, before the solver starts (PIL-294 D1).
+    pub fits: Option<&'a dyn Fn(usize, Elements, f64) -> Option<String>>,
+}
+
+/// Mesh `step` (the body, mm) and solve it with `elements`, in `dir`.
+#[cfg(target_arch = "wasm32")]
+pub fn solve(_setup: &Setup, _step: &[u8], _faces: &Faces, _dir: &Path, _elements: Elements, _ctx: &RunCtx) -> Result<Run, Failure> {
+    Err("the stress estimate needs the desktop app: it runs a mesher and a solver on this computer".into())
+}
+
+/// Mesh `step` (the body, mm) and solve it with `elements`, in `dir`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: Elements, ctx: &RunCtx) -> Result<Run, Failure> {
+    let started = std::time::Instant::now();
+    let stage = |stage: Stage| {
+        set_progress(Some(Progress { document_id: ctx.document_id.to_string(), stage, elements, run: ctx.run, runs: ctx.runs, since: ctx.started }))
+    };
+    stage(Stage::Meshing);
+    let (gmsh, ccx) = programs();
+    let word = elements.word();
+    // Each run of an estimate has files of its own (the mesh check solves the same model again).
+    let tag = format!("{word}-{}", ctx.run);
+    let step_path = dir.join("part.step");
+    std::fs::write(&step_path, step).map_err(|e| format!("{}: {e}", step_path.display()))?;
+    let h = setup.mesh_size;
+    let msh_name = format!("{tag}.msh");
+    let args = mesher_args(elements, h, &msh_name);
+    let (_, mesher_isolated) = match run_program(&gmsh, &args, &[], dir, &format!("{tag}-mesher"), 600, "mesher", ctx.generation) {
+        Ok(done) => done,
+        Err(ended) => {
+            let (mut f, t) = failure(ended, "mesher", &gmsh, h);
+            if let Trouble::Overlap(Some(surface)) = t {
+                f.at = surface_point(&gmsh, h, surface, faces, dir, ctx.generation);
+            }
+            return Err(f);
+        }
+    };
+    let text = std::fs::read_to_string(dir.join(&msh_name)).map_err(|e| format!("the mesher wrote no mesh ({e})"))?;
+    let mut msh = formats::read_msh(&text)?;
+    mesh_in_mm(&mut msh, faces)?;
     let surface_face = model::surface_faces(&msh, faces);
     let fem = match elements {
         Elements::Shell => model::shell_model(&msh, &surface_face, setup.thickness)?,
         Elements::Solid => model::solid_model(&msh, &surface_face)?,
     };
+    if let Some(refusal) = ctx.fits.and_then(|fits| fits(fem.nodes.len(), elements, h)) {
+        return Err(refusal.into());
+    }
     let mut fixed: Vec<usize> = Vec::new();
+    // Shell nodes held over an area of the sheet: translations only (D3).
+    let mut pinned: Vec<usize> = Vec::new();
     let mut rollers: Vec<(usize, usize)> = Vec::new();
     let mut untilted: Vec<(usize, usize)> = Vec::new();
     // The nodes of fixed supports and loads, each with its label: where stress concentrates
@@ -653,13 +899,23 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     for s in &setup.supports {
         let n = model::held(&fem, &s.faces);
         if n.is_empty() {
-            return Err(format!("the support on {} holds no node of the {word} mesh", s.label));
+            return Err(format!("the support on {} holds no node of the {word} mesh", s.label).into());
         }
         match s.kind {
             SupportKind::Fixed => {
                 labels.push(s.label.clone());
                 anchors.extend(n.iter().filter_map(|i| fem.nodes.get(*i).map(|p| (*p, labels.len() - 1))));
-                fixed.extend(n);
+                let area = model::held_area(&fem, &s.faces);
+                if area.is_empty() {
+                    fixed.extend(n);
+                } else {
+                    // A support over a side of the sheet pins it; one that also takes in an edge
+                    // (an end) clamps the edge's nodes.
+                    let area: std::collections::BTreeSet<usize> = area.into_iter().collect();
+                    for i in n {
+                        if area.contains(&i) { pinned.push(i) } else { fixed.push(i) }
+                    }
+                }
             }
             SupportKind::Roller(axis) => rollers.extend(n.into_iter().map(|i| (i, axis))),
             SupportKind::Symmetry(axis) => {
@@ -670,6 +926,8 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     }
     fixed.sort_unstable();
     fixed.dedup();
+    pinned.sort_unstable();
+    pinned.dedup();
     rollers.sort_unstable();
     rollers.dedup();
     let mut forces: Vec<(usize, P)> = Vec::new();
@@ -701,12 +959,13 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     let scale: f64 = forces.iter().map(|(_, f)| model::len(*f)).sum();
     // The solver's RF at a held node is the node's internal force: where a load is applied on a
     // held node too (a pressured face's rim on a roller face), the support carries RF less it.
-    let held_nodes: std::collections::BTreeSet<usize> = fixed.iter().copied().chain(rollers.iter().map(|(n, _)| *n)).collect();
+    let held_nodes: std::collections::BTreeSet<usize> =
+        fixed.iter().copied().chain(pinned.iter().copied()).chain(rollers.iter().map(|(n, _)| *n)).collect();
     let on_held = forces.iter().filter(|(n, _)| held_nodes.contains(n)).fold([0.0; 3], |a, (_, f)| model::add(a, *f));
     let material = InpMaterial { e_mpa: setup.material.e_mpa, nu: setup.material.nu };
     untilted.sort_unstable();
     untilted.dedup();
-    let holds = formats::InpHolds { fixed: &fixed, rollers: &rollers, untilted: &untilted };
+    let holds = formats::InpHolds { fixed: &fixed, pinned: &pinned, rollers: &rollers, untilted: &untilted };
     let (inp, element_count) = match elements {
         Elements::Shell => (
             formats::write_inp(&fem.nodes, &InpElements::Shell { tris: &fem.shells, thickness: setup.thickness }, &material, &holds, &forces),
@@ -718,10 +977,28 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     std::fs::write(dir.join(format!("{job}.inp")), inp).map_err(|e| e.to_string())?;
     stage(Stage::Solving);
     let (env, threads) = solver_threads();
+    // An element the solver names (from 1) placed by its corners' middle.
+    let element_point = |n: usize| -> Option<P> {
+        let corners: Vec<P> = match elements {
+            Elements::Shell => fem.shells.get(n.checked_sub(1)?)?.iter().take(3).filter_map(|i| fem.nodes.get(*i).copied()).collect(),
+            Elements::Solid => fem.tets.get(n.checked_sub(1)?)?.iter().take(4).filter_map(|i| fem.nodes.get(*i).copied()).collect(),
+        };
+        let k = corners.len();
+        (k > 0).then(|| model::mul(corners.into_iter().fold([0.0; 3], model::add), 1.0 / k as f64))
+    };
+    let solver_failure = |ended: Ended| {
+        let (mut f, t) = failure(ended, "solver", &ccx, h);
+        if let Trouble::InsideOut(Some(n)) = t {
+            f.at = element_point(n);
+        }
+        f
+    };
     let (out, solver_isolated) =
-        run_program(&ccx, &["-i".to_string(), job.clone()], &env, dir, &format!("{tag}-solver"), 1800, "solver", ctx.generation)?;
-    if let Some(line) = out.lines().find(|l| l.contains("*ERROR")) {
-        return Err(format!("the solver refused the job: {}", line.trim()));
+        run_program(&ccx, &["-i".to_string(), job.clone()], &env, dir, &format!("{tag}-solver"), 1800, "solver", ctx.generation)
+            .map_err(solver_failure)?;
+    // The solver can end "successfully" having refused the job: read its errors the same way.
+    if out.contains("*ERROR") {
+        return Err(solver_failure(Ended::Failed { code: Some(0), signal: None, log: out }));
     }
     let frd = std::fs::read_to_string(dir.join(format!("{job}.frd"))).map_err(|e| format!("the solver wrote no results ({e})"))?;
     let frd = formats::read_frd(&frd)?;

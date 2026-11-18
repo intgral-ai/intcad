@@ -128,8 +128,10 @@ pub struct StressEstimateParams {
     /// The sheet's thickness, mm. Default: the sheet metal rule the body was made with.
     #[serde(default)]
     pub thickness: Option<f64>,
-    /// The largest element size, mm. Default: about a thirtieth of the body for shells, the
-    /// thickness for solids.
+    /// The largest element size, mm; curved faces get smaller elements (24 per turn, down to a
+    /// fiftieth of this). Default: about a thirtieth of the body for shells; for solids the
+    /// thickness of sheet metal, otherwise about a 25th of the body and half its thinnest side,
+    /// but no finer than a mesh of about 90 000 nodes.
     #[serde(default)]
     pub mesh_size: Option<f64>,
     /// `shell`, `solid`, or `both` (the shell result is shown). Default: shell for sheet metal,

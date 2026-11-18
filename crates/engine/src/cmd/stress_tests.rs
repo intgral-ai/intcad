@@ -739,8 +739,9 @@ fn plate_with_hole(s: &mut Session) -> (u64, u64) {
 /// Hall 1952; as given in W. D. Pilkey and D. F. Pilkey, Peterson's Stress Concentration Factors,
 /// 3rd ed., Wiley 2008, ch. 4), so the peak at the hole's edge is Kt σ_nom = 25.1 MPa.
 /// Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
-/// Mesh: 1.5 mm (the default here is 1.0 mm: 199 504 nodes, whose mesh check's finer run,
-/// 595 186 nodes and 14 GB measured, is over the 6 GB limit and skipped). At 1.5 mm the finer run
+/// Mesh: 1.5 mm (the default was 1.0 mm before `default_solid_size` capped its nodes: 199 504
+/// nodes, whose mesh check's finer run, 595 186 nodes and 14 GB measured, is over the 6 GB limit
+/// and skipped). At 1.5 mm the finer run
 /// is predicted at about 4 GB, so the check runs on a computer with at least 8 GB available.
 /// Run with SOLIDCRAFT_FEA_MAX_NODES set below its finer run (100000), the check is skipped and
 /// says why, and everything but "settled" is still checked.
@@ -1151,13 +1152,13 @@ fn g2_the_memory_limit_is_the_smaller_of_the_ceiling_and_half_the_memory_availab
     let sample =
         |kb: &str| format!("MemTotal:       32617284 kB\nMemFree:        15938128 kB\nMemAvailable:   {kb} kB\nBuffers:          402312 kB\n");
     assert_eq!(mem_available(&sample("8000000")), Some(8_192_000_000.0));
-    assert_eq!(finer_limit(None, Some(&sample("8000000")), 6.0e9), Limit::Memory(4_096_000_000.0));
-    assert_eq!(finer_limit(None, Some(&sample("30000000")), 6.0e9), Limit::Memory(6.0e9));
-    assert_eq!(finer_limit(None, Some("MemTotal: 32617284 kB\n"), 6.0e9), Limit::Memory(6.0e9));
-    assert_eq!(finer_limit(None, Some(&sample("lots")), 6.0e9), Limit::Memory(6.0e9));
+    assert_eq!(finer_limit(None, mem_available(&sample("8000000")), 6.0e9), Limit::Memory(4_096_000_000.0));
+    assert_eq!(finer_limit(None, mem_available(&sample("30000000")), 6.0e9), Limit::Memory(6.0e9));
+    assert_eq!(finer_limit(None, mem_available("MemTotal: 32617284 kB\n"), 6.0e9), Limit::Memory(6.0e9));
+    assert_eq!(finer_limit(None, mem_available(&sample("lots")), 6.0e9), Limit::Memory(6.0e9));
     assert_eq!(finer_limit(None, None, 6.0e9), Limit::Memory(6.0e9));
     // The cap, when set, replaces the memory limit.
-    assert_eq!(finer_limit(Some("250000"), Some(&sample("8000000")), 6.0e9), Limit::Nodes(250_000.0));
+    assert_eq!(finer_limit(Some("250000"), mem_available(&sample("8000000")), 6.0e9), Limit::Nodes(250_000.0));
 }
 
 /// Holds at `points`, fixed (X, Y and Z) or along one axis.
@@ -1397,4 +1398,206 @@ fn g3_the_memory_and_node_predictions_cover_what_was_measured() {
     let (r1, _) = predict_finer(14_555, Elements::Solid);
     eprintln!("G3 R1: finer nodes predicted {r1:.0}, measured 30447 ({:+.1}%)", 100.0 * (r1 / 30_447.0 - 1.0));
     assert!((30_447.0..=1.5 * 30_447.0).contains(&r1), "R1: {r1}");
+}
+
+/// A2: a solid part's default element size is about a 25th of it and half its thinnest side,
+/// but no finer than a mesh of about 90 000 nodes for its volume. R2's plate (200 x 50 x 2 mm, a
+/// Ø10 hole) was meshed at 1.0 mm, too fine for its mesh check to fit; a compact part keeps its
+/// detail size; with no volume known the detail size stands.
+#[test]
+fn a_solid_parts_default_mesh_is_no_finer_than_about_ninety_thousand_nodes() {
+    let plate_volume = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
+    let plate_diag = (200.0f64 * 200.0 + 50.0 * 50.0 + 4.0).sqrt();
+    let h = default_solid_size(plate_diag, 2.0, Some(plate_volume));
+    assert!((h - (SOLID_NODES_PER_MM3 * plate_volume / DEFAULT_SOLID_NODES).cbrt()).abs() < 1e-12 && h > 1.25 && h < 1.35, "{h}");
+    let nodes = SOLID_NODES_PER_MM3 * plate_volume / h.powi(3);
+    let (finer_nodes, finer_bytes) = predict_finer(nodes as usize, Elements::Solid);
+    assert!(finer_bytes <= MEMORY_CEILING, "the finer run fits: {finer_nodes} nodes, {finer_bytes} bytes");
+    let bar = default_solid_size((140.0f64 * 140.0 + 28.0 * 28.0 + 16.0).sqrt(), 4.0, Some(13_120.0));
+    assert_eq!(bar, 2.0, "the Peterson bar keeps two elements through its 4 mm");
+    assert_eq!(default_solid_size(plate_diag, 2.0, None), 1.0);
+    assert_eq!(default_solid_size(1.0, 0.1, Some(0.01)), 0.3, "never under 0.3 mm by default");
+    for v in [Some(f64::NAN), Some(-1.0), Some(f64::INFINITY), Some(0.0)] {
+        assert_eq!(default_solid_size(plate_diag, 2.0, v), 1.0, "{v:?}");
+    }
+}
+
+/// A bar 100 x 20 x `t` mm along X with a Ø`d` hole through its middle (along Z), made with the
+/// app's commands: its end faces at x = 0 and x = 100.
+fn bar_with_hole(s: &mut Session, t: f64, d: f64) -> (u64, u64) {
+    run(s, "solid.box", json!({"length": 100, "width": 20, "height": t, "body_name": "Bar"}));
+    run(s, "solid.cylinder", json!({"diameter": d, "height": t, "base": [50, 10, 0], "operation": "cut", "targets": ["Bar"]}));
+    let faces = run(s, "model.faces", json!({"body": "Bar"}));
+    let end = |x: f64| {
+        faces["faces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|f| {
+                (f["centroid"][0].as_f64().unwrap_or(f64::NAN) - x).abs() < 1e-6 && f["plane_normal"][0].as_f64().is_some_and(|n| n.abs() > 0.99)
+            })
+            .and_then(|f| f["index"].as_u64())
+            .unwrap_or_else(|| panic!("no end face at x = {x}: {faces}"))
+    };
+    (end(0.0), end(100.0))
+}
+
+/// V-A2, real: bars 100 x 20 x T mm (T 5 and 10) with one hole of Ø1, 2, 3, 4 or 6 mm through
+/// the middle, clamped at one end with 10 N down at the other, 6061-T6, at the default settings
+/// (the mesh check off, to keep it short). Before curvature sizing 5 of the 10 failed: gmsh's
+/// "overlapping facets" or CalculiX's "nonpositive jacobian" (PIL-294 ship review).
+/// Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Pass: all 10 solve, and the forces balance within 1 %.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn va2_bars_with_small_holes_all_mesh_and_solve_at_the_default_settings() {
+    let mut failed = Vec::new();
+    for t in [5.0, 10.0] {
+        for d in [1.0, 2.0, 3.0, 4.0, 6.0] {
+            let mut s = Session::default();
+            let (held, end) = bar_with_hole(&mut s, t, d);
+            let p = json!({"loads": [{"face": end, "force": [0, 0, -10]}], "supports": [{"face": held}], "material": "6061-T6", "mesh_check": false});
+            match s.execute(CMD, &p) {
+                Ok(r) => {
+                    eprintln!(
+                        "VA2 T{t} Ø{d}: {} nodes at {} mm, away peak {} MPa, {}",
+                        r["runs"][0]["nodes"], r["runs"][0]["mesh_size_mm"], r["peak_away"]["von_mises_mpa"], r["equilibrium"]["line"]
+                    );
+                    if number(&r["equilibrium"]["mismatch_percent"]) >= 1.0 {
+                        failed.push(format!("T{t} Ø{d}: {}", r["equilibrium"]));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("VA2 T{t} Ø{d}: {e}");
+                    failed.push(format!("T{t} Ø{d}: {e}"));
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{} of 10 failed:\n{}", failed.len(), failed.join("\n"));
+}
+
+/// V-A3, real: a hole too small for even the smallest element (a Ø0.02 mm hole in a 100 x 20 x
+/// 10 mm bar meshed at 4 mm, whose smallest element is 0.08 mm). A solver the system kills is
+/// `fea::fea_tests::a_program_the_system_kills_reads_as_out_of_memory`.
+/// Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Pass: it fails with plain advice that names a `mesh_size` to try, without the programs' own
+/// text (no "gpl.htm", "*ERROR", "Error   :", "signal"); or it meshes after all, which is said.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn va3_failures_read_as_plain_advice_without_the_programs_text() {
+    let clean = |e: &str| {
+        for raw in ["gpl.htm", "*ERROR", "Error   :", "signal", "exit status", "WARRANTY"] {
+            assert!(!e.contains(raw), "`{raw}` in: {e}");
+        }
+    };
+    let mut s = Session::default();
+    let (held, end) = bar_with_hole(&mut s, 10.0, 0.02);
+    let p = json!({"loads": [{"face": end, "force": [0, 0, -10]}], "supports": [{"face": held}], "material": "6061-T6", "mesh_check": false, "mesh_size": 4});
+    match s.execute(CMD, &p) {
+        Ok(r) => eprintln!("VA3 the Ø0.02 mm hole meshed after all: {} nodes", r["runs"][0]["nodes"]),
+        Err(e) => {
+            let e = e.to_string();
+            eprintln!("VA3 tiny hole: {e}");
+            clean(&e);
+            assert!(e.contains("`mesh_size`, such as"), "{e}");
+        }
+    }
+}
+
+/// D1: the memory a run may use is half the memory free, or 8 GB where that is unknown; a
+/// control group's limit (a container, `systemd-run -p MemoryMax=8G`) counts as what is free.
+#[test]
+fn d1_a_runs_memory_limit_is_half_the_memory_free_within_its_control_group() {
+    let files = |path: &str, file: &str| -> Option<String> {
+        match (path, file) {
+            ("/user.slice/run-1.service", "memory.max") => Some("8000000000\n".into()),
+            ("/user.slice/run-1.service", "memory.current") => Some("1000000000\n".into()),
+            ("/user.slice", "memory.max") => Some("max\n".into()),
+            ("/user.slice", "memory.current") => Some("3000000000\n".into()),
+            _ => None,
+        }
+    };
+    assert_eq!(cgroup_room("0::/user.slice/run-1.service\n", files), Some(7.0e9));
+    assert_eq!(cgroup_room("0::/user.slice\n", files), None, "max: no limit");
+    assert_eq!(cgroup_room("0::/\n", files), None);
+    assert_eq!(cgroup_room("12:memory:/x\n", files), None, "cgroup v1 is not read");
+    assert_eq!(first_run_limit(Some(8.0e9)), 4.0e9);
+    for unknown in [None, Some(f64::NAN), Some(-1.0), Some(0.0)] {
+        assert_eq!(first_run_limit(unknown), FIRST_RUN_FALLBACK, "{unknown:?}");
+    }
+    for e in [Elements::Solid, Elements::Shell] {
+        for b in [1.0e9, 4.0e9, 12.0e9] {
+            let back = solver_bytes(nodes_for_bytes(b, e), e);
+            assert!((back / b - 1.0).abs() < 1e-9, "{e:?} {b}: {back}");
+        }
+    }
+}
+
+/// D1 and V-A1: a run too big for the memory is refused before the solver starts, naming the
+/// memory it would need and a `mesh_size` that fits. R2's plate (200 x 50 x 2 mm, a Ø10 hole) at
+/// 0.7 mm under an 8 GB cap (4 GB a run) is refused from its volume, before meshing; its mesh
+/// (493 468 nodes with curvature sizing) is refused too; at the suggested size it fits.
+#[test]
+fn d1_a_run_too_big_for_the_memory_is_refused_with_a_mesh_size_that_fits() {
+    let v = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
+    let cap = 4.0e9;
+    let predicted = SOLID_NODES_PER_MM3 * v / 0.7f64.powi(3);
+    let words = memory_refusal(predicted, Elements::Solid, 0.7, cap, false).unwrap_or_else(|| panic!("0.7 mm under 4 GB is refused"));
+    eprintln!("D1 R2 at 0.7 mm: {words}");
+    assert!(words.starts_with("not solved: the solid mesh at about 0.7 mm would have about "), "{words}");
+    assert!(words.contains("GB of memory; this computer has about 4 GB to spare") && words.contains("`mesh_size`, such as "), "{words}");
+    let size: f64 = words
+        .split("such as ")
+        .nth(1)
+        .and_then(|t| t.split(" mm").next())
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("no size in: {words}"));
+    assert!(solver_bytes(SOLID_NODES_PER_MM3 * v / size.powi(3), Elements::Solid) <= cap, "{size} mm fits");
+    assert!(size < 1.3, "not far coarser than needed: {size}");
+    let meshed = memory_refusal(493_468.0, Elements::Solid, 0.7, cap, true).unwrap_or_else(|| panic!("the mesh is refused"));
+    assert!(meshed.contains(" has about 490,000 nodes"), "{meshed}");
+    assert_eq!(memory_refusal(493_468.0, Elements::Solid, 0.7, 13.0e9, true), None, "half of 26 GB free: it fits");
+    assert_eq!(memory_refusal(predicted, Elements::Solid, 0.7, 13.0e9, false), None, "a prediction is refused only when twice over");
+    let shell = memory_refusal(150_000.0, Elements::Shell, 1.0, 2.0e9, true).unwrap_or_else(|| panic!("150 000 shell nodes under 2 GB"));
+    assert!(shell.starts_with("not solved: the shell mesh"), "{shell}");
+    for raw in ["gpl.htm", "signal", "*ERROR"] {
+        assert!(!words.contains(raw) && !shell.contains(raw));
+    }
+    for junk in [f64::NAN, 0.0, -5.0] {
+        assert_eq!(memory_refusal(junk, Elements::Solid, 1.0, cap, true), None);
+        assert_eq!(memory_refusal(1.0e7, Elements::Solid, junk, cap, true), None);
+    }
+}
+
+/// V-A1, real: R2's plate at 0.7 mm with a run limit of 4 GB (an 8 GB computer) is refused before
+/// anything is meshed. Run it under `systemd-run --user -p MemoryMax=8G -p MemorySwapMax=0` to see
+/// the control group read; without it the limit is half the memory free here, and the case is
+/// refused only on a computer with less than about 29 GB free.
+/// Real: the app's modelling and memory reading. Faked: nothing.
+/// Pass: refused within 15 s naming a `mesh_size`, or (with much memory free) it says so.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn va1_a_mesh_too_big_for_the_memory_is_refused_before_solving() {
+    let cap = first_run_limit(memory_available_here());
+    eprintln!("VA1 run limit here: {:.1} GB", cap / 1.0e9);
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 200, "width": 50, "height": 2, "body_name": "Plate"}));
+    run(&mut s, "solid.cylinder", json!({"diameter": 10, "height": 2, "base": [100, 25, 0], "operation": "cut", "targets": ["Plate"]}));
+    let p = json!({"supports": [{"face": [0, 25, 1]}], "loads": [{"face": [200, 25, 1], "force": [800, 0, 0]}], "material": "6061-T6", "mesh_size": 0.7, "mesh_check": false});
+    let started = std::time::Instant::now();
+    let r = s.execute(CMD, &p);
+    let took = started.elapsed().as_secs_f64();
+    match r {
+        Err(e) => {
+            let e = e.to_string();
+            eprintln!("VA1 refused in {took:.1} s: {e}");
+            assert!(e.contains("not solved: the solid mesh") && e.contains("`mesh_size`, such as"), "{e}");
+            assert!(took < 15.0, "{took} s");
+        }
+        Ok(r) => {
+            eprintln!("VA1 solved in {took:.0} s ({} nodes): this computer has the memory", r["runs"][0]["nodes"]);
+            assert!(cap > 8.0e9, "solved under a {cap} limit");
+        }
+    }
 }

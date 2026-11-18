@@ -505,6 +505,26 @@ pub(crate) const SOLID_MEMORY: (f64, f64, f64) = (18_500.0, 130_000.0, 0.2);
 /// The same for shells, per node of the mid-surface (the solver expands each into three through
 /// the thickness).
 pub(crate) const SHELL_MEMORY: (f64, f64, f64) = (44_500.0, 60_000.0, 0.1);
+/// Nodes of a second-order tetrahedral mesh per mm³ of part with 1 mm elements: a mesh of `h` mm
+/// has about this × volume / h³ nodes. Measured with curvature sizing on R2's plate (200 x 50 x
+/// 2 mm, a Ø10 hole): 11.3 at 1.5 mm, 10.1 at 1.0 mm, 8.5 at 0.7 mm.
+pub(crate) const SOLID_NODES_PER_MM3: f64 = 10.0;
+/// The most nodes a default solid mesh is sized for: a first run whose mesh check's finer run
+/// still fits [`MEMORY_CEILING`] (a first run of about 93 000 nodes, see there).
+pub(crate) const DEFAULT_SOLID_NODES: f64 = 90_000.0;
+
+/// The default element size for a solid part that is not sheet metal, mm: about 25 elements
+/// across and two through its thinnest side, but no finer than a mesh of about
+/// [`DEFAULT_SOLID_NODES`] for its `volume` (mm³). Without that, a large thin part got a mesh too
+/// big for this computer: R2's 200 x 50 x 2 mm plate was meshed at 1.0 mm (199 504 nodes), so the
+/// mesh check's finer run (595 186 nodes, 14 GB measured) never fitted; it is meshed at about
+/// 1.3 mm now. Under 0.3 mm only when given.
+pub(crate) fn default_solid_size(diag: f64, smallest: f64, volume: Option<f64>) -> f64 {
+    let detail = (diag / 25.0).min(smallest / 2.0);
+    let budget = volume.filter(|v| v.is_finite() && *v > 0.0).map_or(0.0, |v| (SOLID_NODES_PER_MM3 * v / DEFAULT_SOLID_NODES).cbrt());
+    detail.max(budget).max(0.3)
+}
+
 /// The most memory the mesh check's finer run may need, bytes, wherever the computer has more to
 /// spare. 6 GB: a finer run of about 278 000 solid nodes (a first run of about 93 000) or
 /// 125 000 shell nodes (a first run of about 55 000), about a minute and a half of solving for
@@ -952,6 +972,9 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
     let mut finer: Option<fea::Run> = None;
     let mut check = Check::Off;
     let mut k = 0usize;
+    // Half the memory free when the estimate starts (D1).
+    let run_cap = first_run_limit(memory_available_here());
+    let fits = |nodes: usize, elements: Elements, h: f64| memory_refusal(nodes as f64, elements, h, run_cap, true);
     for (i, elements) in plan.runs.iter().enumerate() {
         let h = match (plan.mesh_size, elements, plan.sheet) {
             (Some(h), Elements::Shell, _) => h,
@@ -959,8 +982,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             (Some(h), Elements::Solid, false) => h,
             (None, Elements::Shell, _) => (diag / 30.0).clamp(1.5 * plan.thickness, 8.0 * plan.thickness),
             (None, Elements::Solid, true) => plan.thickness.max(0.3),
-            // A solid part: about 25 elements across, at least two through its thinnest side.
-            (None, Elements::Solid, false) => (diag / 25.0).min(smallest / 2.0).max(0.3),
+            (None, Elements::Solid, false) => default_solid_size(diag, smallest, volume),
         };
         // The finer run looks at the same region away from supports and loads as this one.
         let setup = |size: f64| Setup {
@@ -971,9 +993,17 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             supports: plan.supports.clone(),
             away_distance: away_distance(h, section_size(*elements, plan.sheet, plan.thickness, volume, area)),
         };
+        // A solid's mesh is predicted from its volume before meshing, which takes time and memory
+        // of its own at a size far too fine; every mesh is counted again before the solver runs.
+        if *elements == Elements::Solid
+            && let Some(v) = volume.filter(|v| v.is_finite() && *v > 0.0)
+            && let Some(refusal) = memory_refusal(SOLID_NODES_PER_MM3 * v / h.powi(3), Elements::Solid, h, run_cap, false)
+        {
+            return Err(failed(refusal));
+        }
         k += 1;
-        let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0 };
-        let run = fea::solve(&setup(h), &step, &faces.display, &dir, *elements, &ctx).map_err(failed)?;
+        let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0, fits: Some(&fits) };
+        let run = fea::solve(&setup(h), &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
         if i == 0 && plan.mesh_check {
             // Gated on the finer run's predicted size, not the first run's time: memory is what
             // runs out (R2's finer run took 14 GB), and a solid run that fits solves in about a
@@ -987,8 +1017,8 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 k += 1;
                 let fine_h = h / MESH_CHECK_RATIO;
                 let fine_setup = setup(fine_h);
-                let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0 };
-                let fine = fea::solve(&fine_setup, &step, &faces.display, &dir, *elements, &ctx).map_err(failed)?;
+                let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0, fits: Some(&fits) };
+                let fine = fea::solve(&fine_setup, &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
                 check = Check::Ran { first_h: h, finer_h: fine_h, items: settling(&run, &fine) };
                 finer = Some(fine);
             }
@@ -1329,20 +1359,111 @@ pub(crate) fn mem_available(meminfo: &str) -> Option<f64> {
 }
 
 /// The finer run's limit: the node cap in `max_nodes` (the variable's text) when it is a whole
-/// number above 0; otherwise the smaller of `ceiling` and half the available memory in
-/// `meminfo` (the ceiling alone where that cannot be read).
-pub(crate) fn finer_limit(max_nodes: Option<&str>, meminfo: Option<&str>, ceiling: f64) -> Limit {
+/// number above 0; otherwise the smaller of `ceiling` and half the memory `available`, bytes (the
+/// ceiling alone where that is not known).
+pub(crate) fn finer_limit(max_nodes: Option<&str>, available: Option<f64>, ceiling: f64) -> Limit {
     if let Some(n) = max_nodes.and_then(|v| v.trim().parse::<u64>().ok()).filter(|n| *n > 0) {
         return Limit::Nodes(n as f64);
     }
-    Limit::Memory(meminfo.and_then(mem_available).map_or(ceiling, |a| ceiling.min(a / 2.0)))
+    Limit::Memory(available.map_or(ceiling, |a| ceiling.min(a / 2.0)))
 }
 
 /// The finer run's limit on this computer now.
 pub(crate) fn finer_limit_here() -> Limit {
     let var = std::env::var(MAX_NODES_VAR).ok();
-    let meminfo = if cfg!(target_os = "linux") { std::fs::read_to_string("/proc/meminfo").ok() } else { None };
-    finer_limit(var.as_deref(), meminfo.as_deref(), MEMORY_CEILING)
+    finer_limit(var.as_deref(), memory_available_here(), MEMORY_CEILING)
+}
+
+/// What a control group (Linux cgroup v2: a container, or `systemd-run -p MemoryMax=`) leaves
+/// this process, bytes: the least, over the group in `cgroup` (`/proc/self/cgroup`'s text) and
+/// each group above it, of its `memory.max` less its `memory.current`, as `read` gives those
+/// files' text for a group's path under `/sys/fs/cgroup`. `None` where no group sets a limit.
+pub(crate) fn cgroup_room(cgroup: &str, read: impl Fn(&str, &str) -> Option<String>) -> Option<f64> {
+    let path = cgroup.lines().find_map(|l| l.strip_prefix("0::"))?.trim();
+    let mut room: Option<f64> = None;
+    let mut at = path.trim_end_matches('/').to_string();
+    loop {
+        let number = |file: &str| read(&at, file).and_then(|t| t.trim().parse::<f64>().ok());
+        if let (Some(max), Some(used)) = (number("memory.max"), number("memory.current")) {
+            let left = (max - used).max(0.0);
+            room = Some(room.map_or(left, |r: f64| r.min(left)));
+        }
+        match at.rfind('/') {
+            Some(i) if !at.is_empty() => at.truncate(i),
+            _ => break,
+        }
+    }
+    room
+}
+
+/// The memory this process may use now, bytes: Linux's MemAvailable, no more than its control
+/// group leaves it ([`cgroup_room`]). `None` where it cannot be read (Windows, macOS).
+pub(crate) fn memory_available_here() -> Option<f64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let free = std::fs::read_to_string("/proc/meminfo").ok().as_deref().and_then(mem_available);
+    let group = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|c| cgroup_room(&c, |path, file| std::fs::read_to_string(format!("/sys/fs/cgroup{path}/{file}")).ok()));
+    match (free, group) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The memory a run may use where this computer's free memory cannot be read: half a 16 GB
+/// laptop's.
+pub(crate) const FIRST_RUN_FALLBACK: f64 = 8.0e9;
+
+/// The most memory a run may need, bytes: half the memory available (`available`), or
+/// [`FIRST_RUN_FALLBACK`] where that is not known. The mesh check's finer run has the smaller
+/// [`finer_limit`] besides.
+pub(crate) fn first_run_limit(available: Option<f64>) -> f64 {
+    available.filter(|a| a.is_finite() && *a > 0.0).map_or(FIRST_RUN_FALLBACK, |a| a / 2.0)
+}
+
+/// The most nodes whose solve fits in `bytes` ([`solver_bytes`] turned round).
+pub(crate) fn nodes_for_bytes(bytes: f64, elements: Elements) -> f64 {
+    let (per_node, at, extra) = match elements {
+        Elements::Solid => SOLID_MEMORY,
+        Elements::Shell => SHELL_MEMORY,
+    };
+    (bytes.max(0.0) * at.powf(extra) / per_node).powf(1.0 / (1.0 + extra))
+}
+
+/// Whether a run of `nodes` nodes (the mid-surface's for shells) at `h` mm fits `cap` bytes: `None`
+/// when it does, else the words that refuse it, with the predicted memory and a `mesh_size` that
+/// fits. `meshed`: the count is the mesh's own; otherwise it is predicted from the part's volume
+/// ([`SOLID_NODES_PER_MM3`], which can be 20 % high at fine sizes), and refused only when twice
+/// over (PIL-294 D1: R2's plate at 0.7 mm was killed by the system after 115 s).
+pub(crate) fn memory_refusal(nodes: f64, elements: Elements, h: f64, cap: f64, meshed: bool) -> Option<String> {
+    let bytes = solver_bytes(nodes, elements);
+    let over = if meshed { bytes > cap } else { bytes > 2.0 * cap };
+    if !over || !(nodes.is_finite() && nodes > 0.0 && h.is_finite() && h > 0.0) {
+        return None;
+    }
+    let fit = nodes_for_bytes(cap, elements);
+    let dims = match elements {
+        Elements::Solid => 3.0,
+        Elements::Shell => 2.0,
+    };
+    // A tenth over, then up to two significant figures: a size that fits, not one at the edge.
+    let size = h * (nodes / fit).powf(1.0 / dims) * 1.1;
+    let k = 10f64.powf(size.log10().floor() - 1.0);
+    let size = (size / k).ceil() * k;
+    let has = if meshed { "has" } else { "would have" };
+    let mm = |x: f64| format!("{}", (x * 1000.0).round() / 1000.0);
+    Some(format!(
+        "not solved: the {} mesh at about {} mm {has} about {} nodes, and the solver would need about {} of memory; this computer has about {} \
+         to spare for one run (half the memory free now). Use a larger `mesh_size`, such as {} mm, or free some memory",
+        elements.word(),
+        mm(h),
+        about_count(nodes),
+        about_bytes(bytes),
+        about_bytes(cap),
+        mm(size)
+    ))
 }
 
 /// The mesh check's finer run from the first's node count: its predicted nodes and memory, bytes.

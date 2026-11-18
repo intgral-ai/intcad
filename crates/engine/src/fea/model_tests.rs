@@ -183,3 +183,22 @@ fn g4_the_triangle_grid_answers_exactly_as_a_scan_of_every_triangle() {
         }
     }
 }
+
+/// D3: a support over a side of the sheet (a face with element faces) holds its nodes over the
+/// area; an edge among the support's faces (an end) keeps its nodes clamped; a solid model has no
+/// area to pin.
+#[test]
+fn a_support_over_a_side_of_the_sheet_is_an_area_and_an_edge_is_not() {
+    let side: BTreeSet<usize> = [0, 1, 2, 3, 4, 5].into_iter().collect();
+    let end: BTreeSet<usize> = [2, 4, 6].into_iter().collect();
+    let mut on_face = BTreeMap::new();
+    on_face.insert(1u32, (side, vec![[0, 1, 2, 3, 4, 5]]));
+    on_face.insert(2u32, (end, Vec::new()));
+    let shells = Model { nodes: vec![[0.0; 3]; 7], shells: vec![[0, 1, 2, 3, 4, 5]], tets: Vec::new(), on_face };
+    assert_eq!(held_area(&shells, &[1]), vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(held_area(&shells, &[1, 2]), vec![0, 1, 3, 5], "the end's nodes stay clamped");
+    assert!(held_area(&shells, &[2]).is_empty(), "an edge alone is clamped");
+    assert!(held_area(&shells, &[9]).is_empty());
+    let solid = Model { nodes: shells.nodes.clone(), shells: Vec::new(), tets: Vec::new(), on_face: shells.on_face.clone() };
+    assert!(held_area(&solid, &[1]).is_empty());
+}

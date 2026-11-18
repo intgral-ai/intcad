@@ -689,6 +689,23 @@ pub fn held(model: &Model, faces: &[u32]) -> Vec<usize> {
     out.into_iter().collect()
 }
 
+/// The nodes a support on `faces` holds over an area of the shells: on the faces that have
+/// element faces (a side of the sheet), less those on its edges among `faces` (an end, a hole
+/// wall, which a support clamps). Empty for a solid model: only shells have rotations to hold or
+/// leave.
+pub fn held_area(model: &Model, faces: &[u32]) -> Vec<usize> {
+    if model.shells.is_empty() {
+        return Vec::new();
+    }
+    let (mut area, mut edge): (BTreeSet<usize>, BTreeSet<usize>) = (BTreeSet::new(), BTreeSet::new());
+    for f in faces {
+        if let Some((n, e)) = model.on_face.get(f) {
+            if e.is_empty() { &mut edge } else { &mut area }.extend(n.iter().copied());
+        }
+    }
+    area.difference(&edge).copied().collect()
+}
+
 /// A direction held at a point: a fixed support holds each of its points along X, Y and Z, a
 /// roller along its own axis only.
 #[derive(Clone, Copy, Debug, PartialEq)]
