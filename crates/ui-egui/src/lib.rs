@@ -1199,6 +1199,7 @@ impl SolveApp {
             }
             self.ui.layout = p.layout;
             self.preferences = p;
+            self.session.set_open_newer_files(self.preferences.open_newer_files);
             #[cfg(not(target_arch = "wasm32"))]
             if let Err(error) = agent_chat::sync_ai_connections(self) {
                 agent_chat::ai_sync_failed(self, error);

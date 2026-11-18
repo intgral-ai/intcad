@@ -586,6 +586,10 @@ pub struct Session {
     /// save leaves them out of the file and an opened design starts without them. The user's,
     /// like `param_check`, so it survives opening and starting designs.
     pub keep_print_faces: bool,
+    /// Whether a design a newer Intcad saved opens, keeping what this version can't read. On by
+    /// default (#12166); off refuses it with a message asking to update, as before. The user's,
+    /// like `param_check`, so it survives opening and starting designs.
+    pub open_newer_files: bool,
     /// After a live frame: its sketch, the document it left and the revision. Its links were
     /// brought up to date by that frame, so the gesture's next frame needn't project them again
     /// while nothing else has run (#3222).
@@ -964,6 +968,7 @@ impl Session {
             param_check: schema::ParamCheck::Off,
             easyprint_upload: None,
             keep_print_faces: true,
+            open_newer_files: true,
             live_links: None,
             active_component: 0,
             active_occurrence_path: None,
@@ -1034,6 +1039,7 @@ impl Session {
         let param_check = self.param_check;
         let easyprint_upload = self.easyprint_upload.take();
         let keep_print_faces = self.keep_print_faces;
+        let open_newer_files = self.open_newer_files;
         let render_viewport = self.render_viewport.clone();
         let render_jobs = self.render_jobs.scratch();
         let checkpoints = std::mem::take(&mut self.checkpoints);
@@ -1055,6 +1061,7 @@ impl Session {
         self.param_check = param_check;
         self.easyprint_upload = easyprint_upload;
         self.keep_print_faces = keep_print_faces;
+        self.open_newer_files = open_newer_files;
         self.render_viewport = render_viewport;
         self.render_jobs = render_jobs;
         self.checkpoints = checkpoints;
@@ -1452,6 +1459,12 @@ impl Session {
     /// (`timeline.compute_all` computes every one).
     pub fn set_validation(&mut self, validation: solidcraft_kernel::Validation) {
         self.model.set_validation(validation);
+    }
+
+    /// Whether a design a newer Intcad saved opens ([`Session::open_newer_files`]): off refuses
+    /// it instead, with a message asking to update.
+    pub fn set_open_newer_files(&mut self, open: bool) {
+        self.open_newer_files = open;
     }
 
     /// The model body a name means: one of the model's own bodies as it is named, else the body
@@ -2305,6 +2318,7 @@ impl Session {
             param_check: self.param_check,
             easyprint_upload: self.easyprint_upload.clone(),
             keep_print_faces: self.keep_print_faces,
+            open_newer_files: self.open_newer_files,
             live_links: None,
             active_component: self.active_component,
             active_occurrence_path: self.active_occurrence_path.clone(),

@@ -1251,6 +1251,9 @@ preference_settings! {
     max_step_file_mb: u64 = DEFAULT_STEP_MB, PAGE_GENERAL;
     /// The largest design file opened or saved, in MB (#4086): from the default (256) up to 16 GB.
     max_design_file_mb: u64 = DEFAULT_DESIGN_MB, PAGE_GENERAL;
+    /// A design a newer Intcad saved opens, keeping the parts this version can't read (#12166).
+    /// Off: it is refused with a message asking to update, as before.
+    open_newer_files: bool = true, PAGE_GENERAL => check_id("prefs.open_newer_files");
     /// Explicit assembly Move uses joint handles; off keeps the previous Move panel.
     assembly_move_handles: bool = true, PAGE_TOOLS => check_id("joint_move.use_handles");
     /// Degrees per step near the assembly Move ring.
@@ -2409,6 +2412,8 @@ pub fn apply(app: &mut SolveApp, ctx: &egui::Context) {
     apply_network(&app.preferences);
     // The features computed from now on are checked as the preference says.
     app.session.set_validation(app.preferences.validation);
+    // A design a newer Intcad saved opens, or is refused, as the preference says.
+    app.session.set_open_newer_files(app.preferences.open_newer_files);
     // The profiler records while the preference is on (switched when it changes; at start-up only
     // when on, so SOLIDCRAFT_PROFILE=1 is not undone by the default).
     let profile = app.preferences.profile_operations;

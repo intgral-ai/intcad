@@ -270,6 +270,7 @@ fn swap_in(app: &mut SolveApp, mut slot: DocSlot) -> DocSlot {
     // Preferences the session holds go with the user, not the tab (#680).
     app.session.auto_project = out.session.auto_project;
     app.session.set_validation(out.session.validation());
+    app.session.set_open_newer_files(out.session.open_newer_files);
     // So does the host's pre-command check: every tab is held to it.
     app.session.set_command_check(out.session.command_check());
     app.session.set_single_surface_analysis(app.preferences.single_surface_analysis);

@@ -481,6 +481,7 @@ fn start(app: &mut SolveApp) {
     // evaluated under the user's validation mode.
     scratch.set_command_check(app.session.command_check());
     scratch.set_validation(app.preferences.validation);
+    scratch.set_open_newer_files(app.preferences.open_newer_files);
     if insert {
         scratch.selection = app.session.selection.clone();
     }
@@ -609,6 +610,7 @@ fn start_staged(app: &mut SolveApp) {
     let mut session = if insert { app.session.scratch() } else { Session::default() };
     session.set_command_check(app.session.command_check());
     session.set_validation(app.preferences.validation);
+    session.set_open_newer_files(app.preferences.open_newer_files);
     if insert {
         session.selection = app.session.selection.clone();
     }

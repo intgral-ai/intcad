@@ -76,6 +76,8 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         });
         ui_kit::settings_section(ui, "files", app.tr("FILES"), |ui| {
             file_size_rows(app, ui, labels);
+            let tip = app.tr("prefs.open_newer_files_note").to_string();
+            setting::open_newer_files(app, ui).backing_on_hover_text(&tip);
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - t.space_16 - ui.spacing().item_spacing.x).max(0.0);
                 ui.allocate_ui_with_layout(egui::vec2(width, t.control_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {

@@ -100,6 +100,18 @@ impl NewerFile {
         }
     }
 
+    /// Why opening is refused when the user asked not to open files a newer build saved: the
+    /// message this app gave before it opened them (#12166). `noun` names the file in it.
+    pub fn refusal(&self, noun: &str) -> String {
+        let (app, reads, format) = (self.app, self.reads_up_to, self.format);
+        match self.unknown_changes.first() {
+            Some(change) if format <= reads => format!(
+                "this {noun} was saved by a newer {app} (format {format} with `{change}`, which this version doesn't know): update {app} to open it"
+            ),
+            _ => format!("this {noun} was saved by a newer {app} (format {format}, this version reads up to {reads}): update {app} to open it"),
+        }
+    }
+
     /// Every line to report: the notice, then what couldn't be read, by name.
     pub fn warnings(&self) -> Vec<String> {
         let unread = self.not_understood.iter().map(|what| format!("Not read: {what}. Saving keeps it."));

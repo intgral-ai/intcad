@@ -1347,6 +1347,13 @@ fn unreadable_design(path: &str, reason: &str) -> EngineError {
 /// Read the design file at `path` for `doc.open`, under its file's name if it has none of its own.
 fn read_design(s: &mut Session, path: &str) -> Result<(Document, Option<solidcraft_doc::SavedModel>)> {
     let (mut doc, saved) = solidcraft_io::read_design_file(path, s.open_preview.take()).map_err(|e| unreadable_design(path, &e.to_string()))?;
+    // The reader already tells a newer build's file apart (`says_newer`); with the preference off,
+    // this is where the old refusal is made, before the design takes the session's place.
+    if !s.open_newer_files
+        && let Some(file) = &doc.newer_file
+    {
+        return Err(EngineError::Other(format!("{path}: {}", file.refusal("design"))));
+    }
     if let Some(stem) = default_name_for(&doc.name, path) {
         doc.name = stem;
     }
@@ -3400,6 +3407,46 @@ mod tests {
             assert_eq!(written["format"], json!(newer));
             assert_eq!(written["future_section"], json!([1, 2]));
             assert!(written["features"].as_array().unwrap().contains(&future));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The "Open designs saved by a newer Intcad" preference's old behaviour: with it off, such a
+    /// design is refused, in both encodings; on (the default), it opens and says what it kept.
+    #[test]
+    fn a_newer_design_is_refused_when_opening_newer_files_is_off() {
+        let dir = std::env::temp_dir().join(format!("sc_refuse_newer_design_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+        let mut file: Value = serde_json::from_str(&s.doc.to_json()).unwrap();
+        let newer_format = solidcraft_doc::format::FORMAT + 1;
+        file["format"] = json!(solidcraft_doc::format::format_string(newer_format));
+        let future = json!({"id": 900, "name": "Lattice1", "type": "gyroid_lattice", "cell": 2.5});
+        file["features"].as_array_mut().unwrap().push(future);
+        file["future_section"] = json!([1, 2]);
+        for name in ["newer.json", "newer.sc"] {
+            let path = dir.join(name);
+            let source = solidcraft_doc::Document::from_json(&file.to_string()).unwrap();
+            let bytes = if name.ends_with(".sc") { solidcraft_io::write_design_container(&source).unwrap() } else { file.to_string().into_bytes() };
+            std::fs::write(&path, bytes).unwrap();
+            let path = path.to_string_lossy().to_string();
+            let mut refused = Session::default();
+            refused.set_open_newer_files(false);
+            let error = refused.execute("doc.open", &json!({"path": path})).unwrap_err().to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "{path}: this design was saved by a newer Intcad (format {newer_format}, this version reads up to {}): update Intcad to open it",
+                    solidcraft_doc::format::FORMAT
+                )
+            );
+            assert!(refused.doc.features.is_empty(), "the refusal leaves the session as it was");
+            let mut opened = Session::default();
+            let reply = opened.execute("doc.open", &json!({"path": path})).unwrap();
+            assert_eq!(reply["newer_file"]["format"], json!(newer_format), "{reply}");
+            assert_eq!(reply["features"], 2, "{reply}");
+            assert!(reply["newer_file"]["not_understood"].to_string().contains("gyroid_lattice"), "{reply}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
