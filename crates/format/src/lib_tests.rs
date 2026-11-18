@@ -98,10 +98,10 @@ fn a_file_is_taken_apart_or_refused_with_the_apps_words() {
     assert!(v.get("format_pending").is_none(), "taken out");
     assert_eq!(FAMILY.take_version(&mut json!({})), Ok((1, None)), "untagged");
     let refused = |mut v: Value| FAMILY.take_version(&mut v).unwrap_err().0;
-    assert_eq!(refused(json!([])), "not a App design (expected a JSON object)");
-    assert_eq!(refused(json!({"format": "other/2"})), "not a App design (format `other/2`)");
-    assert_eq!(refused(json!({"format": 2})), "not a App design (format is not a string)");
-    assert_eq!(refused(json!({"format": "app/0"})), "not a App design (format 0)");
+    assert_eq!(refused(json!([])), "not an App design (expected a JSON object)");
+    assert_eq!(refused(json!({"format": "other/2"})), "not an App design (format `other/2`)");
+    assert_eq!(refused(json!({"format": 2})), "not an App design (format is not a string)");
+    assert_eq!(refused(json!({"format": "app/0"})), "not an App design (format 0)");
     assert_eq!(refused(json!({"format": "app/2", "format_pending": [1]})), "damaged design: `format_pending` is not a short list of names");
 }
 
@@ -119,7 +119,7 @@ fn every_step_runs_once_in_order() {
     // A list beside a hand-written format means nothing.
     assert_eq!(steps_run(2, Some(&["d".to_string()])), ["2to3", "a", "c", "d", "e"]);
     let mut v = json!({});
-    assert_eq!(FAMILY.upgrade(&mut v, 0, None), Err(AppError("not a App design (format 0)".into())));
+    assert_eq!(FAMILY.upgrade(&mut v, 0, None), Err(AppError("not an App design (format 0)".into())));
 }
 
 #[test]

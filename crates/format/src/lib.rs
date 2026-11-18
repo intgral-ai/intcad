@@ -190,7 +190,7 @@ impl<E: From<FormatError>> Family<'_, E> {
     /// not: [`Family::newer`] says so.
     pub fn take_version(&self, v: &mut Value) -> Result<(u32, Option<Vec<String>>), E> {
         let (app, noun) = (self.app, self.noun);
-        let not_ours = |what: String| E::from(FormatError::Invalid(format!("not a {app} {noun} ({what})")));
+        let not_ours = |what: String| E::from(FormatError::Invalid(format!("not an {app} {noun} ({what})")));
         let Some(obj) = v.as_object() else { return Err(not_ours("expected a JSON object".into())) };
         let version = match obj.get("format") {
             None => self.untagged.ok_or_else(|| not_ours("no format".into()))?,
@@ -212,7 +212,7 @@ impl<E: From<FormatError>> Family<'_, E> {
     pub fn upgrade(&self, v: &mut Value, version: u32, applied: Option<&[String]>) -> Result<(), E> {
         let formats = &self.formats;
         if version == 0 {
-            return Err(E::from(FormatError::Invalid(format!("not a {} {} (format 0)", self.app, self.noun))));
+            return Err(E::from(FormatError::Invalid(format!("not an {} {} (format 0)", self.app, self.noun))));
         }
         // A list beside a format that isn't made of changes is ignored, like any field an upgrade
         // drops.
