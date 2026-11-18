@@ -106,6 +106,7 @@ if ($Phase -ne 'package') {
   # GTK/WebKitGTK (Linux), WebView2 (Windows) and WKWebView (macOS) licence texts, including
   # the LGPL text; also built into Help > About > Licences.
   Copy-Item (Join-Path $Root 'packaging\notices\WEB-VIEW-PLATFORM-NOTICES.txt') (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt')
+  Copy-Item (Join-Path $Root 'packaging\notices\CEF-CREDITS.html') (Join-Path $Stage 'CEF-CREDITS.html')
   # Application-relative Mastra runtime. Bundling is opt-in because the artifact is still
   # unapproved (DQ-7, #15). 1.0 supports Windows x86_64 MSVC only; ordinary packaging keeps the
   # previous release behavior and the WXS harvests an empty folder.
@@ -149,6 +150,7 @@ Copy-Item (Join-Path $Stage '*.exe') $Portable
 foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt') { Copy-Item (Join-Path $Root $f) $Portable }
 Copy-Item (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt') $Portable
 Copy-Item (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt') $Portable
+Copy-Item (Join-Path $Stage 'CEF-CREDITS.html') $Portable
 if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
 $Zip = Join-Path $Dist "intcad-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue

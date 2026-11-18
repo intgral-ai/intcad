@@ -20,7 +20,12 @@ Assistant 只剩 CEF 一套实现。** Linux 原生 Wayland 与 X11（XWayland�
 | `apps/solidcraft/src/main.rs` | `assistant_web` 字段与分支改为单一 CEF；`main()` 首行加 CEF 子进程分派；`wgpu_options()` 改用 grafting 共享设备 + `WgpuSetup::Existing` |
 | `apps/solidcraft/Cargo.toml` | 删除 `wry`（Windows/macOS/Linux 三处）、`gtk`、`gdkx11`；新增 `welding 0.15.0`（`cef-runtime`）、`dpi` |
 | `Cargo.lock` | `wry`、`gtk`、`webkit2gtk`、`gdkx11` 条目为 **0**（`grep -c` 验证） |
-| `assets/locales/pending/assistant-web-host.json` | “页面打不开”改为 CEF/GPU 互操作说明（8 种语言） |
+| `assets/locales/pending/assistant-web-host.json` | “页面打不开”改为 CEF/GPU 互操作说明（8 种语言）；删除过时的“原生 Wayland 需要 X11 子窗口”文案 |
+| `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` | 整篇替换为 CEF/Chromium（BSD-3）+ welding MPL-2.0 说明 |
+| `packaging/notices/CEF-CREDITS.html`（新） | CEF 生成的完整第三方清单（8.3 MiB），三个平台的包脚本都会安装 |
+| `packaging/{linux/package.sh,macos/package.sh,windows/package.ps1}`、`assets/platforms/windows/solidcraft.wxs` | 安装/打包 CEF-CREDITS.html；MSI 组件补上该文件 |
+| `packaging/linux/{nfpm.yaml,AppRun}` | 删除 libgtk-3 / libwebkit2gtk 依赖与“缺 WebKitGTK”提示，改为 CEF 自带的通用缺失库提示 |
+| `NOTICE`、`docs/web-view-licences.md`、`crates/ui-egui/src/help.rs` | 桌面 WebView 段落改写为 CEF/Chromium；帮助页嵌入的也是新通告 |
 
 页面传输（保持既有 IPC 契约）：
 
@@ -49,6 +54,9 @@ Assistant 只剩 CEF 一套实现。** Linux 原生 Wayland 与 X11（XWayland�
 | 100 次创建/销毁、崩溃恢复 | **PASS** | soak 100/100、`terminated→recovered` |
 | 沙箱 | **PASS** | `CefSandboxMode::Sandboxed` 默认；10/10 soak |
 | GPU 互操作缺失时的行为 | **PASS** | `SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP=1`：面板给出说明，CAD 正常 |
+| 应用内剪贴板：页面→系统 | **PASS** | `app-input.py`：`typed_copied_out="clip-abc"`、`copied_out="你好，世界"`（X 剪贴板读回） |
+| 应用内 popup | **PASS** | 实页注入原生 `<select>` 后，应用日志 `popup surface 150x138 at 10,43` |
+| 应用内 OS 输入法引擎（fcitx5 候选窗） | **UNTESTED** | CEF 侧组合/提交/取消已在探针验证；真实 IME 会话未在 CEF 路径重跑 |
 | 原生 Xorg | **UNTESTED** | 本机无 root/VT，`Xorg` 在 `parse_vt_settings` 失败 |
 
 ## 4. 真实 CAD 性能（同机、同模型、同窗口协议）
@@ -88,9 +96,10 @@ CPU readback，也没有黑屏或崩溃。
 | CI | 无 CEF 下载 | 每次干净构建 +311 MiB 下载、cmake/ninja、`libcef_dll_wrapper`（约 2 分钟）；建议缓存 |
 | 内存 | 315–682 MB | 897–1129 MB |
 
-**未完成的许可工作（发布阻断）**：`packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` 仍是
-WebKitGTK/GTK 文本，`help.rs` 仍把它作为“web view 平台库”展示。迁移必须换成 CEF/Chromium
-的 `CREDITS.html`（8.3 MiB）与 BSD 文本，并更新 `THIRD-PARTY-LICENSES` 生成流程。
+**许可已完成**：`WEB-VIEW-PLATFORM-NOTICES.txt` 换成 CEF/Chromium 通告，`CEF-CREDITS.html`
+随包安装（Linux/macOS/Windows/MSI），`NOTICE`、帮助页与 `docs/web-view-licences.md` 同步更新；
+`strings target/release/intcad` 中 “WebKitGTK 4.1” 出现 **0** 次、“Chromium Embedded
+Framework” 15 次。仍需人工法律审查（非工程阻断）。
 
 ## 7. 跨平台
 

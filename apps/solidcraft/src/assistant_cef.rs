@@ -176,6 +176,8 @@ pub struct CefAssistant {
     pushes: u64,
     frames: u64,
     last_stats: Instant,
+    /// Test-only: a native `<select>` was added to the real page to exercise the popup path.
+    test_select: bool,
 }
 
 impl CefAssistant {
@@ -266,6 +268,7 @@ impl CefAssistant {
             pushes: 0,
             frames: 0,
             last_stats: Instant::now(),
+            test_select: false,
         })
     }
 
@@ -391,6 +394,21 @@ impl CefAssistant {
             }
         }
 
+        // Test only (SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT): a native select in the real page,
+        // so the popup surface path is exercised in the app rather than only in the probe.
+        if !self.test_select
+            && self.texture.is_some()
+            && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT").is_some()
+        {
+            self.test_select = true;
+            let _ = self.producer.execute_script(
+                "(() => { const s = document.createElement('select'); s.id = '__cef_test_select'; \
+                 s.style.cssText = 'position:fixed;left:8px;top:8px;width:120px;height:26px;z-index:2147483647'; \
+                 for (const v of ['alpha','beta','gamma']) { const o = document.createElement('option'); o.textContent = v; s.appendChild(o); } \
+                 document.body.appendChild(s); })()",
+                "",
+            );
+        }
         self.input(solve, ctx, rect, ppp);
         // The page paints on change; the host only has to ask soon while it is working.
         let working = self.last_frame.elapsed() < Duration::from_millis(400);
@@ -449,6 +467,10 @@ impl CefAssistant {
         let render_state = frame.wgpu_render_state()?;
         match self.producer.acquire_popup(&self.host) {
             Ok(Some(popup)) => {
+                note(&format!(
+                    "popup surface {}x{} at {},{}",
+                    popup.texture.size.width, popup.texture.size.height, popup.rect.x, popup.rect.y
+                ));
                 let mut renderer = render_state.renderer.write();
                 if let Some(id) = self.popup.take() {
                     renderer.free_texture(&id);

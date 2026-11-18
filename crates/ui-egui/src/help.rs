@@ -18,17 +18,17 @@ use solidcraft_engine::licences::{LICENSE_APACHE, LICENSE_MIT, NOTICE, THIRD_PAR
 /// What the Assistant's page holds that is not Intcad's own (Mastra's components, the npm
 /// packages they import, the fonts), with the licence texts each part ships:
 /// packages/assistant-web/THIRD-PARTY-NOTICES.txt, written by that folder's build. Built in on the
-/// systems whose app carries the page (apps/solidcraft/src/assistant_web.rs), so a single
+/// systems whose app carries the page (apps/solidcraft/src/assistant_cef.rs), so a single
 /// downloaded executable carries these notices as it carries the page.
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub const ASSISTANT_PAGE_NOTICES: Option<&str> = Some(include_str!("../../../packages/assistant-web/THIRD-PARTY-NOTICES.txt"));
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub const ASSISTANT_PAGE_NOTICES: Option<&str> = None;
 
-/// The platform libraries the Assistant's web view links: GTK 3 and WebKitGTK 4.1 on Linux,
-/// WebView2 on Windows, WKWebView on macOS, with the LGPL/BSD texts each needs. Built in, so a
-/// single downloaded executable or an AppImage carries the same notice as the packages that
-/// install `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt`.
+/// The runtime the Assistant's web view carries: CEF and the Chromium it embeds (BSD 3-Clause),
+/// with the third-party list in `packaging/notices/CEF-CREDITS.html`, which ships next to this
+/// notice. Built in, so a single downloaded executable or an AppImage carries the same notice as
+/// the packages that install `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt`.
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub const WEB_VIEW_NOTICES: Option<&str> = Some(include_str!("../../../packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt"));
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]

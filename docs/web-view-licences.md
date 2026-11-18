@@ -1,5 +1,12 @@
 # Desktop web-view licences and notices
 
+> **Update (CEF cutover):** the Assistant no longer uses system GTK/WebKitGTK. Its page is
+> drawn by the CEF distribution the app ships (BSD 3-Clause, third-party list in
+> `packaging/notices/CEF-CREDITS.html`), integrated through welding/grafting (MPL-2.0,
+> unmodified). `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` carries the CEF/Chromium
+> notice; the WebKitGTK sections below are kept as the record of the WRY era and no longer
+> describe what is installed. Human legal review is still open.
+
 **Status:** engineering notes, attribution and shipping notices for the Assistant's web view.
 This is **not** rights clearance and not a legal opinion. The exception in
 [`../skills/solidcraft-ground-rules/SKILL.md`](../skills/solidcraft-ground-rules/SKILL.md)

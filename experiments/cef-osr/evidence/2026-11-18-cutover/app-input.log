@@ -1,0 +1,20 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+SolidCraft graphics: Vulkan, MSAA 4x (requested 4x)
+solidcraft: control server listening on 127.0.0.1:18114 (token in /tmp/inp5/control/18114.token)
+solidcraft: assistant (CEF): page server on http://127.0.0.1:35111/index.html
+SolidCraft graphics: GPU tessellation ready; bodies are evaluated on the GPU from now on
+solidcraft: assistant (CEF): TitleChanged { title: "Assistant" }
+solidcraft: assistant (CEF): LoadEnd { url: "http://127.0.0.1:35111/index.html", http_status: 200 }
+solidcraft: assistant (CEF): TitleChanged { title: "Assistant" }
+solidcraft: assistant (CEF): page said {"type":"ready"}
+solidcraft: assistant (CEF): page said {"type":"surface","color":"#0d0d0d"}
+solidcraft: assistant (CEF): stats over 2 s: ticks=1 state_pushes=0 cef_frames=0
+solidcraft: assistant (CEF): CEF: first frame; replaying 0 held input event(s)
+solidcraft: assistant (CEF): stats over 2 s: ticks=67 state_pushes=2 cef_frames=5
+solidcraft: assistant (CEF): stats over 2 s: ticks=191 state_pushes=0 cef_frames=19
+solidcraft: assistant (CEF): CEF: copied 8 byte(s) out of the page
+solidcraft: assistant (CEF): stats over 2 s: ticks=53 state_pushes=0 cef_frames=1
+solidcraft: assistant (CEF): CEF: copied 15 byte(s) out of the page
+solidcraft: assistant (CEF): stats over 2 s: ticks=145 state_pushes=0 cef_frames=3
+solidcraft: assistant (CEF): popup surface 150x138 at 10,43
+solidcraft: assistant (CEF): stats over 2 s: ticks=55 state_pushes=0 cef_frames=1

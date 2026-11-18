@@ -171,6 +171,7 @@ copy_docs "$APP/Contents/Resources/Licenses"
 # which the app carries built in as well (Help > About > Licences).
 cp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
 cp "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$APP/Contents/Resources/Licenses/WEB-VIEW-PLATFORM-NOTICES.txt"
+cp "$ROOT/packaging/notices/CEF-CREDITS.html" "$APP/Contents/Resources/Licenses/CEF-CREDITS.html"
 # The inventory of what that page was built from. The page itself is embedded in the executable
 # (include_bytes!); packaging/macos/verify-assistant-bundle.py checks both in the finished app.
 mkdir -p "$APP/Contents/Resources/Assistant"

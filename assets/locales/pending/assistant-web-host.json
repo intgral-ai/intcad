@@ -1,7 +1,7 @@
 {
   "en": {
-    "ui.agent_chat_web_native_wayland_body": "This session opened a native Wayland window, and the Assistant's page is drawn by WebKitGTK in an X11 child window. Set Window system to X11 (or Automatic) in Graphics settings, then restart Intcad. The model view itself can stay on Wayland.",
-    "ui.agent_chat_web_native_wayland_title": "The Assistant needs an X11 window",
+    "ui.agent_chat_web_native_wayland_body": "The app could not show the Assistant's page in this window. Check Graphics settings and retry.",
+    "ui.agent_chat_web_native_wayland_title": "The Assistant's page is unavailable",
     "ui.agent_chat_web_failed_body": "The app could not start its page renderer. It needs a Vulkan driver that can share textures with the app (AMD and Intel on Linux; NVIDIA not yet) and the CEF runtime that ships with the app. Check Graphics settings and retry.",
     "ui.agent_chat_web_failed_title": "The Assistant's page could not open",
     "ui.agent_chat_web_retry": "Retry",
@@ -9,8 +9,8 @@
     "ui.agent_chat_web_assistant_settings": "Assistant settings"
   },
   "ja": {
-    "ui.agent_chat_web_native_wayland_body": "このセッションはネイティブ Wayland ウィンドウを開きました。アシスタントのページは X11 子ウィンドウ内の WebKitGTK で描画されます。グラフィック設定で「ウィンドウシステム」を X11（または自動）に設定し、Intcad を再起動してください。モデル表示自体は Wayland のままで構いません。",
-    "ui.agent_chat_web_native_wayland_title": "アシスタントには X11 ウィンドウが必要です",
+    "ui.agent_chat_web_native_wayland_body": "このウィンドウでアシスタントのページを表示できませんでした。グラフィックス設定を確認して再試行してください。",
+    "ui.agent_chat_web_native_wayland_title": "アシスタントのページを表示できません",
     "ui.agent_chat_web_failed_body": "アプリはページレンダラーを起動できませんでした。アプリとテクスチャを共有できる Vulkan ドライバー（Linux では AMD と Intel が対応、NVIDIA は未対応）と、アプリに同梱の CEF ランタイムが必要です。グラフィックス設定を確認して再試行してください。",
     "ui.agent_chat_web_failed_title": "アシスタントのページを開けませんでした",
     "ui.agent_chat_web_retry": "再試行",
@@ -18,8 +18,8 @@
     "ui.agent_chat_web_assistant_settings": "アシスタント設定"
   },
   "zh": {
-    "ui.agent_chat_web_native_wayland_body": "本次会话打开了原生 Wayland 窗口，而助手页面由 X11 子窗口中的 WebKitGTK 绘制。请在“图形”设置中将“窗口系统”设为 X11（或自动），然后重启 Intcad。模型视图本身可以继续使用 Wayland。",
-    "ui.agent_chat_web_native_wayland_title": "助手需要 X11 窗口",
+    "ui.agent_chat_web_native_wayland_body": "应用无法在此窗口中显示助手页面。请检查“图形”设置后重试。",
+    "ui.agent_chat_web_native_wayland_title": "助手页面不可用",
     "ui.agent_chat_web_failed_body": "应用无法启动网页渲染器。它需要能与应用共享纹理的 Vulkan 驱动（Linux 上 AMD 与 Intel 可用，NVIDIA 暂不支持）以及随应用安装的 CEF 运行时。请检查“图形”设置后重试。",
     "ui.agent_chat_web_failed_title": "无法打开助手页面",
     "ui.agent_chat_web_retry": "重试",
@@ -27,8 +27,8 @@
     "ui.agent_chat_web_assistant_settings": "助手设置"
   },
   "de": {
-    "ui.agent_chat_web_native_wayland_body": "Diese Sitzung hat ein natives Wayland-Fenster geöffnet; die Seite des Assistenten wird von WebKitGTK in einem X11-Kindfenster gezeichnet. Stellen Sie in den Grafik-Einstellungen das Fenstersystem auf X11 (oder Automatisch) und starten Sie Intcad neu. Die Modellansicht selbst kann auf Wayland bleiben.",
-    "ui.agent_chat_web_native_wayland_title": "Der Assistent benötigt ein X11-Fenster",
+    "ui.agent_chat_web_native_wayland_body": "Die App konnte die Assistant-Seite in diesem Fenster nicht anzeigen. Prüfen Sie die Grafik-Einstellungen und versuchen Sie es erneut.",
+    "ui.agent_chat_web_native_wayland_title": "Die Assistant-Seite ist nicht verfügbar",
     "ui.agent_chat_web_failed_body": "Die App konnte ihren Seiten-Renderer nicht starten. Nötig sind ein Vulkan-Treiber, der Texturen mit der App teilen kann (unter Linux AMD und Intel; NVIDIA noch nicht), und die mitgelieferte CEF-Laufzeit. Prüfen Sie die Grafik-Einstellungen und versuchen Sie es erneut.",
     "ui.agent_chat_web_failed_title": "Die Seite des Assistenten konnte nicht geöffnet werden",
     "ui.agent_chat_web_retry": "Erneut versuchen",
@@ -36,8 +36,8 @@
     "ui.agent_chat_web_assistant_settings": "Assistenten-Einstellungen"
   },
   "ar": {
-    "ui.agent_chat_web_native_wayland_body": "فتحت هذه الجلسة نافذة Wayland أصلية، وتُعرض صفحة المساعد بواسطة WebKitGTK داخل نافذة X11 فرعية. اضبط «نظام النوافذ» على X11 (أو تلقائي) في إعدادات الرسومات، ثم أعد تشغيل Intcad. يمكن أن يبقى عرض النموذج على Wayland.",
-    "ui.agent_chat_web_native_wayland_title": "يحتاج المساعد إلى نافذة X11",
+    "ui.agent_chat_web_native_wayland_body": "تعذّر على التطبيق عرض صفحة المساعد في هذه النافذة. تحقّق من إعدادات الرسوميات ثم أعد المحاولة.",
+    "ui.agent_chat_web_native_wayland_title": "صفحة المساعد غير متاحة",
     "ui.agent_chat_web_failed_body": "تعذّر على التطبيق تشغيل عارض الصفحة. يلزم برنامج تشغيل Vulkan يمكنه مشاركة الأنسجة مع التطبيق (AMD وIntel على Linux؛ NVIDIA ليس بعد) وبيئة CEF المرفقة مع التطبيق. تحقّق من إعدادات الرسوميات ثم أعد المحاولة.",
     "ui.agent_chat_web_failed_title": "تعذّر فتح صفحة المساعد",
     "ui.agent_chat_web_retry": "إعادة المحاولة",
@@ -45,8 +45,8 @@
     "ui.agent_chat_web_assistant_settings": "إعدادات المساعد"
   },
   "he": {
-    "ui.agent_chat_web_native_wayland_body": "הפעלה זו פתחה חלון Wayland מקורי, והעמוד של העוזר מצויר על ידי WebKitGTK בתוך חלון X11 בן. יש להגדיר את מערכת החלונות ל-X11 (או אוטומטי) בהגדרות הגרפיקה, ואז להפעיל מחדש את Intcad. תצוגת המודל עצמה יכולה להישאר ב-Wayland.",
-    "ui.agent_chat_web_native_wayland_title": "העוזר זקוק לחלון X11",
+    "ui.agent_chat_web_native_wayland_body": "האפליקציה לא הצליחה להציג את העמוד של העוזר בחלון הזה. בדקו את הגדרות הגרפיקה ונסו שוב.",
+    "ui.agent_chat_web_native_wayland_title": "העמוד של העוזר אינו זמין",
     "ui.agent_chat_web_failed_body": "האפליקציה לא הצליחה להפעיל את מצייר העמוד. נדרשים מנהל התקן Vulkan שיכול לשתף מרקמים עם האפליקציה (AMD ו-Intel ב-Linux; NVIDIA עדיין לא) וסביבת CEF שמגיעה עם האפליקציה. בדקו את הגדרות הגרפיקה ונסו שוב.",
     "ui.agent_chat_web_failed_title": "לא ניתן היה לפתוח את העמוד של העוזר",
     "ui.agent_chat_web_retry": "נסה שוב",
@@ -54,8 +54,8 @@
     "ui.agent_chat_web_assistant_settings": "הגדרות העוזר"
   },
   "vi": {
-    "ui.agent_chat_web_native_wayland_body": "Phiên này đã mở cửa sổ Wayland gốc, và trang của Trợ lý được WebKitGTK vẽ trong cửa sổ con X11. Hãy đặt Hệ thống cửa sổ thành X11 (hoặc Tự động) trong Cài đặt đồ họa, rồi khởi động lại Intcad. Chế độ xem mô hình vẫn có thể ở Wayland.",
-    "ui.agent_chat_web_native_wayland_title": "Trợ lý cần cửa sổ X11",
+    "ui.agent_chat_web_native_wayland_body": "Ứng dụng không thể hiển thị trang Trợ lý trong cửa sổ này. Kiểm tra Cài đặt đồ họa rồi thử lại.",
+    "ui.agent_chat_web_native_wayland_title": "Trang Trợ lý không khả dụng",
     "ui.agent_chat_web_failed_body": "Ứng dụng không thể khởi động trình kết xuất trang. Cần trình điều khiển Vulkan chia sẻ được kết cấu với ứng dụng (AMD và Intel trên Linux; NVIDIA chưa) và bộ chạy CEF đi kèm. Kiểm tra Cài đặt đồ họa rồi thử lại.",
     "ui.agent_chat_web_failed_title": "Không thể mở trang của Trợ lý",
     "ui.agent_chat_web_retry": "Thử lại",
@@ -63,8 +63,8 @@
     "ui.agent_chat_web_assistant_settings": "Cài đặt Trợ lý"
   },
   "ko": {
-    "ui.agent_chat_web_native_wayland_body": "이 세션은 네이티브 Wayland 창을 열었습니다. 어시스턴트 페이지는 X11 자식 창의 WebKitGTK로 그려집니다. 그래픽 설정에서 창 시스템을 X11(또는 자동)로 설정한 뒤 Intcad을 다시 시작하세요. 모델 보기 자체는 Wayland에 그대로 둘 수 있습니다.",
-    "ui.agent_chat_web_native_wayland_title": "어시스턴트에는 X11 창이 필요합니다",
+    "ui.agent_chat_web_native_wayland_body": "이 창에서 어시스턴트 페이지를 표시할 수 없습니다. 그래픽 설정을 확인한 뒤 다시 시도하세요.",
+    "ui.agent_chat_web_native_wayland_title": "어시스턴트 페이지를 사용할 수 없음",
     "ui.agent_chat_web_failed_body": "앱이 페이지 렌더러를 시작하지 못했습니다. 앱과 텍스처를 공유할 수 있는 Vulkan 드라이버(Linux의 AMD·Intel, NVIDIA는 아직 미지원)와 앱에 포함된 CEF 런타임이 필요합니다. 그래픽 설정을 확인한 뒤 다시 시도하세요.",
     "ui.agent_chat_web_failed_title": "어시스턴트 페이지를 열 수 없습니다",
     "ui.agent_chat_web_retry": "다시 시도",

@@ -86,6 +86,7 @@ install -Dm644 "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$STAGE/us
 # The platform web view's licences (GTK 3, WebKitGTK 4.1, WebView2, WKWebView), including the
 # LGPL text a dynamically linked system library needs. Also built into About > Licences.
 install -Dm644 "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$STAGE/usr/share/doc/intcad/WEB-VIEW-PLATFORM-NOTICES.txt"
+install -Dm644 "$ROOT/packaging/notices/CEF-CREDITS.html" "$STAGE/usr/share/doc/intcad/CEF-CREDITS.html"
 
 if command -v desktop-file-validate >/dev/null; then
   desktop-file-validate "$STAGE/usr/share/applications/$APP_ID.desktop"
