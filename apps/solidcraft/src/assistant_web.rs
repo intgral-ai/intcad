@@ -126,6 +126,16 @@ fn serve(request: &Request<Vec<u8>>, pictures: &Pictures) -> Response<Cow<'stati
     }
 }
 
+/// One of the page's files, for a host that serves the page itself (the CEF path).
+pub(crate) fn page_file(name: &str) -> Option<(&'static str, &'static [u8])> {
+    FILES.iter().find(|(file, _, _)| *file == name).map(|(_, kind, bytes)| (*kind, *bytes))
+}
+
+/// The page's security policy, for that same host.
+pub(crate) fn page_policy() -> &'static str {
+    POLICY
+}
+
 /// What kind of picture the bytes begin as, of the kinds messages are sent with. Anything else
 /// is not served: the page is given a picture to draw, never a document to open.
 fn picture_kind(bytes: &[u8]) -> Option<&'static str> {

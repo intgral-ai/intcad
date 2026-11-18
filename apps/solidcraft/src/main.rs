@@ -21,6 +21,7 @@
 #[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+mod assistant_cef;
 mod assistant_web;
 mod come_forward;
 mod control_server;
@@ -104,6 +105,7 @@ struct App {
     /// The Assistant's conversation as a web view over its panel.
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     assistant_web: assistant_web::AssistantWeb,
+    assistant_cef: Option<assistant_cef::CefAssistant>,
     /// A device's own app moving the view (Preferences › Navigation, off by default).
     nav_bridge: nav_bridge::NavBridge,
     /// Where the next file dialog opens: it follows the open design (#7756).
@@ -251,7 +253,11 @@ impl eframe::App for App {
         self.solve.logic(ctx);
         // The Assistant's page asks and is told with the app's logic, painted or not.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        self.assistant_web.logic(&mut self.solve, ctx);
+        if let Some(cef) = self.assistant_cef.as_mut() {
+            cef.logic(&mut self.solve, ctx);
+        } else {
+            self.assistant_web.logic(&mut self.solve, ctx);
+        }
         // The file chooser that opened is not the desktop's own: the user has to be told (#10159).
         #[cfg(target_os = "linux")]
         if let Some(reason) = desktop_chooser::take_reason() {
@@ -288,16 +294,28 @@ impl eframe::App for App {
         content_ui(&mut self.solve, ui);
         // After the frame's UI, which says where the Assistant panel is this frame.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        self.assistant_web.tick(&mut self.solve, ui.ctx(), frame);
+        if let Some(cef) = self.assistant_cef.as_mut() {
+            cef.tick(&mut self.solve, ui.ctx(), frame);
+        } else {
+            self.assistant_web.tick(&mut self.solve, ui.ctx(), frame);
+        }
         #[cfg(target_os = "macos")]
         {
             // Cut, Copy, Paste and Select All are in the Edit menu while the page has the keyboard.
             if let Some(menu) = &mut self.native_menu {
                 // Undo and Redo chosen while the page had the keyboard are its text's.
                 for redo in menu.take_text_edits() {
-                    self.assistant_web.edit_text(redo);
+                    if let Some(cef) = self.assistant_cef.as_mut() {
+                        cef.edit_text(redo);
+                    } else {
+                        self.assistant_web.edit_text(redo);
+                    }
                 }
-                menu.set_text_editing(&self.solve, self.assistant_web.focused());
+                let editing = self
+                    .assistant_cef
+                    .as_ref()
+                    .map_or_else(|| self.assistant_web.focused(), assistant_cef::CefAssistant::focused);
+                menu.set_text_editing(&self.solve, editing);
             }
         }
         // After the frame's UI, so a setting changed in it (Preferences' OK) is written now.
@@ -317,7 +335,11 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // The Assistant's web view is a child of the window: it goes while the window is there.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        self.assistant_web.close();
+        if let Some(cef) = self.assistant_cef.as_mut() {
+            cef.close();
+        } else {
+            self.assistant_web.close();
+        }
         // The agent chat's agent and everything it started end with the app.
         solidcraft_ui_egui::agent_chat::shutdown(&mut self.solve);
         // A save still being written ends before the app does.
@@ -1042,6 +1064,11 @@ impl Drop for DriverClient {
 }
 
 fn main() -> eframe::Result {
+    // CEF re-executes this binary for its renderer, GPU and utility processes: nothing else
+    // may run before that dispatch (no wgpu, no thread pools).
+    if let Some(code) = assistant_cef::subprocess_entry() {
+        std::process::exit(code);
+    }
     #[cfg(target_os = "macos")]
     objc2_foundation::NSProcessInfo::processInfo().setProcessName(objc2_foundation::ns_string!("Intcad"));
     mark("main");
@@ -1415,8 +1442,36 @@ fn main() -> eframe::Result {
                 app.native_file_menu = native_menu.is_some();
             }
             // The Assistant's conversation is a web view where the host has one.
+            // CEF for the Assistant, while the migration is under test: the panel keeps its
+            // contract either way, so the two hosts are interchangeable for a run.
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-            let assistant_web = assistant_web::AssistantWeb::new(&mut app);
+            let assistant_cef = if assistant_cef::enabled() {
+                match cc
+                    .wgpu_render_state
+                    .as_ref()
+                    .and_then(assistant_cef::CefAssistant::new)
+                {
+                    Some(cef) => {
+                        solidcraft_ui_egui::agent_chat::web::set_host(&mut app, true);
+                        Some(cef)
+                    }
+                    None => {
+                        solidcraft_ui_egui::agent_chat::web::set_problem(
+                            &mut app,
+                            solidcraft_ui_egui::agent_chat::web::Problem::Failed,
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            let assistant_web = if assistant_cef.is_some() {
+                assistant_web::AssistantWeb::default()
+            } else {
+                assistant_web::AssistantWeb::new(&mut app)
+            };
             mark("app created");
             solidcraft_engine::crash::phase("first frame");
             Ok(Box::new(App {
@@ -1434,6 +1489,7 @@ fn main() -> eframe::Result {
                 native_menu,
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 assistant_web,
+                assistant_cef,
                 nav_bridge,
                 dialog_folder,
             }))
@@ -1485,6 +1541,12 @@ fn wgpu_options(cpu: bool, preference: Option<&str>) -> eframe::egui_wgpu::WgpuC
             d.required_features |= adapter.features() & startup::FLOAT_DEPTH_STENCIL;
             d
         });
+    }
+    // CEF's page comes in as a DMA-BUF: the Vulkan device has to be opened with the interop
+    // extensions, which the descriptor alone cannot add. When it cannot, eframe keeps its own
+    // device and the Assistant says why (assistant_cef::CefAssistant::new refuses).
+    if let Some(setup) = assistant_cef::interop_setup() {
+        options.wgpu_setup = setup;
     }
     options
 }
