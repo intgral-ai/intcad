@@ -232,6 +232,18 @@ longer finds updates. Point it at the current one:
 `flatpak remote-modify --user --url=https://docs.solidcraft.io/flatpak/repo/ solidcraft`
 (use your remote's name: `solvecraft` for one added before 0.4), then `flatpak update --user`.
 
+## The geometry kernel
+
+The kernel is **solidcore**, vendored in `solidcore/` with its history, licence and attribution
+files (Apache-2.0; a Rust port of SMLib and SM_API from USD BRep). The workspace takes
+`solidcore`, `solidcore-record`, `solidcore-ops`, `solidcore-tess` and `solidcore-step` from that
+tree by path; there is no git revision pin and no second copy of the kernel. `solidcore/` is
+excluded from this workspace's lints and has its own toolchain file, as upstream publishes it.
+
+`crates/kernel` is the only crate that speaks to the kernel's modelling layer; `crates/smlib` and
+`crates/geom` keep the boundary types. A kernel change is made in `solidcore/` and carried here by
+updating the vendored tree, never by forking a second kernel in `crates/`.
+
 ## Draft design containers
 
 The #303 draft used `solvecraft-container/1`. `crates/io/src/design.rs` accepts that
