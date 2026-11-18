@@ -49,16 +49,21 @@ The disposition table is `ledger.md`; the owner approved CD-1…CD-7 (§7 there)
 The single implementation is `solidcraft_format`'s registry/container used by `doc`/`io`. Test
 `design::tests::a_design_saved_at_format_51_with_its_pending_changes_saves_and_reopens` builds a
 file exactly as Intcad 0.1.1 wrote it, saves it as `solidcraft/58` and reopens it with identical
-data. GUI-level verification (open a real project, save, reopen) and the new
-`open_newer_files` preference are to be recorded at the final SHA.
+data (1 passed on the branch; `a_snapshot_budget_bounds_the_design_container_it_writes` also 1
+passed). GUI-level verification on the branch: Linux opened the real `solidcraft/1` corpus design
+`modern-sheet-metal.solidcraft` (errors 0, features 2), saved it as a new file (16,508 bytes) and
+reopened it with the same bodies, sketch (Contour, 3 curves, dof 8, solved) and timeline; Windows
+opened the sample, saved it (`C:/Users/Public/cd1-win.sc`, 44,940 bytes) and reopened it (errors 0,
+features 9, parameters preserved). The `open_newer_files` preference is implemented and its
+refusal path is tested. All of this is on branch commits, to be repeated at the final SHA.
 
 ## 6. Platform acceptance
 
 | Platform | Status |
 | --- | --- |
-| Linux native CI | in PR #185's run (to record) |
-| Linux GUI E2E | not run |
-| Windows native CI + VM GUI E2E | not run |
+| Linux native CI | PR #185 runs (dispatched 44402787343; pending final) |
+| Linux GUI E2E | **PASS 8/8** at `42f4d670a` (task `int1454`): sample open, orbit drag, face select, Assistant open/resize/control. Evidence `~/.local/state/intcad-e2e/runs/intcad-e2e-int1454-ui-c28767d6c085-int1454/20261118T212022Z-681395/REPORT.md`; artifact sha256 `e6da03a57c438530d1640a0a171b0f1f220768aa95e3a1d5a54cef246b5a83cc` |
+| Windows native CI + VM GUI E2E | **PASS** at `f82b56372` (task `int1454w`): MSI `b1d55038d01c9452f4b534bfe93e8d365c0f08c2875518395aaccaf84890be4a`, app sha256 `ca1c34de2167f4b2ec028afe6403430d43a7a83a09ae4f7c6992dbcf036ba6c1`, installed and running, Sample Plate loaded, control channel ok. Evidence `~/.local/state/intcad-e2e/windows/runs/…/20261118T213755Z-734039` |
 | macOS native automation | not run |
 | macOS/desktop UI (PP) | not run |
 
