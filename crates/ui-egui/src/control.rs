@@ -293,6 +293,9 @@ fn key_from(name: &str) -> Option<egui::Key> {
 /// Run one command as `engine.execute` does: through `app.run`, then the first-body fit and the
 /// camera the command asked for.
 fn execute(app: &mut SolveApp, id: &str, params: Value) -> Result<Value, String> {
+    // One spelling, as the engine resolves it: the id compared below (`engine.commands`,
+    // `view.pick`) and the command that runs are the registered one.
+    let id = solidcraft_engine::resolve_command_id(id).unwrap_or(id);
     if solidcraft_engine::panels::commands::is_command(id) {
         // No first-body meshing, camera-follow or fit tail for application layout.
         return app.run(id, params);
