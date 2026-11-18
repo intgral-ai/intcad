@@ -51,8 +51,6 @@ pub const TABLE: &[(&str, Class)] = &[
     ("sketch", Class::Layer(1)),
     // the B-rep kernel, solidcore (the Rust port of NVIDIA's SMLib, ADR 0002); only the kernel uses it
     ("smlib", Class::Layer(1)),
-    // STEP (ISO 10303) exchange structure and geometry, no modelling backend
-    ("step", Class::Layer(1)),
     ("kernel", Class::Layer(1)),
     ("render", Class::Layer(1)),
     // multibody dynamics (rigid bodies, joints, forces, time integration; geom only)
@@ -75,7 +73,7 @@ pub const TABLE: &[(&str, Class)] = &[
 
 /// Explicit orderings *within* a layer (earlier may be used by later).
 /// The viewport draws display plans the GPU crate evaluates and draws with its pipelines; the MCP
-/// server's tests draw screenshots with them. The kernel reads and writes STEP through `step`.
+/// server's tests draw screenshots with them. The kernel reads and writes STEP through `solidcore-step`.
 pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["gpu", "ui-egui"],
     &["gpu", "mcp"],
@@ -85,7 +83,6 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     // The task controller's real engine ports sit beside the engine, below the UI.
     &["engine", "agent-task-engine"],
     &["smlib", "kernel"],
-    &["step", "kernel"],
 ];
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {

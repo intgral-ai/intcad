@@ -41,8 +41,8 @@ mod profile;
 pub mod section;
 pub mod simplify;
 pub mod spline_space;
-pub mod stderr;
 pub mod srgb;
+pub mod stderr;
 /// The plan evaluator, now the kernel's (`solidcore::eval::plan`), and the display plan, now
 /// solidcore-tess's (RFC 0003, item 1.1), under their old path.
 pub mod tess {

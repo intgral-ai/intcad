@@ -1,5 +1,10 @@
 # Kernel attribution
 
+> **Superseded (INT-1454, CD-7).** The kernel is no longer consumed as pinned git revisions:
+> it is vendored in `solidcore/` (SolidCraft v0.44.1, snapshot `524be9e1`) with path dependencies,
+> and `crates/kernel`/`crates/smlib`/`crates/geom` now carry upstream's newer code. This page
+> records the pre-sync investigation; numbers and pin statements below are historical.
+
 What the kernel is built from, what this fork changed, whether the historical action-matrix
 baseline can judge the Beta run, and what the 213 new failures are. Investigation only: no
 upstream issue, comment or PR was posted, and no code was changed.

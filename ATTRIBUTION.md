@@ -843,10 +843,10 @@ crates/engine/src/tests/gltf_import.rs); no third-party models are committed.
 
 | Crate | Used for | Licence |
 |---|---|---|
-| solidcore (https://github.com/tangency-labs/solidcore, pinned by rev in Cargo.toml) | the Rust port of NVIDIA's SMLib: the B-rep kernel behind crates/smlib | Apache-2.0 (its NOTICE credits NVIDIA's USD BRep) |
+| solidcore (vendored in `solidcore/` from https://github.com/tangency-labs/solidcore at SolidCraft v0.44.1) | the Rust port of NVIDIA's SMLib: the B-rep kernel behind `crates/kernel` and `crates/smlib`, and the STEP reader | Apache-2.0 (its own LICENSE, NOTICE and ATTRIBUTION.md are in `solidcore/`) |
 
-Linked as a crate; no code from it is copied into SolidCraft. Its licence text and NOTICE go
-into THIRD-PARTY-LICENSES.txt when `main` regenerates it.
+Vendored, not linked: the tree keeps its own history, LICENSE, NOTICE and ATTRIBUTION.md, and
+`cargo xtask licences` covers the crates built from it.
 
 ## FreeCAD and Rhino import library
 

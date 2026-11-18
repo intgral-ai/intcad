@@ -3726,8 +3726,10 @@ impl Document {
         for b in &mut st.bodies {
             let c = self.body_color(b);
             let face_colors = if authored_faces { self.face_colors(b) } else { self.imported_face_colors(b) };
-            let faces: Vec<solidcraft_kernel::FacePaint> =
-                face_colors.into_iter().map(|(face, l)| solidcraft_kernel::FacePaint { face, color: l.rgb(), opacity: l.opacity as f32, name: None }).collect();
+            let faces: Vec<solidcraft_kernel::FacePaint> = face_colors
+                .into_iter()
+                .map(|(face, l)| solidcraft_kernel::FacePaint { face, color: l.rgb(), opacity: l.opacity as f32, name: None })
+                .collect();
             let opacity = self.model_body_opacity(b) as f32;
             let paint = solidcraft_kernel::Paint { opacity, faces, name: None };
             if c != b.body.color() || b.body.paint() != Some(&paint) {

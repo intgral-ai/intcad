@@ -350,10 +350,15 @@ fn a_union_meeting_two_pieces_of_three_keeps_the_third() {
     let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
     assert_eq!(r.shell_count(), 2);
     let h = verified(&r, &[&a, &tool], 0.02);
-    let operands: BTreeSet<usize> = h.faces.iter().flat_map(|f| &f.origins).filter_map(|o| match *o {
-        FaceOrigin::Face { operand, .. } => Some(operand),
-        _ => None,
-    }).collect();
+    let operands: BTreeSet<usize> = h
+        .faces
+        .iter()
+        .flat_map(|f| &f.origins)
+        .filter_map(|o| match *o {
+            FaceOrigin::Face { operand, .. } => Some(operand),
+            _ => None,
+        })
+        .collect();
     assert_eq!(operands, BTreeSet::from([0, 1]), "{}", show(h));
     let sources = r.face_sources().expect("the by-lump union keeps face sources");
     assert_eq!(sources.len(), r.face_count());
@@ -374,10 +379,15 @@ fn a_union_of_a_body_in_pieces_with_a_loose_tool_keeps_every_piece() {
     let r = boolean(&a, &tool, BoolOp::Union).unwrap().unwrap();
     assert_eq!(r.shell_count(), 3);
     let h = verified(&r, &[&a, &tool], 0.02);
-    let operands: BTreeSet<usize> = h.faces.iter().flat_map(|f| &f.origins).filter_map(|o| match *o {
-        FaceOrigin::Face { operand, .. } => Some(operand),
-        _ => None,
-    }).collect();
+    let operands: BTreeSet<usize> = h
+        .faces
+        .iter()
+        .flat_map(|f| &f.origins)
+        .filter_map(|o| match *o {
+            FaceOrigin::Face { operand, .. } => Some(operand),
+            _ => None,
+        })
+        .collect();
     assert_eq!(operands, BTreeSet::from([0, 1]), "{}", show(h));
     let sources = r.face_sources().expect("the all-apart union keeps face sources");
     assert_eq!(sources.len(), r.face_count());
@@ -398,6 +408,8 @@ fn a_union_where_every_box_overlaps_but_the_tool_misses_the_inner_piece() {
     let hollow = boolean(&outer, &cavity, BoolOp::Cut).unwrap().unwrap();
     assert_eq!(hollow.shell_count(), 2);
     let inner = boxed(8.0, 8.0, 8.0, 12.0, 12.0, 12.0);
+    // The axis reaches (22, 10, 10) from (-1, 2, 2); at radius 0.5 it passes the wall but
+    // misses the inner box (no intersection volume).
     let tool = crate::cylinder(Vec3::new(-1.0, 2.0, 2.0), Vec3::new(23.0, 8.0, 8.0), 0.5, 26.0).unwrap();
     assert!(boolean(&inner, &tool, BoolOp::Intersect).unwrap().is_none());
     let a = crate::join_apart(&[hollow, inner]).unwrap().unwrap();
