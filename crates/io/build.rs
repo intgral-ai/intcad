@@ -1,7 +1,7 @@
 //! What the model cache is keyed by. `SOLIDCRAFT_EVALUATION_SOURCE`: the digest of the committed
 //! source a design's model is computed from: the `doc` crate and every workspace crate it is
-//! built from, the patched dependencies, the locked versions of all others, the workspace's build
-//! settings and the cache's own reader. A cache is only the result of evaluating its design when
+//! built from, the vendored kernel, the patched dependencies, the locked versions of all others,
+//! the workspace's build settings and the cache's own reader. A cache is only the result of evaluating its design when
 //! that source computed it, and an update that changed none of it (only the interface, the
 //! commands or the other file formats, or the version number) computes the same model.
 //! `SOLIDCRAFT_SOURCE_COMMIT`: the commit, recorded with the cache. Both are "unknown" without git
@@ -13,13 +13,15 @@ use std::process::Command;
 
 /// The workspace crates a design's model is computed from: `doc` and every workspace crate it
 /// depends on (a test checks the list against their manifests).
-const EVALUATION_CRATES: [&str; 8] = ["geom", "profile", "smlib", "sketch", "kernel", "render", "derive", "doc"];
+const EVALUATION_CRATES: [&str; 12] =
+    ["color", "display-units", "geom", "profile", "smlib", "sketch", "kernel", "render", "derive", "doc", "format", "viewport"];
+/// The other files the saved model depends on, relative to the workspace root.
+const EVALUATION_FILES: [&str; 3] = ["crates/io/build.rs", "crates/io/src/design/native_cache.rs", ".cargo/config.toml"];
 /// The committed trees whose every file computes models, hashed as one tree id each: the vendored
 /// kernel, so any change under `solidcore/` invalidates the models the old kernel computed.
 const EVALUATION_TREES: [&str; 1] = ["solidcore"];
-/// The other files the saved model depends on, relative to the workspace root.
-const EVALUATION_FILES: [&str; 3] = ["crates/io/build.rs", "crates/io/src/design/native_cache.rs", ".cargo/config.toml"];
-/// What under `vendor/` does not compute models: notes, and the interface's renderer.
+/// What under `vendor/` does not compute models: notes, and the interface's renderer. The kernel is
+/// not under `vendor/`; it is `solidcore/`, in [`EVALUATION_TREES`].
 const VENDOR_OUTSIDE: [&str; 2] = ["README.md", "egui-wgpu"];
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
