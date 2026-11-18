@@ -1,0 +1,410 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+PAGE min_x=248.0 min_y=8.0 ppp=1.25 phys=480x580
+PAGE min_x=248.0 min_y=8.0 ppp=1.25 phys=952x1377
+NAV Navigation(LoadStart { url: "file:///home/hyjing/Code/intgral/intcad/worktrees/cef-osr/experiments/cef-osr/poc/fixtures/probe.html" })
+NAV Navigation(AddressChanged { url: "file:///home/hyjing/Code/intgral/intcad/worktrees/cef-osr/experiments/cef-osr/poc/fixtures/probe.html" })
+NAV Navigation(TitleChanged { title: "cef-osr-probe" })
+NAV Navigation(TitleChanged { title: "probe: loaded 384x464 dpr 1.25" })
+NAV Navigation(LoadEnd { url: "file:///home/hyjing/Code/intgral/intcad/worktrees/cef-osr/experiments/cef-osr/poc/fixtures/probe.html", http_status: 200 })
+NAV Navigation(TitleChanged { title: "probe: loaded 384x464 dpr 1.25" })
+EVENT WindowFocused(false)
+QUEUE first frame: replaying 0 held event(s)
+QUEUE pointer replayed: 0
+EVENT PointerMoved([488.0 248.0])
+INPUT mouse Moved 300,300
+EVENT WindowFocused(true)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerMoved([488.0 248.0])
+INPUT mouse Moved 300,300
+QUEUE flushed 1
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT WindowFocused(false)
+STATS frames_total=4 frames_last_min=3 p50_ms=34.5 repaints=49 texture=Some([953, 1378])
+STATS frames_total=4 frames_last_min=3 p50_ms=34.5 repaints=54 texture=Some([953, 1378])
+STATS frames_total=4 frames_last_min=3 p50_ms=34.5 repaints=59 texture=Some([953, 1378])
+STATS frames_total=4 frames_last_min=3 p50_ms=34.5 repaints=64 texture=Some([953, 1378])
+STATS frames_total=4 frames_last_min=3 p50_ms=34.5 repaints=69 texture=Some([953, 1378])
+EVENT WindowFocused(true)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerMoved([488.0 248.0])
+INPUT mouse Moved 300,300
+QUEUE flushed 1
+STATS frames_total=4 frames_last_min=3 p50_ms=34.5 repaints=77 texture=Some([953, 1378])
+STATS frames_total=4 frames_last_min=3 p50_ms=34.5 repaints=82 texture=Some([953, 1378])
+EVENT MouseMoved([498.0 132.0])
+EVENT PointerMoved([398.4 105.6])
+INPUT mouse Moved 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [398.4 105.6], button: Primary, pressed: true, modifiers: Modifiers::NONE }
+INPUT mouse Pressed 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [398.4 105.6], button: Primary, pressed: false, modifiers: Modifiers::NONE }
+INPUT mouse Released 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 3
+NAV Navigation(TitleChanged { title: "probe: mousedown 150,98" })
+EVENT Key { key: C, physical_key: Some(C), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("c")
+INPUT text "c"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key c" })
+NAV Navigation(TitleChanged { title: "probe: input \"c\"" })
+EVENT Key { key: C, physical_key: Some(C), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: L, physical_key: Some(L), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("l")
+INPUT text "l"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key l" })
+NAV Navigation(TitleChanged { title: "probe: input \"cl\"" })
+EVENT Key { key: L, physical_key: Some(L), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: I, physical_key: Some(I), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("i")
+INPUT text "i"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key i" })
+NAV Navigation(TitleChanged { title: "probe: input \"cli\"" })
+EVENT Key { key: I, physical_key: Some(I), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: P, physical_key: Some(P), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("p")
+INPUT text "p"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key p" })
+NAV Navigation(TitleChanged { title: "probe: input \"clip\"" })
+EVENT Key { key: P, physical_key: Some(P), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: B, physical_key: Some(B), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("b")
+INPUT text "b"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key b" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipb\"" })
+EVENT Key { key: B, physical_key: Some(B), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: O, physical_key: Some(O), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("o")
+INPUT text "o"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key o" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipbo\"" })
+EVENT Key { key: O, physical_key: Some(O), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: A, physical_key: Some(A), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("a")
+INPUT text "a"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key a" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipboa\"" })
+EVENT Key { key: A, physical_key: Some(A), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: R, physical_key: Some(R), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("r")
+INPUT text "r"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key r" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipboar\"" })
+EVENT Key { key: R, physical_key: Some(R), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+STATS frames_total=14 frames_last_min=13 p50_ms=39.9 repaints=150 texture=Some([953, 1378])
+EVENT Key { key: D, physical_key: Some(D), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("d")
+INPUT text "d"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key d" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipboard\"" })
+EVENT Key { key: D, physical_key: Some(D), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: Minus, physical_key: Some(Minus), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("-")
+INPUT text "-"
+QUEUE flushed 1
+NAV Navigation(TitleChanged { title: "probe: input \"clipboard-\"" })
+EVENT Key { key: Minus, physical_key: Some(Minus), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+EVENT Key { key: T, physical_key: Some(T), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("t")
+INPUT text "t"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key t" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipboard-t\"" })
+EVENT Key { key: T, physical_key: Some(T), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: E, physical_key: Some(E), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("e")
+INPUT text "e"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key e" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipboard-te\"" })
+EVENT Key { key: E, physical_key: Some(E), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: S, physical_key: Some(S), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("s")
+INPUT text "s"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key s" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipboard-tes\"" })
+EVENT Key { key: S, physical_key: Some(S), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: T, physical_key: Some(T), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("t")
+INPUT text "t"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key t" })
+NAV Navigation(TitleChanged { title: "probe: input \"clipboard-test\"" })
+EVENT Key { key: T, physical_key: Some(T), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: ControlLeft, physical_key: Some(ControlLeft), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT ModifiersChanged(Modifiers { ctrl: true, command: true })
+EVENT Key { key: A, physical_key: Some(A), pressed: true, repeat: false, modifiers: Modifiers { ctrl: true, command: true } }
+EVENT Key { key: ControlLeft, physical_key: Some(ControlLeft), pressed: false, repeat: false, modifiers: Modifiers { ctrl: true, command: true } }
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 1
+NAV Navigation(TitleChanged { title: "probe: key a+ctrl" })
+EVENT Key { key: A, physical_key: Some(A), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+STATS frames_total=22 frames_last_min=21 p50_ms=40.0 repaints=218 texture=Some([953, 1378])
+EVENT Key { key: ControlLeft, physical_key: Some(ControlLeft), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT ModifiersChanged(Modifiers { ctrl: true, command: true })
+EVENT Copy
+CLIPBOARD copy_out 14 byte(s)
+NAV ScriptCompleted { id: WebRequestId(7), result: Ok("\"clipboard-test\"") }
+EVENT Key { key: ControlLeft, physical_key: Some(ControlLeft), pressed: false, repeat: false, modifiers: Modifiers { ctrl: true, command: true } }
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT Key { key: C, physical_key: Some(C), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+STATS frames_total=22 frames_last_min=21 p50_ms=40.0 repaints=252 texture=Some([953, 1378])
+EVENT MouseMoved([498.0 132.0])
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [398.4 105.6], button: Primary, pressed: true, modifiers: Modifiers::NONE }
+INPUT mouse Pressed 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [398.4 105.6], button: Primary, pressed: false, modifiers: Modifiers::NONE }
+INPUT mouse Released 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: mousedown 150,98" })
+STATS frames_total=23 frames_last_min=22 p50_ms=40.1 repaints=277 texture=Some([953, 1378])
+EVENT Key { key: ControlLeft, physical_key: Some(ControlLeft), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT ModifiersChanged(Modifiers { ctrl: true, command: true })
+EVENT Key { key: A, physical_key: Some(A), pressed: true, repeat: false, modifiers: Modifiers { ctrl: true, command: true } }
+EVENT Key { key: ControlLeft, physical_key: Some(ControlLeft), pressed: false, repeat: false, modifiers: Modifiers { ctrl: true, command: true } }
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 1
+NAV Navigation(TitleChanged { title: "probe: key a+ctrl" })
+EVENT Key { key: A, physical_key: Some(A), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: ControlLeft, physical_key: Some(ControlLeft), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT ModifiersChanged(Modifiers { ctrl: true, command: true })
+EVENT Paste("你好，世界")
+CLIPBOARD paste_in 15 byte(s)
+EVENT Key { key: ControlLeft, physical_key: Some(ControlLeft), pressed: false, repeat: false, modifiers: Modifiers { ctrl: true, command: true } }
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 1
+NAV Navigation(TitleChanged { title: "probe: input \"你好，世界\"" })
+EVENT Key { key: V, physical_key: Some(V), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+STATS frames_total=27 frames_last_min=26 p50_ms=40.1 repaints=342 texture=Some([953, 1378])
+EVENT MouseMoved([498.0 132.0])
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [398.4 105.6], button: Primary, pressed: true, modifiers: Modifiers::NONE }
+INPUT mouse Pressed 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [398.4 105.6], button: Primary, pressed: false, modifiers: Modifiers::NONE }
+INPUT mouse Released 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: mousedown 150,98" })
+EVENT Key { key: A, physical_key: Some(A), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("a")
+INPUT text "a"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key a" })
+NAV Navigation(TitleChanged { title: "probe: input \"你好，世界a\"" })
+STATS frames_total=31 frames_last_min=30 p50_ms=40.1 repaints=400 texture=Some([953, 1378])
+EVENT Key { key: A, physical_key: Some(A), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: B, physical_key: Some(B), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("b")
+INPUT text "b"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key b" })
+NAV Navigation(TitleChanged { title: "probe: input \"你好，世界ab\"" })
+EVENT Key { key: B, physical_key: Some(B), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: C, physical_key: Some(C), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("c")
+INPUT text "c"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key c" })
+NAV Navigation(TitleChanged { title: "probe: input \"你好，世界abc\"" })
+EVENT Key { key: C, physical_key: Some(C), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT MouseMoved([120.0 700.0])
+EVENT PointerMoved([96.0 560.0])
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [96.0 560.0], button: Primary, pressed: true, modifiers: Modifiers::NONE }
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [96.0 560.0], button: Primary, pressed: false, modifiers: Modifiers::NONE }
+INPUT mouse Released -190,690
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 1
+STATS frames_total=34 frames_last_min=33 p50_ms=41.1 repaints=463 texture=Some([953, 1378])
+EVENT Key { key: Z, physical_key: Some(Z), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("z")
+EVENT Key { key: Z, physical_key: Some(Z), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+EVENT Key { key: Z, physical_key: Some(Z), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("z")
+EVENT Key { key: Z, physical_key: Some(Z), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+EVENT Key { key: Z, physical_key: Some(Z), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("z")
+EVENT Key { key: Z, physical_key: Some(Z), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+EVENT MouseMoved([498.0 132.0])
+EVENT PointerMoved([398.4 105.6])
+INPUT mouse Moved 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [398.4 105.6], button: Primary, pressed: true, modifiers: Modifiers::NONE }
+INPUT mouse Pressed 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [398.4 105.6], button: Primary, pressed: false, modifiers: Modifiers::NONE }
+INPUT mouse Released 188,122
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 3
+STATS frames_total=37 frames_last_min=36 p50_ms=41.5 repaints=525 texture=Some([953, 1378])
+NAV Navigation(TitleChanged { title: "probe: mousedown 150,98" })
+EVENT Key { key: O, physical_key: Some(O), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("o")
+INPUT text "o"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key o" })
+NAV Navigation(TitleChanged { title: "probe: input \"你好，世界abco\"" })
+EVENT Key { key: O, physical_key: Some(O), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+EVENT Key { key: K, physical_key: Some(K), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Text("k")
+INPUT text "k"
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: key k" })
+NAV Navigation(TitleChanged { title: "probe: input \"你好，世界abcok\"" })
+EVENT Key { key: K, physical_key: Some(K), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+QUEUE flushed 1
+STATS frames_total=42 frames_last_min=41 p50_ms=50.0 repaints=590 texture=Some([953, 1378])
+EVENT MouseMoved([610.0 310.0])
+EVENT PointerMoved([488.0 248.0])
+INPUT mouse Moved 300,300
+QUEUE flushed 1
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT MouseWheel { unit: Line, delta: [0.0 1.0], phase: Move, source: Unknown, modifiers: Modifiers::NONE }
+INPUT mouse WheelScrolled { delta_x: 0, delta_y: 20 } 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT MouseWheel { unit: Line, delta: [0.0 1.0], phase: Move, source: Unknown, modifiers: Modifiers::NONE }
+INPUT mouse WheelScrolled { delta_x: 0, delta_y: 20 } 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: wheel -20" })
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT MouseWheel { unit: Line, delta: [0.0 1.0], phase: Move, source: Unknown, modifiers: Modifiers::NONE }
+INPUT mouse WheelScrolled { delta_x: 0, delta_y: 20 } 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT MouseWheel { unit: Line, delta: [0.0 1.0], phase: Move, source: Unknown, modifiers: Modifiers::NONE }
+INPUT mouse WheelScrolled { delta_x: 0, delta_y: 20 } 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: wheel -40" })
+STATS frames_total=48 frames_last_min=47 p50_ms=50.0 repaints=661 texture=Some([953, 1378])
+EVENT Key { key: Escape, physical_key: Some(Escape), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Key { key: Escape, physical_key: Some(Escape), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+EVENT MouseMoved([610.0 310.0])
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [488.0 248.0], button: Primary, pressed: true, modifiers: Modifiers::NONE }
+INPUT mouse Pressed 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [488.0 248.0], button: Primary, pressed: false, modifiers: Modifiers::NONE }
+INPUT mouse Released 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 2
+NAV Navigation(TitleChanged { title: "probe: mousedown 240,240" })
+EVENT MouseMoved([848.0 132.0])
+EVENT PointerMoved([678.4 105.6])
+INPUT mouse Moved 538,122
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [678.4 105.6], button: Primary, pressed: true, modifiers: Modifiers::NONE }
+INPUT mouse Pressed 538,122
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [678.4 105.6], button: Primary, pressed: false, modifiers: Modifiers::NONE }
+INPUT mouse Released 538,122
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 3
+NAV Navigation(TitleChanged { title: "probe: mousedown 430,98" })
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+STATS frames_total=51 frames_last_min=50 p50_ms=50.2 repaints=731 texture=Some([953, 1378])
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+STATS frames_total=51 frames_last_min=50 p50_ms=50.2 repaints=756 texture=Some([953, 1378])
+POPUP rect x=510 y=135 w=83 h=123
+EVENT Key { key: Escape, physical_key: Some(Escape), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+EVENT Key { key: Escape, physical_key: Some(Escape), pressed: false, repeat: false, modifiers: Modifiers::NONE }
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+EVENT MouseMoved([610.0 310.0])
+EVENT PointerMoved([488.0 248.0])
+INPUT mouse Moved 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [488.0 248.0], button: Secondary, pressed: true, modifiers: Modifiers::NONE }
+INPUT mouse Pressed 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT ModifiersChanged(Modifiers::NONE)
+EVENT PointerButton { pos: [488.0 248.0], button: Secondary, pressed: false, modifiers: Modifiers::NONE }
+INPUT mouse Released 300,300
+EVENT ModifiersChanged(Modifiers::NONE)
+QUEUE flushed 3
+NAV Navigation(TitleChanged { title: "probe: mousedown 240,240" })
+POPUP rect x=510 y=135 w=83 h=123
+NAV Navigation(ContextMenuRequested { x: 300, y: 300, targets: [Page, Frame], link_url: "", source_url: "", page_url: "file:///home/hyjing/Code/intgral/intcad/worktrees/cef-osr/experiments/cef-osr/poc/fixtures/probe.html", selection_text: "" })
+POPUP closed
+STATS frames_total=52 frames_last_min=51 p50_ms=50.2 repaints=788 texture=Some([953, 1378])
+EVENT Key { key: Escape, physical_key: Some(Escape), pressed: true, repeat: false, modifiers: Modifiers::NONE }
+EVENT Key { key: Escape, physical_key: Some(Escape), pressed: false, repeat: false, modifiers: Modifiers::NONE }

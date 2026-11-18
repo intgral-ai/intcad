@@ -127,17 +127,32 @@ fn run() -> i32 {
         ),
     );
 
+    // PROBE_NO_DMABUF=1 builds the device the way a host without the interop
+    // helper would: no VK_EXT_queue_family_foreign, no VK_EXT_external_memory_dma_buf.
+    // The import must then fail with a typed error and a clear message, not a
+    // crash and not a CPU fallback.
+    let without_dmabuf = env("PROBE_NO_DMABUF").as_deref() == Some("1");
     let device_descriptor = wgpu::DeviceDescriptor {
         label: Some("cef-osr-probe"),
-        required_features: required,
+        required_features: if without_dmabuf { wgpu::Features::empty() } else { required },
         required_limits: wgpu::Limits::downlevel_defaults(),
         ..Default::default()
     };
-    let (device, queue) = match welding::build_dmabuf_capable_device(&adapter, &device_descriptor) {
-        Ok(pair) => pair,
-        Err(error) => {
-            eprintln!("device creation for DMA-BUF import failed: {error}");
-            return 3;
+    let (device, queue) = if without_dmabuf {
+        match pollster::block_on(adapter.request_device(&device_descriptor)) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("device creation failed: {error}");
+                return 3;
+            }
+        }
+    } else {
+        match welding::build_dmabuf_capable_device(&adapter, &device_descriptor) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("device creation for DMA-BUF import failed: {error}");
+                return 3;
+            }
         }
     };
     let host = HostWgpuContext::new(device, queue);
@@ -369,6 +384,12 @@ fn send_one(producer: &mut LinuxCefProducer, script: &str) {
     } else if let Some(rest) = script.strip_prefix("wait:") {
         let millis: u64 = rest.trim().parse().unwrap_or(200);
         std::thread::sleep(Duration::from_millis(millis));
+    } else if let Some(rest) = script.strip_prefix("imepreedit:") {
+        let _ = producer.ime_set_composition(rest, (rest.chars().count() as u32, rest.chars().count() as u32));
+        receipt("input", &format!("\"imepreedit\":{}", json_string(rest)));
+    } else if script == "imecancel" {
+        let _ = producer.ime_cancel_composition();
+        receipt("input", "\"imecancel\":true");
     } else if let Some(rest) = script.strip_prefix("ime:") {
         // What a real input method produces: a composition, then the commit.
         // The page's composition handlers turn it into navigation events, so it

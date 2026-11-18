@@ -13,10 +13,13 @@ This file is only *how to run it again*.
 | Path | What it is |
 |---|---|
 | `poc/src/bin/probe.rs` | Headless probe: real CEF accelerated OSR → DMABUF → host wgpu texture, with no window at all. Prints `RECEIPT {...}` lines as evidence. |
+| `poc/src/bin/soak.rs` | Lifecycle soak: create/destroy N times, resize pressure, visibility, scale changes, renderer crash recovery, first-frame input queue, RSS/fd/VRAM samples. |
+| `poc/src/lib.rs`, `poc/src/queue.rs` | The bounded input queue (unit-tested): order for keys/IME, coalesced motion, reported overflow, cleared on blur/hide/close. |
 | `poc/src/bin/panel.rs` | Minimal egui host: the same CEF texture drawn by `egui_wgpu` in one `eframe` window, with pointer/wheel/keyboard/IME/pop-up forwarding. |
 | `poc/fixtures/probe.html` | Test page: solid `#1e90ff` background, an input, a `<select>`, and a log that mirrors every gesture into `document.title` (which comes back as a navigation event). |
 | `nix/runtime.nix` | The CEF runtime libraries as one `cef-osr-env` wrapper (NixOS has no `/usr/lib`). |
 | `scripts/matrix.sh` | The Wayland/X11/headless matrix. |
+| `scripts/panel-x11-input.sh` | Clipboard both ways, focus handover, wheel, `<select>` popup and context menu on a real X11 seat. |
 | `scripts/panel-headless.sh` | The panel on a headless sway (wlroots) compositor, with `grim` screenshots and a CPU sample. |
 | `scripts/tree_cpu.py` | CPU of a process **and its descendants** (CEF renders in child processes). |
 | `scripts/ppm2png.py` | PPM → PNG without third-party packages. |
@@ -50,13 +53,22 @@ Environment knobs are documented at the top of `probe.rs` and `panel.rs`
 - `PROBE_SANDBOX=sandboxed` — CEF's process sandbox instead of
   `UnsandboxedTrustedContent`.
 
-The matrix, the panel screenshots and the CPU sample:
+The matrix, the lifecycle soak, the X11 input checks and the panel screenshots:
 
 ```sh
 scripts/matrix.sh /tmp/cef-evidence/matrix
 nix shell nixpkgs#sway nixpkgs#grim nixpkgs#wlrctl nixpkgs#wtype \
   -c ./scripts/panel-headless.sh /tmp/cef-evidence/panel 10
+CEF_PATH=... SOAK_CYCLES=100 SOAK_CRASH=1 SOAK_CONTROL=1 \
+  nix shell nixpkgs#... -c ./target/release/cef-osr-soak
+nix shell nixpkgs#xdotool nixpkgs#xclip \
+  -c ./scripts/panel-x11-input.sh /tmp/cef-evidence/panel-x11
 ```
+
+Clipboard is bridged in the host on purpose: CEF's own OSR clipboard is broken
+upstream (cef#4341), so `panel.rs` reads the page selection and writes it to the
+system clipboard, and commits system text into the focused field as an input
+method would.
 
 Everything in `evidence/` was produced by those two commands plus the
 `PROBE_INPUT` scripts recorded in the logs.

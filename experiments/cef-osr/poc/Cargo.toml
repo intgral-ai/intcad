@@ -11,6 +11,10 @@ name = "cef-osr-probe"
 path = "src/bin/probe.rs"
 
 [[bin]]
+name = "cef-osr-soak"
+path = "src/bin/soak.rs"
+
+[[bin]]
 name = "cef-osr-panel"
 path = "src/bin/panel.rs"
 

@@ -1,0 +1,8 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+RECEIPT {"tag":"soak_start","cycles":10,"resizes":2,"rss_kib":212976,"fds":78,"vram_mib":21}
+RECEIPT {"tag":"queue","queue_sent":9,"queue_held":9,"queue_coalesced":0,"queue_refused":0,"queue_typed":true,"queue_control_X_delivered":false}
+RECEIPT {"tag":"cycle","cycle":0,"first_frame":true,"rss_kib":269668,"fds":118,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":9,"first_frame":true,"rss_kib":270236,"fds":118,"vram_mib":21}
+RECEIPT {"tag":"soak_end","cycles":10,"first_frames":10,"failures":0,"seconds":4.0,"rss_kib":270236,"fds":118,"vram_mib":21}
+RECEIPT {"tag":"soak_queue","queue_sent":9,"queue_held":9,"queue_coalesced":0,"queue_refused":0,"queue_typed":true,"queue_control_X_delivered":false}
+RECEIPT {"tag":"crash",null}

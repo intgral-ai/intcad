@@ -1,0 +1,11 @@
+CEF 154.0.34 Linux x64 minimal
+  distribution directory      1.5 GiB
+  libcef.so (as shipped)   1387.6 MiB
+  libcef.so (strip --strip-unneeded) 259.6 MiB
+  download archive (tar.bz2) 311.4 MiB
+  locales                     49 MiB / 220 files (prunable to en-US + zh-CN)
+  CREDITS.html               8.3 MiB
+  resources.pak             22.4 MiB
+  icudtl.dat                10.3 MiB
+  v8_context_snapshot.bin    0.7 MiB
+Runtime set to ship (stripped): ~300 MiB per Linux arch

@@ -1,0 +1,20 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+RECEIPT {"tag":"soak_start","cycles":100,"resizes":8,"rss_kib":220412,"fds":79,"vram_mib":21}
+RECEIPT {"tag":"queue","queue_sent":9,"queue_held":9,"queue_coalesced":0,"queue_refused":0,"queue_typed":true,"queue_control_X_delivered":false}
+RECEIPT {"tag":"cycle","cycle":0,"first_frame":true,"rss_kib":280184,"fds":119,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":10,"first_frame":true,"rss_kib":280600,"fds":116,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":20,"first_frame":true,"rss_kib":280912,"fds":116,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":30,"first_frame":true,"rss_kib":281172,"fds":119,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":40,"first_frame":true,"rss_kib":281388,"fds":119,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":50,"first_frame":true,"rss_kib":281500,"fds":119,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":60,"first_frame":true,"rss_kib":281572,"fds":119,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":70,"first_frame":true,"rss_kib":281656,"fds":116,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":80,"first_frame":true,"rss_kib":281900,"fds":118,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":90,"first_frame":true,"rss_kib":282016,"fds":119,"vram_mib":21}
+RECEIPT {"tag":"cycle","cycle":99,"first_frame":true,"rss_kib":281832,"fds":116,"vram_mib":21}
+[675417:675417:1118/151536.072191:ERROR:third_party/blink/common/chrome_debug_urls.cc:163] Intentionally crashing (with null pointer dereference) because user navigated to chrome://crash/
+[2026-11-18T21:15:36Z ERROR welding::linux_cef::cef_backed] weld: CEF render process terminated (Crashed, code 139, SIGSEGV)
+RECEIPT {"tag":"crash","first_frame":true,"terminated_event":true,"recovered_frame":true}
+RECEIPT {"tag":"soak_end","cycles":100,"first_frames":100,"failures":0,"seconds":8.5,"rss_kib":282224,"fds":118,"vram_mib":21}
+RECEIPT {"tag":"soak_queue","queue_sent":9,"queue_held":9,"queue_coalesced":0,"queue_refused":0,"queue_typed":true,"queue_control_X_delivered":false}
+RECEIPT {"tag":"crash","first_frame":true,"terminated_event":true,"recovered_frame":true}

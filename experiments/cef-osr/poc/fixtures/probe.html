@@ -41,11 +41,17 @@
   composer.addEventListener('compositionstart', () => log('compositionstart'));
   composer.addEventListener('compositionupdate', (e) => log('compositionupdate ' + JSON.stringify(e.data)));
   composer.addEventListener('compositionend', (e) => log('compositionend ' + JSON.stringify(e.data)));
-  addEventListener('keydown', (e) => log('key ' + e.key));
+  addEventListener('keydown', (e) => log('key ' + e.key + (e.ctrlKey ? '+ctrl' : '') + (e.metaKey ? '+meta' : '')));
   addEventListener('mousedown', (e) => log('mousedown ' + e.clientX + ',' + e.clientY));
   addEventListener('wheel', (e) => {
     if (Math.abs(e.deltaY) >= 1) log('wheel ' + Math.round(e.deltaY));
   }, { passive: true });
+  document.addEventListener('copy', () => log('copy event'));
+  document.addEventListener('cut', () => log('cut event'));
+  document.addEventListener('paste', (e) => {
+    const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+    log('paste event ' + JSON.stringify(text));
+  });
   document.getElementById('pick').addEventListener('change', (e) => log('select ' + e.target.value));
   addEventListener('dragover', (e) => { e.preventDefault(); });
   addEventListener('drop', (e) => {

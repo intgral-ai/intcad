@@ -9,14 +9,16 @@
 //! Env: CEF_PATH, PANEL_URL, PANEL_SANDBOX, PANEL_SWITCHES (see probe.rs).
 //! Keys: click the page to give it focus; Esc returns focus to egui.
 
+use cef_osr_poc::queue::{char_event, Input, InputQueue};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use welding::linux_cef::{LinuxCefConfig, LinuxCefProducer};
 use welding::wgpu;
 use welding::{
-    CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceProducer, DragEventKind, DragInput, DragOperations, DragPayload,
-    EventModifiers, FocusDirection, HostWgpuContext, ImportedTexture, KeyEvent, KeyEventKind, MouseAction, MouseButton, MouseEvent,
+    CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent, CefSurfaceProducer, DragEventKind, DragInput, DragOperations,
+    DragPayload, EventModifiers, FocusDirection, HostWgpuContext, ImportedTexture, KeyEvent, KeyEventKind, MouseAction, MouseButton, MouseEvent,
+    WebRequestId,
 };
 
 fn env(name: &str) -> Option<String> {
@@ -33,6 +35,8 @@ struct PanelApp {
     placed: Option<[u32; 2]>,
     focused: bool,
     left_down: bool,
+    queue: InputQueue,
+    copy_request: Option<u64>,
     hidden: bool,
     frames: u64,
     repaints: u64,
@@ -91,6 +95,8 @@ impl PanelApp {
             placed: None,
             focused: false,
             left_down: false,
+            queue: InputQueue::new(256),
+            copy_request: None,
             hidden: false,
             frames: 0,
             repaints: 0,
@@ -121,6 +127,16 @@ impl PanelApp {
         let id = renderer.register_native_texture(&self.host.device, &frame.view, wgpu::FilterMode::Linear);
         drop(renderer);
         self.texture = Some((id, size));
+        // CEF drops input until it has painted once; everything typed before
+        // this point is replayed now, in order.
+        if !self.queue.is_ready() {
+            self.queue.ready();
+            eprintln!("QUEUE first frame: replaying {} held event(s)", self.queue.pending());
+            // Pointer first; the keys follow on the next frame, after the page
+            // has had a chance to focus the field the click landed in.
+            let sent = self.queue.flush_pointer(&mut self.producer);
+            eprintln!("QUEUE pointer replayed: {sent}");
+        }
         ctx.request_repaint();
     }
 
@@ -143,11 +159,19 @@ impl PanelApp {
     }
 
     fn send_mouse(&mut self, action: MouseAction, x: f32, y: f32) {
+        self.send_mouse_button(action, x, y, MouseButton::Left);
+    }
+
+    fn send_mouse_button(&mut self, action: MouseAction, x: f32, y: f32, button: MouseButton) {
         if std::env::var_os("PANEL_TRACE").is_some() {
             eprintln!("INPUT mouse {action:?} {x:.0},{y:.0}");
         }
+        if matches!(action, MouseAction::Moved) {
+            self.queue.push_motion(x.round() as i32, y.round() as i32, EventModifiers { left_mouse_button: self.left_down, ..Default::default() });
+            return;
+        }
         let modifiers = EventModifiers { left_mouse_button: self.left_down, ..Default::default() };
-        let _ = self.producer.send_mouse_input(MouseEvent { x: x.round() as i32, y: y.round() as i32, button: MouseButton::Left, action, modifiers });
+        self.queue.push(Input::Mouse(MouseEvent { x: x.round() as i32, y: y.round() as i32, button, action, modifiers }));
     }
 
     fn send_key(&mut self, key: egui::Key, pressed: bool, modifiers: egui::Modifiers) {
@@ -158,11 +182,14 @@ impl PanelApp {
             shift: modifiers.shift,
             ctrl: modifiers.ctrl,
             alt: modifiers.alt,
-            meta: modifiers.mac_cmd || modifiers.command,
+            // `command` is an alias for ctrl off macOS; sending it as Meta made
+            // every Ctrl shortcut arrive as Ctrl+Super and the page treated it
+            // as a plain keypress.
+            meta: modifiers.mac_cmd,
             ..Default::default()
         };
         let kind = if pressed { KeyEventKind::RawKeyDown } else { KeyEventKind::KeyUp };
-        let _ = self.producer.send_keyboard_input(KeyEvent { kind, windows_key_code: vk, native_key_code: 0, character: None, modifiers });
+        self.queue.push(Input::Key(KeyEvent { kind, windows_key_code: vk, native_key_code: 0, character: None, modifiers }));
     }
 }
 
@@ -235,6 +262,19 @@ impl eframe::App for PanelApp {
         self.runtime.do_message_loop_work();
         while let Some(event) = self.producer.poll_web_event() {
             let text = format!("{event:?}");
+            if let CefSurfaceEvent::ScriptCompleted { id, result } = &event {
+                if self.copy_request == Some(id.get()) {
+                    self.copy_request = None;
+                    match result {
+                        Ok(json) => {
+                            let copied = serde_json_unescape(json);
+                            eprintln!("CLIPBOARD copy_out {} byte(s)", copied.len());
+                            ctx.copy_text(copied);
+                        }
+                        Err(error) => eprintln!("CLIPBOARD selection read failed: {error}"),
+                    }
+                }
+            }
             if std::env::var_os("PANEL_TRACE").is_some() {
                 eprintln!("NAV {}", text.chars().take(240).collect::<String>());
             }
@@ -249,21 +289,31 @@ impl eframe::App for PanelApp {
                 Err(error) => eprintln!("PANEL: import failed: {error}"),
             }
         }
-        if let Some(popup) = self.producer.acquire_popup(&self.host).ok().flatten() {
-            let mut renderer = self.render_state.renderer.write();
-            if let Some((id, _)) = self.popup.take() {
-                renderer.free_texture(&id);
+        if let Some(rect) = self.producer.popup_rect() {
+            eprintln!("POPUP rect x={} y={} w={} h={}", rect.x, rect.y, rect.width, rect.height);
+        }
+        match self.producer.acquire_popup(&self.host) {
+            Ok(Some(popup)) => {
+                let mut renderer = self.render_state.renderer.write();
+                if let Some((id, _)) = self.popup.take() {
+                    renderer.free_texture(&id);
+                }
+                let id = renderer.register_native_texture(&self.host.device, &popup.texture.view, wgpu::FilterMode::Linear);
+                drop(renderer);
+                self.popup = Some((
+                    id,
+                    egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(popup.texture.size.width as f32, popup.texture.size.height as f32)),
+                ));
             }
-            let id = renderer.register_native_texture(&self.host.device, &popup.texture.view, wgpu::FilterMode::Linear);
-            drop(renderer);
-            self.popup = Some((
-                id,
-                egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(popup.texture.size.width as f32, popup.texture.size.height as f32)),
-            ));
-        } else if self.producer.popup_rect().is_none() {
-            if let Some((id, _)) = self.popup.take() {
-                self.render_state.renderer.write().free_texture(&id);
+            Ok(None) => {
+                if self.producer.popup_rect().is_none() {
+                    if let Some((id, _)) = self.popup.take() {
+                        self.render_state.renderer.write().free_texture(&id);
+                        eprintln!("POPUP closed");
+                    }
+                }
             }
+            Err(error) => eprintln!("POPUP import failed: {error}"),
         }
 
         egui::Panel::left("stats").min_size(240.0).show(ui, |ui| {
@@ -271,7 +321,9 @@ impl eframe::App for PanelApp {
             ui.label(format!("frames: {}", self.frames));
             ui.label(format!("focus: {}", if self.focused { "page" } else { "egui" }));
             ui.label(format!("scale: {:.2}", self.ppp));
-            ui.checkbox(&mut self.hidden, "hide page (set_visible)");
+            if ui.checkbox(&mut self.hidden, "hide page (set_visible)").changed() && self.hidden {
+                self.queue.clear();
+            }
             if ui.button("Reload").clicked() {
                 let _ = self.producer.reload();
             }
@@ -298,6 +350,7 @@ impl eframe::App for PanelApp {
             let physical = [(rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32];
             if self.placed != Some(physical) {
                 self.placed = Some(physical);
+                eprintln!("PAGE min_x={:.1} min_y={:.1} ppp={:.2} phys={}x{}", rect.min.x, rect.min.y, ppp, physical[0], physical[1]);
                 if let Err(error) = self.producer.resize(dpi::PhysicalSize::new(physical[0], physical[1])) {
                     eprintln!("PANEL: resize failed: {error}");
                 }
@@ -353,18 +406,33 @@ impl eframe::App for PanelApp {
                         let local = (pos - rect.min) * ppp;
                         self.send_mouse(MouseAction::Moved, local.x, local.y);
                     }
-                    egui::Event::PointerButton { pos, button, pressed, modifiers }
-                        if rect.contains(pos) && button == egui::PointerButton::Primary =>
-                    {
-                        if pressed {
+                    egui::Event::PointerButton { pos, button, pressed, modifiers } => {
+                        let inside = rect.contains(pos);
+                        if pressed && !inside {
+                            // A press on the CAD side takes the keyboard back;
+                            // nothing queued for the page may arrive later.
+                            self.focused = false;
+                            self.left_down = false;
+                            self.queue.clear();
+                            continue;
+                        }
+                        let cef_button = match button {
+                            egui::PointerButton::Primary => MouseButton::Left,
+                            egui::PointerButton::Secondary => MouseButton::Right,
+                            egui::PointerButton::Middle => MouseButton::Middle,
+                            _ => continue,
+                        };
+                        if pressed && inside {
                             self.focused = true;
                             let _ = self.producer.move_focus(FocusDirection::Forward);
                         }
-                        self.left_down = pressed;
+                        if cef_button == MouseButton::Left {
+                            self.left_down = pressed;
+                        }
                         let local = (pos - rect.min) * ppp;
                         let action = if pressed { MouseAction::Pressed } else { MouseAction::Released };
                         let _ = modifiers;
-                        self.send_mouse(action, local.x, local.y);
+                        self.send_mouse_button(action, local.x, local.y, cef_button);
                     }
                     egui::Event::MouseWheel { unit, delta, .. } if rect.contains(ctx.pointer_latest_pos().unwrap_or(egui::Pos2::ZERO)) => {
                         let scale = match unit {
@@ -385,35 +453,85 @@ impl eframe::App for PanelApp {
                             eprintln!("INPUT text {text:?}");
                         }
                         for ch in text.chars() {
-                            let _ = self.producer.send_keyboard_input(KeyEvent {
-                                kind: KeyEventKind::Char,
-                                windows_key_code: 0,
-                                native_key_code: 0,
-                                character: Some(ch),
-                                modifiers: EventModifiers::default(),
-                            });
+                            self.queue.push(char_event(ch));
                         }
                     }
                     egui::Event::Key { key, pressed, modifiers, .. } if self.focused => {
+                        let command = modifiers.ctrl || modifiers.mac_cmd;
+                        if pressed && command && key == egui::Key::C {
+                            // CEF OSR does not publish the page's selection to
+                            // the system clipboard (cef#4341), so the host reads
+                            // it and gives it to the windowing system via egui.
+                            self.copy_request = Some(7);
+                            let _ = self.producer.request_script_result(
+                                WebRequestId::new(7),
+                                "(() => { const el = document.activeElement; \
+                                 if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) { \
+                                   return el.value.substring(el.selectionStart, el.selectionEnd); } \
+                                 return window.getSelection().toString(); })()",
+                            );
+                            continue;
+                        }
+                        if pressed && command && key == egui::Key::V {
+                            // Delivered as Event::Paste; CEF's own paste path is
+                            // the broken half of the same upstream issue.
+                            continue;
+                        }
                         if key == egui::Key::Escape && pressed {
+                            // Leaving the page: nothing queued for it should
+                            // arrive after the CAD side has the keyboard.
+                            self.queue.clear();
                             self.focused = false;
                         } else {
                             self.send_key(key, pressed, modifiers);
                         }
                     }
+                    egui::Event::Copy => {
+                        if self.focused {
+                            self.copy_request = Some(7);
+                            let _ = self.producer.request_script_result(
+                                WebRequestId::new(7),
+                                "(() => { const el = document.activeElement; \
+                                 if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) { \
+                                   return el.value.substring(el.selectionStart, el.selectionEnd); } \
+                                 return window.getSelection().toString(); })()",
+                            );
+                        }
+                    }
+                    egui::Event::Paste(text) if self.focused => {
+                        // Host -> page: CEF's own clipboard is broken under OSR
+                        // (cef#4341), so the system text is committed into the
+                        // focused editable the way an input method commits.
+                        eprintln!("CLIPBOARD paste_in {} byte(s)", text.len());
+                        self.queue.push(Input::ImeCommit(text));
+                    }
                     egui::Event::Ime(egui::ImeEvent::Preedit { text, active_range_chars }) => {
                         if text.is_empty() {
-                            let _ = self.producer.ime_cancel_composition();
+                            self.queue.push(Input::ImeCancel);
                         } else {
                             let range = active_range_chars.unwrap_or(0..text.chars().count());
-                            let _ = self.producer.ime_set_composition(&text, (range.start as u32, range.end as u32));
+                            self.queue.push(Input::ImeSet { text, cursor: (range.start as u32, range.end as u32) });
                         }
                     }
                     egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
-                        let _ = self.producer.ime_commit_text(&text);
+                        self.queue.push(Input::ImeCommit(text));
                     }
                     _ => {}
                 }
+            }
+
+            // A window that lost focus must not replay input later.
+            let window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+            if !window_focused {
+                self.queue.clear();
+                self.focused = false;
+            }
+            if self.hidden {
+                self.queue.clear();
+            }
+            let sent = self.queue.flush(&mut self.producer);
+            if sent > 0 && std::env::var_os("PANEL_TRACE").is_some() {
+                eprintln!("QUEUE flushed {sent}");
             }
 
             // ── drag and drop ────────────────────────────────────────────────
@@ -522,4 +640,29 @@ fn main() {
         eprintln!("eframe: {error}");
         std::process::exit(3);
     }
+}
+
+/// The script result is JSON; a string selection arrives quoted and escaped.
+fn serde_json_unescape(json: &str) -> String {
+    let inner = json.trim();
+    let inner = inner.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')).unwrap_or(inner);
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('/') => out.push('/'),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    out
 }

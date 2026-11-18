@@ -1,0 +1,24 @@
+page origin 310,10 input 498,132 select 848,132 scale 1.25
+copy_event: 0
+copy_out: PASS (clipboard-test)
+paste_cn: PASS
+focus_cad_click_stops_page_keys: PASS
+focus_return_to_page: PASS
+wheel: 2 page wheel event(s)
+select_popup: 32 frame(s) with a popup surface
+context_menu: 1 request(s)
+trace tail:
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+POPUP rect x=510 y=135 w=83 h=123
+INPUT mouse Moved 300,300
+INPUT mouse Pressed 300,300
+INPUT mouse Released 300,300
+QUEUE flushed 3
+NAV Navigation(TitleChanged { title: "probe: mousedown 240,240" })
+POPUP rect x=510 y=135 w=83 h=123
+NAV Navigation(ContextMenuRequested { x: 300, y: 300, targets: [Page, Frame], link_url: "", source_url: "", page_url: "file:///home/hyjing/Code/intgral/intcad/worktrees/cef-osr/experiments/cef-osr/poc/fixtures/probe.html", selection_text: "" })
+POPUP closed
