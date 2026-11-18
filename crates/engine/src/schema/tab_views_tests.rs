@@ -75,15 +75,12 @@ fn bad_view_requests_are_refused() {
     }
 }
 
+/// Intcad has no view-tab UI, and the upstream defaults for these commands (Ctrl+T,
+/// Ctrl+Shift+T, F2) collide with Intcad's own bindings, so they ship unbound; the commands
+/// stay callable and a user can bind them.
 #[test]
-fn the_view_shortcuts_are_the_defaults() {
-    for (id, key) in [
-        ("tab.view.open", Some("Ctrl+T")),
-        ("tab.view.reopen", Some("Ctrl+Shift+T")),
-        ("tab.view.rename", Some("F2")),
-        ("tab.view.close", None),
-        ("tab.view.list", None),
-    ] {
-        assert_eq!(crate::find_command(id).map(|c| c.shortcut), Some(key), "{id}");
+fn the_view_shortcuts_are_unbound_by_default() {
+    for id in ["tab.view.open", "tab.view.reopen", "tab.view.rename", "tab.view.close", "tab.view.list"] {
+        assert_eq!(crate::find_command(id).map(|c| c.shortcut), Some(None), "{id}");
     }
 }
