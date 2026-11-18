@@ -91,10 +91,10 @@ def drive(call, output):
     require(reopened_id and reopened_id != original_id, "Open did not load a different document")
     after = measure()
 
-    screenshot = output / "reopened.png"
-    call("ui.screenshot", path=str(screenshot))
-    with screenshot.open("rb") as image:
-        require(image.read(8) == b"\x89PNG\r\n\x1a\n", "Screenshot is not a PNG")
+    render = output / "reopened.png"
+    call("ui.render", path=str(render), timeout=30)
+    with render.open("rb") as image:
+        require(image.read(8) == b"\x89PNG\r\n\x1a\n", "Model capture is not a PNG")
     return before, after
 
 
