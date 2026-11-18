@@ -1196,7 +1196,7 @@ mod tests {
         let snapshot = Snapshot::parse(&told()).expect("a snapshot");
         assert_eq!(snapshot.plans.len(), 2);
         assert_eq!((snapshot.plans[0].state, snapshot.plans[0].account.as_deref()), (PlanState::Expired, Some("a@example.com")));
-        assert_eq!((plan_name(&snapshot.plans[0]).as_str(), plan_name(&snapshot.plans[1]).as_str()), ("ChatGPT plan", "Some New Plan"));
+        assert_eq!((plan_name(&snapshot.plans[0]).as_str(), plan_name(&snapshot.plans[1]).as_str()), ("ChatGPT", "Some New Plan"));
         assert!(snapshot.keys[0].saved && snapshot.keys[0].shadowed && !snapshot.keys[1].saved);
         assert_eq!(snapshot.custom[0].models, ["llama3.2"]);
         let login = snapshot.login.as_ref().expect("the sign-in under way");
@@ -1242,7 +1242,7 @@ mod tests {
     #[test]
     fn a_connection_is_named_by_its_whole_prefix() {
         let snapshot = Snapshot::parse(&told()).expect("a snapshot");
-        assert_eq!(snapshot.name_of("openai"), "ChatGPT plan", "the plan wins over the key with the same prefix");
+        assert_eq!(snapshot.name_of("openai"), "ChatGPT", "the plan wins over the key with the same prefix");
         assert_eq!(snapshot.name_of("mastracode/my-llm"), "my-llm");
         assert_eq!(snapshot.name_of("mastracode"), "mastracode", "half a prefix names no connection");
         assert_eq!(snapshot.name_of("my-llm"), "my-llm", "nor does its other half: the prefix itself is shown");

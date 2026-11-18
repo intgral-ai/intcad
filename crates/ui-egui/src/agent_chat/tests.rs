@@ -16471,11 +16471,11 @@ fn with_nothing_connected_the_built_in_agent_asks_for_a_sign_in_and_opens_no_ses
     assert_eq!(
         names(&connect["plans"]),
         [
-            pair("openai-codex", "ChatGPT plan"),
-            pair("anthropic", "Claude plan"),
-            pair("kimi-for-coding", "Kimi plan"),
-            pair("xai", "xAI plan"),
-            pair("github-copilot", "GitHub Copilot plan")
+            pair("openai-codex", "ChatGPT"),
+            pair("anthropic", "Claude"),
+            pair("kimi-for-coding", "Kimi"),
+            pair("xai", "xAI"),
+            pair("github-copilot", "GitHub Copilot")
         ],
         "the five plans, named in the app's words"
     );
@@ -16490,7 +16490,7 @@ fn with_nothing_connected_the_built_in_agent_asks_for_a_sign_in_and_opens_no_ses
         ],
         "the five keys, named as the agent names them"
     );
-    assert_eq!(connect["plans"][0], json!({"id": "openai-codex", "name": "ChatGPT plan", "state": "out", "account": null, "prefix": "openai"}));
+    assert_eq!(connect["plans"][0], json!({"id": "openai-codex", "name": "ChatGPT", "state": "out", "account": null, "prefix": "openai"}));
     assert_eq!(connect["keys"][1], json!({"id": "openai", "name": "OpenAI", "saved": false, "shadowed": false, "prefix": "openai"}));
     assert_eq!(
         (&connect["custom"], &connect["login"], &connect["problem"], &connect["error"], &connect["dates"]),
@@ -16501,7 +16501,7 @@ fn with_nothing_connected_the_built_in_agent_asks_for_a_sign_in_and_opens_no_ses
     assert!(conn_act(&mut app, &ctx, json!({"type": "auth", "id": "oauth"})).is_err());
     // The plans are in the user's language.
     app.preferences.language = "zh".into();
-    assert_eq!(page_state(&mut app)["connect"]["plans"][0]["name"], "ChatGPT 套餐");
+    assert_eq!(page_state(&mut app)["connect"]["plans"][0]["name"], "ChatGPT");
     // A message typed now waits for the sign-in; it opens no session either.
     send(&mut app, &ctx, "make a box".into());
     poll(&mut app, &ctx);
@@ -16589,7 +16589,7 @@ fn connect_starts_the_built_in_agent_with_its_folder_and_its_keys_and_no_session
     assert_eq!(methods, ["initialize", "_intcad/connections/setup"], "no session/new while nothing is connected");
     let words = json!({"callback": tr("ui.agent_chat_conn_callback")});
     assert_eq!(sent[1]["params"], json!({"keys": {"openai": BUILTIN_KEY}, "custom": [], "words": words}));
-    assert_eq!(page_state(&mut app)["connect"]["plans"][0]["name"], "ChatGPT plan");
+    assert_eq!(page_state(&mut app)["connect"]["plans"][0]["name"], "ChatGPT");
     assert!(app.preferences.agent_last.is_empty(), "the agent started last is not the built-in one's to set");
     disconnect(&mut app);
     assert_eq!(page_state(&mut app)["connect"]["plans"], json!([]), "a stopped agent has said nothing");
@@ -16633,7 +16633,7 @@ fn showing_the_assistant_starts_the_built_in_agent_once_and_no_other_agent() {
     let rows = |list: &Value| list.as_array().expect("rows").iter().map(|row| row["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
     assert_eq!(rows(&state["connect"]["plans"]), ["openai-codex", "anthropic", "kimi-for-coding", "xai", "github-copilot"]);
     assert_eq!(rows(&state["connect"]["keys"]), connections::KEY_IDS);
-    assert_eq!(state["connect"]["plans"][0]["name"], "ChatGPT plan");
+    assert_eq!(state["connect"]["plans"][0]["name"], "ChatGPT");
     assert!(state["items"].as_array().is_some_and(|items| !items.iter().any(|item| item["kind"] == "user")), "no message was sent");
     // More frames start nothing more.
     h.frames(20);
@@ -16757,7 +16757,7 @@ fn a_plan_signing_in_opens_the_session_and_its_models_show() {
     assert_eq!(state["connect"]["connected"], true);
     assert_eq!(
         state["connect"]["plans"][0],
-        json!({"id": "openai-codex", "name": "ChatGPT plan", "state": "in", "account": "a@example.com", "prefix": "openai"})
+        json!({"id": "openai-codex", "name": "ChatGPT", "state": "in", "account": "a@example.com", "prefix": "openai"})
     );
     let models: Vec<&str> =
         state["config"][0]["options"].as_array().expect("the models").iter().map(|choice| choice["value"].as_str().unwrap()).collect();
@@ -17428,7 +17428,7 @@ fn a_failed_turn_says_why_in_the_users_words() {
                 "{language} {word}"
             );
             if (language, word) == ("zh", "auth") {
-                assert_eq!(notice["text"], "「ChatGPT 套餐」的登录已过期。重新登录后，刚才那句话会自动发出。");
+                assert_eq!(notice["text"], "「ChatGPT」的登录已过期。重新登录后，刚才那句话会自动发出。");
             }
             assert_eq!(app.agent_chat.state(), State::Ready, "the conversation goes on");
             assert_eq!(status(&app)["items"].as_array().expect("items").last(), Some(&json!({"notice": text, "error": true})));
@@ -17443,11 +17443,11 @@ fn a_failed_turn_says_why_in_the_users_words() {
     // Chinese reads badly with a space before what follows.
     {
         let _language = crate::i18n::scope("zh");
-        let name = [("name", "ChatGPT 套餐")];
-        assert_eq!(trf("ui.agent_chat_problem_auth", &name), "「ChatGPT 套餐」的登录已过期。重新登录后，刚才那句话会自动发出。");
-        assert_eq!(trf("ui.agent_chat_problem_quota", &name), "「ChatGPT 套餐」的额度用完了。不会自动换模型：可以换一个模型，或者打开连接与登录。");
-        assert_eq!(trf("ui.agent_chat_problem_rate", &name), "「ChatGPT 套餐」现在限流了。过一会儿再试。");
-        assert_eq!(trf("ui.agent_chat_problem_model", &name), "「ChatGPT 套餐」用不了选中的模型。换一个模型。");
+        let name = [("name", "ChatGPT")];
+        assert_eq!(trf("ui.agent_chat_problem_auth", &name), "「ChatGPT」的登录已过期。重新登录后，刚才那句话会自动发出。");
+        assert_eq!(trf("ui.agent_chat_problem_quota", &name), "「ChatGPT」的额度用完了。不会自动换模型：可以换一个模型，或者打开连接与登录。");
+        assert_eq!(trf("ui.agent_chat_problem_rate", &name), "「ChatGPT」现在限流了。过一会儿再试。");
+        assert_eq!(trf("ui.agent_chat_problem_model", &name), "「ChatGPT」用不了选中的模型。换一个模型。");
         assert_eq!(trf("ui.agent_chat_problem_network", &name), "连不上模型服务。检查网络，消息没有丢。");
     }
     // The connection is found by its whole prefix: a custom address's has a slash in it.
@@ -17649,7 +17649,7 @@ fn a_refused_key_is_told_as_a_key_and_is_not_sent_again_by_itself() {
     poll(&mut app, &ctx);
     send(&mut app, &ctx, "make a box".into());
     fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
-    assert_eq!(last_notice(&mut app)["problem"], json!({"kind": "auth", "prefix": "openai", "name": "ChatGPT plan"}));
+    assert_eq!(last_notice(&mut app)["problem"], json!({"kind": "auth", "prefix": "openai", "name": "ChatGPT"}));
     // The words the page has for the two, in the two languages given.
     assert_eq!(tr("ui.agent_chat_problem_key"), "{name} refused the API key. Update the key in Connections, then send the message again.");
     let _language = crate::i18n::scope("zh");
@@ -17847,17 +17847,14 @@ fn the_control_channel_carries_out_a_connection_action_as_the_page_does() {
 
 /// The names the page has for the words of the Connections page, in the order of the contract's
 /// table (section 5). The page reads them by name: a JSON object has no order to keep.
-const CONNECTION_STRINGS: [&str; 73] = [
+const CONNECTION_STRINGS: [&str; 66] = [
     "connTitle",
     "connNoneTitle",
-    "connNoneBody",
     "connBack",
-    "connUsing",
     "connPlans",
     "connKeys",
     "connCustom",
     "connSignedIn",
-    "connSignedOut",
     "connExpired",
     "connSigningIn",
     "connSignIn",
@@ -17865,19 +17862,15 @@ const CONNECTION_STRINGS: [&str; 73] = [
     "connSignOut",
     "connUse",
     "connInUse",
-    "connPlanNote",
     "connShadowed",
     "connKeySaved",
-    "connKeyNone",
     "connKeyAdd",
     "connKeyUpdate",
     "connRemove",
-    "connKeyNote",
     "connKeyTitle",
     "connKeyBody",
     "connKeyPlaceholder",
     "connSave",
-    "connCustomAdded",
     "connCustomAdd",
     "connCustomName",
     "connCustomUrl",
@@ -17941,7 +17934,7 @@ fn every_word_of_the_connections_page_is_sent_in_each_complete_language() {
     let chinese = words(&mut app, "zh");
     assert_eq!(
         (&chinese["connTitle"], &chinese["connUse"], &chinese["planGithubCopilot"]),
-        (&json!("连接与登录"), &json!("用这个"), &json!("GitHub Copilot 套餐"))
+        (&json!("连接与登录"), &json!("用这个"), &json!("GitHub Copilot"))
     );
     for language in ["en", "zh", "ar", "he", "ja", "vi"] {
         let told = words(&mut app, language);

@@ -1445,17 +1445,24 @@ function standing(label: string, tone: 'success' | 'neutral' | 'error' | 'progre
   return { label, description: label, tone, glyph: tone === 'neutral' ? ('ring' as const) : ('filled' as const) };
 }
 
-/** One connection on the connections page: what it is, how it stands, what can be done, and under it a sign-in under way. */
+/**
+ * One connection on the connections page: what it is, what can be done, and under it a sign-in
+ * under way. How it stands is said only when the button beside it does not say it already: a row
+ * with **Sign in** needs no "not signed in". `detail` is the one more thing worth a glance, the
+ * account or the address.
+ */
 function ConnRow({
   entry,
+  detail,
   note,
   status,
   actions,
   children,
 }: {
   entry: Connection;
+  detail?: string | null;
   note?: string;
-  status: ReturnType<typeof standing>;
+  status?: ReturnType<typeof standing>;
   actions: ReactNode;
   children?: ReactNode;
 }) {
@@ -1472,12 +1479,17 @@ function ConnRow({
             </span>
             <span className="min-w-0 text-label break-words">{entry.name}</span>
           </span>
-          <Status presentation={status} className="shrink-0 text-caption" />
+          {status && <Status presentation={status} className="shrink-0 text-caption" />}
+          {detail && (
+            <Txt variant="caption" tone="muted" className="min-w-0 break-all">
+              {detail}
+            </Txt>
+          )}
         </span>
         <span className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</span>
       </div>
       {note && (
-        <Txt variant="caption" className="ps-[1.375rem] break-words">
+        <Txt variant="caption" tone="muted" className="ps-[1.375rem] break-words">
           {note}
         </Txt>
       )}
@@ -1821,18 +1833,11 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
           </Button>
         )}
       </div>
-      {connect.connected ? (
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 px-1">
-          <Txt variant="caption" className="shrink-0">
-            {strings.connUsing}
-          </Txt>
-          {(current || used) && <span className="min-w-0 truncate text-label">{[current && formatModelName(placeOf(connect, current).model), used && shortName(used.name)].filter(Boolean).join(' · ')}</span>}
-        </div>
-      ) : (
-        <div className="flex min-w-0 flex-col gap-0.5 px-1">
-          <span className="text-label">{strings.connNoneTitle}</span>
-          <Txt variant="caption">{strings.connNoneBody}</Txt>
-        </div>
+      {/* What is in use is marked on its row below. */}
+      {!connect.connected && (
+        <Txt variant="caption" tone="muted">
+          {strings.connNoneTitle}
+        </Txt>
       )}
 
       <SettingsGroup>
@@ -1849,7 +1854,7 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
               ? standing(strings.connSigningIn, 'progress')
               : plan.state === 'expired'
                 ? standing(strings.connExpired, 'error')
-                : standing(strings.connSignedOut, 'neutral');
+                : undefined;
         const signOut = (
           <Button type="button" size="sm" onClick={() => post({ type: 'conn_logout', id: plan.id })}>
             {strings.connSignOut}
@@ -1866,7 +1871,7 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
           <ConnRow
             key={plan.id}
             entry={plan}
-            note={plan.state === 'out' ? undefined : [plan.account, strings.connPlanNote].filter(Boolean).join(' · ')}
+            detail={plan.state === 'out' ? undefined : plan.account}
             status={status}
             actions={
               plan.state === 'in' ? (
@@ -1904,8 +1909,8 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
         <ConnRow
           key={key.id}
           entry={key}
-          note={key.saved ? (key.shadowed ? strings.connShadowed : strings.connKeyNote) : undefined}
-          status={key.saved ? standing(strings.connKeySaved, 'success') : standing(strings.connKeyNone, 'neutral')}
+          note={key.saved && key.shadowed ? strings.connShadowed : undefined}
+          status={key.saved ? standing(strings.connKeySaved, 'success') : undefined}
           actions={
             key.saved ? (
               <>
@@ -1937,8 +1942,7 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
         <ConnRow
           key={entry.id}
           entry={entry}
-          note={entry.url}
-          status={standing(strings.connCustomAdded, 'success')}
+          detail={entry.url}
           actions={
             <>
               {usedOrUse(entry)}
