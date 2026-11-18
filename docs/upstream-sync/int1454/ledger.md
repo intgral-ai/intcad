@@ -108,11 +108,11 @@ than dropping them silently.
 | --- | --- | --- | --- | --- | --- | --- |
 | A1 | 31 commits, `crates/mcp` + new `mcp-server` | MCP machinery split, 25→27 tools (`version`, `cancel`), prompts/resources/completions, compact replies, batch from script | Flat `crates/mcp` + IntCAD `document_guard` (guarded envelopes); no `mcp-server` | MIT OR Apache-2.0 | D3, A2 | **Port-selective**: `version` (and `cancel` if the agent-task controller needs it); the crate split is deferred |
 | A2 | 12 commits, `crates/control*` | Token transport/protocol split, shared client, `TOO_MANY_CONNECTIONS`, live enable/disable, extra methods | App-local `control_server.rs` + `engine/src/control_auth.rs`; IntCAD method `agent.task.revalidate` | MIT OR Apache-2.0 | — | **Port-selective**: refusal-with-drain; crate extraction **Not Applicable** now |
-| A3 | 26 commits, `crates/craft-plugin*` + engine plugin surface | Wasmtime plugin host: no WASI/network, fuel/memory/deadline caps, staged writes, folder grants, approval hash, safe archive install | **No plugin runtime** (`plugins.rs` is a metadata list) | MIT OR Apache-2.0; pulls `wasmtime` (Apache-2.0 WITH LLVM-exception) | D3, D5 | **Blocked — product decision** (CD-5): new subsystem, new execution surface, new dependency and packaging story; not a migration of existing behaviour |
+| A3 | 26 commits, `crates/craft-plugin*` + engine plugin surface | Wasmtime plugin host: no WASI/network, fuel/memory/deadline caps, staged writes, folder grants, approval hash, safe archive install | **No plugin runtime** (`plugins.rs` is a metadata list) | MIT OR Apache-2.0; pulls `wasmtime` (Apache-2.0 WITH LLVM-exception) | D3, D5 | **Blocked — CD-5 approved deferral.** Unblock: a product decision to ship plugins, a licence/packaging review of `wasmtime`/`cranelift`, and a security review of the capability model. Not Not Applicable |
 | A4 | 44 commits, `ui-egui/src/agent_chat` incl. `7b22bb3e2` | Gate decides on the registered id, reads `command` or `id`, unknown ids refused, `plugin.run` asks | **Vulnerable**: case-sensitive gate vs case-insensitive engine, `id` ignored | MIT OR Apache-2.0 | — | **Adopted now** (security; see `security-findings.md` SEC-1) |
 | A5 | `54b4bb3f4` (STEP decode) | Linear-time Part 21 escape decode | **Absent**: `crates/step/src/p21.rs` still searches the tail per unterminated run (O(N²)); the fixed decoder is in the v0.44.1 snapshot (`solidcore-record/src/step/p21.rs`) | MIT OR Apache-2.0 | K0, D5 | **Adopted** via the snapshot, or backported earlier (SEC-2) |
 | A6 | `18d82f584` (control) | Drain unread input past the connection limit so the refusal is received, not reset | Refusal **already sent** (`control_server.rs` sends `too many connections`), but the stream is dropped without a drain | MIT OR Apache-2.0 | — | **Adopted**: the message exists; the drain/shared-counter refinement is the work (SEC-3) |
-| A7 | `12a9a7f0f`, `4d2691e63` | Default-off control channel; opt-in insecure HTTP | IntCAD defaults on; keys only to https/loopback | MIT OR Apache-2.0 | — | **Blocked** pending a Compatibility Decision — see §7 |
+| A7 | `12a9a7f0f`, `4d2691e63` | Default-off control channel; opt-in insecure HTTP | IntCAD defaults on; keys only to https/loopback | MIT OR Apache-2.0 | — | **CD-3: keep default on** (default change Not Applicable; applicable fixes still adopted). **CD-4: rejected** (plaintext opt-in Not Applicable) |
 
 ## 4. UI (INT-1493)
 
@@ -130,9 +130,9 @@ logic**, adapted into IntCAD's fork (537 upstream-changed files; 63 also changed
 | U6 | `82660d4ee` + 301 locale commits | `ui-text` crate (catalog lookup, substitution, RTL), message ids, locale growth (5,702→7,020 keys, +3 languages) | `ui-egui/src/i18n.rs` + `bidi.rs` are at **fork parity**; upstream moved both into `ui-text` (`ui-egui/src/bidi.rs` is absent at the target). Catalogs are 1,318 keys behind | MIT OR Apache-2.0 | — | **Already Covered** (machinery at fork parity) / **Adopted** (message ids used by migrated UI only) |
 | U7 | `82660d4ee` | `ui-registry` handle table (233 lines) | `ui-egui/src/scenario.rs` (1,219 lines) has the same functions; `ui.*` control methods present | MIT OR Apache-2.0 | — | **Already Covered** — do not import |
 | U8 | 39 commits, `control`/`control-egui` split | Transport split, typed params, runtime on/off switch | In-crate `control.rs` (3,768 lines) | MIT OR Apache-2.0 | — | **Not Applicable** (refactor) / **Adopted** (`control_switch` behaviour, typed params) |
-| U9 | 64/13/6 commits, `ui-kit`/`look`/`theme` (`--full-history --no-merges`) | Ribbon, chrome, Preferences, start page; icons; tokens | In-crate `ui_kit` module (66 files, 34,203 lines, +15 IntCAD lines) | **LICENSE-BRAND — Blocked** | — | **Blocked** |
-| U10 | 414 icon files, `crates/look/icons` | Every post-brand icon lives only in the brand crate | `assets/icons/ui` 400 files (pre-brand, unchanged but 2) | **LICENSE-BRAND — Blocked** | — | **Blocked** — draw in-house or reuse pre-brand |
-| U11 | ~101 commits, panel foundation | Dock/partition engine, drag paint, production descriptors | `panel_runtime` 6 files vs 16 upstream | MIT/Apache code, kit-coupled | U9 | **Blocked** (unusable without brand crates) |
+| U9 | 64/13/6 commits, `ui-kit`/`look`/`theme` (`--full-history --no-merges`) | Ribbon, chrome, Preferences, start page; icons; tokens | In-crate `ui_kit` module (66 files, 34,203 lines, +15 IntCAD lines) | **LICENSE-BRAND — Blocked** | — | **Blocked (CD-6)** |
+| U10 | 414 icon files, `crates/look/icons` | Every post-brand icon lives only in the brand crate | `assets/icons/ui` 400 files (pre-brand, unchanged but 2) | **LICENSE-BRAND — Blocked** | — | **Blocked (CD-6)** — draw in-house or reuse pre-brand |
+| U11 | ~101 commits, panel foundation | Dock/partition engine, drag paint, production descriptors | `panel_runtime` 6 files vs 16 upstream | MIT/Apache code, kit-coupled | U9 | **Blocked (CD-6)** — unusable without brand crates |
 | U12 | 12 + 32 commits, viewport interaction | Snap-point glyphs, drag layer, pen, edge detail, silhouettes | Engine support present (`engine/src/snap.rs` identical); all 7 UI files absent | MIT OR Apache-2.0 | U3, D3 | **Adopted** — best value/lowest brand risk |
 | U13 | 37 commits, timeline | Fold chips, folders, component scope, per-design fold memory | Timeline exists; fold/scope files absent | MIT/Apache (1 kit ref each) | D3 | **Adopted** (adapt) |
 | U14 | 153 commits, dialogs | Constraint picker, end caps, airfoil, auto-dialog | Files absent; `sketch.insert_airfoil` absent | MIT/Apache | D3 | **Adopted** except airfoil (**Blocked** on engine command) |
@@ -192,17 +192,20 @@ B6's full pathspec is `Cargo.toml Cargo.lock rust-toolchain.toml deny.toml clipp
   builds cannot open them), and a file from a newer build changes from "refused" to "opened, the
   unreadable parts kept, re-saved under its own number".
 
-## 7. Compatibility Decision candidates
+## 7. Compatibility Decisions — **approved 2026-11-17**
 
-| ID | Question | Evidence | Status |
+| ID | Question | Decision | Consequence in this ledger |
 | --- | --- | --- | --- |
-| CD-1 | Adopt format 58 and open-newer-and-preserve, accepting that older IntCAD builds cannot open new files? | §6; `doc/src/format.rs`, `format/src/newer.rs` | **Waiting for owner** |
-| CD-2 | Rename/alias MCP tools if upstream changed the exposed surface? | A1 | Waiting for A1 detail |
-| CD-3 | Control channel default on→off (upstream `12a9a7f0f`)? | SEC-4 | Waiting for owner |
-| CD-4 | Adopt opt-in plaintext HTTP for private endpoints (`4d2691e63`)? | SEC-4; IntCAD today is stricter | Waiting for owner |
-| CD-5 | Adopt upstream's plugin runtime (Wasmtime, folder grants, install approval)? | A3; new subsystem, new execution surface, +`wasmtime`/`cranelift`, packaging entitlements | Waiting for owner |
-| CD-6 | May IntCAD reuse post-brand changes to `ui-egui` chrome files named in `LICENSE-BRAND` §1(a)? | U9/U10/U11 note; files carry MIT/Apache but implement licensed interface | Waiting for owner/legal — default answer is **no** |
-| CD-7 | Vendor `solidcore/` in-tree as upstream does, or keep the rev-pin model in `docs/compatibility.md`? | K0: the snapshot has no common ancestor with the pin; vendoring changes the licence/notice story and the mirror workflow | Waiting for owner (architecture decision) |
+| CD-1 | Format 58 and the newer-file policy | **Approved**: adopt upstream format 58, Doc and the single persistence implementation; keep upstream's existing compatibility/save mechanisms; write no IntCAD-specific compatibility, backup or conflict layer. Verify opening an old design, save and reopen, and data integrity on real files. | D2, D6, §6 ≡ Adopted; the two promise changes are accepted (older builds cannot open new files; newer files open and are preserved) |
+| CD-2 | MCP tool surface | **Approved**: first publish a map of old name → new name, input/output schema, behaviour, side effects, permissions, callers. Pure renames are replaced outright (registry, callers, skills, tests, docs), with no legacy-name compatibility layer. Schema changes that are semantically equivalent migrate together. Any functional, permission or side-effect change goes to a separate Compatibility Decision. New tools are audited individually. **Case and `id`/`command` aliases must take the same resolve, authorise and execute path.** | A1; SEC-1 is the first instance of the alias rule |
+| CD-3 | Control channel default | **Approved**: keep IntCAD's current default **on**; absorb applicable security fixes; do not widen permissions. | A7 ≡ Already Covered for the default; upstream `12a9a7f0f`'s default change is Not Applicable |
+| CD-4 | Opt-in plaintext HTTP | **Approved: rejected**. Keep the HTTPS/loopback-only key rule. | A7 ≡ Not Applicable for `4d2691e63` |
+| CD-5 | Plugin runtime | **Approved: not enabled this round.** Record as Blocked/deferred with unblock conditions; not Not Applicable. | A3 ≡ Blocked (owner-approved deferral); U18 Blocked |
+| CD-6 | Post-brand UI material | **Approved: do not introduce** brand-era `ui-kit`/`look`/`theme`/chrome/assets. Migrate only provably compliant functional logic, adapted to the existing egui + WebView. | U9/U10/U11 and the licence-uncertain chrome files ≡ **Blocked** by decision, permanently for this sync |
+| CD-7 | Kernel delivery model | **Approved**: adopt upstream's vendored `solidcore` closure in full (ops/tess/step), remove the stale rev pins, update Cargo, lockfile, `docs/compatibility.md`. No two kernels may coexist. | K0 ≡ Adopted as a subtree; CD-7 closes open question 2 |
+
+These are owner decisions, not implementer preferences. Changing one requires a new decision, not an
+edit to this row.
 
 ## 8. Conflict watchlist
 
@@ -223,10 +226,8 @@ not a wish list.
 ## 9. Open questions
 
 1. Is `crates/step` kept locally (patched) until K1 lands, or is the STEP move part of K1 itself?
-2. Does the vendored `solidcore/` model conflict with IntCAD's rev-pinning rule in
-   `docs/compatibility.md`? The snapshot has no common ancestor with the pin, so a subtree or a
-   pinned mirror must be chosen deliberately — CD-7.
+2. ~~Vendored `solidcore` vs rev pin~~ — **decided by CD-7**: vendored closure, pins removed,
+   `docs/compatibility.md` updated, one kernel.
 3. Which UI features are declared "backend migrated, UI not exposed"? The list is in §4; the UI
    PR confirms it feature by feature.
-4. Independent review: completed; its findings are folded in. A second review runs before the
-   Phase 0 gate is declared passed.
+4. Independent review: two rounds completed; defects fixed; the Phase 0 gate passed.

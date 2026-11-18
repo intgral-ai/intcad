@@ -29,20 +29,21 @@ created it and the guard that would catch it.
 | Brand-restricted UI kit, look, theme, app icons | INT-1493 UI work | `LICENSE-BRAND` §1 forbids use outside SolidCraft | cannot be lifted; design in-house equivalents or record a gap |
 | Upstream UI screenshots and docs that show SolidCraft chrome | docs/evidence | not licence-blocked but identity-confusing | capture IntCAD's own evidence |
 
-## 3. Compatibility Decision candidates (not decided here)
+## 3. Compatibility Decisions — decided 2026-11-17
 
-The Spec lets ordinary, compatible new behaviour ship after tests pass. These change what a user
-or an external agent observes, so they go to the owner before merge:
+All seven were approved by the owner; the binding text is in [ledger.md §7](ledger.md). Summary:
 
-1. **CD-1 — design file format.** If adopting the v0.44.1 Doc/Format implementation writes a
-   format that older IntCAD builds cannot open, or silently upgrades an opened file: choose
-   between (a) upstream-only, new files need the new build, (b) keep an older write path —
-   (b) is forbidden by the single-implementation rule, so the real question is user messaging and
-   a minimum-version note in release notes.
-2. **CD-2 — MCP/agent tool surface.** If upstream renamed or reshaped tools that IntCAD's agents
-   and HostDispatch expose, external automations break. Decide whether to alias old names.
-3. **CD-3 — command/default behaviour.** Any command whose default changes (e.g. extrude distance
-   origin, view switcher) must keep old behaviour behind a preference per repo rules.
+| ID | Decision |
+| --- | --- |
+| CD-1 | Adopt format 58 and the single upstream persistence implementation; verify old-open, save/reopen, integrity |
+| CD-2 | MCP tool map first; pure renames replaced outright; semantic/permission changes need a new CD; aliases share one resolve/authorise/execute path |
+| CD-3 | Keep the control channel default **on**; absorb applicable fixes only |
+| CD-4 | **Reject** opt-in plaintext HTTP; keep HTTPS/loopback |
+| CD-5 | Plugin runtime **deferred** (Blocked with unblock conditions) |
+| CD-6 | **No** brand-era UI kit/look/theme/chrome/assets; logic only |
+| CD-7 | Adopt the vendored solidcore closure; remove rev pins; one kernel |
+
+Any further change to these is a new decision, not an implementation detail.
 
 ## 4. What would stop the sync from starting
 
