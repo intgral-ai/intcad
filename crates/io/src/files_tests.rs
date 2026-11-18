@@ -211,3 +211,49 @@ fn a_permanent_delete_removes_a_whole_folder() {
     assert!(!folder.exists());
     assert!(scratch.path().is_dir());
 }
+
+/// A replace is not allowed to lose the only copy: the old destination is put back when the
+/// replacement fails.
+#[test]
+fn a_failed_replace_puts_the_destination_back() {
+    let scratch = Scratch::new();
+    let target = scratch.file("keep.txt", "old");
+    let error = swap_in(&target, || Err("the move was refused".into())).unwrap_err();
+    assert!(error.contains("refused"), "{error}");
+    assert_eq!(fs::read(&target).unwrap(), b"old");
+    let leftovers: Vec<_> = fs::read_dir(scratch.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .filter(|n| n.to_string_lossy().starts_with(".intcad-replace-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn a_completed_replace_removes_the_kept_copy_and_keeps_the_new_file() {
+    let scratch = Scratch::new();
+    let target = scratch.file("keep.txt", "old");
+    swap_in(&target, || fs::write(&target, "new").map_err(|e| e.to_string())).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"new");
+    let leftovers: Vec<_> = fs::read_dir(scratch.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .filter(|n| n.to_string_lossy().starts_with(".intcad-replace-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn a_replace_clears_a_partial_destination_before_restoring_the_old_one() {
+    let scratch = Scratch::new();
+    let target = scratch.file("keep.txt", "old");
+    let error = swap_in(&target, || {
+        fs::write(&target, "half-written").map_err(|e| e.to_string())?;
+        Err("copy stopped".into())
+    })
+    .unwrap_err();
+    assert!(error.contains("copy stopped"), "{error}");
+    assert_eq!(fs::read(&target).unwrap(), b"old");
+}

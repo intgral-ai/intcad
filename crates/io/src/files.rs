@@ -255,10 +255,69 @@ pub fn copy_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemR
     if target == source {
         return ItemResult::failed(source, &direct, "the item is already there");
     }
+    if target.exists() && conflict == Conflict::Replace {
+        // Copy next to the destination first: a copy that fails part-way must not truncate the
+        // file being replaced.
+        let Some(parent) = target.parent() else {
+            return ItemResult::failed(source, &target, "the destination has no folder");
+        };
+        let Some(replace_name) = target.file_name().and_then(OsStr::to_str) else {
+            return ItemResult::failed(source, &target, "the destination name is not readable");
+        };
+        let temporary = temporary_sibling(parent, replace_name);
+        if let Err(e) = fs::copy(source, &temporary) {
+            let _ = fs::remove_file(&temporary);
+            return ItemResult::failed(source, &target, describe("copy", source, &e));
+        }
+        let copy = temporary.clone();
+        let to = target.clone();
+        return match swap_in(&target, || fs::rename(&copy, &to).map_err(|e| describe("copy", source, &e))) {
+            Ok(()) => ItemResult::done(source, &target),
+            Err(e) => {
+                let _ = fs::remove_file(&temporary);
+                ItemResult::failed(source, &target, e)
+            }
+        };
+    }
     match copy_entry(source, &target) {
         Ok(()) => ItemResult::done(source, &target),
         Err(e) => ItemResult::failed(source, &target, e),
     }
+}
+
+/// Keep `destination` beside itself while `replace` writes the new entry, and put the old one
+/// back when `replace` fails. A failed replace therefore never leaves the person without their
+/// file. If both the replacement and the restore fail, the error names the kept file.
+fn swap_in(destination: &Path, replace: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    let Some(parent) = destination.parent() else { return Err("the destination has no folder".into()) };
+    let Some(name) = destination.file_name().and_then(OsStr::to_str) else {
+        return Err("the destination name is not readable".into());
+    };
+    let backup = temporary_sibling(parent, name);
+    fs::rename(destination, &backup).map_err(|e| describe("replace", destination, &e))?;
+    match replace() {
+        Ok(()) => remove_permanent(&backup)
+            .map_err(|e| format!("the replacement is in place, but the previous entry could not be removed from {}: {e}", backup.display())),
+        Err(e) => match fs::rename(&backup, destination) {
+            Ok(()) => Err(e),
+            Err(restore) => Err(format!("{e}; the previous entry is kept at {} because it could not be put back: {restore}", backup.display())),
+        },
+    }
+}
+
+/// A hidden sibling path for a replace, free at the moment it is chosen. The process id and a
+/// counter keep two replaces in one folder apart.
+fn temporary_sibling(parent: &Path, name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    for _ in 0..1000 {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".intcad-replace-{}-{n}-{name}", std::process::id()));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    parent.join(format!(".intcad-replace-{}-{name}", std::process::id()))
 }
 
 /// Move `source` into the folder `destination`, following `conflict`. Across volumes the
@@ -280,11 +339,14 @@ pub fn move_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemR
         return ItemResult::failed(source, &direct, "the item is already there");
     }
     if target.exists() {
-        // A replace of one file by another: the destination goes first (Windows will not rename
-        // over it), and only a plain file may be replaced.
-        if let Err(e) = remove_permanent(&target) {
-            return ItemResult::failed(source, &target, e);
-        }
+        // Replace keeps the old destination aside until the move is complete; a failed move
+        // puts it back, so a replace never loses the only copy (#INT-1484 review).
+        let from = source.to_path_buf();
+        let to = target.clone();
+        return match swap_in(&target, || move_entry(&from, &to)) {
+            Ok(()) => ItemResult::done(source, &target),
+            Err(e) => ItemResult::failed(source, &target, e),
+        };
     }
     match move_entry(source, &target) {
         Ok(()) => ItemResult::done(source, &target),
@@ -312,9 +374,12 @@ pub fn rename(source: &Path, new_name: &str, conflict: Conflict) -> ItemResult {
                 if !is_plain_file(source) || !is_plain_file(&target) {
                     return ItemResult::failed(source, &target, "a folder cannot replace another entry");
                 }
-                if let Err(e) = remove_permanent(&target) {
-                    return ItemResult::failed(source, &target, e);
-                }
+                let from = source.to_path_buf();
+                let to = target.clone();
+                return match swap_in(&target, || fs::rename(&from, &to).map_err(|e| describe("rename", &from, &e))) {
+                    Ok(()) => ItemResult::done(source, &target),
+                    Err(e) => ItemResult::failed(source, &target, e),
+                };
             }
         }
     }
