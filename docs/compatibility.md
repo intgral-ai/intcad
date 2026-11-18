@@ -66,6 +66,19 @@ Not backward-compatible: builds up to 0.5 don't know the new tag and refuse file
 later builds. Test: `version_of` accepts both prefixes; legacy-tagged designs load and are
 re-tagged on save.
 
+The current format is 58: a new design is written as `solidcraft/58` (a drawing keeps its own
+`solidcraft-drawing/N`). There is one persistence implementation, `solidcraft_format` (the
+format `Family` and its `container`), and `crates/doc`/`crates/io` supply only the document types
+and the limits. A build that reads up to 51 cannot open a 58 file; a build newer than the file
+opens it instead of refusing it: what it reads is read, the parts it can't read (a feature, a
+parameter, a section) are named and kept as they came, and the file is saved under its own format
+number and change list. Intcad's five pre-58 pending changes (`bridged-counterbore`, `fillet-turn`,
+`hole-direction-own-faces`, `revolve-axis-origin-expressions`, `transferred-profile-frame`) are
+the files upstream folded into `v51`, byte for byte, so a design any earlier Intcad release saved
+is a prefix subset of `v51` and needs no migration: it opens and upgrades to 58 as usual. Tests:
+`a_design_saved_at_format_51_with_its_pending_changes_saves_and_reopens` (io), the format and
+newer-file tests in `crates/doc/src/format.rs` and `crates/doc/src/newer_file_tests.rs`.
+
 ## 3. `SOLVECRAFT_*` environment variables
 
 Every runtime variable is read through one helper, `solidcraft_geom::env` (`var`, `var_os`):
