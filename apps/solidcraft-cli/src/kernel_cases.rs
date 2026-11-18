@@ -496,6 +496,17 @@ fn surface_word(s: &solidcore_record::brep::Surface) -> &'static str {
     }
 }
 
+/// A face's B-spline form for the `splines` check: its surface when that is one, or else the
+/// `nurbs` net of a blend, whose `surface` is its definition and has no (u, v) of its own (the
+/// net is where an exact round's B-spline lives). An analytic surface's `nurbs` form is not
+/// counted: `splines` grades the B-splines the body is made of, not the forms of cylinders.
+fn face_spline_shape(f: &solidcore_record::brep::Face) -> Option<[[u64; 2]; 2]> {
+    match &f.surface {
+        solidcore_record::brep::Surface::Blend { .. } => f.nurbs.as_ref().and_then(spline_shape),
+        surface => spline_shape(surface),
+    }
+}
+
 /// A B-spline face's two directions as `[degree, spans]` (spans: the distinct knot intervals of
 /// the modelled range), the lower first, so a surface parameterised the other way round reads the
 /// same. `None` for a surface that is not a B-spline.
@@ -516,9 +527,10 @@ fn spline_shape(s: &solidcore_record::brep::Surface) -> Option<[[u64; 2]; 2]> {
     Some(if a <= b { [a, b] } else { [b, a] })
 }
 
-/// The `splines` check: every B-spline face of the bodies matches one entry of `want` and every
-/// entry one face (`{degree: [p, q], spans?: [m, n]}`, in either order of directions; without
-/// `spans` only the degrees are graded). `Ok(got)` with what the faces are, `ok` when they match.
+/// The `splines` check: every B-spline face of the bodies (a blend's net included) matches one
+/// entry of `want` and every entry one face (`{degree: [p, q], spans?: [m, n]}`, in either order
+/// of directions; without `spans` only the degrees are graded). `Ok(got)` with what the faces
+/// are, `ok` when they match.
 fn splines_match(faces: &[[[u64; 2]; 2]], want: &Value) -> Result<(Value, bool), String> {
     let list = want.as_array().ok_or("`splines` must be a list of {degree: [p, q], spans?: [m, n]}")?;
     let pair = |v: &Value| -> Option<[u64; 2]> { Some([v.get(0)?.as_u64()?, v.get(1)?.as_u64()?]) };
@@ -816,7 +828,7 @@ fn check_case_in(
         let record = b.body.record();
         for f in &record.faces {
             kinds.insert(surface_word(&f.surface));
-            spline_faces.extend(spline_shape(&f.surface));
+            spline_faces.extend(face_spline_shape(f));
         }
         boundary += record.edges.iter().filter(|e| e.uses.len() == 1).count() as u64;
     }

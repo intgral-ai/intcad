@@ -100,6 +100,39 @@ fn close(x: f64, y: f64, scale: f64) -> bool {
     (x - y).abs() <= REL * scale.max(1e-9)
 }
 
+/// #56/#117: at a large translation (1e5) SMLib's own check refuses the *moved* operand before
+/// the boolean runs — `SmSurfOfRevolution::Test #7 Parameterization: Bad PolarCurve Anal and
+/// NURB intervals does not match appropriate Surface Domain Intervals` (tolerance 1e-12, owner
+/// `SmCylinder`), reported as "the first operand already fails it" — because the analytic and
+/// NURB intervals no longer match at absolute coordinates that large. This is the documented
+/// SMLib limitation #56 (and the #117 family), not a general relaxation: only this refusal is
+/// accepted, only from the moved side of the translation case, and every other error still
+/// fails the case.
+fn moved_operand_refused(error: &str) -> bool {
+    error.contains("the first operand already fails it") && error.contains("SmSurfOfRevolution::Test #7")
+}
+
+/// A boolean at the origin or moved by the translation case, where #56/#117 may refuse the
+/// moved operands' own check.
+enum Moved {
+    Volume(f64),
+    OperandRefused,
+}
+
+/// A boolean's volume, or the one accepted #56/#117 operand refusal. Any other error fails.
+fn run_moved(a: &Body, b: &Body, op: BoolOp) -> Result<Moved, TestCaseError> {
+    match boolean(a, b, op) {
+        Ok(None) => Ok(Moved::Volume(0.0)),
+        Ok(Some(body)) => {
+            let bad = body.validity();
+            prop_assert!(bad.is_empty(), "{op:?} result is not a sound solid: {}", bad.join("; "));
+            Ok(Moved::Volume(measure(&body).map_err(|e| TestCaseError::fail(format!("measure: {e}")))?.volume))
+        }
+        Err(e) if moved_operand_refused(&e.to_string()) => Ok(Moved::OperandRefused),
+        Err(e) => Err(TestCaseError::fail(format!("{op:?} returned an error: {e}"))),
+    }
+}
+
 /// Inclusion-exclusion: V(A∪B) + V(A∩B) = V(A) + V(B), and V(A−B) = V(A) − V(A∩B).
 fn identity(a: &Prim, b: &Prim) -> Result<(), TestCaseError> {
     let (ba, bb) = (a.body(), b.body());
@@ -174,10 +207,27 @@ proptest! {
         let t = Vec3::new(off, -off * 0.7, off * 0.3);
         let mv = |x: &Body| transform(x, t, Vec3::ZERO, Vec3::Z, 0.0).expect("translate");
         let (ta, tb) = (mv(&ba), mv(&bb));
-        let s = vol(&ba) + vol(&bb);
+        // The moved operands are the same parts: the offset changes coordinates, not volumes.
+        let (va, vb) = (vol(&ba), vol(&bb));
+        let s = va + vb;
+        prop_assert!(
+            close(vol(&ta), va, s) && close(vol(&tb), vb, s),
+            "a moved operand's volume changed: {:.4}/{:.4} vs {va:.4}/{vb:.4}",
+            vol(&ta),
+            vol(&tb)
+        );
         for op in [BoolOp::Union, BoolOp::Intersect, BoolOp::Cut] {
-            let (here, there) = (run(&ba, &bb, op)?, run(&ta, &tb, op)?);
-            prop_assert!(close(here, there, s), "{op:?} at origin {here:.4}, moved by {off} gives {there:.4}");
+            match (run_moved(&ba, &bb, op)?, run_moved(&ta, &tb, op)?) {
+                (Moved::Volume(here), Moved::Volume(there)) => {
+                    prop_assert!(close(here, there, s), "{op:?} at origin {here:.4}, moved by {off} gives {there:.4}");
+                }
+                // #56/#117: SMLib's own check refuses the moved operand at 1e5 (see
+                // `moved_operand_refused`); the moved volumes asserted above hold the parts to
+                // their originals, and the origin side still has to give a volume.
+                (Moved::Volume(_), Moved::OperandRefused) if off > 0.0 => {}
+                (Moved::OperandRefused, _) => prop_assert!(false, "{op:?} was refused as an operand at the origin"),
+                (_, Moved::OperandRefused) => prop_assert!(false, "{op:?} was refused as an operand with no offset"),
+            }
         }
     }
 
@@ -316,6 +366,24 @@ fn check(r: Result<(), TestCaseError>) {
     if let Err(e) = r {
         panic!("{e}");
     }
+}
+
+/// Only #56/#117's exact moved-operand refusal is accepted: another SMLib refusal, or the same
+/// words from another check, still fails the case.
+#[test]
+fn moved_operand_refusal_is_only_the_documented_one() {
+    let error = "the operation failed: SMLib boolean: SMLib's check refuses the result (the first operand already fails it): 1 failed tests:\nSmSurfOfRevolution::Test #7 Parameterization: Bad PolarCurve Anal and NURB intervals does not match appropriate Surface Domain Intervals (tolerance= 1e-12) [owner SmCylinder]";
+    assert!(moved_operand_refused(error), "the 1e5-offset cylinder's operand refusal is the accepted one");
+    assert!(
+        !moved_operand_refused(
+            "the operation failed: SMLib boolean: SMLib's check refuses the result: 1 failed tests: SmFace::Test #29 Face crosses Seam"
+        ),
+        "another refusal is not accepted"
+    );
+    assert!(
+        !moved_operand_refused("SMLib boolean: SMLib's check refuses the result (the first operand already fails it)"),
+        "the words alone, from another check, are not accepted"
+    );
 }
 
 /// A box and a cylinder in general position: the intersect is a sliver 0.5 mm thick. It was
