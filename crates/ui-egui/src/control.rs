@@ -13,6 +13,8 @@
 //! - `document.export`, `document.import {text, name?}`, `document.saved {revision}`: the design
 //!   for a host that keeps the files itself (#8517)
 //! - `ui.inspect`: UI state, viewport rect, camera, tool and dialog
+//! - `ui.rects {prefix?}`: the rects drawn last frame, in window points, with the scale to window
+//!   pixels (a native child window is placed in those pixels; `ui.handles` gives their centres)
 //! - `ui.drag {x0, y0, x1, y1, button?, shift?, ctrl?, steps?, hold?}` (box selection, navigation;
 //!   `hold` keeps the button down that many frames before moving);
 //!   `ui.selection` (selection, dialog inputs, hover, drawn sketch dimensions);
@@ -1138,6 +1140,15 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             // The handles drawn last frame (toolbar buttons `toolbar:<id>`, panels, browser rows…).
             let list = crate::scenario::handles(s("prefix").unwrap_or(""));
             ok(json!(list.into_iter().map(|(n, p)| json!({"name": n, "x": p.x, "y": p.y})).collect::<Vec<_>>()))
+        }
+        "ui.rects" => {
+            // The rects drawn last frame, in the window's egui points, and the points-to-window
+            // pixels scale: a native view placed over one of them is compared in real pixels.
+            let list = crate::scenario::rects(s("prefix").unwrap_or(""));
+            ok(json!({
+                "rects": list.into_iter().map(|(n, r)| json!({"name": n, "x": r.left(), "y": r.top(), "width": r.width(), "height": r.height()})).collect::<Vec<_>>(),
+                "pixelsPerPoint": ctx.pixels_per_point(),
+            }))
         }
         "ui.pick" => wrap(crate::view_pick::pick_command(app, p)),
         "ui.at" => {
@@ -3764,5 +3775,35 @@ mod tests {
         let r = h.call("ui.home", json!({"sample": 0}));
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["open"], true, "the sample was asked for: {r}");
+    }
+
+    /// The rects a frame published are readable over the control channel, in the window's egui
+    /// points, with the scale to its pixels: a native view over the Assistant's page
+    /// (`agent_chat:web`) is compared with the window's own coordinates (INT-1487).
+    #[test]
+    fn ui_rects_reports_the_published_rects_and_their_pixel_scale() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        crate::scenario::clear_handles();
+        let page = egui::Rect::from_min_size(egui::pos2(633.0, 166.0), egui::vec2(370.0, 479.0));
+        crate::scenario::publish_rect("agent_chat:web", page);
+        crate::scenario::publish_rect("agent_chat:panel", page.expand(9.0));
+        crate::scenario::publish_rect("toolbar", egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 34.0)));
+        let ctx = egui::Context::default();
+        let (request, _) = super::ControlRequest::new("ui.rects", json!({"prefix": "agent_chat:"}));
+        let reply = match super::handle(&mut app, &ctx, &request) {
+            super::Outcome::Done(reply) => reply,
+            _ => panic!("unexpected screenshot"),
+        };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["pixelsPerPoint"], json!(f64::from(ctx.pixels_per_point())), "the window's own scale, for a native view's pixels");
+        let rects = reply["result"]["rects"].as_array().expect("the rects");
+        assert_eq!(rects.len(), 2, "the prefix leaves the toolbar out: {reply}");
+        assert_eq!(rects[0]["name"], "agent_chat:web");
+        assert_eq!(
+            [rects[0]["x"].clone(), rects[0]["y"].clone(), rects[0]["width"].clone(), rects[0]["height"].clone()],
+            [json!(633.0), json!(166.0), json!(370.0), json!(479.0)],
+            "{reply}"
+        );
+        assert_eq!(rects[1]["name"], "agent_chat:panel");
     }
 }
