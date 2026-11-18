@@ -235,7 +235,7 @@ mod tests {
         assert!(crate::browser::is_open(&h.app, "point_clouds", true));
         let first = gpu_clouds(&h.app, &h.ctx);
         assert_eq!(first.len(), 1);
-        let size = solidcraft_viewport_gpu::view::DOT_SIZE;
+        let size = solidcraft_viewport_gpu::view::CELL_SIZE;
         assert_eq!(first[0].dots.len(), 2 * size);
         // The second point: at x = 10, green.
         assert_eq!(&first[0].dots[size..size + 4], &10f32.to_le_bytes());

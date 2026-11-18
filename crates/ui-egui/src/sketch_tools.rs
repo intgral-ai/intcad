@@ -9,6 +9,7 @@ use crate::icons::markers::glyph_letter;
 use crate::ui_kit::BackingTooltipExt as _;
 use solidcraft_engine::geom::prelude::*;
 use std::cell::{Cell, RefCell};
+use crate::section_view::SectionCut;
 
 use egui::{Pos2, Stroke};
 use serde_json::{Value, json};
@@ -273,7 +274,7 @@ fn marks(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
 /// Commands that start with a step of their own: Canvas and Decal ask for the image first,
 /// Edit Canvas opens the canvas panel. False when the command should not go on.
 pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
-    if id == "inspect.section" && app.preferences.viewport_section_status && !app.session.section.is_empty() {
+    if id == "inspect.section" && app.preferences.viewport_section_status && !app.session.cut().is_none() {
         let _ = app.run(id, json!({"clear":true}));
         return false;
     }

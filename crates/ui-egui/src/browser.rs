@@ -9,6 +9,7 @@
 use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::{Container, Surface};
 use solidcraft_engine::geom::prelude::*;
+use crate::section_view::SectionCut;
 
 #[path = "browser_cache.rs"]
 mod cache;
@@ -2253,13 +2254,13 @@ pub fn view_items(app: &SolveApp, name: &str) -> Vec<Item> {
 /// The Analysis folder: the Section Analysis, while there is one (shown or hidden), with an eye
 /// to hide and show it, a double-click to edit it and a menu to delete it (#822).
 fn analysis_rows(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize, acts: &mut Actions) {
-    if !app.session.section.is_empty() {
+    if !app.session.cut().is_none() {
         // A section made (or remade) while an older one was hidden replaces it, shown.
         app.tree.hidden_section = None;
         app.tree.analysis_hidden = false;
         app.tree.section_hidden = false;
     }
-    if app.session.section.is_empty() && app.tree.hidden_section.is_none() {
+    if app.session.cut().is_none() && app.tree.hidden_section.is_none() {
         app.tree.analysis_hidden = false;
         app.tree.section_hidden = false;
         return;
@@ -2329,7 +2330,7 @@ pub fn set_section_visible(app: &mut SolveApp, visible: bool) {
                 app.tree.hidden_section = None;
             }
         }
-    } else if let Some(section) = app.session.section.first().map(|p| (p.origin, p.normal))
+    } else if let Some(section) = app.session.cut()
         && app.run("inspect.section", json!({"clear": true})).is_ok()
     {
         app.tree.hidden_section = Some(section);

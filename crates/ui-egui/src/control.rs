@@ -48,6 +48,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
+#[cfg(test)]
+use crate::section_view::SectionCut;
 
 use serde_json::{Value, json};
 use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps};
@@ -2694,7 +2696,7 @@ mod tests {
         app.start("inspect.section");
         let Some(crate::dialogs::Kind::Section { offset, .. }) = app.dialog.as_mut().map(|d| &mut d.kind) else { panic!("no section dialog") };
         *offset = "15 mm".into();
-        assert!(app.session.section.is_none() && crate::viewport::section_plane(&app).is_some());
+        assert!(app.session.cut().is_none() && crate::viewport::section_plane(&app).is_some());
         let preview = render(&mut app, &dir.join("preview.png"));
         assert!(whole != preview, "the model render ignores the section the window shows");
         // Committed, it renders the same.

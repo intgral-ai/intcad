@@ -1,3 +1,4 @@
+use crate::section_view::SectionCut;
 use super::*;
 use crate::scenario::Harness;
 use egui::Color32;
@@ -285,7 +286,7 @@ fn environment_ring_fixture() -> Harness {
     enter(&mut h.app, true).unwrap();
     inspector::select_editor(&mut h.app, inspector::Editor::Environment);
     h.app.preferences.nav = crate::prefs::OPENSCAD_NAV.into();
-    h.app.cam.fit(&solidcraft_engine::product_scene::extract(&h.app.session).unwrap().bounds);
+    h.app.cam.fit(&solidcraft_engine::render::view_bounds(&solidcraft_engine::product_scene::extract(&h.app.session).unwrap().bounds));
     environment_ring_frame(&mut h, egui::Modifiers::NONE, vec![]);
     h
 }
@@ -1278,7 +1279,7 @@ fn opaque_pbr_product_gpu_and_cpu_share_color_and_material_semantics() {
         previous = Some(key);
         let mut camera = Camera { fov: 0.0, ..Default::default() };
         camera.set_view(StandardView::Iso);
-        camera.fit(&scene.bounds);
+        camera.fit(&solidcraft_engine::render::view_bounds(&scene.bounds));
         let radius = scene.bounds.diagonal().max(10.0) + scene.bounds.center().dist(camera.target);
         let eye = camera.eye().to_f32();
         let mut task = ImageTask::new(
@@ -1816,7 +1817,7 @@ fn product_gpu_buffers_preserve_opacity_and_never_contain_overlays() {
     assert!(gpu.glass.as_chunks::<{ crate::gpu::TRI_SIZE }>().0.iter().all(|v| color(v) == Some([51, 102, 153, 102])));
     assert!(gpu.lines.is_empty() && gpu.overlay.is_empty() && gpu.under.is_empty() && gpu.hidden.is_empty() && gpu.ghost.is_empty());
     s.selection = vec![solidcraft_engine::Sel::Body { name: "Glass".into() }];
-    s.section = Some((solidcore_record::Vec3::ZERO, solidcore_record::Vec3::X));
+    s.set_cut(Some((solidcore_record::Vec3::ZERO, solidcore_record::Vec3::X)));
     let after = solidcraft_engine::product_scene::extract(&s).unwrap();
     assert_eq!(gpu_scene(&after).unwrap().0, key);
     s.execute("appearance.assign", &json!({"bodies":["Glass"],"color":"#336699","opacity":0.0})).unwrap();
@@ -2016,7 +2017,7 @@ fn cpu_checkpoints_replace_only_the_provisional_texture_and_keep_final_export_an
     let doc = h.app.session.doc.clone();
     let undo = h.app.session.undo.len();
     h.app.render_workspace.view.job = Some(second);
-    let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, frame: frame.info.clone() };
+    let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, adaptive: None, frame: frame.info.clone() };
     cache_preview_frame(&mut h.app, &ctx, &info, frame.png());
     remember_displayed_job(&mut h.app, false);
     assert_eq!(displayed_image(&h.app).unwrap().info.job, second);
@@ -2076,7 +2077,7 @@ fn cancelling_a_preview_returns_to_the_final_image_without_resetting_pan_or_expo
     let reply = h.app.run("render.start", json!({"settings":{"width":16,"height":16}})).unwrap();
     let pending = serde_json::from_value(reply["job"].clone()).unwrap();
     h.app.render_workspace.view.job = Some(pending);
-    let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, frame: frame.info.clone() };
+    let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, adaptive: None, frame: frame.info.clone() };
     cache_preview_frame(&mut h.app, &ctx, &info, frame.png());
     assert!(h.app.render_workspace.preview_image.is_none(), "a different job's checkpoint must be ignored");
     info.frame.job = pending;
@@ -2604,7 +2605,7 @@ fn nav_app(render: bool, preset: &str, around: crate::prefs::OrbitAround) -> cra
     app.ui.perspective = true;
     let mut cam = Camera { fov: 0.6, ..Default::default() };
     cam.set_view(solidcraft_viewport::StandardView::Iso);
-    cam.fit(&solidcraft_engine::product_scene::extract(&app.session).unwrap().bounds);
+    cam.fit(&solidcraft_engine::render::view_bounds(&solidcraft_engine::product_scene::extract(&app.session).unwrap().bounds));
     app.cam = cam;
     app
 }
@@ -3299,6 +3300,8 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
                 denoise: true,
                 lens: Some(ThinLens { aperture_radius_mm: 0.5, focus_distance_mm: 123.0 }),
                 lighting: Some(StudioLighting {
+                    directional_lights: Default::default(),
+                    punctual_lights: Default::default(),
                     environment: [0.25, 0.5, 0.75],
                     sun: Some(Sun { direction: [2.0, 3.0, 4.0], angular_radius_rad: 0.0123456789, radiance: [11.0, 22.0, 33.0] }),
                     area_lights: AreaLights::new(&[AreaLight {
@@ -3315,6 +3318,7 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
                     intensity: 1.75,
                 }),
                 hdr: None,
+                ..Default::default()
             }),
         }),
         ..Default::default()
@@ -3390,7 +3394,7 @@ fn cpu_setup_reload_preserves_unedited_numeric_options_and_explicit_empty_values
         "area_samples":16,"seed":9123,"environment":{"color":[0.0,0.0,0.0],"intensity":2.0}
     }))
     .unwrap();
-    let mut expected = RenderSetup { camera: h.app.cam, exposure_ev: 1.5, job: Some(RenderJob::CpuRaytrace { options }), ..Default::default() };
+    let mut expected = RenderSetup { camera: h.app.cam, exposure_ev: 1.5, job: Some(RenderJob::CpuRaytrace { transparent_background: false, options: Box::new(options) }), ..Default::default() };
     h.app.run("render.settings.set", json!({"name":"CPU numeric","set":expected})).unwrap();
     h.app.render_workspace.view.name = "CPU numeric".into();
     setups::load(&mut h.app);
@@ -3413,7 +3417,7 @@ fn cpu_setup_reload_preserves_unedited_numeric_options_and_explicit_empty_values
     assert!(json!(expected)["job"]["options"].get("exposure_ev").is_none());
     for value in [json!({}), json!({"lights":[],"punctual_lights":[],"area_lights":[],"environment":{"color":[0.0,0.0,0.0],"intensity":0.0}})] {
         let options: CpuJob = serde_json::from_value(value).unwrap();
-        expected.job = Some(RenderJob::CpuRaytrace { options });
+        expected.job = Some(RenderJob::CpuRaytrace { transparent_background: false, options: Box::new(options) });
         h.app.run("render.settings.set", json!({"name":"CPU numeric","set":expected})).unwrap();
         setups::load(&mut h.app);
         assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
@@ -3500,7 +3504,7 @@ fn cpu_progressive_setup_preserves_hidden_values_empty_lists_and_one_exposure() 
         width: 32,
         height: 16,
         exposure_ev: -1.5,
-        job: Some(RenderJob::CpuRaytrace { options }),
+        job: Some(RenderJob::CpuRaytrace { transparent_background: false, options: Box::new(options) }),
         ..Default::default()
     };
     h.app.run("render.settings.set", json!({"name":"Progressive hidden","set":expected})).unwrap();
@@ -3645,7 +3649,7 @@ fn hdr_ui_save_embeds_once_without_a_host_and_reload_never_reopens_the_source_pa
     assert_eq!(h.app.session.doc.render.resources.len(), 1, "both setups share one source payload");
     assert_eq!(h.app.session.doc.render.resources.total_bytes(), bytes.len());
     let cpu = h.app.session.doc.render.setups.get("HDR CPU").unwrap().clone();
-    assert!(matches!(&cpu.job, Some(RenderJob::CpuRaytrace { options })
+    assert!(matches!(&cpu.job, Some(RenderJob::CpuRaytrace { options, .. })
         if options.hdr.unwrap().samples == 64 && options.progressive.unwrap().samples_per_pixel == 7 && options.progressive.unwrap().seed == 84));
     let encoded = h.app.session.doc.to_json();
     assert!(!encoded.contains("original-embedded.hdr"), "the document never stores the source path");
@@ -7126,7 +7130,7 @@ fn render_lighting_shadow_edits_are_undoable_and_preset_reviews_reject_changed_d
     assert!(!h.app.render_workspace.view.raytrace.shadows);
     assert_eq!(h.app.session.undo.len(), undo + 1);
     assert!(matches!(&h.app.session.doc.render.setups["Studio"].job,
-        Some(solidcraft_engine::doc::render_settings::RenderJob::CpuRaytrace { options }) if !options.shadows));
+        Some(solidcraft_engine::doc::render_settings::RenderJob::CpuRaytrace { options, .. }) if !options.shadows));
     h.app.run("edit.undo", json!({})).unwrap();
     setups::load(&mut h.app);
     assert_eq!(h.app.session.doc, before);
@@ -7244,13 +7248,14 @@ fn fit_aspect_keeps_the_product_inside_a_tall_image() {
     let radius = bounds.diagonal();
     for fov in [0.0, std::f64::consts::FRAC_PI_4] {
         let mut landscape = Camera { fov, ..Default::default() };
-        assert!(landscape.fit_aspect(&bounds, 2.0));
+        let view = solidcraft_engine::render::view_bounds(&bounds);
+        assert!(landscape.fit_aspect(&view, 2.0));
         let mut plain = Camera { fov, ..Default::default() };
-        plain.fit(&bounds);
+        plain.fit(&view);
         assert_eq!(landscape, plain, "a wide picture keeps the standard fit");
         for aspect in [0.5, 0.25] {
             let mut cam = Camera { fov, ..Default::default() };
-            assert!(cam.fit_aspect(&bounds, aspect));
+            assert!(cam.fit_aspect(&view, aspect));
             for p in corners(&bounds) {
                 let q = cam.view_proj(aspect, radius).apply(p);
                 let (x, y) = (q[0] / q[3], q[1] / q[3]);
@@ -7259,7 +7264,7 @@ fn fit_aspect_keeps_the_product_inside_a_tall_image() {
         }
         // Nothing to fit leaves the camera alone.
         let mut cam = Camera { fov, distance: 123.0, ..Default::default() };
-        assert!(!cam.fit_aspect(&Aabb3::EMPTY, 0.5));
+        assert!(!cam.fit_aspect(&solidcraft_engine::render::view_bounds(&Aabb3::EMPTY), 0.5));
         assert_eq!(cam.distance, 123.0);
     }
 }

@@ -6,6 +6,7 @@ use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::choice_row;
 use solidcraft_engine::geom::prelude::*;
 use std::hash::{Hash, Hasher};
+use crate::section_view::SectionCut;
 
 use egui::{RichText, vec2};
 use serde_json::{Value, json};
@@ -4592,7 +4593,7 @@ fn sels(d: &Dialog, i: usize) -> &[Sel] {
 
 /// Section Analysis with a section on and no plane picked: OK turns the section off.
 fn section_turns_off(s: &Session, inputs: &[selection::SelInput]) -> bool {
-    !s.section.is_empty() && selection::items(inputs, 0).is_empty()
+    !s.cut().is_none() && selection::items(inputs, 0).is_empty()
 }
 
 /// Run the dialog's commands on the window thread, taking the Join its operation check already
@@ -4647,7 +4648,7 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
         }
     }
     if let Kind::Section { offset, flip, hatch } = &d.kind
-        && let Some(cut) = app.session.section.first().map(|p| (p.origin, p.normal))
+        && let Some(cut) = app.session.cut()
     {
         app.tree.section_dialog = if d.extra.contains_key("plane") && sels(d, 0).is_empty() {
             None // Programmatic geometry is reconstructed from the actual session, never cached.
@@ -4662,7 +4663,7 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
 /// now left it. Programmatic cuts use their actual geometry in the same existing form.
 pub fn edit_section(app: &mut SolveApp) {
     app.start_section_edit();
-    let cut = app.session.section.first().map(|p| (p.origin, p.normal)).or(app.tree.hidden_section);
+    let cut = app.session.cut().or(app.tree.hidden_section);
     let last = app.tree.section_dialog.clone().filter(|last| cut.is_some_and(|c| same_cut(c, last.cut)));
     if app.preferences.viewport_section_status {
         if let Some((origin, normal)) = cut {

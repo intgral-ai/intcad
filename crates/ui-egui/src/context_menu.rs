@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use solidcraft_engine::geom::prelude::*;
 use solidcraft_engine::{Sel, doc::FeatureKind};
+use crate::section_view::SectionCut;
 
 use crate::SolveApp;
 
@@ -764,7 +765,7 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         v.push(cmd(app, "edit.undo", "Undo").on(!app.session.undo.is_empty()));
         v.push(cmd(app, "edit.redo", "Redo").on(!app.session.redo.is_empty()));
         v.push(Item::sep());
-        if !app.session.section.is_empty() {
+        if !app.session.cut().is_none() {
             v.push(act("ui.unsection", "Remove Section", "section"));
         }
         v.push(act("ui.origin", if app.origin_shown() { "Hide Origin" } else { "Show Origin" }, "origin"));

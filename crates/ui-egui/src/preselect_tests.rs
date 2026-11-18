@@ -3080,6 +3080,7 @@ fn convert_mesh_asks_for_the_body_and_converts_the_selected_one() {
                 name: "Mesh".into(),
                 positions: mesh.positions.iter().flat_map(|p| [p.x, p.y, p.z]).collect(),
                 triangles: mesh.triangles.iter().flatten().copied().collect(),
+                corner_normals: Default::default(),
                 color: None,
             }],
         },

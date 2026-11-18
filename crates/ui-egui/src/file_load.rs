@@ -1648,6 +1648,7 @@ mod tests {
                 name: "Saved triangle".into(),
                 positions: vec![0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 0.0].into(),
                 triangles: vec![0, 1, 2].into(),
+                corner_normals: Default::default(),
                 color: Some([0.8, 0.2, 0.1]),
             }],
         };
@@ -1664,6 +1665,7 @@ mod tests {
                 name: "Hostile overdraw".into(),
                 positions: vec![0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 0.0].into(),
                 triangles: (0..10_000).flat_map(|_| [0, 1, 2]).collect(),
+                corner_normals: Default::default(),
                 color: None,
             }],
         };

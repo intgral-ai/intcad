@@ -12,6 +12,7 @@ use solidcraft_viewport::{Camera, Mat4, Rgb};
 use solidcraft_engine::sketch::CurveKind;
 use solidcraft_engine::view::{GridFade, GridPlane, colors, grid_ext, grid_lines, grid_plane, grid_step, sketch_lines_with_sampler};
 use std::hash::{Hash, Hasher};
+use crate::section_view::SectionCut;
 
 use crate::gpu::{Frame, GpuScene, GpuTarget, SceneSlot, ViewportCallback};
 use crate::navigation::{CameraInput, NavCaps, orbit_drag};
@@ -3085,9 +3086,9 @@ pub fn section_plane(app: &SolveApp) -> Option<(Vec3, Vec3)> {
         let (_, p) = cmds.into_iter().next()?;
         let mut scratch = app.session.scratch();
         scratch.execute("inspect.section", &p).ok()?;
-        return scratch.section.first().map(|p| (p.origin, p.normal));
+        return scratch.cut();
     }
-    slice_plane(app).or_else(|| app.session.section.first().map(|p| (p.origin, p.normal)))
+    slice_plane(app).or_else(|| app.session.cut())
 }
 
 /// The cut [`section_plane`] shows as a Section Analysis of one plane (its id 1: the cap's own
@@ -8482,7 +8483,7 @@ mod tests {
         h.app.start("inspect.section");
         let Some(crate::dialogs::Kind::Section { offset, .. }) = h.app.dialog.as_mut().map(|d| &mut d.kind) else { panic!("section dialog") };
         *offset = "15 mm".into();
-        assert!(h.app.session.section.is_none());
+        assert!(h.app.session.cut().is_none());
         let preview = pixels(&mut h, cam);
         assert!(whole.iter().zip(&preview).filter(|(a, b)| a != b).count() > 100, "the picture ignored the uncommitted section preview");
         assert!(std::sync::Arc::ptr_eq(&before, &h.app.session.doc));
@@ -8491,11 +8492,11 @@ mod tests {
         h.app.dialog = None;
         assert_eq!(preview, pixels(&mut h, cam), "preview and committed section must draw identically");
 
-        h.app.session.section = None;
+        h.app.session.set_cut(None);
         h.app.run("sketch.create", json!({"plane":{"origin":[0,0,10],"x_dir":[1,0,0],"y_dir":[0,1,0]}})).unwrap();
         let whole = pixels(&mut h, cam);
         h.app.run("sketch.options", json!({"slice":true})).unwrap();
-        assert!(h.app.session.section.is_none());
+        assert!(h.app.session.cut().is_none());
         let sliced = pixels(&mut h, cam);
         assert!(whole.iter().zip(&sliced).filter(|(a, b)| a != b).count() > 100, "the picture ignored the active Sketch Slice");
         h.app.run("sketch.options", json!({"slice":false})).unwrap();
@@ -9018,6 +9019,7 @@ mod tests {
             name: "Small mesh".into(),
             positions: [0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0].into(),
             triangles: [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3].into(),
+            corner_normals: Default::default(),
             color: Some([0.8, 0.3, 0.1]),
         }];
         let id = doc.add_feature(FeatureKind::MeshImport { file: "small.stl".into(), meshes }, Some("Mesh")).unwrap();
@@ -9063,7 +9065,7 @@ mod tests {
                 })
             })
             .collect();
-        let meshes = vec![MeshData { name: "Grid".into(), positions, triangles, color: None }];
+        let meshes = vec![MeshData { name: "Grid".into(), positions, triangles, corner_normals: Default::default(), color: None }];
         doc.add_feature(FeatureKind::MeshImport { file: "grid.stl".into(), meshes }, Some("Grid")).unwrap();
         let mut app = SolveApp::new(solidcraft_engine::Session::new(doc), crate::Services::default());
         app.ui.ground_shadow = false;
@@ -9121,6 +9123,7 @@ mod tests {
             name: "Grid".into(),
             positions: corners.iter().flat_map(|[x, y]| [f64::from(*x), f64::from(*y), 0.0]).collect(),
             triangles: (0..u32::try_from(corners.len()).unwrap()).collect(),
+            corner_normals: Default::default(),
             color: None,
         }];
         doc.add_feature(FeatureKind::MeshImport { file: "grid.stl".into(), meshes }, Some("Grid")).unwrap();
@@ -9156,6 +9159,7 @@ mod tests {
             name: "Scan".into(),
             positions: corners.iter().flatten().copied().collect(),
             triangles: (0..u32::try_from(corners.len()).unwrap()).collect(),
+            corner_normals: Default::default(),
             color: None,
         }];
         doc.add_feature(FeatureKind::MeshImport { file: "scan.stl".into(), meshes }, Some("Scan")).unwrap();
@@ -12095,7 +12099,7 @@ mod tests {
         let mut s = solidcraft_engine::Session::default();
         s.execute("solid.box", &json!({"length": 40, "width": 30, "height": 20})).unwrap();
         let o = Vec3::new(0.0, 15.0, 0.0);
-        s.section = Some((o, Vec3::new(0.0, -1.0, 0.0)));
+        s.set_cut(Some((o, Vec3::new(0.0, -1.0, 0.0))));
         let mut app = SolveApp::new(s, crate::Services::default());
         let indexes =
             |app: &SolveApp| app.viewport.section_index.lock().unwrap().values().map(|(_, i)| std::sync::Arc::as_ptr(i) as usize).collect::<Vec<_>>();
@@ -12104,7 +12108,7 @@ mod tests {
         assert_eq!(first.len(), 1);
         for k in 1..4 {
             let a = (10.0 * k as f64).to_radians();
-            app.session.section = Some((o, Vec3::new(0.0, -a.cos(), a.sin())));
+            app.session.set_cut(Some((o, Vec3::new(0.0, -a.cos(), a.sin()))));
             build_scene(&app);
             assert_eq!(indexes(&app), first, "tilted {k}");
         }
@@ -13401,6 +13405,7 @@ mod grid_plane_tests {
                 name: format!("Panel {i}"),
                 positions: vec![-0.25, y, -0.25, 0.25, y, -0.25, 0.0, y, 0.25].into(),
                 triangles: vec![0, 1, 2].into(),
+                corner_normals: Default::default(),
                 color: None,
             })
             .collect();

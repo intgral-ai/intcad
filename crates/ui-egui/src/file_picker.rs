@@ -493,7 +493,8 @@ mod tests {
         let doc = &h.app.session.doc;
         let canvas = doc.canvases.first().expect("the canvas is placed");
         let (vals, _) = doc.param_values();
-        let n = doc.canvas_plane(&vals, canvas).unwrap().normal();
+        let state = crate::open_meshing::session_world(&h.app.session);
+        let n = doc.canvas_plane(&vals, canvas, &state).unwrap().normal();
         assert!(n.z.abs() > 0.99, "the canvas lies on {n:?}, not on XY");
     }
 
@@ -522,8 +523,9 @@ mod tests {
         let doc = &h.app.session.doc;
         assert_eq!(doc.canvases.len(), 2, "both images are placed");
         let (vals, _) = doc.param_values();
+        let state = crate::open_meshing::session_world(&h.app.session);
         for canvas in &doc.canvases {
-            let plane = doc.canvas_plane(&vals, canvas).unwrap();
+            let plane = doc.canvas_plane(&vals, canvas, &state).unwrap();
             assert!(plane.normal().z.abs() > 0.99 && (plane.origin.z - 40.0).abs() < 1e-6, "{} lies on {plane:?}", canvas.name);
         }
     }

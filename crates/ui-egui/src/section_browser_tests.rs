@@ -4,6 +4,7 @@
 use egui::pos2;
 use serde_json::json;
 use solidcraft_engine::geom::prelude::*;
+use crate::section_view::SectionCut;
 
 use crate::context_menu::{self, Target};
 use crate::scenario::Harness;
@@ -37,33 +38,33 @@ fn the_eye_hides_and_shows_the_section_and_delete_removes_it() {
     let mut h = harness();
     h.app.run("inspect.section", json!({"plane": "XZ", "offset": 15})).unwrap();
     h.frames(3);
-    let section = h.app.session.section.expect("a section");
+    let section = h.app.session.cut().expect("a section");
     assert!(crate::scenario::handle_at("row:Section Analysis").is_some(), "the section is listed under Analysis");
 
     click(&mut h, "eye:Section Analysis");
-    assert_eq!(h.app.session.section, None, "the eye turns the section off");
+    assert_eq!(h.app.session.cut(), None, "the eye turns the section off");
     assert!(crate::scenario::handle_at("row:Section Analysis").is_some(), "a hidden section stays listed");
 
     click(&mut h, "eye:Section Analysis");
-    let back = h.app.session.section.expect("the eye turns it back on");
+    let back = h.app.session.cut().expect("the eye turns it back on");
     assert!((back.0 - section.0).len() < 1e-9 && (back.1 - section.1).len() < 1e-9, "the same plane: {back:?} vs {section:?}");
 
     // The folder's eye is its own: hiding it turns the section off without changing the
     // section's eye, and hiding the section doesn't change the folder's.
     click(&mut h, "eye:Analysis");
-    assert_eq!(h.app.session.section, None);
+    assert_eq!(h.app.session.cut(), None);
     assert!(h.app.tree.analysis_hidden && !h.app.tree.section_hidden);
     menu(&mut h, "Show/Hide");
-    assert!(h.app.session.section.is_none() && h.app.tree.section_hidden, "the menu hides the section itself");
+    assert!(h.app.session.cut().is_none() && h.app.tree.section_hidden, "the menu hides the section itself");
     assert!(h.app.tree.analysis_hidden, "the section's eye doesn't change the folder's");
     click(&mut h, "eye:Analysis");
-    assert_eq!(h.app.session.section, None, "the section was hidden on its own meanwhile");
+    assert_eq!(h.app.session.cut(), None, "the section was hidden on its own meanwhile");
     assert!(!h.app.tree.analysis_hidden);
     menu(&mut h, "Show/Hide");
-    assert!(h.app.session.section.is_some(), "Show/Hide in the menu brings it back");
+    assert!(h.app.session.cut().is_some(), "Show/Hide in the menu brings it back");
 
     menu(&mut h, "Delete");
-    assert_eq!(h.app.session.section, None);
+    assert_eq!(h.app.session.cut(), None);
     assert!(h.app.tree.hidden_section.is_none());
     assert!(crate::scenario::handle_at("row:Section Analysis").is_none(), "a deleted section leaves the browser");
 }
@@ -75,7 +76,7 @@ fn deleting_a_hidden_section_forgets_it() {
     h.frames(3);
     click(&mut h, "eye:Section Analysis");
     menu(&mut h, "Delete");
-    assert!(h.app.session.section.is_none() && h.app.tree.hidden_section.is_none());
+    assert!(h.app.session.cut().is_none() && h.app.tree.hidden_section.is_none());
     assert!(crate::scenario::handle_at("row:Analysis").is_none());
 }
 
@@ -114,7 +115,7 @@ fn edit_starts_from_the_section_as_it_was_left() {
         *offset = "12 mm".into();
     }
     ok(&mut h);
-    let cut = h.app.session.section.expect("a section");
+    let cut = h.app.session.cut().expect("a section");
     assert!((cut.0.z - 12.0).abs() < 1e-9, "{cut:?}");
 
     // The toolbar starts a new section (in place of this one), not an edit of it.
@@ -125,7 +126,7 @@ fn edit_starts_from_the_section_as_it_was_left() {
     assert!(plane.is_empty(), "a new section picks its own plane: {plane:?}");
     crate::dialogs::cancel(&mut h.app);
     h.frames(2);
-    assert!(h.app.session.section.is_some_and(|c| (c.0.z - 12.0).abs() < 1e-9), "cancelling keeps the section");
+    assert!(h.app.session.cut().is_some_and(|c| (c.0.z - 12.0).abs() < 1e-9), "cancelling keeps the section");
 
     menu(&mut h, "Edit Section Analysis");
     let (offset, flip, plane) = section_dialog(&h);
@@ -166,11 +167,11 @@ fn the_hatch_option_carries_through_the_section() {
     h.frames(2);
     assert!(!crate::viewport::section_hatch(&h.app), "the preview follows the option");
     ok(&mut h);
-    assert!(h.app.session.section.is_some() && !h.app.session.section_hatch);
+    assert!(h.app.session.cut().is_some() && !h.app.session.section_hatch);
 
     click(&mut h, "eye:Section Analysis");
     click(&mut h, "eye:Section Analysis");
-    assert!(h.app.session.section.is_some() && !h.app.session.section_hatch, "shown again, still plain");
+    assert!(h.app.session.cut().is_some() && !h.app.session.section_hatch, "shown again, still plain");
     menu(&mut h, "Edit Section Analysis");
     let d = h.app.dialog.as_ref().map(|d| &d.kind);
     assert!(matches!(d, Some(crate::dialogs::Kind::Section { hatch: false, .. })), "{d:?}");
@@ -191,11 +192,11 @@ fn ok_with_no_plane_picked_turns_the_section_off() {
     assert!(crate::scenario::handle_at("dialog:hint:section_off").is_some(), "the dialog says OK turns the section off");
     h.step(&json!({"widget":"Cancel"})).unwrap();
     h.frames(3);
-    assert!(h.app.dialog.is_none() && h.app.session.section.is_some(), "Cancel keeps the section");
+    assert!(h.app.dialog.is_none() && h.app.session.cut().is_some(), "Cancel keeps the section");
 
     h.app.start("inspect.section");
     ok(&mut h);
-    assert_eq!(h.app.session.section, None, "OK with no plane picked turns the section off");
+    assert_eq!(h.app.session.cut(), None, "OK with no plane picked turns the section off");
     assert!(crate::scenario::handle_at("row:Section Analysis").is_none(), "the browser no longer lists it");
 
     h.app.start("inspect.section");
@@ -216,28 +217,28 @@ fn editing_programmatic_sections_keeps_actual_plane_flip_hatch_and_cancel_then_m
         let mut h = harness();
         h.app.run("inspect.section", params).unwrap();
         assert!(h.app.dialog.is_none(), "programmatic commands never open a form");
-        let cut = h.app.session.section.unwrap();
+        let cut = h.app.session.cut().unwrap();
         let hatch = h.app.session.section_hatch;
         crate::dialogs::edit_section(&mut h.app);
         let d = h.app.dialog.as_ref().unwrap();
         let cmds = crate::dialogs::apply_commands(&h.app, d).unwrap();
         let mut scratch = h.app.session.scratch();
         scratch.execute(&cmds[0].0, &cmds[0].1).unwrap();
-        let preview = scratch.section.unwrap();
+        let preview = scratch.cut().unwrap();
         assert!((preview.0 - cut.0).len() < 1e-9 && (preview.1 - cut.1).len() < 1e-9);
         assert_eq!(scratch.section_hatch, hatch);
-        assert_eq!(h.app.session.section, Some(cut), "edit intent cannot toggle the active cut off");
+        assert_eq!(h.app.session.cut(), Some(cut), "edit intent cannot toggle the active cut off");
         crate::dialogs::cancel(&mut h.app);
-        assert_eq!(h.app.session.section, Some(cut));
+        assert_eq!(h.app.session.cut(), Some(cut));
         crate::dialogs::edit_section(&mut h.app);
         if let Some(crate::dialogs::Kind::Section { offset, .. }) = h.app.dialog.as_mut().map(|d| &mut d.kind) {
             *offset = "30 mm".into();
         }
         let cmds = crate::dialogs::apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
         h.app.run(&cmds[0].0, cmds[0].1.clone()).unwrap();
-        assert_ne!(h.app.session.section.unwrap().0, cut.0);
+        assert_ne!(h.app.session.cut().unwrap().0, cut.0);
         assert!(
-            (h.app.session.section.unwrap().1 - cut.1).len() < 1e-12,
+            (h.app.session.cut().unwrap().1 - cut.1).len() < 1e-12,
             "moving the plane retains its clipping direction within normalisation precision"
         );
     }
@@ -253,17 +254,17 @@ fn section_ribbon_toggle_and_setting_edit_have_separate_intent_and_compatibility
     let effect = h.app.session.status_items().into_iter().find(|e| e.command == "inspect.section").unwrap();
     let item = crate::viewport_status::presentation(&h.app, &effect).unwrap();
     h.step(&json!({"click":{"handle":format!("viewport_status:{}:setting",item.id)}})).unwrap();
-    assert!(h.app.dialog.is_some() && h.app.session.section.is_some());
+    assert!(h.app.dialog.is_some() && h.app.session.cut().is_some());
     crate::dialogs::cancel(&mut h.app);
     h.app.start("inspect.section");
-    assert!(h.app.dialog.is_none() && h.app.session.section.is_none());
+    assert!(h.app.dialog.is_none() && h.app.session.cut().is_none());
     assert!(h.app.session.analysis.is_some());
     h.app.run("inspect.section", json!({"plane":"XY"})).unwrap();
     h.app.preferences.viewport_section_status = false;
-    let cut = h.app.session.section;
+    let cut = h.app.session.cut();
     h.app.start("inspect.section");
     assert!(h.app.dialog.is_some());
-    assert_eq!(h.app.session.section, cut);
+    assert_eq!(h.app.session.cut(), cut);
 }
 
 /// Reopened from a section's own geometry (Graphics → Show viewport section status), the dialog
@@ -282,7 +283,7 @@ fn a_section_reopened_from_its_geometry_keeps_its_drag_arrow() {
         h.app.run("solid.box", json!({"length":40,"width":30,"height":20})).unwrap();
         h.app.run("inspect.section", params.clone()).unwrap();
         h.frames(3);
-        let cut = h.app.session.section.unwrap();
+        let cut = h.app.session.cut().unwrap();
         menu(&mut h, "Edit Section Analysis");
         let (offset, _, plane) = section_dialog(&h);
         assert!(plane.is_empty(), "{params}: no plane picked: {plane:?}");

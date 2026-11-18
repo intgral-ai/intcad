@@ -244,6 +244,7 @@ mod rule_editor_tests;
 pub mod save_job;
 pub mod scenario;
 pub(crate) mod scene_palette;
+mod section_view;
 pub mod select_other;
 pub mod selection;
 pub mod semantic_content;

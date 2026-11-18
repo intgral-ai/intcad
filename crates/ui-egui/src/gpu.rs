@@ -358,7 +358,7 @@ pub(crate) fn offscreen_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Q
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn offscreen_tessellates(shader: &str) -> Option<bool> {
     let (adapter, device, queue) = offscreen_device()?;
-    Some(solidcraft_viewport_gpu::view::tessellation(&adapter, &device, &queue, shader).is_some())
+    Some(solidcraft_viewport_gpu::view::tessellation(&adapter, &device, &queue, shader, solidcraft_gpu::env::force_cpu_tessellation()).is_some())
 }
 
 /// Render `scene` offscreen on a device of its own, through the viewport's real resources and
@@ -541,7 +541,9 @@ fn offscreen(
     eprintln!("offscreen adapter: {:?}", adapter.get_info().backend);
     let format = if srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
     let depth = solidcraft_viewport_gpu::depth_format(&device, true);
-    let compute = tess.and_then(|shader| solidcraft_viewport_gpu::view::tessellation(&adapter, &device, &queue, shader));
+    let compute = tess.and_then(|shader| {
+        solidcraft_viewport_gpu::view::tessellation(&adapter, &device, &queue, shader, solidcraft_gpu::env::force_cpu_tessellation())
+    });
     let target = GpuTarget { format, depth: Some(depth), samples: 1, tess: compute.is_some(), oit: false };
     let mut resources = egui_wgpu::CallbackResources::default();
     resources.insert(Renderer::new(&device, target, compute));
@@ -563,7 +565,10 @@ fn offscreen(
         view_proj,
         back,
         size_px: [size as f32; 2],
-        clip: [0.0; 4],
+        clip: [[0.0; 4]; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES],
+        clip_hatch: [0; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES],
+        turned_depth: None,
+        moving: None,
         cap: [0.0; 4],
         images: Vec::new(),
         clouds: Vec::new(),
@@ -663,7 +668,17 @@ impl OffscreenFrames {
         let (adapter, device, queue) = offscreen_device()?;
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let depth = solidcraft_viewport_gpu::depth_format(&device, true);
-        let compute = if tess { solidcraft_viewport_gpu::view::tessellation(&adapter, &device, &queue, solidcraft_viewport_gpu::SHADER) } else { None };
+        let compute = if tess {
+            solidcraft_viewport_gpu::view::tessellation(
+                &adapter,
+                &device,
+                &queue,
+                solidcraft_viewport_gpu::SHADER,
+                solidcraft_gpu::env::force_cpu_tessellation(),
+            )
+        } else {
+            None
+        };
         let target = GpuTarget { format, depth: Some(depth), samples: 1, tess: compute.is_some(), oit: false };
         let mut resources = egui_wgpu::CallbackResources::default();
         resources.insert(Renderer::new(&device, target, compute));
@@ -1504,7 +1519,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn plans_are_drawn_on_the_gpu_once_the_evaluation_has_compiled() {
-        let Ok(tess) = solidcraft_viewport_gpu::TessGpu::headless() else {
+        let policy = match solidcraft_gpu::env::policy() {
+            Ok(policy) => policy,
+            Err(e) => {
+                eprintln!("skipped: {e}");
+                return;
+            }
+        };
+        let Ok(tess) = solidcraft_viewport_gpu::TessGpu::headless(policy) else {
             eprintln!("skipped: no GPU adapter that builds the evaluation");
             return;
         };

@@ -4,6 +4,8 @@
 use crate::ui_kit::BackingTooltipExt as _;
 use solidcraft_engine::geom::prelude::*;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use crate::section_view::SectionCut;
 
 use egui::{Modifiers, Pos2};
 use serde::{Deserialize, Serialize};
@@ -9807,7 +9809,7 @@ mod tests {
             assert_eq!(s.continuity.len(), 1);
             assert_eq!(s.status_items().len(), 2);
             assert_eq!(s.status_items()[0].command, "inspect.continuity");
-            assert!(s.section.is_some());
+            assert!(s.cut().is_some());
             assert!(!s.is_dirty());
         }
         assert!(std::sync::Arc::ptr_eq(&doc, &app.session.doc));

@@ -4,6 +4,7 @@
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::geom::prelude::*;
+use crate::section_view::SectionCut;
 
 use crate::scenario::Harness;
 
@@ -953,9 +954,9 @@ fn hidden_edge_mode_is_scoped_and_invalidates_hover_without_pointer_motion() {
     assert!(!pick_cached(&mut h.app, &proj, pos).iter().any(target));
     h.app.session.visibility.hidden_bodies.clear();
     // The section removes the target entirely: even hidden-edge mode must exclude it.
-    h.app.session.section = Some((solidcore_record::Vec3::new(0.0, 0.0, -5.0), solidcore_record::Vec3::Z));
+    h.app.session.set_cut(Some((solidcore_record::Vec3::new(0.0, 0.0, -5.0), solidcore_record::Vec3::Z)));
     assert!(!pick_all(&h.app, &proj, pos).iter().any(target));
-    h.app.session.section = None;
+    h.app.session.set_cut(None);
     h.call("ui.prefs", json!({"select_hidden_edges":false}));
     assert!(!pick_cached(&mut h.app, &proj, pos).iter().any(target));
 }
@@ -970,11 +971,11 @@ fn hidden_edge_mode_keeps_section_caps_as_occluders() {
     let target = |hit: &Hit| matches!(hit, Hit::Edge { body, .. } if body == "Target");
     assert!(pick_all(&h.app, &proj, pos).iter().any(target), "an ordinary face permits hidden edges");
     // The target remains below the cut, but the section cap through the cover hides it.
-    h.app.session.section = Some((solidcore_record::Vec3::new(0.0, 0.0, 25.0), solidcore_record::Vec3::Z));
+    h.app.session.set_cut(Some((solidcore_record::Vec3::new(0.0, 0.0, 25.0), solidcore_record::Vec3::Z)));
     assert!(!pick(&h.app, &proj, pos).iter().any(target), "ordinary picking must respect the cap");
     assert!(!pick_all(&h.app, &proj, pos).iter().any(target), "Select Other must respect the cap");
     // A plane between the bodies removes the cover without making a cap over the target.
-    h.app.session.section = Some((solidcore_record::Vec3::new(0.0, 0.0, 15.0), solidcore_record::Vec3::Z));
+    h.app.session.set_cut(Some((solidcore_record::Vec3::new(0.0, 0.0, 15.0), solidcore_record::Vec3::Z)));
     assert!(pick_all(&h.app, &proj, pos).iter().any(target));
 }
 
@@ -994,7 +995,7 @@ fn hidden_edge_mode_keeps_caps_behind_a_nearer_kept_face() {
     let pos = proj.to_screen(solidcore_record::Vec3::new(5.0, 0.02, 10.0)).unwrap();
     let target = |hit: &Hit| matches!(hit, Hit::Edge { body, .. } if body == "Target");
     assert!(pick_all(&h.app, &proj, pos).iter().any(target), "ordinary faces permit hidden edges");
-    h.app.session.section = Some((solidcore_record::Vec3::new(0.0, 0.0, 25.0), solidcore_record::Vec3::Z));
+    h.app.session.set_cut(Some((solidcore_record::Vec3::new(0.0, 0.0, 25.0), solidcore_record::Vec3::Z)));
     for enabled in [false, true] {
         h.app.preferences.select_hidden_edges = enabled;
         for hits in [pick(&h.app, &proj, pos), pick_all(&h.app, &proj, pos)] {
