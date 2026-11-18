@@ -553,3 +553,29 @@ fn cancel_closes_the_conflict_question() {
     assert!(crate::scenario::handle_at("dialog:Keep Both").is_none(), "Cancel closes the question");
     assert!(!scratch.path().join("bracket (copy).sc").exists(), "Cancel copies nothing");
 }
+
+/// A file the system cannot open says why in the panel and offers its folder. The desktop's own
+/// message is a worker's answer, so the test hands the panel the same answer.
+#[test]
+fn an_open_failure_names_the_file_and_offers_its_folder() {
+    use crate::scenario::{Harness, rect_of};
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let path = scratch.path().join("orphan.bin");
+    std::fs::write(&path, [0u8, 1, 2]).unwrap();
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.call("ui.files", json!({"root": scratch.path().to_string_lossy()}));
+    h.frames(20);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    sender.send((path.clone(), Err("no program is associated with this file".to_string()))).unwrap();
+    h.app.file_tree.open_jobs.push(receiver);
+    h.frames(3);
+    let state = h.call("ui.files", json!({}));
+    let notice = state["result"]["notice"].clone();
+    assert_eq!(notice["error"], true, "{notice}");
+    assert!(notice["text"].as_str().is_some_and(|text| text.contains("orphan.bin")), "{notice}");
+    assert!(rect_of("files:notice").is_some());
+    assert!(crate::scenario::handle_at("dialog:button::Show in File Manager").is_some(), "the folder is reachable");
+}
