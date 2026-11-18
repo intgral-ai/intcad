@@ -73,7 +73,10 @@ fn reads_only(id: &str) -> bool {
         || id.starts_with("model.")
         || id.ends_with(".inspect")
         || id.ends_with(".list")
-        || matches!(id, "edit.checkpoint" | "render.status" | "render.backends" | "render.settings.get" | "file.slicers" | "engine.describe")
+        || matches!(
+            id,
+            "edit.checkpoint" | "render.status" | "render.backends" | "render.settings.get" | "file.slicers" | "engine.describe" | "view.pick"
+        )
 }
 
 /// Commands that read or write a file by their nature: any string they are given in a path
@@ -263,11 +266,7 @@ pub fn describe(method: &str, params: &Value) -> String {
     match method {
         "engine.batch" => {
             let steps = params.get("commands").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
-            let ids: Vec<&str> = steps
-                .iter()
-                .filter_map(|s| command_of(s).map(|raw| resolve(raw).unwrap_or(raw)))
-                .take(6)
-                .collect();
+            let ids: Vec<&str> = steps.iter().filter_map(|s| command_of(s).map(|raw| resolve(raw).unwrap_or(raw))).take(6).collect();
             let more = if steps.len() > ids.len() { format!(" (+{})", steps.len() - ids.len()) } else { String::new() };
             format!("batch: {}{more}", ids.join(", "))
         }
@@ -420,22 +419,21 @@ mod tests {
     /// (#INT-1454 SEC-1); now every spelling resolves to one registered id first.
     #[test]
     fn a_spelling_cannot_select_a_command_the_gate_did_not_judge() {
-        // Case: the engine resolves case-insensitively, so the gate must too.
-        assert!(matches!(exec("FILE.SAVE", json!({"path": "/tmp/a.sc"})), Verdict::Ask(_)));
+        // Case, with parameters that name no file: the old gate read `FILE.SAVE` as an ordinary
+        // command and let it run. `a.sc` is not a file name to `looks_like_file` (no separator,
+        // no listed extension), so only the resolved id can make this ask.
+        assert!(matches!(exec("FILE.SAVE", json!({})), Verdict::Ask(_)));
+        assert!(matches!(exec("File.Save", json!({"path": "a.sc"})), Verdict::Ask(_)));
         assert!(matches!(exec("File.New", json!({})), Verdict::Ask(_)));
         assert!(matches!(exec("DIAGNOSTICS.CRASH_REPORTS", json!({})), Verdict::Refuse(_)));
         assert!(matches!(exec("Diagnostics.Crash_Report", json!({"id": "x"})), Verdict::Refuse(_)));
-        // Space: the engine trims before resolving.
-        assert!(matches!(exec("  file.save\t", json!({"path": "/tmp/a.sc"})), Verdict::Ask(_)));
-        // The control channel's `id` alias, which the gate used to ignore entirely.
-        assert!(matches!(
-            request("engine.execute", &json!({"id": "file.save", "params": {"path": "/tmp/a.sc"}}), 5),
-            Verdict::Ask(_)
-        ));
-        assert!(matches!(
-            request("engine.execute", &json!({"id": "diagnostics.crash_reports", "params": {}}), 5),
-            Verdict::Refuse(_)
-        ));
+        // Surrounding space, as the engine trims it.
+        assert!(matches!(exec("  file.new\t", json!({})), Verdict::Ask(_)));
+        // The control channel's `id` alias, which the gate used to ignore entirely: with no
+        // `command`, the old gate judged an empty id and returned Run.
+        assert!(matches!(request("engine.execute", &json!({"id": "file.save", "params": {}}), 5), Verdict::Ask(_)));
+        assert!(matches!(request("engine.execute", &json!({"id": "file.save", "params": {"path": "a.sc"}}), 5), Verdict::Ask(_)));
+        assert!(matches!(request("engine.execute", &json!({"id": "diagnostics.crash_reports", "params": {}}), 5), Verdict::Refuse(_)));
         // An id that names nothing is refused: the engine must not pick a command the gate did
         // not judge. The last one is a Cyrillic `е`, which looks like `file.save` to a reader.
         for id in ["file.sav", "", "   ", "file.sav\u{0435}"] {
@@ -449,6 +447,16 @@ mod tests {
         assert!(matches!(request("engine.batch", &batch, 0), Verdict::Ask(a) if a.contains("/etc/x")));
         let crash = json!({"commands": [{"command": "solid.box"}, {"command": "DIAGNOSTICS.CRASH_REPORT", "params": {"id": "x"}}]});
         assert!(matches!(request("engine.batch", &crash, 0), Verdict::Refuse(_)));
+    }
+
+    /// The window answers `view.pick` outside the command registry; the agent may still call it,
+    /// as the control protocol documents, and it reads.
+    #[test]
+    fn the_windows_own_pick_still_runs_for_the_agent() {
+        assert_eq!(exec("view.pick", json!({"x": 10, "y": 20})), Verdict::Run { change: false });
+        assert_eq!(exec("VIEW.PICK", json!({"x": 10, "y": 20})), Verdict::Run { change: false });
+        let batch = json!({"commands": [{"command": "view.pick", "params": {"x": 1}}, {"command": "solid.box"}]});
+        assert_eq!(request("engine.batch", &batch, 0), Verdict::Run { change: true });
     }
 
     /// The request that executes is rewritten to the id the gate judged, so an approval and the
