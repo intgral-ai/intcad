@@ -383,9 +383,30 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v
 }
 
+/// Every command, built once: the gate, the control channel and execution all resolve ids
+/// through this list, so a request cannot be judged on one id and run as another.
+fn all_commands() -> &'static [&'static CommandSpec] {
+    static ALL: std::sync::OnceLock<Vec<&'static CommandSpec>> = std::sync::OnceLock::new();
+    ALL.get_or_init(command_specs)
+}
+
+/// Commands the window answers itself, outside the registry. The agent may call them too, and
+/// they read: a pick touches neither the document, the selection nor undo. Kept in step with the
+/// control channel's own dispatch, which intercepts them before `SolveApp::run`.
+pub const WINDOW_COMMANDS: &[&str] = &["view.pick"];
+
+/// The registered id `id` names: surrounding whitespace removed, exact match first, then
+/// ASCII-case-insensitive, plus the window-answered commands above. This is the one resolution
+/// rule for the agent gate, the control channel and execution; `None` means no command is named
+/// and nothing may run under it.
+pub fn resolve_command_id(id: &str) -> Option<&'static str> {
+    let id = id.trim();
+    WINDOW_COMMANDS.iter().copied().find(|w| w.eq_ignore_ascii_case(id)).or_else(|| find_command(id).map(|c| c.id))
+}
+
 pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
-    let all = command_specs();
-    all.iter().find(|c| c.id == id).or_else(|| all.iter().find(|c| c.id.eq_ignore_ascii_case(id))).copied()
+    let id = id.trim();
+    all_commands().iter().find(|c| c.id == id).or_else(|| all_commands().iter().find(|c| c.id.eq_ignore_ascii_case(id))).copied()
 }
 
 /// The end of an unknown command's error: up to three ids like `id`, nearest first. Ids a few
