@@ -15,10 +15,7 @@ use solidcraft_engine::{
         transmission::Transmission,
     },
 };
-use solidcraft_viewport::{
-    clear_coat::ClearCoat,
-    surface::OpaqueSurface,
-};
+use solidcraft_viewport::{clear_coat::ClearCoat, surface::OpaqueSurface};
 
 #[cfg(test)]
 use crate::theme::Tokens;

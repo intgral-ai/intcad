@@ -1,10 +1,10 @@
 //! Select Other: press and hold, the viewport menu's entry, click cycling and dialog inputs; and
 //! which of overlapping sketch curves a click picks.
 
+use crate::section_view::SectionCut;
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 use solidcraft_engine::geom::prelude::*;
-use crate::section_view::SectionCut;
 
 use crate::scenario::Harness;
 

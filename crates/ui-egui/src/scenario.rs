@@ -40,11 +40,11 @@
 //!
 //! The same files drive the live app over the control channel for screenshots.
 
+use crate::section_view::SectionCut;
 use solidcraft_engine::geom::prelude::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use crate::section_view::SectionCut;
 
 use serde_json::{Value, json};
 use solidcraft_engine::Session;

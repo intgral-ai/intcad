@@ -93,9 +93,10 @@ pub const TABLE: &[(&str, Class)] = &[
 /// server's tests draw screenshots with them. The kernel reads and writes STEP through `solidcore-step`.
 pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     // The viewport's GPU work is drawn with by the app's GPU crate, the egui paint callbacks and
-    // the UI itself.
+    // the UI itself (its viewport hands egui's device and pass to the pipelines).
     &["viewport-gpu", "gpu"],
     &["viewport-gpu", "viewport-egui"],
+    &["viewport-gpu", "ui-egui"],
     &["viewport-egui", "ui-egui"],
     &["gpu", "ui-egui"],
     &["gpu", "mcp"],

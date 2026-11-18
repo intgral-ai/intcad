@@ -6,10 +6,10 @@
 use crate::i18n::{tr, tr_engine_error};
 use crate::icons::markers::glyph_icon;
 use crate::icons::markers::glyph_letter;
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use solidcraft_engine::geom::prelude::*;
 use std::cell::{Cell, RefCell};
-use crate::section_view::SectionCut;
 
 use egui::{Pos2, Stroke};
 use serde_json::{Value, json};

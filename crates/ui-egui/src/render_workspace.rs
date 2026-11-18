@@ -12,7 +12,8 @@ use solidcraft_engine::doc::render_settings::RenderSetup;
 use solidcraft_engine::render::job::LightingPreset;
 use solidcraft_engine::render::job::{ImageHost, Integrator, PreviewInfo, RaytraceOptions};
 use solidcraft_engine::render::{
-    Availability, ExecutorDescriptor, ExecutorId, ProductScene, RenderLimits, RenderMode, RenderOperation, RenderProfile, RenderRequest, ScratchLayout,
+    Availability, ExecutorDescriptor, ExecutorId, ProductScene, RenderLimits, RenderMode, RenderOperation, RenderProfile, RenderRequest,
+    ScratchLayout,
 };
 use solidcraft_viewport::Camera;
 

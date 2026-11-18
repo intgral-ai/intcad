@@ -11,13 +11,13 @@
 //! state; [`items`] lists them and [`run_item`] runs one, so the control channel (`ui.menu`,
 //! `ui.menuPick`) and tests reach everything a click does.
 
+use crate::section_view::SectionCut;
 use crate::ui_kit::{Container, Surface};
 use egui::{Color32, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use serde::Serialize;
 use serde_json::{Value, json};
 use solidcraft_engine::geom::prelude::*;
 use solidcraft_engine::{Sel, doc::FeatureKind};
-use crate::section_view::SectionCut;
 
 use crate::SolveApp;
 

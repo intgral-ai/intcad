@@ -1,6 +1,7 @@
 //! The 3D viewport: navigation, GPU (or CPU fallback) rendering, picking, overlays, the axis
 //! view and the navigation bar.
 
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::{Container, Surface};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
@@ -8,11 +9,10 @@ use serde_json::json;
 use solidcore_record::{Plane, Vec2, Vec3};
 use solidcraft_engine::Sel;
 use solidcraft_engine::geom::prelude::*;
-use solidcraft_viewport::{Camera, Mat4, Rgb};
 use solidcraft_engine::sketch::CurveKind;
 use solidcraft_engine::view::{GridFade, GridPlane, colors, grid_ext, grid_lines, grid_plane, grid_step, sketch_lines_with_sampler};
+use solidcraft_viewport::{Camera, Mat4, Rgb};
 use std::hash::{Hash, Hasher};
-use crate::section_view::SectionCut;
 
 use crate::gpu::{Frame, GpuScene, GpuTarget, SceneSlot, ViewportCallback};
 use crate::navigation::{CameraInput, NavCaps, orbit_drag};
@@ -1785,12 +1785,8 @@ pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
     if app.ui.visual_style != 2 {
         let bounds = ground_bounds(app, &st);
         let radius = (bounds.diagonal() * 0.04).clamp(1e-4, 1e6) as f32;
-        sc.ground_ao = solidcraft_viewport_gpu::view::GroundAo::new(
-            solidcraft_engine::render::view_bounds(&bounds),
-            ground_height(bounds),
-            app.cam.up,
-            radius,
-        );
+        sc.ground_ao =
+            solidcraft_viewport_gpu::view::GroundAo::new(solidcraft_engine::render::view_bounds(&bounds), ground_height(bounds), app.cam.up, radius);
     }
     // Section: the outline of each body where the plane cuts it, in the view's text colour (#4146).
     if let Some((o, n)) = section_plane(app) {
@@ -3414,7 +3410,7 @@ pub(crate) fn analysis_legend_data(app: &SolveApp) -> Option<AnalysisLegend> {
 /// edits one plane, and hatches it at the cap's own angle (index 0).
 fn section_clip(
     app: &SolveApp,
-) -> ([ [f32; 4]; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES], [usize; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES]) {
+) -> ([[f32; 4]; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES], [usize; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES]) {
     let planes: Vec<(Vec3, f64)> = section_plane(app).map(|(o, n)| vec![(n, n.dot(o))]).unwrap_or_default();
     (solidcraft_viewport_gpu::view::clip_planes(&planes), solidcraft_viewport_gpu::view::clip_hatches(&[]))
 }
@@ -4886,8 +4882,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             pv_key: app.preview.key,
             pv_slot: app.preview.slot.clone(),
             pv_hide: app.preview.rolled_back,
-            preview_bounds: (app.preview.active && !app.preview.rolled_back)
-                .then_some(solidcraft_engine::render::view_bounds(&app.preview.bounds)),
+            preview_bounds: (app.preview.active && !app.preview.rolled_back).then_some(solidcraft_engine::render::view_bounds(&app.preview.bounds)),
             clip,
             cap: {
                 let [r, g, b, _] = t.section_cap.to_normalized_gamma_f32();
@@ -8977,7 +8972,9 @@ mod tests {
                             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                                 view: &depth_view,
                                 depth_ops: Some(wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(solidcraft_viewport_gpu::view::far_depth(solidcraft_viewport_gpu::view::reversed_depth(Some(depth)))),
+                                    load: wgpu::LoadOp::Clear(solidcraft_viewport_gpu::view::far_depth(
+                                        solidcraft_viewport_gpu::view::reversed_depth(Some(depth)),
+                                    )),
                                     store: wgpu::StoreOp::Discard,
                                 }),
                                 stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Discard }),

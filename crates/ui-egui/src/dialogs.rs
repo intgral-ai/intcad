@@ -2,11 +2,11 @@
 //! inputs (geometry picked in the viewport, never typed), then runs its command; it never
 //! changes the design itself. Things selected before the command starts become its input.
 
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::choice_row;
 use solidcraft_engine::geom::prelude::*;
 use std::hash::{Hash, Hasher};
-use crate::section_view::SectionCut;
 
 use egui::{RichText, vec2};
 use serde_json::{Value, json};

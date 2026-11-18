@@ -43,19 +43,19 @@
 //!   and replies once the command has run (`"animate": false` skips that one call)
 //! - `ui.resize {width, height}`, `app.quit`
 
+#[cfg(test)]
+use crate::section_view::SectionCut;
 use solidcraft_engine::geom::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
-#[cfg(test)]
-use crate::section_view::SectionCut;
 
 use serde_json::{Value, json};
 use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps};
 use solidcraft_engine::io::vfs;
-use solidcraft_viewport::{Camera, StandardView};
 use solidcraft_engine::schema::ParamCheck;
+use solidcraft_viewport::{Camera, StandardView};
 
 use crate::SolveApp;
 

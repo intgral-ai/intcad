@@ -16,8 +16,9 @@ solidcraft-mcp-server = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# No `solidcraft-gpu`: it does not compile on this branch until the viewport/GPU slice ports it.
-# The screenshot tests install the viewport's CPU rasterizer, so they cover the CPU fallback a
-# machine without a GPU adapter uses, not the GPU path.
+# No `solidcraft-gpu` or `solidcraft-viewport-gpu`: an MCP session reaches pictures through the
+# engine's capture hook, which the app or CLI installs, and the screenshot tests install the
+# viewport's CPU rasterizer. They cover the CPU fallback a machine without a GPU adapter uses,
+# not the GPU path, without pulling wgpu's native backends into the server.
 # Synthetic reference pictures for the compare_picture test.
 image = { workspace = true }

@@ -3,8 +3,8 @@
 //! the tokens equal what was drawn before, and that a new colour cannot skip them.
 
 use egui::Color32;
-use solidcraft_viewport::Rgb;
 use solidcraft_engine::view::colors;
+use solidcraft_viewport::Rgb;
 
 use crate::theme::Tokens;
 

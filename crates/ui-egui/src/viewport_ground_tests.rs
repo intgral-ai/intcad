@@ -10,7 +10,8 @@ fn ground_ao_follows_the_existing_plane_in_both_up_axes_without_origin_clamping(
             // A 3 x 4 x 12 box has diagonal 13: the original ground offset is .014 mm.
             let bounds = Aabb3 { min: Vec3::new(-1.5, -2.0, bottom), max: Vec3::new(1.5, 2.0, bottom + 12.0) };
             let ground =
-                solidcraft_viewport_gpu::view::GroundAo::new(solidcraft_engine::render::view_bounds(&bounds), ground_height(bounds), cam.up, 2.0).unwrap();
+                solidcraft_viewport_gpu::view::GroundAo::new(solidcraft_engine::render::view_bounds(&bounds), ground_height(bounds), cam.up, 2.0)
+                    .unwrap();
             let bytes = ground.vertices(None);
             assert_eq!(bytes.len(), 6 * crate::gpu::TRI_SIZE);
             for vertex in bytes.as_chunks::<{ crate::gpu::TRI_SIZE }>().0 {

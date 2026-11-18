@@ -1522,10 +1522,7 @@ fn saved_surface_content(app: &mut SolveApp, ui: &mut egui::Ui, target: Option<&
                 solidcraft_engine::doc::render_surface::SurfaceSource::Builtin(source) => source.id.clone(),
                 solidcraft_engine::doc::render_surface::SurfaceSource::Embedded(_) => "embedded".to_string(),
             };
-            ui.label(format!(
-                "{} - {} ({}): {:?}",
-                source, binding.target.definition, binding.target.feature, binding.target.occurrence_path
-            ));
+            ui.label(format!("{} - {} ({}): {:?}", source, binding.target.definition, binding.target.feature, binding.target.occurrence_path));
             if ui_kit::button(ui, app.tr("render.inspector_replace"), ui_kit::Button::Normal).clicked() {
                 open_category(app, "surfaces");
             }

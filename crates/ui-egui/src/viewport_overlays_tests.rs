@@ -1,5 +1,5 @@
-use crate::section_view::SectionCut;
 use super::*;
+use crate::section_view::SectionCut;
 use crate::{scenario::Harness, shell::LayoutMode};
 
 #[test]

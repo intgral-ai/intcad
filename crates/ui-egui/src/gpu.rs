@@ -110,9 +110,21 @@ pub fn install(
     // The evaluation shader compiles beside the window, which does not wait for it: on D3D12 it
     // takes seconds, most of the start (#4860). Bodies are built on the CPU until it is ready.
     #[cfg(not(target_arch = "wasm32"))]
-    let later = gpu_meshing.then(|| solidcraft_viewport_gpu::view::TessLater::start(&rs.adapter, &rs.device, &rs.queue, solidcraft_viewport_gpu::SHADER, solidcraft_gpu::env::force_cpu_tessellation()));
+    let later = gpu_meshing.then(|| {
+        solidcraft_viewport_gpu::view::TessLater::start(
+            &rs.adapter,
+            &rs.device,
+            &rs.queue,
+            solidcraft_viewport_gpu::SHADER,
+            solidcraft_gpu::env::force_cpu_tessellation(),
+        )
+    });
     #[cfg(target_arch = "wasm32")]
-    let tess = if gpu_meshing { solidcraft_viewport_gpu::view::tessellation(&rs.adapter, &rs.device, &rs.queue, solidcraft_viewport_gpu::SHADER) } else { None };
+    let tess = if gpu_meshing {
+        solidcraft_viewport_gpu::view::tessellation(&rs.adapter, &rs.device, &rs.queue, solidcraft_viewport_gpu::SHADER)
+    } else {
+        None
+    };
     #[cfg(not(target_arch = "wasm32"))]
     let tess = None;
     let (scene, window) = (GpuTarget { tess: tess.is_some(), ..scene }, GpuTarget { tess: tess.is_some(), ..window });
@@ -212,12 +224,7 @@ pub fn install_cpu_picture_renderer() {
     solidcraft_engine::capture::install(std::sync::Arc::new(|scene, cam, w, h| Ok(cpu_picture(scene, cam, w, h))));
 }
 
-fn cpu_picture(
-    scene: &solidcraft_viewport::Scene,
-    cam: &solidcraft_viewport::Camera,
-    w: u32,
-    h: u32,
-) -> solidcraft_engine::capture::Picture {
+fn cpu_picture(scene: &solidcraft_viewport::Scene, cam: &solidcraft_viewport::Camera, w: u32, h: u32) -> solidcraft_engine::capture::Picture {
     let canvas = solidcraft_viewport::render(scene, cam, w as usize, h as usize);
     solidcraft_engine::capture::Picture { rgba: canvas.rgba, renderer: "cpu" }
 }

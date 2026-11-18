@@ -1,11 +1,11 @@
 //! Grouped preferences composed with the shared UI kit. Changes apply immediately; Cancel
 //! restores the opening snapshot, Apply keeps editing, and Defaults affects the current page.
 
+#[cfg(test)]
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use solidcraft_engine::geom::prelude::*;
 use std::collections::BTreeMap;
-#[cfg(test)]
-use crate::section_view::SectionCut;
 
 use egui::{Modifiers, Pos2};
 use serde::{Deserialize, Serialize};

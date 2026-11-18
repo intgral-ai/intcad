@@ -6,10 +6,10 @@
 //! viewport, a double-click on a sketch edits it, and a right-click opens the item's menu
 //! ([`crate::context_menu`]).
 
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::{Container, Surface};
 use solidcraft_engine::geom::prelude::*;
-use crate::section_view::SectionCut;
 
 #[path = "browser_cache.rs"]
 mod cache;

@@ -2,12 +2,12 @@
 
 use crate::fonts::RichTextExt as _;
 use crate::icons::glyphs::pin_icon;
+#[cfg(test)]
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::{self, Container, Edge, Surface};
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
-#[cfg(test)]
-use crate::section_view::SectionCut;
 
 use crate::theme::Tokens;
 use crate::{SolveApp, icons};

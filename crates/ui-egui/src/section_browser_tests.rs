@@ -1,10 +1,10 @@
 //! Section Analysis in the browser (#822): an Analysis folder lists it with an eye to hide and
 //! show it, and its menu edits or deletes it.
 
+use crate::section_view::SectionCut;
 use egui::pos2;
 use serde_json::json;
 use solidcraft_engine::geom::prelude::*;
-use crate::section_view::SectionCut;
 
 use crate::context_menu::{self, Target};
 use crate::scenario::Harness;

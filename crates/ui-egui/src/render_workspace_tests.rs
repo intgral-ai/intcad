@@ -1,6 +1,6 @@
-use crate::section_view::SectionCut;
 use super::*;
 use crate::scenario::Harness;
+use crate::section_view::SectionCut;
 use egui::Color32;
 use solidcraft_engine::Session;
 
@@ -3394,7 +3394,12 @@ fn cpu_setup_reload_preserves_unedited_numeric_options_and_explicit_empty_values
         "area_samples":16,"seed":9123,"environment":{"color":[0.0,0.0,0.0],"intensity":2.0}
     }))
     .unwrap();
-    let mut expected = RenderSetup { camera: h.app.cam, exposure_ev: 1.5, job: Some(RenderJob::CpuRaytrace { transparent_background: false, options: Box::new(options) }), ..Default::default() };
+    let mut expected = RenderSetup {
+        camera: h.app.cam,
+        exposure_ev: 1.5,
+        job: Some(RenderJob::CpuRaytrace { transparent_background: false, options: Box::new(options) }),
+        ..Default::default()
+    };
     h.app.run("render.settings.set", json!({"name":"CPU numeric","set":expected})).unwrap();
     h.app.render_workspace.view.name = "CPU numeric".into();
     setups::load(&mut h.app);
