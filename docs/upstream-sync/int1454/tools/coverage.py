@@ -126,10 +126,20 @@ def main():
             for sha, areas, n in inventory:
                 fh.write(f"{sha}\t{areas}\t{n}\t{subjects.get(sha, '')}\n")
 
+    all_paths = {p for paths in files.values() for p in paths}
+    unmatched_paths = sorted(p for p in all_paths
+                             if not any(_under(p, s) for specs in AREAS.values() for s in specs))
+
     print(f"range {FORK}..{TARGET}: {len(files)} non-merge commits")
     for area in AREAS:
         print(f"  {area:12s} {counts[area]:5d}")
     print(f"  {'(empty)':12s} {len(empty):5d}")
+    print(f"distinct paths: {len(all_paths)} unmatched: {len(unmatched_paths)}")
+
+    if unmatched_paths:
+        print("\nUNMATCHED PATHS:")
+        for p in unmatched_paths[:50]:
+            print(f"  {p}")
 
     if unassigned:
         print(f"\nUNASSIGNED: {len(unassigned)}")
@@ -138,7 +148,9 @@ def main():
             for p in paths[:3]:
                 print(f"      {p}")
         return 1
-    print("\nall commits assigned")
+    if unmatched_paths:
+        return 1
+    print("\nall commits assigned, every path matched")
     return 0
 
 
