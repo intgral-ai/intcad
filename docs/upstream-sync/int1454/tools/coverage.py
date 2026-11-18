@@ -55,13 +55,14 @@ AREAS = {
         "tools", "flake.nix", "flake.lock", "package.json", "package-lock.json",
         "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "deny.toml",
         "clippy.toml", "rustfmt.toml", ".gitignore", ".gitattributes",
-        ".coderabbit.yaml", "THIRD-PARTY-LICENSES.txt",
+        ".coderabbit.yaml", "THIRD-PARTY-LICENSES.txt", "tests/tools",
     ],
     "apps": ["apps", "schema", "packages"],
     "docs": [
         "docs", "skills", "attribution", "README.md", "CONTRIBUTING.md",
         "AGENTS.md", "CLAUDE.md", "NOTICE", "ATTRIBUTION.md", "ROADMAP.md",
-        "SECURITY.md", "DISCLAIMER.md", "LICENSE-APACHE", "LICENSE-MIT",
+        "SECURITY.md", "DISCLAIMER.md", "LICENSE", "LICENSE-APACHE", "LICENSE-MIT",
+        "LICENSE-BRAND", "examples/demo",
     ],
     "test-policy": ["tests/KNOWN_FAILING_TESTS", "tests/QUARANTINED_TESTS"],
     "retired": [
@@ -72,6 +73,7 @@ AREAS = {
         "crates/solidcore-step", "crates/solidcore-ssi", "crates/step-import",
         "crates/step-brep", "crates/step-export", "crates/ssi",
         "crates/nurbs-grid-mesh", "crates/xtask", "crates/diagnostics",
+        "crates/solidcore-smlib-api",
     ],
 }
 

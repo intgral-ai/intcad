@@ -21,13 +21,16 @@ Coverage is computed by `tools/coverage.py`, which assigns **every** non-merge c
 python3 docs/upstream-sync/int1454/tools/coverage.py        # 4939 commits, "all commits assigned", exit 0
 ```
 
+The same pathspecs also cover **every distinct path** in the range (15,357 paths, 0 unmatched),
+so nothing hides in a commit that happens to touch another area too.
+
 Result (a commit touching several areas is counted in each, so counts overlap):
 
 | Area | Commits | Ledger units |
 | --- | --- | --- |
 | kernel | 884 | K0–K15 |
 | doc-engine | 753 | D1–D6 |
-| assistant | 80 | A1–A6 |
+| assistant | 80 | A1–A7 |
 | ui | 700 | U1–U22 |
 | build | 298 | B1–B9 |
 | apps | 88 | B7 |
@@ -108,7 +111,7 @@ than dropping them silently.
 | A3 | 26 commits, `crates/craft-plugin*` + engine plugin surface | Wasmtime plugin host: no WASI/network, fuel/memory/deadline caps, staged writes, folder grants, approval hash, safe archive install | **No plugin runtime** (`plugins.rs` is a metadata list) | MIT OR Apache-2.0; pulls `wasmtime` (Apache-2.0 WITH LLVM-exception) | D3, D5 | **Blocked — product decision** (CD-5): new subsystem, new execution surface, new dependency and packaging story; not a migration of existing behaviour |
 | A4 | 44 commits, `ui-egui/src/agent_chat` incl. `7b22bb3e2` | Gate decides on the registered id, reads `command` or `id`, unknown ids refused, `plugin.run` asks | **Vulnerable**: case-sensitive gate vs case-insensitive engine, `id` ignored | MIT OR Apache-2.0 | — | **Adopted now** (security; see `security-findings.md` SEC-1) |
 | A5 | `54b4bb3f4` (STEP decode) | Linear-time Part 21 escape decode | **Absent**: `crates/step/src/p21.rs` still searches the tail per unterminated run (O(N²)); the fixed decoder is in the v0.44.1 snapshot (`solidcore-record/src/step/p21.rs`) | MIT OR Apache-2.0 | K0, D5 | **Adopted** via the snapshot, or backported earlier (SEC-2) |
-| A6 | `18d82f584` (control) | Drain unread input past the connection limit so the refusal is received, not reset | Refusal **already sent** (`control_server.rs` sends `too many connections`), but the stream is dropped without a drain | MIT OR Apache-2.0 | — | **Partially covered**: the message exists; adopt the drain/shared-state refinement (SEC-3) |
+| A6 | `18d82f584` (control) | Drain unread input past the connection limit so the refusal is received, not reset | Refusal **already sent** (`control_server.rs` sends `too many connections`), but the stream is dropped without a drain | MIT OR Apache-2.0 | — | **Adopted**: the message exists; the drain/shared-counter refinement is the work (SEC-3) |
 | A7 | `12a9a7f0f`, `4d2691e63` | Default-off control channel; opt-in insecure HTTP | IntCAD defaults on; keys only to https/loopback | MIT OR Apache-2.0 | — | **Blocked** pending a Compatibility Decision — see §7 |
 
 ## 4. UI (INT-1493)
@@ -124,7 +127,7 @@ logic**, adapted into IntCAD's fork (537 upstream-changed files; 63 also changed
 | U3 | 30 commits, viewport-gpu draw/perf | Indirect instanced draws, while-loops in `tess.wgsl`, capture OOM reporting, hover edges, drag layers | `tess.wgsl` 318 vs 378 lines; capture 668 vs 881 | MIT OR Apache-2.0 | K5 | **Adopted** (adapt) |
 | U4 | `7b90a309a` + `82660d4ee` | Grid spacing moved to viewport; `color` crate (sRGB, analysis colours) | `AnalysisColors` exists in `render/src/analysis.rs`; the grid test `the_grid_steps_by_one_two_and_five_with_the_view` exists **only** upstream (`viewport/src/grid.rs:37`) | MIT OR Apache-2.0 | U1 | **Adopted** (grid) / **Already Covered** (analysis colours) / **Not Applicable** (colour dedup refactor) |
 | U5 | `a833316f8` | `display-units` crate (152 lines, 6 tests) | `doc/src/display_units.rs` is a **932-line superset** with the same API | MIT OR Apache-2.0 | — | **Already Covered** — do not import |
-| U6 | `82660d4ee` + 301 locale commits | `ui-text` machinery, message ids, locale growth (5,702→7,020 keys, +3 languages) | `ui-egui/src/i18n.rs` + `bidi.rs` (identical apart from visibility) | MIT OR Apache-2.0 | — | **Already Covered** (machinery) / **Adopted** (message ids used by migrated UI only) |
+| U6 | `82660d4ee` + 301 locale commits | `ui-text` machinery, message ids, locale growth (5,702→7,020 keys, +3 languages) | `ui-egui/src/i18n.rs` + `bidi.rs` equal to the **fork** state (`bidi.rs` differs from the target only in visibility); the catalogs are 1,318 keys behind | MIT OR Apache-2.0 | — | **Already Covered** (machinery at fork parity) / **Adopted** (message ids used by migrated UI only) |
 | U7 | `82660d4ee` | `ui-registry` handle table (233 lines) | `ui-egui/src/scenario.rs` (1,219 lines) has the same functions; `ui.*` control methods present | MIT OR Apache-2.0 | — | **Already Covered** — do not import |
 | U8 | 39 commits, `control`/`control-egui` split | Transport split, typed params, runtime on/off switch | In-crate `control.rs` (3,768 lines) | MIT OR Apache-2.0 | — | **Not Applicable** (refactor) / **Adopted** (`control_switch` behaviour, typed params) |
 | U9 | 64/13/6 commits, `ui-kit`/`look`/`theme` (`--full-history --no-merges`) | Ribbon, chrome, Preferences, start page; icons; tokens | In-crate `ui_kit` module (66 files, 34,203 lines, +15 IntCAD lines) | **LICENSE-BRAND — Blocked** | — | **Blocked** |
@@ -168,6 +171,12 @@ before the licence took effect.
 | B9 | 24 commits, `tests/KNOWN_FAILING_TESTS`, `tests/QUARANTINED_TESTS` | Upstream's known-failing and quarantine lists, incl. "11 tests regressed by solidcore c0d3cc0124" | IntCAD has its own 33-entry list and gate | MIT OR Apache-2.0 | — | **Not Applicable** as content (names upstream tests only) — but every entry is a **signal** to check in K12 |
 | X1 | 2,700 commits touching paths retired at v0.44.1 (2,654 whose every path is absent) | `plan/`, `reports/`, `harness/`, `site/`, `fixtures/`, `crates/{difftest,goldens,solidcore*,step-import,step-brep,ssi,nurbs-grid-mesh,diagnostics,xtask}` | IntCAD never had most of these; `difftest`/`goldens` were upstream-only tooling | MIT OR Apache-2.0 | — | **Not Applicable** — tree absent at the target; content moved into `solidcore/` (K0) or retired |
 | X2 | 29 empty commits (7 `port:`, the rest `blend:`/`wire:`/`fix:`/`difftest:`/`solidcore:`/`Revert`) | Process markers with no tree change | — | — | — | **Not Applicable** — no content to migrate |
+
+Reproduce any row with `git log --no-merges --full-history --format='%H' 06749ac4..v0.44.1 -- <paths>`.
+B6's full pathspec is `Cargo.toml Cargo.lock rust-toolchain.toml deny.toml clippy.toml rustfmt.toml
+.cargo .config flake.nix flake.lock package.json package-lock.json tools .gitignore .gitattributes
+.coderabbit.yaml THIRD-PARTY-LICENSES.txt` (117); dropping `package.json package-lock.json` and
+`tools` gives 115. B8 additionally names the root documents listed in its row.
 
 ## 6. Persistence (verified)
 
