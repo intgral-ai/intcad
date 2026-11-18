@@ -38,6 +38,9 @@ solidcraft-display-units = { path = "crates/display-units" }
 solidcraft-viewport = { path = "crates/viewport" }
 solidcraft-space-mouse = { path = "crates/space-mouse" }
 solidcraft-mcp = { path = "crates/mcp" }
+# MCP machinery any app may share: the JSON-RPC lifecycle, tool/resource/prompt methods,
+# tool schemas and argument checks, image results; no app's design, engine or renderer.
+solidcraft-mcp-server = { path = "crates/mcp-server" }
 # The control channel's token files, loopback server and requests; no UI toolkit.
 solidcraft-control = { path = "crates/control" }
 solidcraft-derive = { path = "crates/derive" }

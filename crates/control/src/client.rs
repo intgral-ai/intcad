@@ -132,6 +132,9 @@ struct Outstanding {
     what: String,
     /// What it does when it finishes; `None`: not known (a request this client did not send).
     effect: Option<Effect>,
+    /// Extra facts the caller keeps about the request, merged into `control.pending` statuses
+    /// (a guarded request's method, step count and options; `None` for a plain request).
+    meta: Option<Value>,
     since: Instant,
 }
 
@@ -144,8 +147,8 @@ impl Outstanding {
 /// What became of a request still running when its call returned, once a later call waited it
 /// out: kept for [`Connection::pending`].
 enum Settled {
-    Finished { what: String, reply: Value },
-    Lost { what: String },
+    Finished { what: String, reply: Value, meta: Option<Value> },
+    Lost { what: String, meta: Option<Value>, reply: Option<Value> },
 }
 
 /// The end of a wait for an outstanding request.
@@ -156,6 +159,29 @@ enum Waited {
     Nothing,
     /// Still running when the wait ran out.
     Running,
+}
+
+/// What [`Connection::wait_pending`] found for a request of this connection.
+#[derive(Debug)]
+pub enum PendingEnd {
+    /// It finished: its own reply.
+    Done(Value),
+    /// The app holds nothing (any more) for this connection.
+    Nothing,
+    /// Still running when the wait ran out.
+    Running,
+}
+
+/// `status` with the facts the caller keeps about a request (`meta`).
+fn with_meta(mut status: Value, meta: &Option<Value>) -> Value {
+    if let (Some(meta), Some(object)) = (meta, status.as_object_mut())
+        && let Some(fields) = meta.as_object()
+    {
+        for (key, value) in fields {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    status
 }
 
 /// A connection to the app listening at an address. It connects when a call needs it, so a
@@ -222,6 +248,11 @@ impl Connection {
         self.waits = waits;
     }
 
+    /// The waits for a request still running, as set (or the defaults).
+    pub fn waits(&self) -> Waits {
+        self.waits
+    }
+
     /// The address it connects to.
     pub fn addr(&self) -> &str {
         &self.addr
@@ -257,7 +288,7 @@ impl Connection {
     pub fn disconnect(&mut self) {
         self.conn = None;
         if let Some(o) = self.outstanding.take() {
-            self.settled = Some(Settled::Lost { what: o.what });
+            self.settled = Some(Settled::Lost { what: o.what, meta: o.meta, reply: None });
         }
     }
 
@@ -335,7 +366,15 @@ impl Connection {
         if self.conn.is_none() {
             self.connect()?;
         }
-        let Some((reader, writer)) = self.conn.as_mut() else { return Err(std::io::Error::other("not connected")) };
+        self.roundtrip_connected(line)
+    }
+
+    /// One exchange on the current connection: never connects, and never retries. For a guarded
+    /// write, whose outcome must be known before anything else is sent.
+    pub fn roundtrip_connected(&mut self, line: &str) -> std::io::Result<String> {
+        let Some((reader, writer)) = self.conn.as_mut() else {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "not connected"));
+        };
         // One write: a request that loses its newline still reaches the app as a request.
         let sent = writer.write_all(format!("{line}\n").as_bytes()).and_then(|()| writer.flush());
         if let Err(e) = sent {
@@ -357,10 +396,69 @@ impl Connection {
         Ok(reply)
     }
 
-    fn set_read_timeout(&self, t: Duration) {
+    /// How long the next reply may take on this connection (the default: [`READ_TIMEOUT`]).
+    pub fn set_read_timeout(&self, t: Duration) {
         if let Some((_, writer)) = &self.conn {
             writer.set_read_timeout(Some(t)).ok();
         }
+    }
+
+    /// Set the id of the next request line (tests that check the bytes on the wire).
+    pub fn set_next_id(&mut self, id: u64) {
+        self.next_id = id;
+    }
+
+    /// What messages call the request this connection is still running; `None` when there is none.
+    pub fn outstanding_what(&self) -> Option<String> {
+        self.outstanding.as_ref().map(|o| o.what.clone())
+    }
+
+    /// The facts the caller keeps about the request this connection is still running
+    /// ([`Connection::begin_outstanding`]); `None` when there is none.
+    pub fn outstanding_meta(&self) -> Option<Value> {
+        self.outstanding.as_ref().and_then(|o| o.meta.clone())
+    }
+
+    /// Keep a request's end for [`Connection::pending`] once a later call waited it out.
+    pub fn settle_finished(&mut self, what: String, reply: Value, meta: Option<Value>) {
+        self.settled = Some(Settled::Finished { what, reply, meta });
+    }
+
+    /// Record that a request is over without a reply this client can trust: [`Connection::pending`]
+    /// reports it as lost, with the raw reply when there is one, and `meta` (what the caller keeps
+    /// about the request).
+    pub fn settle_lost(&mut self, what: String, meta: Option<Value>, reply: Option<Value>) {
+        self.settled = Some(Settled::Lost { what, meta, reply });
+    }
+
+    /// Remember a request the app says is still running, with what the caller keeps about it
+    /// (`meta`), so [`Connection::pending`] can report it and [`Connection::wait_pending`] can
+    /// wait for it. The caller has already seen the app's "still running" reply.
+    pub fn begin_outstanding(&mut self, what: String, effect: Option<Effect>, meta: Option<Value>) {
+        self.outstanding = Some(Outstanding { what, effect, meta, since: Instant::now() });
+    }
+
+    /// Wait up to `limit` for the request this connection is still running, asking
+    /// `control.pending`: its end, nothing, or still running.
+    ///
+    /// # Errors
+    /// As [`Connection::ask`]: the connection, and so the reply, was lost.
+    pub fn wait_pending(&mut self, limit: Duration) -> Result<PendingEnd, CallError> {
+        match self.wait_outstanding(limit)? {
+            Waited::Done(reply) => Ok(PendingEnd::Done(reply)),
+            Waited::Nothing => Ok(PendingEnd::Nothing),
+            Waited::Running => Ok(PendingEnd::Running),
+        }
+    }
+
+    /// Wait for a request still running from an earlier call before a new one is sent, keeping
+    /// its end for [`Connection::pending`]. An error: it is still running (or its reply was
+    /// lost), so the new request was not sent.
+    ///
+    /// # Errors
+    /// [`CallError::StillRunning`]; as [`Connection::wait_pending`].
+    pub fn settle_before_call(&mut self) -> Result<(), CallError> {
+        self.settle_earlier()
     }
 
     /// A reply line as JSON.
@@ -477,7 +575,7 @@ impl Connection {
     }
 
     /// The error for the outstanding request still running after its wait.
-    fn still_running(&self, earlier: bool) -> CallError {
+    pub fn still_running(&self, earlier: bool) -> CallError {
         let Some(o) = &self.outstanding else { return CallError::StillRunning(format!("{STILL_RUNNING} a request is still running in the app")) };
         let document = self.document;
         let effect =
@@ -503,9 +601,9 @@ impl Connection {
     /// Before a new request: wait for one still running from an earlier call, keeping its end for
     /// `pending`. Still running after the wait: the new request is not sent.
     fn settle_earlier(&mut self) -> Result<(), CallError> {
-        let Some(what) = self.outstanding.as_ref().map(|o| o.what.clone()) else { return Ok(()) };
+        let Some((what, meta)) = self.outstanding.as_ref().map(|o| (o.what.clone(), o.meta.clone())) else { return Ok(()) };
         match self.wait_outstanding(self.waits.settle) {
-            Ok(Waited::Done(reply)) => self.settled = Some(Settled::Finished { what, reply }),
+            Ok(Waited::Done(reply)) => self.settled = Some(Settled::Finished { what, reply, meta }),
             Ok(Waited::Nothing) => {}
             Ok(Waited::Running) => return Err(self.still_running(true)),
             // The connection was lost, and the earlier reply with it (`pending` says so): the new
@@ -521,18 +619,28 @@ impl Connection {
     pub fn pending(&mut self) -> Value {
         if let Some(s) = self.settled.take() {
             return match s {
-                Settled::Finished { what, reply } => json!({"pending": what, "done": true, "reply": reply}),
-                Settled::Lost { what } => json!({"pending": what, "lost": true}),
+                Settled::Finished { what, reply, meta } => with_meta(json!({"pending": what, "done": true, "reply": reply}), &meta),
+                Settled::Lost { what, meta, reply } => {
+                    let mut status = with_meta(json!({"pending": what, "lost": true}), &meta);
+                    if let Some(reply) = reply
+                        && let Some(object) = status.as_object_mut()
+                    {
+                        object.insert("reply".into(), reply);
+                    }
+                    status
+                }
             };
         }
-        let Some(what) = self.outstanding.as_ref().map(|o| o.what.clone()) else { return json!({"pending": null}) };
+        let Some((what, meta)) = self.outstanding.as_ref().map(|o| (o.what.clone(), o.meta.clone())) else { return json!({"pending": null}) };
         match self.wait_outstanding(self.waits.settle) {
-            Ok(Waited::Done(reply)) => json!({"pending": what, "done": true, "reply": reply}),
+            Ok(Waited::Done(reply)) => with_meta(json!({"pending": what, "done": true, "reply": reply}), &meta),
             Ok(Waited::Nothing) => json!({"pending": null}),
-            Ok(Waited::Running) => json!({"pending": what, "done": false, "running_s": self.outstanding.as_ref().map_or(0, Outstanding::secs)}),
+            Ok(Waited::Running) => {
+                with_meta(json!({"pending": what, "done": false, "running_s": self.outstanding.as_ref().map_or(0, Outstanding::secs)}), &meta)
+            }
             Err(_) => {
                 self.settled = None;
-                json!({"pending": what, "lost": true})
+                with_meta(json!({"pending": what, "lost": true}), &meta)
             }
         }
     }
@@ -574,7 +682,7 @@ impl Connection {
         let v = Self::parse(&reply)?;
         // Timed out in the app, still running: wait for its result on this connection.
         if v.get("running").and_then(Value::as_bool) == Some(true) {
-            self.outstanding = Some(Outstanding { what: what.clone(), effect: Some(effect), since: sent });
+            self.outstanding = Some(Outstanding { what: what.clone(), effect: Some(effect), meta: None, since: sent });
             (self.progress)(&format!(
                 "{what} is still running in the app after {} s; waiting up to {} s more for it",
                 sent.elapsed().as_secs(),
@@ -594,7 +702,7 @@ impl Connection {
         if v.get("busy").and_then(Value::as_bool) == Some(true)
             && let Some(params) = again
         {
-            self.outstanding = Some(Outstanding { what: "an earlier request".into(), effect: None, since: Instant::now() });
+            self.outstanding = Some(Outstanding { what: "an earlier request".into(), effect: None, meta: None, since: Instant::now() });
             self.settle_earlier()?;
             return self.exchange(Request { method, params, what, effect, once }, false);
         }

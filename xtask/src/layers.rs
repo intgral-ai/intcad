@@ -48,6 +48,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("format", Class::Layer(0)),
     // the control channel shared by apps: token files, the loopback server and its requests, no UI
     ("control", Class::Layer(0)),
+    // MCP machinery any app may share: JSON-RPC, tool schemas and checks, image results, no app types
+    ("mcp-server", Class::Layer(0)),
     // 3D mouse descriptors and reports (no workspace dependencies; the apps read the device)
     ("space-mouse", Class::Layer(0)),
     // the derive macros (proc-macro, no workspace dependencies)

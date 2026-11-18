@@ -1,37 +1,42 @@
-//! SolidCraft MCP server.
+//! Intcad MCP server.
 //!
-//! JSON-RPC 2.0 over stdio (newline-delimited), implementing the MCP lifecycle, tools and
-//! resources. Tools map onto the control-channel methods (`engine.execute`, `document.inspect`,
-//! `ui.render`…, see `docs/control-protocol.md`), served either by an in-process headless
-//! [`Headless`] session or by a running app through its loopback control port ([`Remote`]), so a
-//! person can watch the agent model. Every modelling step is an engine command; tools never open
-//! dialogs.
+//! Intcad's tools, instructions and resources, served over JSON-RPC 2.0 on stdio by the shared
+//! MCP server (`solidcraft-mcp-server`: the lifecycle, tool schemas and argument checks). Tools map
+//! onto the control-channel methods (`engine.execute`, `document.inspect`, `ui.render`…, see
+//! `docs/control-protocol.md`), served either by an in-process headless [`Headless`] session or by a
+//! running app through its loopback control port ([`Remote`]), so a person can watch the agent
+//! model. Every modelling step is an engine command; tools never open dialogs.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
 mod backend;
 mod document_guard;
+mod options;
 mod server;
 mod skill_reference;
 mod tools;
 
-pub use backend::{Auto, Backend, Headless, Remote};
+#[cfg(not(target_arch = "wasm32"))]
+pub use backend::{Auto, Remote};
+pub use backend::{Backend, Headless};
 pub use document_guard::{GuardedCallError, GuardedReply};
 pub use document_guard::{decode_guarded_reply, validate_request as validate_guarded_request};
-pub use server::{PROTOCOL_VERSION, SUPPORTED_VERSIONS, Server};
-pub use tools::{call_tool, tool_definitions};
+pub use options::{COMPACT_ENV, COMPACT_FLAG, Options};
+pub use server::Server;
+pub use solidcraft_mcp_server::{PROTOCOL_VERSION, SUPPORTED_VERSIONS};
+pub use tools::{call_tool, call_tool_with, tool_definitions, tool_definitions_with};
 
 use std::path::PathBuf;
 
 use solidcraft_engine::io::vfs::{self, PathScope};
 
-/// The folders `intcad-cli mcp` lets its agent read, write and delete in by default: the
-/// app's own recovery folder, this server's private scratch folder (screenshots), and each
-/// `allowed` folder (`--allow-path`). The open design's folder joins on every call when it is a
-/// safe one (`vfs::design_folder_refusal`; the server adds it), and stays for the rest of the run
-/// like the folder of every design a call opens or saves (#7181). The working folder, the home
-/// folder and anything above it never count by themselves, so `~/.ssh`, `~/.bashrc` and other
-/// dotfiles are out of reach unless a folder holding them is allowed on purpose.
+/// The folders `intcad-cli mcp` lets its agent read, write and delete in by default: the app's own
+/// recovery folder, this server's private scratch folder (screenshots), and each `allowed` folder
+/// (`--allow-path`). The open design's folder joins on every call when it is a safe one
+/// (`vfs::design_folder_refusal`; the server adds it), and stays for the rest of the run like the
+/// folder of every design a call opens or saves (#7181). The working folder, the home folder and
+/// anything above it never count by themselves, so `~/.ssh`, `~/.bashrc` and other dotfiles are out
+/// of reach unless a folder holding them is allowed on purpose.
 pub fn agent_scope(allowed: impl IntoIterator<Item = PathBuf>) -> PathScope {
     agent_scope_with(solidcraft_engine::recovery::default_dir(), allowed)
 }
