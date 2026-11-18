@@ -231,7 +231,7 @@ export type StringKey =
   | 'dfmRefresh' | 'dfmStale' | 'dfmFindings' | 'dfmAdvisory' | 'dfmFailed' | 'dfmChecked'
   | 'dfmNotCovered' | 'dfmMeasured' | 'dfmRequirement' | 'dfmSource' | 'dfmOverride'
   | 'dfmAll' | 'dfmSelected' | 'dfmOff' | 'dfmSelect'
-  | 'connTitle' | 'connIntro' | 'connNoneTitle' | 'connNoneBody' | 'connBack' | 'connUsing' | 'connUsingHint'
+  | 'connTitle' | 'connNoneTitle' | 'connNoneBody' | 'connBack' | 'connUsing'
   | 'connPlans' | 'connKeys' | 'connCustom' | 'connSignedIn' | 'connSignedOut' | 'connExpired' | 'connSigningIn'
   | 'connSignIn' | 'connSignInAgain' | 'connSignOut' | 'connUse' | 'connInUse' | 'connPlanNote' | 'connShadowed'
   | 'connKeySaved' | 'connKeyNone' | 'connKeyAdd' | 'connKeyUpdate' | 'connRemove' | 'connKeyNote' | 'connKeyTitle'
@@ -241,7 +241,8 @@ export type StringKey =
   | 'connCodeDone' | 'connDeviceHint' | 'connProblemPort' | 'connProblemOffline' | 'connProblemFailed'
   | 'connButton' | 'connButtonNone' | 'connButtonTip'
   | 'planOpenaiCodex' | 'planAnthropic' | 'planKimiForCoding' | 'planXai' | 'planGithubCopilot'
-  | 'problemAuth' | 'problemKey' | 'problemQuota' | 'problemRate' | 'problemNetwork' | 'problemModel';
+  | 'problemAuth' | 'problemKey' | 'problemQuota' | 'problemRate' | 'problemNetwork' | 'problemModel'
+  | 'effort' | 'effortOff' | 'effortLow' | 'effortMedium' | 'effortHigh' | 'effortXhigh' | 'effortMax';
 
 export type Strings = Record<StringKey, string>;
 

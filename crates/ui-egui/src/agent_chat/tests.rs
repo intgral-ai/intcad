@@ -17809,14 +17809,12 @@ fn the_control_channel_carries_out_a_connection_action_as_the_page_does() {
 
 /// The names the page has for the words of the Connections page, in the order of the contract's
 /// table (section 5). The page reads them by name: a JSON object has no order to keep.
-const CONNECTION_STRINGS: [&str; 68] = [
+const CONNECTION_STRINGS: [&str; 73] = [
     "connTitle",
-    "connIntro",
     "connNoneTitle",
     "connNoneBody",
     "connBack",
     "connUsing",
-    "connUsingHint",
     "connPlans",
     "connKeys",
     "connCustom",
@@ -17878,6 +17876,13 @@ const CONNECTION_STRINGS: [&str; 68] = [
     "problemRate",
     "problemNetwork",
     "problemModel",
+    "effort",
+    "effortOff",
+    "effortLow",
+    "effortMedium",
+    "effortHigh",
+    "effortXhigh",
+    "effortMax",
 ];
 
 /// B17 (the app's half): every word of the Connections page is sent under its name, with a text

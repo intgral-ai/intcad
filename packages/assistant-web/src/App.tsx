@@ -26,6 +26,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import type { AssistantState, Connect, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings, TurnProblem } from './host';
 import { pictureUrl, post } from './host';
+import { ModelPicker as MastraModelPicker } from '@/domains/llm/model-picker';
+import type { ModelPickerProvider } from '@/domains/llm/model-picker-types';
 import { ProviderLogoMonogram } from '@/domains/llm/provider-logo-monogram';
 import { Activity, ActivityContent, ActivityHeadline, ActivityTrigger } from '@/ds/components/ai/activity';
 import type { TaskListItem } from '@/ds/components/ai/task-list';
@@ -34,6 +36,7 @@ import { ToolCallGroup, ToolCallOutput, presentTool } from '@/ds/components/ai/t
 import { AttachmentCard } from '@/ds/components/AttachmentCard';
 import { Badge } from '@/ds/components/Badge';
 import { Button } from '@/ds/components/Button';
+import { ButtonsGroup } from '@/ds/components/ButtonsGroup';
 import { ChatShell } from '@/ds/components/ChatShell';
 import { Combobox } from '@/ds/components/Combobox';
 import type { ComboboxOption } from '@/ds/components/Combobox';
@@ -61,7 +64,11 @@ import { Notice } from '@/ds/components/Notice';
 import { PendingIndicator } from '@/ds/components/PendingIndicator';
 import { Status } from '@/ds/components/StatusIndicators/status';
 import { Textarea } from '@/ds/components/Textarea';
+import { ThinkingLevelPicker } from '@/ds/components/ThinkingLevel';
+import type { ThinkingLevelOption } from '@/ds/components/ThinkingLevel';
 import { Txt } from '@/ds/components/Txt';
+import { SettingsContainer } from '@/ds/new/settings/settings-container';
+import { SettingsGroup, SettingsHeader, SettingsTitle } from '@/ds/new/settings/settings-header';
 import { cn } from '@/lib/utils';
 import { compareModelReleaseDates, formatModelName } from '@/utils/model';
 
@@ -819,67 +826,81 @@ function Mark({ name, size }: { name: string; size: number }) {
 /** A connection's name for a narrow place: "ChatGPT Plus/Pro (Codex Subscription)" reads "ChatGPT Plus/Pro". */
 const shortName = (name: string) => name.replace(/\s*[(\uFF08][^()\uFF08\uFF09]*[)\uFF09]$/, '') || name;
 
-/** The picker's last row for the built-in agent: no model, the way to the connections. */
-const OPEN_CONNECTIONS = '__connections__';
+/** The words of this page for the effort levels an agent names; a level it names otherwise keeps the agent's own word. */
+const EFFORT_WORDS = { off: 'effortOff', low: 'effortLow', medium: 'effortMedium', high: 'effortHigh', xhigh: 'effortXhigh', max: 'effortMax' } as const;
+
+/** The agent's reasoning effort (its `thought_level` option), as Mastra's thinking-level parts take it. */
+function effortOf(state: AssistantState) {
+  const option = state.config?.find(entry => entry.category === 'thought_level');
+  if (!option) return null;
+  const { strings } = state;
+  const options: ThinkingLevelOption[] = option.options.map(choice => {
+    const known = EFFORT_WORDS[choice.value as keyof typeof EFFORT_WORDS];
+    return {
+      value: choice.value,
+      label: (known && strings[known]) || choice.name,
+      ...(choice.value === 'off' ? { emphasis: 'muted' as const } : choice.value === 'max' ? { emphasis: 'warning' as const } : {}),
+    };
+  });
+  return { options, value: option.currentValue, label: strings.effort || option.name, set: (value: string) => post({ type: 'config', id: option.id, value }) };
+}
 
 /**
- * The built-in agent's model: the models of every connection at once, connection by connection,
- * newest first within each, by their readable names with the connection named under each, and
- * searched across all of them. The last row opens the connections, where another provider is
- * added. It is the page's own Combobox and not Mastra's model picker, which would do all this:
- * that one brings in a package (tslib, by way of cmdk) whose licence the build does not accept.
+ * The built-in agent's model and its reasoning effort, at the composer's lower right, as Mastra
+ * groups the two (its story "ThinkingLevel / Picker / Grouped With Model Picker"). The model is
+ * in Mastra's own model picker: the models of every connection, a group to a connection, newest
+ * first, searched across all of them, with the row that opens the connections, where another
+ * provider is added. The effort is Mastra's thinking-level picker beside it.
  */
 function ProviderPicker({ state, connect, onConnections }: { state: AssistantState; connect: Connect; onConnections: () => void }) {
   const { strings } = state;
   const { option, current, ids } = modelChoice(state);
   if (ids.length === 0) return null;
-  const groups = new Map<string, string[]>();
+  const groups = new Map<string, ModelPickerProvider>();
+  const names = new Map<string, string>();
   for (const id of ids) {
-    const { group } = placeOf(connect, id);
-    groups.set(group, [...(groups.get(group) ?? []), id]);
+    const { group, model, via } = placeOf(connect, id);
+    names.set(group, via?.name ?? group);
+    const provider = groups.get(group) ?? { id: group, name: via ? shortName(via.name) : group, models: [] };
+    provider.models.push({ id: model, releaseDate: connect.dates[id] });
+    groups.set(group, provider);
   }
-  // The connections in their own order, whichever has the newest model; what no connection gives comes last.
+  // The connections in their own order; what no connection gives comes last.
   const order = liveOf(connect).map(entry => entry.prefix);
   const rank = (group: string) => (order.includes(group) ? order.indexOf(group) : order.length);
-  // As Mastra's picker orders a provider's models: by release date, then by id.
-  const newestFirst = (a: string, b: string) => compareModelReleaseDates(connect.dates[a], connect.dates[b]) || a.localeCompare(b);
-  const options: ComboboxOption[] = [...groups].sort(([a], [b]) => rank(a) - rank(b)).flatMap(([, models]) =>
-    models.sort(newestFirst).map(id => {
-      const { group, model, via } = placeOf(connect, id);
-      const name = via?.name ?? group;
-      return {
-        value: id,
-        label: formatModelName(model),
-        description: name || undefined,
-        start: (
-          <span aria-hidden className="flex shrink-0">
-            <Mark name={via?.name ?? group} size={14} />
-          </span>
-        ),
-        keywords: [id, name],
-      };
-    }),
-  );
-  options.push({ value: OPEN_CONNECTIONS, label: strings.connTitle, start: <Plug aria-hidden /> });
-  return (
-    <Combobox
-      options={options}
-      value={current}
-      onValueChange={value => {
-        if (value === OPEN_CONNECTIONS) onConnections();
-        else if (value !== current) pickModel(option, value);
+  const providers = [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
+  const at = current ? placeOf(connect, current) : null;
+  const effort = effortOf(state);
+  const mark = (group: string) => <Mark name={names.get(group) ?? group} size={14} />;
+  const model = (
+    <MastraModelPicker
+      providers={providers}
+      value={at ? { provider: at.group, model: at.model } : undefined}
+      onValueChange={next => {
+        const id = `${next.provider}/${next.model}`;
+        if (id !== current) pickModel(option, id);
       }}
-      placeholder={current || strings.model}
-      searchPlaceholder={strings.modelSearch}
-      emptyText={strings.modelNoMatch}
-      variant="ghost"
-      size="sm"
+      renderProviderIcon={mark}
+      addProvider={{ label: strings.connTitle, render: <button type="button" onClick={onConnections} /> }}
+      busy={state.configPending}
+      side="top"
       align="end"
-      popupWidth="md"
-      disabled={state.configPending}
-      aria-label={strings.model}
-      className="w-auto max-w-40 min-w-0 shrink"
-    />
+    >
+      <span className="sr-only">{strings.model}: </span>
+      {at && (
+        <span aria-hidden className="flex shrink-0">
+          {mark(at.group)}
+        </span>
+      )}
+      <span className="max-w-40 truncate">{at ? formatModelName(at.model) : strings.model}</span>
+    </MastraModelPicker>
+  );
+  if (!effort) return model;
+  return (
+    <ButtonsGroup size="sm" aria-label={`${strings.model}, ${effort.label}`} className="min-w-0">
+      {model}
+      <ThinkingLevelPicker options={effort.options} value={effort.value} label={effort.label} onChange={effort.set} />
+    </ButtonsGroup>
   );
 }
 
@@ -1174,8 +1195,8 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
   const agent = state.agents.find(entry => entry.id === state.agent);
   const name = agent?.name ?? (state.detecting ? strings.detecting : strings.noneFound);
   const badge = stateBadge(state);
-  // The agent's own settings; its model is picked beside the message box.
-  const settings = (state.config ?? []).filter(option => option.category !== 'model');
+  // The agent's own settings; its model is picked beside the message box, and so is the built-in agent's effort.
+  const settings = (state.config ?? []).filter(option => option.category !== 'model' && !(state.connect && option.category === 'thought_level'));
   const notReady = notReadyOf(state);
   // The built-in agent is the only one there is: its connections stand where the agents are picked.
   const connect = state.connect;
@@ -1439,26 +1460,27 @@ function ConnRow({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border px-3 py-2.5">
-      {/* How it stands is under the name, not beside it: in a panel as narrow as the app's, a name
-          beside its status and its buttons was cut short. The buttons go under when they do not fit. */}
-      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="flex min-w-0 flex-1 basis-40 items-start gap-2">
-          <span aria-hidden className="flex shrink-0 pt-0.5">
-            <Mark name={entry.name} size={16} />
+    <div className="flex min-w-0 flex-col gap-1.5 px-3 py-1.5">
+      {/* One line where the panel has room: the name, how it stands, what can be done. In a panel as
+          narrow as the app's the standing goes under the name and the buttons under both, so that no
+          name is cut short. */}
+      <div className="flex min-h-control-sm min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="flex min-w-0 flex-1 basis-44 flex-wrap items-center gap-x-2.5 gap-y-0.5">
+          <span className="flex min-w-0 items-center gap-2">
+            <span aria-hidden className="flex shrink-0">
+              <Mark name={entry.name} size={14} />
+            </span>
+            <span className="min-w-0 text-label break-words">{entry.name}</span>
           </span>
-          <span className="flex min-w-0 flex-col gap-1">
-            <span className="text-sm break-words">{entry.name}</span>
-            <Status presentation={status} className="text-xs" />
-            {note && (
-              <Txt variant="caption" className="break-words">
-                {note}
-              </Txt>
-            )}
-          </span>
+          <Status presentation={status} className="shrink-0 text-caption" />
         </span>
-        <span className="flex shrink-0 flex-wrap items-center gap-2">{actions}</span>
+        <span className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</span>
       </div>
+      {note && (
+        <Txt variant="caption" className="ps-[1.375rem] break-words">
+          {note}
+        </Txt>
+      )}
       {children}
     </div>
   );
@@ -1767,7 +1789,6 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
   // Only one sign-in runs at a time.
   const signing = connect.login !== null;
   const keyEntry = connect.keys.find(key => key.id === keyFor);
-  const heading = 'pt-2 text-sm font-medium';
   /** A connection's newest model, in the order Mastra's picker lists them: by release date, then by id. */
   const newest = (entry: Connection) =>
     ids.filter(id => connectionOf(connect, id) === entry).sort((a, b) => compareModelReleaseDates(connect.dates[a], connect.dates[b]) || a.localeCompare(b))[0];
@@ -1800,20 +1821,25 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
           </Button>
         )}
       </div>
-      <Txt variant="caption">{strings.connIntro}</Txt>
       {connect.connected ? (
-        <div className="flex min-w-0 flex-col gap-0.5 rounded-lg bg-card px-3 py-2.5">
-          <Txt variant="caption">{strings.connUsing}</Txt>
-          {(current || used) && <span className="truncate text-sm">{[current && formatModelName(placeOf(connect, current).model), used && shortName(used.name)].filter(Boolean).join(' · ')}</span>}
-          <Txt variant="caption">{strings.connUsingHint}</Txt>
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 px-1">
+          <Txt variant="caption" className="shrink-0">
+            {strings.connUsing}
+          </Txt>
+          {(current || used) && <span className="min-w-0 truncate text-label">{[current && formatModelName(placeOf(connect, current).model), used && shortName(used.name)].filter(Boolean).join(' · ')}</span>}
         </div>
       ) : (
-        <Notice variant="info" title={strings.connNoneTitle}>
-          <Notice.Message>{strings.connNoneBody}</Notice.Message>
-        </Notice>
+        <div className="flex min-w-0 flex-col gap-0.5 px-1">
+          <span className="text-label">{strings.connNoneTitle}</span>
+          <Txt variant="caption">{strings.connNoneBody}</Txt>
+        </div>
       )}
 
-      <h3 className={heading}>{strings.connPlans}</h3>
+      <SettingsGroup>
+      <SettingsHeader>
+        <SettingsTitle>{strings.connPlans}</SettingsTitle>
+      </SettingsHeader>
+      <SettingsContainer>
       {connect.plans.map(plan => {
         const here = connect.login?.id === plan.id ? connect.login : null;
         const status =
@@ -1832,7 +1858,7 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
         // The row whose sign-in is under way has its own ways on under it; the others wait for it.
         const signIn = (label: string) =>
           !here && (
-            <Button type="button" size="sm" variant="primary" disabled={signing} onClick={() => post({ type: 'conn_login', id: plan.id })}>
+            <Button type="button" size="sm" variant={plan.state === 'expired' ? 'primary' : 'default'} disabled={signing} onClick={() => post({ type: 'conn_login', id: plan.id })}>
               {label}
             </Button>
           );
@@ -1866,8 +1892,14 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
           </ConnRow>
         );
       })}
+      </SettingsContainer>
+      </SettingsGroup>
 
-      <h3 className={heading}>{strings.connKeys}</h3>
+      <SettingsGroup>
+      <SettingsHeader>
+        <SettingsTitle>{strings.connKeys}</SettingsTitle>
+      </SettingsHeader>
+      <SettingsContainer>
       {connect.keys.map(key => (
         <ConnRow
           key={key.id}
@@ -1893,8 +1925,14 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
           }
         />
       ))}
+      </SettingsContainer>
+      </SettingsGroup>
 
-      <h3 className={heading}>{strings.connCustom}</h3>
+      <SettingsGroup>
+      <SettingsHeader>
+        <SettingsTitle>{strings.connCustom}</SettingsTitle>
+      </SettingsHeader>
+      <SettingsContainer>
       {connect.custom.map(entry => (
         <ConnRow
           key={entry.id}
@@ -1912,14 +1950,19 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
         />
       ))}
       {adding ? (
-        <CustomForm connect={connect} stamp={state} strings={strings} onDone={() => setAdding(false)} />
+        <div className="min-w-0 px-3 py-2.5">
+          <CustomForm connect={connect} stamp={state} strings={strings} onDone={() => setAdding(false)} />
+        </div>
       ) : (
-        <div>
-          <Button type="button" size="sm" onClick={() => setAdding(true)}>
+        <div className="px-3 py-1.5">
+          <Button type="button" size="sm" variant="ghost" className="-mx-2" onClick={() => setAdding(true)}>
+            <Plus />
             {strings.connCustomAdd}
           </Button>
         </div>
       )}
+      </SettingsContainer>
+      </SettingsGroup>
       {keyEntry && <KeyDialog entry={keyEntry} error={connect.error} stamp={state} strings={strings} onClose={() => setKeyFor(null)} />}
     </div>
   );

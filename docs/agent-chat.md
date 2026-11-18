@@ -513,6 +513,11 @@ the same custom addresses and Mastra's same sign-ins. A key, an address or a sig
 one conversation reaches another's agent when that conversation is next shown: it is handed
 everything again.
 
+The model is picked at the lower right of the message box, in Mastra's own model picker: the
+models of every connection, a group to a connection, newest first, with a search box and a row that
+opens the Connections page. The agent's reasoning effort is the button beside it, Mastra's
+thinking-level picker: the levels the agent names, **Off** to **Max**, in the app's language.
+
 While nothing is connected the agent has no session and the panel reads **Sign-in needed**. A turn
 that fails for its connection (a plan's sign-in that expired, an API key that was refused, a plan
 or key with nothing left, too many requests, no network, a model the connection may not use) is

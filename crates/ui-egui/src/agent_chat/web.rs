@@ -520,12 +520,10 @@ pub fn state(app: &mut SolveApp) -> String {
         // The built-in agent's connections (`connect`, below): its page, the sign-ins' own
         // names, and the sentences of a turn its connection refused.
         ("connTitle", "ui.agent_chat_conn_title"),
-        ("connIntro", "ui.agent_chat_conn_intro"),
         ("connNoneTitle", "ui.agent_chat_conn_none_title"),
         ("connNoneBody", "ui.agent_chat_conn_none_body"),
         ("connBack", "ui.agent_chat_conn_back"),
         ("connUsing", "ui.agent_chat_conn_using"),
-        ("connUsingHint", "ui.agent_chat_conn_using_hint"),
         ("connPlans", "ui.agent_chat_conn_plans"),
         ("connKeys", "ui.agent_chat_conn_keys"),
         ("connCustom", "ui.agent_chat_conn_custom"),
@@ -587,6 +585,14 @@ pub fn state(app: &mut SolveApp) -> String {
         ("problemRate", "ui.agent_chat_problem_rate"),
         ("problemNetwork", "ui.agent_chat_problem_network"),
         ("problemModel", "ui.agent_chat_problem_model"),
+        // The levels of an agent's reasoning effort, by the value it names them with.
+        ("effort", "ui.agent_chat_effort"),
+        ("effortOff", "ui.agent_chat_effort_off"),
+        ("effortLow", "ui.agent_chat_effort_low"),
+        ("effortMedium", "ui.agent_chat_effort_medium"),
+        ("effortHigh", "ui.agent_chat_effort_high"),
+        ("effortXhigh", "ui.agent_chat_effort_xhigh"),
+        ("effortMax", "ui.agent_chat_effort_max"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), Value::from(tr(key))))
