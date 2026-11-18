@@ -7,6 +7,7 @@ use solidcore_record::Vec3;
 
 use super::run;
 use crate::*;
+use solidcraft_geom::MeshGeom;
 
 fn world_box(s: &Session, body: &str) -> (Vec3, Vec3) {
     let b = s.world_state().unwrap().body(body).unwrap_or_else(|| panic!("no body `{body}`")).mesh().bounds();
@@ -278,7 +279,7 @@ fn assert_as_evaluated_afresh(s: &Session) {
         assert!(x.edges.iter().flatten().zip(y.edges.iter().flatten()).all(|(p, q)| p.dist(*q) < 1e-7), "{}: edges", a.name);
         assert_same_surface(&x, &y, &a.name);
         // A plan's ties fall by the pose it was made at.
-        let (x, y) = (a.display_plan().unwrap().evaluate(), b.display_plan().unwrap().evaluate());
+        let (x, y) = (a.display_plan().unwrap().evaluate().0, b.display_plan().unwrap().evaluate().0);
         assert_eq!(x.triangles.len(), y.triangles.len(), "{}: plan", a.name);
         assert_same_surface(&x, &y, &a.name);
     }

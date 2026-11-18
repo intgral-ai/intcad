@@ -4,6 +4,7 @@
 use serde_json::json;
 
 use crate::scenario::Harness;
+use solidcraft_engine::geom::MeshGeom;
 
 /// A design of `n` boxes (ten patterns of a box each), in a headless app, settled.
 fn grid(n: usize) -> Harness {

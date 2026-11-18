@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use solidcore_record::Vec3;
 
 use crate::Session;
+use solidcraft_geom::MeshGeom;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
     match s.execute(id, &p) {

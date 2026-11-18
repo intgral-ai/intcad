@@ -59,7 +59,7 @@ fn a_pipeline_the_device_rejects_is_an_error_not_a_crash() {
     let gpu = ok(TessGpu::new(name, device, queue));
     let body = ok(solidcraft_kernel::torus(Vec3::ZERO, 6.0, 1.5));
     let plan = ok(body.mesh_plan(&solidcraft_kernel::MeshTolerance::chord(0.01)));
-    assert_eq!(ok(gpu.evaluate(&plan)).positions.len(), plan.evaluate().positions.len());
+    assert_eq!(ok(gpu.evaluate(&plan)).positions.len(), plan.evaluate().0.positions.len());
 }
 
 /// The shader as the D3D12 backend translates it (naga's HLSL for shader model 5.1, the FXC
@@ -227,7 +227,7 @@ fn gpu_evaluation_matches_the_cpu() {
     let Some(gpu) = gpu() else { return };
     for (name, body) in bodies() {
         let plan = ok(body.mesh_plan(&solidcraft_kernel::MeshTolerance::chord(0.01)));
-        let cpu = plan.evaluate();
+        let cpu = plan.evaluate().0;
         let got = ok(gpu.evaluate(&plan));
         assert_eq!(got.triangles, cpu.triangles, "{name}");
         assert_eq!(got.tri_face, cpu.tri_face, "{name}");
@@ -257,7 +257,7 @@ fn a_resident_mesh_matches_the_cpu() {
     let Some(gpu) = gpu() else { return };
     for (name, body) in bodies() {
         let plan = ok(body.mesh_plan(&solidcraft_kernel::MeshTolerance { chord: 0.01, angle: Some(std::f64::consts::PI / 9.0) }));
-        let cpu = plan.evaluate();
+        let cpu = plan.evaluate().0;
         let mesh = ok(gpu.prepare(&plan));
         assert_eq!(mesh.vertex_count as usize, cpu.positions.len(), "{name}");
         assert_eq!(mesh.index_count as usize, cpu.triangles.len() * 3, "{name}");
@@ -321,7 +321,7 @@ fn a_scene_in_one_dispatch_matches_each_body_on_the_cpu() {
     ok(d.poll(wgpu::PollType::wait_indefinitely()));
     let out: Vec<f32> = ok(slice.get_mapped_range()).as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
     for ((plan, part), (name, _)) in plans.iter().zip(&mesh.parts).zip(bodies()) {
-        let cpu = plan.evaluate();
+        let cpu = plan.evaluate().0;
         assert_eq!((part.vertices.end - part.vertices.start) as usize, cpu.positions.len(), "{name}");
         assert_eq!((part.indices.end - part.indices.start) as usize, cpu.triangles.len() * 3, "{name}");
         for (k, p) in cpu.positions.iter().enumerate() {
@@ -357,7 +357,11 @@ fn check_empty_tessellation(gpu: &TessGpu, plan: &TessPlan) {
 fn tessellation_without_vertices_does_not_dispatch() {
     let Some(gpu) = gpu() else { return };
     let plan = TessPlan {
-        surfaces: vec![EvalSurface::Plane { origin: Vec3::ZERO, du: Vec3::X, dv: Vec3::Y }],
+        surfaces: vec![EvalSurface::Plane {
+            origin: solidcraft_geom::tess::to_kernel(Vec3::ZERO),
+            du: solidcraft_geom::tess::to_kernel(Vec3::X),
+            dv: solidcraft_geom::tess::to_kernel(Vec3::Y),
+        }],
         faces: vec![solidcraft_geom::tess::FacePlan { surface: Some(0), ..Default::default() }],
         ..Default::default()
     };
@@ -411,7 +415,7 @@ fn bench_plate() {
             let plan = ok(plate.mesh_plan(&solidcraft_kernel::MeshTolerance::chord(tol)));
             p.push(ms(t));
             let t = std::time::Instant::now();
-            let m = plan.evaluate();
+            let m = plan.evaluate().0;
             c.push(ms(t));
             np = m.triangles.len();
             if let Some(gpu) = &gpu {

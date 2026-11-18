@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use super::run;
 use crate::Session;
 use crate::fuzz;
+use solidcraft_geom::MeshGeom;
 
 /// Run a script; every command must succeed and every body be a sound solid.
 fn script(steps: Value) -> Session {
@@ -385,7 +386,12 @@ fn knife_edge_part() -> Session {
 
 /// The volume of the session's bodies through the display plan.
 fn planned_volume(s: &Session) -> f64 {
-    s.model.state().bodies.iter().map(|b| b.body.mesh_plan(&solidcraft_kernel::MeshTolerance::chord(2e-4)).unwrap().evaluate().measure().volume).sum()
+    s.model
+        .state()
+        .bodies
+        .iter()
+        .map(|b| b.body.mesh_plan(&solidcraft_kernel::MeshTolerance::chord(2e-4)).unwrap().evaluate().0.measure().volume)
+        .sum()
 }
 
 /// #851: the arc's top edge runs out tangent to the back face at the knife edge's top. The blend

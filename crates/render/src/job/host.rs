@@ -1606,7 +1606,7 @@ mod retained_request_tests {
             tri_face: vec![0],
             ..Default::default()
         };
-        let bounds = mesh.bounds();
+        let bounds = solidcraft_geom::MeshGeom::bounds(&mesh);
         let scene = ProductScene {
             meshes: vec![crate::ProductMesh {
                 transmission: None,

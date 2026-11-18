@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 
 use crate::{Sel, Session};
+use solidcraft_geom::MeshGeom;
 
 fn run(s: &mut Session, id: &str, params: Value) -> Value {
     s.execute(id, &params).unwrap_or_else(|e| panic!("{id} {params}: {e}"))

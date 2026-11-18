@@ -3,6 +3,7 @@ use std::f64::consts::PI;
 use serde_json::{Value, json};
 
 use crate::*;
+use solidcraft_geom::MeshGeom;
 
 mod mesh_convert;
 
@@ -3339,6 +3340,7 @@ mod naming {
 
     use super::run;
     use crate::Session;
+    use solidcraft_geom::MeshGeom;
 
     fn volume(s: &mut Session) -> f64 {
         run(s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap_or(0.0)

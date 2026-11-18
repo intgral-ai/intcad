@@ -1254,7 +1254,7 @@ mod tests {
         let tetra = solidcraft_kernel::mesh_body(&corners, &[[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
             .unwrap()
             .with_color(Some([0.25, 0.5, 0.75]))
-            .with_paint(Some(solidcraft_kernel::Paint { opacity: 0.5, faces: Vec::new() }));
+            .with_paint(Some(solidcraft_kernel::Paint { opacity: 0.5, faces: Vec::new(), name: None }));
         let block = solidcraft_kernel::box_solid(Vec3::new(40., 0., 0.), Vec3::new(60., 20., 20.)).unwrap();
         let model = saved_model(vec![block, tetra.clone()]);
         let doc = document();

@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn packing_offset_and_ids_follow_bvh_reordering() {
-        use solidcraft_geom::Mesh;
+        use solidcraft_geom::{Mesh, MeshGeom};
         use solidcraft_render::{ProductMesh, ProductScene};
         use std::sync::Arc;
         let mut mesh = Mesh::default();
