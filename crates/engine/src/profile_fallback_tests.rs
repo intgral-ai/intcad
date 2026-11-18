@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 use solidcraft_geom::MeshGeom;
 
 use crate::Session;
-use solidcraft_geom::MeshGeom;
 
 const HOLE: f64 = std::f64::consts::PI * 16.0 * 10.0;
 

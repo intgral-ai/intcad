@@ -5,7 +5,6 @@ use solidcraft_doc::{FeatureKind, ProfileSel};
 use solidcraft_geom::MeshGeom;
 
 use crate::Session;
-use solidcraft_geom::MeshGeom;
 
 fn run(session: &mut Session, command: &str, params: Value) -> Value {
     session.execute(command, &params).unwrap_or_else(|error| panic!("{command}: {error}"))
