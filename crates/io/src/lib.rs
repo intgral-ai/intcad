@@ -71,7 +71,7 @@ pub use gerber::{GerberLayer, GerberOutline, read_gerber_layer, read_gerber_outl
 pub use gerber_set::{
     BOARD_EXTENSIONS, BoardJob, GerberSet, MAX_SET_FILES, SetFile, SetRole, classify_set, is_zip_path, read_gerber_set, zip_entries,
 };
-pub use legacy_dir::{APP_ID, PREVIOUS_APP_IDS, adopt_legacy_dir, legacy_flatpak_paths};
+pub use legacy_dir::{APP_ID, LEGACY_APP_ID, PREVIOUS_APP_IDS, adopt_legacy_dir, legacy_flatpak_paths};
 pub use safe_write::{backup_path, write_atomic};
 pub use sketch2d::{Geom2, MAX_DRAWING_BYTES};
 pub use svg::{CurveWarning, SvgDrawing, decode_svg, read_svg, read_svg_drawing, svg_nothing_to_import, svg_sheet};
