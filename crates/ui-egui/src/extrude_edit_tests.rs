@@ -347,9 +347,16 @@ fn adjacent_profiles_from_slanted_face_use_same_merged_centre_as_geometry() {
     let point = [2.0 * angle.sin(), 0.0, 10.0 + 2.0 * angle.cos()];
     h.app.run("solid.extrude", json!({"sketch":"Adjacent","distance":10,"from":point,"name":"Depth","body_name":"Main","operation":"new"})).unwrap();
     let min_z = h.app.session.world_state().unwrap().body("Main").unwrap().mesh().bounds().min.z;
+    // The extrude starts on the slanted face, so where it starts under the merged profiles'
+    // middle (x = 5, y = 5) is where a ray up through the solid first meets it.
+    let (start_z, _) = {
+        let mesh = h.app.session.world_state().unwrap().body("Main").unwrap().mesh();
+        mesh.raycast(solidcore_record::Vec3::new(5.0, 5.0, 0.0), solidcore_record::Vec3::new(0.0, 0.0, 1.0)).unwrap()
+    };
+    assert!((start_z - (10.0 + 2.0 / angle.cos() - 5.0 * angle.tan())).abs() < 1e-6, "the start follows the face: {start_z}");
     open(&mut h);
     let base = crate::canvas::anchor(&h.app, h.app.dialog.as_ref().unwrap()).unwrap().0;
-    assert!((base.z - min_z).abs() < 1e-7, "displayed start{} geometry start{min_z}", base.z);
+    assert!((base.z - start_z).abs() < 1e-6, "displayed start {} geometry start {start_z}", base.z);
     // Averaging the two unmerged rectangle loops gives x=3.5; their internal
     // seam must not bias the reference ray used by the extent handle.
     let unmerged_height = 10.0 + 2.0 / angle.cos() - 3.5 * angle.tan();
