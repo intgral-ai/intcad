@@ -1,0 +1,43 @@
+name: Assistant UI
+
+on:
+  pull_request:
+    paths:
+      - "packages/assistant-web/**"
+      - ".agents/skills/verify-intcad/browser/**"
+      - ".github/workflows/assistant-ui.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: assistant-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  composer:
+    name: Assistant composer in Chrome
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Bombadil 0.7.10
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL --retry 3 -o bombadil https://github.com/antithesishq/bombadil/releases/download/v0.7.10/bombadil-x86_64-linux
+          echo '6f2664ca7d4067017b4efb26db5c29d6dcfecdc78131f96989d336f12420cc1b  bombadil' | sha256sum --check
+          chmod +x bombadil
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Exercise the bundled Assistant page
+        run: python3 .agents/skills/verify-intcad/browser/run.py --output "$RUNNER_TEMP/composer-trace"
+      - name: Keep the action trace and browser screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: assistant-composer-trace
+          path: ${{ runner.temp }}/composer-trace
+          retention-days: 7
+          if-no-files-found: error

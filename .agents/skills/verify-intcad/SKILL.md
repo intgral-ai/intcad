@@ -33,7 +33,8 @@ WebView, fixture or provider needed by the journey before driving it.
 
 Use the public command or tool for command behavior and the actual UI control for UI behavior.
 Use named handles from `ui.handles` or `ui.rects` for egui controls, and native input or
-accessibility for Assistant's WebView controls. Wait for expected state with a bounded read-only
+accessibility for embedded WebView behavior. For Assistant composer changes, run the
+[browser check](features/assistant.md) against the bundled page. Wait for expected state with a bounded read-only
 poll. If a mutation times out, inspect its outcome before retrying. Read the resulting model,
 file or report after the action.
 

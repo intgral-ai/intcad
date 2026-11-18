@@ -7,7 +7,7 @@ are starting points. A shared engine, document or host change may affect several
 | --- | --- | --- |
 | Model geometry and save or reopen designs | Kernel, engine modeling commands, document and I/O crates, native file handling | [Model and files](model-and-files.md) |
 | Check a sheet-metal design and read its report | DFM and project commands, rules, validation storage, DFM card and model marks | [DFM](dfm.md) |
-| Open Assistant and use its controls, agent and tools | Native WebView host, agent chat, MCP, Mastra runtime, installers | [Assistant](assistant.md) |
+| Open Assistant and use its controls, agent and tools | Bundled Assistant page, native WebView host, agent chat, MCP, Mastra runtime, installers | [Assistant](assistant.md) |
 
 For changes outside these recipes, use the [validation policy](../../../../docs/validation-policy.md)
 and exercise the affected product entry point. Add a recipe when the flow is worth replaying.
