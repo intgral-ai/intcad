@@ -16077,6 +16077,44 @@ fn the_floating_panel_keeps_its_drag_strip_and_the_page_is_told_the_selection() 
     assert_eq!(told(&mut h)["radius"].as_f64(), Some(0.0));
 }
 
+/// Through a window made smaller, then larger, then its old size again, the place given to the
+/// host's view moves and resizes with the Assistant's panel: it stays inside the panel and left
+/// of the right rail, and the panel stays inside the window. The Linux host places its native
+/// view on exactly this rect, so a place that did not follow the window would leave the page
+/// over the model while its panel moved (INT-1487).
+#[test]
+fn the_web_view_follows_its_panel_through_window_resizes() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true}));
+    h.call("ui.set", json!({"layout": "floating"}));
+    h.call("ui.agent_chat", json!({"open": true, "width": 380, "picker": false}));
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    let mut places = Vec::new();
+    for (width, height) in [(1440.0, 900.0), (1100.0, 700.0), (900.0, 640.0), (1440.0, 900.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(2);
+        let window = h.ctx.content_rect();
+        let panel = crate::scenario::rect_of("agent_chat:panel").expect("the Assistant's panel in the window");
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the room the panel gives the host's view");
+        assert!(window.contains_rect(panel), "the panel is in the window at {width}x{height}: {panel:?} in {window:?}");
+        assert!(panel.expand(1.0).contains_rect(place), "the page is in its panel at {width}x{height}: {place:?} in {panel:?}");
+        let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+        assert!(panel.right() <= rail.left() + 1.0, "the panel stands left of the rail at {width}x{height}: {panel:?} {rail:?}");
+        assert!(place.right() < rail.left() + 1.0, "so does the page at {width}x{height}: {place:?} {rail:?}");
+        assert!(place.height() > window.height() / 2.0, "the page fills its panel's height at {width}x{height}: {place:?} in {window:?}");
+        assert!(places.last() != Some(&place), "the page moved with the window at {width}x{height}: {place:?}");
+        places.push(place);
+    }
+    let (first, last) = (places.first().expect("a place"), places.last().expect("a place"));
+    assert!(
+        (first.min - last.min).length() < 0.5 && (first.size() - last.size()).length() < 0.5,
+        "the old size puts it back where it was: {places:?}"
+    );
+    assert_eq!(web::placement(&mut h.app, &h.ctx), places.last().copied(), "the last frame's place is the one the host takes, once");
+}
+
 /// Files dropped on the host's web view are attached to the next message as files dropped on the
 /// panel are, and one that cannot be says why; while they are over the view the page is told.
 #[test]

@@ -2604,6 +2604,9 @@ fn pump_tools(app: &mut SolveApp) {
         let refuse = |req: ControlRequest, e: String| {
             let _ = req.reply.send(json!({"ok": false, "error": e}));
         };
+        // One spelling from here on: the id the gate judges, "Always allow" remembers and the
+        // engine runs are the registered one, whatever `command`/`id` and casing arrived.
+        gate::canonicalize(&req.method, &mut req.params);
         // Anatomy is read-only for the whole turn: a write request never reaches the gate.
         let skill = app.agent_chat.skill_binding.as_ref().map_or(app.agent_chat.skill, |binding| binding.skill);
         if skill.read_only() && matches!(gate::request(&req.method, &req.params, 0), gate::Verdict::Run { change: true } | gate::Verdict::Ask(_)) {
