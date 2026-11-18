@@ -109,9 +109,11 @@ impl Renderer {
             pv_hide: false,
             preview_bounds: None,
             view_proj: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.5, 1.0]],
+            turned_depth: None,
             back: [0.0, 0.0, 1.0],
             size_px: [SIZE as f32; 2],
-            clip: [0.0; 4],
+            clip: [[0.0; 4]; super::MAX_SECTION_PLANES],
+            clip_hatch: [0; super::MAX_SECTION_PLANES],
             cap: [0.0; 4],
             images: Vec::new(),
             clouds: Vec::new(),
@@ -127,6 +129,7 @@ impl Renderer {
             hover_tint: [0.0; 3],
             selection_tint: [0.0; 3],
             hatch: Default::default(),
+            moving: None,
         };
         let size = wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 };
         let color = device.create_texture(&wgpu::TextureDescriptor {

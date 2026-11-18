@@ -34,9 +34,9 @@ pub(super) struct Maps {
 /// model batches, so moving a preview never re-uploads unchanged model colours or vertices.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroundAo {
-    bounds: solidcraft_geom::Aabb3,
+    bounds: solidcraft_viewport::vec::Bounds,
     height: f64,
-    up: solidcraft_render::UpAxis,
+    up: solidcraft_viewport::UpAxis,
     radius: f32,
 }
 
@@ -45,11 +45,11 @@ impl GroundAo {
         if !back.iter().all(|v| v.is_finite()) {
             return false;
         }
-        let cam = solidcraft_render::Camera { up: self.up, ..Default::default() };
+        let cam = solidcraft_viewport::Camera { up: self.up, ..Default::default() };
         cam.to_frame(solidcore_record::Vec3::new(f64::from(back[0]), f64::from(back[1]), f64::from(back[2]))).z > 0.0
     }
 
-    pub fn new(bounds: solidcraft_geom::Aabb3, height: f64, up: solidcraft_render::UpAxis, radius: f32) -> Option<Self> {
+    pub fn new(bounds: solidcraft_viewport::vec::Bounds, height: f64, up: solidcraft_viewport::UpAxis, radius: f32) -> Option<Self> {
         if bounds.is_empty() || !bounds.min.is_finite() || !bounds.max.is_finite() || !height.is_finite() || !radius.is_finite() || radius <= 0.0 {
             return None;
         }
@@ -58,17 +58,17 @@ impl GroundAo {
 
     /// Two triangles (168 bytes), extended to cover an optional preview without moving the
     /// existing ground height. Invalid preview bounds are ignored.
-    pub fn vertices(&self, preview: Option<solidcraft_geom::Aabb3>) -> Vec<u8> {
+    pub fn vertices(&self, preview: Option<solidcraft_viewport::vec::Bounds>) -> Vec<u8> {
         self.vertices_with_radius(preview, self.radius)
     }
 
     /// Cover the preview plus the current frame's sampling margin. Invalid radii draw nothing.
-    pub fn vertices_with_radius(&self, preview: Option<solidcraft_geom::Aabb3>, radius: f32) -> Vec<u8> {
+    pub fn vertices_with_radius(&self, preview: Option<solidcraft_viewport::vec::Bounds>, radius: f32) -> Vec<u8> {
         use solidcore_record::Vec3;
         if !radius.is_finite() || radius <= 0.0 {
             return Vec::new();
         }
-        let cam = solidcraft_render::Camera { up: self.up, ..Default::default() };
+        let cam = solidcraft_viewport::Camera { up: self.up, ..Default::default() };
         let mut coverage = self.bounds;
         if let Some(bb) = preview.filter(|b| !b.is_empty() && b.min.is_finite() && b.max.is_finite()) {
             for i in 0..8 {
@@ -97,6 +97,7 @@ impl GroundAo {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
             bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.extend_from_slice(&super::NO_VALUE.to_le_bytes());
         }
         bytes
     }
@@ -154,9 +155,10 @@ fn term_target(view: &wgpu::TextureView) -> Option<wgpu::RenderPassColorAttachme
     })
 }
 
-/// The opaque triangles of `batches`, as neither pass counts them in the performance overlay.
-fn draw_opaque(pass: &mut wgpu::RenderPass<'_>, pipelines: &OpaquePipelines, binds: [&wgpu::BindGroup; 2], batches: [&Batches; 2]) {
-    for (batch, bind) in batches.into_iter().zip(binds) {
+/// The opaque triangles of each scene in `layers` (its group 0 bind and batches), as neither pass
+/// counts them in the performance overlay.
+fn draw_opaque(pass: &mut wgpu::RenderPass<'_>, pipelines: &OpaquePipelines, layers: &[(&wgpu::BindGroup, &Batches)]) {
+    for &(bind, batch) in layers {
         pass.set_bind_group(0, bind, &[]);
         pass.set_pipeline(&pipelines.built);
         for tris in [&batch.tris, &batch.open_tris, &batch.ground_ao].into_iter().flatten() {
@@ -291,11 +293,10 @@ impl Resources {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        binds: [&wgpu::BindGroup; 2],
         radius: f32,
         size_px: [f32; 2],
         reversed: bool,
-        batches: [&Batches; 2],
+        layers: &[(&wgpu::BindGroup, &Batches)],
     ) {
         let enabled = radius.is_finite() && radius > 0.0;
         // Bound memory at large window sizes; normalized coordinates also handle downsampling.
@@ -304,9 +305,10 @@ impl Resources {
             self.maps = maps(device, &self.layout, size);
             self.size = size;
         }
-        if !enabled {
+        // The blur reads the frame's uniform through the first scene's bind (the model's).
+        let Some(&(first, _)) = layers.first().filter(|_| enabled) else {
             return;
-        }
+        };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sc_ao_prepass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -327,7 +329,7 @@ impl Resources {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        draw_opaque(&mut pass, &self.prepass, binds, batches);
+        draw_opaque(&mut pass, &self.prepass, layers);
         drop(pass);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sc_ao_term"),
@@ -342,7 +344,7 @@ impl Resources {
             multiview_mask: None,
         });
         pass.set_bind_group(2, &self.maps.bind, &[]);
-        draw_opaque(&mut pass, &self.term, binds, batches);
+        draw_opaque(&mut pass, &self.term, layers);
         drop(pass);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sc_ao_blur"),
@@ -353,7 +355,7 @@ impl Resources {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.blur);
-        pass.set_bind_group(0, binds[0], &[]);
+        pass.set_bind_group(0, first, &[]);
         pass.set_bind_group(2, &self.maps.blur_bind, &[]);
         pass.draw(0..3, 0..1);
     }
@@ -376,9 +378,9 @@ mod tests {
     #[test]
     fn receiver_visibility_follows_the_camera_side_in_both_up_axes() {
         use solidcore_record::Vec3;
-        let bounds = solidcraft_geom::Aabb3 { min: Vec3::ZERO, max: Vec3::new(3.0, 4.0, 12.0) };
-        for up in [solidcraft_render::UpAxis::Y, solidcraft_render::UpAxis::Z] {
-            let cam = solidcraft_render::Camera { up, ..Default::default() };
+        let bounds = solidcraft_viewport::vec::Bounds { min: Vec3::ZERO, max: Vec3::new(3.0, 4.0, 12.0) };
+        for up in [solidcraft_viewport::UpAxis::Y, solidcraft_viewport::UpAxis::Z] {
+            let cam = solidcraft_viewport::Camera { up, ..Default::default() };
             let ground = GroundAo::new(bounds, 0.0, up, 1.0).unwrap();
             assert!(ground.visible_from(cam.from_frame(Vec3::Z).to_f32()));
             assert!(!ground.visible_from(cam.from_frame(-Vec3::Z).to_f32()));
@@ -390,11 +392,11 @@ mod tests {
     #[test]
     fn a_growing_preview_keeps_the_current_sampling_margin_at_the_fixed_ground_height() {
         use solidcore_record::Vec3;
-        use solidcraft_geom::Aabb3;
-        let bounds = Aabb3 { min: Vec3::ZERO, max: Vec3::new(3.0, 4.0, 12.0) };
-        let ground = GroundAo::new(bounds, -0.014, solidcraft_render::UpAxis::Z, 1.0).unwrap();
-        let preview = Aabb3 { min: Vec3::new(100.0, 200.0, -40.0), max: Vec3::new(103.0, 204.0, -28.0) };
-        let mut drawn = Aabb3::EMPTY;
+        use solidcraft_viewport::vec::Bounds;
+        let bounds = Bounds { min: Vec3::ZERO, max: Vec3::new(3.0, 4.0, 12.0) };
+        let ground = GroundAo::new(bounds, -0.014, solidcraft_viewport::UpAxis::Z, 1.0).unwrap();
+        let preview = Bounds { min: Vec3::new(100.0, 200.0, -40.0), max: Vec3::new(103.0, 204.0, -28.0) };
+        let mut drawn = Bounds::EMPTY;
         for vertex in ground.vertices_with_radius(Some(preview), 10.0).as_chunks::<{ crate::view::TRI_SIZE }>().0 {
             let read = |i| f64::from(f32::from_le_bytes(vertex[i..i + 4].try_into().unwrap()));
             drawn.add(Vec3::new(read(0), read(4), read(8)));

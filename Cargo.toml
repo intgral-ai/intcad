@@ -36,6 +36,8 @@ solidcraft-ui-egui = { path = "crates/ui-egui" }
 solidcraft-color = { path = "crates/color" }
 solidcraft-display-units = { path = "crates/display-units" }
 solidcraft-viewport = { path = "crates/viewport" }
+solidcraft-viewport-egui = { path = "crates/viewport-egui" }
+solidcraft-viewport-gpu = { path = "crates/viewport-gpu" }
 solidcraft-space-mouse = { path = "crates/space-mouse" }
 solidcraft-mcp = { path = "crates/mcp" }
 # MCP machinery any app may share: the JSON-RPC lifecycle, tool/resource/prompt methods,

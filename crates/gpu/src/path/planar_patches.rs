@@ -114,7 +114,8 @@ pub(super) fn ids(triangles: &[Triangle], cancel: &CancelToken) -> Result<Vec<u3
 mod tests {
     use super::*;
     use solidcore_record::Vec3;
-    use solidcraft_render::surface::OpaqueSurface;
+    use solidcraft_geom::MeshGeom;
+    use solidcraft_viewport::surface::OpaqueSurface;
 
     fn triangle(p: [[f64; 3]; 3], body: u32) -> Triangle {
         Triangle {
@@ -123,6 +124,7 @@ mod tests {
             surface: OpaqueSurface::new(Vec3::ZERO, 0.0, 0.5, 1.5).unwrap(),
             transmission: None,
             medium: body,
+            scalar_face: false,
         }
     }
 
@@ -193,7 +195,7 @@ mod tests {
 
     #[test]
     fn packing_offset_and_ids_follow_bvh_reordering() {
-        use solidcraft_geom::{Mesh, MeshGeom};
+        use solidcraft_geom::Mesh;
         use solidcraft_render::{ProductMesh, ProductScene};
         use std::sync::Arc;
         let mut mesh = Mesh::default();

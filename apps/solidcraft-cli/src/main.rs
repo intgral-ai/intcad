@@ -615,9 +615,9 @@ fn cmd_script(args: &[String]) -> Result<(), String> {
 
 /// `gpu`: the headless adapter survey and the policy's pick.
 fn cmd_gpu(args: &[String]) -> Result<(), String> {
-    use solidcraft_gpu::select::{Policy, survey};
+    use solidcraft_viewport_gpu::select::{Policy, survey};
     let policy = match args {
-        [] => Policy::from_env()?,
+        [] => solidcraft_gpu::env::policy()?,
         [flag, v] if flag == "--policy" => Policy::parse(v).ok_or_else(|| format!("--policy must be auto, hardware, software or cpu, not `{v}`"))?,
         _ => return Err("usage: intcad-cli gpu [--policy auto|hardware|software|cpu]".into()),
     };
@@ -637,7 +637,7 @@ fn cmd_gpu(args: &[String]) -> Result<(), String> {
         }))
     );
     match s.lands_on {
-        Some(solidcraft_gpu::select::Landing::Cpu) => {
+        Some(solidcraft_viewport_gpu::select::Landing::Cpu) => {
             solidcraft_engine::note!("warning: {}", solidcraft_engine::capture::CPU_WARNING);
             Ok(())
         }
@@ -653,7 +653,7 @@ fn cmd_gpu(args: &[String]) -> Result<(), String> {
 /// error that names the policy.
 fn install_renderer() {
     solidcraft_engine::capture::install(std::sync::Arc::new(|scene, cam, w, h| {
-        let (rgba, renderer) = solidcraft_gpu::capture::headless_rgba(scene, cam, w, h)?;
+        let (rgba, renderer) = solidcraft_gpu::env::headless_rgba(scene, cam, w, h)?;
         Ok(solidcraft_engine::capture::Picture { rgba, renderer })
     }));
 }

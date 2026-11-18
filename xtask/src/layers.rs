@@ -74,6 +74,11 @@ pub const TABLE: &[(&str, Class)] = &[
     ("agent-task-engine", Class::Layer(4)),
     ("ui-egui", Class::Layer(5)),
     ("gpu", Class::Layer(5)),
+    // the viewport renderer's GPU work on wgpu: pipelines, offscreen pictures, adapter selection,
+    // and display plans evaluated in a compute shader; wgpu is a UI toolkit, so it sits at L5
+    ("viewport-gpu", Class::Layer(5)),
+    // the viewport in an egui window: egui-wgpu paint callbacks and install
+    ("viewport-egui", Class::Layer(5)),
     ("mcp", Class::Layer(5)),
     ("testkit", Class::Testkit),
     // apps and tooling
@@ -87,6 +92,11 @@ pub const TABLE: &[(&str, Class)] = &[
 /// The viewport draws display plans the GPU crate evaluates and draws with its pipelines; the MCP
 /// server's tests draw screenshots with them. The kernel reads and writes STEP through `solidcore-step`.
 pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
+    // The viewport's GPU work is drawn with by the app's GPU crate, the egui paint callbacks and
+    // the UI itself.
+    &["viewport-gpu", "gpu"],
+    &["viewport-gpu", "viewport-egui"],
+    &["viewport-egui", "ui-egui"],
     &["gpu", "ui-egui"],
     &["gpu", "mcp"],
     // The UI hosts the chat MCP server over the Mastra bridge lane (#9); the server never

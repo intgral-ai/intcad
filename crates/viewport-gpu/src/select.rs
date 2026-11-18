@@ -1,11 +1,11 @@
 //! What draws a headless picture: every adapter the platform's native backends offer is
 //! classified as hardware (a discrete, integrated or virtual GPU) or software (a GPU driver that
 //! runs on the CPU, such as llvmpipe, lavapipe or WARP), and a [`Policy`] picks one. The last
-//! tier, below any adapter, is SolidCraft's own CPU rasterizer (no surface analysis, highlights
+//! tier, below any adapter, is the viewport's CPU rasterizer (no surface analysis, highlights
 //! or legends): `auto` lands there only when no adapter qualifies, `cpu` forces it, `hardware`
-//! and `software` never use it. macOS uses Metal only, and has no software adapter. `SOLIDCRAFT_GPU`
-//! (`auto`, `hardware`, `software`, `cpu`) sets the policy from the environment; `WGPU_BACKEND`
-//! still narrows the backends.
+//! and `software` never use it. macOS uses Metal only, and has no software adapter. The host
+//! chooses the policy (from its settings or environment) and passes it; `WGPU_BACKEND`, wgpu's
+//! own variable, still narrows the backends.
 
 use serde::Serialize;
 
@@ -72,15 +72,6 @@ impl Policy {
         }
     }
 
-    /// The policy `SOLIDCRAFT_GPU` names; [`Policy::Auto`] when it is unset, and an error when
-    /// it names none.
-    pub fn from_env() -> Result<Policy, String> {
-        match std::env::var("SOLIDCRAFT_GPU") {
-            Ok(v) => Policy::parse(&v).ok_or_else(|| format!("SOLIDCRAFT_GPU must be auto, hardware, software or cpu, not `{v}`")),
-            Err(_) => Ok(Policy::Auto),
-        }
-    }
-
     /// `auto`, `hardware`, `software` or `cpu`.
     pub fn name(self) -> &'static str {
         match self {
@@ -91,7 +82,8 @@ impl Policy {
         }
     }
 
-    pub(crate) fn admits(self, tier: Tier) -> bool {
+    /// Whether an adapter of `tier` may serve this policy.
+    pub fn admits(self, tier: Tier) -> bool {
         match self {
             Policy::Auto => true,
             Policy::Hardware => tier == Tier::Hardware,
@@ -174,10 +166,23 @@ fn instance() -> wgpu::Instance {
     wgpu::Instance::new(desc)
 }
 
+// Some Windows Vulkan drivers crash or hang while unloading their DLL during FLS cleanup.
+// Retain one successful instance for the process, while every call still creates its own
+// descriptor and devices. Retaining no device also leaves device loss and limits per caller.
+#[cfg(target_os = "windows")]
+fn retain_vulkan_instance(instance: &wgpu::Instance, found: &[wgpu::Adapter]) {
+    if found.iter().any(|adapter| adapter.get_info().backend == wgpu::Backend::Vulkan) {
+        static INSTANCE: std::sync::OnceLock<wgpu::Instance> = std::sync::OnceLock::new();
+        let _ = INSTANCE.get_or_init(|| instance.clone());
+    }
+}
+
 /// Every adapter the native backends offer, best first.
 #[cfg(not(target_arch = "wasm32"))]
 fn adapters(instance: &wgpu::Instance) -> Vec<wgpu::Adapter> {
     let mut all = pollster::block_on(instance.enumerate_adapters(native_backends()));
+    #[cfg(target_os = "windows")]
+    retain_vulkan_instance(instance, &all);
     all.sort_by_key(|a| std::cmp::Reverse(rank(a.get_info().device_type)));
     all
 }
@@ -218,7 +223,10 @@ pub fn pick_path(policy: Policy, keep: impl Fn(&wgpu::AdapterInfo) -> bool) -> O
     }
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
     desc.backends = backends;
-    let mut all = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(backends));
+    let instance = wgpu::Instance::new(desc);
+    let mut all = pollster::block_on(instance.enumerate_adapters(backends));
+    #[cfg(target_os = "windows")]
+    retain_vulkan_instance(&instance, &all);
     all.sort_by_key(|a| std::cmp::Reverse(rank(a.get_info().device_type)));
     all.into_iter()
         .filter(|a| keep(&a.get_info()))

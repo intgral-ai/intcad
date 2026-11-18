@@ -1,21 +1,20 @@
 //! Pictures of a [`Scene`] drawn offscreen with the viewport's pipelines ([`crate::view`]): the
 //! same shading, edges, silhouettes, section cap and surface analysis the viewport shows, read
-//! back as RGBA. `intcad-cli snapshot`, MCP screenshots, `ui.render` and thumbnails draw
-//! through it, on the application's device ([`Capturer::new`]) or on a headless one
+//! back as RGBA. A host's command-line snapshots, screenshots and thumbnails draw through it, on
+//! the application's device ([`Capturer::new`]) or on a headless one
 //! ([`Capturer::headless`], [`shared`]). Without a qualifying adapter, the `auto` policy falls
 //! to the last tier, the CPU rasterizer ([`headless_rgba`]), and says so: every picture names the
 //! renderer that drew it (`gpu`, `gpu-software` or `cpu`); `hardware` and `software` fail with an
 //! error that names the policy.
 
-use solidcraft_geom::prelude::*;
+use solidcraft_viewport::vec::Vec3Ops;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use solidcore_record::Vec3;
-use solidcraft_render::hatch::Hatch;
-use solidcraft_render::{AnalysisMode, Camera, Rgb, SECTION_CAP, Scene, SceneMesh};
-use wgpu::util::DeviceExt;
+use solidcraft_viewport::hatch::Hatch;
+use solidcraft_viewport::{AnalysisMode, Camera, Rgb, SECTION_CAP, Scene, SceneMesh};
 
 use crate::view::{AccessMap, DrawStats, Frame, GpuScene, GpuTarget, Palette, PaletteIndex, Renderer, analysis_colors, analysis_uniform};
 use crate::{GpuError, Result, caught, error_scopes};
@@ -56,6 +55,9 @@ struct State {
     /// The last picture's scene key and accessibility map version (each picture uploads anew).
     key: u64,
     access_version: u64,
+    /// The resolve textures cleared before their first resolve (tests count them).
+    #[cfg(test)]
+    resolve_clears: u32,
 }
 
 impl Capturer {
@@ -88,7 +90,14 @@ impl Capturer {
             samples,
             depth,
             max_side,
-            state: Mutex::new(State { renderer, background, key: 0, access_version: 0 }),
+            state: Mutex::new(State {
+                renderer,
+                background,
+                key: 0,
+                access_version: 0,
+                #[cfg(test)]
+                resolve_clears: 0,
+            }),
             device,
             queue,
             lost: Arc::default(),
@@ -122,11 +131,11 @@ impl Capturer {
         self.is_lost()
     }
 
-    /// A device of its own, without a window (native only): the adapter the `SOLIDCRAFT_GPU`
-    /// policy picks ([`crate::select`]).
+    /// A device of its own, without a window (native only): the adapter `policy` picks
+    /// ([`crate::select`]).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn headless() -> Result<Self> {
-        let (adapter, device, queue) = crate::open_headless()?;
+    pub fn headless(policy: crate::select::Policy) -> Result<Self> {
+        let (adapter, device, queue) = crate::open_headless(policy)?;
         // Errors are caught per picture (error scopes); anything else is logged, never a panic.
         device.on_uncaptured_error(Arc::new(|e: wgpu::Error| log::error!("GPU: {e}")));
         let lost = watch_lost(&device);
@@ -135,8 +144,8 @@ impl Capturer {
 
     /// As [`Capturer::headless`], drawing with the depth format `depth` ([`Capturer::with_depth`]).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn headless_with_depth(depth: wgpu::TextureFormat) -> Result<Self> {
-        let (adapter, device, queue) = crate::open_headless()?;
+    pub fn headless_with_depth(policy: crate::select::Policy, depth: wgpu::TextureFormat) -> Result<Self> {
+        let (adapter, device, queue) = crate::open_headless(policy)?;
         device.on_uncaptured_error(Arc::new(|e: wgpu::Error| log::error!("GPU: {e}")));
         let lost = watch_lost(&device);
         Ok(Self::with_depth(&adapter, device, queue, depth)?.watching(lost))
@@ -145,8 +154,8 @@ impl Capturer {
     /// As [`Capturer::headless`], without multisampling: one sample per pixel, as the viewport
     /// draws where 4× isn't available (some browsers and devices, or MSAA turned off).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn headless_single_sample() -> Result<Self> {
-        let (adapter, device, queue) = crate::open_headless()?;
+    pub fn headless_single_sample(policy: crate::select::Policy) -> Result<Self> {
+        let (adapter, device, queue) = crate::open_headless(policy)?;
         device.on_uncaptured_error(Arc::new(|e: wgpu::Error| log::error!("GPU: {e}")));
         let depth = crate::depth_format(&device, true);
         let lost = watch_lost(&device);
@@ -182,17 +191,30 @@ impl Capturer {
     /// [`Capturer::rgba`] with `highlight` drawn as the viewport draws its highlight scene
     /// (selection and hover feedback), over the model scene.
     pub fn rgba_highlighted(&self, scene: &Scene, highlight: Option<GpuScene>, cam: &Camera, width: u32, height: u32) -> Result<Vec<u8>> {
-        self.draw(scene, highlight, cam, width, height).map(|(rgba, _)| rgba)
+        self.draw(scene, highlight, cam, [width, height], 0.0).map(|(rgba, _)| rgba)
+    }
+
+    /// [`Capturer::rgba`] with ambient occlusion of `radius` (world units), as the viewport
+    /// shades with it on.
+    pub fn rgba_occluded(&self, scene: &Scene, cam: &Camera, width: u32, height: u32, radius: f32) -> Result<Vec<u8>> {
+        self.draw(scene, None, cam, [width, height], radius).map(|(rgba, _)| rgba)
     }
 
     /// [`Capturer::rgba`] and what the picture drew ([`DrawStats`]). Both come from the same
     /// turn on the device, so another thread's picture can't put its counts in their place.
     pub fn rgba_with_stats(&self, scene: &Scene, cam: &Camera, width: u32, height: u32) -> Result<(Vec<u8>, DrawStats)> {
-        self.draw(scene, None, cam, width, height)
+        self.draw(scene, None, cam, [width, height], 0.0)
     }
 
     /// The picture and what it drew, both read while this call has the device to itself.
-    fn draw(&self, scene: &Scene, highlight: Option<GpuScene>, cam: &Camera, width: u32, height: u32) -> Result<(Vec<u8>, DrawStats)> {
+    fn draw(
+        &self,
+        scene: &Scene,
+        highlight: Option<GpuScene>,
+        cam: &Camera,
+        [width, height]: [u32; 2],
+        ao_radius: f32,
+    ) -> Result<(Vec<u8>, DrawStats)> {
         if !(1..=self.max_side).contains(&width) || !(1..=self.max_side).contains(&height) {
             return Err(GpuError::Render(format!("a picture is 1 to {} pixels a side, not {width} × {height}", self.max_side)));
         }
@@ -211,11 +233,18 @@ impl Capturer {
             _ => None,
         };
         let mut frame = frame(scene, cam, [width, height], state.key, access);
+        frame.ao_radius = ao_radius;
         // Always a highlight scene of the picture's own, empty without one: the renderer keeps
         // its last highlight scene while the slot is empty (as the viewport does until the next
         // is built), so the previous picture's highlight would show in this one.
         frame.hl_key = state.key;
         frame.hl_slot = Arc::new(Mutex::new(Some(highlight.unwrap_or_default())));
+        self.picture(state, &frame, scene.background.unwrap_or(BACKGROUND), [width, height])
+    }
+
+    /// `frame` drawn over the `background` gradient, read back as straight RGBA, and what it
+    /// drew (read while the caller holds `state`).
+    fn picture(&self, state: &mut State, frame: &Frame, (top, bottom): (Rgb, Rgb), [width, height]: [u32; 2]) -> Result<(Vec<u8>, DrawStats)> {
         let (device, queue) = (&self.device, &self.queue);
         let scopes = error_scopes(device);
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
@@ -236,10 +265,27 @@ impl Capturer {
         let depth = texture("sc_capture_depth", self.depth, self.samples, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let (resolved_view, depth_view) = (resolved.create_view(&Default::default()), depth.create_view(&Default::default()));
         let multisampled_view = multisampled.as_ref().map(|t| t.create_view(&Default::default()));
-        let (top, bottom) = scene.background.unwrap_or(BACKGROUND);
-        let background = background_vertices(device, top, bottom);
+        let background = match background_vertices(device, top, bottom) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = caught(scopes);
+                return Err(e);
+            }
+        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sc_capture") });
-        state.renderer.prepare(device, queue, &mut encoder, &frame);
+        // Multisampled, the picture's texture is written only by the resolve: cleared first, or
+        // some AMD Radeon Direct3D 12 drivers read it back black or as garbage (#10140), as the
+        // viewport's resolve targets showed nothing until they were cleared (#6828).
+        let _cleared = crate::view::clear_resolve_targets(&mut encoder, multisampled_view.is_some().then_some(&resolved_view));
+        #[cfg(test)]
+        {
+            state.resolve_clears += _cleared;
+        }
+        state.renderer.prepare(device, queue, &mut encoder, frame);
+        if let Some(reason) = state.renderer.take_refused_upload() {
+            let _ = caught(scopes);
+            return Err(GpuError::Render(reason));
+        }
         {
             let (view, resolve_target, store) = match &multisampled_view {
                 Some(ms) => (ms, Some(&resolved_view), wgpu::StoreOp::Discard),
@@ -271,7 +317,7 @@ impl Capturer {
             pass.set_pipeline(&state.background);
             pass.set_vertex_buffer(0, background.slice(..));
             pass.draw(0..6, 0..1);
-            state.renderer.paint(&frame, &mut pass, [0.0, 0.0, width as f32, height as f32]);
+            state.renderer.paint(frame, &mut pass, [0.0, 0.0, width as f32, height as f32]);
         }
         let row = width * 4;
         let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -321,60 +367,73 @@ impl Capturer {
     /// [`Capturer::rgba`] as PNG bytes.
     pub fn png(&self, scene: &Scene, cam: &Camera, width: u32, height: u32) -> Result<Vec<u8>> {
         let rgba = self.rgba(scene, cam, width, height)?;
-        solidcraft_render::png(width as usize, height as usize, rgba).ok_or_else(|| GpuError::Render("PNG encoding failed".into()))
+        solidcraft_viewport::png(width as usize, height as usize, rgba).ok_or_else(|| GpuError::Render("PNG encoding failed".into()))
     }
 }
 
-/// The process's headless capturer (native only), opened on first use under the `SOLIDCRAFT_GPU`
-/// policy and kept; the error when no adapter qualifies or the device fails (not retried).
+/// The process's headless capturer (native only), opened on first use on the adapter `policy`
+/// picks and kept, whatever later calls pass; the error when no adapter qualifies or the device
+/// fails (not retried). A host passes the same policy every time.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn shared() -> std::result::Result<&'static Capturer, &'static GpuError> {
+pub fn shared(policy: crate::select::Policy) -> std::result::Result<&'static Capturer, &'static GpuError> {
     static SHARED: std::sync::OnceLock<Result<Capturer>> = std::sync::OnceLock::new();
-    SHARED.get_or_init(Capturer::headless).as_ref()
+    SHARED.get_or_init(|| Capturer::headless(policy)).as_ref()
 }
 
 /// What draws this process's headless pictures (native only): the shared headless device, or the
-/// CPU rasterizer where the `SOLIDCRAFT_GPU` policy lands there (`cpu`, or `auto` with no
-/// qualifying adapter).
+/// CPU rasterizer where the policy lands there (`cpu`, or `auto` with no qualifying adapter).
 #[cfg(not(target_arch = "wasm32"))]
 pub enum Headless {
     Gpu(&'static Capturer),
     Cpu,
 }
 
-/// [`Headless`] under the `SOLIDCRAFT_GPU` policy; an error when the policy is `hardware` or
-/// `software` and no adapter of that tier opens (or the variable names no policy).
+/// [`Headless`] under `policy`; the error when the policy is `hardware` or `software` and no
+/// adapter of that tier opens.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn headless() -> std::result::Result<Headless, String> {
+pub fn headless(policy: crate::select::Policy) -> std::result::Result<Headless, &'static GpuError> {
     use crate::select::Policy;
-    let policy = Policy::from_env()?;
     if policy == Policy::Cpu {
         return Ok(Headless::Cpu);
     }
-    match shared() {
+    match shared(policy) {
         Ok(c) => Ok(Headless::Gpu(c)),
         Err(e) if policy == Policy::Auto => {
             log::warn!("pictures are drawn by the CPU rasterizer: {e}");
             Ok(Headless::Cpu)
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(e),
     }
 }
 
-/// `scene` drawn by [`headless`]: straight RGBA and the renderer that drew it (`gpu`,
-/// `gpu-software` or `cpu`). The CPU rasterizer draws no surface analysis, highlights or legends.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn headless_rgba(scene: &Scene, cam: &Camera, width: u32, height: u32) -> std::result::Result<(Vec<u8>, &'static str), String> {
-    match headless()? {
-        Headless::Gpu(c) => c.rgba(scene, cam, width, height).map(|rgba| (rgba, c.renderer())).map_err(|e| e.to_string()),
-        Headless::Cpu => {
-            if !(1..=MAX_SIDE).contains(&width) || !(1..=MAX_SIDE).contains(&height) {
-                return Err(format!("a picture is 1 to {MAX_SIDE} pixels a side, not {width} × {height}"));
+impl Headless {
+    /// `scene` drawn: straight RGBA and the renderer that drew it (`gpu`, `gpu-software` or
+    /// `cpu`). The CPU rasterizer draws no surface analysis, highlights or legends.
+    pub fn rgba(&self, scene: &Scene, cam: &Camera, width: u32, height: u32) -> std::result::Result<(Vec<u8>, &'static str), String> {
+        match self {
+            Headless::Gpu(c) => c.rgba(scene, cam, width, height).map(|rgba| (rgba, c.renderer())).map_err(|e| e.to_string()),
+            Headless::Cpu => {
+                if !(1..=MAX_SIDE).contains(&width) || !(1..=MAX_SIDE).contains(&height) {
+                    return Err(format!("a picture is 1 to {MAX_SIDE} pixels a side, not {width} × {height}"));
+                }
+                let canvas = solidcraft_viewport::render(scene, cam, width as usize, height as usize);
+                Ok((canvas.rgba, "cpu"))
             }
-            let canvas = solidcraft_render::render(scene, cam, width as usize, height as usize);
-            Ok((canvas.rgba, "cpu"))
         }
     }
+}
+
+/// `scene` drawn by [`headless`] under `policy` ([`Headless::rgba`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn headless_rgba(
+    policy: crate::select::Policy,
+    scene: &Scene,
+    cam: &Camera,
+    width: u32,
+    height: u32,
+) -> std::result::Result<(Vec<u8>, &'static str), String> {
+    headless(policy).map_err(|e| e.to_string())?.rgba(scene, cam, width, height)
 }
 
 /// The frame parameters of a picture: the scene's own geometry as the model scene (key `key`),
@@ -399,9 +458,11 @@ fn frame(scene: &Scene, cam: &Camera, [width, height]: [u32; 2], key: u64, acces
         pv_hide: false,
         preview_bounds: None,
         view_proj: cam.view_proj(f64::from(width) / f64::from(height.max(1)), scene.radius.max(1.0)).to_f32(),
+        turned_depth: None,
         back: cam.back().to_f32(),
         size_px: [width as f32, height as f32],
-        clip: scene.clip.map_or([0.0; 4], |(n, d)| [n.x as f32, n.y as f32, n.z as f32, d as f32]),
+        clip: crate::view::clip_planes(&scene.clip),
+        clip_hatch: crate::view::clip_hatches(&(0..scene.clip.len()).map(|k| scene.clip_hatch.get(k).copied().unwrap_or(k)).collect::<Vec<_>>()),
         cap: [f32::from(cap.0) / 255.0, f32::from(cap.1) / 255.0, f32::from(cap.2) / 255.0, if scene.plain_cap { 0.0 } else { 1.0 }],
         images: Vec::new(),
         clouds: Vec::new(),
@@ -417,18 +478,19 @@ fn frame(scene: &Scene, cam: &Camera, [width, height]: [u32; 2], key: u64, acces
         hover_tint: [0.0; 3],
         selection_tint: [0.0; 3],
         hatch: scene.part_hatch.map_or_else(Default::default, |c| c.map(|Rgb(r, g, b)| [r, g, b].map(|x| f32::from(x) / 255.0))),
+        moving: None,
     }
 }
 
 /// A scene's meshes and lines as the viewport's model scene: faces in their colours (smooth
 /// normals; a face normal where a vertex has none), lines as wide lines (over everything when
 /// `on_top`), the grid under everything. A body whose appearance is see-through
-/// ([`solidcraft_render::SceneMesh::glass`]) goes into the scene's glass, drawn as the viewport
+/// ([`solidcraft_viewport::SceneMesh::glass`]) goes into the scene's glass, drawn as the viewport
 /// draws glass: far sides first, then near sides, so what lies inside it shows through. When the
 /// scene hatches its cut by part ([`Scene::part_hatch`]), each body's colours are palette entries
 /// of its own, carrying its hatch.
 pub fn scene_geometry(scene: &Scene) -> GpuScene {
-    let by_part = scene.part_hatch.is_some() && scene.clip.is_some();
+    let by_part = scene.part_hatch.is_some() && !scene.clip.is_empty();
     // Per body, its colours' stable entries (by part), and the stable palette they make.
     let mut own: Vec<HashMap<[u8; 4], PaletteIndex>> = Vec::new();
     let mut stable: Vec<[u8; 4]> = Vec::new();
@@ -466,12 +528,14 @@ pub fn scene_geometry(scene: &Scene) -> GpuScene {
             let flat = (b - a).cross(c - a).normalized().unwrap_or(Vec3::Z);
             for (k, p) in t.iter().zip([a, b, c]) {
                 let n = mesh.normals.get(*k as usize).copied().filter(|n| n.is_finite() && n.len() > 0.5).unwrap_or(flat);
-                if m.glass() {
-                    sc.glass_tri(p.to_f32(), n.to_f32(), col);
-                } else if m.closed {
-                    sc.tri(p.to_f32(), n.to_f32(), col);
-                } else {
-                    sc.open_tri(p.to_f32(), n.to_f32(), col);
+                // A mesh with values gives each vertex its own ([`SceneMesh::values`]).
+                match m.values.as_ref().and_then(|v| v.get(*k as usize)).copied() {
+                    Some(value) if m.glass() => sc.glass_tri_value(p.to_f32(), n.to_f32(), col, value),
+                    Some(value) if m.closed => sc.tri_value(p.to_f32(), n.to_f32(), col, value),
+                    Some(value) => sc.open_tri_value(p.to_f32(), n.to_f32(), col, value),
+                    None if m.glass() => sc.glass_tri(p.to_f32(), n.to_f32(), col),
+                    None if m.closed => sc.tri(p.to_f32(), n.to_f32(), col),
+                    None => sc.open_tri(p.to_f32(), n.to_f32(), col),
                 }
             }
         }
@@ -538,7 +602,7 @@ fn fs(i: O) -> @location(0) vec4<f32> {
 /// Background vertex: NDC position (2 × f32) and sRGB colour (4 × u8).
 const BACKGROUND_VERTEX: u64 = 12;
 
-fn background_vertices(device: &wgpu::Device, top: Rgb, bottom: Rgb) -> wgpu::Buffer {
+fn background_vertices(device: &wgpu::Device, top: Rgb, bottom: Rgb) -> Result<wgpu::Buffer> {
     let mut bytes = Vec::with_capacity(6 * BACKGROUND_VERTEX as usize);
     let corner = |x: f32, y: f32| (x, y, if y > 0.0 { top } else { bottom });
     for (x, y, c) in [corner(-1.0, 1.0), corner(1.0, 1.0), corner(1.0, -1.0), corner(-1.0, 1.0), corner(1.0, -1.0), corner(-1.0, -1.0)] {
@@ -546,11 +610,7 @@ fn background_vertices(device: &wgpu::Device, top: Rgb, bottom: Rgb) -> wgpu::Bu
         bytes.extend_from_slice(&y.to_le_bytes());
         bytes.extend_from_slice(&[c.0, c.1, c.2, 255]);
     }
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("sc_capture_background"),
-        contents: &bytes,
-        usage: wgpu::BufferUsages::VERTEX,
-    })
+    crate::buffer_init(device, "sc_capture_background", &bytes, wgpu::BufferUsages::VERTEX)
 }
 
 fn background_pipeline(device: &wgpu::Device, samples: u32, depth: wgpu::TextureFormat) -> wgpu::RenderPipeline {
@@ -596,8 +656,8 @@ fn background_pipeline(device: &wgpu::Device, samples: u32, depth: wgpu::Texture
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::TRI_SIZE;
-    use solidcraft_geom::Mesh;
+    use crate::view::{TRI_COLOR_AT, TRI_SIZE};
+    use solidcore_tess::Mesh;
     use std::sync::Arc;
 
     /// One triangle facing the camera.
@@ -613,7 +673,7 @@ mod tests {
 
     /// The colour of a triangle `scene_geometry` wrote (its first vertex's palette entry).
     fn color(scene: &GpuScene, bytes: &[u8]) -> Option<[u8; 4]> {
-        let index = bytes.get(TRI_SIZE - 4..TRI_SIZE)?.try_into().ok().map(u32::from_le_bytes)?;
+        let index = bytes.get(TRI_COLOR_AT..TRI_COLOR_AT + 4)?.try_into().ok().map(u32::from_le_bytes)?;
         scene.palette.get(crate::view::PaletteIndex(index))
     }
 
@@ -629,6 +689,7 @@ mod tests {
             opacity,
             closed: true,
             hatch: Default::default(),
+            values: None,
         };
         let geometry = |opacity: f32| scene_geometry(&Scene { meshes: vec![mesh(opacity)], ..Default::default() });
 
@@ -649,6 +710,157 @@ mod tests {
         assert_eq!(color(&trace, &trace.glass).map(|c| c[3]), Some(13), "0.05 of 255");
     }
 
+    /// A multisampled picture is resolved into a new texture nothing else writes. On some AMD
+    /// Radeon Direct3D 12 drivers an uncleared one read back black or as garbage, so `ui.render`
+    /// and the MCP screenshot came back black while the window showed the model (#10140). Each
+    /// picture clears its new resolve texture once, before the resolve, and shows its background.
+    #[test]
+    fn a_multisampled_picture_clears_its_resolve_texture_before_the_resolve() {
+        let Ok(capturer) = Capturer::headless(crate::test_env::policy()) else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let clears = || capturer.state.lock().map(|s| s.resolve_clears).unwrap_or(u32::MAX);
+        let rgba = capturer.rgba(&Scene::default(), &Camera::default(), 32, 24).unwrap();
+        // The light background gradient, opaque, in every corner: not black, not transparent.
+        for at in [0, 31, 23 * 32, 23 * 32 + 31] {
+            let p = rgba.get(at * 4..at * 4 + 4).unwrap();
+            assert!(p[0] > 150 && p[1] > 150 && p[2] > 150 && p[3] == 255, "pixel {at} shows the background: {p:?}");
+        }
+        let expected = u32::from(capturer.samples() > 1);
+        assert_eq!(clears(), expected, "the multisampled picture's resolve texture is cleared first; one sample resolves nothing");
+        capturer.rgba(&Scene::default(), &Camera::default(), 32, 24).unwrap();
+        assert_eq!(clears(), 2 * expected, "every picture has a new resolve texture, cleared again");
+        // One sample: the picture's own pass clears the texture it draws into.
+        if let Ok(single) = Capturer::headless_single_sample(crate::test_env::policy()) {
+            single.rgba(&Scene::default(), &Camera::default(), 32, 24).unwrap();
+            assert_eq!(single.state.lock().map(|s| s.resolve_clears).ok(), Some(0));
+        }
+    }
+
+    /// Bodies dragged as a layer of their own ([`crate::view::MovingLayer`]) are drawn moved by
+    /// its transform: the picture is the one of the bodies built where they were moved to, and
+    /// the bodies go back to the model scene when the drag ends (on this machine's GPU, skipped
+    /// without one).
+    #[test]
+    fn a_moving_layer_is_drawn_moved_by_its_transform() {
+        let Ok(capturer) = Capturer::headless_single_sample(crate::test_env::policy()) else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let wide = Arc::new(Mesh {
+            positions: vec![Vec3::new(-1.0, 0.0, -0.5), Vec3::new(0.2, 0.0, -0.5), Vec3::new(-0.4, 0.0, 0.6)],
+            ..(*sheet()).clone()
+        });
+        let shift = Vec3::new(0.6, 0.0, 0.3);
+        let at = |offset: Vec3| {
+            let mesh = Mesh { positions: wide.positions.iter().map(|p| *p + offset).collect(), ..(*wide).clone() };
+            Scene { meshes: vec![SceneMesh::solid(Arc::new(mesh), Rgb(200, 30, 30))], ..Default::default() }
+        };
+        // Two and a half units of the view's height either side.
+        let cam = Camera { distance: 6.0, ..Camera::default() };
+        let size = [64, 64];
+        let slot = |sc: GpuScene| Arc::new(Mutex::new(Some(sc)));
+        let Ok(mut state) = capturer.state.lock() else { panic!("capturer state") };
+        // Drawn where it was moved to.
+        let moved = frame(&at(shift), &cam, size, 1, None);
+        let expected = capturer.picture(&mut state, &moved, BACKGROUND, size).unwrap().0;
+        assert!(expected.chunks(4).filter(|p| p[0] > p[1].saturating_add(60)).count() > 50, "the body shows");
+        // Drawn where it was, moved by the layer; the model scene empty.
+        let mut layered = frame(&Scene::default(), &cam, size, 2, None);
+        let transform = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [shift.x as f32, shift.y as f32, shift.z as f32, 1.0]];
+        layered.moving = Some(crate::view::MovingLayer { key: 3, slot: slot(scene_geometry(&at(Vec3::ZERO))), transform });
+        let drawn = capturer.picture(&mut state, &layered, BACKGROUND, size).unwrap().0;
+        let differ = expected.chunks(4).zip(drawn.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 8)).count();
+        assert!(differ <= 4, "{differ} pixels differ from the body drawn where it was moved to");
+        // The drag over: the model scene draws it, and nothing is drawn twice or left behind.
+        let after = frame(&at(shift), &cam, size, 4, None);
+        let back = capturer.picture(&mut state, &after, BACKGROUND, size).unwrap().0;
+        assert_eq!(back, expected);
+    }
+
+    /// A frame without a moving layer lets the layer's scene go: the same key handed in again
+    /// with nothing in its slot draws nothing, and a new key takes the scene waiting in its slot.
+    /// So who leaves its layer out of a frame (a preview hidden for a pick) hands the scene over
+    /// again under a new key (on this machine's GPU, skipped without one).
+    #[test]
+    fn a_moving_layer_left_out_of_a_frame_is_drawn_again_only_under_a_new_key() {
+        let Ok(capturer) = Capturer::headless_single_sample(crate::test_env::policy()) else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let wide = Mesh { positions: vec![Vec3::new(-1.0, 0.0, -0.5), Vec3::new(0.2, 0.0, -0.5), Vec3::new(-0.4, 0.0, 0.6)], ..(*sheet()).clone() };
+        let body = scene_geometry(&Scene { meshes: vec![SceneMesh::solid(Arc::new(wide), Rgb(200, 30, 30))], ..Default::default() });
+        let cam = Camera { distance: 6.0, ..Camera::default() };
+        let size = [64, 64];
+        let transform = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let Ok(mut state) = capturer.state.lock() else { panic!("capturer state") };
+        // The picture of an empty model scene with the layer `moving`, and how much of it is red.
+        let mut picture = |model: u64, moving: Option<(u64, Option<GpuScene>)>| {
+            let mut f = frame(&Scene::default(), &cam, size, model, None);
+            f.moving = moving.map(|(key, scene)| crate::view::MovingLayer { key, slot: Arc::new(Mutex::new(scene)), transform });
+            let drawn = capturer.picture(&mut state, &f, BACKGROUND, size).unwrap().0;
+            let red = drawn.chunks(4).filter(|p| p[0] > p[1].saturating_add(60)).count();
+            (drawn, red)
+        };
+        let (shown, red) = picture(1, Some((7, Some(body.clone()))));
+        assert!(red > 50, "the layer's body shows");
+        assert_eq!(picture(2, Some((7, None))).0, shown, "the same key again: the scene taken stays");
+        assert_eq!(picture(3, None).1, 0, "a frame without the layer");
+        assert_eq!(picture(4, Some((7, None))).1, 0, "the scene went with that frame: its key alone brings nothing back");
+        assert_eq!(picture(5, Some((8, Some(body)))).0, shown, "handed over again under a new key");
+    }
+
+    /// A dragged component's parts drawn as instances (one copy of a part's triangles, placed
+    /// many times) move with its layer too, lit flat or smooth: the layer built where the drag
+    /// found them and moved by its transform draws what the model scene draws with the
+    /// placements moved.
+    #[test]
+    fn a_moving_layers_instances_are_drawn_moved_by_its_transform() {
+        let Ok(capturer) = Capturer::headless_single_sample(crate::test_env::policy()) else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let flat = Mesh { positions: vec![Vec3::new(-1.0, 0.0, -0.5), Vec3::new(0.2, 0.0, -0.5), Vec3::new(-0.4, 0.0, 0.6)], ..(*sheet()).clone() };
+        let smooth = Mesh { normals: vec![Vec3::new(-0.2, -1.0, 0.0), Vec3::new(0.2, -1.0, 0.0), Vec3::new(0.0, -1.0, 0.2)], ..flat.clone() };
+        let shift = [0.6_f32, 0.0, 0.3];
+        let cam = Camera { distance: 6.0, ..Camera::default() };
+        let size = [64, 64];
+        let Ok(mut state) = capturer.state.lock() else { panic!("capturer state") };
+        for (k, mesh) in [flat, smooth].iter().enumerate() {
+            let tris = Arc::new(crate::view::SharedTris::new(mesh));
+            assert_eq!(tris.flat, k == 0);
+            let placed_at = |[x, y, z]: [f32; 3]| {
+                let mut inst = crate::view::InstancedMesh {
+                    key: 1,
+                    tris: tris.clone(),
+                    instances: Vec::new(),
+                    look: crate::view::InstanceLook::Opaque,
+                    levels: Vec::new(),
+                    closed: true,
+                };
+                let mut sc = GpuScene::default();
+                let red = sc.color([200, 30, 30, 255]);
+                inst.place([[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z]], red);
+                sc.instanced = vec![inst];
+                Arc::new(Mutex::new(Some(sc)))
+            };
+            let key = 10 * k as u64;
+            // The model scene with the placement where it was moved to.
+            let mut moved = frame(&Scene::default(), &cam, size, key + 1, None);
+            moved.slot = placed_at(shift);
+            let expected = capturer.picture(&mut state, &moved, BACKGROUND, size).unwrap().0;
+            assert!(expected.chunks(4).filter(|p| p[0] > p[1].saturating_add(60)).count() > 50, "the part shows");
+            // Placed where it was, in the layer moved by the drag; the model scene empty.
+            let mut layered = frame(&Scene::default(), &cam, size, key + 2, None);
+            let transform = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [shift[0], shift[1], shift[2], 1.0]];
+            layered.moving = Some(crate::view::MovingLayer { key: key + 3, slot: placed_at([0.0; 3]), transform });
+            let drawn = capturer.picture(&mut state, &layered, BACKGROUND, size).unwrap().0;
+            let differ = expected.chunks(4).zip(drawn.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 8)).count();
+            assert!(differ <= 4, "flat {}: {differ} pixels differ from the part placed where it was moved to", k == 0);
+        }
+    }
+
     /// A face with a colour of its own is drawn in that colour, and takes its body's opacity:
     /// painting one face does not make the body solid again.
     #[test]
@@ -660,6 +872,7 @@ mod tests {
             opacity: 0.5,
             closed: true,
             hatch: Default::default(),
+            values: None,
         };
         let sc = scene_geometry(&Scene { meshes: vec![mesh], ..Default::default() });
         assert_eq!(sc.tris.len(), 0);
