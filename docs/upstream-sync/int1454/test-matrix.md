@@ -10,8 +10,9 @@ artifact that proves it.
 | --- | --- | --- |
 | CI (Linux) | run `43955685642` success | no new failure |
 | Lists / Kernel rig / Fillet rig / Packaging lint | `43955685446` / `43955685477` / `43955685536` / `43955685558` success | unchanged |
-| Known failures | `tests/KNOWN_FAILING_TESTS`, 42 lines | list may only shrink; no skip/ignore additions |
+| Known failures | `tests/KNOWN_FAILING_TESTS`, 33 test entries (42 lines) | list may only shrink; no skip/ignore additions |
 | Local full gate | `cargo xtask ci` | run for shared/contract changes |
+| Vendored kernel suite | solidcore's own `xtask`/CI inside `solidcore/` | the kernel PR names which of those gates IntCAD runs and which it explicitly does not |
 | E2E entry | `/home/hyjing/Code/intgral/intcad/.dev/e2e/bin/intcad-e2e` | only in the main checkout |
 
 ## 2. Per-area PR gates

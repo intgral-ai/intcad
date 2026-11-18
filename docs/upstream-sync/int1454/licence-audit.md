@@ -28,10 +28,11 @@ not new upstream brand changes.
 | `crates/look` | 455 | 15,202 text lines + 2 TTF (icon masters, themes) | Blocked (§1b) |
 | `crates/theme` | 5 | 2,677 lines | Blocked (§1c) |
 | `assets/branding` | 10 | 84 text lines + 4 PNG | Blocked for new content (§1d) |
-| `assets/icons/app` | 18 | 368 text lines + 12 binary | Blocked for new content (§1d) |
+| `assets/icons/app` | 18 | 173 text lines (svg/json/rs) + 15 binary (png/ico/icns/car) | Blocked for new content (§1d) |
 | `assets/icons/ui` | **absent at v0.44.1** | — | upstream moved UI icons into `crates/look/icons` |
 
-≈ 603 files, **87,233 text lines**, are unavailable on licence grounds. Third-party material
+≈ 603 files, **77,112 text lines** (sum of the rows; binaries excluded), are unavailable on
+licence grounds. Third-party material
 inside those folders keeps its own licence (IBM Plex fonts, OFL 1.1), but that does not open the
 surrounding brand material.
 

@@ -85,8 +85,9 @@ when they become evidence.
 4. **Doc persistence**: IntCAD must adopt upstream's Doc/Format/save implementation as the single
    implementation. Upstream gained a `crates/format` crate (absent in develop); the exact format
    version delta and compatibility risk are tracked in the ledger, not assumed here.
-5. **Develop's `NOTICE` is stale**: it says the kernel "builds on the truck crates", while
-   `crates/kernel/Cargo.toml` depends on `solidcore-record` and `solidcraft-smlib`. This is an
+5. **Develop's `NOTICE` and kernel docs are stale**: `NOTICE` says the kernel "builds on the truck
+   crates" and `crates/kernel/src/lib.rs` still documents truck, while `Cargo.lock` contains **no
+   `truck*` package** and the kernel depends on `solidcore-record`/`solidcraft-smlib`. This is an
    existing attribution/accuracy defect to fix during the licence audit, not a sync result.
 
 ## 6. CI and test baseline (develop `0fd92bea2`)
@@ -99,9 +100,13 @@ Packaging lint `43955685558`.
   skills, layers, UI containers, mesh decisions, workspace clippy, wasm check, doc tests,
   web-offline, selected nextest). It does **not** run action matrix, kernel rig, packaging matrix
   or the full native suite.
-- Known failures are pinned in `tests/KNOWN_FAILING_TESTS` (**42** entries) and checked by
-  `cargo xtask known-failing`; a listed test that starts passing also fails the gate. The sync may
-  not add entries, skip tests or loosen assertions.
+- Known failures are pinned in `tests/KNOWN_FAILING_TESTS` (**33 test entries** in 42 lines; the
+  rest are the header comment) and checked by `cargo xtask known-failing`; a listed test that
+  starts passing also fails the gate. The sync may not add entries, skip tests or loosen
+  assertions.
+- Toolchain: develop has **no `rust-toolchain.toml`** and every job uses
+  `dtolnay/rust-toolchain@stable`; v0.44.1 pins **1.99.1** (`rust-toolchain.toml`, workspace
+  `rust-version = "1.95"`). The pin is a Phase 1 prerequisite.
 - Validation policy: `docs/validation-policy.md`.
 - E2E entry lives only in the main checkout: `/home/hyjing/Code/intgral/intcad/.dev/e2e/bin/`
   (`intcad-e2e`, `intcad-e2e-mcp`, `intcad-e2e-win`, …). Worktrees have no `.dev/e2e` copy.

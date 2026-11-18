@@ -16,6 +16,7 @@ work is sliced, and what still needs a human decision.
 | [security-findings.md](security-findings.md) | verified security issues in today's tree and the upstream fixes that address them |
 | [review-brief.md](review-brief.md) | what an independent reviewer must check before the gate passes |
 | [generated/commits.tsv](generated/commits.tsv) | every non-merge upstream commit with area labels |
+| [tools/coverage.py](tools/coverage.py) | the coverage proof: assigns every commit to an area, exits non-zero on an orphan |
 
 Frozen references: upstream **v0.44.1** = `e151d5ea6866fb055e011379153fb1cae0566f22`,
 IntCAD **develop** = `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f`, fork point

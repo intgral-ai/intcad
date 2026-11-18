@@ -49,11 +49,13 @@ ui-egui        -> color, control, control-egui, engine, gpu, look, space-mouse, 
 
 The solidcore tree vendored at v0.44.1 is commit `524be9e16707f726586a7ab8696d87fd633e2096`
 (root tree `8b5c0144…`), 2026-11-17. IntCAD's pinned `8ddce901…` (solidcore) and `f5e8e9a2…`
-(solidcore-record) are 2026-11-02/03 and are **3,501 commits behind** that snapshot. The pinned
-revs and the release snapshot have **disjoint history** (`git merge-base` exits 1), so the
-kernel migration is not a fast-forward: it replaces the dependency payload and re-validates every
-kernel behaviour. IntCAD holds no local solidcore patches (it consumes the crate), which keeps the
-replacement tractable.
+(solidcore-record) are 2026-11-02/03, 282 commits apart from each other. Measured **in the
+solidcore repository**, `8ddce901` and the snapshot `524be9e1` have **no common ancestor**
+(`git merge-base` exits 1) and are **3,501 commits** apart
+(`git rev-list --count 8ddce901..524be9e1`), so the kernel migration is not a fast-forward: it
+replaces the dependency payload and re-validates every kernel behaviour. IntCAD holds no local
+solidcore patches (it consumes the crate), which keeps the replacement tractable. Note the pin
+predates `solidcore-ops`/`-tess`/`-step` entirely, so the new kernel cannot compile at it.
 
 Also a governance defect to settle during the kernel unit: the two pins are different revisions of
 the **same** repository, so `solidcore` and `solidcore-record` can resolve to two source trees.

@@ -14,47 +14,44 @@ Classification in this Phase 0 draft means **planned disposition**, not complete
 
 ## 0. Coverage
 
-Every non-merge upstream commit is assigned to at least one unit by path. Counts overlap where a
-commit touches several units, so they do not sum to 4,939.
-
-| Unit group | Commits | Unit group | Commits |
-| --- | --- | --- | --- |
-| K1 solidcore subtree | 701 | A1 MCP | 31 |
-| K2 kernel | 158 | A2 control channel | 12 |
-| K3 geom/smlib/dynamics | 185 | A3 plugins | 5 |
-| K4 kernel corpora | 65 | A4 agent gate | 44 |
-| D1 format | 3 | U1 ui-egui | 559 |
-| D2 doc | 296 | U2 viewport/render/gpu | 50 |
-| D3 engine | 619 | U3 brand + UI plumbing | 73 |
-| D4 sketch | 63 | B1 CI | 104 |
-| D5 io/STEP | 80 | B2 xtask | 84 |
-| X1 retired/moved paths | 2,690 | B3 scripts | 50 |
-| X2 empty process commits | 29 | B4 packaging | 15 |
-| | | B5 vendor | 4 |
-| | | B6 manifests | 92 |
-| | | B7 apps | 88 |
-| | | B8 docs | 494 |
-
-Reproduce:
+Coverage is computed by `tools/coverage.py`, which assigns **every** non-merge commit in
+`06749ac4..v0.44.1` to at least one path area and exits non-zero if one is unassigned. Run:
 
 ```sh
-git log --no-merges --format='%H' 06749ac4..v0.44.1 | wc -l            # 4939
-git log --no-merges --oneline 06749ac4..v0.44.1 -- <unit paths> | wc -l
-# X1 = commits whose every path is absent at v0.44.1 (retired or moved into solidcore/)
-# X2 = 29 commits with an empty tree diff ("port: …" process markers)
+python3 docs/upstream-sync/int1454/tools/coverage.py        # 4939 commits, "all commits assigned", exit 0
 ```
 
-The machine-readable per-commit inventory is `generated/commits.tsv`.
+Result (a commit touching several areas is counted in each, so counts overlap):
 
-The unit tables that follow group paths into functional units, so their per-unit counts differ
-from this path-based table. The path-based table is the coverage check; the unit tables are the
-work plan. Both are reproducible with the commands above.
+| Area | Commits | Ledger units |
+| --- | --- | --- |
+| kernel | 884 | K0–K15 |
+| doc-engine | 753 | D1–D6 |
+| assistant | 80 | A1–A6 |
+| ui | 700 | U1–U22 |
+| build | 298 | B1–B9 |
+| apps | 88 | B7 |
+| docs | 494 | B8 |
+| test-policy | 24 | B9 |
+| retired / moved | 2,700 | X1 |
+| empty (no tree change) | 29 | X2 |
+
+Two further facts, measured separately:
+
+- Commits whose **every** path is absent at v0.44.1: **2,654**. The larger 2,700 above is the
+  path-based "retired" area, which also counts commits that touch a retired path *and* a live one.
+- Of the 29 empty commits, **7** have a `port:` subject; the rest are `blend:`, `wire:`, `fix:`,
+  `difftest:`, `solidcore:` or `Revert` markers with no tree change.
+
+The unit tables below group paths into functional units, so their counts differ from this table.
+The areas are the coverage check; the units are the work plan. `generated/commits.tsv` is a
+per-commit inventory with area labels; it is a navigation aid, not the coverage proof.
 
 ## 1. Kernel / geometry (INT-1490)
 
 | ID | Upstream | Function | IntCAD today | Licence | Deps | Disposition |
 | --- | --- | --- | --- | --- | --- | --- |
-| K0 | 701 commits touching `solidcore/`; snapshot = `524be9e1…` (tree `8b5c0144…`) | Vendored kernel snapshot: B-rep, booleans, blends, tessellation, STEP, difftest/goldens harness | No `solidcore/` tree; git pins `8ddce901…` + `f5e8e9a2…`, **3,501 commits behind**, history disjoint; pin predates `solidcore-ops/-tess/-step` | Apache-2.0 (USD BRep port) + fixtures ODC-By-1.0 | toolchain 1.99.1 | **Adopted** — snapshot replacement, precondition for K1–K10 |
+| K0 | 701 commits touching `solidcore/`; snapshot = `524be9e1…` (tree `8b5c0144…`) | Vendored kernel snapshot: B-rep, booleans, blends, tessellation, STEP, difftest/goldens harness | No `solidcore/` tree; git pins `8ddce901…` (solidcore) + `f5e8e9a2…` (record), 282 commits apart; the pin predates `solidcore-ops/-tess/-step` | Apache-2.0 (USD BRep port) + fixtures ODC-By-1.0 | toolchain 1.99.1 | **Adopted** — snapshot replacement, precondition for K1–K10 |
 | K1 | 34 commits, kernel STEP/IGES I/O | Topology-first STEP reader + AP242 writer now in `solidcore-step` | Absent (fork state); `crates/step` still exists separately | MIT OR Apache-2.0 | K0 | **Adopted** |
 | K2 | 24 commits, blend/fillet/chamfer | Blend refusals as data from ops, wider-than-face rounds, tangent-chain angle | Fork state | MIT OR Apache-2.0 | K0 (`solidcore-ops`) | **Adopted** |
 | K3 | 35 commits, sweep/loft/boundary/surface | Sweep/loft correctness, planar loft walls via solidcore skin | Fork state | MIT OR Apache-2.0 | K0 | **Adopted** |
@@ -71,11 +68,23 @@ work plan. Both are reproducible with the commands above.
 | K14 | 32 commits, `xtask/mesh-decisions.txt` | Removes doc-layer mesh decisions as exact geometry lands | Same as fork | MIT OR Apache-2.0 | doc exact-geometry work | **Adopted** with D2; the list may only shrink |
 | K15 | 4 commits, layering/seam files | `xtask/solidcore-seam.txt`, `-paths`, `-public`, `docs/layers*` | Absent; the seam text in AGENTS.md is ahead of develop | MIT OR Apache-2.0 | K0, K5, K9 | **Adopted** after the deps exist |
 
-Kernel is a **snapshot replacement**, not a bump: develop's pinned revisions and v0.44.1's vendored
-tree have no common ancestor (`git merge-base` exits 1), and the pin does not even contain the
-crates the new kernel imports. **No kernel unit can land before K0**, which makes kernel one
-atomic PR (K0 + the code units it unlocks), guarded by `cargo xtask kernel-cases --known-failing`
-and the oracle rather than by textual merging.
+Kernel is a **snapshot replacement**, not a bump: in the solidcore repository the pinned
+`solidcore` revision `8ddce901` and the vendored snapshot `524be9e1` have **no common ancestor**
+(`git merge-base` exits 1), and the pin does not contain the crates the new kernel imports. The
+distance is `git rev-list --count 8ddce901..524be9e1` = **3,501** commits. Measured with:
+
+```sh
+git clone --filter=blob:none --no-checkout https://github.com/tangency-labs/solidcore /tmp/opencode/solidcore
+cd /tmp/opencode/solidcore
+git merge-base 8ddce901671f1cebd9214a31d21895d725e886c8 524be9e16707f726586a7ab8696d87fd633e2096; echo $?   # 1
+git rev-list --count 8ddce901671f1cebd9214a31d21895d725e886c8..524be9e16707f726586a7ab8696d87fd633e2096   # 3501
+```
+
+**No kernel unit can land before K0**, which makes kernel one atomic PR (K0 + the code units it
+unlocks), guarded by `cargo xtask kernel-cases --known-failing` and the oracle rather than by
+textual merging. K0 also vendors the kernel's **own** test suite and CI workflows; the kernel PR
+must state which of those gates IntCAD runs in its CI and which it deliberately does not, rather
+than dropping them silently.
 
 ## 2. Document / format / engine / assembly / IO (INT-1491)
 
@@ -98,8 +107,9 @@ and the oracle rather than by textual merging.
 | A2 | 12 commits, `crates/control*` | Token transport/protocol split, shared client, `TOO_MANY_CONNECTIONS`, live enable/disable, extra methods | App-local `control_server.rs` + `engine/src/control_auth.rs`; IntCAD method `agent.task.revalidate` | MIT OR Apache-2.0 | — | **Port-selective**: refusal-with-drain; crate extraction **Not Applicable** now |
 | A3 | 26 commits, `crates/craft-plugin*` + engine plugin surface | Wasmtime plugin host: no WASI/network, fuel/memory/deadline caps, staged writes, folder grants, approval hash, safe archive install | **No plugin runtime** (`plugins.rs` is a metadata list) | MIT OR Apache-2.0; pulls `wasmtime` (Apache-2.0 WITH LLVM-exception) | D3, D5 | **Blocked — product decision** (CD-5): new subsystem, new execution surface, new dependency and packaging story; not a migration of existing behaviour |
 | A4 | 44 commits, `ui-egui/src/agent_chat` incl. `7b22bb3e2` | Gate decides on the registered id, reads `command` or `id`, unknown ids refused, `plugin.run` asks | **Vulnerable**: case-sensitive gate vs case-insensitive engine, `id` ignored | MIT OR Apache-2.0 | — | **Adopted now** (security; see `security-findings.md` SEC-1) |
-| A5 | `54b4bb3f4` (STEP decode), `18d82f584` (control) | Hostile-input and availability fixes | Both present in develop | MIT OR Apache-2.0 | K1/D5 for STEP | **Adopted** (SEC-2, SEC-3) |
-| A6 | `12a9a7f0f`, `4d2691e63` | Default-off control channel; opt-in insecure HTTP | IntCAD defaults on; keys only to https/loopback | MIT OR Apache-2.0 | — | **Blocked** pending a Compatibility Decision — see §7 |
+| A5 | `54b4bb3f4` (STEP decode) | Linear-time Part 21 escape decode | **Absent**: `crates/step/src/p21.rs` still searches the tail per unterminated run (O(N²)); the fixed decoder is in the v0.44.1 snapshot (`solidcore-record/src/step/p21.rs`) | MIT OR Apache-2.0 | K0, D5 | **Adopted** via the snapshot, or backported earlier (SEC-2) |
+| A6 | `18d82f584` (control) | Drain unread input past the connection limit so the refusal is received, not reset | Refusal **already sent** (`control_server.rs` sends `too many connections`), but the stream is dropped without a drain | MIT OR Apache-2.0 | — | **Partially covered**: the message exists; adopt the drain/shared-state refinement (SEC-3) |
+| A7 | `12a9a7f0f`, `4d2691e63` | Default-off control channel; opt-in insecure HTTP | IntCAD defaults on; keys only to https/loopback | MIT OR Apache-2.0 | — | **Blocked** pending a Compatibility Decision — see §7 |
 
 ## 4. UI (INT-1493)
 
@@ -109,17 +119,17 @@ logic**, adapted into IntCAD's fork (537 upstream-changed files; 63 also changed
 
 | ID | Upstream | Function | IntCAD today | Licence | Deps | Disposition |
 | --- | --- | --- | --- | --- | --- | --- |
-| U1 | 30 commits, `viewport*` split (`5c99792a8`) | Render math, headless picture, CPU raster, GPU pipelines split out of `render`/`gpu` | Divergent `render`/`gpu` (same content, older) | MIT OR Apache-2.0 | `solidcore-tess` | **Not Applicable as a refactor**; individual fixes portable |
+| U1 | 30 commits, `viewport*` split (`5c99792a8`) | Render math, headless picture, CPU raster, GPU pipelines split out of `render`/`gpu` | Divergent `render`/`gpu` (same content, older); no `viewport` crate | MIT OR Apache-2.0 | `solidcore-tess` | **Adopted** — `doc` depends on `solidcraft-viewport` (6 modules) and the grid/pick logic lives there; the crate split is a prerequisite, not an optional refactor |
 | U2 | 145 commits, camera/navigation fixes | Upright orbit from a rolled view, perspective zoom clamp, orthographic depth drift, polyline picking | Tests absent by name | MIT OR Apache-2.0 | K5 (mesher) for some | **Adopted** (adapt into `render::camera`) |
 | U3 | 30 commits, viewport-gpu draw/perf | Indirect instanced draws, while-loops in `tess.wgsl`, capture OOM reporting, hover edges, drag layers | `tess.wgsl` 318 vs 378 lines; capture 668 vs 881 | MIT OR Apache-2.0 | K5 | **Adopted** (adapt) |
-| U4 | `7b90a309a` + `82660d4ee` | Grid spacing moved to viewport; `color` crate (sRGB, analysis colours) | `the_grid_steps_by_one_two_and_five_with_the_view` already present; `AnalysisColors` in `render/src/analysis.rs` | MIT OR Apache-2.0 | — | **Already Covered** (grid, analysis) / **Not Applicable** (colour dedup) |
+| U4 | `7b90a309a` + `82660d4ee` | Grid spacing moved to viewport; `color` crate (sRGB, analysis colours) | `AnalysisColors` exists in `render/src/analysis.rs`; the grid test `the_grid_steps_by_one_two_and_five_with_the_view` exists **only** upstream (`viewport/src/grid.rs:37`) | MIT OR Apache-2.0 | U1 | **Adopted** (grid) / **Already Covered** (analysis colours) / **Not Applicable** (colour dedup refactor) |
 | U5 | `a833316f8` | `display-units` crate (152 lines, 6 tests) | `doc/src/display_units.rs` is a **932-line superset** with the same API | MIT OR Apache-2.0 | — | **Already Covered** — do not import |
 | U6 | `82660d4ee` + 301 locale commits | `ui-text` machinery, message ids, locale growth (5,702→7,020 keys, +3 languages) | `ui-egui/src/i18n.rs` + `bidi.rs` (identical apart from visibility) | MIT OR Apache-2.0 | — | **Already Covered** (machinery) / **Adopted** (message ids used by migrated UI only) |
 | U7 | `82660d4ee` | `ui-registry` handle table (233 lines) | `ui-egui/src/scenario.rs` (1,219 lines) has the same functions; `ui.*` control methods present | MIT OR Apache-2.0 | — | **Already Covered** — do not import |
 | U8 | 39 commits, `control`/`control-egui` split | Transport split, typed params, runtime on/off switch | In-crate `control.rs` (3,768 lines) | MIT OR Apache-2.0 | — | **Not Applicable** (refactor) / **Adopted** (`control_switch` behaviour, typed params) |
-| U9 | 64/13/0 commits, `ui-kit`/`look`/`theme` | Ribbon, chrome, Preferences, start page; icons; tokens | In-crate `ui_kit` module (66 files, 34,203 lines, +15 IntCAD lines) | **LICENSE-BRAND — Blocked** | — | **Blocked** |
+| U9 | 64/13/6 commits, `ui-kit`/`look`/`theme` (`--full-history --no-merges`) | Ribbon, chrome, Preferences, start page; icons; tokens | In-crate `ui_kit` module (66 files, 34,203 lines, +15 IntCAD lines) | **LICENSE-BRAND — Blocked** | — | **Blocked** |
 | U10 | 414 icon files, `crates/look/icons` | Every post-brand icon lives only in the brand crate | `assets/icons/ui` 400 files (pre-brand, unchanged but 2) | **LICENSE-BRAND — Blocked** | — | **Blocked** — draw in-house or reuse pre-brand |
-| U11 | ~101 commits, panel foundation | Dock/partition engine, drag paint, production descriptors | `panel_runtime` 6 files vs 8 upstream | MIT/Apache code, kit-coupled | U9 | **Blocked** (unusable without brand crates) |
+| U11 | ~101 commits, panel foundation | Dock/partition engine, drag paint, production descriptors | `panel_runtime` 6 files vs 16 upstream | MIT/Apache code, kit-coupled | U9 | **Blocked** (unusable without brand crates) |
 | U12 | 12 + 32 commits, viewport interaction | Snap-point glyphs, drag layer, pen, edge detail, silhouettes | Engine support present (`engine/src/snap.rs` identical); all 7 UI files absent | MIT OR Apache-2.0 | U3, D3 | **Adopted** — best value/lowest brand risk |
 | U13 | 37 commits, timeline | Fold chips, folders, component scope, per-design fold memory | Timeline exists; fold/scope files absent | MIT/Apache (1 kit ref each) | D3 | **Adopted** (adapt) |
 | U14 | 153 commits, dialogs | Constraint picker, end caps, airfoil, auto-dialog | Files absent; `sketch.insert_airfoil` absent | MIT/Apache | D3 | **Adopted** except airfoil (**Blocked** on engine command) |
@@ -150,13 +160,14 @@ before the licence took effect.
 | B1 | 104 commits, `.github/**` | Job split (`quick-compile`, sharded GPU tests), nightly alert, test builds, solidcore CI | IntCAD CI with `scripts/ci/plan.py`, Linux CI + Windows smoke jobs | repo code | — | **Portable subset**: `quick-compile`, GPU sharding, nightly alert. **Not Applicable**: solidcore mirror/release jobs |
 | B2 | 84 commits, `xtask` | `fmt` (Windows command-line limit), `shared`, parallel/params/rustfmt modules, layers `Shared` class | All commands except `fmt`/`shared` | MIT OR Apache-2.0 | — | **Adopted**: `fmt`; `shared` only with the vendored-solidcore model |
 | B3 | 50 commits, `scripts/**` | pr-check kernel rule, pending-format retry, mirror/updater scripts | IntCAD superset of CI scripts | MIT OR Apache-2.0 | — | **Portable subset**; mirror/updater **Not Applicable** |
-| B4 | 15 commits, `packaging/**` | Windows GPO templates, shortcut lint, CLI entitlements | IntCAD packaging (`intcad` identity) | MIT OR Apache-2.0 | — | **Portable**: shortcut lint; GPO/branding **Not Applicable**; CLI entitlements only with plugins |
+| B4 | 15 commits, `packaging/**` | AppImage/dock icon, Flatpak hosted-AI, macOS stapler retry, Windows Server Core CLI, debug symbols, MSI shortcut icon, GPO templates | IntCAD ships Linux/macOS/Windows packaging with `intcad` identity | MIT OR Apache-2.0 | — | **Adopted**: the platform fixes in areas IntCAD ships; **Not Applicable**: GPO templates and brand-named MSI/registry ids only |
 | B5 | 4 commits, `vendor/**` | egui-wgpu 0.37 re-base, winit fixes, accesskit_macos removal | IntCAD vendors egui-wgpu/winit/accesskit_macos at 0.36 | MIT/Apache | B6 | **Adopted with the egui bump** |
-| B6 | 92 commits, manifests/lock/toolchain/deny/nextest | egui 0.36→0.37, toolchain pin 1.99.1, new deps (pgp, coset, ed25519, sysinfo, wasmtime), advisory ignores | No `rust-toolchain.toml`; lock 716→815 packages; third-party list 16,162→21,374 lines | mixed, all permissive (verified: 0 copyleft expressions) | — | **Adopted selectively**: toolchain pin, egui bump; pgp stack only with D5 provenance; wasmtime only with A3 |
+| B6 | 117 commits: manifests, lock, toolchain, deny, nextest, flake, `.gitignore`/`.gitattributes`, `.coderabbit.yaml`, `THIRD-PARTY-LICENSES.txt` | egui 0.36→0.37, toolchain pin 1.99.1, new deps (pgp, coset, ed25519, sysinfo, wasmtime), advisory ignores, flake git-dep fix | No `rust-toolchain.toml`; lock 716→815 packages; third-party list 16,162→21,374 lines | mixed, all permissive (0 copyleft expressions in either generated list) | — | **Adopted selectively**: toolchain pin, egui bump, flake fix; pgp stack only with D5 provenance; wasmtime only with A3 |
 | B7 | 88 commits, `apps/**` | App glue: stack size, single instance, web features | IntCAD apps with own identity | MIT OR Apache-2.0 | — | **Partial** |
-| B8 | 494 commits, `docs/**`, skills, attribution | Documentation, command guides, screenshots, skill text | IntCAD docs | MIT OR Apache-2.0 (screenshots excluded) | — | **Portable subset**; screenshots **Not Applicable** |
-| X1 | 2,690 commits on paths retired at v0.44.1 | `plan/`, `reports/`, `harness/`, `site/`, `fixtures/`, `crates/{difftest,goldens,solidcore*,step-import,step-brep,ssi,nurbs-grid-mesh}` | IntCAD never had most of these; `difftest`/`goldens` were upstream-only tooling | MIT OR Apache-2.0 | — | **Not Applicable** — tree absent at the target, content moved into `solidcore/` (K1) or retired |
-| X2 | 29 empty commits | `port: …` process markers with no tree change | — | — | — | **Not Applicable** — no content to migrate |
+| B8 | 494 commits, `docs/`, `skills/`, `attribution/` plus root `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CLAUDE.md`, `NOTICE`, `ATTRIBUTION.md`, `ROADMAP.md`, `SECURITY.md`, `DISCLAIMER.md`, `LICENSE-*` | Documentation, command guides, screenshots, skill text | IntCAD docs | MIT OR Apache-2.0 (screenshots excluded) | — | **Portable subset**; screenshots **Not Applicable** |
+| B9 | 24 commits, `tests/KNOWN_FAILING_TESTS`, `tests/QUARANTINED_TESTS` | Upstream's known-failing and quarantine lists, incl. "11 tests regressed by solidcore c0d3cc0124" | IntCAD has its own 33-entry list and gate | MIT OR Apache-2.0 | — | **Not Applicable** as content (names upstream tests only) — but every entry is a **signal** to check in K12 |
+| X1 | 2,700 commits touching paths retired at v0.44.1 (2,654 whose every path is absent) | `plan/`, `reports/`, `harness/`, `site/`, `fixtures/`, `crates/{difftest,goldens,solidcore*,step-import,step-brep,ssi,nurbs-grid-mesh,diagnostics,xtask}` | IntCAD never had most of these; `difftest`/`goldens` were upstream-only tooling | MIT OR Apache-2.0 | — | **Not Applicable** — tree absent at the target; content moved into `solidcore/` (K0) or retired |
+| X2 | 29 empty commits (7 `port:`, the rest `blend:`/`wire:`/`fix:`/`difftest:`/`solidcore:`/`Revert`) | Process markers with no tree change | — | — | — | **Not Applicable** — no content to migrate |
 
 ## 6. Persistence (verified)
 
@@ -182,6 +193,7 @@ before the licence took effect.
 | CD-4 | Adopt opt-in plaintext HTTP for private endpoints (`4d2691e63`)? | SEC-4; IntCAD today is stricter | Waiting for owner |
 | CD-5 | Adopt upstream's plugin runtime (Wasmtime, folder grants, install approval)? | A3; new subsystem, new execution surface, +`wasmtime`/`cranelift`, packaging entitlements | Waiting for owner |
 | CD-6 | May IntCAD reuse post-brand changes to `ui-egui` chrome files named in `LICENSE-BRAND` §1(a)? | U9/U10/U11 note; files carry MIT/Apache but implement licensed interface | Waiting for owner/legal — default answer is **no** |
+| CD-7 | Vendor `solidcore/` in-tree as upstream does, or keep the rev-pin model in `docs/compatibility.md`? | K0: the snapshot has no common ancestor with the pin; vendoring changes the licence/notice story and the mirror workflow | Waiting for owner (architecture decision) |
 
 ## 8. Conflict watchlist
 
@@ -203,8 +215,9 @@ not a wish list.
 
 1. Is `crates/step` kept locally (patched) until K1 lands, or is the STEP move part of K1 itself?
 2. Does the vendored `solidcore/` model conflict with IntCAD's rev-pinning rule in
-   `docs/compatibility.md`? The snapshot has disjoint history, so a subtree or a pinned mirrormust
-   be chosen deliberately.
-3. Which UI features are declared "backend migrated, UI not exposed"? Filled in by the UI unit
-   report.
-4. Independent review of `Already Covered` / `Not Applicable` rows: not yet assigned.
+   `docs/compatibility.md`? The snapshot has no common ancestor with the pin, so a subtree or a
+   pinned mirror must be chosen deliberately — CD-7.
+3. Which UI features are declared "backend migrated, UI not exposed"? The list is in §4; the UI
+   PR confirms it feature by feature.
+4. Independent review: completed; its findings are folded in. A second review runs before the
+   Phase 0 gate is declared passed.

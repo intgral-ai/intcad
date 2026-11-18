@@ -50,11 +50,15 @@ Reachable by opening a hostile `.step` inside the allowed paths, or through the 
 migration deliver it and record the interim risk. The migration is the only place that removes
 `crates/step`, so the fix must not be lost in the move — the upstream snapshot already carries it.
 
-## SEC-3 — connection-limit refusal is delivered as a reset (low, availability)
+## SEC-3 — connection-limit refusal can still reach the client as a reset (low, availability)
 
-`18d82f584` writes a refusal message and drains the connection past `MAX_CONNECTIONS`; IntCAD's
-`apps/solidcraft/src/control_server.rs` still closes without it, so on Windows clients can report
-"the app crashed" and a batch can report "may have run". No access gain. Small, contained port.
+Correction after review: IntCAD **does** send `{"ok": false, "error": "too many connections"}`
+(`apps/solidcraft/src/control_server.rs`, in the `OPEN.fetch_add(...) >= MAX_CONNECTIONS` branch).
+What upstream `18d82f584` adds is the part after the write: drain the unread request before
+closing, share the open counter and max-line settings, and name the constant
+`TOO_MANY_CONNECTIONS`. Without the drain, a client that is still writing can still see a TCP
+reset instead of the refusal, which is what made Windows clients report a crash. No access gain;
+a small, contained refinement rather than a missing fix.
 
 ## SEC-4 — defaults that must not be adopted silently
 
