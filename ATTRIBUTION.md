@@ -845,7 +845,7 @@ crates/engine/src/tests/gltf_import.rs); no third-party models are committed.
 |---|---|---|
 | solidcore (vendored in `solidcore/` from https://github.com/tangency-labs/solidcore at SolidCraft v0.44.1) | the Rust port of NVIDIA's SMLib: the B-rep kernel behind `crates/kernel` and `crates/smlib`, and the STEP reader | Apache-2.0 (its own LICENSE, NOTICE and ATTRIBUTION.md are in `solidcore/`) |
 
-Vendored, not linked: the tree keeps its own history, LICENSE, NOTICE and ATTRIBUTION.md, and
+Vendored, not fetched: the tree keeps its own history, LICENSE, NOTICE and ATTRIBUTION.md, and
 `cargo xtask licences` covers the crates built from it.
 
 ## FreeCAD and Rhino import library
