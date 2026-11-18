@@ -88,6 +88,8 @@ const VIEW_IMAGE: (u32, u32) = (960, 600);
 const MAX_PICTURE_BYTES: usize = 4 << 20;
 /// A tool call's arguments kept for its card, at most this big (as JSON text).
 const MAX_TOOL_INPUT: usize = 64 << 10;
+/// How many pictures handed back by tool calls are kept, the newest ones.
+const MAX_TOOL_PICTURES: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -407,6 +409,9 @@ pub struct AgentChat {
     pub input: String,
     /// The viewer, open on one message's pictures.
     gallery: Option<Gallery>,
+    /// The pictures tool calls handed back (files the agent read), by the call's id, oldest
+    /// first. Only the newest [`MAX_TOOL_PICTURES`] are kept: an older call keeps its line.
+    tool_pictures: Vec<(String, Picture)>,
     state: Option<State>,
     agent: String,
     images: bool,
@@ -938,6 +943,21 @@ impl AgentChat {
                     }
                 } else {
                     self.push(Item::Tool { id, title: title.unwrap_or_default(), kind: kind.unwrap_or_default(), status, input, output });
+                }
+            }
+            Event::ToolPicture { id, bytes } => {
+                // Named as the call's own line names the file: "<path> (<n> bytes, <type>)".
+                let line = self.items.iter().rev().find_map(|item| match item {
+                    Item::Tool { id: shown, output, .. } if *shown == id => Some(output.clone().unwrap_or_default()),
+                    _ => None,
+                });
+                if let Some(line) = line.filter(|_| bytes.len() <= MAX_PICTURE_BYTES) {
+                    let path = line.rsplit_once(" (").map_or(line.as_str(), |(path, _)| path);
+                    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+                    self.tool_pictures.retain(|(shown, _)| *shown != id);
+                    self.tool_pictures.push((id, Picture::new(bytes, name)));
+                    let over = self.tool_pictures.len().saturating_sub(MAX_TOOL_PICTURES);
+                    self.tool_pictures.drain(..over);
                 }
             }
             Event::Plan(entries) => {
@@ -2071,6 +2091,7 @@ pub fn new_chat(app: &mut SolveApp) {
     review::forget(chat);
     chat.confirm_new = false;
     chat.items.clear();
+    chat.tool_pictures.clear();
     chat.turn_warning = None;
     chat.gallery = None;
     chat.picked.clear();

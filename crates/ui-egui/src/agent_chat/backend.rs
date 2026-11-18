@@ -82,6 +82,12 @@ pub enum Event {
         input: Option<Value>,
         output: Option<String>,
     },
+    /// A picture a tool call handed back (a file it read), as the encoded bytes of the file.
+    /// Comes after the [`Event::Tool`] that carries the call's result line.
+    ToolPicture {
+        id: String,
+        bytes: Vec<u8>,
+    },
     /// Its plan, replaced whole: each entry with its status.
     Plan(Vec<(String, String)>),
     /// It asks before running something of its own; answered with [`ChatBackend::answer_permission`].

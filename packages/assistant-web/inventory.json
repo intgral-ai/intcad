@@ -819,7 +819,7 @@
       "name": "lucide-react",
       "version": "1.67.0",
       "licence": "ISC",
-      "modulesInScript": 50,
+      "modulesInScript": 51,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1494,8 +1494,8 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1745325,
-      "sha256": "625194448b8081b5449b3ee1947f308abdfd94f6e3c14287696b72a0de645fb2"
+      "bytes": 1746239,
+      "sha256": "cf83bcabf7d38dc8060d2006b949e7a1885f75b6f364cca071f9a500d92d8601"
     },
     "index.html": {
       "bytes": 822,

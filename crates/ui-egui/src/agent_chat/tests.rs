@@ -15931,6 +15931,58 @@ fn the_web_page_edits_the_queue_and_selects_only_what_it_names_rightly() {
     assert_eq!(h.app.agent_chat.gallery.as_ref().map(|gallery| (gallery.at, gallery.pictures.len())), Some((1, 2)));
 }
 
+/// A picture a tool call hands back (a file the agent read) is told to the page by name under
+/// that call, served by the host, and opens in the viewer as a message's picture does. The bytes
+/// are never part of the state. Only the newest few are kept.
+#[test]
+fn a_picture_a_tool_call_hands_back_is_shown_under_the_call_and_opens_in_the_viewer() {
+    let mut h = app_with_cover_and_base();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    let png = test_png([200, 30, 30, 255], 8);
+    let line = "/work/shots/compare.png (99 bytes, image/png)";
+    let call = |id: &str| Event::Tool {
+        id: id.into(),
+        title: Some("view".into()),
+        kind: None,
+        status: Some(ToolStatus::Completed),
+        input: None,
+        output: Some(line.into()),
+    };
+    h.app.agent_chat.on_event(call("t1"));
+    h.app.agent_chat.on_event(Event::ToolPicture { id: "t1".into(), bytes: png.clone() });
+    // A picture for a call the conversation does not have, and one too large to keep, are dropped.
+    h.app.agent_chat.on_event(Event::ToolPicture { id: "nobody".into(), bytes: png.clone() });
+    h.app.agent_chat.on_event(call("t2"));
+    h.app.agent_chat.on_event(Event::ToolPicture { id: "t2".into(), bytes: vec![0; MAX_PICTURE_BYTES + 1] });
+
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    let items = state["items"].as_array().expect("items");
+    let at = items.iter().position(|item| item["id"] == "t1").expect("the call");
+    assert_eq!(items[at]["index"], at);
+    assert_eq!(items[at]["output"], line, "the call's line, not the file's bytes");
+    let pictures = items[at]["pictures"].as_array().expect("its pictures");
+    assert_eq!((pictures.len(), &pictures[0]["note"]), (1, &json!("compare.png")), "named as the file is");
+    assert!(pictures[0].as_object().is_some_and(|fields| fields.len() == 3), "a name, a note and a kind; no bytes");
+    let held = web::pictures(&h.app);
+    assert!(held.iter().any(|(key, bytes)| pictures[0]["key"] == key.as_str() && **bytes == png), "the host has those bytes under that name");
+    let other = items.iter().find(|item| item["id"] == "t2").expect("the second call");
+    assert_eq!(other["pictures"], json!([]));
+
+    assert!(web::act(&mut h.app, &ctx, &json!({"type": "picture", "index": at, "at": 1}).to_string()).is_err(), "a call has one");
+    web::act(&mut h.app, &ctx, &json!({"type": "picture", "index": at, "at": 0}).to_string()).expect("its picture");
+    assert_eq!(h.app.agent_chat.gallery.as_ref().map(|gallery| (gallery.at, gallery.pictures.len())), Some((0, 1)));
+
+    for n in 0..MAX_TOOL_PICTURES {
+        let id = format!("more-{n}");
+        h.app.agent_chat.on_event(call(&id));
+        h.app.agent_chat.on_event(Event::ToolPicture { id, bytes: test_png([30, 30, 200, 255], 8) });
+    }
+    assert_eq!(h.app.agent_chat.tool_pictures.len(), MAX_TOOL_PICTURES, "the newest are kept");
+    assert!(!h.app.agent_chat.tool_pictures.iter().any(|(id, _)| id == "t1"), "the oldest went");
+}
+
 /// Send now from the page steers as the panel's own does: the running step is stopped and the
 /// queue goes once the agent has ended it. A message sent with Ctrl+Enter goes the same way,
 /// with what was typed.

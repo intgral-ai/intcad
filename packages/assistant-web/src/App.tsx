@@ -8,6 +8,7 @@ import {
   ChevronRight,
   ClipboardCheck,
   Ellipsis,
+  FileImage,
   FileText,
   Hammer,
   Image,
@@ -200,6 +201,24 @@ function argsOf(input: string | null): Record<string, unknown> | undefined {
  * argument worth a glance for the headline (the command, the path, the query), and its body draws
  * the details, a command with what it printed, or the arguments and the result.
  */
+/** One picture a tool call handed back, as Mastra's sent picture: the card with its preview, or with an icon if the picture cannot be drawn. */
+function HandedPicture({ picture, name, open }: { picture: PictureRef; name: string; open: () => void }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <AttachmentCard
+      name={name}
+      typeLabel={typeOf(picture.note)}
+      icon={<FileImage aria-hidden />}
+      onClick={failed ? undefined : open}
+      preview={
+        failed ? undefined : (
+          <img src={pictureUrl(picture.key)} alt={name} className="size-full object-cover" draggable={false} onError={() => setFailed(true)} />
+        )
+      }
+    />
+  );
+}
+
 function ToolRow({ tool, approval, strings, own }: { tool: Tool; approval?: Approval; strings: Strings; own: boolean }) {
   const { name, detail } = nameOf(tool.title);
   const waiting = approval?.answer === null;
@@ -237,6 +256,15 @@ function ToolRow({ tool, approval, strings, own }: { tool: Tool; approval?: Appr
           )}
         </ActivityContent>
       </Activity>
+      {/* A picture the call handed back, under the row as Mastra's tool card has it, in Mastra's
+          attachment card. It opens in the app's viewer, as a sent picture does: the panel is narrow. */}
+      {tool.pictures.length > 0 && (
+        <div className="flex min-w-0 flex-wrap gap-2 pl-7">
+          {tool.pictures.map((picture, at) => (
+            <HandedPicture key={picture.key} picture={picture} name={picture.note || strings.viewAttached} open={() => post({ type: 'picture', index: tool.index, at })} />
+          ))}
+        </div>
+      )}
       {/* Outside the row's fold: a request that arrives after the row is drawn must still be seen. */}
       {waiting && approval && (
         <div className="pl-7">

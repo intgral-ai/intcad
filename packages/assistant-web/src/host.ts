@@ -96,7 +96,8 @@ export type Item =
   | { kind: 'user'; index: number; text: string; image: boolean; pictures: PictureRef[]; files: string[]; context: ContextGroups }
   /** `objects`: the names in this answer that the app can select, in the order a click names them by. */
   | { kind: 'text'; index: number; text: string; thought: boolean; objects: string[] }
-  | { kind: 'tool'; id: string; title: string; toolKind: string; status: ToolStatus; words: string | null; input: string | null; output: string | null }
+  /** `pictures`: what the call handed back as pictures (a file the agent read); `index` opens one, as a message's. */
+  | { kind: 'tool'; id: string; index: number; title: string; toolKind: string; status: ToolStatus; words: string | null; input: string | null; output: string | null; pictures: PictureRef[] }
   | { kind: 'plan'; steps: { text: string; status: string }[] }
   | { kind: 'skill'; line: string; warnings: string[]; terminal: string | null; revalidate: boolean }
   | { kind: 'permission'; index: number; heading: string; answered: string | null; options: PermissionOption[] }

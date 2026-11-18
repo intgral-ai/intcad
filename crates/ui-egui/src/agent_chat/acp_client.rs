@@ -249,8 +249,11 @@ impl AcpBackend {
                 }
             }
             Incoming::Text { session, thought, text } if self.accepts_session(&session) => out.push(Event::Text { thought, text }),
-            Incoming::Tool { session, id, title, kind, status, input, output } if self.accepts_session(&session) => {
-                out.push(Event::Tool { id, title, kind, status, input, output })
+            Incoming::Tool { session, id, title, kind, status, input, output, picture } if self.accepts_session(&session) => {
+                out.push(Event::Tool { id: id.clone(), title, kind, status, input, output });
+                if let Some(bytes) = picture {
+                    out.push(Event::ToolPicture { id, bytes });
+                }
             }
             Incoming::Plan { session, steps } if self.accepts_session(&session) => out.push(Event::Plan(steps)),
             Incoming::Permission { session, rpc, title, kind, options } => {

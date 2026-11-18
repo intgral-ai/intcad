@@ -178,8 +178,8 @@ fn picture_key(bytes: &[u8]) -> String {
 }
 
 /// The pictures the page may show now, by the name [`state`] gives each: those sent with the
-/// conversation's messages and those attached to the next one. The host serves the bytes itself;
-/// they are never part of what the page is told.
+/// conversation's messages, those tool calls handed back, and those attached to the next one.
+/// The host serves the bytes itself; they are never part of what the page is told.
 pub fn pictures(app: &SolveApp) -> Vec<(String, Arc<Vec<u8>>)> {
     let chat = &app.agent_chat;
     let sent = chat.items.iter().filter_map(|item| match item {
@@ -190,7 +190,8 @@ pub fn pictures(app: &SolveApp) -> Vec<(String, Arc<Vec<u8>>)> {
         attach::Content::Picture { bytes, .. } => Some(bytes),
         _ => None,
     });
-    sent.flatten().chain(next).map(|bytes| (picture_key(bytes), Arc::clone(bytes))).collect()
+    let handed = chat.tool_pictures.iter().map(|(_, picture)| &picture.bytes);
+    sent.flatten().chain(handed).chain(next).map(|bytes| (picture_key(bytes), Arc::clone(bytes))).collect()
 }
 
 /// The host: files were dropped on the web view. They are attached to the next message as files
@@ -285,6 +286,9 @@ pub fn state(app: &mut SolveApp) -> String {
                     "words": summary::summary(title, input.as_ref(), output.as_deref(), done, units),
                     "input": input.as_ref().map(|value| clipped(&serde_json::to_string_pretty(value).unwrap_or_default())),
                     "output": output.as_deref().map(clipped),
+                    // A picture the call handed back, opened as a message's picture is (`picture`).
+                    "index": index,
+                    "pictures": chat.tool_pictures.iter().filter(|(call, _)| call == id).map(|(_, picture)| json!({"key": picture_key(&picture.bytes), "note": picture.note, "view": false})).collect::<Vec<_>>(),
                 })
             }
             Item::Plan(steps) => {
@@ -765,6 +769,10 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             let (at, shown) = (index("index").ok_or("picture: no index")?, index("at").ok_or("picture: no at")?);
             let pictures = match app.agent_chat.items.get(at) {
                 Some(Item::User { pictures, .. }) if shown < pictures.len() => pictures.clone(),
+                // A tool call's one picture.
+                Some(Item::Tool { id, .. }) if shown == 0 && app.agent_chat.tool_pictures.iter().any(|(call, _)| call == id) => {
+                    app.agent_chat.tool_pictures.iter().filter(|(call, _)| call == id).map(|(_, picture)| picture.clone()).collect()
+                }
                 _ => return Err("picture: that message has no such picture".into()),
             };
             app.agent_chat.gallery = Some(Gallery { pictures, at: shown });

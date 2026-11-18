@@ -523,6 +523,8 @@ pub enum Incoming {
         status: Option<ToolStatus>,
         input: Option<Value>,
         output: Option<String>,
+        /// A picture the call handed back, as the encoded bytes of the file ([`tool_media`]).
+        picture: Option<Vec<u8>>,
     },
     /// The agent's plan: each entry with its status.
     Plan {
@@ -611,6 +613,11 @@ fn tool_output(u: &Value) -> Option<String> {
     } else {
         parts.join("\n")
     };
+    clip_output(&mut s);
+    Some(s)
+}
+
+fn clip_output(s: &mut String) {
     if s.len() > MAX_OUTPUT {
         let mut cut = MAX_OUTPUT;
         while !s.is_char_boundary(cut) {
@@ -619,7 +626,28 @@ fn tool_output(u: &Value) -> Option<String> {
         s.truncate(cut);
         s.push('…');
     }
-    Some(s)
+}
+
+/// The longest result read as a file handed back as media: Mastra's own cap for such a file
+/// (10 MiB) in base64, and the little that stands around it.
+const MAX_MEDIA_TEXT: usize = 14 * 1024 * 1024 + 4096;
+
+/// A file a tool handed back as media, where the agent sends it as Mastra Code does: `rawOutput`
+/// is the JSON text of `{"__workspaceMedia": true, "text": "<path> (<n> bytes, <type>)",
+/// "mediaType", "data": <base64>}`. Gives the line that says what it is, and the file's bytes
+/// when it is a picture. Read as any other result it is two thousand characters of base64.
+fn tool_media(u: &Value) -> Option<(String, Option<Vec<u8>>)> {
+    let text =
+        u.get("rawOutput")?.as_str().filter(|text| text.len() <= MAX_MEDIA_TEXT && text.starts_with('{') && text.contains("\"__workspaceMedia\""))?;
+    let media: Value = serde_json::from_str(text).ok()?;
+    if media.get("__workspaceMedia") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let mut line = media.get("text")?.as_str()?.to_string();
+    clip_output(&mut line);
+    let picture = media.get("mediaType").and_then(Value::as_str).is_some_and(|kind| kind.starts_with("image/"));
+    let bytes = if picture { media.get("data").and_then(Value::as_str).and_then(|data| super::backend::base64_decode(data).ok()) } else { None };
+    Some((line, bytes))
 }
 
 /// Read one line from the agent.
@@ -702,15 +730,19 @@ fn update(u: &Value, session: &str) -> Incoming {
             None => Incoming::Ignored,
         },
         Some("tool_call" | "tool_call_update") => match s("toolCallId") {
-            Some(id) => Incoming::Tool {
-                session: session.to_string(),
-                id,
-                title: s("title"),
-                kind: s("kind"),
-                status: u.get("status").and_then(Value::as_str).and_then(ToolStatus::parse),
-                input: tool_input(u),
-                output: tool_output(u),
-            },
+            Some(id) => {
+                let (line, picture) = tool_media(u).map_or((None, None), |(line, picture)| (Some(line), picture));
+                Incoming::Tool {
+                    session: session.to_string(),
+                    id,
+                    title: s("title"),
+                    kind: s("kind"),
+                    status: u.get("status").and_then(Value::as_str).and_then(ToolStatus::parse),
+                    input: tool_input(u),
+                    output: line.or_else(|| tool_output(u)),
+                    picture,
+                }
+            }
             None => Incoming::Ignored,
         },
         Some("current_mode_update") => match s("currentModeId").or_else(|| s("modeId")) {
@@ -1020,7 +1052,8 @@ mod tests {
                 kind: None,
                 status: Some(ToolStatus::Completed),
                 input: None,
-                output: Some("ok".into())
+                output: Some("ok".into()),
+                picture: None,
             })
         );
         let perm = r#"{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t1","title":"batch"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
@@ -1074,6 +1107,36 @@ mod tests {
         let long = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": "é".repeat(3000)});
         let Incoming::Tool { output: Some(cut), .. } = update(&long, "s") else { panic!() };
         assert!(cut.len() <= MAX_OUTPUT + 3 && cut.ends_with('…'));
+    }
+
+    /// Mastra Code hands back a file it read as media: the JSON text of an object with the file's
+    /// bytes in base64. It is a line and a picture, never two thousand characters of base64.
+    #[test]
+    fn a_file_handed_back_as_media_is_a_line_and_a_picture() {
+        let png = b"\x89PNG\r\n\x1a\nthe rest";
+        let handed = |kind: &str, data: &str| {
+            let media = json!({"__workspaceMedia": true, "text": format!("shots/a.png (16 bytes, {kind})"), "mediaType": kind, "data": data});
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": media.to_string()}), "s")
+            else {
+                panic!()
+            };
+            (output, picture)
+        };
+        let base64 = super::super::backend::base64(png);
+        assert_eq!(handed("image/png", &base64), (Some("shots/a.png (16 bytes, image/png)".into()), Some(png.to_vec())));
+        // A PDF comes the same way: its line, and no picture. So does a picture whose bytes do not decode.
+        assert_eq!(handed("application/pdf", &base64), (Some("shots/a.png (16 bytes, application/pdf)".into()), None));
+        assert_eq!(handed("image/png", "not base64!"), (Some("shots/a.png (16 bytes, image/png)".into()), None));
+        // Anything that only looks like it is read as any other result.
+        for raw in [json!({"__workspaceMedia": false, "text": "x"}).to_string(), json!({"note": "\"__workspaceMedia\""}).to_string()] {
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": raw.clone()}), "s")
+            else {
+                panic!()
+            };
+            assert_eq!((output, picture), (Some(raw), None));
+        }
     }
 
     #[test]

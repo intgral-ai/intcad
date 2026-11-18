@@ -522,7 +522,14 @@ A tool the agent calls is a row of the conversation, drawn as Mastra draws it: t
 tool and the argument worth a glance (a command, a path), and opened it shows the details, a
 command with what it printed, or the arguments and the result. The agent sends a tool's arguments
 as JSON text and its result as `rawOutput`; the app reads both (as it reads an object and
-`content` from other agents), so a row is not left empty. The agent's reasoning effort is the button beside it, Mastra's
+`content` from other agents), so a row is not left empty. A picture the agent reads (PNG, JPEG,
+WebP) comes back as a file's bytes in base64 inside that result: the row then says the file's name
+and size, and the picture is under the row in Mastra's attachment card. A click opens it in the
+app's own viewer, as a picture sent with a message. The bytes are served to the page by the app
+and are never part of the page's state; a picture over 4 MiB is not kept (its row still names
+it), and only the newest 16 are.
+
+The agent's reasoning effort is the button beside the model picker, Mastra's
 thinking-level picker: the levels the agent names, **Off** to **Max**, in the app's language.
 The agent's session mode (**Build**, **Plan**, **Explore**, by the agent's own names) is a select at
 the lower left of the message box, as in Mastra's composer: the label and the box's ring take the
