@@ -33,9 +33,31 @@ state and screenshot. To replay a failure on the same build and port, run:
 python3 .agents/skills/verify-intcad/browser/run.py --reproduce /tmp/intcad-composer-run/trace.jsonl --output /tmp/intcad-composer-replay
 ```
 
-The Assistant UI workflow runs this check for PRs touching the page or its verification files.
-Use the native journey below for embedded WebView focus, window layout, native IPC handling
-and provider behavior.
+## Check Assistant decisions and DFM findings in Chrome
+
+The [Playwright tests](../browser/test_assistant_ui.py) open the shipped Assistant at a
+380-pixel panel width. They click its controls, check the exact outgoing requests, and push
+the next desktop state to check what the user sees.
+
+| When a PR changes | What to verify |
+| --- | --- |
+| Tool approvals and preview cards | Deny, allow once and always allow send distinct answers for the right request. Accept and reject address the right preview. Answered cards show the outcome and remove the action buttons. |
+| Attachments and active turns | Enter preserves the draft while a file loads. Removing the second attachment addresses index 1. The remaining attachment can be sent without text. Stop and Escape cancel a busy turn, and Escape in an idle turn sends nothing. |
+| New chat | The existing transcript stays visible while confirmation is pending. Cancel and confirm send distinct answers. Check the transcript after the host replies. |
+| DFM report | Expand two findings. Check the measured value, requirement, missing threshold, stale badge and selected row. Check the run ID, finding ID and display mode sent to the host. |
+
+From the repository root, use Chrome and a Python virtual environment:
+
+```sh
+python -m pip install -r .agents/skills/verify-intcad/browser/requirements.txt
+python -m pytest -v .agents/skills/verify-intcad/browser/test_assistant_ui.py \
+  --browser-channel chrome --tracing on --output /tmp/intcad-assistant-traces
+```
+
+Use a fresh output directory. Open an individual trace with `python -m playwright show-trace <trace.zip>`.
+The Assistant UI workflow runs both browser checks for changes to the page, the native bridge
+file or the browser tests. Each check publishes its own artifacts. Use the native journey below
+for embedded WebView focus, window layout, Rust handling and provider behavior.
 
 ## Driving it with the native desktop
 

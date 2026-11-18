@@ -21,6 +21,10 @@ SOLIDCRAFT_DFM_SAMPLE=plate cargo test -p solidcraft-engine --test dfm_acceptanc
 For freshness, run `a_changed_declaration_makes_the_old_report_stale_and_the_next_check_decides`
 in the same test target. In the app, use `dfm.check` and read the completed run with `inspect.dfm`.
 Compare the run ID, target rule state and measurement with the saved report and findings.
+For Assistant card changes, run the [browser journeys](assistant.md#check-assistant-decisions-and-dfm-findings-in-chrome)
+to exercise finding details and selection messages. For the native Review rail, the existing
+`cargo test -p solidcraft-ui-egui --lib dfm_review_tests` checks picking a finding and dragging
+a report onto or outside the Assistant.
 For a card or selection change, capture the card, click the affected finding and observe the
 expected model highlight. See the [desktop evidence](../../../../docs/dfm-acceptance-report.md#6-desktop-evidence-l5).
 

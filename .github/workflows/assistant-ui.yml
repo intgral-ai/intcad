@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "packages/assistant-web/**"
+      - "crates/ui-egui/src/agent_chat/web.rs"
       - ".agents/skills/verify-intcad/browser/**"
       - ".github/workflows/assistant-ui.yml"
   workflow_dispatch:
@@ -39,5 +40,30 @@ jobs:
         with:
           name: assistant-composer-trace
           path: ${{ runner.temp }}/composer-trace
+          retention-days: 7
+          if-no-files-found: error
+
+  journeys:
+    name: Assistant decisions, files and DFM in Chrome
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install browser test tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/assistant-ui"
+          "$RUNNER_TEMP/assistant-ui/bin/pip" install -r .agents/skills/verify-intcad/browser/requirements.txt
+      - name: Exercise Assistant decisions, files and DFM findings
+        run: |
+          "$RUNNER_TEMP/assistant-ui/bin/python" -m pytest -v .agents/skills/verify-intcad/browser/test_assistant_ui.py \
+            --browser-channel chrome --tracing on --output "$RUNNER_TEMP/assistant-ui-traces"
+      - name: Keep Playwright traces
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: assistant-ui-journeys
+          path: ${{ runner.temp }}/assistant-ui-traces
           retention-days: 7
           if-no-files-found: error

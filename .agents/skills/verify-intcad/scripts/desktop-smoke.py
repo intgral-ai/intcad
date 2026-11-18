@@ -73,11 +73,44 @@ def drive(call, output):
         ), f"Expected {LENGTH} × {WIDTH} × {HEIGHT} mm, measured {dimensions}")
         return volume
 
+    def rect(name):
+        rects = call("ui.rects", prefix=name)["rects"]
+        return next((r for r in rects if r["name"] == name), None)
+
+    def click(name):
+        target = wait_for(lambda: rect(name), name)
+        call("ui.click", x=target["x"] + target["width"] / 2,
+             y=target["y"] + target["height"] / 2)
+
     require(not command("inspect.measure")["bodies"], "Expected a blank design")
     command("sketch.create", plane="XY")
     command("sketch.rectangle.two_point", p0=[0, 0], p1=[LENGTH, WIDTH])
-    command("solid.extrude", distance=f"{HEIGHT} mm")
+    command("sketch.finish")
+    call("ui.start", command="solid.extrude")
+    click("dialog:cancel")
+    wait_for(lambda: call("ui.inspect")["dialog"] is None, "Cancel to dismiss Extrude")
+    require(not command("inspect.measure")["bodies"], "Cancelling Extrude created a solid")
+
+    call("ui.start", command="solid.extrude")
+    wait_for(lambda: rect("dialog:ok"), "the reopened Extrude form")
+    call("ui.text", text=f"{HEIGHT} mm")
+    click("dialog:ok")
+    wait_for(lambda: call("ui.inspect")["dialog"] is None, "OK to finish Extrude")
+    measure()
+
+    click("appbar:undo")
+    wait_for(lambda: not command("inspect.measure")["bodies"], "Undo to remove the extrusion")
+    click("appbar:redo")
+    wait_for(lambda: command("inspect.measure")["bodies"], "Redo to restore the solid")
     before = measure()
+
+    # Only one rail panel should occupy the workspace. Switching panels preserves the solid.
+    click("rail:item:review")
+    wait_for(lambda: rect("review:run"), "the Review panel's Run control")
+    click("rail:item:files")
+    wait_for(lambda: call("ui.prefs")["right_rail_open"] == "files" and
+             rect("rail:panel") and not rect("review:run"), "Files to replace Review")
+    measure()
 
     design = output / "block.sc"
     command("file.save_as", path=str(design), cache=False)

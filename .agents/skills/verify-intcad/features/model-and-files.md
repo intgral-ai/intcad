@@ -2,7 +2,7 @@
 
 ## Sub-features
 
-Build and measure a solid, save a native `.sc` design, close it and open it again.
+Cancel and confirm a feature, undo and redo it, switch native panels, save a design and reopen it.
 
 ## How to get to it (user POV)
 
@@ -22,9 +22,12 @@ python3 .agents/skills/verify-intcad/scripts/desktop-smoke.py \
 ```
 
 On Windows use `target/debug/intcad.exe`. If the Cargo target is elsewhere, pass its binary.
-The script checks the running app's commit, then uses the public modeling commands to make a
-solid. It expects one closed body measuring 40 × 30 × 20 mm and 24,000 mm³. It saves without
-an evaluation cache, closes the design, opens it through the desktop Open path and measures again.
+The script checks the running commit and creates a rectangular profile. It opens the native
+Extrude form and clicks Cancel, which must leave zero bodies. It reopens the form, types
+20 mm and clicks OK. Toolbar Undo must remove the solid and Redo must restore one closed
+40 × 30 × 20 mm body of 24,000 mm³. It then opens Review, checks for its Run control
+and switches to Files. The model must retain the same dimensions and volume. Finally it
+saves without an evaluation cache, closes the design, reopens it and measures again.
 Keep the JSONL transcript, saved design, model capture and app log from the evidence directory.
 
 ## Gotchas
