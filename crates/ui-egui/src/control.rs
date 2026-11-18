@@ -13,6 +13,8 @@
 //! - `document.export`, `document.import {text, name?}`, `document.saved {revision}`: the design
 //!   for a host that keeps the files itself (#8517)
 //! - `ui.inspect`: UI state, viewport rect, camera, tool and dialog
+//! - `ui.rects {prefix?}`: the rects drawn last frame, in window points, with the scale to window
+//!   pixels (native views are placed in those pixels; `ui.handles` gives their centres)
 //! - `ui.drag {x0, y0, x1, y1, button?, shift?, ctrl?, steps?, hold?}` (box selection, navigation;
 //!   `hold` keeps the button down that many frames before moving);
 //!   `ui.selection` (selection, dialog inputs, hover, drawn sketch dimensions);
