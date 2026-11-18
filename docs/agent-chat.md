@@ -505,13 +505,20 @@ they need is kept in three places:
   the agent when it starts and whenever one changes. A key is not written to the preferences, not
   shown again, and not in what the control channel reports.
 - **Custom addresses** (the name, the address, the models, and whether a key is kept for it) are
-  the `mastra_custom` preference.
+  the `mastra_custom` preference. An address is `http` or `https` with a host, and carries no
+  user name, password or query: a secret belongs in the key box, which goes to the keychain.
+
+Each open design's conversation has an agent of its own, and all of them read the same keychain,
+the same custom addresses and Mastra's same sign-ins. A key, an address or a sign-in changed in
+one conversation reaches another's agent when that conversation is next shown: it is handed
+everything again.
 
 While nothing is connected the agent has no session and the panel reads **Sign-in needed**. A turn
-that fails for its connection (a sign-in that expired, a plan or key with nothing left, too many
-requests, no network, a model the connection may not use) is told in a sentence that names the
-connection. After an expired sign-in the message is kept and sent again once that plan is signed
-in; after a network failure **Retry** sends it again.
+that fails for its connection (a plan's sign-in that expired, an API key that was refused, a plan
+or key with nothing left, too many requests, no network, a model the connection may not use) is
+told in a sentence that names the connection. After an expired sign-in the message is kept and
+sent again once that plan is signed in; after a network failure **Retry** sends it again. A
+refused key is mended on the Connections page, and the message is then sent by hand.
 
 The agent's own side (its program, the requests it answers, what it keeps and where) is described
 in `packages/mastra-runtime/agent/README.md`. A script reaches the Connections page's actions

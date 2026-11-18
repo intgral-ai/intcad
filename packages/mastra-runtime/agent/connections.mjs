@@ -69,6 +69,7 @@ export class Connections {
   #login = null;
   #problem = null;
   #expired = new Set();
+  #callbackSentence = '';
 
   /**
    * @param deps.auth        () => Mastra's sign-in storage (`isLoggedIn`, `login`, `logout`, `getActiveAccount`)
@@ -78,7 +79,7 @@ export class Connections {
    * @param deps.setCustom   (list) => makes Mastra use these custom addresses instead of its settings file
    * @param deps.customPrefix (custom id) => the provider part of the ids Mastra gives that address's models
    * @param deps.openUrl     (url) => opens the user's browser
-   * @param deps.holdPorts   (onCallback) => Promise<{ close() }>, see callback.mjs
+   * @param deps.holdPorts   (onCallback) => Promise<{ close() }>, see callback.mjs; `onCallback` answers whether the call was the one waited for
    * @param deps.dates       () => Map of release dates by model id
    * @param deps.changed     (snapshot) => tells the app
    * @param deps.refresh     () => Promise: every open session re-reads which models it may use
@@ -126,7 +127,11 @@ export class Connections {
     this.#tell();
   }
 
-  /** Replaces every key and custom address. Keys go into this process's environment and nowhere else. */
+  /**
+   * Replaces every key and custom address. Keys go into this process's environment and nowhere
+   * else. A custom address that cannot be used (the app checks them first, so this is one from a
+   * file changed by hand) is left out and the rest is taken: one bad entry does not cost the keys.
+   */
   async setup(params) {
     const keys = new Map();
     for (const [id] of KEYS) {
@@ -141,7 +146,7 @@ export class Connections {
       const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
       const url = typeof entry?.url === 'string' ? entry.url.trim() : '';
       const models = Array.isArray(entry?.models) ? entry.models.filter(model => typeof model === 'string' && model.trim()).map(model => model.trim()) : [];
-      if (!name || !/^https?:\/\//i.test(url) || models.length === 0) throw invalid('a custom address needs a name, an http(s) url and at least one model');
+      if (!name || !/^https?:\/\//i.test(url) || models.length === 0) continue;
       // Two names can give one id ("My LLM" and "my-llm", or any two without Latin letters). The
       // later one gets a number, in the order the app keeps them, so both stay usable.
       let id = customId(name);
@@ -156,6 +161,8 @@ export class Connections {
     }
     this.#keys = keys;
     this.#custom = custom;
+    const sentence = params?.words?.callback;
+    this.#callbackSentence = typeof sentence === 'string' && sentence.length <= 400 ? sentence : '';
     // Mastra gets the id as the name: its model ids are then `<its gateway>/<id>/<model>`.
     this.#deps.setCustom(custom.map(entry => ({ name: entry.id, url: entry.url, models: [...entry.models], ...(entry.apiKey ? { apiKey: entry.apiKey } : {}) })));
     await this.#deps.refresh();
@@ -206,7 +213,15 @@ export class Connections {
       if (CALLED_BACK.has(id)) {
         const calledBack = deferred();
         login.abort.signal.addEventListener('abort', () => calledBack.reject(new Error('Login cancelled')));
-        login.ports = await this.#deps.holdPorts(url => calledBack.resolve(url));
+        login.ports = await this.#deps.holdPorts(url => {
+          // Mastra puts a `state` in the address it opens, and the browser brings it back. A call
+          // with another one is not this sign-in's: it is refused here and the wait goes on, where
+          // handing it to Mastra would end the sign-in as failed.
+          const expected = login.url ? new URL(login.url).searchParams.get('state') : null;
+          if (expected && new URL(url).searchParams.get('state') !== expected) return false;
+          calledBack.resolve(url);
+          return true;
+        });
         if (this.#login !== login) return login.ports.close();
         callbacks.authMode = 'browser';
         callbacks.onManualCodeInput = () => calledBack.promise;
@@ -227,13 +242,16 @@ export class Connections {
     }
   }
 
-  /** The code the browser showed. One that has not the shape of a code is refused and the sign-in goes on. */
+  /**
+   * The code the browser showed. One that has not the shape of a code is refused and the sign-in
+   * goes on. With no sign-in waiting for one (the button pressed twice, the first code already
+   * taken) there is nothing to do, and nothing to refuse either.
+   */
   code(params) {
     const login = this.#login;
-    if (!login || login.id !== params?.id || !login.pasted) throw invalid('no sign-in is waiting for a code');
+    if (!login || login.id !== params?.id || !login.pasted) return this.snapshot();
     const code = typeof params.code === 'string' ? params.code.trim() : '';
-    if (code.length > MAX_KEY) throw invalid('the code is too long');
-    if (!/^\S+#\S+$/.test(code)) {
+    if (code.length > MAX_KEY || !/^\S+#\S+$/.test(code)) {
       login.error = 'incomplete';
     } else {
       login.error = null;
@@ -280,6 +298,16 @@ export class Connections {
     const prefixes = [...PLANS.map(([, prefix]) => prefix), ...KEYS.map(([id]) => id), ...this.#custom.map(entry => this.#deps.customPrefix(entry.id))];
     const match = prefixes.filter(prefix => model.startsWith(`${prefix}/`)).sort((a, b) => b.length - a.length)[0];
     return match ?? model.slice(0, Math.max(model.indexOf('/'), 0));
+  }
+
+  /** Whether a model is one of a custom address: its name was typed by the user, who knows what it is. */
+  isCustom(model) {
+    return this.#custom.some(entry => model.startsWith(`${this.#deps.customPrefix(entry.id)}/`));
+  }
+
+  /** What the browser shows after the ChatGPT sign-in page has called back, in the user's language; empty when the app gave none. */
+  callbackSentence() {
+    return this.#callbackSentence;
   }
 
   /** A turn was refused for lack of a valid sign-in: the plan that serves that provider shows as expired. */

@@ -114,9 +114,12 @@ export type Item =
       selected: { runId: string; findingId: string } | null;
     };
 
-/** Why a turn of the built-in agent failed, and on which connection (`name` in the user's words). */
+/**
+ * Why a turn of the built-in agent failed, and on which connection (`name` in the user's words).
+ * `auth` is a plan whose sign-in was refused; `key` is an API key or a custom address that was.
+ */
 export interface TurnProblem {
-  kind: 'auth' | 'quota' | 'rate' | 'network' | 'model';
+  kind: 'auth' | 'key' | 'quota' | 'rate' | 'network' | 'model';
   prefix: string;
   name: string;
 }
@@ -233,12 +236,12 @@ export type StringKey =
   | 'connSignIn' | 'connSignInAgain' | 'connSignOut' | 'connUse' | 'connInUse' | 'connPlanNote' | 'connShadowed'
   | 'connKeySaved' | 'connKeyNone' | 'connKeyAdd' | 'connKeyUpdate' | 'connRemove' | 'connKeyNote' | 'connKeyTitle'
   | 'connKeyBody' | 'connKeyPlaceholder' | 'connSave' | 'connCustomAdded' | 'connCustomAdd' | 'connCustomName'
-  | 'connCustomUrl' | 'connCustomKey' | 'connCustomModels' | 'connCustomNeedBoth' | 'connCustomNeedModel' | 'connAdd'
+  | 'connCustomUrl' | 'connCustomKey' | 'connCustomModels' | 'connCustomNeedBoth' | 'connCustomNeedModel' | 'connCustomTooMany' | 'connCustomPlainUrl' | 'connCustomExists' | 'connAdd'
   | 'connWaiting' | 'connStarting' | 'connReopen' | 'connCodeHint' | 'connCodePlaceholder' | 'connCodeIncomplete'
   | 'connCodeDone' | 'connDeviceHint' | 'connProblemPort' | 'connProblemOffline' | 'connProblemFailed'
   | 'connButton' | 'connButtonNone' | 'connButtonTip'
   | 'planOpenaiCodex' | 'planAnthropic' | 'planKimiForCoding' | 'planXai' | 'planGithubCopilot'
-  | 'problemAuth' | 'problemQuota' | 'problemRate' | 'problemNetwork' | 'problemModel';
+  | 'problemAuth' | 'problemKey' | 'problemQuota' | 'problemRate' | 'problemNetwork' | 'problemModel';
 
 export type Strings = Record<StringKey, string>;
 

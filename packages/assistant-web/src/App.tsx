@@ -1270,7 +1270,7 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
             </DropdownMenu>
           )}
           {/* It wraps out of sight when the name leaves it no room. With nothing connected the button beside it says so, and a state would only repeat it. */}
-          {!(connect && !connect.connected) && (
+          {!nothingConnected(state) && (
             <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
               {badge.label}
             </Badge>
@@ -1412,7 +1412,8 @@ function ConnectionButton({ state, connect, onOpen }: { state: AssistantState; c
         <Plug />
       )}
       {connect.connected && <span className="shrink-0 text-muted-foreground">{strings.connButton}</span>}
-      <span className="truncate">{connect.connected ? used && shortName(used.name) : strings.connButtonNone}</span>
+      {/* An agent that is not running has not said what is connected: the button names the page, not a state. */}
+      <span className="truncate">{connect.connected ? used && shortName(used.name) : listed(connect) ? strings.connButtonNone : strings.connTitle}</span>
       <ChevronRight />
     </Button>
   );
@@ -1546,27 +1547,66 @@ function KeyDialog({
   );
 }
 
+/** Whether an address is one the app keeps: http or https, a host, and neither a sign-in nor a query in it. */
+function plainAddress(text: string): 'ok' | 'not' | 'secret' {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return 'not';
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname || /\s/.test(text)) return 'not';
+  // A key belongs in the key box: in the address it would be kept and shown as part of it.
+  return url.username || url.password || url.search ? 'secret' : 'ok';
+}
+
 /**
  * An address that speaks OpenAI's protocol, or a model on this computer. Its models are typed:
- * none are found by asking the address. The boxes take no more than the app accepts.
+ * none are found by asking the address. What is typed is checked here as the app checks it, and
+ * said under the boxes; the form stays, with what was typed, until the app has kept the address.
  */
-function CustomForm({ strings, onDone }: { strings: Strings; onDone: (added: boolean) => void }) {
+function CustomForm({
+  connect,
+  stamp,
+  strings,
+  onDone,
+}: {
+  connect: Connect;
+  stamp: unknown;
+  strings: Strings;
+  onDone: () => void;
+}) {
   const [draft, setDraft] = useState({ name: '', url: '', key: '', models: '' });
   const [missing, setMissing] = useState<string | null>(null);
+  // The name sent, while the app's answer is awaited: the address listed, or its reason for not keeping it.
+  const [waiting, setWaiting] = useState<string | null>(null);
+  useEffect(() => {
+    if (!waiting) return;
+    if (connect.error) {
+      setWaiting(null);
+      setMissing(connect.error);
+    } else if (connect.custom.some(entry => entry.name === waiting)) {
+      onDone();
+    }
+  }, [stamp]);
   function add() {
     const name = draft.name.trim();
     const url = draft.url.trim();
-    if (!name || !/^https?:\/\/\S+$/i.test(url)) return setMissing(strings.connCustomNeedBoth);
+    const address = plainAddress(url);
+    if (!name || address === 'not') return setMissing(strings.connCustomNeedBoth);
+    if (address === 'secret') return setMissing(strings.connCustomPlainUrl);
+    if (connect.custom.some(entry => entry.name === name)) return setMissing(strings.connCustomExists);
     const models = draft.models
       // A comma as it is typed in Chinese separates as well.
       .split(/[,\uFF0C]/)
       .map(model => model.trim())
-      .filter(model => model && model.length <= 120)
-      .slice(0, 16);
+      .filter(Boolean);
     if (models.length === 0) return setMissing(strings.connCustomNeedModel);
+    if (models.length > 16 || models.some(model => model.length > 120)) return setMissing(strings.connCustomTooMany);
     const key = draft.key.trim();
+    setMissing(null);
+    setWaiting(name);
     post(key ? { type: 'conn_custom', name, url, key, models } : { type: 'conn_custom', name, url, models });
-    onDone(true);
   }
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border p-3">
@@ -1595,10 +1635,10 @@ function CustomForm({ strings, onDone }: { strings: Strings; onDone: (added: boo
         <Input size="sm" value={draft.models} onChange={event => setDraft({ ...draft, models: event.target.value })} />
       </Field>
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" size="sm" variant="primary" onClick={add}>
+        <Button type="button" size="sm" variant="primary" disabled={waiting !== null} onClick={add}>
           {strings.connAdd}
         </Button>
-        <Button type="button" size="sm" onClick={() => onDone(false)}>
+        <Button type="button" size="sm" onClick={onDone}>
           {strings.cancel}
         </Button>
       </div>
@@ -1722,8 +1762,6 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
   const { strings } = state;
   const [keyFor, setKeyFor] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  // An address was added from here and no key asked for since: an error now is about the address.
-  const [added, setAdded] = useState(false);
   const { option, current, ids } = modelChoice(state);
   const used = connectionOf(connect, current);
   // Only one sign-in runs at a time.
@@ -1751,10 +1789,7 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
       )
     );
   };
-  const askKey = (id: string) => {
-    setAdded(false);
-    setKeyFor(id);
-  };
+  const askKey = (id: string) => setKeyFor(id);
   return (
     <div className="flex min-w-0 flex-col gap-3 py-2">
       <div className="flex min-w-0 items-center justify-between gap-2">
@@ -1876,16 +1911,8 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
           }
         />
       ))}
-      {/* The app could not keep the address just added (its key, in the keychain): said where it was added. */}
-      {added && !keyEntry && connect.error && <Wrong>{connect.error}</Wrong>}
       {adding ? (
-        <CustomForm
-          strings={strings}
-          onDone={sent => {
-            setAdding(false);
-            if (sent) setAdded(true);
-          }}
-        />
+        <CustomForm connect={connect} stamp={state} strings={strings} onDone={() => setAdding(false)} />
       ) : (
         <div>
           <Button type="button" size="sm" onClick={() => setAdding(true)}>
@@ -1915,7 +1942,7 @@ function ProblemWays({
   strings: Strings;
   onConnections: () => void;
 }) {
-  // A sign-in that was refused is a plan's; a key that was refused is mended on the page.
+  // A sign-in that was refused is a plan's (`auth`); a key that was refused (`key`) is mended on the page.
   const plan = connect.plans.find(entry => entry.prefix === problem.prefix && entry.state !== 'out');
   const way =
     problem.kind === 'auth' ? (
@@ -1931,6 +1958,16 @@ function ProblemWays({
       >
         {strings.connSignInAgain}
       </Button>
+    ) : problem.kind === 'key' ? (
+      <>
+        <Button type="button" size="sm" variant="primary" onClick={onConnections}>
+          {strings.connTitle}
+        </Button>
+        {/* The message is kept: with the key mended it is sent from here. */}
+        <Button type="button" size="sm" disabled={busy} onClick={() => post({ type: 'conn_retry' })}>
+          {strings.retry}
+        </Button>
+      </>
     ) : problem.kind === 'quota' || problem.kind === 'model' ? (
       <Button type="button" size="sm" onClick={onConnections}>
         {strings.connTitle}
@@ -1989,15 +2026,21 @@ function Welcome({ state }: { state: AssistantState }) {
 const ROOM = { '--chat-edge': '0rem', '--chat-gutter': '0.5rem', '--chat-fade': '1.25rem' } as CSSProperties;
 const COLUMN = 'px-1 md:px-1';
 
+/** Whether the built-in agent has told its connections: it lists its sign-ins and keys whenever it runs. */
+const listed = (connect: Connect) => connect.plans.length + connect.keys.length + connect.custom.length > 0;
+
+/** The built-in agent runs and has nothing to talk to: the Connections page is then the panel. */
+const nothingConnected = (state: AssistantState | null) => Boolean(state?.connect && listed(state.connect) && !state.connect.connected);
+
 export function App({ state }: { state: AssistantState | null }) {
   const turns = useMemo(() => turnsOf(state?.items ?? []), [state?.items]);
   // The agent whose missing adapter is being explained; the card goes once Refresh finds it.
   const [setup, setSetup] = useState<string | null>(null);
   // The built-in agent's connections page takes the conversation's place while it is open. With
-  // nothing connected it is the panel; once a connection is there it is not taken away behind
-  // the user's back: they go to the conversation with its button.
+  // the agent running and nothing connected it is the panel; once a connection is there it is not
+  // taken away behind the user's back: they go to the conversation with its button.
   const [connOpen, setConnOpen] = useState(false);
-  const none = Boolean(state?.connect && !state.connect.connected);
+  const none = nothingConnected(state);
   useEffect(() => {
     if (none) setConnOpen(true);
   }, [none]);
@@ -2006,8 +2049,15 @@ export function App({ state }: { state: AssistantState | null }) {
   const connect = state.connect;
   const explained = notReadyOf(state).find(agent => agent.id === setup);
   const busy = state.state === 'busy';
-  const showConn = Boolean(connect) && (connOpen || none);
-  const openConn = () => setConnOpen(true);
+  // The page is made of what the agent says of its connections. One that is not running (not
+  // started yet, stopped, or failed to start) has said nothing, and the page would be empty: the
+  // conversation stays, with the app's words about the agent and the bar's button to start it.
+  const showConn = connect ? listed(connect) && (connOpen || none) : false;
+  const openConn = () => {
+    setConnOpen(true);
+    // Asked for while the agent is not running: it is started, and the page shows once it has answered.
+    if (connect && !listed(connect) && !state.running) post({ type: 'connect' });
+  };
   // The built-in agent's sign-ins are on its connections page, not on the app's sign-in card.
   const signIn = Boolean(state.auth) && !connect;
   const confirmNew = state.confirmNew && (

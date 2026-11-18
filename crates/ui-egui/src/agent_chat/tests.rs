@@ -16174,6 +16174,15 @@ fn fake_agent_program(dir: &std::path::Path, name: &str, snapshot: &Value) -> st
     program
 }
 
+/// What the app hands the agent with these keys and addresses: its words go with them.
+fn setup_of(keys: &[(&str, &str)], custom: Vec<connections::SetupCustom>) -> connections::Request {
+    connections::Request::Setup(connections::Setup {
+        keys: keys.iter().map(|(provider, key)| (provider.to_string(), key.to_string())).collect(),
+        custom,
+        callback: tr("ui.agent_chat_conn_callback").to_string(),
+    })
+}
+
 fn chatgpt_in(told: &mut Value) {
     told["plans"][0]["state"] = json!("in");
     told["plans"][0]["account"] = json!("a@example.com");
@@ -16485,14 +16494,16 @@ fn a_start_hands_over_the_kept_keys_and_custom_addresses_before_any_session() {
         api_key: key.map(str::to_string),
         models: vec![model.into()],
     };
-    let expected = connections::Setup {
-        keys: vec![("openai".into(), BUILTIN_KEY.into())],
-        custom: vec![
-            custom("my-llm", "http://localhost:11434/v1", Some(CUSTOM_KEY), "llama3.2"),
-            custom("open", "https://llm.example/v1", None, "m"),
-        ],
-    };
-    assert_eq!(script.requests(), [connections::Request::Setup(expected)]);
+    let expected = setup_of(
+        &[("openai", BUILTIN_KEY)],
+        vec![custom("my-llm", "http://localhost:11434/v1", Some(CUSTOM_KEY), "llama3.2"), custom("open", "https://llm.example/v1", None, "m")],
+    );
+    assert_eq!(script.requests(), [expected]);
+    // The sentence the browser shows after the ChatGPT sign-in page calls back goes with it.
+    assert_eq!(
+        script.requests()[0].params()["words"],
+        json!({"callback": "Go back to Intcad: the sign-in finishes there. You can close this page."})
+    );
     // Something is connected (the key): now, and only now, the session is asked for, once.
     let saved = |told: &mut Value| told["keys"][1]["saved"] = json!(true);
     script.report(Event::Connections(conn_snapshot(saved)));
@@ -16538,7 +16549,8 @@ fn connect_starts_the_built_in_agent_with_its_folder_and_its_keys_and_no_session
         std::fs::read_to_string(dir.join("mastra-agent.in")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
     let methods: Vec<&str> = sent.iter().map(|message| message["method"].as_str().unwrap_or_default()).collect();
     assert_eq!(methods, ["initialize", "_intcad/connections/setup"], "no session/new while nothing is connected");
-    assert_eq!(sent[1]["params"], json!({"keys": {"openai": BUILTIN_KEY}, "custom": []}));
+    let words = json!({"callback": tr("ui.agent_chat_conn_callback")});
+    assert_eq!(sent[1]["params"], json!({"keys": {"openai": BUILTIN_KEY}, "custom": [], "words": words}));
     assert_eq!(page_state(&mut app)["connect"]["plans"][0]["name"], "ChatGPT plan");
     assert!(app.preferences.agent_last.is_empty(), "the agent started last is not the built-in one's to set");
     disconnect(&mut app);
@@ -16637,8 +16649,9 @@ fn showing_the_assistant_starts_the_built_in_agent_once_and_no_other_agent() {
 }
 
 /// B3: after `conn_login` the page is told the sign-in under way with the phase the agent gives,
-/// and it stays told: the app has no timer for it (the backend's clock is tested beside the
-/// backend, `no_timer_ends_a_sign_in_under_way`). The address the agent opened is not passed on.
+/// and it stays told. Neither the app nor its ACP client has a timer for a sign-in, so there is
+/// no clock to advance here: what can be shown is that polling on changes nothing and sends
+/// nothing. The address the agent opened is not passed on.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_sign_in_under_way_is_told_to_the_page_and_stays() {
@@ -16665,12 +16678,13 @@ fn a_sign_in_under_way_is_told_to_the_page_and_stays() {
     assert_eq!(script.calls(), ["conn: setup", "conn: login openai-codex"], "nothing ended the sign-in");
     // One sign-in at a time: a second is refused here, before the agent would answer `busy`.
     assert!(conn_act(&mut app, &ctx, json!({"type": "conn_login", "id": "anthropic"})).is_err());
-    // And if the agent does answer `busy`, nothing is said and nothing changes.
+    // And if the agent does answer `busy`, the conversation says nothing and the sign-in stays.
     let before = app.agent_chat.items.len();
     script.report(Event::ConnectionsFailed { what: connections::What::Login, code: -32000 });
     poll(&mut app, &ctx);
     assert_eq!((app.agent_chat.items.len(), app.agent_chat.state()), (before, State::NeedsAuth));
     assert_eq!(page_state(&mut app)["connect"]["login"], expected);
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_refused"));
     // The phases the agent can give, each as it gives it.
     for phase in ["starting", "browser", "device", "code"] {
         script.report(Event::Connections(conn_snapshot(|told| told["login"] = json!({"id": "xai", "phase": phase}))));
@@ -16904,13 +16918,19 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
         assert!(!why.contains(BUILTIN_KEY), "the reason goes to the host's log: {why}");
     }
     assert!(keys.get("mastra/key/openai").unwrap().is_none() && script.calls() == ["conn: setup"], "nothing refused was kept or sent");
+    // A key the page could send and the app does not take is told to the page, so its dialog stops waiting.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": "k".repeat(4097)})).expect_err("too long");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_refused"));
 
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": format!("  {BUILTIN_KEY}\n")}))
         .expect("a key for one of the five");
     assert_eq!(keys.get("mastra/key/openai").unwrap().as_deref(), Some(BUILTIN_KEY), "in the keychain, trimmed");
     until_setups(&mut app, &ctx, &script, 2);
-    let expected = connections::Setup { keys: vec![("openai".into(), BUILTIN_KEY.into())], custom: Vec::new() };
-    assert_eq!(script.requests().last(), Some(&connections::Request::Setup(expected)), "and handed to the agent, with every other key there is");
+    assert_eq!(
+        script.requests().last(),
+        Some(&setup_of(&[("openai", BUILTIN_KEY)], Vec::new())),
+        "and handed to the agent, with every other key there is"
+    );
     // The agent says the key is saved: something is connected, so the session opens.
     script.report(Event::Connections(conn_snapshot(|told| told["keys"][1]["saved"] = json!(true))));
     poll(&mut app, &ctx);
@@ -16926,7 +16946,7 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
     conn_act(&mut app, &ctx, json!({"type": "conn_key_remove", "provider": "openai"})).expect("a listed provider");
     assert!(keys.get("mastra/key/openai").unwrap().is_none(), "taken out of the keychain");
     until_setups(&mut app, &ctx, &script, 3);
-    assert_eq!(script.requests().last(), Some(&connections::Request::Setup(connections::Setup::default())), "and the agent is handed what is left");
+    assert_eq!(script.requests().last(), Some(&setup_of(&[], Vec::new())), "and the agent is handed what is left");
 
     // A keychain that refuses: the page is told, in the user's words; nothing is handed over.
     app.services.secrets = Some(Arc::new(RefusingKeys));
@@ -16952,14 +16972,17 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
     let (mut app, _keys, ctx) = app_with_builtin();
     app.services.secrets = Some(Arc::new(RefusingKeys));
     let script = start_builtin(&mut app, &ctx);
-    assert_eq!(script.requests(), [connections::Request::Setup(connections::Setup::default())]);
-    assert_eq!(app.agent_chat.conn.error.as_deref(), Some(tr("ui.host_ai_key_unavailable")));
+    assert_eq!(script.requests(), [setup_of(&[], Vec::new())]);
+    assert_eq!(app.agent_chat.conn.error, Some("ui.host_ai_key_unavailable"));
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.host_ai_key_unavailable"));
     assert!(!everywhere_a_key_could_leak(&mut app, &script).contains(BUILTIN_KEY));
 }
 
 /// B11: `conn_custom` is checked field by field, kept in preferences without its key (which
 /// goes to the keychain) and handed to the agent with it; `conn_custom_remove` takes all of it
-/// away again, by the id the agent gave the address.
+/// away again, by the id the agent gave the address. Every refusal tells the page why, in the
+/// user's words (`connect.error`): none only reaches the host's log. A name that is kept is not
+/// written over, and nothing that was typed is quietly left out.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_custom_address_is_checked_kept_without_its_key_and_handed_over() {
@@ -16977,41 +17000,68 @@ fn a_custom_address_is_checked_kept_without_its_key_and_handed_over() {
         action[field] = value;
         action
     };
-    for refused in [
-        without("name"),
-        without("url"),
-        without("models"),
-        with("name", json!("")),
-        with("name", json!("n".repeat(41))),
-        with("url", json!("localhost:11434/v1")),
-        with("url", json!("ftp://localhost/v1")),
-        with("url", json!(format!("https://llm.example/{}", "p".repeat(400)))),
-        with("models", json!([])),
-        with("models", json!("llama3.2")),
-        with("models", json!((0..17).map(|n| format!("m{n}")).collect::<Vec<_>>())),
-        with("models", json!(["m".repeat(121)])),
-        with("key", json!(7)),
-        with("key", json!(format!("{CUSTOM_KEY}{}", "k".repeat(4096)))),
-    ] {
+    let both = "ui.agent_chat_conn_custom_need_both";
+    let model = "ui.agent_chat_conn_custom_need_model";
+    let many = "ui.agent_chat_conn_custom_too_many";
+    let plain = "ui.agent_chat_conn_custom_plain_url";
+    let refusals = [
+        (without("name"), both),
+        (without("url"), both),
+        (with("name", json!("")), both),
+        (with("name", json!("\u{feff}")), both),
+        (with("name", json!("n".repeat(41))), both),
+        (with("url", json!("localhost:11434/v1")), both),
+        (with("url", json!("ftp://localhost/v1")), both),
+        (with("url", json!(format!("https://llm.example/{}", "p".repeat(400)))), both),
+        (with("url", json!(format!("https://user:{CUSTOM_KEY}@llm.example/v1"))), plain),
+        (with("url", json!(format!("https://llm.example/v1?api_key={CUSTOM_KEY}"))), plain),
+        (without("models"), model),
+        (with("models", json!("llama3.2")), model),
+        (with("models", json!([])), model),
+        (with("models", json!((0..17).map(|n| format!("m{n}")).collect::<Vec<_>>())), many),
+        (with("models", json!(["llama3.2", "m".repeat(121)])), many),
+        (with("key", json!(7)), "ui.agent_chat_conn_refused"),
+        (with("key", json!(format!("{CUSTOM_KEY}{}", "k".repeat(4096)))), "ui.agent_chat_conn_refused"),
+        // A key is not sent in the clear to another computer: the app's rule for every key it holds.
+        (with("url", json!("http://192.168.1.20:11434/v1")), "ui.ai_key_needs_https"),
+    ];
+    for (refused, sentence) in refusals {
         let why = conn_act(&mut app, &ctx, refused.clone()).expect_err("out of range");
-        assert!(!why.contains(CUSTOM_KEY) && !why.contains("localhost"), "{why}");
+        assert!(!why.contains(CUSTOM_KEY) && !why.contains("localhost") && !why.contains("llm.example"), "{why}");
+        let state = page_state(&mut app);
+        assert_eq!(state["connect"]["error"], tr(sentence), "{refused}: the page is told why");
+        assert!(!state.to_string().contains(CUSTOM_KEY), "a secret typed into the address is shown nowhere");
+        assert_eq!(status(&app)["connect"]["error"], tr(sentence));
     }
     assert!(app.preferences.mastra_custom.is_empty() && script.calls() == ["conn: setup"], "nothing refused was kept or sent");
+    assert!(keys.get("mastra/custom/my-llm").unwrap().is_none());
+    // The sentence is the user's language's, whenever it is read.
+    let chinese = {
+        let _language = crate::i18n::scope("zh");
+        tr("ui.ai_key_needs_https").to_string()
+    };
+    app.preferences.language = "zh".into();
+    assert_eq!(page_state(&mut app)["connect"]["error"], chinese);
+    assert_ne!(chinese, tr("ui.ai_key_needs_https"));
+    app.preferences.language = "en".into();
 
+    // What is in range is kept, and the word of the last refusal goes.
     conn_act(&mut app, &ctx, good()).expect("a custom address in range");
+    assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null);
     let kept = connections::CustomAddress {
         name: "my-llm".into(),
         url: "http://localhost:11434/v1".into(),
         models: vec!["llama3.2".into(), "qwen3".into()],
         key: true,
     };
-    assert_eq!(app.preferences.mastra_custom, [kept]);
+    assert_eq!(app.preferences.mastra_custom, std::slice::from_ref(&kept));
     assert_eq!(keys.get("mastra/custom/my-llm").unwrap().as_deref(), Some(CUSTOM_KEY), "its key is in the keychain");
     until_setups(&mut app, &ctx, &script, 2);
     let sent = script.requests().last().expect("the setup").params();
+    assert_eq!(sent["keys"], json!({}));
     assert_eq!(
-        sent,
-        json!({"keys": {}, "custom": [{"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2", "qwen3"], "apiKey": CUSTOM_KEY}]})
+        sent["custom"],
+        json!([{"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2", "qwen3"], "apiKey": CUSTOM_KEY}])
     );
     let saved: Value = serde_json::from_str(&app.prefs()).unwrap();
     assert_eq!(
@@ -17020,33 +17070,24 @@ fn a_custom_address_is_checked_kept_without_its_key_and_handed_over() {
     );
     assert!(!everywhere_a_key_could_leak(&mut app, &script).contains(CUSTOM_KEY));
 
-    // The same name again replaces it; without a key, none is left behind.
-    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "my-llm", "url": "http://localhost:1234/v1", "models": ["phi4"]}))
-        .expect("in range");
-    assert_eq!(app.preferences.mastra_custom.len(), 1);
-    assert_eq!((app.preferences.mastra_custom[0].url.as_str(), app.preferences.mastra_custom[0].key), ("http://localhost:1234/v1", false));
-    assert!(keys.get("mastra/custom/my-llm").unwrap().is_none());
-    until_setups(&mut app, &ctx, &script, 3);
-    assert_eq!(
-        script.requests().last().expect("the setup").params()["custom"],
-        json!([{"name": "my-llm", "url": "http://localhost:1234/v1", "models": ["phi4"]}])
-    );
+    // A name that is kept is not written over (that would drop its key): the page is told.
+    let again = json!({"type": "conn_custom", "name": " my-llm ", "url": "http://localhost:1234/v1", "models": ["phi4"]});
+    conn_act(&mut app, &ctx, again).expect_err("the name is taken");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_custom_exists"));
+    assert_eq!(app.preferences.mastra_custom, [kept]);
+    assert_eq!(keys.get("mastra/custom/my-llm").unwrap().as_deref(), Some(CUSTOM_KEY), "and its key stays");
+    assert_eq!(script.calls().iter().filter(|call| *call == "conn: setup").count(), 2, "nothing was handed over again");
 
-    // A key is not sent in the clear to another computer: the app's rule for every key it holds.
-    conn_act(
-        &mut app,
-        &ctx,
-        json!({"type": "conn_custom", "name": "lan", "url": "http://192.168.1.20:11434/v1", "key": CUSTOM_KEY, "models": ["m"]}),
-    )
-    .expect("in range");
-    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.ai_key_needs_https"));
-    assert!(app.preferences.mastra_custom.len() == 1 && keys.get("mastra/custom/lan").unwrap().is_none());
+    // A short address is an address, and plain HTTP to another computer is fine without a key.
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "pi", "url": "http://pi", "models": ["phi4"]})).expect("in range");
+    until_setups(&mut app, &ctx, &script, 3);
+    assert_eq!(script.requests().last().expect("the setup").params()["custom"][1], json!({"name": "pi", "url": "http://pi", "models": ["phi4"]}));
     // A keychain that refuses keeps the address out too.
     app.services.secrets = Some(Arc::new(RefusingKeys));
     conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "keyed", "url": "https://llm.example/v1", "key": CUSTOM_KEY, "models": ["m"]}))
         .expect("in range");
     assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.host_ai_key_unavailable"));
-    assert_eq!(app.preferences.mastra_custom.len(), 1);
+    assert_eq!(app.preferences.mastra_custom.len(), 2);
     app.services.secrets = Some(keys.clone());
 
     // Removal goes by the id the agent gave it, which is not the name as it was typed.
@@ -17060,7 +17101,8 @@ fn a_custom_address_is_checked_kept_without_its_key_and_handed_over() {
     assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null);
     let told = |told: &mut Value| {
         told["custom"] = json!([
-            {"id": "my-llm", "name": "my-llm", "url": "http://localhost:1234/v1", "models": ["phi4"], "keyed": false, "prefix": "mastracode/my-llm"},
+            {"id": "my-llm", "name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2", "qwen3"], "keyed": true, "prefix": "mastracode/my-llm"},
+            {"id": "pi", "name": "pi", "url": "http://pi", "models": ["phi4"], "keyed": false, "prefix": "mastracode/pi"},
             {"id": "second-llm", "name": "Second LLM", "url": "https://llm.example/v1", "models": ["m"], "keyed": true, "prefix": "mastracode/second-llm"},
         ])
     };
@@ -17068,19 +17110,226 @@ fn a_custom_address_is_checked_kept_without_its_key_and_handed_over() {
     poll(&mut app, &ctx);
     let state = page_state(&mut app);
     assert_eq!(
-        state["connect"]["custom"][1],
+        state["connect"]["custom"][2],
         json!({"id": "second-llm", "name": "Second LLM", "url": "https://llm.example/v1", "models": ["m"], "keyed": true, "prefix": "mastracode/second-llm"})
     );
     assert_eq!(state["connect"]["connected"], true, "a custom address is something to talk to");
     assert!(conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove", "id": "no-such"})).is_err());
     assert!(conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove"})).is_err());
     conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove", "id": "second-llm"})).expect("an address the agent lists");
-    assert_eq!(app.preferences.mastra_custom.iter().map(|kept| kept.name.as_str()).collect::<Vec<_>>(), ["my-llm"]);
+    assert_eq!(app.preferences.mastra_custom.iter().map(|kept| kept.name.as_str()).collect::<Vec<_>>(), ["my-llm", "pi"]);
     assert!(keys.get("mastra/custom/Second LLM").unwrap().is_none(), "its key goes with it");
     until_setups(&mut app, &ctx, &script, 5);
-    assert_eq!(script.requests().last().expect("the setup").params()["custom"].as_array().map(Vec::len), Some(1));
-    conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove", "id": "my-llm"})).expect("the other one");
-    assert!(app.preferences.mastra_custom.is_empty());
+    assert_eq!(script.requests().last().expect("the setup").params()["custom"].as_array().map(Vec::len), Some(2));
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove", "id": "my-llm"})).expect("another one");
+    assert_eq!(app.preferences.mastra_custom.len(), 1);
+    assert!(keys.get("mastra/custom/my-llm").unwrap().is_none());
+
+    // No more than 32 are kept: the next one is refused, and the page is told.
+    until_setups(&mut app, &ctx, &script, 6);
+    for n in 0..31 {
+        conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": format!("a{n}"), "url": "http://pi", "models": ["m"]})).expect("room for it");
+    }
+    assert_eq!(app.preferences.mastra_custom.len(), 32);
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "one-more", "url": "http://pi", "models": ["m"]})).expect_err("full");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_custom_full"));
+    assert_eq!(app.preferences.mastra_custom.len(), 32);
+    until_setups(&mut app, &ctx, &script, 7);
+}
+
+/// An address in the preferences that cannot be handed over (written by hand, or by another
+/// version of the app) is never shown on the page, so nobody could remove it: it does not take
+/// its name, and it makes way, with its key, for an address of that name that is added.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_address_that_cannot_be_handed_over_takes_neither_its_name_nor_room() {
+    use backend::Secrets as _;
+    let (mut app, _keys, ctx) = app_with_builtin();
+    let keys = Arc::new(direct_integration::Keys::default());
+    app.services.secrets = Some(keys.clone());
+    keys.set("mastra/custom/old", CUSTOM_KEY).unwrap();
+    let address = |name: &str, url: &str, key: bool| connections::CustomAddress { name: name.into(), url: url.into(), models: vec!["m".into()], key };
+    app.preferences.mastra_custom = vec![address("old", "https://llm.example/v1?api_key=in-the-address", true), address("fine", "http://pi", false)];
+    let script = start_builtin(&mut app, &ctx);
+    let handed = |script: &Script| script.requests().last().expect("the setup").params()["custom"].clone();
+    assert_eq!(handed(&script), json!([{"name": "fine", "url": "http://pi", "models": ["m"]}]), "what cannot be handed over is left out");
+    assert_eq!(app.preferences.mastra_custom.len(), 2, "and left alone in the preferences");
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "old", "url": "http://localhost:11434/v1", "models": ["m"]}))
+        .expect("the name is free");
+    assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null);
+    assert_eq!(app.preferences.mastra_custom, [address("fine", "http://pi", false), address("old", "http://localhost:11434/v1", false)]);
+    assert!(keys.get("mastra/custom/old").unwrap().is_none(), "the key of the entry that made way went with it");
+    until_setups(&mut app, &ctx, &script, 2);
+    assert_eq!(
+        handed(&script),
+        json!([{"name": "fine", "url": "http://pi", "models": ["m"]}, {"name": "old", "url": "http://localhost:11434/v1", "models": ["m"]}])
+    );
+    // An address that can be handed over still keeps its name.
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "fine", "url": "http://localhost:1234/v1", "models": ["m"]})).expect_err("taken");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_custom_exists"));
+}
+
+/// What the agent refuses is told to the page as that, so a key dialog or the address form
+/// stops waiting; never in the agent's words. The next action takes the word away again.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_request_the_agent_refuses_is_told_to_the_page_until_the_next_action() {
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    for what in [connections::What::Setup, connections::What::Login, connections::What::Code, connections::What::Logout, connections::What::Cancel] {
+        script.report(Event::ConnectionsFailed { what, code: -32602 });
+        poll(&mut app, &ctx);
+        let state = page_state(&mut app);
+        assert_eq!(state["connect"]["error"], "That could not be done. Try again.", "{what:?}");
+        assert_eq!((&state["state"], &state["items"]), (&json!("auth"), &json!([])), "it is not an error of the conversation");
+        // In the user's language whenever it is read, though it arrived outside a frame.
+        app.preferences.language = "zh".into();
+        assert_eq!(page_state(&mut app)["connect"]["error"], "这一步没有做成。请再试一次。");
+        app.preferences.language = "en".into();
+        conn_act(&mut app, &ctx, json!({"type": "conn_cancel"})).expect("a listed action");
+        assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null, "the next action starts clean");
+    }
+    assert_eq!(script.calls().iter().filter(|call| *call == "conn: cancel").count(), 5);
+}
+
+/// D: what the page is given when the built-in agent could not start, ended by itself or was
+/// stopped. The connections are still an object (the agent is still the built-in one) with
+/// nothing in them and `connected: false`, the state says which it was, and the reason is among
+/// the items: the page has the conversation to show, not an empty Connections page.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_built_in_agent_that_failed_or_ended_leaves_the_page_its_notice_and_no_connections() {
+    let nothing = json!({"plans": [], "keys": [], "custom": [], "login": null, "problem": null, "error": null, "dates": {}, "connected": false});
+    let notices = |state: &Value| -> Vec<String> {
+        let items = state["items"].as_array().expect("items");
+        items
+            .iter()
+            .filter(|item| item["kind"] == "notice" && item["error"] == true)
+            .map(|item| item["text"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    // It could not start: its program is not there.
+    let (mut app, _keys, ctx) = app_with_builtin();
+    connect(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"], &state["connect"]), (&json!("failed"), &json!(false), &nothing));
+    let said = notices(&state);
+    assert!(said.last().is_some_and(|text| text.starts_with("The agent could not start: ")), "{said:?}");
+
+    // It ended while it was starting: failed, with the end said.
+    let (mut app, _keys, ctx) = app_with_builtin();
+    let script = start_builtin(&mut app, &ctx);
+    script.report(Event::Exited { tail: vec!["[intcad] Mastra Code's SDK is not in /nowhere.".into()] });
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"], &state["connect"]), (&json!("failed"), &json!(false), &nothing));
+    let said = notices(&state);
+    assert!(said.last().is_some_and(|text| text.starts_with(tr("ui.agent_chat_exited")) && text.contains("SDK is not in")), "{said:?}");
+
+    // It ended after it had said what is connected: what it said is gone with it.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    assert_eq!(page_state(&mut app)["connect"]["connected"], true);
+    script.report(Event::Exited { tail: vec!["out of memory".into()] });
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"], &state["connect"]), (&json!("exited"), &json!(false), &nothing));
+    let said = notices(&state);
+    assert!(said.last().is_some_and(|text| text.starts_with(tr("ui.agent_chat_exited")) && text.ends_with("out of memory")), "{said:?}");
+    assert_eq!(status(&app)["connect"], nothing);
+
+    // Stopped by the user: off, and nothing to say.
+    let (mut app, _script, _keys, _ctx) = builtin_ready();
+    disconnect(&mut app);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"], &state["connect"]), (&json!("off"), &json!(false), &nothing));
+    assert_eq!(state["items"], json!([]));
+}
+
+/// C: each design's conversation has an agent of its own, and all of them read one keychain,
+/// one list of custom addresses and Mastra's one sign-in file. A key removed in one
+/// conversation is handed to the other's agent again, without the key, when that conversation
+/// is shown; so is a sign-in one agent reports. The conversation that made the change is not
+/// set up twice, and catching up is not handed back as a change.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_change_in_one_conversation_reaches_the_other_ones_agent_when_it_is_shown() {
+    use backend::Secrets as _;
+    let setups = |script: &Script| script.calls().iter().filter(|call| *call == "conn: setup").count();
+    let saved = |told: &mut Value| told["keys"][1]["saved"] = json!(true);
+    let ready = Event::Ready { agent: "Mastra Code 0.1".into(), images: false };
+    let (mut app, keys, ctx) = app_with_builtin();
+    keys.set("mastra/key/openai", BUILTIN_KEY).unwrap();
+    // The first design's conversation: its agent is set up with the key.
+    let a = start_builtin(&mut app, &ctx);
+    a.report(Event::Connections(conn_snapshot(saved)));
+    a.report(ready.clone());
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    // A second design: its conversation is its own, and starts an agent of its own with the same key.
+    crate::documents::open_tab(&mut app, solidcraft_engine::Session::default()).unwrap();
+    assert!(app.agent_chat.backend.is_none() && app.agent_chat.state.is_none(), "the new design has its own conversation");
+    let b = start_builtin(&mut app, &ctx);
+    b.report(Event::Connections(conn_snapshot(saved)));
+    b.report(ready.clone());
+    poll(&mut app, &ctx);
+    assert_eq!(b.requests(), [setup_of(&[("openai", BUILTIN_KEY)], Vec::new())]);
+    assert_eq!(page_state(&mut app)["connect"]["keys"][1]["saved"], true);
+
+    // Back in the first design. Being shown again hands nothing over: nothing has changed.
+    crate::documents::switch(&mut app, 0);
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!((setups(&a), setups(&b)), (1, 1));
+    // The key is removed there: that agent is set up again, without it.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key_remove", "provider": "openai"})).expect("a listed provider");
+    until_setups(&mut app, &ctx, &a, 2);
+    assert_eq!(a.requests().last(), Some(&setup_of(&[], Vec::new())));
+    a.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    assert_eq!((setups(&a), setups(&b)), (2, 1), "the other design's agent is not shown: it has heard nothing yet");
+
+    // The second design is shown: its agent is set up again, without the key, and says so.
+    crate::documents::switch(&mut app, 1);
+    until_setups(&mut app, &ctx, &b, 2);
+    assert_eq!(b.requests().last(), Some(&setup_of(&[], Vec::new())), "the removed key is not handed over again");
+    b.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["connect"]["keys"][1]["saved"], &state["state"]), (&json!(false), &json!("auth")), "its page no longer says the key is saved");
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!(setups(&b), 2, "once");
+    // The first design made the change itself: shown again, it is not behind.
+    crate::documents::switch(&mut app, 0);
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!((setups(&a), setups(&b)), (2, 2));
+
+    // A plan signed in there reaches the other agent the same way.
+    a.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(setups(&a), 2, "the agent that reported the sign-in knows of it");
+    crate::documents::switch(&mut app, 1);
+    until_setups(&mut app, &ctx, &b, 3);
+    // Set up again, that agent reads Mastra's sign-ins afresh and says the same. That is the
+    // change it caught up with, not a new one to hand back.
+    b.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(page_state(&mut app)["connect"]["plans"][0]["state"], "in");
+    crate::documents::switch(&mut app, 0);
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!((setups(&a), setups(&b)), (2, 3), "catching up is not a change to tell the others of");
+    // A sign-out reported in the second design reaches the first.
+    crate::documents::switch(&mut app, 1);
+    b.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    crate::documents::switch(&mut app, 0);
+    until_setups(&mut app, &ctx, &a, 3);
+    assert_eq!(setups(&b), 3);
 }
 
 /// B13: with the built-in agent the provider and model are still chosen with the existing
@@ -17273,6 +17522,102 @@ fn a_message_refused_for_its_sign_in_is_sent_again_once_that_plan_is_signed_in()
     assert_eq!(sent, ["prompt: make a box", "prompt: make a plate instead"]);
 }
 
+/// A turn refused for its API key is told as that, not as a sign-in that expired: the agent says
+/// `auth` for both, and there is no sign-in to do again for a key. On the prefix of a saved key,
+/// of a custom address, or of nothing known, the notice is of the kind `key` with the key's
+/// sentence (in English and in Chinese), and nothing sends the message again by itself, not
+/// even a plan with the same prefix signing in. On a signed-in plan's prefix `auth` stays, with
+/// its resend.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_refused_key_is_told_as_a_key_and_is_not_sent_again_by_itself() {
+    use connections::TurnKind;
+    let last_notice = |app: &mut SolveApp| page_state(app)["items"].as_array().expect("items").last().expect("the notice").clone();
+    // An OpenAI key is saved and a custom address is kept; the ChatGPT plan, which gives the
+    // same `openai` models, is signed out. The Claude plan is signed in.
+    let connected = |told: &mut Value| {
+        told["keys"][1]["saved"] = json!(true);
+        told["plans"][1]["state"] = json!("in");
+        told["custom"] = json!([{"id": "my-llm", "name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"], "keyed": true, "prefix": "mastracode/my-llm"}]);
+    };
+    for (prefix, name) in [("openai", "OpenAI"), ("mastracode/my-llm", "my-llm"), ("somewhere-else", "somewhere-else")] {
+        let (mut app, script, _keys, ctx) = builtin_told(connected);
+        script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+        poll(&mut app, &ctx);
+        send(&mut app, &ctx, "make a box".into());
+        // The agent's word is `auth`, as for a sign-in.
+        fail_turn(&mut app, &ctx, &script, TurnKind::Auth, prefix);
+        let text = format!("{name} refused the API key. Update the key in Connections, then send the message again.");
+        assert_eq!(
+            last_notice(&mut app),
+            json!({"kind": "notice", "error": true, "text": text, "problem": {"kind": "key", "prefix": prefix, "name": name}})
+        );
+        assert_eq!(status(&app)["items"].as_array().expect("items").last(), Some(&json!({"notice": text, "error": true})));
+        app.preferences.language = "zh".into();
+        assert_eq!(last_notice(&mut app)["text"], format!("「{name}」拒绝了这个 API key。在连接与登录里更新 key，再发一次。"));
+        app.preferences.language = "en".into();
+        assert_eq!(app.agent_chat.state(), State::Ready, "the conversation goes on");
+        // No plan is shown expired by the app, and no snapshot sends the message again: not the
+        // same one, and not the ChatGPT plan (whose models have the key's prefix) signing in.
+        assert_eq!(page_state(&mut app)["connect"]["plans"][0]["state"], "out");
+        script.report(Event::Connections(conn_snapshot(connected)));
+        poll(&mut app, &ctx);
+        script.report(Event::Connections(conn_snapshot(|told| {
+            connected(told);
+            chatgpt_in(told);
+        })));
+        poll(&mut app, &ctx);
+        poll(&mut app, &ctx);
+        assert_eq!(script.prompts().len(), 1, "{prefix}: a refused key is mended by hand, and the message sent by hand");
+        assert_eq!(app.agent_chat.state(), State::Ready);
+    }
+    // Nothing is known of the connections at all: still a key, named as the agent is.
+    let (mut app, script, ctx) = app_with_script();
+    app.builtin_agent = Some(builtin_agent());
+    app.agent_chat.conn.active = true;
+    send(&mut app, &ctx, "make a box".into());
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    assert_eq!(last_notice(&mut app)["problem"], json!({"kind": "key", "prefix": "openai", "name": "Mastra"}));
+
+    // On the prefix of a plan that is signed in, `auth` stays the sign-in's: its sentence, and
+    // the message again once the plan is signed in. The entry shows the plan expired first.
+    let (mut app, script, _keys, ctx) = builtin_told(connected);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    script.report(Event::Connections(conn_snapshot(|told| {
+        connected(told);
+        told["plans"][1]["state"] = json!("expired");
+    })));
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "anthropic");
+    let name = tr("ui.agent_chat_plan_anthropic").to_string();
+    let text = trf("ui.agent_chat_problem_auth", &[("name", &name)]);
+    assert_eq!(
+        last_notice(&mut app),
+        json!({"kind": "notice", "error": true, "text": text, "problem": {"kind": "auth", "prefix": "anthropic", "name": name}})
+    );
+    assert_eq!(script.prompts().len(), 1);
+    script.report(Event::Connections(conn_snapshot(connected)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 2, "signed in again, the message goes by itself");
+    assert_eq!(script.prompts()[1], script.prompts()[0]);
+    // A plan and a key with the same prefix, the plan signed in: the plan serves the models,
+    // so the refusal is the sign-in's.
+    let (mut app, script, _keys, ctx) = builtin_told(|told| {
+        chatgpt_in(told);
+        told["keys"][1]["saved"] = json!(true);
+    });
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    assert_eq!(last_notice(&mut app)["problem"], json!({"kind": "auth", "prefix": "openai", "name": "ChatGPT plan"}));
+    // The words the page has for the two, in the two languages given.
+    assert_eq!(tr("ui.agent_chat_problem_key"), "{name} refused the API key. Update the key in Connections, then send the message again.");
+    let _language = crate::i18n::scope("zh");
+    assert_eq!(tr("ui.agent_chat_problem_key"), "「{name}」拒绝了这个 API key。在连接与登录里更新 key，再发一次。");
+}
+
 /// B16: after a `network` failure the message is kept and `conn_retry` sends it again, once;
 /// with nothing kept, or while the agent is not ready, the action is refused.
 #[cfg(not(target_arch = "wasm32"))]
@@ -17383,6 +17728,7 @@ fn a_refused_setup_ends_the_start_as_failed() {
     script.report(Event::ConnectionsFailed { what: connections::What::Setup, code: -32603 });
     poll(&mut app, &ctx);
     assert!(app.agent_chat.state() == State::NeedsAuth && app.agent_chat.items.is_empty());
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_refused"), "the page is told, the conversation is not");
 }
 
 /// While the built-in agent is stopped a key and a custom address can still be kept (they are
@@ -17413,10 +17759,7 @@ fn a_key_is_kept_while_the_built_in_agent_is_stopped_and_handed_over_when_it_sta
     let script = start_builtin(&mut app, &ctx);
     let custom =
         connections::SetupCustom { name: "my-llm".into(), url: "http://localhost:11434/v1".into(), api_key: None, models: vec!["llama3.2".into()] };
-    assert_eq!(
-        script.requests(),
-        [connections::Request::Setup(connections::Setup { keys: vec![("google".into(), BUILTIN_KEY.into())], custom: vec![custom] })]
-    );
+    assert_eq!(script.requests(), [setup_of(&[("google", BUILTIN_KEY)], vec![custom])]);
 }
 
 /// The control channel carries out a Connections action exactly as the page does (the same
@@ -17466,7 +17809,7 @@ fn the_control_channel_carries_out_a_connection_action_as_the_page_does() {
 
 /// The names the page has for the words of the Connections page, in the order of the contract's
 /// table (section 5). The page reads them by name: a JSON object has no order to keep.
-const CONNECTION_STRINGS: [&str; 64] = [
+const CONNECTION_STRINGS: [&str; 68] = [
     "connTitle",
     "connIntro",
     "connNoneTitle",
@@ -17506,6 +17849,9 @@ const CONNECTION_STRINGS: [&str; 64] = [
     "connCustomModels",
     "connCustomNeedBoth",
     "connCustomNeedModel",
+    "connCustomTooMany",
+    "connCustomPlainUrl",
+    "connCustomExists",
     "connAdd",
     "connWaiting",
     "connStarting",
@@ -17527,6 +17873,7 @@ const CONNECTION_STRINGS: [&str; 64] = [
     "planXai",
     "planGithubCopilot",
     "problemAuth",
+    "problemKey",
     "problemQuota",
     "problemRate",
     "problemNetwork",

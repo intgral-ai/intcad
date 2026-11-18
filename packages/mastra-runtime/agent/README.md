@@ -8,7 +8,8 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
 - `callback.mjs`: how the ChatGPT browser sign-in waits for the browser without a time limit;
 - `agent.mjs`: the methods on the ACP agent, a model list a person can read, sessions that follow a
   sign-in or sign-out, and the reason on a turn that fails;
-- `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure.
+- `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure;
+- `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed.
 
 The tests are `../test/connections.test.ts`. They run these files against stand-ins: no test signs
 in anywhere, opens a browser or reads a key.
@@ -45,10 +46,10 @@ sends the same snapshot as the notification `_intcad/connections/changed` whenev
 
 | Method | Params | What it does |
 | -- | -- | -- |
-| `_intcad/connections/setup` | `{ keys: { <key id>: <key> }, custom: [{ name, url, apiKey?, models }] }` | Replaces every key and custom address. |
+| `_intcad/connections/setup` | `{ keys: { <key id>: <key> }, custom: [{ name, url, apiKey?, models }], words?: { callback } }` | Replaces every key and custom address, and reads Mastra's sign-ins from its file again. A custom address that cannot be used is left out, the rest is taken. `words.callback` is the sentence the browser shows after the ChatGPT sign-in page has called back. |
 | `_intcad/connections/list` | `{}` | Nothing; answers with the snapshot. |
 | `_intcad/connections/login` | `{ id }` | Starts a plan sign-in in the background. Error `-32000` `busy` if one is under way. |
-| `_intcad/connections/code` | `{ id, code }` | Hands over the code the browser showed (Claude). |
+| `_intcad/connections/code` | `{ id, code }` | Hands over the code the browser showed (Claude). With no sign-in waiting for one it changes nothing and is not an error. |
 | `_intcad/connections/reopen` | `{}` | Opens the sign-in address in the browser again. |
 | `_intcad/connections/cancel` | `{}` | Ends the sign-in under way. |
 | `_intcad/connections/logout` | `{ id }` | Signs out of a plan. |
@@ -97,6 +98,19 @@ variable Mastra reads for that provider, and no key is written to a file. Mastra
 from the environment it inherited, so a key that happens to be set where the app was started is
 not used behind the user's back.
 
+Three more things follow from the key being in the environment:
+
+- Mastra Code starts the commands a model runs (its command tool) with a copy of the agent's
+  environment. `secrets.mjs` takes every provider's key variable out of that copy, so a command
+  such as `env` shows none. If Mastra's sandbox is not the one this was written for, the agent
+  does not start, where it would otherwise start unguarded.
+- The variables removed at start are every provider's that Mastra knows, not only the five the
+  page offers: a key for another provider in the environment the app was started from would
+  otherwise serve models with no row on the page.
+- ACP's SDK prints a request it answers with an error, and the app keeps the agent's last lines.
+  The parameters of a request are not printed (`params: '[not shown]'`): they can be a key, a
+  pasted code, or what the user wrote.
+
 Plan sign-ins are different: Mastra keeps them itself, in `auth.json` in its data folder.
 
 A custom address without a key is given the word `none` in the key's place, because Mastra counts
@@ -109,7 +123,8 @@ own data there, apart from a Mastra Code the user may have installed. The agent 
 folder of its own inside it (`home/`): Mastra Code reads a person's own agent files from their
 home folder (instructions for agents, MCP servers, its own settings), and none of that is meant for
 Intcad's assistant or for the model it talks to. Without `MASTRA_APP_DATA_DIR` (run by hand)
-nothing of this is changed.
+nothing of this is changed. The browser is the exception: it is started with the user's own home
+folder, so it is the browser they use, with the profile they are signed in with.
 
 ## The ChatGPT sign-in does not time out
 
@@ -120,7 +135,12 @@ waits until the user has signed in or cancels, without changing Mastra's files:
 1. `callback.mjs` takes both ports before the sign-in starts.
 2. Mastra Code, finding both taken, still builds the sign-in address (pointing at 1457) and then
    waits, without a limit, for the address the browser was sent back to, as pasted by hand.
-3. The listener receives the browser's call and hands that address over.
+3. The listener receives the browser's call and hands that address over. Only the call that
+   carries the `state` Mastra put into the sign-in address is taken; any other request to the
+   ports is refused and the wait goes on, and none can end the agent.
+
+The page the browser then shows sends the user back to the app. It does not say "signed in":
+the code is exchanged after it.
 
 `cancel`, the end of the sign-in, or the end of the process frees the ports. If another program
 holds 1457, the sign-in cannot be received and fails with `problem.kind` `port`.
@@ -130,8 +150,16 @@ holds 1457, the sign-in cannot be received and fails with `problem.kind` `port`.
 Run for real with the SDK above, an empty home folder, a stand-in model service and a stand-in for
 the browser opener: start, the snapshot, a custom address, a session, a streamed answer, keys in
 memory with the session's list updated, each kind of failed turn, the ChatGPT sign-in still waiting
-after 70 seconds, cancel freeing the ports, and the first step of the other sign-ins.
+after 70 seconds, cancel freeing the ports, and the first step of the other sign-ins. Also: with
+two keys handed over and two more in the environment the agent was started from, the stand-in
+model had the agent run `env` (one permission request, allowed), and neither the command's
+output nor the request that carried it back held any of them; a refused request was printed
+without its parameters; a request the listener cannot read and a call with another `state` were
+each answered 400 with the sign-in still waiting.
 
-Not checked: any sign-in completed with a real account through this agent (the sign-in address
-pointing at port 1457 in particular), a turn answered by a real provider, and the Kimi plan's model
-prefix.
+The sign-in address points at port 1457 where Mastra Code's own points at 1455. Asked without
+signing in (2026-11-18), OpenAI's sign-in service treats the two alike (it goes on to its sign-in
+page) and refuses an address with any other port.
+
+Not checked: any sign-in completed with a real account through this agent, a turn answered by a
+real provider, and the Kimi plan's model prefix.

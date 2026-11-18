@@ -32,7 +32,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
     configOptions(entry) {
       const options = super.configOptions(entry);
       const model = options.find(option => option.id === 'model');
-      if (model) model.options = orderModelOptions(model.options, dates(), model.currentValue);
+      if (model) model.options = orderModelOptions(model.options, dates(), model.currentValue, id => connections.isCustom(id));
       return options;
     }
 
@@ -79,7 +79,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       const usable = [...new Set(catalog.filter(model => model.hasApiKey).map(model => model.id))];
       if (usable.length === 0) return;
       entry.models = usable.map(id => ({ modelId: id, name: id }));
-      if (!usable.includes(entry.session.model.get() ?? '')) await entry.session.model.switch(usable.filter(isChatModel).sort(newestFirst(dates()))[0] ?? usable[0]);
+      if (!usable.includes(entry.session.model.get() ?? '')) await entry.session.model.switch(usable.filter(id => connections.isCustom(id) || isChatModel(id)).sort(newestFirst(dates()))[0] ?? usable[0]);
     }
 
     /** A turn that fails says why in a word the Assistant has a sentence for, and for which provider. */

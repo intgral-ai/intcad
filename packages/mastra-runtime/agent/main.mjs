@@ -16,11 +16,17 @@ import { intcadAgent } from './agent.mjs';
 import { holdCallbackPorts } from './callback.mjs';
 import { Connections, KEYS } from './connections.mjs';
 import { releaseDates } from './models.mjs';
+import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
+
+// ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
+const printError = console.error.bind(console);
+console.error = (...args) => printError(...withoutParams(args));
 
 // Mastra Code is a coding agent: it reads a person's own agent files from their home folder (their
 // instructions for agents, their MCP servers, its own settings there). None of that is meant for
 // Intcad's assistant or for the model it talks to, so when the app names a data folder the agent
 // gets a home of its own inside it. This has to happen before anything of Mastra's is loaded.
+const usersHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
 if (process.env.MASTRA_APP_DATA_DIR) {
   const home = join(process.env.MASTRA_APP_DATA_DIR, 'home');
   mkdirSync(home, { recursive: true });
@@ -39,7 +45,7 @@ if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createAcpSession }, storage, gateway, customSource, { openUrlInBrowser }] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createAcpSession }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox }] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
@@ -48,6 +54,7 @@ const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent
     load('@mastra/code-sdk/dist/agents/mastracode-gateway.js'),
     load('@mastra/code-sdk/dist/agents/custom-provider-source.js'),
     load('@mastra/code-sdk/dist/utils/open-url.js'),
+    load('@mastra/core/dist/workspace/index.js'),
   ]);
 
 let registry = {};
@@ -62,8 +69,32 @@ const keyEnv = id => [registry.providers?.[id]?.apiKeyEnvVar ?? []].flat();
 
 // A key reaches Mastra through this process's environment, and only the app puts one there
 // (`_intcad/connections/setup`). One that happens to be in the environment the app was started from
-// is not the user's choice here, so it is taken out.
-for (const [id] of KEYS) for (const name of keyEnv(id)) delete process.env[name];
+// is not the user's choice here, so it is taken out: every provider's, not only the five the page
+// offers, or Mastra would serve models on a key no row of the page shows.
+const keyNames = keyVariables(registry);
+for (const [id] of KEYS) for (const name of keyEnv(id)) keyNames.add(name);
+for (const name of keyNames) delete process.env[name];
+// And the keys the app does put there stay out of the commands a model runs.
+keepKeysFromCommands(LocalSandbox, keyNames);
+
+// The browser is the user's own: it is started with their home folder, not the agent's, so it is
+// the browser they use and the profile they are signed in with. (The opener starts it before it
+// returns, so the agent's home is back before anything of Mastra's runs again.)
+const setHome = home => {
+  for (const [name, value] of Object.entries(home)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+};
+const openUrl = url => {
+  const agentsHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  setHome(usersHome);
+  try {
+    openUrlInBrowser(url);
+  } finally {
+    setHome(agentsHome);
+  }
+};
 
 let agent = null;
 const connections = new Connections({
@@ -75,8 +106,8 @@ const connections = new Connections({
   // computer) is given a word in the key's place, which such a service ignores.
   setCustom: list => customSource.setCustomProvidersSource(() => list.map(entry => ({ ...entry, apiKey: entry.apiKey || 'none' }))),
   customPrefix: id => `${gateway.MASTRACODE_GATEWAY_ID}/${id}`,
-  openUrl: url => openUrlInBrowser(url),
-  holdPorts: onCallback => holdCallbackPorts(http, onCallback),
+  openUrl,
+  holdPorts: onCallback => holdCallbackPorts(http, onCallback, { sentence: () => connections.callbackSentence() }),
   dates: () => dates,
   changed: snapshot => {
     agent?.connection.extNotification('_intcad/connections/changed', snapshot).catch(error => process.stderr.write(`[intcad] could not tell the app: ${error}\n`));

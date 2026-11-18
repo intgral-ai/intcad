@@ -34,9 +34,10 @@ export function newestFirst(dates) {
 /**
  * The options of a session's model setting as the picker gets them: only models one can talk to,
  * newest first. The model in use stays in the list whatever it is, so the setting never points at
- * nothing.
+ * nothing. `typed(id)` says a model's name was typed by the user (a custom address's): those are
+ * all listed, whatever their name or their address's name looks like.
  */
-export function orderModelOptions(options, dates, current) {
+export function orderModelOptions(options, dates, current, typed = () => false) {
   const order = newestFirst(dates);
-  return options.filter(option => option.value === current || isChatModel(option.value)).sort((a, b) => order(a.value, b.value));
+  return options.filter(option => option.value === current || typed(option.value) || isChatModel(option.value)).sort((a, b) => order(a.value, b.value));
 }

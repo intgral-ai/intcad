@@ -578,7 +578,7 @@ mod tests {
     }
 
     fn setup(key: &str) -> connections::Request {
-        connections::Request::Setup(connections::Setup { keys: vec![("openai".into(), key.into())], custom: Vec::new() })
+        connections::Request::Setup(connections::Setup { keys: vec![("openai".into(), key.into())], ..Default::default() })
     }
 
     fn sent(backend: &AcpBackend) -> Vec<Pending> {
@@ -648,14 +648,17 @@ mod tests {
             models: vec!["llama3.2".into()],
         };
         let keyed = connections::SetupCustom { api_key: Some("k2".into()), ..custom.clone() };
-        let all = Request::Setup(connections::Setup { keys: vec![("openai".into(), "k1".into())], custom: vec![custom, keyed] });
-        assert_eq!(
-            all.params(),
-            json!({"keys": {"openai": "k1"}, "custom": [
-                {"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"]},
-                {"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"], "apiKey": "k2"},
-            ]})
-        );
+        let mut all = connections::Setup { keys: vec![("openai".into(), "k1".into())], custom: vec![custom, keyed], ..Default::default() };
+        let handed = json!({"keys": {"openai": "k1"}, "custom": [
+            {"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"]},
+            {"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"], "apiKey": "k2"},
+        ]});
+        assert_eq!(Request::Setup(all.clone()).params(), handed, "without words of the app's, the agent keeps its own");
+        // The sentence the browser shows after the sign-in page has called back goes with it.
+        all.callback = "Go back to Intcad.".into();
+        let mut worded = handed.clone();
+        worded["words"] = json!({"callback": "Go back to Intcad."});
+        assert_eq!(Request::Setup(all).params(), worded);
         let mut events = Vec::new();
         backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(connections_snapshot("in")) }, &mut events);
         assert!(matches!(events.as_slice(), [Event::Connections(snapshot)] if snapshot.connected()), "{events:?}");
@@ -696,23 +699,6 @@ mod tests {
         backend.connections(connections::Request::List);
         backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"plans": "none"})) }, &mut events);
         assert_eq!(events, [Event::ConnectionsFailed { what: connections::What::List, code: 0 }]);
-        backend.shutdown(true);
-    }
-
-    /// B3: a browser sign-in is never ended by a timer in the app. With a sign-in asked for and
-    /// not finished, a minute and then ten minutes pass: nothing is reported, the agent runs on,
-    /// and nothing was sent to cancel it.
-    #[test]
-    fn no_timer_ends_a_sign_in_under_way() {
-        let mut backend = builtin_backend(true).unwrap();
-        backend.connections(connections::Request::Login("openai-codex".into()));
-        let asked = Instant::now();
-        for later in [Duration::from_secs(61), Duration::from_secs(11 * 60), Duration::from_secs(24 * 60 * 60)] {
-            assert!(backend.poll_at(asked + later).is_empty(), "nothing times a sign-in out after {later:?}");
-            assert!(backend.pid().is_some() && !backend.exited);
-        }
-        assert_eq!(sent(&backend), [Pending::Connections(connections::What::Login)], "the request still waits for its answer; no cancel was added");
-        assert!(backend.cancelling.is_none());
         backend.shutdown(true);
     }
 

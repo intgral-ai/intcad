@@ -15,6 +15,7 @@ const { holdCallbackPorts } = await load("callback.mjs");
 const { isChatModel, orderModelOptions, releaseDates } = await load("models.mjs");
 const { classifyFailure, classifySignInFailure } = await load("problems.mjs");
 const { intcadAgent } = await load("agent.mjs");
+const { keepKeysFromCommands, keyVariables, withoutParams } = await load("secrets.mjs");
 
 const PROVIDERS = [
   { id: "openai-codex", name: "ChatGPT Plus/Pro (Codex Subscription)" },
@@ -44,7 +45,7 @@ function world(overrides: Json = {}) {
   const opened: string[] = [];
   const written: string[] = [];
   const env: Record<string, string> = { PATH: "/usr/bin", GOOGLE_GENERATIVE_AI_API_KEY: "left over" };
-  const held: { close: () => void; closed: boolean; callback: (url: string) => void }[] = [];
+  const held: { close: () => void; closed: boolean; callback: (url: string) => boolean }[] = [];
   let custom: Json[] | null = null;
   let refreshed = 0;
   const auth = {
@@ -67,7 +68,7 @@ function world(overrides: Json = {}) {
     openUrl: (url: string) => void opened.push(url),
     holdPorts:
       overrides.holdPorts ??
-      (async (callback: (url: string) => void) => {
+      (async (callback: (url: string) => boolean) => {
         const ports = { closed: false, callback, close: () => void (ports.closed = true) };
         held.push(ports);
         return ports;
@@ -153,15 +154,26 @@ test("custom addresses are handed to Mastra from memory, with the key kept out o
   assert.equal(customId("本地模型"), "custom");
 });
 
-test("a custom address without a name, an http address or a model is refused; names that give one id each get their own", async () => {
-  const { connections } = world();
-  for (const entry of [
-    { name: "", url: "http://x/v1", models: ["m"] },
-    { name: "a", url: "ftp://x", models: ["m"] },
-    { name: "a", url: "http://x/v1", models: [] },
-  ]) {
-    await assert.rejects(connections.setup({ custom: [entry] }), { code: "INVALID" });
-  }
+test("a custom address that cannot be used is left out and the rest is taken; names that give one id each get their own", async () => {
+  const { connections, env } = world();
+  // The app checks an address before it keeps it, so a bad one comes from a file changed by hand.
+  // It must not cost the user their keys, nor print them (a refused request is printed by ACP's SDK).
+  const mixed = await connections.setup({
+    keys: { openai: "sk-kept" },
+    custom: [
+      { name: "", url: "http://x/v1", models: ["m"] },
+      { name: "\uFEFF", url: "http://x/v1", models: ["m"] },
+      { name: "a", url: "ftp://x", models: ["m"] },
+      { name: "a", url: "http://x/v1", models: [] },
+      { name: "kept", url: "http://x/v1", models: ["m"] },
+    ],
+    words: { callback: "回到 Intcad" },
+  });
+  assert.deepEqual(mixed.custom.map((entry: Json) => entry.name), ["kept"]);
+  assert.equal(env.OPENAI_API_KEY, "sk-kept");
+  assert.equal(connections.callbackSentence(), "回到 Intcad");
+  assert.equal((await connections.setup({ words: { callback: 5 } })).custom.length, 0);
+  assert.equal(connections.callbackSentence(), "", "a sentence that is not one is not shown");
   const same = await connections.setup({ custom: [{ name: "A b", url: "http://x/v1", models: ["m"] }, { name: "a-b", url: "http://y/v1", models: ["m"] }, { name: "本地模型", url: "http://z/v1", models: ["m"] }, { name: "另一个", url: "http://w/v1", models: ["m"] }] });
   assert.deepEqual(same.custom.map((entry: Json) => [entry.name, entry.id, entry.prefix]), [
     ["A b", "a-b", "mastracode/a-b"],
@@ -197,7 +209,12 @@ test("a browser sign-in holds the local ports, opens the browser, waits without 
   assert.equal(held[0]!.closed, false);
   connections.reopen();
   assert.equal(opened.length, 2);
-  held[0]!.callback("http://localhost:1457/auth/callback?code=c1&state=s1");
+  // A call that is not this sign-in's (another `state`) is refused and the wait goes on: handed to
+  // Mastra it would end the sign-in as failed.
+  assert.equal(held[0]!.callback("http://localhost:1457/auth/callback?code=x&state=other"), false);
+  await settle();
+  assert.equal(connections.list().login.phase, "browser");
+  assert.equal(held[0]!.callback("http://localhost:1457/auth/callback?code=c1&state=s1"), true);
   await settle();
   finish();
   await settle();
@@ -240,11 +257,16 @@ test("a sign-in that shows a code in the browser takes it pasted, and refuses on
   assert.equal(connections.list().login.phase, "code");
   assert.equal(connections.code({ id: "anthropic", code: "abc" }).login.error, "incomplete");
   assert.equal(connections.list().login.phase, "code", "the sign-in is still waiting");
-  assert.throws(() => connections.code({ id: "xai", code: "abc#def" }), { code: "INVALID" });
+  assert.equal(connections.code({ id: "anthropic", code: "x".repeat(5000) }).login.error, "incomplete");
+  // A code for a sign-in that is not the one waiting changes nothing, and is not refused: ACP's SDK
+  // prints what it refuses, and this is a code.
+  assert.equal(connections.code({ id: "xai", code: "abc#def" }).login.id, "anthropic");
   connections.code({ id: "anthropic", code: " abc#def " });
   await settle();
   assert.equal(told.at(-1)!.plans[1].state, "in");
   assert.equal(told.at(-1)!.login, null);
+  // The button pressed a second time, after the code was taken.
+  assert.equal(connections.code({ id: "anthropic", code: "abc#def" }).login, null);
 });
 
 test("a device sign-in shows the code to type, taken from the sentence when it is only there, and the company address is not asked for", async () => {
@@ -312,25 +334,71 @@ test("signing out, and a refused sign-in showing as expired until the next sign-
   await assert.rejects(connections.logout({ id: "nobody" }), { code: "INVALID" });
 });
 
-test("the two local ports are held until closed, a callback is handed over, and a taken port is said to be busy", async () => {
+test("the two local ports are held until closed, only the awaited callback is taken, and a taken port is said to be busy", async () => {
   const got: string[] = [];
   const base = 41455;
-  const ports = await holdCallbackPorts(http, (url: string) => void got.push(url), [base, base + 2]);
+  let sentence = "";
+  const awaited = (url: string) => {
+    got.push(url);
+    return url.includes("state=s1");
+  };
+  const ports = await holdCallbackPorts(http, awaited, { ports: [base, base + 2], sentence: () => sentence });
   // Mastra asks the holder to step aside before it gives the port up; the holder stays.
   assert.equal((await fetch(`http://127.0.0.1:${base}/cancel`)).status, 200);
   assert.equal((await fetch(`http://127.0.0.1:${base + 2}/nothing`)).status, 404);
-  assert.equal((await fetch(`http://127.0.0.1:${base + 2}/auth/callback?state=s`)).status, 404, "a call without a code is not the sign-in");
+  assert.equal((await fetch(`http://127.0.0.1:${base + 2}/auth/callback?state=s1`)).status, 400, "a call without a code is not the sign-in");
+  // Anything on this computer can call the port. An address that cannot be read once ended the
+  // agent's process; it is answered and the listener stays.
+  const raw = await new Promise<string>((resolve, reject) => {
+    const request = http.request({ host: "127.0.0.1", port: base + 2, path: "//", method: "GET" }, (response) => resolve(String(response.statusCode)));
+    request.on("error", reject);
+    request.end();
+  });
+  assert.equal(raw, "400");
+  assert.equal((await fetch(`http://127.0.0.1:${base + 2}/auth/callback?code=x&state=other`)).status, 400, "another sign-in's call is refused, and the wait goes on");
   const response = await fetch(`http://127.0.0.1:${base + 2}/auth/callback?code=c1&state=s1`);
   assert.equal(response.status, 200);
-  assert.match(await response.text(), /go back to Intcad/);
-  assert.deepEqual(got, [`http://localhost:${base + 2}/auth/callback?code=c1&state=s1`]);
-  await assert.rejects(holdCallbackPorts(http, () => {}, [base + 4, base + 2]), { code: "PORT_BUSY" });
+  // The sign-in is not finished when the browser calls: the page promises nothing.
+  const page = await response.text();
+  assert.match(page, /Go back to Intcad/);
+  assert.doesNotMatch(page, /Signed in/);
+  assert.deepEqual(got, [`http://localhost:${base + 2}/auth/callback?code=x&state=other`, `http://localhost:${base + 2}/auth/callback?code=c1&state=s1`]);
+  // In the user's language when the app gave the sentence, and never as markup.
+  sentence = "<b>回到 Intcad</b>";
+  const translated = await (await fetch(`http://127.0.0.1:${base + 2}/auth/callback?code=c2&state=s1`)).text();
+  assert.match(translated, /&#60;b&#62;回到 Intcad&#60;\/b&#62;/);
+  await assert.rejects(holdCallbackPorts(http, () => false, { ports: [base + 4, base + 2] }), { code: "PORT_BUSY" });
   ports.close();
   // Free again at once; and the first port only has to be out of Mastra's reach, so another holder of it is fine.
-  const again = await holdCallbackPorts(http, () => {}, [base, base + 2]);
-  const second = await holdCallbackPorts(http, () => {}, [base, base + 6]);
+  const again = await holdCallbackPorts(http, () => false, { ports: [base, base + 2] });
+  const second = await holdCallbackPorts(http, () => false, { ports: [base, base + 6] });
   again.close();
   second.close();
+});
+
+test("a key is not in the environment of a command a model runs, nor in a refusal that is printed", () => {
+  const names = keyVariables({ providers: { openai: { apiKeyEnvVar: "OPENAI_API_KEY" }, google: { apiKeyEnvVar: ["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"] }, none: {} } });
+  assert.deepEqual([...names].sort(), ["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "MASTRA_GATEWAY_API_KEY", "OPENAI_API_KEY"]);
+  // As Mastra's local sandbox: the environment of every process it starts begins as a copy of the agent's.
+  class Sandbox {
+    env: Record<string, string> = { HOME: "/h", OPENAI_API_KEY: "sk-secret", MASTRA_GATEWAY_API_KEY: "gw-secret" };
+    buildEnv(extra: Record<string, string> = {}) {
+      return { PATH: "/usr/bin", ...this.env, ...extra };
+    }
+  }
+  keepKeysFromCommands(Sandbox, names);
+  const sandbox = new Sandbox();
+  assert.deepEqual(sandbox.buildEnv({ EXTRA: "1", GOOGLE_API_KEY: "g-secret" }), { PATH: "/usr/bin", HOME: "/h", EXTRA: "1" });
+  assert.equal(sandbox.env.OPENAI_API_KEY, "sk-secret", "what Mastra itself reads is untouched");
+  // Another SDK, where the guard has nothing to hold on to: the agent does not start unguarded.
+  assert.throws(() => keepKeysFromCommands(class {}, names), /would be given the keys/);
+
+  // ACP's SDK prints `console.error("Error handling request", message, error)` for a request it refuses.
+  const printed = withoutParams(["Error handling request", { jsonrpc: "2.0", id: 3, method: "_intcad/connections/setup", params: { keys: { openai: "sk-secret" } } }, { code: -32602, message: "bad" }]);
+  assert.ok(!JSON.stringify(printed).includes("sk-secret"));
+  assert.deepEqual(printed, ["Error handling request", { jsonrpc: "2.0", id: 3, method: "_intcad/connections/setup", params: "[not shown]" }, { code: -32602, message: "bad" }]);
+  const failure = new Error("x");
+  assert.deepEqual(withoutParams([failure, "text", null, 5]), [failure, "text", null, 5]);
 });
 
 test("only models one can talk to are listed, newest first, and the one in use always stays", () => {
@@ -343,6 +411,10 @@ test("only models one can talk to are listed, newest first, and the one in use a
   assert.deepEqual(orderModelOptions(options, DATES, "openai/gpt-image-2").map((option: Json) => option.value)[0], "openai/gpt-6.2-sol");
   assert.ok(orderModelOptions(options, DATES, "openai/gpt-image-2").some((option: Json) => option.value === "openai/gpt-image-2"));
   assert.deepEqual([...releaseDates({ providers: { openai: { modelReleaseDates: { "gpt-5": "2025-08-07", bad: 5 } }, none: {} } })], [["openai/gpt-5", "2025-08-07"]]);
+  // A custom address's models were typed by the user. Neither their name nor the address's ("Olive"
+  // has "live" in it, "audio lab" has "audio") is read for what the model can do.
+  const typed = ["mastracode/olive/llama3.2", "mastracode/audio-lab/qwen2-audio", "openai/gpt-image-2"].map((value) => ({ value, name: value }));
+  assert.deepEqual(orderModelOptions(typed, DATES, "", (id: string) => id.startsWith("mastracode/")).map((option: Json) => option.value), ["mastracode/audio-lab/qwen2-audio", "mastracode/olive/llama3.2"]);
 });
 
 test("a failed turn is put into one of the kinds the Assistant has words for", () => {

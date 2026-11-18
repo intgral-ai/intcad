@@ -279,9 +279,24 @@ impl Snapshot {
         self.plans.iter().any(|plan| plan.prefix == prefix && plan.state == PlanState::In)
     }
 
+    /// Whether a plan is signed in, signed out or expired in `now` and was not so here. Mastra
+    /// keeps its sign-ins in a file every agent of the app reads, so such a change is one the
+    /// other conversations' agents have to hear of.
+    pub fn plans_differ(&self, now: &Snapshot) -> bool {
+        self.plans.iter().any(|plan| now.plans.iter().find(|other| other.id == plan.id).is_some_and(|other| other.state != plan.state))
+    }
+
+    /// Whether a plan that is signed in, or was until its sign-in was refused, gives the models
+    /// under `prefix`. A turn refused there was refused for that sign-in; anywhere else it went
+    /// through a key or a custom address.
+    pub fn plan_held(&self, prefix: &str) -> bool {
+        self.plans.iter().any(|plan| plan.prefix == prefix && plan.state != PlanState::Out)
+    }
+
     /// The name, in the user's words, of the connection that gives the models under `prefix`: a
     /// plan that is or was signed in before a key (the plan serves the models where both do), a
-    /// key before a custom address. A prefix no connection has is shown as it is.
+    /// key before a custom address, and a provider without a key before a plan that is signed
+    /// out (a turn did not go through that plan). A prefix no connection has is shown as it is.
     pub fn name_of(&self, prefix: &str) -> String {
         let plan = |used: bool| self.plans.iter().find(|plan| plan.prefix == prefix && (plan.state != PlanState::Out) == used).map(plan_name);
         let key = |saved: bool| self.keys.iter().find(|key| key.prefix == prefix && key.saved == saved).map(|key| key.name.clone());
@@ -289,8 +304,8 @@ impl Snapshot {
         plan(true)
             .or_else(|| key(true))
             .or_else(custom)
-            .or_else(|| plan(false))
             .or_else(|| key(false))
+            .or_else(|| plan(false))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| if prefix.is_empty() { AGENT_NAME.to_string() } else { prefix.to_string() })
     }
@@ -317,8 +332,12 @@ pub fn plan_name(plan: &Plan) -> String {
 /// Why a turn failed, as the built-in agent tells it in the error's `data.intcad`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurnKind {
-    /// The sign-in or key was refused.
+    /// A plan's sign-in was refused: signing in again mends it.
     Auth,
+    /// An API key was refused, a provider's or a custom address's. The agent calls this `auth`
+    /// too; the app tells the two apart by the connection ([`TurnProblem::as_told`]), since
+    /// there is no sign-in to do again for a key.
+    Key,
     /// The plan or key has nothing left.
     Quota,
     /// Too many requests for now.
@@ -335,6 +354,7 @@ impl TurnKind {
     pub fn id(self) -> &'static str {
         match self {
             TurnKind::Auth => "auth",
+            TurnKind::Key => "key",
             TurnKind::Quota => "quota",
             TurnKind::Rate => "rate",
             TurnKind::Network => "network",
@@ -346,6 +366,7 @@ impl TurnKind {
     pub fn sentence(self) -> Option<&'static str> {
         Some(match self {
             TurnKind::Auth => "ui.agent_chat_problem_auth",
+            TurnKind::Key => "ui.agent_chat_problem_key",
             TurnKind::Quota => "ui.agent_chat_problem_quota",
             TurnKind::Rate => "ui.agent_chat_problem_rate",
             TurnKind::Network => "ui.agent_chat_problem_network",
@@ -369,7 +390,19 @@ pub struct TurnProblem {
 }
 
 impl TurnProblem {
-    /// Read the `data` of a JSON-RPC error. `None`: the error says nothing of the kind.
+    /// The failure as the user is told it. The agent says `auth` for every refused credential;
+    /// only a plan has a sign-in to do again, so `auth` stays for a plan that is signed in or was
+    /// until now, and is a refused key for everything else: a saved key, a custom address, or a
+    /// connection nothing is known of.
+    pub fn as_told(mut self, snapshot: Option<&Snapshot>) -> TurnProblem {
+        if self.kind == TurnKind::Auth && !snapshot.is_some_and(|snapshot| snapshot.plan_held(&self.prefix)) {
+            self.kind = TurnKind::Key;
+        }
+        self
+    }
+
+    /// Read the `data` of a JSON-RPC error. `None`: the error says nothing of the kind. (`key` is
+    /// not a word the agent uses: [`TurnProblem::as_told`] makes it.)
     pub fn parse(data: Option<&Value>) -> Option<TurnProblem> {
         let told = data?.get("intcad").filter(|told| told.is_object())?;
         let kind = match told.get("kind").and_then(Value::as_str)? {
@@ -399,6 +432,9 @@ pub struct Setup {
     /// `(provider, key)`.
     pub keys: Vec<(String, String)>,
     pub custom: Vec<SetupCustom>,
+    /// What the browser shows once the ChatGPT sign-in page has called back, in the user's
+    /// language (`words.callback`). Empty: the agent's own words.
+    pub callback: String,
 }
 
 impl std::fmt::Debug for Setup {
@@ -497,7 +533,11 @@ impl Request {
                         row
                     })
                     .collect();
-                json!({"keys": keys, "custom": custom})
+                let mut params = json!({"keys": keys, "custom": custom});
+                if let (false, Some(params)) = (setup.callback.is_empty(), params.as_object_mut()) {
+                    params.insert("words".into(), json!({"callback": setup.callback}));
+                }
+                params
             }
             Request::Login(id) | Request::Logout(id) => json!({"id": id}),
             Request::Code { id, code } => json!({"id": id, "code": code}),
@@ -506,35 +546,157 @@ impl Request {
     }
 }
 
-/// A custom address as the page asks for it, checked: a name of 1 to 40 characters, an `http` or
-/// `https` address of at most 400, 1 to 16 model names of at most 120 each, and a key of at most
-/// 4096 when one is given. The reason for a refusal never repeats a value.
-pub fn custom_address(name: &str, url: &str, key: Option<&str>, models: &[Value]) -> Result<(CustomAddress, Option<String>), &'static str> {
+/// Strip from both ends what JavaScript's `trim()` strips. The agent trims a name that way, and
+/// the two sides have to agree on which name is empty: Rust's own `trim` leaves U+FEFF (the
+/// byte-order mark a paste can carry) where JavaScript takes it.
+fn js_trim(text: &str) -> &str {
+    text.trim_matches(|c: char| {
+        matches!(
+            c,
+            '\u{9}'..='\u{d}' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
+        )
+    })
+}
+
+/// Why a custom address is not taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unfit {
+    /// The name or the address is missing or out of range, or the address is no `http` or
+    /// `https` address with a host.
+    NameOrAddress,
+    /// No model is named.
+    NoModel,
+    /// More than 16 models, or a name of more than 120 characters.
+    Models,
+    /// The address carries a user name, a password, a query or a fragment: a secret there would
+    /// be kept in preferences and shown, where a key is not.
+    AddressCarriesMore,
+    /// An address of that name is kept already.
+    Exists,
+    /// As many addresses as can be kept are kept already.
+    Full,
+    /// Its key would travel in the clear to another computer.
+    KeyInTheClear,
+    /// What came as its key is no key.
+    Key,
+}
+
+impl Unfit {
+    /// The catalog's sentence for the page (`connect.error`).
+    pub fn sentence(self) -> &'static str {
+        match self {
+            Unfit::NameOrAddress => "ui.agent_chat_conn_custom_need_both",
+            Unfit::NoModel => "ui.agent_chat_conn_custom_need_model",
+            Unfit::Models => "ui.agent_chat_conn_custom_too_many",
+            Unfit::AddressCarriesMore => "ui.agent_chat_conn_custom_plain_url",
+            Unfit::Exists => "ui.agent_chat_conn_custom_exists",
+            Unfit::Full => "ui.agent_chat_conn_custom_full",
+            Unfit::KeyInTheClear => "ui.ai_key_needs_https",
+            Unfit::Key => REFUSED,
+        }
+    }
+
+    /// The reason for the host's log. It repeats nothing that was typed.
+    pub fn why(self) -> &'static str {
+        match self {
+            Unfit::NameOrAddress => "a custom address needs a name of 1 to 40 characters and an http or https address",
+            Unfit::NoModel => "a custom address needs a model name",
+            Unfit::Models => "a custom address takes at most 16 model names of at most 120 characters",
+            Unfit::AddressCarriesMore => "the address carries a user name, a password, a query or a fragment",
+            Unfit::Exists => "an address of that name is kept already",
+            Unfit::Full => "no room for another custom address",
+            Unfit::KeyInTheClear => "a key is only sent over HTTPS or to this computer",
+            Unfit::Key => "the key is out of range",
+        }
+    }
+}
+
+/// The sentence for something the agent, or the app, could not do and has no better words for.
+pub const REFUSED: &str = "ui.agent_chat_conn_refused";
+
+/// An address a custom connection can have: `http` or `https`, a host, nothing before the host
+/// and no query or fragment after the path, within the length limit. A short one (`http://pi`)
+/// is as good as any. Slashes at its end are left off, as every base address is kept.
+fn custom_url(url: &str) -> Result<String, Unfit> {
+    let url = js_trim(url).trim_end_matches('/');
+    if url.chars().count() > MAX_URL || url.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\') {
+        return Err(Unfit::NameOrAddress);
+    }
+    let lower = url.to_ascii_lowercase();
+    let rest = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://")).ok_or(Unfit::NameOrAddress)?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') || url.contains(['?', '#']) {
+        return Err(Unfit::AddressCarriesMore);
+    }
+    // What stands before a port: a name, an address, or an IPv6 address in its brackets.
+    let host = match authority.strip_prefix('[') {
+        Some(inner) => inner.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    if host.is_empty() {
+        return Err(Unfit::NameOrAddress);
+    }
+    Ok(url.to_string())
+}
+
+/// A custom address as it was typed, checked: a name of 1 to 40 characters, an address
+/// ([`custom_url`]) of at most 400, 1 to 16 model names of at most 120 each (`None`: an entry
+/// that is no text), and a key of at most 4096 when one is given, which only goes over HTTPS or
+/// to this computer. Nothing typed is quietly left out, except a model named twice.
+pub fn custom_address(name: &str, url: &str, key: Option<&str>, models: &[Option<&str>]) -> Result<(CustomAddress, Option<String>), Unfit> {
     let plain = |s: &str| !s.chars().any(char::is_control);
-    let name = name.trim();
+    let name = js_trim(name);
     if name.is_empty() || name.chars().count() > MAX_NAME || !plain(name) {
-        return Err("a custom address needs a name of 1 to 40 characters");
+        return Err(Unfit::NameOrAddress);
     }
-    let url = super::agents::normalize_url(url).map_err(|_| "the address must start with http:// or https://")?;
-    if url.chars().count() > MAX_URL || !plain(&url) {
-        return Err("the address is too long");
+    let url = custom_url(url)?;
+    if models.is_empty() {
+        return Err(Unfit::NoModel);
     }
-    if models.is_empty() || models.len() > MAX_MODELS {
-        return Err("a custom address needs 1 to 16 model names");
+    if models.len() > MAX_MODELS {
+        return Err(Unfit::Models);
     }
     let mut named: Vec<String> = Vec::new();
     for model in models {
-        let model = model.as_str().map(str::trim).filter(|model| !model.is_empty() && model.chars().count() <= MAX_MODEL && plain(model));
-        let model = model.ok_or("a model name has 1 to 120 characters")?;
+        let model = js_trim(model.ok_or(Unfit::Models)?);
+        if model.is_empty() {
+            return Err(Unfit::NoModel);
+        }
+        if model.chars().count() > MAX_MODEL || !plain(model) {
+            return Err(Unfit::Models);
+        }
         if !named.iter().any(|known| known == model) {
             named.push(model.to_string());
         }
     }
-    let key = key.map(str::trim).filter(|key| !key.is_empty());
+    let key = key.map(js_trim).filter(|key| !key.is_empty());
     if key.is_some_and(|key| key.chars().count() > MAX_SECRET || !plain(key)) {
-        return Err("the key is too long");
+        return Err(Unfit::Key);
+    }
+    if key.is_some() && !super::agents::key_safe_for(&url) {
+        return Err(Unfit::KeyInTheClear);
     }
     Ok((CustomAddress { name: name.to_string(), url, models: named, key: key.is_some() }, key.map(str::to_string)))
+}
+
+/// The custom addresses of the preferences that can be handed to the agent: each checked as one
+/// that is typed is, since a preferences file can be written by hand or by another version. One
+/// that does not pass is left out here and left alone there.
+fn fit_addresses(kept: &[CustomAddress]) -> Vec<CustomAddress> {
+    let mut fit: Vec<CustomAddress> = Vec::new();
+    for address in kept {
+        if fit.len() >= MAX_CUSTOM {
+            break;
+        }
+        let models: Vec<Option<&str>> = address.models.iter().map(|model| Some(model.as_str())).collect();
+        let Ok((mut checked, _)) = custom_address(&address.name, &address.url, None, &models) else { continue };
+        checked.key = address.key;
+        let in_the_clear = checked.key && !super::agents::key_safe_for(&checked.url);
+        if !in_the_clear && !fit.iter().any(|known| known.name == checked.name) {
+            fit.push(checked);
+        }
+    }
+    fit
 }
 
 // ---- What the app does with it ----
@@ -572,17 +734,36 @@ pub(crate) struct Conn {
     pub active: bool,
     /// The agent's last snapshot (`None`: it has sent none since it started).
     pub snapshot: Option<Snapshot>,
-    /// A key or custom address the app could not keep, in the user's language.
-    pub error: Option<String>,
+    /// What the last action could not do: the catalog id of its sentence. It is worded where it
+    /// is shown, as a failed turn is, because it can be set outside a frame.
+    pub error: Option<&'static str>,
     pub session: Session,
     /// The agent refused a session since its last snapshot: it is not asked again before the next.
     pub refused: bool,
     /// The keys being read from the keychain for the next `setup`, and whether one could not be read.
     reading: Option<std::sync::mpsc::Receiver<(Setup, bool)>>,
     pub kept: Option<Kept>,
+    /// The count of changes ([`SolveApp::builtin_changes`]) this conversation's agent was last
+    /// set up at. Behind it, the agent holds keys, addresses or sign-ins that are no longer so.
+    set_up_at: u64,
+    /// The setup under way only catches up with a change made in another conversation: the
+    /// snapshot it brings is not a change of this one's to count again.
+    catching_up: bool,
+    /// A plan was signed in or out here since [`settle`] last looked.
+    plans_changed: bool,
 }
 
 impl Conn {
+    /// Take in what the agent now says of its connections.
+    pub(super) fn take_in(&mut self, snapshot: Snapshot) {
+        let catching_up = std::mem::take(&mut self.catching_up);
+        if !catching_up && self.snapshot.as_ref().is_some_and(|before| before.plans_differ(&snapshot)) {
+            self.plans_changed = true;
+        }
+        self.snapshot = Some(snapshot);
+        self.refused = false;
+    }
+
     /// Keep the message of a turn that failed for `problem`.
     pub(super) fn keep(&mut self, problem: &TurnProblem) {
         let lapsed = self.snapshot.as_ref().is_some_and(|snapshot| !snapshot.plan_in(&problem.prefix));
@@ -590,8 +771,9 @@ impl Conn {
     }
 }
 
-/// Read every key the built-in agent is handed. `true` with it: the keychain refused one.
-fn read_setup(secrets: Option<&dyn Secrets>, custom: &[CustomAddress]) -> (Setup, bool) {
+/// Read every key the built-in agent is handed, for the addresses that can be handed over
+/// ([`fit_addresses`]). `true` with it: the keychain refused one.
+fn read_setup(secrets: Option<&dyn Secrets>, custom: &[CustomAddress], callback: String) -> (Setup, bool) {
     let mut failed = false;
     let mut read = |id: String| match secrets.map(|secrets| secrets.get(&id)) {
         Some(Ok(key)) => key.filter(|key| !key.trim().is_empty()),
@@ -604,17 +786,23 @@ fn read_setup(secrets: Option<&dyn Secrets>, custom: &[CustomAddress]) -> (Setup
     };
     let keys: Vec<(String, String)> =
         KEY_IDS.iter().filter_map(|provider| read(key_secret(provider)).map(|key| (provider.to_string(), key))).collect();
-    let custom: Vec<SetupCustom> = custom
-        .iter()
-        .take(MAX_CUSTOM)
+    let custom: Vec<SetupCustom> = fit_addresses(custom)
+        .into_iter()
         .map(|address| SetupCustom {
-            name: address.name.clone(),
-            url: address.url.clone(),
             api_key: if address.key { read(custom_secret(&address.name)) } else { None },
-            models: address.models.clone(),
+            name: address.name,
+            url: address.url,
+            models: address.models,
         })
         .collect();
-    (Setup { keys, custom }, failed)
+    (Setup { keys, custom, callback }, failed)
+}
+
+/// What the browser is to show when the ChatGPT sign-in page calls back, in the user's language.
+/// A setup can be begun outside a frame, where the language is not set: it is set here.
+fn callback_words(app: &SolveApp) -> String {
+    let _language = crate::i18n::scope(&app.preferences.language);
+    tr("ui.agent_chat_conn_callback").to_string()
 }
 
 fn send(app: &mut SolveApp, request: Request) {
@@ -631,12 +819,14 @@ pub(super) fn begin_setup(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.agent_chat.conn.active || app.agent_chat.backend.is_none() {
         return;
     }
+    app.agent_chat.conn.set_up_at = app.builtin_changes;
     let secrets = app.services.secrets.clone();
     let custom = app.preferences.mastra_custom.clone();
+    let callback = callback_words(app);
     let (tx, rx) = std::sync::mpsc::channel();
     let wake = ctx.clone();
     let spawned = std::thread::Builder::new().name("mastra-keys".into()).spawn(move || {
-        let _ = tx.send(read_setup(secrets.as_deref(), &custom));
+        let _ = tx.send(read_setup(secrets.as_deref(), &custom, callback));
         wake.request_repaint();
     });
     if spawned.is_ok() {
@@ -644,8 +834,8 @@ pub(super) fn begin_setup(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         // Nothing to read on: the agent still starts, with the addresses and without keys.
         app.agent_chat.conn.reading = None;
-        app.agent_chat.conn.error = Some(tr("ui.host_ai_key_unavailable").to_string());
-        let (setup, _) = read_setup(None, &app.preferences.mastra_custom);
+        app.agent_chat.conn.error = Some("ui.host_ai_key_unavailable");
+        let (setup, _) = read_setup(None, &app.preferences.mastra_custom, callback_words(app));
         send(app, Request::Setup(setup));
     }
 }
@@ -654,19 +844,34 @@ pub(super) fn begin_setup(app: &mut SolveApp, ctx: &egui::Context) {
 #[cfg(target_arch = "wasm32")]
 pub(super) fn begin_setup(_app: &mut SolveApp, _ctx: &egui::Context) {}
 
-/// Take in the keys once they are read, and hand them to the agent.
-pub(super) fn poll(app: &mut SolveApp) {
+/// A key or a custom address was kept or removed: every conversation's agent is behind until it
+/// is set up again, and this one's is set up now.
+fn changed(app: &mut SolveApp, ctx: &egui::Context) {
+    app.builtin_changes = app.builtin_changes.wrapping_add(1);
+    begin_setup(app, ctx);
+}
+
+/// The conversation's turn each frame it is the one shown. Its agent is set up again when a key,
+/// a custom address or a sign-in was changed in another conversation since (each design keeps
+/// an agent of its own, and all of them read the same keychain and the same sign-ins). And the
+/// keys of a setup are taken in once they are read, and handed to the agent.
+pub(super) fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     use std::sync::mpsc::TryRecvError;
+    let conn = &app.agent_chat.conn;
+    if conn.active && app.agent_chat.backend.is_some() && conn.set_up_at != app.builtin_changes {
+        app.agent_chat.conn.catching_up = true;
+        begin_setup(app, ctx);
+    }
     let Some(reading) = &app.agent_chat.conn.reading else { return };
     let (setup, failed) = match reading.try_recv() {
         Ok(read) => read,
         Err(TryRecvError::Empty) => return,
         // The reader ended without an answer: the agent starts without keys rather than not at all.
-        Err(TryRecvError::Disconnected) => (read_setup(None, &app.preferences.mastra_custom).0, true),
+        Err(TryRecvError::Disconnected) => (read_setup(None, &app.preferences.mastra_custom, callback_words(app)).0, true),
     };
     app.agent_chat.conn.reading = None;
     if failed {
-        app.agent_chat.conn.error = Some(tr("ui.host_ai_key_unavailable").to_string());
+        app.agent_chat.conn.error = Some("ui.host_ai_key_unavailable");
     }
     send(app, Request::Setup(setup));
 }
@@ -676,6 +881,11 @@ pub(super) fn poll(app: &mut SolveApp) {
 /// is connected a session is opened, once, and the message kept from a refused sign-in is sent
 /// again when that plan is signed in.
 pub(super) fn settle(app: &mut SolveApp) {
+    // A plan signed in or out here: the other conversations' agents are behind, this one's is not.
+    if std::mem::take(&mut app.agent_chat.conn.plans_changed) {
+        app.builtin_changes = app.builtin_changes.wrapping_add(1);
+        app.agent_chat.conn.set_up_at = app.builtin_changes;
+    }
     let chat = &mut app.agent_chat;
     if !chat.conn.active || chat.backend.is_none() {
         return;
@@ -761,7 +971,7 @@ fn page(conn: &Conn) -> Value {
         "custom": custom,
         "login": login,
         "problem": snapshot.problem.as_ref().map(|problem| json!({"id": problem.id, "kind": problem.kind.id()})),
-        "error": conn.error,
+        "error": conn.error.map(tr),
         "dates": snapshot.dates,
         "connected": snapshot.connected(),
     })
@@ -784,8 +994,16 @@ fn change(app: &mut SolveApp, change: impl FnOnce(&dyn Secrets) -> Result<(), St
         Some(secrets) => change(secrets.as_ref()).map_err(|_| "ui.host_ai_key_unavailable"),
         None => Err("ui.ai_no_keychain"),
     };
-    app.agent_chat.conn.error = kept.err().map(|why| tr(why).to_string());
+    app.agent_chat.conn.error = kept.err();
     kept.is_ok()
+}
+
+/// Refuse an action for something the user typed, and tell them: the page shows `sentence`
+/// (`connect.error`), where a refusal that only reached the host's log would leave them waiting.
+fn refuse(app: &mut SolveApp, ctx: &egui::Context, sentence: &'static str, why: String) -> Result<(), String> {
+    app.agent_chat.conn.error = Some(sentence);
+    ctx.request_repaint();
+    Err(why)
 }
 
 /// The actions of the Connections page.
@@ -814,6 +1032,8 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
     if !super::agents::is_builtin(app) {
         return Err(format!("{kind}: this agent has no connections"));
     }
+    // What the last action could not do is no longer the news.
+    app.agent_chat.conn.error = None;
     let text = |name: &str| action.get(name).and_then(Value::as_str);
     let provider =
         || text("provider").filter(|provider| KEY_IDS.contains(provider)).ok_or_else(|| format!("{kind}: provider must be one of the five"));
@@ -832,7 +1052,7 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
         }
         "conn_code" => {
             let id = text("id").ok_or("conn_code: no id")?;
-            let code = text("code").map(str::trim).filter(|code| !code.is_empty() && code.chars().count() <= MAX_SECRET);
+            let code = text("code").map(js_trim).filter(|code| !code.is_empty() && code.chars().count() <= MAX_SECRET);
             let code = code.ok_or("conn_code: a code has 1 to 4096 characters")?;
             if !told(app).ok_or_else(silent)?.login.as_ref().is_some_and(|login| login.id == id) {
                 return Err("conn_code: no sign-in for that plan is under way".into());
@@ -860,54 +1080,65 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
         "conn_key" => {
             let provider = provider()?;
             let key =
-                text("key").map(str::trim).filter(|key| !key.is_empty() && key.chars().count() <= MAX_SECRET && !key.chars().any(char::is_control));
-            let key = key.ok_or("conn_key: a key has 1 to 4096 characters")?;
+                text("key").map(js_trim).filter(|key| !key.is_empty() && key.chars().count() <= MAX_SECRET && !key.chars().any(char::is_control));
+            let Some(key) = key else { return refuse(app, ctx, REFUSED, "conn_key: a key has 1 to 4096 characters".into()) };
             if change(app, |secrets| secrets.set(&key_secret(provider), key)) {
-                begin_setup(app, ctx);
+                changed(app, ctx);
             }
         }
         "conn_key_remove" => {
             let provider = provider()?;
             if change(app, |secrets| secrets.delete(&key_secret(provider))) {
-                begin_setup(app, ctx);
+                changed(app, ctx);
             }
         }
         "conn_custom" => {
-            let (name, url) = (text("name").ok_or("conn_custom: no name")?, text("url").ok_or("conn_custom: no url")?);
-            let models = action.get("models").and_then(Value::as_array).ok_or("conn_custom: no models")?;
-            let key = match action.get("key") {
-                None | Some(Value::Null) => None,
-                Some(Value::String(key)) => Some(key.as_str()),
-                Some(_) => return Err("conn_custom: key must be text".into()),
+            // Only what can be handed over counts. An entry that cannot (written by hand, or by
+            // another version) is never shown, so it takes neither a name nor room.
+            let kept = fit_addresses(&app.preferences.mastra_custom);
+            let checked = (|| {
+                let (Some(name), Some(url)) = (text("name"), text("url")) else { return Err(Unfit::NameOrAddress) };
+                let models = action.get("models").and_then(Value::as_array).ok_or(Unfit::NoModel)?;
+                let key = match action.get("key") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(key)) => Some(key.as_str()),
+                    Some(_) => return Err(Unfit::Key),
+                };
+                let models: Vec<Option<&str>> = models.iter().map(Value::as_str).collect();
+                let (address, key) = custom_address(name, url, key, &models)?;
+                // An address is added, never written over: writing over one would drop its key.
+                if kept.iter().any(|known| known.name == address.name) {
+                    return Err(Unfit::Exists);
+                }
+                if kept.len() >= MAX_CUSTOM {
+                    return Err(Unfit::Full);
+                }
+                Ok((address, key))
+            })();
+            let (address, key) = match checked {
+                Ok(checked) => checked,
+                Err(unfit) => return refuse(app, ctx, unfit.sentence(), format!("conn_custom: {}", unfit.why())),
             };
-            let (address, key) = custom_address(name, url, key, models).map_err(|why| format!("conn_custom: {why}"))?;
-            let known = app.preferences.mastra_custom.iter().position(|kept| kept.name == address.name);
-            if known.is_none() && app.preferences.mastra_custom.len() >= MAX_CUSTOM {
-                return Err("conn_custom: no room for another custom address".into());
-            }
-            // The app's rule for every key it holds: over HTTPS, or to this computer.
-            if key.is_some() && !super::agents::key_safe_for(&address.url) {
-                app.agent_chat.conn.error = Some(tr("ui.ai_key_needs_https").to_string());
-                return Ok(());
-            }
-            let had_key = known.and_then(|at| app.preferences.mastra_custom.get(at)).is_some_and(|kept| kept.key);
-            let secret = custom_secret(&address.name);
             // The key goes first: an address is not kept with a key the keychain did not take.
-            let stored = match key {
-                Some(key) => change(app, |secrets| secrets.set(&secret, &key)),
-                // An address given again without a key leaves none behind.
-                None if had_key => change(app, |secrets| secrets.delete(&secret)),
-                None => {
-                    app.agent_chat.conn.error = None;
-                    true
+            let secret = custom_secret(&address.name);
+            if key.is_none_or(|key| change(app, |secrets| secrets.set(&secret, &key))) {
+                // An entry of this name that could not be handed over makes way, with its key:
+                // it was never shown, so nobody could have removed it.
+                let (same, others): (Vec<CustomAddress>, Vec<CustomAddress>) =
+                    std::mem::take(&mut app.preferences.mastra_custom).into_iter().partition(|other| js_trim(&other.name) == address.name);
+                app.preferences.mastra_custom = others;
+                for old in same {
+                    let stale = custom_secret(&old.name);
+                    if old.key
+                        && !(address.key && stale == secret)
+                        && let Some(secrets) = &app.services.secrets
+                    {
+                        // Left behind it would only lie in the keychain: nothing reads it again.
+                        let _ = secrets.delete(&stale);
+                    }
                 }
-            };
-            if stored {
-                match known.and_then(|at| app.preferences.mastra_custom.get_mut(at)) {
-                    Some(kept) => *kept = address,
-                    None => app.preferences.mastra_custom.push(address),
-                }
-                begin_setup(app, ctx);
+                app.preferences.mastra_custom.push(address);
+                changed(app, ctx);
             }
         }
         "conn_custom_remove" => {
@@ -917,14 +1148,13 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
             let name = named.map_or_else(|| id.to_string(), |custom| custom.name.clone());
             let at = app.preferences.mastra_custom.iter().position(|kept| kept.name == name).ok_or("conn_custom_remove: no such custom address")?;
             let address = app.preferences.mastra_custom.remove(at);
-            app.agent_chat.conn.error = None;
             if address.key
                 && let Some(secrets) = &app.services.secrets
                 && secrets.delete(&custom_secret(&address.name)).is_err()
             {
-                app.agent_chat.conn.error = Some(tr("ui.host_ai_key_unavailable").to_string());
+                app.agent_chat.conn.error = Some("ui.host_ai_key_unavailable");
             }
-            begin_setup(app, ctx);
+            changed(app, ctx);
         }
         "conn_retry" => {
             let chat = &app.agent_chat;
@@ -1037,10 +1267,12 @@ mod tests {
         }
         assert_eq!(TurnProblem::parse(None), None);
         assert!(TurnKind::Other.sentence().is_none());
-        for kind in [TurnKind::Auth, TurnKind::Quota, TurnKind::Rate, TurnKind::Network, TurnKind::Model] {
+        for kind in [TurnKind::Auth, TurnKind::Key, TurnKind::Quota, TurnKind::Rate, TurnKind::Network, TurnKind::Model] {
             let sentence = kind.sentence().expect("a sentence of the app's own");
             assert!(!tr(sentence).starts_with("ui."), "{sentence} is in the catalog");
         }
+        // `key` is the app's own reading of `auth`, never the agent's word.
+        assert_eq!(read(json!({"intcad": {"kind": "key", "prefix": "openai"}})).map(|problem| problem.kind), Some(TurnKind::Other));
     }
 
     /// B10: what holds a key or a pasted code never prints it, so no log line can carry one.
@@ -1052,7 +1284,7 @@ mod tests {
             api_key: Some("sk-custom-never-shown".into()),
             models: vec!["llama3.2".into()],
         };
-        let setup = Setup { keys: vec![("openai".into(), "sk-openai-never-shown".into())], custom: vec![custom] };
+        let setup = Setup { keys: vec![("openai".into(), "sk-openai-never-shown".into())], custom: vec![custom], ..Default::default() };
         let request = Request::Setup(setup.clone());
         // The request does carry them: the parameters are what goes to the agent.
         let params = request.params().to_string();
@@ -1065,49 +1297,188 @@ mod tests {
         assert!(code.contains("anthropic") && !code.contains("never-shown"), "{code}");
     }
 
-    /// B11: a custom address is taken only whole and in range, and the reason for a refusal
-    /// repeats nothing that was typed.
+    /// B11: a custom address is taken only whole and in range, each refusal has its own sentence
+    /// for the page, and the reason for the host's log repeats nothing that was typed.
     #[test]
     fn a_custom_address_is_taken_only_in_range() {
-        let models = [json!("llama3.2"), json!(" qwen3 "), json!("llama3.2")];
+        let models = [Some("llama3.2"), Some(" qwen3 "), Some("llama3.2")];
         let (address, key) = custom_address("  my-llm ", " http://localhost:11434/v1/ ", Some("  k  "), &models).expect("a custom address");
-        assert_eq!(
-            address,
-            CustomAddress {
-                name: "my-llm".into(),
-                url: "http://localhost:11434/v1".into(),
-                models: vec!["llama3.2".into(), "qwen3".into()],
-                key: true
-            }
-        );
-        assert_eq!(key.as_deref(), Some("k"));
+        let kept = CustomAddress {
+            name: "my-llm".into(),
+            url: "http://localhost:11434/v1".into(),
+            models: vec!["llama3.2".into(), "qwen3".into()],
+            key: true,
+        };
+        assert_eq!((address, key.as_deref()), (kept, Some("k")), "trimmed, and a model named twice is named once");
         let (plain, none) = custom_address("local", "https://llm.example/v1", Some("   "), &models[..1]).expect("a custom address");
         assert!(!plain.key && none.is_none(), "an empty key is no key");
-        let ok = [json!("m")];
-        let seventeen: Vec<Value> = (0..17).map(|n| json!(format!("m{n}"))).collect();
+        // A short address is an address: a host is all it needs.
+        for (typed, kept) in [
+            ("http://pi", "http://pi"),
+            ("HTTP://Pi:8080/", "HTTP://Pi:8080"),
+            ("http://[::1]:11434/v1", "http://[::1]:11434/v1"),
+            ("https://a.b/x@y/v1", "https://a.b/x@y/v1"),
+        ] {
+            assert_eq!(custom_address("n", typed, None, &[Some("m")]).map(|(address, _)| address.url).as_deref(), Ok(kept), "{typed}");
+        }
+        // The name is trimmed as the agent trims it: a byte-order mark is no name.
+        assert_eq!(
+            custom_address("\u{feff} my-llm\u{feff}\u{3000}", "http://pi", None, &[Some("m")]).map(|(address, _)| address.name).as_deref(),
+            Ok("my-llm")
+        );
+        assert_eq!(js_trim("\u{feff}\u{a0}\t x\u{2028}\u{feff}"), "x");
+        assert_eq!(js_trim("\u{85}x"), "\u{85}x", "what JavaScript leaves is left");
+
+        let ok = [Some("m")];
+        let seventeen: Vec<String> = (0..17).map(|n| format!("m{n}")).collect();
+        let seventeen: Vec<Option<&str>> = seventeen.iter().map(|model| Some(model.as_str())).collect();
+        let (long_name, long_url, long_model, long_key) =
+            ("n".repeat(41), format!("https://llm.example/{}", "p".repeat(400)), "m".repeat(121), "k".repeat(4097));
+        let local = "http://localhost:11434/v1";
         let refused = [
-            custom_address("", "http://localhost:11434/v1", None, &ok),
-            custom_address("   ", "http://localhost:11434/v1", None, &ok),
-            custom_address(&"n".repeat(41), "http://localhost:11434/v1", None, &ok),
-            custom_address("tab\tname", "http://localhost:11434/v1", None, &ok),
-            custom_address("my-llm", "localhost:11434", None, &ok),
-            custom_address("my-llm", "ftp://localhost/v1", None, &ok),
-            custom_address("my-llm", &format!("https://llm.example/{}", "p".repeat(400)), None, &ok),
-            custom_address("my-llm", "http://localhost:11434/v1", None, &[]),
-            custom_address("my-llm", "http://localhost:11434/v1", None, &seventeen),
-            custom_address("my-llm", "http://localhost:11434/v1", None, &[json!("")]),
-            custom_address("my-llm", "http://localhost:11434/v1", None, &[json!(7)]),
-            custom_address("my-llm", "http://localhost:11434/v1", None, &[json!("m".repeat(121))]),
-            custom_address("my-llm", "http://localhost:11434/v1", Some(&"k".repeat(4097)), &ok),
+            (custom_address("", local, None, &ok), Unfit::NameOrAddress),
+            (custom_address("   ", local, None, &ok), Unfit::NameOrAddress),
+            (custom_address("\u{feff}", local, None, &ok), Unfit::NameOrAddress),
+            (custom_address(&long_name, local, None, &ok), Unfit::NameOrAddress),
+            (custom_address("tab\tname", local, None, &ok), Unfit::NameOrAddress),
+            (custom_address("my-llm", "localhost:11434", None, &ok), Unfit::NameOrAddress),
+            (custom_address("my-llm", "ftp://localhost/v1", None, &ok), Unfit::NameOrAddress),
+            (custom_address("my-llm", "http://", None, &ok), Unfit::NameOrAddress),
+            (custom_address("my-llm", "http://:8080/v1", None, &ok), Unfit::NameOrAddress),
+            (custom_address("my-llm", "http://local host/v1", None, &ok), Unfit::NameOrAddress),
+            (custom_address("my-llm", "http://localhost\\@evil.example/v1", None, &ok), Unfit::NameOrAddress),
+            (custom_address("my-llm", &long_url, None, &ok), Unfit::NameOrAddress),
+            (custom_address("my-llm", "https://user:sk-in-the-address@llm.example/v1", None, &ok), Unfit::AddressCarriesMore),
+            (custom_address("my-llm", "https://token@llm.example/v1", None, &ok), Unfit::AddressCarriesMore),
+            (custom_address("my-llm", "https://llm.example/v1?api_key=sk-in-the-address", None, &ok), Unfit::AddressCarriesMore),
+            (custom_address("my-llm", "https://llm.example/v1#sk-in-the-address", None, &ok), Unfit::AddressCarriesMore),
+            (custom_address("my-llm", local, None, &[]), Unfit::NoModel),
+            (custom_address("my-llm", local, None, &[Some("m"), Some("  ")]), Unfit::NoModel),
+            (custom_address("my-llm", local, None, &seventeen), Unfit::Models),
+            (custom_address("my-llm", local, None, &[Some("m"), Some(long_model.as_str())]), Unfit::Models),
+            (custom_address("my-llm", local, None, &[Some("m"), None]), Unfit::Models),
+            (custom_address("my-llm", local, Some(long_key.as_str()), &ok), Unfit::Key),
+            (custom_address("my-llm", "http://192.168.1.20:11434/v1", Some("k"), &ok), Unfit::KeyInTheClear),
+            (custom_address("my-llm", "http://pi", Some("k"), &ok), Unfit::KeyInTheClear),
         ];
-        for (n, result) in refused.iter().enumerate() {
-            let why = result.as_ref().expect_err(&format!("case {n} is refused"));
-            assert!(!why.contains("my-llm") && !why.contains("localhost") && !why.contains("kkkk"), "{why}");
+        for (n, (result, unfit)) in refused.iter().enumerate() {
+            assert_eq!(result.as_ref().err(), Some(unfit), "case {n}");
         }
         assert!(
-            custom_address(&"n".repeat(40), &format!("https://llm.example/{}", "p".repeat(380)), Some(&"k".repeat(4096)), &seventeen[..16]).is_ok(),
-            "the limits themselves are in range"
+            custom_address("my-llm", "http://192.168.1.20:11434/v1", None, &ok).is_ok(),
+            "without a key, plain HTTP to another computer is the user's to choose"
         );
+        let limits =
+            custom_address(&"n".repeat(40), &format!("https://llm.example/{}", "p".repeat(380)), Some("k".repeat(4096).as_str()), &seventeen[..16]);
+        assert!(limits.is_ok(), "the limits themselves are in range");
+        for unfit in [
+            Unfit::NameOrAddress,
+            Unfit::NoModel,
+            Unfit::Models,
+            Unfit::AddressCarriesMore,
+            Unfit::Exists,
+            Unfit::Full,
+            Unfit::KeyInTheClear,
+            Unfit::Key,
+        ] {
+            assert!(!tr(unfit.sentence()).starts_with("ui."), "{unfit:?} has its sentence in the catalog");
+            let why = unfit.why();
+            assert!(!why.is_empty() && !why.contains("my-llm") && !why.contains("localhost") && !why.contains("sk-"), "{why}");
+        }
+    }
+
+    /// What preferences hold is checked as what is typed is before it is handed to the agent: a
+    /// file written by hand, or by another version, hands over nothing the form would refuse.
+    /// What does not pass is left out of the hand-over and left alone in the list.
+    #[test]
+    fn custom_addresses_from_preferences_are_checked_before_they_are_handed_over() {
+        let address = |name: &str, url: &str, models: &[&str], key: bool| CustomAddress {
+            name: name.into(),
+            url: url.into(),
+            models: models.iter().map(|model| model.to_string()).collect(),
+            key,
+        };
+        let kept = vec![
+            address("good", "http://localhost:11434/v1", &["llama3.2"], true),
+            address("\u{feff}", "http://localhost:11434/v1", &["m"], false),
+            address("secret-in-address", "https://user:sk-in-the-address@llm.example/v1", &["m"], false),
+            address("query", "https://llm.example/v1?api_key=sk-in-the-address", &["m"], false),
+            address("no-models", "https://llm.example/v1", &[], false),
+            address("key-in-the-clear", "http://192.168.1.20:11434/v1", &["m"], true),
+            address("good", "https://second.example/v1", &["m"], false),
+            address(" pi ", "http://pi/", &["m", "m"], false),
+        ];
+        let before = kept.clone();
+        let fit = fit_addresses(&kept);
+        assert_eq!(fit, [address("good", "http://localhost:11434/v1", &["llama3.2"], true), address("pi", "http://pi", &["m"], false)]);
+        assert_eq!(kept, before, "the list itself is not rewritten");
+        let (setup, failed) = read_setup(None, &kept, "Go back to Intcad.".into());
+        assert_eq!(setup.custom.iter().map(|custom| custom.name.as_str()).collect::<Vec<_>>(), ["good", "pi"]);
+        assert!(!failed && !Request::Setup(setup).params().to_string().contains("sk-in-the-address"));
+        let many: Vec<CustomAddress> = (0..40).map(|n| address(&format!("a{n}"), "http://pi", &["m"], false)).collect();
+        assert_eq!(fit_addresses(&many).len(), MAX_CUSTOM);
+    }
+
+    /// A plan that changed hands is told from a snapshot that says the same again.
+    #[test]
+    fn a_plan_signed_in_or_out_is_a_change_and_the_same_again_is_not() {
+        let before = Snapshot::parse(&told()).expect("a snapshot");
+        assert!(!before.plans_differ(&before));
+        let mut keys_only = told();
+        keys_only["keys"][0]["saved"] = json!(false);
+        keys_only["login"] = json!(null);
+        assert!(
+            !before.plans_differ(&Snapshot::parse(&keys_only).expect("a snapshot")),
+            "keys and a sign-in under way are not a plan changing hands"
+        );
+        for state in ["in", "out"] {
+            let mut now = told();
+            now["plans"][0]["state"] = json!(state);
+            assert!(before.plans_differ(&Snapshot::parse(&now).expect("a snapshot")), "{state}");
+        }
+        let mut conn = Conn::default();
+        conn.take_in(before.clone());
+        assert!(!conn.plans_changed, "the first word is no change");
+        let mut signed_out = told();
+        signed_out["plans"][0]["state"] = json!("out");
+        let signed_out = Snapshot::parse(&signed_out).expect("a snapshot");
+        conn.take_in(signed_out.clone());
+        assert!(conn.plans_changed);
+        // Catching up with a change made elsewhere is not a change to tell the others of again.
+        let mut behind = Conn::default();
+        behind.take_in(before);
+        behind.catching_up = true;
+        behind.take_in(signed_out);
+        assert!(!behind.plans_changed && !behind.catching_up);
+    }
+
+    /// A refused credential is a sign-in's only on a plan that is signed in or was until now:
+    /// through a saved key, a custom address or a connection nothing is known of it is the key's.
+    #[test]
+    fn a_refused_credential_is_the_keys_unless_a_plan_holds_the_prefix() {
+        let snapshot = Snapshot::parse(&told()).expect("a snapshot");
+        let auth = |prefix: &str| TurnProblem { kind: TurnKind::Auth, prefix: prefix.into() };
+        // `openai` is the expired ChatGPT plan's: the sign-in was refused, though a key is saved too.
+        assert_eq!(auth("openai").as_told(Some(&snapshot)).kind, TurnKind::Auth);
+        for prefix in ["google", "mastracode/my-llm", "mastracode", "new", "nowhere", ""] {
+            assert_eq!(auth(prefix).as_told(Some(&snapshot)).kind, TurnKind::Key, "{prefix}");
+        }
+        assert_eq!(auth("openai").as_told(None).kind, TurnKind::Key, "nothing is known of the connections");
+        let mut signed_out = told();
+        signed_out["plans"][0]["state"] = json!("out");
+        let signed_out = Snapshot::parse(&signed_out).expect("a snapshot");
+        assert_eq!(auth("openai").as_told(Some(&signed_out)).kind, TurnKind::Key, "signed out, the saved key served the turn");
+        assert_eq!(signed_out.name_of("openai"), "OpenAI");
+        // A provider without a key is named before a plan that is signed out: the turn did not
+        // go through that plan.
+        let mut bare = told();
+        bare["plans"][0]["state"] = json!("out");
+        bare["keys"][0]["saved"] = json!(false);
+        assert_eq!(Snapshot::parse(&bare).expect("a snapshot").name_of("openai"), "OpenAI");
+        // Every other kind is told as the agent says it.
+        for kind in [TurnKind::Quota, TurnKind::Rate, TurnKind::Network, TurnKind::Model, TurnKind::Other] {
+            assert_eq!(TurnProblem { kind, prefix: "google".into() }.as_told(Some(&snapshot)).kind, kind);
+        }
     }
 
     #[test]

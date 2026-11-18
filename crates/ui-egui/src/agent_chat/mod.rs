@@ -1030,10 +1030,7 @@ impl AgentChat {
                 }
             }
             Event::AuthStatus(s) => self.auth_status = Some(s),
-            Event::Connections(snapshot) => {
-                self.conn.snapshot = Some(snapshot);
-                self.conn.refused = false;
-            }
+            Event::Connections(snapshot) => self.conn.take_in(snapshot),
             Event::ConnectionsFailed { what, code } => {
                 // Without the first snapshot the agent cannot be used: starting has failed. Later
                 // refusals change nothing here (a second sign-in while one is under way, say).
@@ -1041,10 +1038,15 @@ impl AgentChat {
                     self.notice(trf("ui.agent_chat_failed_start", &[("error", &format!("{} ({code})", what.method()))]), true);
                     self.state = Some(State::Failed);
                 } else {
+                    // The page waits for an answer to what it asked (a key dialog, the address
+                    // form): it is told that this did not work. Never in the agent's words.
+                    self.conn.error = Some(connections::REFUSED);
                     log::debug!("the agent refused {} ({code})", what.method());
                 }
             }
             Event::TurnProblem(problem) => {
+                // The agent's `auth` is a plan's sign-in or a key: the connection says which.
+                let problem = problem.as_told(self.conn.snapshot.as_ref());
                 if problem.kind.sentence().is_some() {
                     let name = match &self.conn.snapshot {
                         Some(snapshot) => snapshot.name_of(&problem.prefix),
@@ -2763,7 +2765,7 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.set_document(&stamp.document_id, stamp.revision);
     }
-    connections::poll(app);
+    connections::poll(app, ctx);
     let events = app.agent_chat.backend.as_mut().map(|b| b.poll()).unwrap_or_default();
     for e in events {
         let ready = matches!(e, Event::Ready { .. });
