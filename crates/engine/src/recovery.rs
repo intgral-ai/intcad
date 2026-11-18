@@ -132,7 +132,8 @@ fn read_entry(path: &Path) -> Option<Entry> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// An entry's design: `<id>.sc`, or `<id>.solidcraft` for an autosave an earlier release wrote (compatibility shim, docs/compatibility.md).
+/// An entry's design: `<id>.sc`, or `<id>.solidcraft` / `<id>.solvecraft` for an autosave an
+/// earlier release wrote (compatibility shim, docs/compatibility.md).
 fn design_file(dir: &Path, id: &str) -> PathBuf {
     solidcraft_io::DESIGN_EXTS.iter().map(|ext| file(dir, id, ext)).find(|p| p.is_file()).unwrap_or_else(|| file(dir, id, solidcraft_io::DESIGN_EXT))
 }

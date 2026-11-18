@@ -104,7 +104,6 @@ mod metadata;
 pub(crate) mod motion;
 mod notes;
 mod parts;
-mod plugin;
 mod point_cloud;
 mod point_cloud_deviation;
 mod script;
@@ -187,6 +186,15 @@ pub type LiveRun = fn(&mut Session, &Value) -> Result<(Value, Option<crate::Live
 pub type Enabled = fn(&Session) -> std::result::Result<(), String>;
 pub type SchemaFn = fn() -> schemars::Schema;
 
+/// A command's authority, independent of undo history: reads only, or may edit the design.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    /// The command may change the design.
+    Edit,
+    /// Explicitly reviewed to leave the design and authoring state unchanged.
+    Read,
+}
+
 pub struct CommandSpec {
     pub id: &'static str,
     pub label: &'static str,
@@ -203,7 +211,7 @@ pub struct CommandSpec {
     pub run: Run,
     pub undoable: bool,
     /// Command authority, independent of undo history. New commands require edit authority.
-    pub effect: craft_plugin::Effect,
+    pub effect: Effect,
     /// What runs instead of `run` when the command is given `live: true` (a frame of an
     /// interactive gesture, see [`Session::execute`]).
     pub live: Option<LiveRun>,
@@ -232,7 +240,7 @@ impl CommandSpec {
             enabled: always,
             run,
             undoable: true,
-            effect: craft_plugin::Effect::Edit,
+            effect: Effect::Edit,
             live: None,
             reads_model: true,
             planned: None,
@@ -288,7 +296,7 @@ impl CommandSpec {
     }
     /// Explicitly reviewed to leave the design and authoring state unchanged.
     pub const fn read_only(mut self) -> Self {
-        self.effect = craft_plugin::Effect::Read;
+        self.effect = Effect::Read;
         self
     }
     pub const fn noundo(mut self) -> Self {
@@ -386,7 +394,6 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(cell_grid::COMMANDS.iter());
     v.extend(mesh::COMMANDS.iter());
     v.extend(construct_auto::COMMANDS.iter());
-    v.extend(plugin::COMMANDS.iter());
     v.extend(construct::COMMANDS.iter());
     v.extend(sheet::COMMANDS.iter());
     v.extend(plastic::COMMANDS.iter());

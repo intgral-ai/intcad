@@ -9,9 +9,9 @@ use solidcraft_engine::Session;
 use solidcraft_engine::control_pending;
 use solidcraft_engine::panels::ActionSink;
 use solidcraft_engine::panels::commands::LayoutCatalogue;
-use solidcraft_engine::render::StandardView;
 use solidcraft_engine::schema::ParamCheck;
 use solidcraft_engine::view::Guides;
+use solidcraft_engine::view::StandardView;
 
 pub(crate) use crate::document_guard::decode_guarded_reply;
 use crate::document_guard::{
@@ -475,7 +475,9 @@ impl Remote {
     /// The tool error for the outstanding request still running after its wait.
     fn still_running(&self, earlier: bool) -> String {
         let Some(o) = &self.outstanding else { return format!("{STILL_RUNNING} a request is still running in the app") };
-        let effect = o.effect.map_or("it was not cancelled and may still change the design when it finishes", control_pending::Effect::when_done);
+        let effect = o
+            .effect
+            .map_or_else(|| "it was not cancelled and may still change the design when it finishes".to_string(), |effect| effect.when_done("design"));
         let settle = self.waits.settle.as_secs();
         if earlier {
             format!(
@@ -875,7 +877,7 @@ impl Remote {
         let steps = params.get("commands").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
         if self.param_check == ParamCheck::Strict {
             if let Some(refusal) = solidcraft_engine::batch_preflight::contracts(steps) {
-                return Ok(refusal.reply(steps.len()));
+                return Ok(refusal.reply(steps.len(), false));
             }
             return self.call_once("engine.batch", params, true);
         }
@@ -982,7 +984,7 @@ impl Headless {
         if method == "engine.batch"
             && let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, self.session.param_check, &[])
         {
-            return Ok(refusal.reply(steps.len()));
+            return Ok(refusal.reply(steps.len(), false));
         }
         let panels = steps.iter().filter(|step| step_command(step).is_some_and(commands::is_command)).count();
         if method == "engine.batch" && p.get("rollback").and_then(Value::as_bool).unwrap_or(true) {
@@ -1049,7 +1051,7 @@ impl Headless {
                     "fit" => {
                         let b = solidcraft_engine::view::bounds(s).map_err(|e| e.to_string())?;
                         if let Some(c) = s.camera.as_mut() {
-                            c.fit(&b);
+                            c.fit(&solidcraft_engine::render::view_bounds(&b));
                         }
                     }
                     _ => {
@@ -1076,7 +1078,7 @@ impl Headless {
                 let path = str_p("path").ok_or("missing `path`")?;
                 // A path outside the agent's folders is refused before anything is drawn.
                 solidcraft_engine::io::vfs::check(path).map_err(|e| format!("{path}: {e}"))?;
-                let scene = solidcraft_engine::view::scene_with_guides(s, &cam, s.section, guides).map_err(|e| e.to_string())?;
+                let scene = solidcraft_engine::view::scene_with_guides(s, &cam, &s.section, guides).map_err(|e| e.to_string())?;
                 // Drawn on the GPU by the renderer the host installed (`intcad-cli mcp`).
                 let png = solidcraft_engine::capture::png(&scene, &cam, w, h)?;
                 solidcraft_engine::io::vfs::write(path, &png.bytes).map_err(|e| format!("{path}: {e}"))?;

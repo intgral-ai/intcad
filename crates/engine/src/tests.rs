@@ -1667,7 +1667,10 @@ fn hostile_params_never_panic() {
                 *id,
                 "doc.open" | "file.save" | "file.save_as" | "file.export" | "file.save_mesh" | "sketch.export_dxf" | "document.snapshot.capture"
             )
-        }) // file system side effects are covered by their own tests
+        }) // file system side effects are covered by their own tests:
+        // document.snapshot.capture writes an immutable design snapshot under the candidate store
+        // before any parameter could be refused, so hostile parameters are covered by the snapshot
+        // tests (and the store root is a per-test temporary folder), not by this loop.
         .collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -1682,12 +1685,6 @@ fn hostile_params_never_panic() {
                         // call behind one lock, so building the box for each of the ~3000 calls
                         // ran one after another on every thread (over half an hour in CI).
                         let mut start = Session::default();
-                        // Hostile plugin ids must never name packages in the user's real install folder.
-                        start.plugin_state.plugins_dir = Some(solidcraft_io::vfs::temp_dir().join(format!(
-                            "solidcraft-hostile-plugins-{}-{}",
-                            std::process::id(),
-                            id.replace('.', "-")
-                        )));
                         let _ = start.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10}));
                         let _ = start.execute("sketch.create", &json!({"plane": "XY"}));
                         let _ = start.execute("sketch.rectangle.two_point", &json!({"p0": [0, 0], "p1": [5, 5]}));

@@ -46,9 +46,6 @@ pub const TABLE: &[(&str, Class)] = &[
     ("display-units", Class::Layer(0)),
     // versioned file formats: the tag, the version registry and its container (no app types)
     ("format", Class::Layer(0)),
-    // app-independent plugin contracts, manifests and permissions: types only, no SolidCraft crate
-    // may be reached from here (the wasm runtime is CD-5, deferred and absent)
-    ("craft-plugin", Class::Layer(0)),
     // the control channel shared by apps: token files, the loopback server and its requests, no UI
     ("control", Class::Layer(0)),
     // 3D mouse descriptors and reports (no workspace dependencies; the apps read the device)

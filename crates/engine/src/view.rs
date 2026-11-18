@@ -15,6 +15,8 @@ use solidcraft_viewport::{Camera, Rgb, Scene, SceneAnalysis, SceneLine, SceneMes
 pub use solidcraft_viewport::grid::{grid_ext, grid_step};
 
 pub use solidcraft_viewport::MAX_SECTION_PLANES;
+// INT-1454: remove when MCP/UI adopt the viewport crate; the type moved there in v0.44.1.
+pub use solidcraft_viewport::StandardView;
 
 use crate::{Result, SectionPlane, Sel, Session};
 

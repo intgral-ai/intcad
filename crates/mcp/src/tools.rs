@@ -1630,7 +1630,7 @@ fn batch_run(b: &mut dyn Backend, a: &Map<String, Value>) -> (Value, bool) {
     if b.in_process()
         && let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, b.param_check(), &[])
     {
-        let mut reply = refusal.reply(steps.len());
+        let mut reply = refusal.reply(steps.len(), false);
         if let Some(o) = reply.as_object_mut() {
             o.insert("ok".into(), Value::Bool(false));
             o.insert("applied".into(), json!([]));

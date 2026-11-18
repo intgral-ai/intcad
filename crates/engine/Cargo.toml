@@ -9,8 +9,8 @@ license.workspace = true
 workspace = true
 
 [features]
-# CD-5: the wasm plugin runtime (upstream's `plugins` feature, wasmtime) is deferred. `plugin.run`
-# keeps its upstream no-runtime refusal; manifests, inspection and installation stay.
+# CD-5: the plugin runtime (upstream's `plugins` feature, wasmtime) is deferred, so this build
+# ships no plugin command surface and no wasm host; `crates/craft-plugin` is not part of it.
 default = []
 # Optional authored texture/HDR bytes; the command registry and metadata remain available.
 bundled-render-library = []
@@ -37,7 +37,6 @@ name = "sketch_target_bench"
 required-features = ["solver-profiling"]
 
 [dependencies]
-craft-plugin = { workspace = true }
 solidcraft-viewport = { workspace = true }
 # The printed look of an inserted circuit board (src/cmd/board_layers.rs): its layers drawn
 # into an image; both already in the tree (ui-egui, render).

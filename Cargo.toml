@@ -15,9 +15,6 @@ repository = "https://github.com/intgral-ai/intcad"
 [workspace.dependencies]
 robust = "1.2"
 # internal
-# App-independent command plugin contracts, manifests and permissions. Types only: the wasm
-# runtime (`craft-plugin-wasm`) is CD-5, deferred, and not in this tree.
-craft-plugin = { path = "crates/craft-plugin" }
 solidcraft-geom = { path = "crates/geom" }
 solidcraft-profile = { path = "crates/profile" }
 solidcraft-sketch = { path = "crates/sketch" }
