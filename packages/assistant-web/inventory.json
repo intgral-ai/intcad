@@ -7,6 +7,7 @@
     "version": "69.0.0-alpha.4",
     "licence": "Apache-2.0",
     "sourceFilesInScript": [
+      "packages/playground-ui/src/domains/llm/provider-logo-monogram.tsx",
       "packages/playground-ui/src/ds/components/AgentIndicator/agent-glyph.tsx",
       "packages/playground-ui/src/ds/components/AgentIndicator/paint.ts",
       "packages/playground-ui/src/ds/components/AgentIndicator/poses.ts",
@@ -40,10 +41,16 @@
       "packages/playground-ui/src/ds/components/Composer/composer.tsx",
       "packages/playground-ui/src/ds/components/Composer/use-composer-pointer.ts",
       "packages/playground-ui/src/ds/components/CopyButton/copy-button.tsx",
+      "packages/playground-ui/src/ds/components/Dialog/dialog-action.tsx",
+      "packages/playground-ui/src/ds/components/Dialog/dialog-context.ts",
+      "packages/playground-ui/src/ds/components/Dialog/dialog-shell.ts",
+      "packages/playground-ui/src/ds/components/Dialog/dialog.tsx",
       "packages/playground-ui/src/ds/components/DisclosureChevron/disclosure-chevron.tsx",
+      "packages/playground-ui/src/ds/components/Drawer/drawer.tsx",
       "packages/playground-ui/src/ds/components/DropdownMenu/dropdown-menu.tsx",
       "packages/playground-ui/src/ds/components/EmptyState/EmptyState.tsx",
       "packages/playground-ui/src/ds/components/Field/field-control-aria.ts",
+      "packages/playground-ui/src/ds/components/Field/field.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-column.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-error-msg.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-help-text.tsx",
@@ -52,6 +59,7 @@
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-message.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-error-id.ts",
+      "packages/playground-ui/src/ds/components/Input/input.tsx",
       "packages/playground-ui/src/ds/components/MarkdownRenderer/arriving.ts",
       "packages/playground-ui/src/ds/components/MarkdownRenderer/blocks.ts",
       "packages/playground-ui/src/ds/components/MarkdownRenderer/markdown-renderer.tsx",
@@ -76,12 +84,15 @@
       "packages/playground-ui/src/ds/components/ScrollArea/scroll-area.tsx",
       "packages/playground-ui/src/ds/components/Select/select.tsx",
       "packages/playground-ui/src/ds/components/Shimmer/shimmer.tsx",
+      "packages/playground-ui/src/ds/components/StatusIndicators/status-dot-styles.ts",
+      "packages/playground-ui/src/ds/components/StatusIndicators/status.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-context.ts",
       "packages/playground-ui/src/ds/components/Tabs/tabs-list.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-root.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-tab.tsx",
       "packages/playground-ui/src/ds/components/Textarea/textarea.tsx",
       "packages/playground-ui/src/ds/components/ThemeProvider/theme-context.ts",
+      "packages/playground-ui/src/ds/components/Tooltip/info-tooltip.tsx",
       "packages/playground-ui/src/ds/components/Tooltip/tooltip.tsx",
       "packages/playground-ui/src/ds/components/Txt/Txt.tsx",
       "packages/playground-ui/src/ds/components/ai/activity/activity.tsx",
@@ -121,11 +132,13 @@
       "packages/playground-ui/src/ds/tokens/sizes.ts",
       "packages/playground-ui/src/hooks/use-autoscroll.tsx",
       "packages/playground-ui/src/hooks/use-copy-to-clipboard.ts",
+      "packages/playground-ui/src/hooks/use-is-mobile.ts",
       "packages/playground-ui/src/lib/merge-refs.ts",
       "packages/playground-ui/src/lib/string.ts",
       "packages/playground-ui/src/lib/toast-api.tsx",
       "packages/playground-ui/src/lib/tw-merge-config.ts",
-      "packages/playground-ui/src/lib/utils.ts"
+      "packages/playground-ui/src/lib/utils.ts",
+      "packages/playground-ui/src/utils/model.ts"
     ],
     "stylesheetsImported": [
       "packages/playground-ui/components.css",
@@ -185,7 +198,7 @@
       "name": "@base-ui/react",
       "version": "1.9.0",
       "licence": "MIT",
-      "modulesInScript": 256,
+      "modulesInScript": 311,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -572,7 +585,7 @@
       "name": "lucide-react",
       "version": "1.67.0",
       "licence": "ISC",
-      "modulesInScript": 45,
+      "modulesInScript": 46,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1195,16 +1208,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1515052,
-      "sha256": "0647260127baf1af8f699af1d50694b7c90a153a46c179e806460e481fc42c29"
+      "bytes": 1593889,
+      "sha256": "fa4db8e353977f60396fc08f0176f78b57210603301f38b6cfed913f2bf173d3"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 346209,
-      "sha256": "7c99657d3be54d740a460c9702ab7bb524ad0ae22f6c37c35d3996e81dbcafed"
+      "bytes": 351302,
+      "sha256": "a9e33bc42efd20ed56baa17bb8d06795d59fc5ce25c0dfe88dbb3207fffbde9e"
     }
   }
 }

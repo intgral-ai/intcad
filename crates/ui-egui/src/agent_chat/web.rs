@@ -321,6 +321,11 @@ pub fn state(app: &mut SolveApp) -> String {
                 })
             }
             Item::Notice { text, error } => json!({"kind": "notice", "text": text, "error": error}),
+            // A notice to a page that reads no more of it; `problem` says which way out to offer.
+            Item::Problem { text, kind, prefix, name } => json!({
+                "kind": "notice", "text": text, "error": true,
+                "problem": {"kind": kind.id(), "prefix": prefix, "name": name},
+            }),
         })
         .collect();
     let turn = chat.turn.as_ref().map(|turn| {
@@ -388,9 +393,12 @@ pub fn state(app: &mut SolveApp) -> String {
             .collect::<Vec<_>>()
     });
     // The known agents not found. A basic one is listed by the page as not ready, with `body`.
+    // Beside the built-in agent there is nothing to install, whatever was found before.
+    let builtin = agents::is_builtin(app);
     let missing: Vec<Value> = chat
         .detection
         .as_ref()
+        .filter(|_| !builtin)
         .map(|found| {
             let listed = |agent: &super::discover::Missing| {
                 let body = agent.basic.then(|| trf("ui.agent_chat_install_body", &[("agent", agent.name)]));
@@ -509,6 +517,72 @@ pub fn state(app: &mut SolveApp) -> String {
         ("dfmSelected", "ui.dfm_check.selected"),
         ("dfmOff", "ui.dfm_check.off"),
         ("dfmSelect", "ui.dfm_check.selected"),
+        // The built-in agent's connections (`connect`, below): its page, the sign-ins' own
+        // names, and the sentences of a turn its connection refused.
+        ("connTitle", "ui.agent_chat_conn_title"),
+        ("connIntro", "ui.agent_chat_conn_intro"),
+        ("connNoneTitle", "ui.agent_chat_conn_none_title"),
+        ("connNoneBody", "ui.agent_chat_conn_none_body"),
+        ("connBack", "ui.agent_chat_conn_back"),
+        ("connUsing", "ui.agent_chat_conn_using"),
+        ("connUsingHint", "ui.agent_chat_conn_using_hint"),
+        ("connPlans", "ui.agent_chat_conn_plans"),
+        ("connKeys", "ui.agent_chat_conn_keys"),
+        ("connCustom", "ui.agent_chat_conn_custom"),
+        ("connSignedIn", "ui.agent_chat_conn_signed_in"),
+        ("connSignedOut", "ui.agent_chat_conn_signed_out"),
+        ("connExpired", "ui.agent_chat_conn_expired"),
+        ("connSigningIn", "ui.agent_chat_conn_signing_in"),
+        ("connSignIn", "ui.agent_chat_conn_sign_in"),
+        ("connSignInAgain", "ui.agent_chat_conn_sign_in_again"),
+        ("connSignOut", "ui.agent_chat_conn_sign_out"),
+        ("connUse", "ui.agent_chat_conn_use"),
+        ("connInUse", "ui.agent_chat_conn_in_use"),
+        ("connPlanNote", "ui.agent_chat_conn_plan_note"),
+        ("connShadowed", "ui.agent_chat_conn_shadowed"),
+        ("connKeySaved", "ui.agent_chat_conn_key_saved"),
+        ("connKeyNone", "ui.agent_chat_conn_key_none"),
+        ("connKeyAdd", "ui.agent_chat_conn_key_add"),
+        ("connKeyUpdate", "ui.agent_chat_conn_key_update"),
+        ("connRemove", "ui.agent_chat_conn_remove"),
+        ("connKeyNote", "ui.agent_chat_conn_key_note"),
+        ("connKeyTitle", "ui.agent_chat_conn_key_title"),
+        ("connKeyBody", "ui.agent_chat_conn_key_body"),
+        ("connKeyPlaceholder", "ui.agent_chat_conn_key_placeholder"),
+        ("connSave", "ui.agent_chat_conn_save"),
+        ("connCustomAdded", "ui.agent_chat_conn_custom_added"),
+        ("connCustomAdd", "ui.agent_chat_conn_custom_add"),
+        ("connCustomName", "ui.agent_chat_conn_custom_name"),
+        ("connCustomUrl", "ui.agent_chat_conn_custom_url"),
+        ("connCustomKey", "ui.agent_chat_conn_custom_key"),
+        ("connCustomModels", "ui.agent_chat_conn_custom_models"),
+        ("connCustomNeedBoth", "ui.agent_chat_conn_custom_need_both"),
+        ("connCustomNeedModel", "ui.agent_chat_conn_custom_need_model"),
+        ("connAdd", "ui.agent_chat_conn_add"),
+        ("connWaiting", "ui.agent_chat_conn_waiting"),
+        ("connStarting", "ui.agent_chat_conn_starting"),
+        ("connReopen", "ui.agent_chat_conn_reopen"),
+        ("connCodeHint", "ui.agent_chat_conn_code_hint"),
+        ("connCodePlaceholder", "ui.agent_chat_conn_code_placeholder"),
+        ("connCodeIncomplete", "ui.agent_chat_conn_code_incomplete"),
+        ("connCodeDone", "ui.agent_chat_conn_code_done"),
+        ("connDeviceHint", "ui.agent_chat_conn_device_hint"),
+        ("connProblemPort", "ui.agent_chat_conn_problem_port"),
+        ("connProblemOffline", "ui.agent_chat_conn_problem_offline"),
+        ("connProblemFailed", "ui.agent_chat_conn_problem_failed"),
+        ("connButton", "ui.agent_chat_conn_button"),
+        ("connButtonNone", "ui.agent_chat_conn_button_none"),
+        ("connButtonTip", "ui.agent_chat_conn_button_tip"),
+        ("planOpenaiCodex", "ui.agent_chat_plan_openai_codex"),
+        ("planAnthropic", "ui.agent_chat_plan_anthropic"),
+        ("planKimiForCoding", "ui.agent_chat_plan_kimi_for_coding"),
+        ("planXai", "ui.agent_chat_plan_xai"),
+        ("planGithubCopilot", "ui.agent_chat_plan_github_copilot"),
+        ("problemAuth", "ui.agent_chat_problem_auth"),
+        ("problemQuota", "ui.agent_chat_problem_quota"),
+        ("problemRate", "ui.agent_chat_problem_rate"),
+        ("problemNetwork", "ui.agent_chat_problem_network"),
+        ("problemModel", "ui.agent_chat_problem_model"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), Value::from(tr(key))))
@@ -561,6 +635,9 @@ pub fn state(app: &mut SolveApp) -> String {
         "configPending": chat.config_pending,
         "notes": notes,
         "auth": auth,
+        // The built-in agent's connections: an object exactly while it is the agent, so the
+        // page shows its Connections page then and is as it was otherwise.
+        "connect": connections::told_of(app),
         "missing": missing,
         "confirmNew": chat.confirm_new,
         "left": app.preferences.agent_chat_side == "left",
@@ -583,7 +660,11 @@ pub fn state(app: &mut SolveApp) -> String {
 /// `pick_context`, `remove_picked` (`index`, `label`), `add_file`, `paste_picture`, `remove_file`
 /// (`index`), `skill` (`id`). The agent: `agent` (`id`, one of the listed agents), `connect`,
 /// `disconnect`, `agent_mode` (`id`), `model` (`id`), `custom_model` (`text`), `config` (`id`,
-/// `value`), `auth` (`id`), `refresh`, `add_agent`, `settings`. The panel: `close`, `minimize`,
+/// `value`), `auth` (`id`), `refresh`, `add_agent`, `settings`. The built-in agent's connections
+/// ([`connections::act`]): `conn_login` (`id`), `conn_code` (`id`, `code`), `conn_reopen`,
+/// `conn_cancel`, `conn_logout` (`id`), `conn_key` (`provider`, `key`), `conn_key_remove`
+/// (`provider`), `conn_custom` (`name`, `url`, `key`, `models`), `conn_custom_remove` (`id`),
+/// `conn_retry`. The panel: `close`, `minimize`,
 /// `side` (`left`); the page cannot move the Assistant to a window of its own. And `surface`
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
@@ -856,6 +937,7 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             }
             app.agent_chat.authenticate(id);
         }
+        kind if connections::ACTIONS.contains(&kind) => connections::act(app, ctx, kind, &action)?,
         "refresh" => refresh(app, ctx),
         "add_agent" => settings::open_add(app),
         "settings" => crate::prefs::open_at(app, crate::prefs::PAGE_ASSISTANT),

@@ -475,6 +475,48 @@ working folder and the `intcad-app` server's program as WSL shows them (`C:\User
 this works with WSL's default networking. If you moved WSL's drive mounts away from `/mnt`
 (`automount.root` in `/etc/wsl.conf`), those paths won't match and the agent can't start the server.
 
+## The built-in agent
+
+Intcad can run with an agent of its own in place of the agents on the computer: Mastra Code's ACP
+agent with Intcad's additions. The environment variable `SOLIDCRAFT_MASTRA_AGENT` names its
+program: the absolute path of an executable that takes no arguments. It is read once, when the app
+starts. Without it, or when it does not name a file, nothing changes: the chat uses the agents it
+finds and the ones you added, as described above.
+
+With the built-in agent the agent list is that agent alone, **Mastra**. Nothing is looked for on
+the computer, and Preferences → AI shows neither **Agents** nor the choice of how turns run. The
+agents, the default agent and the other choices of earlier preferences are not offered, and they
+stay in the preferences file as they were. The agent starts by itself the first time its panel is
+shown in a conversation. After **Disconnect**, a start that failed, or its end, it starts again
+with **Connect**, **Retry** or the next message.
+
+Signing in, API keys and custom addresses are on the Assistant's **Connections** page, and what
+they need is kept in three places:
+
+- **Plan sign-ins** are Mastra's own: it keeps them in its data folder. The app names that folder
+  to the agent in `MASTRA_APP_DATA_DIR`, so the agent shares nothing with a Mastra Code you
+  installed yourself. It is `mastra` in the app's settings folder: the folder
+  `SOLIDCRAFT_SETTINGS_DIR` names when a run was given one, otherwise the app's per-user data
+  folder (`~/Library/Application Support/Intcad`, `$XDG_DATA_HOME/intcad`, `%LOCALAPPDATA%\Intcad`).
+  It is made when the agent first starts.
+- **API keys** are in the system keychain and nowhere else, one entry for each: `mastra/key/` and
+  the provider (`anthropic`, `openai`, `google`, `openrouter`, `deepseek`), and
+  `mastra/custom/` and the name for a custom address that has a key. The app hands every key to
+  the agent when it starts and whenever one changes. A key is not written to the preferences, not
+  shown again, and not in what the control channel reports.
+- **Custom addresses** (the name, the address, the models, and whether a key is kept for it) are
+  the `mastra_custom` preference.
+
+While nothing is connected the agent has no session and the panel reads **Sign-in needed**. A turn
+that fails for its connection (a sign-in that expired, a plan or key with nothing left, too many
+requests, no network, a model the connection may not use) is told in a sentence that names the
+connection. After an expired sign-in the message is kept and sent again once that plan is signed
+in; after a network failure **Retry** sends it again.
+
+The agent's own side (its program, the requests it answers, what it keeps and where) is described
+in `packages/mastra-runtime/agent/README.md`. A script reaches the Connections page's actions
+through `ui.agent_chat` ([control protocol](control-protocol.md)).
+
 ## Signing in
 
 If a coding agent isn't signed in, it says so and the panel shows **Sign in to the agent** with

@@ -118,6 +118,17 @@ pub enum Event {
         id: String,
         result: Result<Vec<ConfigOption>, String>,
     },
+    /// The built-in agent's connections, as it now reports them: the answer to a
+    /// [`ChatBackend::connections`] request, or its own word that something changed.
+    Connections(super::connections::Snapshot),
+    /// A [`ChatBackend::connections`] request the agent refused (`code`: its JSON-RPC error code,
+    /// 0 for an answer that was no snapshot). Its words are not passed on: they could repeat a key.
+    ConnectionsFailed {
+        what: super::connections::What,
+        code: i64,
+    },
+    /// The message failed for a reason its connection gave; [`Event::TurnEnded`] follows.
+    TurnProblem(super::connections::TurnProblem),
     /// The message is answered (`reason`: why it stopped, empty for a normal end).
     TurnEnded {
         reason: String,
@@ -181,6 +192,12 @@ pub trait ChatBackend {
     /// An endpoint's new reasoning effort (empty: send nothing), from the next request on.
     fn set_reasoning_effort(&mut self, _effort: &str) {}
     fn set_config_option(&mut self, _id: &str, _value: &str) {}
+    /// Ask the built-in agent about its connections, or change them; [`Event::Connections`]
+    /// answers. Only the built-in agent has any: every other backend ignores the request.
+    fn connections(&mut self, _request: super::connections::Request) {}
+    /// Stop using the open session without ending the agent: what it still sends for that
+    /// session is no longer taken in. [`ChatBackend::new_session`] opens the next one.
+    fn forget_session(&mut self) {}
     /// Its process, for status and tests.
     fn pid(&self) -> Option<u32> {
         None

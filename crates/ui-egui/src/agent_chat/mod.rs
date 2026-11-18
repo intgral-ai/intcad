@@ -25,6 +25,7 @@ mod api_client;
 pub mod ask_here;
 pub mod attach;
 pub mod backend;
+pub mod connections;
 pub mod context;
 pub(crate) mod dfm_runtime;
 #[cfg(not(target_arch = "wasm32"))]
@@ -306,6 +307,14 @@ pub enum Item {
         text: String,
         error: bool,
     },
+    /// A turn the built-in agent's connection refused: the whole sentence in the user's
+    /// language, and why, whose connection and its name, for the page to offer the way out.
+    Problem {
+        text: String,
+        kind: connections::TurnKind,
+        prefix: String,
+        name: String,
+    },
     /// A turn whose changes ran on a copy of the design: what it would do, Accept and Reject
     /// ([`review`]).
     Review(review::Card),
@@ -508,6 +517,8 @@ pub struct AgentChat {
     pub connection_auth: Option<bool>,
     /// The running backend hands turns to a Mastra workflow, so [`Event::Ready`] is not a sign-in.
     mastra: bool,
+    /// The built-in agent's connections, while it is the running agent ([`connections`]).
+    pub(crate) conn: connections::Conn,
     /// The popped-out chat window was given its saved place (it is open); see `panel::window_builder`.
     pub(crate) window_placed: bool,
     /// The agent's own modes, and the current one.
@@ -639,6 +650,8 @@ impl AgentChat {
         self.runtime_version = None;
         self.connection_auth = None;
         self.mastra = false;
+        // The next agent says what is connected itself; nothing of this one's word is kept.
+        self.conn = connections::Conn::default();
         if self.state.is_some() {
             self.state = Some(State::Off);
         }
@@ -877,6 +890,9 @@ impl AgentChat {
                 self.images = images;
                 self.state = Some(State::Ready);
                 self.picking = Some(false);
+                if self.conn.active {
+                    self.conn.session = connections::Session::Open;
+                }
                 // Keep the mode across a new chat.
                 if self.config_options.is_none()
                     && let Some(m) = self.restore_mode.take()
@@ -1001,7 +1017,12 @@ impl AgentChat {
             }
             Event::AuthRequired { methods } => {
                 self.clear_config();
-                self.auth = methods;
+                // The built-in agent's sign-ins are its connections: its own methods are not offered.
+                self.auth = if self.conn.active { Vec::new() } else { methods };
+                if self.conn.active {
+                    self.conn.session = connections::Session::None;
+                    self.conn.refused = true;
+                }
                 self.state = Some(State::NeedsAuth);
                 self.picking = Some(false);
                 // What was asked goes again once the login is done.
@@ -1010,6 +1031,30 @@ impl AgentChat {
                 }
             }
             Event::AuthStatus(s) => self.auth_status = Some(s),
+            Event::Connections(snapshot) => {
+                self.conn.snapshot = Some(snapshot);
+                self.conn.refused = false;
+            }
+            Event::ConnectionsFailed { what, code } => {
+                // Without the first snapshot the agent cannot be used: starting has failed. Later
+                // refusals change nothing here (a second sign-in while one is under way, say).
+                if what == connections::What::Setup && self.conn.snapshot.is_none() {
+                    self.notice(trf("ui.agent_chat_failed_start", &[("error", &format!("{} ({code})", what.method()))]), true);
+                    self.state = Some(State::Failed);
+                } else {
+                    log::debug!("the agent refused {} ({code})", what.method());
+                }
+            }
+            Event::TurnProblem(problem) => {
+                if let Some(sentence) = problem.kind.sentence() {
+                    let name = match &self.conn.snapshot {
+                        Some(snapshot) => snapshot.name_of(&problem.prefix),
+                        None => connections::AGENT_NAME.to_string(),
+                    };
+                    self.conn.keep(&problem);
+                    self.push(Item::Problem { text: trf(sentence, &[("name", &name)]), kind: problem.kind, prefix: problem.prefix, name });
+                }
+            }
             Event::TurnEnded { reason } => {
                 if self.state() == State::Busy {
                     self.state = Some(State::Ready);
@@ -1038,6 +1083,7 @@ impl AgentChat {
             }
             Event::Exited { tail } => {
                 self.clear_config();
+                self.conn = connections::Conn::default();
                 if self.mastra {
                     self.runtime = Some(RuntimeStatus::Stopped);
                 }
@@ -1205,7 +1251,10 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         chat.picking = Some(true);
         return;
     };
-    let execution = app.preferences.chat_execution;
+    let builtin = agents::is_builtin(app);
+    // The built-in agent answers by itself. The execution choice is not offered with it, so one
+    // an older version saved must not apply: nobody could change it back.
+    let execution = if builtin { agents::Execution::Direct } else { app.preferences.chat_execution };
     // ACP tasks exist in HostAi, but this panel cannot yet show the agent's sign-in methods or
     // answer its permission requests. Do not offer a Mastra workflow on an ACP agent until that
     // wiring lands; direct chat with the same agent keeps working.
@@ -1324,6 +1373,12 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
         })(),
         (agents::Execution::Direct, agents::Kind::Acp) if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
+        (agents::Execution::Direct, agents::Kind::Acp) if builtin => {
+            // Made when the agent first starts, not when the app does: a run that never opens
+            // the Assistant leaves no folder behind.
+            let data = app.builtin_agent.as_ref().and_then(|found| found.data.clone()).filter(|folder| std::fs::create_dir_all(folder).is_ok());
+            acp_client::AcpBackend::start_builtin(&entry.argv, start, data.as_deref()).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+        }
         (agents::Execution::Direct, agents::Kind::Acp) => {
             acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)
         }
@@ -1342,38 +1397,53 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         },
     };
     match started {
-        Ok(mut b) => {
-            b.set_instructions(&app.preferences.agent_instructions);
-            app.preferences.agent_last = entry.id.clone();
-            chat.backend = Some(b);
-            chat.argv = entry.argv.clone();
-            chat.running_id = entry.id.clone();
-            chat.mastra = execution == agents::Execution::Mastra;
-            chat.runtime = chat.mastra.then_some(RuntimeStatus::Starting);
-            chat.runtime_version = None;
-            chat.connection_auth = None;
-            chat.modes.clear();
-            chat.mode.clear();
-            chat.models.clear();
-            chat.model.clear();
-            chat.models_note = None;
-            chat.model_revert = None;
-            chat.running_endpoint = if entry.kind.is_api() && !chat.mastra { entry.base_url.clone() } else { String::new() };
-            // An endpoint's models from the last time, until the new list arrives.
-            if let Some(list) = chat.models_cache.get(&chat.running_endpoint) {
-                chat.models = list.clone();
-                chat.model = entry.model.clone();
-            }
-            chat.state = Some(State::Starting);
-            chat.auth.clear();
-            chat.auth_status = None;
-            chat.agent.clear();
-        }
+        Ok(b) => started_with(app, ctx, b, &entry, execution),
         Err(e) => {
             chat.notice(trf("ui.agent_chat_failed_start", &[("error", &e)]), true);
             chat.state = Some(State::Failed);
         }
     }
+}
+
+/// The agent's process is up: the conversation starts on it. The built-in agent is handed its
+/// keys and custom addresses first and gets its session once it says something is connected
+/// ([`connections::settle`]); every other agent opens its session by itself.
+#[cfg(not(target_arch = "wasm32"))]
+fn started_with(app: &mut SolveApp, ctx: &egui::Context, mut b: Box<dyn ChatBackend>, entry: &agents::Entry, execution: agents::Execution) {
+    let builtin = agents::is_builtin(app);
+    b.set_instructions(&app.preferences.agent_instructions);
+    // The built-in agent is not what "the agent started last" means to a version without it:
+    // what an older version saved there stays for that version to find.
+    if !builtin {
+        app.preferences.agent_last = entry.id.clone();
+    }
+    let chat = &mut app.agent_chat;
+    chat.backend = Some(b);
+    chat.argv = entry.argv.clone();
+    chat.running_id = entry.id.clone();
+    chat.mastra = execution == agents::Execution::Mastra;
+    chat.runtime = chat.mastra.then_some(RuntimeStatus::Starting);
+    chat.runtime_version = None;
+    chat.connection_auth = None;
+    chat.modes.clear();
+    chat.mode.clear();
+    chat.models.clear();
+    chat.model.clear();
+    chat.models_note = None;
+    chat.model_revert = None;
+    chat.running_endpoint = if entry.kind.is_api() && !chat.mastra { entry.base_url.clone() } else { String::new() };
+    // An endpoint's models from the last time, until the new list arrives.
+    if let Some(list) = chat.models_cache.get(&chat.running_endpoint) {
+        chat.models = list.clone();
+        chat.model = entry.model.clone();
+    }
+    chat.state = Some(State::Starting);
+    chat.auth.clear();
+    chat.auth_status = None;
+    chat.agent.clear();
+    chat.conn = connections::Conn::default();
+    chat.conn.active = builtin;
+    connections::begin_setup(app, ctx);
 }
 
 /// The launch, once the window is up (the desktop host; not for runs driven over `--control`):
@@ -1397,7 +1467,9 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.agent_chat.connect_at_start {
         return;
     }
-    if app.agent_chat.detection.is_none() {
+    // The built-in agent is the only one there is: nothing is looked for first.
+    let builtin = agents::is_builtin(app);
+    if app.agent_chat.detection.is_none() && !builtin {
         refresh(app, ctx);
         return;
     }
@@ -1405,7 +1477,9 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if app.agent_chat.state.is_some() || !app.preferences.agent_connect_at_start {
         return;
     }
-    let last = app.preferences.agent_last.clone();
+    // The agent an older version started last is not offered beside the built-in one, and is
+    // not missed either.
+    let last = if builtin { String::new() } else { app.preferences.agent_last.clone() };
     if !last.is_empty() {
         if !agents::entries(app).iter().any(|e| e.id == last) {
             app.agent_chat.notice(trf("ui.agent_chat_last_missing", &[("agent", &last)]), true);
@@ -1678,6 +1752,7 @@ pub(crate) fn leave_document(app: &mut SolveApp) {
     let chat = &mut app.agent_chat;
     chat.steering = false;
     chat.last = None;
+    chat.conn.kept = None;
     // A prompt waiting for startup or sign-in has not reached the backend yet. Keep it
     // with the explicit queue so a late Ready event cannot send it on returning to the tab.
     if let Some((text, image, at, files)) = chat.queued.take() {
@@ -1914,6 +1989,8 @@ fn submit(app: &mut SolveApp, ctx: &egui::Context, text: String, image: bool, co
         context: context.clone(),
         files: files.iter().filter(|f| !f.is_picture()).map(|f| f.name.clone()).collect(),
     });
+    // A new message takes the place of one kept from a failed turn: that one is not sent again.
+    app.agent_chat.conn.kept = None;
     // The message's place in the conversation: its picture is kept there when it is taken.
     let at = app.agent_chat.items.len().checked_sub(1);
     // The agent gets the selection as text after the message; the conversation shows chips.
@@ -2009,6 +2086,7 @@ pub fn new_chat(app: &mut SolveApp) {
     chat.seen = None;
     chat.discard_end = running;
     chat.model_revert = None;
+    chat.conn.kept = None;
     if matches!(chat.state(), State::Ready | State::Busy) {
         chat.restore_mode = Some(chat.mode.clone()).filter(|m| !m.is_empty());
         chat.state = Some(State::Starting);
@@ -2016,6 +2094,9 @@ pub fn new_chat(app: &mut SolveApp) {
             // Instructions edited since the last session apply from this one on.
             b.set_instructions(&app.preferences.agent_instructions);
             b.new_session();
+        }
+        if chat.conn.active {
+            chat.conn.session = connections::Session::Opening;
         }
     }
     chat.clear_config();
@@ -2118,6 +2199,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
         edit_requested: requests_edit(&text),
     });
     app.agent_chat.last = Some((text, image, at, files));
+    app.agent_chat.conn.kept = None;
     app.agent_chat.state = Some(State::Busy);
     app.agent_chat.stopped = false;
     app.agent_chat.steering = false;
@@ -2682,6 +2764,7 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.set_document(&stamp.document_id, stamp.revision);
     }
+    connections::poll(app);
     let events = app.agent_chat.backend.as_mut().map(|b| b.poll()).unwrap_or_default();
     for e in events {
         let ready = matches!(e, Event::Ready { .. });
@@ -2718,6 +2801,9 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
             Some(Outcome::Permission { key, title, kind, options }) => on_permission(app, key, title, kind.as_deref(), options),
             None => {}
         }
+        // What the built-in agent just said may open its session, or end the conversation's
+        // readiness: settled before anything below acts on a session being ready.
+        connections::settle(app);
         if let Some(model) = confirmed_model {
             app.preferences.agent_models.insert(app.agent_chat.running_id.clone(), model.clone());
             if let Some(a) = app.preferences.agents.iter_mut().find(|a| a.id == app.agent_chat.running_id && a.kind.is_api()) {
@@ -2736,7 +2822,9 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         if ready {
             apply_saved_model(app);
         }
-        if (ready || configured) && !app.agent_chat.config_pending {
+        // A session of the built-in agent that opened while nothing is connected takes no message.
+        let usable = !app.agent_chat.conn.active || app.agent_chat.state() == State::Ready;
+        if (ready || configured) && !app.agent_chat.config_pending && usable {
             if app.agent_chat.config_options.is_some()
                 && let Some(mode) = app.agent_chat.restore_mode.take()
                 && mode != app.agent_chat.mode
@@ -2797,11 +2885,25 @@ pub(super) fn look_on_open(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// The panel is shown this frame (open, and not folded to its strip): the built-in agent starts
+/// by itself, because the Connections page has its rows from what the agent first says, and a
+/// conversation that is off would show an empty page. Once per conversation: one whose agent
+/// was stopped, could not start or ended is left as it is, for Connect, Retry or the next
+/// message to start. No other agent starts this way.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn start_builtin_when_shown(app: &mut SolveApp, ctx: &egui::Context) {
+    // `None`: nothing was ever started in this conversation. Stopped, failed and ended are states.
+    if agents::is_builtin(app) && app.agent_chat.state.is_none() && !app.preferences.agent_chat_minimized {
+        connect(app, ctx);
+    }
+}
+
 /// Look for installed agents in the background (cached until the panel opens again; Refresh
 /// looks at once).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
-    if app.agent_chat.detecting.is_some() {
+    // With the built-in agent nothing is looked for on the computer: every look comes through here.
+    if app.agent_chat.detecting.is_some() || agents::is_builtin(app) {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -3088,7 +3190,9 @@ fn set_config_option_checked(app: &mut SolveApp, id: &str, value: &str, listed_o
 /// `side`, `minimized`, `width`, `refresh`, `connect`, `stop`, `attach` (a file's path, for the
 /// next message), `remove_file` (index), `send`, `attach_view`, `attach_selection`, `pick`,
 /// `permission` (an option id, or `"cancel"`), `approve` (`true`/`false`, the oldest held
-/// request), `cancel` (Stop), `send_now` (steer: stop, then send the queue), `remove_pending` (index), `undo` (the newest message's changes); returns the panel's state.
+/// request), `cancel` (Stop), `send_now` (steer: stop, then send the queue), `remove_pending` (index), `undo` (the newest message's changes),
+/// `connection` (one `conn_*` action of the built-in agent's Connections page, as the page posts
+/// it); returns the panel's state.
 pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Value, String> {
     if let Some(e) = p.get("features").and_then(Value::as_bool) {
         app.preferences.ai_features = e;
@@ -3246,6 +3350,12 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
             connect(app, ctx);
         }
     }
+    // One action of the built-in agent's Connections page (`conn_*`), as the page posts it: it
+    // goes through the page's own check and is refused with the page's own reason.
+    if let Some(action) = p.get("connection") {
+        let kind = action.get("type").and_then(Value::as_str).ok_or("no type")?;
+        connections::act(app, ctx, kind, action)?;
+    }
     if let Some(text) = p.get("send").and_then(Value::as_str) {
         send(app, ctx, text.to_string());
     }
@@ -3321,6 +3431,7 @@ pub fn status(app: &SolveApp) -> Value {
             Item::Approval { title, answer, .. } => json!({"approval": title, "answer": answer}),
             Item::Changes { steps, undone, .. } => json!({"changes": steps, "undone": undone}),
             Item::Notice { text, error } => json!({"notice": text, "error": error}),
+            Item::Problem { text, .. } => json!({"notice": text, "error": true}),
             Item::Review(card) => json!({"review": card.id, "steps": card.words, "more": card.more,
                 "made": card.made.iter().map(|b| json!({"name": b.name, "volume": b.after})).collect::<Vec<_>>(),
                 "changed": card.changed.iter().map(|b| json!({"name": b.name, "before": b.before, "after": b.after})).collect::<Vec<_>>(),
@@ -3405,6 +3516,8 @@ pub fn status(app: &SolveApp) -> Value {
                 None => serde_json::Value::Null,
             },
         );
+        // The built-in agent's connections, as the page is told them; never a key.
+        state.insert("connect".into(), connections::told_of(app));
         state.insert("previewChanges".into(), json!(app.preferences.agent_chat_preview));
         state.insert("askHere".into(), json!({"open": c.ask_box.open, "text": c.ask_box.text}));
         state.insert(

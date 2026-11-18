@@ -103,7 +103,8 @@ export type Item =
   | { kind: 'approval'; id: number; title: string; answer: boolean | null }
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
   | { kind: 'review'; index: number; review: number; steps: string[]; more: number; made: { name: string; volume: number }[]; changed: { name: string; before: number; after: number }[]; removed: { name: string; volume: number }[]; outcome: string }
-  | { kind: 'notice'; text: string; error: boolean }
+  /** `problem`: a turn of the built-in agent failed on its connection; `text` already says so in full. */
+  | { kind: 'notice'; text: string; error: boolean; problem?: TurnProblem | null }
   | {
       kind: 'check';
       id: string;
@@ -112,6 +113,33 @@ export type Item =
       display: 'all' | 'selected' | 'off';
       selected: { runId: string; findingId: string } | null;
     };
+
+/** Why a turn of the built-in agent failed, and on which connection (`name` in the user's words). */
+export interface TurnProblem {
+  kind: 'auth' | 'quota' | 'rate' | 'network' | 'model';
+  prefix: string;
+  name: string;
+}
+
+/**
+ * The built-in agent's connections: what it can talk to, and a sign-in under way. `prefix` is the
+ * part before `/` in the ids of the models a connection gives.
+ */
+export interface Connect {
+  plans: { id: string; name: string; state: 'in' | 'out' | 'expired'; account: string | null; prefix: string }[];
+  /** `shadowed`: a signed-in plan serves the same models, and wins. */
+  keys: { id: string; name: string; saved: boolean; shadowed: boolean; prefix: string }[];
+  custom: { id: string; name: string; url: string; models: string[]; keyed: boolean; prefix: string }[];
+  login: { id: string; phase: 'starting' | 'browser' | 'device' | 'code'; userCode: string | null; error: 'incomplete' | null } | null;
+  /** The last sign-in that could not finish. */
+  problem: { id: string; kind: 'port' | 'offline' | 'failed' } | null;
+  /** A key or custom address the app could not keep, in the user's language. */
+  error: string | null;
+  /** Release date (`YYYY-MM-DD`) by model id. */
+  dates: Record<string, string>;
+  /** A plan signed in, a key saved, or a custom address: there is something to talk to. */
+  connected: boolean;
+}
 
 export interface MissingAgent {
   id: string;
@@ -175,6 +203,8 @@ export interface AssistantState {
   strings: Strings;
   /** Which findings the viewport marks, and the one selected. */
   dfm: { display: 'all' | 'selected' | 'off'; selected: { runId: string; findingId: string } | null };
+  /** Present exactly when the current agent is the built-in one; without it the page is as it was. */
+  connect?: Connect | null;
 }
 
 /** The names of the page's own words: the list `state` sends in crates/ui-egui/src/agent_chat/web.rs. */
@@ -197,7 +227,18 @@ export type StringKey =
   | 'dfmCheckTitle' | 'dfmRunning' | 'dfmDone' | 'dfmCancelled' | 'dfmError' | 'dfmNotChecked'
   | 'dfmRefresh' | 'dfmStale' | 'dfmFindings' | 'dfmAdvisory' | 'dfmFailed' | 'dfmChecked'
   | 'dfmNotCovered' | 'dfmMeasured' | 'dfmRequirement' | 'dfmSource' | 'dfmOverride'
-  | 'dfmAll' | 'dfmSelected' | 'dfmOff' | 'dfmSelect';
+  | 'dfmAll' | 'dfmSelected' | 'dfmOff' | 'dfmSelect'
+  | 'connTitle' | 'connIntro' | 'connNoneTitle' | 'connNoneBody' | 'connBack' | 'connUsing' | 'connUsingHint'
+  | 'connPlans' | 'connKeys' | 'connCustom' | 'connSignedIn' | 'connSignedOut' | 'connExpired' | 'connSigningIn'
+  | 'connSignIn' | 'connSignInAgain' | 'connSignOut' | 'connUse' | 'connInUse' | 'connPlanNote' | 'connShadowed'
+  | 'connKeySaved' | 'connKeyNone' | 'connKeyAdd' | 'connKeyUpdate' | 'connRemove' | 'connKeyNote' | 'connKeyTitle'
+  | 'connKeyBody' | 'connKeyPlaceholder' | 'connSave' | 'connCustomAdded' | 'connCustomAdd' | 'connCustomName'
+  | 'connCustomUrl' | 'connCustomKey' | 'connCustomModels' | 'connCustomNeedBoth' | 'connCustomNeedModel' | 'connAdd'
+  | 'connWaiting' | 'connStarting' | 'connReopen' | 'connCodeHint' | 'connCodePlaceholder' | 'connCodeIncomplete'
+  | 'connCodeDone' | 'connDeviceHint' | 'connProblemPort' | 'connProblemOffline' | 'connProblemFailed'
+  | 'connButton' | 'connButtonNone' | 'connButtonTip'
+  | 'planOpenaiCodex' | 'planAnthropic' | 'planKimiForCoding' | 'planXai' | 'planGithubCopilot'
+  | 'problemAuth' | 'problemQuota' | 'problemRate' | 'problemNetwork' | 'problemModel';
 
 export type Strings = Record<StringKey, string>;
 
@@ -244,7 +285,18 @@ export type Action =
   | { type: 'surface'; color: string }
   | { type: 'copy'; text: string }
   | { type: 'review'; id: number; accept: boolean }
-  | { type: 'open_link'; url: string };
+  | { type: 'open_link'; url: string }
+  // The built-in agent's connections; the app refuses these for any other agent.
+  | { type: 'conn_login'; id: string }
+  | { type: 'conn_code'; id: string; code: string }
+  | { type: 'conn_reopen' }
+  | { type: 'conn_cancel' }
+  | { type: 'conn_logout'; id: string }
+  | { type: 'conn_key'; provider: string; key: string }
+  | { type: 'conn_key_remove'; provider: string }
+  | { type: 'conn_custom'; name: string; url: string; key?: string; models: string[] }
+  | { type: 'conn_custom_remove'; id: string }
+  | { type: 'conn_retry' };
 
 declare global {
   interface Window {

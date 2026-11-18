@@ -765,6 +765,10 @@ pub struct SolveApp {
     pub agent: agent_cursor::AgentCursor,
     /// The agent chat panel (docs/design/in-app-agent-chat.md).
     pub agent_chat: agent_chat::AgentChat,
+    /// The chat's built-in agent, looked for once when the app starts
+    /// ([`agent_chat::agents::look_for_builtin`]); `None`: the chat has none. It is the window's,
+    /// not one conversation's, so every tab's chat sees the same.
+    pub builtin_agent: Option<agent_chat::agents::Builtin>,
     /// Making SolidCraft available to the AI apps installed here ([`ai_connect`]).
     pub ai_connect: ai_connect::State,
     pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
@@ -949,6 +953,7 @@ impl SolveApp {
             control_rx: None,
             guarded_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             agent_chat: Default::default(),
+            builtin_agent: agent_chat::agents::look_for_builtin(),
             ai_connect: Default::default(),
             control_held: Default::default(),
             control_job: None,

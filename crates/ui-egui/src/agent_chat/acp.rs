@@ -538,6 +538,16 @@ pub enum Incoming {
         kind: Option<String>,
         options: Vec<PermissionOption>,
     },
+    /// A request of ours was refused, and the error says why in the built-in agent's own terms
+    /// (`data.intcad`): a turn that failed for its connection. Only [`parse_builtin`] reads it.
+    Refused {
+        id: u64,
+        error: (i64, String),
+        problem: super::connections::TurnProblem,
+    },
+    /// The built-in agent's connections changed: its snapshot (`_intcad/connections/changed`).
+    /// Only [`parse_builtin`] reads it.
+    Connections(super::connections::Snapshot),
     /// The agent says whether it is logged in (an extension both adapters send).
     AuthStatus(String),
     /// The agent switched to another of its modes.
@@ -592,6 +602,17 @@ fn tool_output(u: &Value) -> Option<String> {
 
 /// Read one line from the agent.
 pub fn parse(line: &str) -> Option<Incoming> {
+    read(line, false)
+}
+
+/// Read one line from the built-in agent: as [`parse`], and its own additions to the protocol
+/// too (why a request failed, in [`Incoming::Refused`], and [`Incoming::Connections`]). No other
+/// agent is read this way, so nothing another agent sends is taken for either.
+pub fn parse_builtin(line: &str) -> Option<Incoming> {
+    read(line, true)
+}
+
+fn read(line: &str, builtin: bool) -> Option<Incoming> {
     let msg: Value = serde_json::from_str(line.trim()).ok()?;
     let method = msg.get("method").and_then(Value::as_str);
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -600,7 +621,12 @@ pub fn parse(line: &str) -> Option<Incoming> {
             let id = id.as_u64()?;
             let result = match msg.get("error") {
                 Some(e) => {
-                    Err((e.get("code").and_then(Value::as_i64).unwrap_or(0), e.get("message").and_then(Value::as_str).unwrap_or("error").to_string()))
+                    let error =
+                        (e.get("code").and_then(Value::as_i64).unwrap_or(0), e.get("message").and_then(Value::as_str).unwrap_or("error").to_string());
+                    if builtin && let Some(problem) = super::connections::TurnProblem::parse(e.get("data")) {
+                        return Some(Incoming::Refused { id, error, problem });
+                    }
+                    Err(error)
                 }
                 None => Ok(msg.get("result").cloned().unwrap_or(Value::Null)),
             };
@@ -636,6 +662,9 @@ pub fn parse(line: &str) -> Option<Incoming> {
         }
         (Some(m), Some(id)) => Some(Incoming::Unsupported { rpc: id.clone(), method: m.to_string() }),
         (Some("session/update"), None) => Some(update(params.get("update")?, params.get("sessionId").and_then(Value::as_str).unwrap_or(""))),
+        (Some(super::connections::CHANGED), None) if builtin => {
+            Some(super::connections::Snapshot::parse(&params).map_or(Incoming::Ignored, Incoming::Connections))
+        }
         (Some("_auth/status_update"), None) => {
             params.get("authStatus").and_then(|s| s.get("label")).and_then(Value::as_str).map(|l| Incoming::AuthStatus(l.to_string()))
         }

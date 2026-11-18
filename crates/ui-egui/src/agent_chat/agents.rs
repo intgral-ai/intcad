@@ -281,8 +281,88 @@ impl Entry {
     }
 }
 
-/// Every agent the chat can use: the installed ones found, then the ones the user added.
+/// The built-in agent, as found when the app starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Builtin {
+    /// Its program: an absolute path, started without arguments.
+    pub program: std::path::PathBuf,
+    /// The folder of the app's own where it keeps its sign-ins and its other data, so it shares
+    /// none with a Mastra Code the user installed (`None`: no such folder could be named, and it
+    /// keeps them where it does by itself).
+    pub data: Option<std::path::PathBuf>,
+}
+
+/// Look for the built-in agent, once, when the app starts: the environment variable
+/// `SOLIDCRAFT_MASTRA_AGENT` names its program. `None`: there is none, and the chat uses the
+/// agents it finds and the ones the user added, as it did before there was a built-in one.
+/// Tests name the agent themselves ([`crate::SolveApp::builtin_agent`]): a variable left in a
+/// developer's shell must not change what they see.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn look_for_builtin() -> Option<Builtin> {
+    if cfg!(test) {
+        return None;
+    }
+    let program = builtin_program(solidcraft_engine::geom::env::var("MASTRA_AGENT"))?;
+    Some(Builtin { program, data: builtin_data(std::env::var_os("SOLIDCRAFT_SETTINGS_DIR"), solidcraft_engine::recovery::data_dir()) })
+}
+
+/// The browser build starts no agent.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn look_for_builtin() -> Option<Builtin> {
+    None
+}
+
+/// The program a `SOLIDCRAFT_MASTRA_AGENT` value names: an absolute path to a file. Anything
+/// else is no built-in agent, so a mistyped value leaves the chat as it was.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn builtin_program(value: Option<String>) -> Option<std::path::PathBuf> {
+    let program = std::path::PathBuf::from(value.filter(|value| !value.trim().is_empty())?);
+    (program.is_absolute() && program.is_file()).then_some(program)
+}
+
+/// Where the built-in agent keeps its data: `mastra` in the app's settings folder. `chosen` is
+/// the settings folder a run was given for itself (`SOLIDCRAFT_SETTINGS_DIR`), which the app's
+/// other files follow too; `own` is the app's per-user folder otherwise.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn builtin_data(chosen: Option<std::ffi::OsString>, own: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    let settings = chosen.map(std::path::PathBuf::from).filter(|folder| folder.is_absolute()).or(own)?;
+    Some(settings.join("mastra"))
+}
+
+/// Whether the chat has its built-in agent. With it the agent list is that one agent: nothing
+/// is looked for on the computer, and the agents of an older version's preferences are not offered.
+pub fn is_builtin(app: &crate::SolveApp) -> bool {
+    app.builtin_agent.is_some()
+}
+
+/// The built-in agent as the agent list shows it.
+fn builtin(app: &crate::SolveApp) -> Option<Entry> {
+    let program = &app.builtin_agent.as_ref()?.program;
+    Some(Entry {
+        id: super::connections::AGENT_ID.to_string(),
+        name: super::connections::AGENT_NAME.to_string(),
+        kind: Kind::Acp,
+        argv: vec![program.to_string_lossy().into_owned()],
+        version: None,
+        login: "",
+        found: false,
+        base_url: String::new(),
+        model: String::new(),
+        key: false,
+        request_timeout_s: DEFAULT_REQUEST_TIMEOUT_S,
+        reasoning_effort: String::new(),
+        problem: None,
+        install: "",
+        retired: false,
+    })
+}
+
+/// Every agent the chat can use: the built-in one alone when there is one, else the installed
+/// ones found, then the ones the user added.
 pub fn entries(app: &crate::SolveApp) -> Vec<Entry> {
+    if let Some(entry) = builtin(app) {
+        return vec![entry];
+    }
     let mut out = Vec::new();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(d) = &app.agent_chat.detection {
@@ -502,6 +582,38 @@ mod tests {
         ] {
             assert!(!key_safe_for(url), "{url}");
         }
+    }
+
+    /// The built-in agent is named by an absolute path to a file and nothing looser, and keeps
+    /// its data in `mastra` under the settings folder: the one a run was given, else the app's own.
+    #[test]
+    fn the_built_in_agent_is_an_absolute_file_with_a_data_folder_of_the_apps() {
+        let me = std::env::current_exe().expect("this test's own program");
+        assert_eq!(builtin_program(Some(me.to_string_lossy().into_owned())), Some(me.clone()));
+        let folder = me.parent().expect("its folder").to_string_lossy().into_owned();
+        for not_one in [
+            None,
+            Some(String::new()),
+            Some("   ".into()),
+            Some("mastra-agent".into()),
+            Some("./mastra-agent".into()),
+            Some(folder),
+            Some("/no/such/program".into()),
+        ] {
+            assert_eq!(builtin_program(not_one.clone()), None, "{not_one:?}");
+        }
+        let own = std::path::PathBuf::from(if cfg!(windows) { r"C:\Users\u\AppData\Local\Intcad" } else { "/home/u/.local/share/intcad" });
+        let given = std::path::PathBuf::from(if cfg!(windows) { r"D:\run\settings" } else { "/tmp/run/settings" });
+        assert_eq!(builtin_data(None, Some(own.clone())), Some(own.join("mastra")));
+        assert_eq!(
+            builtin_data(Some(given.clone().into_os_string()), Some(own.clone())),
+            Some(given.join("mastra")),
+            "a run's own settings folder wins"
+        );
+        assert_eq!(builtin_data(Some("relative/settings".into()), Some(own.clone())), Some(own.join("mastra")), "a relative folder is not one");
+        assert_eq!(builtin_data(None, None), None);
+        // A test never finds one by itself, whatever the shell it runs in holds.
+        assert_eq!(look_for_builtin(), None);
     }
 
     #[test]

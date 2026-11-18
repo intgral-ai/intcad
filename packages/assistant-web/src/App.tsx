@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Camera,
   ChevronDown,
+  ChevronRight,
   ClipboardCheck,
   Ellipsis,
   FileText,
@@ -12,6 +13,7 @@ import {
   MessageSquare,
   MousePointerClick,
   Pencil,
+  Plug,
   Plus,
   ShieldCheck,
   Square,
@@ -22,8 +24,9 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import type { AssistantState, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings } from './host';
+import type { AssistantState, Connect, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings, TurnProblem } from './host';
 import { pictureUrl, post } from './host';
+import { ProviderLogoMonogram } from '@/domains/llm/provider-logo-monogram';
 import { Activity, ActivityContent, ActivityHeadline, ActivityTrigger } from '@/ds/components/ai/activity';
 import type { TaskListItem } from '@/ds/components/ai/task-list';
 import { TaskList, TaskListContainer } from '@/ds/components/ai/task-list';
@@ -46,16 +49,21 @@ import {
   ComposerStatus,
 } from '@/ds/components/Composer';
 import { CopyButton } from '@/ds/components/CopyButton';
+import { Dialog, DialogAction, DialogBody, DialogCancel, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/ds/components/Dialog';
 import { DropdownMenu } from '@/ds/components/DropdownMenu';
 import { EmptyState } from '@/ds/components/EmptyState';
+import { Field, FieldLabel } from '@/ds/components/Field';
+import { Input } from '@/ds/components/Input';
 import { MarkdownRenderer } from '@/ds/components/MarkdownRenderer';
 import { Message } from '@/ds/components/Message';
 import { MessageScrollerItem } from '@/ds/components/MessageScroller';
 import { Notice } from '@/ds/components/Notice';
 import { PendingIndicator } from '@/ds/components/PendingIndicator';
+import { Status } from '@/ds/components/StatusIndicators/status';
 import { Textarea } from '@/ds/components/Textarea';
 import { Txt } from '@/ds/components/Txt';
 import { cn } from '@/lib/utils';
+import { compareModelReleaseDates, formatModelName } from '@/utils/model';
 
 type Of<K extends Item['kind']> = Extract<Item, { kind: K }>;
 type Tool = Of<'tool'>;
@@ -452,7 +460,18 @@ function CheckCardView({ item, strings }: { item: Of<'check'>; strings: Strings 
   );
 }
 
-function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings: Strings }) {
+function Response({
+  turn,
+  busy,
+  strings,
+  ways,
+}: {
+  turn: Turn;
+  busy: boolean;
+  strings: Strings;
+  /** The built-in agent's connections, for the turn whose failure can still be acted on: the last one. */
+  ways?: { connect: Connect; onConnections: () => void };
+}) {
   const lastText = turn.parts.reduce((found, part, index) => (part.kind === 'text' && !part.thought ? index : found), -1);
   return (
     <div className="flex min-w-0 flex-col gap-4">
@@ -519,6 +538,7 @@ function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings:
             return (
               <Notice key={key} variant={part.item.error ? 'destructive' : 'note'}>
                 <Notice.Message>{part.item.text}</Notice.Message>
+                {ways && part.item.problem && <ProblemWays problem={part.item.problem} busy={busy} strings={strings} {...ways} />}
               </Notice>
             );
           case 'check':
@@ -730,15 +750,150 @@ function Queue({ state }: { state: AssistantState }) {
   );
 }
 
+/** The models the agent lists and the one in use: its model option when it describes itself by options. */
+function modelChoice(state: AssistantState) {
+  const option = state.config?.find(entry => entry.category === 'model');
+  return {
+    option,
+    current: option ? option.currentValue : state.model,
+    ids: option ? option.options.map(choice => choice.value) : state.models.map(model => model.id),
+  };
+}
+
+type ModelOption = ReturnType<typeof modelChoice>['option'];
+
+/** Picking a model is setting the agent's model option, as develop's picker does it. */
+function pickModel(option: ModelOption, id: string) {
+  post(option ? { type: 'config', id: option.id, value: id } : { type: 'model', id });
+}
+
+/** One of the built-in agent's connections, whichever kind it is. */
+type Connection = Connect['plans'][number] | Connect['keys'][number] | Connect['custom'][number];
+
+/**
+ * The connections there is something to talk through, in the order one is taken before another
+ * with the same prefix: a plan that is signed in, a saved key no plan stands before, a custom
+ * address. A plan whose sign-in has expired comes last: its models are still named after it
+ * when nothing else gives them.
+ */
+function liveOf(connect: Connect): Connection[] {
+  return [
+    ...connect.plans.filter(plan => plan.state === 'in'),
+    ...connect.keys.filter(key => key.saved && !key.shadowed),
+    ...connect.custom,
+    ...connect.plans.filter(plan => plan.state === 'expired'),
+  ];
+}
+
+/**
+ * The connection a model goes through: the one whose prefix, then `/`, its id starts with, and
+ * the longest when several do. A prefix may itself hold a `/` (a custom address), so a model id
+ * is never cut at a slash to find its provider.
+ */
+function connectionOf(connect: Connect, model: string) {
+  let found: Connection | undefined;
+  for (const entry of liveOf(connect)) {
+    if (model.startsWith(`${entry.prefix}/`) && (!found || entry.prefix.length > found.prefix.length)) found = entry;
+  }
+  return found;
+}
+
+/**
+ * Where a model stands in the picker: under the connection it goes through, by the rest of its
+ * id. One that no connection gives stands under the first part of its id.
+ */
+function placeOf(connect: Connect, id: string) {
+  const via = connectionOf(connect, id);
+  const at = via ? via.prefix.length : id.indexOf('/');
+  return at > 0 ? { group: id.slice(0, at), model: id.slice(at + 1), via } : { group: '', model: id, via };
+}
+
+/**
+ * The mark beside a connection: the first letter of its name in a square. Not the provider's own
+ * logo: this repository carries no other product's icons.
+ */
+function Mark({ name, size }: { name: string; size: number }) {
+  return <ProviderLogoMonogram providerId={name} style={{ width: size, height: size }} />;
+}
+
+/** A connection's name for a narrow place: "ChatGPT Plus/Pro (Codex Subscription)" reads "ChatGPT Plus/Pro". */
+const shortName = (name: string) => name.replace(/\s*[(\uFF08][^()\uFF08\uFF09]*[)\uFF09]$/, '') || name;
+
+/** The picker's last row for the built-in agent: no model, the way to the connections. */
+const OPEN_CONNECTIONS = '__connections__';
+
+/**
+ * The built-in agent's model: the models of every connection at once, connection by connection,
+ * newest first within each, by their readable names with the connection named under each, and
+ * searched across all of them. The last row opens the connections, where another provider is
+ * added. It is the page's own Combobox and not Mastra's model picker, which would do all this:
+ * that one brings in a package (tslib, by way of cmdk) whose licence the build does not accept.
+ */
+function ProviderPicker({ state, connect, onConnections }: { state: AssistantState; connect: Connect; onConnections: () => void }) {
+  const { strings } = state;
+  const { option, current, ids } = modelChoice(state);
+  if (ids.length === 0) return null;
+  const groups = new Map<string, string[]>();
+  for (const id of ids) {
+    const { group } = placeOf(connect, id);
+    groups.set(group, [...(groups.get(group) ?? []), id]);
+  }
+  // The connections in their own order, whichever has the newest model; what no connection gives comes last.
+  const order = liveOf(connect).map(entry => entry.prefix);
+  const rank = (group: string) => (order.includes(group) ? order.indexOf(group) : order.length);
+  // As Mastra's picker orders a provider's models: by release date, then by id.
+  const newestFirst = (a: string, b: string) => compareModelReleaseDates(connect.dates[a], connect.dates[b]) || a.localeCompare(b);
+  const options: ComboboxOption[] = [...groups].sort(([a], [b]) => rank(a) - rank(b)).flatMap(([, models]) =>
+    models.sort(newestFirst).map(id => {
+      const { group, model, via } = placeOf(connect, id);
+      const name = via?.name ?? group;
+      return {
+        value: id,
+        label: formatModelName(model),
+        description: name || undefined,
+        start: (
+          <span aria-hidden className="flex shrink-0">
+            <Mark name={via?.name ?? group} size={14} />
+          </span>
+        ),
+        keywords: [id, name],
+      };
+    }),
+  );
+  options.push({ value: OPEN_CONNECTIONS, label: strings.connTitle, start: <Plug aria-hidden /> });
+  return (
+    <Combobox
+      options={options}
+      value={current}
+      onValueChange={value => {
+        if (value === OPEN_CONNECTIONS) onConnections();
+        else if (value !== current) pickModel(option, value);
+      }}
+      placeholder={current || strings.model}
+      searchPlaceholder={strings.modelSearch}
+      emptyText={strings.modelNoMatch}
+      variant="ghost"
+      size="sm"
+      align="end"
+      popupWidth="md"
+      disabled={state.configPending}
+      aria-label={strings.model}
+      className="w-auto max-w-40 min-w-0 shrink"
+    />
+  );
+}
+
 /**
  * The agent's model, searched by typing; an agent that takes a model it did not list is sent what
  * was typed. The list is the agent's own models, or its model option when it describes itself by
  * options. Mastra's trigger is as wide as its row by default; `w-auto` keeps it to its text, so it
  * takes no room from the controls beside it and is the one that is cut short in a narrow panel.
+ * The built-in agent's list is drawn by `ProviderPicker`.
  */
-function ModelPicker({ state }: { state: AssistantState }) {
+function ModelPicker({ state, onConnections }: { state: AssistantState; onConnections: () => void }) {
   const { strings } = state;
   const [typed, setTyped] = useState('');
+  if (state.connect) return <ProviderPicker state={state} connect={state.connect} onConnections={onConnections} />;
   const option = state.config?.find(entry => entry.category === 'model');
   const listed: ComboboxOption[] = option
     ? option.options.map(choice => ({
@@ -780,7 +935,7 @@ function ModelPicker({ state }: { state: AssistantState }) {
   );
 }
 
-function AssistantComposer({ state }: { state: AssistantState }) {
+function AssistantComposer({ state, onConnections }: { state: AssistantState; onConnections: () => void }) {
   const { strings } = state;
   const [text, setText] = useState('');
   const [sent, setSent] = useState(0);
@@ -966,7 +1121,7 @@ function AssistantComposer({ state }: { state: AssistantState }) {
               )}
             </ComposerActionsStart>
             <ComposerActionsEnd>
-              <ModelPicker state={state} />
+              <ModelPicker state={state} onConnections={onConnections} />
               {busy && (
                 <Button type="button" size="icon-sm" className="shrink-0" aria-label={strings.stop} tooltip={strings.stop} onClick={() => post({ type: 'stop' })}>
                   <Square />
@@ -1014,7 +1169,7 @@ function notReadyOf(state: AssistantState) {
 const ROW_HINT = 'ml-auto inline-block pl-4 whitespace-nowrap text-muted-foreground first-letter:uppercase';
 
 /** The panel's own bar: the agent and what it runs with, its state, and the panel's controls. */
-function AssistantBar({ state, onSetup }: { state: AssistantState; onSetup: (id: string) => void }) {
+function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState; onSetup: (id: string) => void; onConnections: () => void }) {
   const { strings } = state;
   const agent = state.agents.find(entry => entry.id === state.agent);
   const name = agent?.name ?? (state.detecting ? strings.detecting : strings.noneFound);
@@ -1022,90 +1177,104 @@ function AssistantBar({ state, onSetup }: { state: AssistantState; onSetup: (id:
   // The agent's own settings; its model is picked beside the message box.
   const settings = (state.config ?? []).filter(option => option.category !== 'model');
   const notReady = notReadyOf(state);
+  // The built-in agent is the only one there is: its connections stand where the agents are picked.
+  const connect = state.connect;
+  // What the agent itself offers to set, in the menu the agent is in: its modes and its options.
+  const ownSettings = (
+    <>
+      {state.modes.length > 0 && (
+        <DropdownMenu.RadioSub
+          label={state.modes.find(mode => mode.id === state.mode)?.name ?? state.mode}
+          options={state.modes.map(mode => ({ value: mode.id, label: mode.name }))}
+          value={state.mode}
+          onValueChange={id => post({ type: 'agent_mode', id })}
+          closeOnSelect
+        />
+      )}
+      {settings.map(option => (
+        <DropdownMenu.RadioSub
+          key={option.id}
+          label={option.name}
+          options={option.options.map(choice => ({ value: choice.value, label: choice.name }))}
+          value={option.currentValue}
+          onValueChange={value => post({ type: 'config', id: option.id, value })}
+          closeOnSelect
+        />
+      ))}
+    </>
+  );
   return (
     <ChatShell.Bar>
       <ChatShell.Column className="flex-row items-center justify-between gap-2 py-2">
         <div className="-m-0.5 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 gap-y-2 overflow-hidden p-0.5">
-          <DropdownMenu>
-            <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={strings.switchAgent} tooltip={strings.switchAgent} className="max-w-full min-w-12">
-              <span className="truncate">{name}</span>
-              <ChevronDown />
-            </DropdownMenu.Trigger>
-            {/* As tall as the panel has room for: the rows under the agents are not left to a scroll. */}
-            <DropdownMenu.Content align="start" className="max-h-[var(--available-height)]">
-              {/* The agents to pick, each with what is known of it without starting it. */}
-              {state.agents.length > 0 && (
-                <DropdownMenu.RadioGroup
-                  value={state.agent ?? ''}
-                  onValueChange={(id: unknown) => {
-                    if (typeof id === 'string' && state.agents.some(entry => entry.id === id)) post({ type: 'agent', id });
-                  }}
-                >
-                  {state.agents.map(entry => (
-                    <DropdownMenu.RadioItem key={entry.id} value={entry.id} closeOnClick>
-                      <span className="flex min-w-0 flex-1 items-center">
-                        <span className="truncate">{entry.name}</span>
-                        {entry.hint && <span className={ROW_HINT}>{entry.hint}</span>}
-                      </span>
-                      {/* The room the picked row's check mark takes, so the words line up. */}
-                      {entry.id !== state.agent && <span aria-hidden className="size-icon-sm shrink-0" />}
-                    </DropdownMenu.RadioItem>
-                  ))}
-                </DropdownMenu.RadioGroup>
-              )}
-              {/* Not agents to pick: a row says what is missing, and opens how to add it. */}
-              {notReady.length > 0 && (
-                <>
-                  {state.agents.length > 0 && <DropdownMenu.Separator />}
-                  <DropdownMenu.Label>{strings.notReady}</DropdownMenu.Label>
-                  {notReady.map(entry => (
-                    <DropdownMenu.Item key={entry.id} onClick={() => onSetup(entry.id)}>
-                      <span className="flex min-w-0 flex-1 items-center">
-                        <span className="truncate">{entry.name}</span>
-                        <span className={ROW_HINT}>{strings.notSetUp}</span>
-                      </span>
-                      <span aria-hidden className="size-icon-sm shrink-0" />
-                    </DropdownMenu.Item>
-                  ))}
-                </>
-              )}
-              {(state.modes.length > 0 || settings.length > 0) && <DropdownMenu.Separator />}
-              {state.modes.length > 0 && (
-                <DropdownMenu.RadioSub
-                  label={state.modes.find(mode => mode.id === state.mode)?.name ?? state.mode}
-                  options={state.modes.map(mode => ({ value: mode.id, label: mode.name }))}
-                  value={state.mode}
-                  onValueChange={id => post({ type: 'agent_mode', id })}
-                  closeOnSelect
-                />
-              )}
-              {settings.map(option => (
-                <DropdownMenu.RadioSub
-                  key={option.id}
-                  label={option.name}
-                  options={option.options.map(choice => ({ value: choice.value, label: choice.name }))}
-                  value={option.currentValue}
-                  onValueChange={value => post({ type: 'config', id: option.id, value })}
-                  closeOnSelect
-                />
-              ))}
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item onClick={() => post({ type: 'add_agent' })}>{strings.addAgent}</DropdownMenu.Item>
-              <DropdownMenu.Item onClick={() => post({ type: 'settings' })}>{strings.settings}</DropdownMenu.Item>
-              <DropdownMenu.Item onClick={() => post({ type: 'refresh' })}>{strings.refresh}</DropdownMenu.Item>
-              {/* Stopping the agent is the agent's own matter, said in full here: the square by Send stops only the running message. */}
-              {state.running && (
-                <>
-                  <DropdownMenu.Separator />
-                  <DropdownMenu.Item onClick={() => post({ type: 'disconnect' })}>{strings.disconnect}</DropdownMenu.Item>
-                </>
-              )}
-            </DropdownMenu.Content>
-          </DropdownMenu>
-          {/* It wraps out of sight when the name leaves it no room. */}
-          <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
-            {badge.label}
-          </Badge>
+          {connect ? (
+            <ConnectionButton state={state} connect={connect} onOpen={onConnections} />
+          ) : (
+            <DropdownMenu>
+              <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={strings.switchAgent} tooltip={strings.switchAgent} className="max-w-full min-w-12">
+                <span className="truncate">{name}</span>
+                <ChevronDown />
+              </DropdownMenu.Trigger>
+              {/* As tall as the panel has room for: the rows under the agents are not left to a scroll. */}
+              <DropdownMenu.Content align="start" className="max-h-[var(--available-height)]">
+                {/* The agents to pick, each with what is known of it without starting it. */}
+                {state.agents.length > 0 && (
+                  <DropdownMenu.RadioGroup
+                    value={state.agent ?? ''}
+                    onValueChange={(id: unknown) => {
+                      if (typeof id === 'string' && state.agents.some(entry => entry.id === id)) post({ type: 'agent', id });
+                    }}
+                  >
+                    {state.agents.map(entry => (
+                      <DropdownMenu.RadioItem key={entry.id} value={entry.id} closeOnClick>
+                        <span className="flex min-w-0 flex-1 items-center">
+                          <span className="truncate">{entry.name}</span>
+                          {entry.hint && <span className={ROW_HINT}>{entry.hint}</span>}
+                        </span>
+                        {/* The room the picked row's check mark takes, so the words line up. */}
+                        {entry.id !== state.agent && <span aria-hidden className="size-icon-sm shrink-0" />}
+                      </DropdownMenu.RadioItem>
+                    ))}
+                  </DropdownMenu.RadioGroup>
+                )}
+                {/* Not agents to pick: a row says what is missing, and opens how to add it. */}
+                {notReady.length > 0 && (
+                  <>
+                    {state.agents.length > 0 && <DropdownMenu.Separator />}
+                    <DropdownMenu.Label>{strings.notReady}</DropdownMenu.Label>
+                    {notReady.map(entry => (
+                      <DropdownMenu.Item key={entry.id} onClick={() => onSetup(entry.id)}>
+                        <span className="flex min-w-0 flex-1 items-center">
+                          <span className="truncate">{entry.name}</span>
+                          <span className={ROW_HINT}>{strings.notSetUp}</span>
+                        </span>
+                        <span aria-hidden className="size-icon-sm shrink-0" />
+                      </DropdownMenu.Item>
+                    ))}
+                  </>
+                )}
+                {(state.modes.length > 0 || settings.length > 0) && <DropdownMenu.Separator />}
+                {ownSettings}
+                <DropdownMenu.Separator />
+                <DropdownMenu.Item onClick={() => post({ type: 'add_agent' })}>{strings.addAgent}</DropdownMenu.Item>
+                <DropdownMenu.Item onClick={() => post({ type: 'settings' })}>{strings.settings}</DropdownMenu.Item>
+                <DropdownMenu.Item onClick={() => post({ type: 'refresh' })}>{strings.refresh}</DropdownMenu.Item>
+                {/* Stopping the agent is the agent's own matter, said in full here: the square by Send stops only the running message. */}
+                {state.running && (
+                  <>
+                    <DropdownMenu.Separator />
+                    <DropdownMenu.Item onClick={() => post({ type: 'disconnect' })}>{strings.disconnect}</DropdownMenu.Item>
+                  </>
+                )}
+              </DropdownMenu.Content>
+            </DropdownMenu>
+          )}
+          {/* It wraps out of sight when the name leaves it no room. With nothing connected the button beside it says so, and a state would only repeat it. */}
+          {!(connect && !connect.connected) && (
+            <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+              {badge.label}
+            </Badge>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           {state.agent && !state.running && (
@@ -1125,6 +1294,21 @@ function AssistantBar({ state, onSetup }: { state: AssistantState; onSetup: (id:
                 {state.left ? strings.dockRight : strings.dockLeft}
               </DropdownMenu.Item>
               <DropdownMenu.Item onClick={() => post({ type: 'minimize' })}>{strings.minimize}</DropdownMenu.Item>
+              {/* The built-in agent has no menu of its own in the bar: what that menu held for the agent is here. */}
+              {connect && (
+                <>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item onClick={onConnections}>{strings.connTitle}</DropdownMenu.Item>
+                  {ownSettings}
+                  <DropdownMenu.Item onClick={() => post({ type: 'settings' })}>{strings.settings}</DropdownMenu.Item>
+                  {state.running && (
+                    <>
+                      <DropdownMenu.Separator />
+                      <DropdownMenu.Item onClick={() => post({ type: 'disconnect' })}>{strings.disconnect}</DropdownMenu.Item>
+                    </>
+                  )}
+                </>
+              )}
             </DropdownMenu.Content>
           </DropdownMenu>
           <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.close} tooltip={strings.close} onClick={() => post({ type: 'close' })}>
@@ -1204,6 +1388,559 @@ function AdapterSetup({ agent, strings, onClose }: { agent: MissingAgent; string
   );
 }
 
+/* ---- The built-in agent's connections ----
+ * The button in the bar, the page that takes the conversation's place, and the page's parts.
+ * All of it is drawn only while the app sends `connect`, which it does for the built-in agent
+ * alone, and every action here is one the app refuses for any other agent.
+ */
+
+/**
+ * The way to the connections, always in the bar: it names the connection in use, or says that
+ * nothing is connected, and opens the page where one signs in, signs out and changes provider.
+ */
+function ConnectionButton({ state, connect, onOpen }: { state: AssistantState; connect: Connect; onOpen: () => void }) {
+  const { strings } = state;
+  // Before the agent has a model, the first connection there is stands for all of them.
+  const used = connect.connected ? (connectionOf(connect, modelChoice(state).current) ?? liveOf(connect)[0]) : undefined;
+  return (
+    <Button type="button" variant="ghost" size="sm" aria-label={strings.connButtonTip} tooltip={strings.connButtonTip} className="max-w-full min-w-12" onClick={onOpen}>
+      {used ? (
+        <span aria-hidden className="flex shrink-0">
+          <Mark name={used.name} size={14} />
+        </span>
+      ) : (
+        <Plug />
+      )}
+      {connect.connected && <span className="shrink-0 text-muted-foreground">{strings.connButton}</span>}
+      <span className="truncate">{connect.connected ? used && shortName(used.name) : strings.connButtonNone}</span>
+      <ChevronRight />
+    </Button>
+  );
+}
+
+/** How a connection stands, for Mastra's status mark: one that is not there is a ring, not a dot. */
+function standing(label: string, tone: 'success' | 'neutral' | 'error' | 'progress') {
+  return { label, description: label, tone, glyph: tone === 'neutral' ? ('ring' as const) : ('filled' as const) };
+}
+
+/** One connection on the connections page: what it is, how it stands, what can be done, and under it a sign-in under way. */
+function ConnRow({
+  entry,
+  note,
+  status,
+  actions,
+  children,
+}: {
+  entry: Connection;
+  note?: string;
+  status: ReturnType<typeof standing>;
+  actions: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border px-3 py-2.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="flex min-w-0 flex-1 basis-28 items-center gap-2">
+          <span aria-hidden className="flex shrink-0">
+            <Mark name={entry.name} size={16} />
+          </span>
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="truncate text-sm">{entry.name}</span>
+            {note && (
+              <Txt variant="caption" className="break-words">
+                {note}
+              </Txt>
+            )}
+          </span>
+        </span>
+        <Status presentation={status} className="shrink-0 text-xs" />
+        <span className="flex shrink-0 flex-wrap items-center gap-2">{actions}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** What went wrong, where it went wrong: under the row or in the form, in the colour of an error. */
+function Wrong({ children }: { children: ReactNode }) {
+  return (
+    <Txt as="p" variant="caption" className="text-destructive-foreground" role="alert">
+      {children}
+    </Txt>
+  );
+}
+
+/**
+ * A key for one provider. What is typed stays in this box until Save hands it to the app, which
+ * keeps it in the system keychain; nothing shows it again. A save is answered by a later state:
+ * the key saved and no error, and the dialog is done; an error, and it stays to say so.
+ */
+function KeyDialog({
+  entry,
+  error,
+  stamp,
+  strings,
+  onClose,
+}: {
+  entry: Connect['keys'][number];
+  error: string | null;
+  stamp: unknown;
+  strings: Strings;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  // Whether a save waits for its answer, and whether the last one was refused. An error that
+  // was there before this save is not about this key, so only an answer is shown.
+  const [waiting, setWaiting] = useState(false);
+  const [refused, setRefused] = useState(false);
+  useEffect(() => {
+    if (!waiting) return;
+    if (error) {
+      setWaiting(false);
+      setRefused(true);
+    } else if (entry.saved) {
+      onClose();
+    }
+  }, [stamp]);
+  const title = strings.connKeyTitle.replace('{name}', entry.name);
+  function save() {
+    const key = draft.trim();
+    if (!key) return;
+    setWaiting(true);
+    setRefused(false);
+    post({ type: 'conn_key', provider: entry.id, key });
+  }
+  return (
+    <Dialog open onOpenChange={open => !open && onClose()}>
+      {/* Cancel closes it: Mastra's own cross has an English name. */}
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{strings.connKeyBody}</DialogDescription>
+        </DialogHeader>
+        <DialogBody>
+          <Input
+            autoFocus
+            type="password"
+            maxLength={4096}
+            aria-label={title}
+            placeholder={strings.connKeyPlaceholder}
+            value={draft}
+            onChange={event => setDraft(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') save();
+            }}
+          />
+          {refused && error && <Wrong>{error}</Wrong>}
+        </DialogBody>
+        <DialogFooter>
+          <DialogCancel>{strings.cancel}</DialogCancel>
+          <DialogAction disabled={!draft.trim()} onConfirm={save}>
+            {strings.connSave}
+          </DialogAction>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * An address that speaks OpenAI's protocol, or a model on this computer. Its models are typed:
+ * none are found by asking the address. The boxes take no more than the app accepts.
+ */
+function CustomForm({ strings, onDone }: { strings: Strings; onDone: (added: boolean) => void }) {
+  const [draft, setDraft] = useState({ name: '', url: '', key: '', models: '' });
+  const [missing, setMissing] = useState<string | null>(null);
+  function add() {
+    const name = draft.name.trim();
+    const url = draft.url.trim();
+    if (!name || !/^https?:\/\/\S+$/i.test(url)) return setMissing(strings.connCustomNeedBoth);
+    const models = draft.models
+      // A comma as it is typed in Chinese separates as well.
+      .split(/[,\uFF0C]/)
+      .map(model => model.trim())
+      .filter(model => model && model.length <= 120)
+      .slice(0, 16);
+    if (models.length === 0) return setMissing(strings.connCustomNeedModel);
+    const key = draft.key.trim();
+    post(key ? { type: 'conn_custom', name, url, key, models } : { type: 'conn_custom', name, url, models });
+    onDone(true);
+  }
+  return (
+    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border p-3">
+      {missing && <Wrong>{missing}</Wrong>}
+      <Field className="gap-1">
+        <FieldLabel>{strings.connCustomName}</FieldLabel>
+        <Input autoFocus size="sm" maxLength={40} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
+      </Field>
+      <Field className="gap-1">
+        <FieldLabel>{strings.connCustomUrl}</FieldLabel>
+        <Input size="sm" maxLength={400} value={draft.url} onChange={event => setDraft({ ...draft, url: event.target.value })} />
+      </Field>
+      <Field className="gap-1">
+        <FieldLabel>{strings.connCustomKey}</FieldLabel>
+        <Input
+          type="password"
+          size="sm"
+          maxLength={4096}
+          placeholder={strings.connKeyPlaceholder}
+          value={draft.key}
+          onChange={event => setDraft({ ...draft, key: event.target.value })}
+        />
+      </Field>
+      <Field className="gap-1">
+        <FieldLabel>{strings.connCustomModels}</FieldLabel>
+        <Input size="sm" value={draft.models} onChange={event => setDraft({ ...draft, models: event.target.value })} />
+      </Field>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="primary" onClick={add}>
+          {strings.connAdd}
+        </Button>
+        <Button type="button" size="sm" onClick={() => onDone(false)}>
+          {strings.cancel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A sign-in that ends with a code: the browser shows it once the user agrees, and it is pasted
+ * back here. The agent judges it; one it finds incomplete stays in the box to be mended.
+ */
+function PasteCode({ id, incomplete, strings }: { id: string; incomplete: boolean; strings: Strings }) {
+  const [draft, setDraft] = useState('');
+  const code = draft.trim();
+  const done = () => post({ type: 'conn_code', id, code });
+  return (
+    <div className="flex min-w-0 flex-col gap-2 pt-2">
+      <Txt variant="caption">{strings.connCodeHint}</Txt>
+      <Input
+        size="sm"
+        maxLength={4096}
+        aria-label={strings.connCodePlaceholder}
+        placeholder={strings.connCodePlaceholder}
+        value={draft}
+        onChange={event => setDraft(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter' && code) done();
+        }}
+      />
+      {incomplete && <Wrong>{strings.connCodeIncomplete}</Wrong>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="primary" disabled={!code} onClick={done}>
+          {strings.connCodeDone}
+        </Button>
+        <Button type="button" size="sm" onClick={() => post({ type: 'conn_cancel' })}>
+          {strings.cancel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Where a plan's sign-in stands, under its row: the page is being opened, the browser has it, a
+ * code is to be typed there, or a code is to be pasted here. A sign-in waits for the user as
+ * long as it takes, so each step that waits can be given up.
+ */
+function SignInProgress({ login, strings }: { login: NonNullable<Connect['login']>; strings: Strings }) {
+  const ways = (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button type="button" size="sm" onClick={() => post({ type: 'conn_reopen' })}>
+        {strings.connReopen}
+      </Button>
+      <Button type="button" size="sm" onClick={() => post({ type: 'conn_cancel' })}>
+        {strings.cancel}
+      </Button>
+    </div>
+  );
+  switch (login.phase) {
+    case 'starting':
+      // Getting the address can take a provider some seconds, or not come at all: this too can be given up.
+      return (
+        <div className="flex min-w-0 flex-col gap-2 pt-2">
+          <Txt variant="caption">{strings.connStarting}</Txt>
+          <div>
+            <Button type="button" size="sm" onClick={() => post({ type: 'conn_cancel' })}>
+              {strings.cancel}
+            </Button>
+          </div>
+        </div>
+      );
+    case 'browser':
+      return (
+        <div className="flex min-w-0 flex-col gap-2 pt-2">
+          <Txt variant="caption">{strings.connWaiting}</Txt>
+          {ways}
+        </div>
+      );
+    case 'device':
+      return (
+        <div className="flex min-w-0 flex-col gap-2 pt-2">
+          <Txt variant="caption">{strings.connDeviceHint}</Txt>
+          {login.userCode && (
+            <div className="flex min-w-0 items-start gap-2">
+              <ToolCallOutput text={login.userCode} />
+              <CopyButton content={login.userCode} />
+            </div>
+          )}
+          {ways}
+        </div>
+      );
+    case 'code':
+      return <PasteCode id={login.id} incomplete={login.error === 'incomplete'} strings={strings} />;
+  }
+}
+
+/** A sign-in that could not finish, under its row: why, and the two ways on. */
+function SignInProblem({ problem, busy, strings }: { problem: NonNullable<Connect['problem']>; busy: boolean; strings: Strings }) {
+  const why = { port: strings.connProblemPort, offline: strings.connProblemOffline, failed: strings.connProblemFailed }[problem.kind];
+  return (
+    <div className="flex min-w-0 flex-col gap-2 pt-2">
+      <Wrong>{why ?? strings.connProblemFailed}</Wrong>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="primary" disabled={busy} onClick={() => post({ type: 'conn_login', id: problem.id })}>
+          {strings.retry}
+        </Button>
+        <Button type="button" size="sm" onClick={() => post({ type: 'conn_cancel' })}>
+          {strings.cancel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The one place for connections: every way the built-in agent can reach a model, each with how
+ * it stands and what can be done. A new user lands here, and the button in the bar comes back to
+ * it at any time.
+ */
+function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; connect: Connect; onClose: () => void }) {
+  const { strings } = state;
+  const [keyFor, setKeyFor] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  // An address was added from here and no key asked for since: an error now is about the address.
+  const [added, setAdded] = useState(false);
+  const { option, current, ids } = modelChoice(state);
+  const used = connectionOf(connect, current);
+  // Only one sign-in runs at a time.
+  const signing = connect.login !== null;
+  const keyEntry = connect.keys.find(key => key.id === keyFor);
+  const heading = 'pt-2 text-sm font-medium';
+  /** A connection's newest model, in the order Mastra's picker lists them: by release date, then by id. */
+  const newest = (entry: Connection) =>
+    ids.filter(id => connectionOf(connect, id) === entry).sort((a, b) => compareModelReleaseDates(connect.dates[a], connect.dates[b]) || a.localeCompare(b))[0];
+  // Changing provider is picking a model of it. A connection the agent lists no model for has nothing to pick.
+  const usedOrUse = (entry: Connection) => {
+    if (entry === used) {
+      return (
+        <Badge variant="success" emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+          {strings.connInUse}
+        </Badge>
+      );
+    }
+    const model = newest(entry);
+    return (
+      model && (
+        <Button type="button" size="sm" disabled={state.configPending} onClick={() => pickModel(option, model)}>
+          {strings.connUse}
+        </Button>
+      )
+    );
+  };
+  const askKey = (id: string) => {
+    setAdded(false);
+    setKeyFor(id);
+  };
+  return (
+    <div className="flex min-w-0 flex-col gap-3 py-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <h2 className="min-w-0 truncate text-sm font-medium">{strings.connTitle}</h2>
+        {connect.connected && (
+          <Button type="button" size="sm" variant="primary" className="shrink-0" onClick={onClose}>
+            {strings.connBack}
+          </Button>
+        )}
+      </div>
+      <Txt variant="caption">{strings.connIntro}</Txt>
+      {connect.connected ? (
+        <div className="flex min-w-0 flex-col gap-0.5 rounded-lg bg-card px-3 py-2.5">
+          <Txt variant="caption">{strings.connUsing}</Txt>
+          {(current || used) && <span className="truncate text-sm">{[current && formatModelName(placeOf(connect, current).model), used && shortName(used.name)].filter(Boolean).join(' · ')}</span>}
+          <Txt variant="caption">{strings.connUsingHint}</Txt>
+        </div>
+      ) : (
+        <Notice variant="info" title={strings.connNoneTitle}>
+          <Notice.Message>{strings.connNoneBody}</Notice.Message>
+        </Notice>
+      )}
+
+      <h3 className={heading}>{strings.connPlans}</h3>
+      {connect.plans.map(plan => {
+        const here = connect.login?.id === plan.id ? connect.login : null;
+        const status =
+          plan.state === 'in'
+            ? standing(strings.connSignedIn, 'success')
+            : here
+              ? standing(strings.connSigningIn, 'progress')
+              : plan.state === 'expired'
+                ? standing(strings.connExpired, 'error')
+                : standing(strings.connSignedOut, 'neutral');
+        const signOut = (
+          <Button type="button" size="sm" onClick={() => post({ type: 'conn_logout', id: plan.id })}>
+            {strings.connSignOut}
+          </Button>
+        );
+        // The row whose sign-in is under way has its own ways on under it; the others wait for it.
+        const signIn = (label: string) =>
+          !here && (
+            <Button type="button" size="sm" variant="primary" disabled={signing} onClick={() => post({ type: 'conn_login', id: plan.id })}>
+              {label}
+            </Button>
+          );
+        return (
+          <ConnRow
+            key={plan.id}
+            entry={plan}
+            note={plan.state === 'out' ? undefined : [plan.account, strings.connPlanNote].filter(Boolean).join(' · ')}
+            status={status}
+            actions={
+              plan.state === 'in' ? (
+                <>
+                  {usedOrUse(plan)}
+                  {signOut}
+                </>
+              ) : plan.state === 'expired' ? (
+                <>
+                  {signIn(strings.connSignInAgain)}
+                  {signOut}
+                </>
+              ) : (
+                signIn(strings.connSignIn)
+              )
+            }
+          >
+            {here ? (
+              <SignInProgress login={here} strings={strings} />
+            ) : (
+              connect.problem?.id === plan.id && <SignInProblem problem={connect.problem} busy={signing} strings={strings} />
+            )}
+          </ConnRow>
+        );
+      })}
+
+      <h3 className={heading}>{strings.connKeys}</h3>
+      {connect.keys.map(key => (
+        <ConnRow
+          key={key.id}
+          entry={key}
+          note={key.saved ? (key.shadowed ? strings.connShadowed : strings.connKeyNote) : undefined}
+          status={key.saved ? standing(strings.connKeySaved, 'success') : standing(strings.connKeyNone, 'neutral')}
+          actions={
+            key.saved ? (
+              <>
+                {!key.shadowed && usedOrUse(key)}
+                <Button type="button" size="sm" onClick={() => askKey(key.id)}>
+                  {strings.connKeyUpdate}
+                </Button>
+                <Button type="button" size="sm" onClick={() => post({ type: 'conn_key_remove', provider: key.id })}>
+                  {strings.connRemove}
+                </Button>
+              </>
+            ) : (
+              <Button type="button" size="sm" onClick={() => askKey(key.id)}>
+                {strings.connKeyAdd}
+              </Button>
+            )
+          }
+        />
+      ))}
+
+      <h3 className={heading}>{strings.connCustom}</h3>
+      {connect.custom.map(entry => (
+        <ConnRow
+          key={entry.id}
+          entry={entry}
+          note={entry.url}
+          status={standing(strings.connCustomAdded, 'success')}
+          actions={
+            <>
+              {usedOrUse(entry)}
+              <Button type="button" size="sm" onClick={() => post({ type: 'conn_custom_remove', id: entry.id })}>
+                {strings.connRemove}
+              </Button>
+            </>
+          }
+        />
+      ))}
+      {/* The app could not keep the address just added (its key, in the keychain): said where it was added. */}
+      {added && !keyEntry && connect.error && <Wrong>{connect.error}</Wrong>}
+      {adding ? (
+        <CustomForm
+          strings={strings}
+          onDone={sent => {
+            setAdding(false);
+            if (sent) setAdded(true);
+          }}
+        />
+      ) : (
+        <div>
+          <Button type="button" size="sm" onClick={() => setAdding(true)}>
+            {strings.connCustomAdd}
+          </Button>
+        </div>
+      )}
+      {keyEntry && <KeyDialog entry={keyEntry} error={connect.error} stamp={state} strings={strings} onClose={() => setKeyFor(null)} />}
+    </div>
+  );
+}
+
+/**
+ * The ways on from a turn that failed on its connection, under the app's sentence about it:
+ * sign in again, look at the connections, or send the message again.
+ */
+function ProblemWays({
+  problem,
+  connect,
+  busy,
+  strings,
+  onConnections,
+}: {
+  problem: TurnProblem;
+  connect: Connect;
+  busy: boolean;
+  strings: Strings;
+  onConnections: () => void;
+}) {
+  // A sign-in that was refused is a plan's; a key that was refused is mended on the page.
+  const plan = connect.plans.find(entry => entry.prefix === problem.prefix && entry.state !== 'out');
+  const way =
+    problem.kind === 'auth' ? (
+      <Button
+        type="button"
+        size="sm"
+        variant="primary"
+        onClick={() => {
+          if (plan && !connect.login) post({ type: 'conn_login', id: plan.id });
+          // The sign-in goes on where its steps are shown: a code to type or to paste is asked for there.
+          onConnections();
+        }}
+      >
+        {strings.connSignInAgain}
+      </Button>
+    ) : problem.kind === 'quota' || problem.kind === 'model' ? (
+      <Button type="button" size="sm" onClick={onConnections}>
+        {strings.connTitle}
+      </Button>
+    ) : problem.kind === 'network' || problem.kind === 'rate' ? (
+      <Button type="button" size="sm" disabled={busy} onClick={() => post({ type: 'conn_retry' })}>
+        {strings.retry}
+      </Button>
+    ) : null;
+  return way && <div className="flex flex-wrap items-center gap-2 pt-2">{way}</div>;
+}
+
 /** Nothing said yet: the Assistant's name, or how to get an agent when there is none. */
 function Welcome({ state }: { state: AssistantState }) {
   const { strings } = state;
@@ -1254,10 +1991,35 @@ export function App({ state }: { state: AssistantState | null }) {
   const turns = useMemo(() => turnsOf(state?.items ?? []), [state?.items]);
   // The agent whose missing adapter is being explained; the card goes once Refresh finds it.
   const [setup, setSetup] = useState<string | null>(null);
+  // The built-in agent's connections page takes the conversation's place while it is open. With
+  // nothing connected it is the panel; once a connection is there it is not taken away behind
+  // the user's back: they go to the conversation with its button.
+  const [connOpen, setConnOpen] = useState(false);
+  const none = Boolean(state?.connect && !state.connect.connected);
+  useEffect(() => {
+    if (none) setConnOpen(true);
+  }, [none]);
   if (!state) return null;
   const { strings } = state;
+  const connect = state.connect;
   const explained = notReadyOf(state).find(agent => agent.id === setup);
   const busy = state.state === 'busy';
+  const showConn = Boolean(connect) && (connOpen || none);
+  const openConn = () => setConnOpen(true);
+  // The built-in agent's sign-ins are on its connections page, not on the app's sign-in card.
+  const signIn = Boolean(state.auth) && !connect;
+  const confirmNew = state.confirmNew && (
+    <Notice variant="warning" title={strings.newChatConfirm}>
+      <div className="flex flex-wrap items-center gap-2 pt-2">
+        <Button type="button" size="sm" variant="primary" onClick={() => post({ type: 'confirm_new', yes: true })}>
+          {strings.newChat}
+        </Button>
+        <Button type="button" size="sm" onClick={() => post({ type: 'confirm_new', yes: false })}>
+          {strings.cancel}
+        </Button>
+      </div>
+    </Notice>
+  );
   const plan = turns.at(-1)?.plan;
   const tasks: TaskListItem[] = (plan ?? []).map((step, index) => ({
     id: String(index),
@@ -1268,8 +2030,16 @@ export function App({ state }: { state: AssistantState | null }) {
   return (
     <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
       <ChatShell className="h-full" style={ROOM} scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}>
-        <AssistantBar state={state} onSetup={setSetup} />
-        <ChatShell.Stage>
+        <AssistantBar state={state} onSetup={setSetup} onConnections={openConn} />
+        {connect && showConn && (
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+            {/* The bar's New chat asks here too: the conversation it is asked in is out of sight. */}
+            {confirmNew}
+            <ConnectionsPage state={state} connect={connect} onClose={() => setConnOpen(false)} />
+          </div>
+        )}
+        {/* Out of sight, not gone: what is typed in the message box is still there on the way back. */}
+        <ChatShell.Stage className={showConn ? 'hidden' : undefined}>
           <ChatShell.Viewport>
             <ChatShell.Content>
               <ChatShell.Column className={`gap-8 py-6 ${COLUMN}`}>
@@ -1282,20 +2052,9 @@ export function App({ state }: { state: AssistantState | null }) {
                     ))}
                   </div>
                 )}
-                {state.confirmNew && (
-                  <Notice variant="warning" title={strings.newChatConfirm}>
-                    <div className="flex flex-wrap items-center gap-2 pt-2">
-                      <Button type="button" size="sm" variant="primary" onClick={() => post({ type: 'confirm_new', yes: true })}>
-                        {strings.newChat}
-                      </Button>
-                      <Button type="button" size="sm" onClick={() => post({ type: 'confirm_new', yes: false })}>
-                        {strings.cancel}
-                      </Button>
-                    </div>
-                  </Notice>
-                )}
-                {state.auth && <SignIn state={state} />}
-                {turns.length === 0 && state.pending.length === 0 && !state.auth && <Welcome state={state} />}
+                {confirmNew}
+                {signIn && <SignIn state={state} />}
+                {turns.length === 0 && state.pending.length === 0 && !signIn && <Welcome state={state} />}
                 {turns.map((turn, index) => {
                   const live = busy && index === turns.length - 1;
                   return (
@@ -1318,7 +2077,12 @@ export function App({ state }: { state: AssistantState | null }) {
                         </MessageScrollerItem>
                       )}
                       <MessageScrollerItem messageId={`${turn.id}-reply`} className="flex min-w-0 flex-col gap-3">
-                        <Response turn={turn} busy={live} strings={strings} />
+                        <Response
+                          turn={turn}
+                          busy={live}
+                          strings={strings}
+                          ways={connect && index === turns.length - 1 ? { connect, onConnections: openConn } : undefined}
+                        />
                       </MessageScrollerItem>
                     </ChatShell.Turn>
                   );
@@ -1345,7 +2109,7 @@ export function App({ state }: { state: AssistantState | null }) {
                     </span>
                   )}
                 </ComposerStatus>
-                <AssistantComposer state={state} />
+                <AssistantComposer state={state} onConnections={openConn} />
               </ChatShell.Column>
             </ChatShell.Dock>
           </ChatShell.Viewport>
