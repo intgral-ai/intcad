@@ -35,6 +35,7 @@ See [docs/agent-development.md](docs/agent-development.md) for standard commands
 - Look at open PRs first, claim with a draft PR (lowest number wins), one topic per PR, never force-push `main`, no pushes just to catch up with `main`: `skills/solidcraft-contributing/SKILL.md`.
 - A PR title and first sentence make sense to someone new to the issue: `skills/solidcraft-contributing/SKILL.md`.
 - Show observable changes with real screenshots or a recording, captured yourself.
+- For each PR, use [verify-intcad](.agents/skills/verify-intcad/SKILL.md) to select checks from the diff and record evidence.
 - Validation: [docs/validation-policy.md](docs/validation-policy.md) — run area checks, reuse unchanged inputs, rerun after changes; never claim unrun checks pass. `cargo xtask skills` keeps this file and `skills/` honest.
 
 ## Working on X: read the skill first
