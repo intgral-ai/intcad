@@ -18,7 +18,7 @@ const BUSY = -32000;
  * @param Base            Mastra Code's ACP agent class
  * @param RequestError    ACP's error class (`new RequestError(code, message, data)`)
  * @param connections     the Connections of this process
- * @param dates           () => Map of release dates by model id
+ * @param dates           () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
  * @param reloadSignIns   () => makes Mastra read its sign-in file again
  */
 export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns }) {
@@ -66,7 +66,17 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
      * use even when no provider is configured for it.)
      */
     async #settle(entry) {
-      const usable = [...new Set((await entry.controller.listAvailableModels()).filter(model => model.hasApiKey).map(model => model.id))];
+      const catalog = await entry.controller.listAvailableModels();
+      // Mastra's live catalog knows models that came out after the registry file it ships with.
+      let learned = false;
+      for (const model of catalog) {
+        if (typeof model.releaseDate === 'string' && model.releaseDate && dates().get(model.id) !== model.releaseDate) {
+          dates().set(model.id, model.releaseDate);
+          learned = true;
+        }
+      }
+      if (learned) connections.tell();
+      const usable = [...new Set(catalog.filter(model => model.hasApiKey).map(model => model.id))];
       if (usable.length === 0) return;
       entry.models = usable.map(id => ({ modelId: id, name: id }));
       if (!usable.includes(entry.session.model.get() ?? '')) await entry.session.model.switch(usable.filter(isChatModel).sort(newestFirst(dates()))[0] ?? usable[0]);

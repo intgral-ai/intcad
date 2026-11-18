@@ -1208,16 +1208,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1593889,
-      "sha256": "fa4db8e353977f60396fc08f0176f78b57210603301f38b6cfed913f2bf173d3"
+      "bytes": 1593887,
+      "sha256": "c1c05f0b01b33cad8a5c1041329447071ea9e1a8de6e221432151aab9657743b"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 351302,
-      "sha256": "a9e33bc42efd20ed56baa17bb8d06795d59fc5ce25c0dfe88dbb3207fffbde9e"
+      "bytes": 351255,
+      "sha256": "bac5106d7a35d051407fed3c23523f5d88145ce5bfa6123aa737971c4caf3209"
     }
   }
 }

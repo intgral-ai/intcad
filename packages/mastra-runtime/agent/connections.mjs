@@ -121,6 +121,11 @@ export class Connections {
     this.#deps.changed(this.snapshot());
   }
 
+  /** Something the snapshot is made from changed outside this class (the release dates): the app is told. */
+  tell() {
+    this.#tell();
+  }
+
   /** Replaces every key and custom address. Keys go into this process's environment and nowhere else. */
   async setup(params) {
     const keys = new Map();

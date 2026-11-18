@@ -353,6 +353,12 @@ impl TurnKind {
             TurnKind::Other => return None,
         })
     }
+    /// That sentence about the connection called `name`, in the language of whoever reads it now.
+    /// It is worded where it is shown, not where the failure arrives: the failure can arrive
+    /// outside a frame (a control-channel call), where the app's language is not set.
+    pub fn words(self, name: &str) -> String {
+        self.sentence().map(|sentence| crate::i18n::format(sentence, &[("name", name)])).unwrap_or_default()
+    }
 }
 
 /// A failed turn: why, and the prefix of the connection it went through.

@@ -380,7 +380,15 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
   let invalidated = 0;
   const entry = {
     models: [] as Json[],
-    controller: { invalidateAvailableModelsCache: () => void (invalidated += 1), listAvailableModels: async () => [{ id: "anthropic/claude-fable-5-2", hasApiKey: true }, { id: "openai/gpt-5", hasApiKey: false }, { id: "openai/gpt-image-2", hasApiKey: true }] },
+    controller: {
+      invalidateAvailableModelsCache: () => void (invalidated += 1),
+      listAvailableModels: async () => [
+        { id: "anthropic/claude-fable-5-2", hasApiKey: true },
+        { id: "anthropic/claude-newer-than-the-registry", hasApiKey: true, releaseDate: "2026-12-01" },
+        { id: "openai/gpt-5", hasApiKey: false },
+        { id: "openai/gpt-image-2", hasApiKey: true },
+      ],
+    },
     session: { model: { get: () => model, switch: async (next: string) => void (model = next) } },
   };
   class Base {
@@ -403,7 +411,8 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
   }
   const { connections, told } = world({ signedIn: ["openai-codex"] });
   let reloaded = 0;
-  const Agent = intcadAgent({ Base, RequestError, connections, dates: () => DATES, reloadSignIns: () => void (reloaded += 1) });
+  const dates = new Map(DATES);
+  const Agent = intcadAgent({ Base, RequestError, connections, dates: () => dates, reloadSignIns: () => void (reloaded += 1) });
   const agent = new Agent();
 
   assert.deepEqual((await agent.initialize({})).authMethods, [], "the sign-ins are on the Connections page, not ACP sign-in methods");
@@ -421,18 +430,21 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
   assert.equal(told.at(-1)!.plans[0].state, "expired");
 
   // Mastra opens a session on its default model though nothing connected serves it: the session starts on one that can answer.
+  // A model that came out after the registry was written has its date from Mastra's catalog, so it lists first.
   const opened = await agent.newSession({});
-  assert.equal(opened.models.currentModelId, "anthropic/claude-fable-5-2");
-  assert.equal(opened.configOptions[0].currentValue, "anthropic/claude-fable-5-2");
+  assert.equal(opened.models.currentModelId, "anthropic/claude-newer-than-the-registry");
+  assert.deepEqual(opened.configOptions[0].options.map((option: Json) => option.value), ["anthropic/claude-newer-than-the-registry", "anthropic/claude-fable-5-2"]);
+  assert.equal(dates.get("anthropic/claude-newer-than-the-registry"), "2026-12-01");
   model = "openai/gpt-5";
 
   // The model in use is gone after a change: the session moves to the newest one it may use and tells the app.
   await agent.refreshSessions();
   assert.equal(reloaded, 1);
   assert.equal(invalidated, 1, "Mastra is told that what can be used has changed");
-  assert.equal(model, "anthropic/claude-fable-5-2");
+  assert.equal(model, "anthropic/claude-newer-than-the-registry");
+  const newest = { value: "anthropic/claude-newer-than-the-registry", name: "anthropic/claude-newer-than-the-registry" };
   assert.deepEqual(updates.at(-1), {
     sessionId: "s1",
-    update: { sessionUpdate: "config_option_update", configOptions: [{ id: "model", currentValue: "anthropic/claude-fable-5-2", options: [{ value: "anthropic/claude-fable-5-2", name: "anthropic/claude-fable-5-2" }] }, { id: "mode", currentValue: "build", options: [] }] },
+    update: { sessionUpdate: "config_option_update", configOptions: [{ id: "model", currentValue: newest.value, options: [newest, { value: "anthropic/claude-fable-5-2", name: "anthropic/claude-fable-5-2" }] }, { id: "mode", currentValue: "build", options: [] }] },
   });
 });

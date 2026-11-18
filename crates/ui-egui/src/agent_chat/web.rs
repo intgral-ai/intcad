@@ -322,8 +322,8 @@ pub fn state(app: &mut SolveApp) -> String {
             }
             Item::Notice { text, error } => json!({"kind": "notice", "text": text, "error": error}),
             // A notice to a page that reads no more of it; `problem` says which way out to offer.
-            Item::Problem { text, kind, prefix, name } => json!({
-                "kind": "notice", "text": text, "error": true,
+            Item::Problem { kind, prefix, name } => json!({
+                "kind": "notice", "text": kind.words(name), "error": true,
                 "problem": {"kind": kind.id(), "prefix": prefix, "name": name},
             }),
         })

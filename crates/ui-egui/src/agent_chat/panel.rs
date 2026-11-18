@@ -1959,9 +1959,9 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                 });
             }
             // The sentence says it all here; the ways out the page offers with it are the page's.
-            Item::Problem { text, .. } => {
+            Item::Problem { kind, name, .. } => {
                 ui_kit::assistant_banner(ui, ui_kit::AssistantTone::Error, |ui| {
-                    ui.add(egui::Label::new(RichText::new(text).color(t.error)).wrap());
+                    ui.add(egui::Label::new(RichText::new(kind.words(name)).color(t.error)).wrap());
                 });
             }
             Item::Review(card) => {

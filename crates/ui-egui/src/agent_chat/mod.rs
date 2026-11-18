@@ -307,10 +307,9 @@ pub enum Item {
         text: String,
         error: bool,
     },
-    /// A turn the built-in agent's connection refused: the whole sentence in the user's
-    /// language, and why, whose connection and its name, for the page to offer the way out.
+    /// A turn the built-in agent's connection refused: why, whose connection and its name. The
+    /// sentence is [`connections::TurnKind::words`], and the page offers the way out by the kind.
     Problem {
-        text: String,
         kind: connections::TurnKind,
         prefix: String,
         name: String,
@@ -1046,13 +1045,13 @@ impl AgentChat {
                 }
             }
             Event::TurnProblem(problem) => {
-                if let Some(sentence) = problem.kind.sentence() {
+                if problem.kind.sentence().is_some() {
                     let name = match &self.conn.snapshot {
                         Some(snapshot) => snapshot.name_of(&problem.prefix),
                         None => connections::AGENT_NAME.to_string(),
                     };
                     self.conn.keep(&problem);
-                    self.push(Item::Problem { text: trf(sentence, &[("name", &name)]), kind: problem.kind, prefix: problem.prefix, name });
+                    self.push(Item::Problem { kind: problem.kind, prefix: problem.prefix, name });
                 }
             }
             Event::TurnEnded { reason } => {
@@ -3431,7 +3430,7 @@ pub fn status(app: &SolveApp) -> Value {
             Item::Approval { title, answer, .. } => json!({"approval": title, "answer": answer}),
             Item::Changes { steps, undone, .. } => json!({"changes": steps, "undone": undone}),
             Item::Notice { text, error } => json!({"notice": text, "error": error}),
-            Item::Problem { text, .. } => json!({"notice": text, "error": true}),
+            Item::Problem { kind, name, .. } => json!({"notice": kind.words(name), "error": true}),
             Item::Review(card) => json!({"review": card.id, "steps": card.words, "more": card.more,
                 "made": card.made.iter().map(|b| json!({"name": b.name, "volume": b.after})).collect::<Vec<_>>(),
                 "changed": card.changed.iter().map(|b| json!({"name": b.name, "before": b.before, "after": b.after})).collect::<Vec<_>>(),
