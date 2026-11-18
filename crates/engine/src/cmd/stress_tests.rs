@@ -394,10 +394,11 @@ fn the_reaction_is_quoted_against_the_loads_and_a_gap_over_one_percent_is_a_warn
 
 /// U3: the mesh check's statuses and what they mean.
 /// Input: fake first and finer runs (no programs): the overall peak 100 MPa at "the clamp", the
-/// peak away from it 50 MPa, deflection 8 mm; finer runs that move by 3 % and by 12 %.
+/// peak away from it 50 MPa, deflection 8 mm; finer runs that move by 2 % and by 12 %.
 /// Action: `settling`, `check_warnings`, `check_line`, `wording`.
 /// Observable: each quantity's status and change; the warnings; the summary's first numbers.
-/// Pass: 3 % reads "settled" and 12 % "still changing"; the warning that the value at the
+/// Pass: 2 % reads "settled" (3 % no longer does: one step's change can leave twice as much)
+/// and 12 % "still changing", each with how far off it may be; the warning that the value at the
 /// support depends on the mesh appears only when the overall peak is at a support, still
 /// changing, and the away peak settled; an away peak still changing gets the sharp-corner
 /// warning; a skipped or switched-off check says the settling is unknown and warns nothing; when
@@ -410,23 +411,25 @@ fn the_mesh_check_says_settled_or_still_changing_and_flags_a_peak_held_up_by_a_s
         let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, finer) };
         check_warnings(&check, finer, &near).join("\n")
     };
-    // Everything 3 %: settled, no warnings.
-    let calm = peaked_run(103.0, Some("the clamp"), Some(51.5), 8.24);
+    // Everything 2 %: settled, no warnings.
+    let calm = peaked_run(102.0, Some("the clamp"), Some(51.0), 8.16);
     let items = settling(&first, &calm);
     assert_eq!(items.iter().map(|s| s.quantity).collect::<Vec<_>>(), [OVERALL, AWAY, DEFLECTION]);
     for s in &items {
         // The overall peak sits at the clamp, so it is never labelled settled, however little it moved.
         let label = if s.quantity == OVERALL { "at a support or load: depends on the mesh" } else { "settled" };
-        assert!((s.change() - 3.0).abs() < 1e-9 && s.settled() && s.status() == label, "{s:?}");
+        assert!((s.change() - 2.0).abs() < 1e-9 && s.settled() && s.status() == label, "{s:?}");
+        let off = if s.quantity == OVERALL { None } else { Some(4.0) };
+        assert!(s.may_be_off().map(|r| (r * 1e6).round() / 1e6) == off, "{s:?}");
     }
     assert_eq!(warnings(&calm), "");
-    // The peak at the clamp moves 12 %, the away peak 3 %: the singular-support warning.
-    let singular = peaked_run(112.0, Some("the clamp"), Some(51.5), 8.24);
+    // The peak at the clamp moves 12 %, the away peak 2 %: the singular-support warning.
+    let singular = peaked_run(112.0, Some("the clamp"), Some(51.0), 8.16);
     let items = settling(&first, &singular);
     assert!((items[0].change() - 12.0).abs() < 1e-9 && items[0].status() == "at a support or load: depends on the mesh");
     let w = warnings(&singular);
     for needed in
-        ["The value at the clamp depends on the mesh", "100 to 112 MPa", "+12.0%", "Lead with the stress away from it: 51.5 MPa", "settled (+3.0%)"]
+        ["The value at the clamp depends on the mesh", "100 to 112 MPa", "+12.0%", "Lead with the stress away from it: 51.0 MPa", "settled (+2.0%)"]
     {
         assert!(w.contains(needed), "`{needed}` missing: {w}");
     }
@@ -438,7 +441,7 @@ fn the_mesh_check_says_settled_or_still_changing_and_flags_a_peak_held_up_by_a_s
     let w = warnings(&peaked_run(112.0, Some("the clamp"), Some(56.0), 8.24));
     assert!(!w.contains("depends on the mesh") && w.contains("sharp inside corner") && w.contains("fillet"), "{w}");
     // At the clamp, settled: nothing.
-    assert_eq!(warnings(&peaked_run(104.0, Some("the clamp"), Some(51.0), 8.0)), "");
+    assert_eq!(warnings(&peaked_run(102.0, Some("the clamp"), Some(51.0), 8.0)), "");
     // A deflection still changing says so.
     assert!(warnings(&peaked_run(103.0, Some("the clamp"), Some(51.5), 9.0)).contains("largest deflection moved by +12.5%"));
     // Skipped or off: unknown, no warnings.
@@ -450,28 +453,29 @@ fn the_mesh_check_says_settled_or_still_changing_and_flags_a_peak_held_up_by_a_s
     assert!(check_line(&skipped).contains("about 670,000 nodes (about 11 GB)"), "{}", check_line(&skipped));
     let line = check_line(&Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &singular) });
     assert!(line.starts_with("mesh 1.50 → 1.00 mm: highest stress 100 → 112 MPa (+12.0%, at a support or load: depends on the mesh)"), "{line}");
-    // At the clamp and moved only 3 %: the line still never says settled for it (R1's clamp moved
+    // At the clamp and moved only 2 %: the line still never says settled for it (R1's clamp moved
     // +0.4 % over one step yet climbs to 151 MPa at 0.35 mm).
     let calm_line = check_line(&Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &calm) });
-    assert!(calm_line.contains("(+3.0%, at a support or load: depends on the mesh)"), "{calm_line}");
+    assert!(calm_line.contains("(+2.0%, at a support or load: depends on the mesh)"), "{calm_line}");
+    assert!(calm_line.contains("(+2.0%, settled, may be off by about 4.0%)"), "{calm_line}");
     // The words lead with the stress away from the clamp.
     let material = Material { name: "6061-T6".into(), e_mpa: 69000.0, nu: 0.33, yield_mpa: 240.0, source: "a handbook".into() };
     let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &singular) };
     let done = [first.clone_run()];
     let outcome = Outcome { done: &done, shown: &singular, check: &check };
     let (summary, assumptions, _) = wording(&material, &[], &[], &outcome, 1.5, &near);
-    assert!(summary.contains("away from the supports and loads, the highest von Mises stress is about 51.5 MPa"), "{summary}");
-    assert!(summary.find("51.5").unwrap_or(usize::MAX) < summary.find("112").unwrap_or(0), "the away peak comes first: {summary}");
+    assert!(summary.contains("away from the supports and loads, the highest von Mises stress is about 51.0 MPa"), "{summary}");
+    assert!(summary.find("51.0").unwrap_or(usize::MAX) < summary.find("112").unwrap_or(0), "the away peak comes first: {summary}");
     assert!(summary.contains("sits at the clamp") && summary.contains("still changing with the mesh"), "{summary}");
     assert!(summary.contains("Mesh check: mesh 1.50 → 1.00 mm"), "{summary}");
     assert!(assumptions.iter().any(|a| a.starts_with("Shown: the mesh check's finer mesh")), "{assumptions:?}");
-    // A peak at the clamp that moved only 3 % is still never called settled in the words: one
+    // A peak at the clamp that moved only 2 % is still never called settled in the words: one
     // step of refinement misses its slow climb (R1's clamp: +0.4 % from 1.5 to 1.0 mm, yet 151
     // MPa at 0.35 mm against 145).
     let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &calm) };
     let outcome = Outcome { done: &done, shown: &calm, check: &check };
     let (summary, _, _) = wording(&material, &[], &[], &outcome, 1.5, &near);
-    assert!(summary.contains("moved +3.0% with a finer mesh, but a value at an idealised support or load can keep creeping up"), "{summary}");
+    assert!(summary.contains("moved +2.0% with a finer mesh, but a value at an idealised support or load can keep creeping up"), "{summary}");
     assert!(!summary.contains("it settled"), "{summary}");
 }
 
@@ -1600,4 +1604,149 @@ fn va1_a_mesh_too_big_for_the_memory_is_refused_before_solving() {
             assert!(cap > 8.0e9, "solved under a {cap} limit");
         }
     }
+}
+
+/// D5: 304L is its own grade at the ASTM A240 minimum for 304L (170 MPa), not 304's 205.
+/// Input: the grade names "304L", "1.4307", "304" and "1.4301". Action: `fea::materials::grade`.
+/// Pass: the L names find 304L at 170 MPa with an ASTM source; the plain names find 304 at 205.
+#[test]
+fn d5_304l_is_its_own_grade_at_its_own_minimum_yield() {
+    for name in ["304L", "304 L", "1.4307", "AISI 304L"] {
+        let g = fea::materials::grade(name).unwrap_or_else(|| panic!("{name} is a grade"));
+        assert!(g.name == "304L stainless steel" && g.yield_mpa == 170.0 && g.source.contains("ASTM A240"), "{name}: {}", g.name);
+    }
+    for name in ["304", "1.4301"] {
+        assert_eq!(fea::materials::grade(name).map(|g| (g.name, g.yield_mpa)), Some(("304 stainless steel", 205.0)), "{name}");
+    }
+}
+
+/// D6: a setting the estimate does not take is refused, not dropped.
+/// Input: a valid setup with one extra key at a time: a remote load's `at`, top-level
+/// `load_cases`, a support's `pin`, a material's `density`. Action: `check_keys`, and the
+/// command as a dry run. Observable: the error. Pass: each is refused, naming the key and where it
+/// was, with what it means where that says more (a remote load, load cases); the setup without
+/// the extra key passes.
+#[test]
+fn d6_a_setting_the_estimate_does_not_take_is_refused_not_dropped() {
+    let base = json!({"loads": [{"face": 1, "force": [0, 0, -5]}], "supports": [{"face": 0, "type": "fixed"}],
+        "material": {"name": "x", "youngs_modulus": 70000, "poisson_ratio": 0.33, "yield_strength": 200, "source": "s"},
+        "mesh_size": 1.0, "dry_run": true});
+    assert!(check_keys(&base).is_ok());
+    let with = |path: &[&str], key: &str| {
+        let mut v = base.clone();
+        let mut at = &mut v;
+        for p in path {
+            at = match p.parse::<usize>() {
+                Ok(i) => &mut at[i],
+                Err(_) => &mut at[*p],
+            };
+        }
+        at[key] = json!(1);
+        check_keys(&v).map(|_| ()).unwrap_err().to_string()
+    };
+    let e = with(&["loads", "0"], "at");
+    assert!(e.contains("loads[0]: `at`") && e.contains("remote force"), "{e}");
+    let e = with(&[], "load_cases");
+    assert!(e.contains("`load_cases`") && e.contains("once for each load case"), "{e}");
+    let e = with(&["supports", "0"], "pin");
+    assert!(e.contains("supports[0]: `pin`") && e.contains("face, type"), "{e}");
+    let e = with(&["material"], "density");
+    assert!(e.contains("material: `density`"), "{e}");
+    // Through the command too, before anything else is looked at.
+    let mut s = Session::default();
+    let (_, held, tip) = strip(&mut s, 100.0);
+    let e = s
+        .execute(
+            CMD,
+            &json!({"loads": [{"face": tip, "force": [0, 0, -10], "at": [200, 0, 0]}], "supports": [{"face": held}], "material": aluminium(), "dry_run": true}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("`at`"), "{e}");
+}
+
+/// The keys `check_keys` takes are the contracts' own: none missing, none extra.
+#[test]
+fn d6_the_known_keys_are_the_contracts_fields() {
+    let schema = schemars::schema_for!(crate::schema::stress::StressEstimateParams);
+    let v = schema.as_value();
+    let props = |o: &Value| -> Vec<String> {
+        let mut k: Vec<String> = o["properties"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
+        k.sort();
+        k
+    };
+    let sorted = |k: &[&str]| -> Vec<String> {
+        let mut k: Vec<String> = k.iter().map(|x| x.to_string()).collect();
+        k.sort();
+        k
+    };
+    let defs = if v["$defs"].is_object() { &v["$defs"] } else { &v["definitions"] };
+    assert_eq!(props(v), sorted(ESTIMATE_KEYS));
+    assert_eq!(props(&defs["LoadParam"]), sorted(LOAD_KEYS));
+    assert_eq!(props(&defs["SupportParam"]), sorted(SUPPORT_KEYS));
+    assert_eq!(props(&defs["GivenMaterial"]), sorted(MATERIAL_KEYS));
+}
+
+/// D7: points on a cylinder (radius 2 about Z) with their outward normals, over `span` degrees.
+fn round_points(span: f64, part_outside: bool) -> Vec<(P, P)> {
+    (0..=40)
+        .map(|i| {
+            let t = (span * f64::from(i) / 40.0).to_radians();
+            let (c, s) = (t.cos(), t.sin());
+            let n = if part_outside { [-c, -s, 0.0] } else { [c, s, 0.0] };
+            ([2.0 * c, 2.0 * s, f64::from(i % 3)], n)
+        })
+        .collect()
+}
+
+/// D7: a round face is named for what it is, not always "a hole".
+/// Input: points on a cylinder over 360°, 90° and 180°, with normals toward the axis (the part
+/// outside it) or away (the part inside). Action: `round_kind`, `Round::words`. Pass: a full turn
+/// toward the axis is a hole, away a round outside face; a quarter turn is a fillet or a rounded
+/// edge; half a turn a curved inside or outside face; holes keep Ø and the rest R.
+#[test]
+fn d7_a_round_face_is_named_for_what_it_is() {
+    let kind = |span: f64, inside: bool| round_kind(&round_points(span, inside), [0.0, 0.0, 1.0], [0.0; 3]);
+    assert_eq!(kind(360.0, true), Round::Hole);
+    assert_eq!(kind(360.0, false), Round::Outside);
+    assert_eq!(kind(90.0, true), Round::Fillet);
+    assert_eq!(kind(90.0, false), Round::Rounded);
+    assert_eq!(kind(180.0, true), Round::InsideCurve);
+    assert_eq!(kind(180.0, false), Round::OutsideCurve);
+    assert_eq!(Round::Hole.words(2, 3.3), "2 holes Ø6.60");
+    assert_eq!(Round::Outside.words(1, 50.0), "a round outside face Ø100");
+    assert_eq!(Round::Fillet.words(1, 2.0), "a fillet R2.00");
+    assert_eq!(Round::Rounded.words(3, 2.0), "3 rounded edges R2.00");
+}
+
+/// D7 in the app: a sheet's bend is not called a hole, and a hole still is.
+/// Input: the angle bracket (a base, a flange bent up, two Ø6.6 holes). Action: dry runs held at
+/// a hole, and at the bend's round faces. Observable: `setup`. Pass: the hole reads "a hole
+/// Ø6.60"; the bend never reads as a hole.
+#[test]
+fn d7_a_bend_is_not_called_a_hole() {
+    let mut s = Session::default();
+    let hole = angle(&mut s);
+    let body = s.model.state().bodies.first().map(|b| b.name.clone()).unwrap_or_default();
+    let faces = run(&mut s, "model.faces", json!({"body": body}));
+    let bend: Vec<u64> = faces["faces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["cylinder"]["radius"].as_f64().is_some_and(|r| (r - 3.3).abs() > 1e-6))
+        .filter_map(|f| f["index"].as_u64())
+        .collect();
+    assert!(!hole.is_empty() && !bend.is_empty(), "a hole and a bend: {faces}");
+    let mut setup = |held: Value| {
+        run(
+            &mut s,
+            CMD,
+            json!({"loads": [{"face": [5.0, 5.0, 1.5], "force": [0, 0, -5]}], "supports": [{"face": held}], "material": aluminium(), "dry_run": true}),
+        )["setup"]
+            .to_string()
+    };
+    let at_hole = setup(json!(hole[0]));
+    assert!(at_hole.contains("Held still: a hole Ø6.60"), "{at_hole}");
+    let at_bend = setup(json!(bend));
+    assert!(!at_bend.contains("hole"), "{at_bend}");
 }

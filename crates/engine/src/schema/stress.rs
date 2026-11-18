@@ -69,7 +69,7 @@ pub struct SupportParam {
 
 /// The material: a grade by name, whose numbers and their source come from the estimate's own
 /// table (`6061-T6`, `6082-T6`, `5052-H32` aluminium; `S235`, `S355` structural steel; `304`
-/// stainless; each at its standard's minimum yield), or any material with all its numbers and
+/// and `304L` stainless; each at its standard's minimum yield), or any material with all its numbers and
 /// where they come from.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
@@ -147,8 +147,8 @@ pub struct StressEstimateParams {
     pub scale: Option<String>,
     /// Solve the first model again with a mesh 1.5 times finer and say, for the highest stress,
     /// the highest stress away from supports and loads and the largest deflection, whether each
-    /// settled (moved 5 % or less) or is still changing; the finer result is shown. Skipped when
-    /// the finer mesh would need more memory than this computer can spare (the smaller of 6 GB
+    /// settled (moved 2.5 % or less) or is still changing, and how far off it may still be; the
+    /// finer result is shown. Skipped when the finer mesh would need more memory than this computer can spare (the smaller of 6 GB
     /// and half the memory available; `SOLIDCRAFT_FEA_MAX_NODES` caps its nodes instead).
     /// Default: true.
     #[serde(default)]
@@ -245,8 +245,13 @@ pub struct StressSettling {
     pub finer: f64,
     /// (finer − first) / first, %.
     pub change_percent: f64,
-    /// `settled` (moved 5 % or less) or `still changing`.
+    /// `settled` (moved 2.5 % or less), `still changing`, or, at a support or load, that it
+    /// depends on the mesh.
     pub status: String,
+    /// How far off the finer value may still be, %: twice its change (one 1.5× step leaves up to
+    /// that for the slowest a smooth stress converges). Absent at a support or load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub may_be_off_percent: Option<f64>,
 }
 
 /// Whether the numbers settle when the mesh is refined.

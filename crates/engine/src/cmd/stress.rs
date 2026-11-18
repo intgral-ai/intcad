@@ -40,11 +40,11 @@ pub static COMMANDS: &[CommandSpec] = &[
              pulls out)}]; supports: [{face, type?: fixed|roller|symmetry|slider}] (fixed: held still, the default; roller, symmetry, \
              slider: a flat face facing along X, Y or Z held only along that axis, free to slide in its plane); face: a name or index from \
              model.faces, a point [x,y,z] within 1 mm of it, or a list; direction: any length; picking one half of a hole takes the whole hole); material: a grade by name (6061-T6, \
-             6082-T6, 5052-H32, S235, S355, 304: sourced, at the standard's minimum yield) or {name, youngs_modulus: MPa, poisson_ratio, \
+             6082-T6, 5052-H32, S235, S355, 304, 304L: sourced, at the standard's minimum yield) or {name, youngs_modulus: MPa, poisson_ratio, \
              yield_strength: MPa, source}; body?; thickness?: mm (sheet metal: its rule's); mesh_size?: mm; elements?: \
              shell|solid|both (default: shell for sheet metal, solid otherwise); show?: stress|deflection; scale?: yield|auto; mesh_check?: \
-             bool (default true: the first model is solved again with a 1.5x finer mesh, and each number is reported settled (moved 5% or \
-             less) or still changing; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
+             bool (default true: the first model is solved again with a 1.5x finer mesh, and each number is reported settled (moved 2.5% or \
+             less) or still changing, with how far off it may still be; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
              this computer can spare: the smaller of 6 GB and half the memory available; SOLIDCRAFT_FEA_MAX_NODES caps its nodes instead); \
              keep_files?; dry_run?: true (check the setup, describe it and draw its supports and loads on the model; solves nothing: run \
              it first so the user can see the faces) → estimate: true, setup, summary, runs, fraction_of_yield, peak_at_support, peak_away (the highest stress \
@@ -76,7 +76,7 @@ pub(crate) const HOW_TO_REPORT: &[&str] = &[
      shape, change the design and run the estimate again; do not scale or guess numbers for designs that were not solved.",
     "Tell the user the material values used and where they came from; if you chose them, say so.",
     "If `warnings` is not empty, say what each means before the numbers.",
-    "State the mesh check's result for every number you quote: settled or still changing, with its % change (`mesh_check`); if the mesh \
+    "State the mesh check's result for every number you quote: settled or still changing, with its % change and how far off it may still be (`may_be_off_percent`, `mesh_check`); if the mesh \
      check was skipped or off, say that whether the numbers have settled is unknown, and why (its `reason`). The mesh check is about the \
      numbers, not the part.",
     "If `peak_at_support` is set, the highest stress sits at that support or load, where an idealised hold concentrates stress: lead with \
@@ -108,6 +108,8 @@ struct BodyFaces<'a> {
     normals: Vec<Option<P>>,
     count: usize,
     display: Faces<'a>,
+    /// The display mesh's vertex normals (outward), beside `display.positions`.
+    vertex_normals: &'a [P],
 }
 
 /// A cylinder face's (radius, axis, origin), if it is one.
@@ -206,10 +208,17 @@ impl BodyFaces<'_> {
         let mut holes: Vec<(f64, Vec<u32>)> = Vec::new();
         for f in faces {
             if let Some((r, ..)) = cylinder(self.spots.get(*f as usize).and_then(Option::as_ref)) {
-                if !holes.iter().any(|(_, h)| h.contains(f)) {
-                    holes.push((r, self.hole_of(*f)));
+                if holes.iter().any(|(_, h)| h.contains(f)) {
+                    continue;
                 }
-                continue;
+                let group = self.hole_of(*f);
+                // A sheet's bend is part of a turn with a name of its own ("flange 1, bend"):
+                // that name says more than "a fillet". A hole or a round outside keeps its size.
+                let named = self.sheet.get(*f as usize).is_some_and(Option::is_some);
+                if !named || matches!(self.round_of(&group), Round::Hole | Round::Outside) {
+                    holes.push((r, group));
+                    continue;
+                }
             }
             let words = self.sheet.get(*f as usize).and_then(|n| n.as_deref()).map(sheet_words).unwrap_or_else(|| {
                 match self.normals.get(*f as usize).copied().flatten() {
@@ -221,20 +230,111 @@ impl BodyFaces<'_> {
                 parts.push(words);
             }
         }
-        let mut by_size: Vec<(f64, usize)> = Vec::new();
-        for (r, _) in &holes {
-            match by_size.iter_mut().find(|(r2, _)| (r2 - r).abs() < 1e-6) {
-                Some(x) => x.1 += 1,
-                None => by_size.push((*r, 1)),
+        // Each round group in words by what it is (a hole, a boss's outside, a fillet, a rounded
+        // edge), counted by kind and size: a fillet is not "a hole" (PIL-294 D7).
+        let mut by_size: Vec<(Round, f64, usize)> = Vec::new();
+        for (r, group) in &holes {
+            let kind = self.round_of(group);
+            match by_size.iter_mut().find(|(k, r2, _)| *k == kind && (r2 - r).abs() < 1e-6) {
+                Some(x) => x.2 += 1,
+                None => by_size.push((kind, *r, 1)),
             }
         }
-        for (r, n) in by_size {
-            let d = sig(2.0 * r);
-            parts.insert(0, if n == 1 { format!("a hole Ø{d}") } else { format!("{n} holes Ø{d}") });
+        for (kind, r, n) in by_size.into_iter().rev() {
+            parts.insert(0, kind.words(n, r));
         }
         if parts.is_empty() { "no face".into() } else { parts.join(", ") }
     }
 
+    /// What the round faces `group` (one cylinder's) are, from their display points.
+    fn round_of(&self, group: &[u32]) -> Round {
+        let Some((_, axis, origin)) = group.first().and_then(|f| cylinder(self.spots.get(*f as usize).and_then(Option::as_ref))) else {
+            return Round::Hole;
+        };
+        let mut points: Vec<(P, P)> = Vec::new();
+        for (t, tri) in self.display.triangles.iter().enumerate() {
+            if !self.display.tri_face.get(t).is_some_and(|f| group.contains(f)) {
+                continue;
+            }
+            for v in tri {
+                if let (Some(p), Some(n)) = (self.display.positions.get(*v as usize), self.vertex_normals.get(*v as usize)) {
+                    points.push((*p, *n));
+                }
+            }
+        }
+        round_kind(&points, axis, origin)
+    }
+}
+
+/// What a group of faces on one cylinder is, for words.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Round {
+    /// A full turn, the part outside it: a hole.
+    Hole,
+    /// A full turn, the part inside it: the outside of a boss, a shaft or a disc's rim.
+    Outside,
+    /// Part of a turn, at most a quarter or so, the part outside it: a fillet in an inside corner.
+    Fillet,
+    /// Part of a turn, at most a quarter or so, the part inside it: a rounded outside edge.
+    Rounded,
+    /// More of a turn, the part outside it (a slot's end, a part-hole).
+    InsideCurve,
+    /// More of a turn, the part inside it.
+    OutsideCurve,
+}
+
+impl Round {
+    /// `n` of them of radius `r`, in words.
+    pub(crate) fn words(self, n: usize, r: f64) -> String {
+        let (one, many, size) = match self {
+            Round::Hole => ("a hole", "holes", format!("Ø{}", sig(2.0 * r))),
+            Round::Outside => ("a round outside face", "round outside faces", format!("Ø{}", sig(2.0 * r))),
+            Round::Fillet => ("a fillet", "fillets", format!("R{}", sig(r))),
+            Round::Rounded => ("a rounded edge", "rounded edges", format!("R{}", sig(r))),
+            Round::InsideCurve => ("a curved inside face", "curved inside faces", format!("R{}", sig(r))),
+            Round::OutsideCurve => ("a curved outside face", "curved outside faces", format!("R{}", sig(r))),
+        };
+        if n == 1 { format!("{one} {size}") } else { format!("{n} {many} {size}") }
+    }
+}
+
+/// What the cylinder of `axis` through `origin` is, from points on its faces with their outward
+/// normals: whether the faces go all the way round (no gap over 60° between their points around
+/// the axis), and whether their normals face the axis (the part is outside them: a hole, a fillet)
+/// or away from it. Part of a turn up to 100° is a fillet or a rounded edge.
+pub(crate) fn round_kind(points: &[(P, P)], axis: P, origin: P) -> Round {
+    let Some(a) = fea::model::unit(axis) else { return Round::Hole };
+    let helper = if a[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let Some(e1) = fea::model::unit(fea::model::cross(a, helper)) else { return Round::Hole };
+    let e2 = fea::model::cross(a, e1);
+    let (mut angles, mut facing) = (Vec::new(), 0.0);
+    for (p, n) in points {
+        let d = fea::model::sub(*p, origin);
+        let radial = fea::model::sub(d, fea::model::mul(a, fea::model::dot(d, a)));
+        let Some(u) = fea::model::unit(radial) else { continue };
+        facing += fea::model::dot(*n, u);
+        angles.push(fea::model::dot(radial, e2).atan2(fea::model::dot(radial, e1)));
+    }
+    if angles.is_empty() {
+        return Round::Hole;
+    }
+    angles.sort_by(f64::total_cmp);
+    let wrap = angles.first().copied().unwrap_or(0.0) + std::f64::consts::TAU - angles.last().copied().unwrap_or(0.0);
+    let gap = angles.windows(2).map(|w| w[1] - w[0]).fold(wrap, f64::max);
+    let span = std::f64::consts::TAU - gap;
+    let inside = facing < 0.0;
+    if gap < 60f64.to_radians() {
+        if inside { Round::Hole } else { Round::Outside }
+    } else if span <= 100f64.to_radians() {
+        if inside { Round::Fillet } else { Round::Rounded }
+    } else if inside {
+        Round::InsideCurve
+    } else {
+        Round::OutsideCurve
+    }
+}
+
+impl BodyFaces<'_> {
     /// Where a marker for `faces` goes: the mean of their centres.
     fn centre(&self, faces: &[u32]) -> P {
         let pts: Vec<P> = faces.iter().filter_map(|f| self.centroids.get(*f as usize).copied()).collect();
@@ -533,8 +633,65 @@ pub(crate) fn default_solid_size(diag: f64, smallest: f64, volume: Option<f64>) 
 pub(crate) const MEMORY_CEILING: f64 = 6.0e9;
 /// A node cap for the finer run that replaces the memory limit (for tests and power users).
 pub(crate) const MAX_NODES_VAR: &str = "SOLIDCRAFT_FEA_MAX_NODES";
-/// A number that moves by at most this much (%) with the finer mesh has settled.
-pub(crate) const SETTLED_PERCENT: f64 = 5.0;
+/// A number that moves by at most this much (%) with the finer mesh has settled. One step of
+/// [`MESH_CHECK_RATIO`] says how far the number moved, not how far it still has to go: for an
+/// error that falls as the element size to the power `p`, what is left on the finer mesh is about
+/// change / (1.5^p − 1), twice the change for `p` = 1 (the slowest a smooth stress converges with
+/// these elements), 0.8 times for `p` = 2. 2.5 % keeps a settled number within about 5 % even at
+/// `p` = 1. At 5 %, a fillet's peak that moved 4.4 % was called settled while it was 5 to 6 % low
+/// (PIL-294 D4, Peterson's stepped bar).
+pub(crate) const SETTLED_PERCENT: f64 = 2.5;
+/// What may be left of a number's error on the finer mesh, per % it moved: 1 / (1.5 − 1), the
+/// first-order bound (see [`SETTLED_PERCENT`]).
+pub(crate) const REMAINING_PER_CHANGE: f64 = 2.0;
+
+/// The setup's keys, by where they go: one the estimate does not know is refused, not ignored,
+/// because a dropped load or support changes the answer without a word (PIL-294 D6). Kept equal
+/// to the contracts in `schema/stress.rs` by a test.
+pub(crate) const ESTIMATE_KEYS: &[&str] =
+    &["body", "loads", "supports", "material", "thickness", "mesh_size", "elements", "show", "scale", "mesh_check", "keep_files", "dry_run"];
+pub(crate) const LOAD_KEYS: &[&str] = &["face", "type", "pressure", "force", "direction", "magnitude"];
+pub(crate) const SUPPORT_KEYS: &[&str] = &["face", "type"];
+pub(crate) const MATERIAL_KEYS: &[&str] = &["name", "youngs_modulus", "poisson_ratio", "yield_strength", "source"];
+
+/// What a key the estimate does not take means, where it says more than "unknown".
+fn unknown_key_hint(key: &str) -> &'static str {
+    match key {
+        "at" | "point" | "remote" | "moment" | "torque" | "couple" => {
+            ": a remote force, a moment or a torque is not supported yet; put the force on the faces it goes in through"
+        }
+        "load_cases" | "cases" | "load_case" | "combinations" => ": one estimate takes one set of loads; run it once for each load case",
+        "gravity" | "acceleration" | "self_weight" | "density" => ": gravity and other body loads are not supported yet",
+        "units" | "unit" => ": forces are N, lengths mm and pressures MPa (or text with its unit, such as \"250 kPa\")",
+        "preload" | "bolt" | "contact" | "bearing" => ": bolts, bearing loads and contact are not supported yet",
+        _ => "",
+    }
+}
+
+/// Refuses any key of the setup the estimate does not take: at the top, in a load, a support or a
+/// material given as an object.
+pub(crate) fn check_keys(p: &Value) -> Result<()> {
+    fn check(v: &Value, allowed: &[&str], what: &str) -> Result<()> {
+        let Some(obj) = v.as_object() else { return Ok(()) };
+        if let Some(key) = obj.keys().find(|k| !allowed.contains(&k.as_str())) {
+            return Err(bad(
+                CMD,
+                format!("{what}: `{key}` is not a setting of the estimate{} (it takes: {})", unknown_key_hint(key), allowed.join(", ")),
+            ));
+        }
+        Ok(())
+    }
+    check(p, ESTIMATE_KEYS, "the setup")?;
+    for (list, allowed, name) in [("loads", LOAD_KEYS, "loads"), ("supports", SUPPORT_KEYS, "supports")] {
+        for (i, v) in p.get(list).and_then(Value::as_array).into_iter().flatten().enumerate() {
+            check(v, allowed, &format!("{name}[{i}]"))?;
+        }
+    }
+    if let Some(m) = p.get("material") {
+        check(m, MATERIAL_KEYS, "material")?;
+    }
+    Ok(())
+}
 /// The peak "away from supports and loads" is looked for at nodes farther than this many
 /// element sizes (of the first mesh) from every fixed support's and force's node (a roller or a
 /// pressure concentrates nothing, see `fea::solve`). A node's stress
@@ -827,6 +984,7 @@ fn support_words(s: &Support) -> String {
 }
 
 fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
+    check_keys(p)?;
     // What to analyse, and its faces.
     let st = s.world_state()?;
     let visible: Vec<&solidcraft_doc::ModelBody> = st.bodies.iter().filter(|b| s.body_visible(&b.name)).collect();
@@ -869,6 +1027,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         normals: face_normals,
         count: body.body.face_count(),
         display: Faces { positions: &positions, triangles: &mesh.triangles, tri_face: &mesh.tri_face },
+        vertex_normals: &normals,
     };
     let plan = plan(p, &faces, body, sheet_t, &s.doc.body_material(&body.name))?;
     let (lo, hi) = positions.iter().fold(([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]), |(mut lo, mut hi), p| {
@@ -1309,6 +1468,11 @@ impl Settling {
     pub(crate) fn settled(&self) -> bool {
         self.change().abs() <= SETTLED_PERCENT
     }
+    /// How far off the finer value may still be, %: [`REMAINING_PER_CHANGE`] times its change.
+    /// None at a support or load, where the value has no limit to settle on.
+    pub(crate) fn may_be_off(&self) -> Option<f64> {
+        (!self.at_support).then(|| REMAINING_PER_CHANGE * self.change().abs())
+    }
     pub(crate) fn status(&self) -> &'static str {
         if self.at_support {
             "at a support or load: depends on the mesh"
@@ -1556,7 +1720,10 @@ pub(crate) fn check_line(check: &Check) -> String {
         Check::Ran { first_h, finer_h, items } => {
             let parts: Vec<String> = items
                 .iter()
-                .map(|s| format!("{} {} → {} {} ({:+.1}%, {})", s.quantity, sig(s.first), sig(s.finer), s.unit, s.change(), s.status()))
+                .map(|s| {
+                    let off = s.may_be_off().map_or_else(String::new, |r| format!(", may be off by about {r:.1}%"));
+                    format!("{} {} → {} {} ({:+.1}%, {}{off})", s.quantity, sig(s.first), sig(s.finer), s.unit, s.change(), s.status())
+                })
                 .collect();
             format!("mesh {} → {} mm: {}", sig(*first_h), sig(*finer_h), parts.join("; "))
         }
@@ -1584,6 +1751,7 @@ fn mesh_check_json(check: &Check) -> StressMeshCheck {
                     finer: round_to(s.finer, 4),
                     change_percent: round_to(s.change(), 2),
                     status: s.status().into(),
+                    may_be_off_percent: s.may_be_off().map(|r| round_to(r, 1)),
                 })
                 .collect(),
             line,
@@ -1635,10 +1803,11 @@ pub(crate) fn check_warnings(check: &Check, shown: &fea::Run, face_label: &dyn F
         let at = shown.peaks.away.map_or_else(String::new, |(_, p)| format!(" near {}", face_label(p)));
         out.push(format!(
             "The highest stress away from supports and loads ({} MPa{at}) moved by {:+.1}% with a finer mesh, so it has not settled: it may be \
-             a sharp inside corner, where the stress keeps rising as the mesh is refined. It needs a finer mesh there, or a fillet on that \
-             corner, before it can be read",
+             a sharp inside corner, where the stress keeps rising as the mesh is refined, or a fillet or hole the mesh is coarse for, where \
+             it may still be {:.0}% or more off. It needs a finer mesh there (or, at a sharp corner, a fillet) before it can be read",
             sig(a.finer),
-            a.change()
+            a.change(),
+            a.may_be_off().unwrap_or(0.0)
         ));
     } else if away.is_none()
         && let Some(o) = item(OVERALL)

@@ -76,7 +76,7 @@ pub const GRADES: &[Grade] = &[
     },
     Grade {
         name: "304 stainless steel",
-        aliases: &["304", "304l", "14301", "aisi304", "ss304", "x5crni1810"],
+        aliases: &["304", "14301", "aisi304", "ss304", "x5crni1810"],
         family: "Stainless Steel",
         e_mpa: 193_000.0,
         nu: 0.3,
@@ -84,6 +84,19 @@ pub const GRADES: &[Grade] = &[
         source: "Yield: the ASTM A240 minimum for type 304 (30 ksi), lower than EN 10088-2's 210 to 230 MPa for 1.4301, as quoted by Aalco's \
                  and Total Materia's data. E: a typical handbook value (ASM; EN 10088-1 gives 200 GPa). Poisson's ratio: 0.3 assumed, not \
                  found in a checked source",
+    },
+    // 304L is its own grade, not 304: its lower carbon gives a lower minimum yield, and taking
+    // 304's 205 MPa overstated it by a fifth (PIL-294 D5).
+    Grade {
+        name: "304L stainless steel",
+        aliases: &["304l", "14307", "aisi304l", "ss304l", "x2crni189"],
+        family: "Stainless Steel",
+        e_mpa: 193_000.0,
+        nu: 0.3,
+        yield_mpa: 170.0,
+        source: "Yield: the ASTM A240 minimum for type 304L, annealed (25 ksi), as quoted by ATI's 304L data sheet (checked 2026-11-18); \
+                 EN 10088-2 specifies 1.4307 higher (200 to 220 MPa). E: a typical handbook value (ASM), as for 304. Poisson's ratio: 0.3 \
+                 assumed, not found in a checked source",
     },
 ];
 
