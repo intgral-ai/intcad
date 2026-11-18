@@ -11,7 +11,6 @@ import {
   FileImage,
   FileText,
   Hammer,
-  Image,
   Map as MapIcon,
   MessageSquare,
   MousePointerClick,
@@ -1203,6 +1202,14 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
             value={text}
             onChange={event => setText(event.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={event => {
+              // A picture on the clipboard is attached by the app, which reads the clipboard itself.
+              const data = event.clipboardData;
+              if (!data.types.includes('text/plain') && [...data.items].some(item => item.type.startsWith('image/'))) {
+                event.preventDefault();
+                post({ type: 'paste_picture' });
+              }
+            }}
           />
           <ComposerActions>
             <ComposerActionsStart className="gap-1">
@@ -1210,14 +1217,11 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
                 <DropdownMenu.Trigger variant="ghost" size="icon-sm" aria-label={strings.add} tooltip={strings.add}>
                   <Plus />
                 </DropdownMenu.Trigger>
-                <DropdownMenu.Content side="top" align="start">
+                {/* Four short rows: this menu never scrolls, so its scroll bar is never shown. */}
+                <DropdownMenu.Content side="top" align="start" className="[&_[data-slot=scroll-area-scrollbar]]:hidden">
                   <DropdownMenu.Item onClick={() => post({ type: 'add_file' })}>
                     <FileText />
                     {strings.addFile}
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item onClick={() => post({ type: 'paste_picture' })}>
-                    <Image />
-                    {strings.pastePicture}
                   </DropdownMenu.Item>
                   <DropdownMenu.Separator />
                   <DropdownMenu.CheckboxItem

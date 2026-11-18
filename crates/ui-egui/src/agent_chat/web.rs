@@ -434,7 +434,6 @@ pub fn state(app: &mut SolveApp) -> String {
         ("title", "ui.assistant"),
         ("add", "ui.agent_chat_add_tip"),
         ("addFile", "ui.agent_chat_add_file"),
-        ("pastePicture", "ui.agent_chat_paste_picture"),
         ("attachView", "ui.agent_chat_attach_view"),
         ("attachSelection", "ui.agent_chat_attach_selection"),
         ("pickContext", "ui.agent_chat_pick_context"),
