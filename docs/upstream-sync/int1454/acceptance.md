@@ -24,6 +24,28 @@ not a completion claim; it records what exists, what is verified, and what is st
 | #179 | SEC-1: one command id for judging, remembering and running | `96a247ccb` |
 | #185 | Kernel, doc/format/IO, engine, MCP, GPU/viewport and UI sync | **TBD after merge** |
 
+## 2a. Commit index by layer (55 commits above `develop` at `f82b56372`)
+
+| Layer | Range (first..last) | Notes |
+| --- | --- | --- |
+| Kernel (K0–K15) | `06749ac4..d12c2fa5f` on `feat/int1454-kernel-snapshot` | vendored solidcore, kernel/smlib/geom/dynamics, STEP tree, rig and action-matrix re-records |
+| Doc/format/IO | `30fe35c92..06e7aa667` | format/colour/display-units/viewport/sketch/render added, doc+io ported, attribution, format-58 note |
+| Engine | `2ca1b7fd8..3e7a7aa46` | engine port, DFM/project/validation re-applied, plugin surface removed, known-failing shrink |
+| MCP | `6e1bcf53a..701d274ca` | server split, guarded envelopes, `version`, `--compact`, CLI stdio fix |
+| GPU/viewport | `9bc73566d` | viewport-gpu/egui added, `crates/gpu` compute-only |
+| UI | `8c1fc4f6c..f82b56372` | egui adaptation, labels/help/dialogs, viewport API, new-file preference, wasm fix |
+| Integration | `1a18423ed`, `b06d531e5`… | develop merge and the two rule fixes (defaults line, advisories) |
+
+## 2b. Licence audit (summary)
+
+All code adopted from SolidCraft is MIT OR Apache-2.0. The kernel is the vendored solidcore tree
+(Apache-2.0; its own `LICENSE`, `NOTICE` and `ATTRIBUTION.md` are carried; USD BRep/SMLib credits
+intact). The moved Liberation Sans font keeps its OFL row, the seven STEP regression fixtures have
+rows in `attribution/pending/step-regressions-v0441.md`, and the FreeCAD fixtures/font moved with
+the doc port have rows in `attribution/pending/doc-assets-v0441.md`. `cargo xtask licences --check`
+reports the generated list will be rewritten on `develop` by the Generated files workflow; no
+brand-era UI kit, look, theme or asset was imported (CD-6).
+
 ## 3. Ledger coverage
 
 `tools/coverage.py` assigns every non-merge commit in `06749ac4..v0.44.1` and every distinct path
