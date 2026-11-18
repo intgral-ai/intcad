@@ -9,7 +9,9 @@ import {
   ClipboardCheck,
   Ellipsis,
   FileText,
+  Hammer,
   Image,
+  Map as MapIcon,
   MessageSquare,
   MousePointerClick,
   Pencil,
@@ -21,6 +23,7 @@ import {
   Target,
   Undo2,
   X,
+  Zap,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
@@ -50,7 +53,9 @@ import {
   ComposerInput,
   ComposerRing,
   ComposerStatus,
+  ComposerToneLabel,
 } from '@/ds/components/Composer';
+import type { ComposerTone } from '@/ds/components/Composer';
 import { CopyButton } from '@/ds/components/CopyButton';
 import { Dialog, DialogAction, DialogBody, DialogCancel, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/ds/components/Dialog';
 import { DropdownMenu } from '@/ds/components/DropdownMenu';
@@ -62,6 +67,7 @@ import { Message } from '@/ds/components/Message';
 import { MessageScrollerItem } from '@/ds/components/MessageScroller';
 import { Notice } from '@/ds/components/Notice';
 import { PendingIndicator } from '@/ds/components/PendingIndicator';
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/ds/components/Select';
 import { Status } from '@/ds/components/StatusIndicators/status';
 import { Textarea } from '@/ds/components/Textarea';
 import { ThinkingLevelPicker } from '@/ds/components/ThinkingLevel';
@@ -995,6 +1001,53 @@ function ModelPicker({ state, onConnections }: { state: AssistantState; onConnec
   );
 }
 
+/**
+ * How Mastra's composer dresses a session mode: its icon, and the tone the mode gives the label and
+ * the composer's ring. A mode Mastra has no dress for is plain.
+ */
+const MODE_DRESS: Record<string, { Icon: typeof Hammer; tone: ComposerTone }> = {
+  build: { Icon: Hammer, tone: 'green' },
+  plan: { Icon: MapIcon, tone: 'purple' },
+  fast: { Icon: Zap, tone: 'orange' },
+};
+
+/** The built-in agent's session mode (its `mode` option), by the names the agent gives its modes. */
+function sessionMode(state: AssistantState) {
+  const option = state.connect ? state.config?.find(entry => entry.category === 'mode') : undefined;
+  if (!option) return null;
+  const dress = MODE_DRESS[option.currentValue];
+  return { option, tone: dress?.tone ?? ('default' as const), Icon: dress?.Icon };
+}
+
+/** The session mode in the composer, where and as Mastra's own composer has it: a select whose label wears the mode's tone. */
+function SessionMode({ state, session }: { state: AssistantState; session: NonNullable<ReturnType<typeof sessionMode>> }) {
+  const { option, tone, Icon } = session;
+  const current = option.options.find(choice => choice.value === option.currentValue);
+  return (
+    <Select
+      value={option.currentValue}
+      onValueChange={value => {
+        if (typeof value === 'string' && value !== option.currentValue) post({ type: 'config', id: option.id, value });
+      }}
+      disabled={state.configPending}
+    >
+      <SelectTrigger variant="ghost" size="sm" aria-label={option.name} className="w-auto">
+        <ComposerToneLabel tone={tone} className="inline-flex items-center gap-1.5">
+          {Icon && <Icon size={12} aria-hidden />}
+          {current?.name ?? option.currentValue}
+        </ComposerToneLabel>
+      </SelectTrigger>
+      <SelectContent>
+        {option.options.map(choice => (
+          <SelectItem key={choice.value} value={choice.value}>
+            {choice.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 function AssistantComposer({ state, onConnections }: { state: AssistantState; onConnections: () => void }) {
   const { strings } = state;
   const [text, setText] = useState('');
@@ -1011,6 +1064,7 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
   ];
   const mode = modes.find(option => option.value === state.permissions)?.label ?? strings.modeEdits;
   const skill = state.skills.find(option => option.id === state.skill);
+  const session = sessionMode(state);
   const picked = state.picked.groups.length > 0 || state.picked.omitted !== null;
   const selected = state.selection.groups.length > 0 || state.selection.omitted !== null;
   const chips = state.attachments.length + state.loading.length > 0 || picked || selected || (state.attachView && state.images);
@@ -1046,7 +1100,7 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
         submit();
       }}
     >
-      <ComposerRing busy={busy}>
+      <ComposerRing tone={session?.tone} busy={busy}>
         <ComposerBox sendingPulseKey={sent}>
           {chips && (
             <ComposerAttachments aria-label={strings.withNext} className="flex flex-wrap gap-2 px-3 pt-3">
@@ -1157,6 +1211,7 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu>
+              {session && <SessionMode state={state} session={session} />}
               <DropdownMenu>
                 <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={mode}>
                   {mode}
@@ -1234,8 +1289,8 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
   const agent = state.agents.find(entry => entry.id === state.agent);
   const name = agent?.name ?? (state.detecting ? strings.detecting : strings.noneFound);
   const badge = stateBadge(state);
-  // The agent's own settings; its model is picked beside the message box, and so is the built-in agent's effort.
-  const settings = (state.config ?? []).filter(option => option.category !== 'model' && !(state.connect && option.category === 'thought_level'));
+  // The agent's own settings; its model is picked beside the message box, and so are the built-in agent's effort and mode.
+  const settings = (state.config ?? []).filter(option => option.category !== 'model' && !(state.connect && (option.category === 'thought_level' || option.category === 'mode')));
   const notReady = notReadyOf(state);
   // The built-in agent is the only one there is: its connections stand where the agents are picked.
   const connect = state.connect;

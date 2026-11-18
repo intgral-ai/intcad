@@ -524,6 +524,9 @@ command with what it printed, or the arguments and the result. The agent sends a
 as JSON text and its result as `rawOutput`; the app reads both (as it reads an object and
 `content` from other agents), so a row is not left empty. The agent's reasoning effort is the button beside it, Mastra's
 thinking-level picker: the levels the agent names, **Off** to **Max**, in the app's language.
+The agent's session mode (**Build**, **Plan**, **Explore**, by the agent's own names) is a select at
+the lower left of the message box, as in Mastra's composer: the label and the box's ring take the
+mode's colour.
 
 While nothing is connected the agent has no session and the panel reads **Sign-in needed**. A turn
 that fails for its connection (a plan's sign-in that expired, an API key that was refused, a plan
