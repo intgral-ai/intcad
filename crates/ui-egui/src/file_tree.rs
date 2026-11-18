@@ -228,6 +228,9 @@ pub(crate) struct FileTree {
     pub(crate) context: Option<ContextMenu>,
     /// The click that opened the row menu is not a click outside it.
     pub(crate) context_opening: bool,
+    /// When the root was chosen, and how long its first listing took once it arrived.
+    root_started: Option<std::time::Instant>,
+    pub(crate) root_ms: Option<f64>,
     /// Openers still running: a file handed to the system answers here when it is done.
     open_jobs: Vec<std::sync::mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     /// Moves the panel made that open designs must follow, drained after each action.
@@ -381,6 +384,8 @@ impl FileTree {
             focused: false,
             context: None,
             context_opening: false,
+            root_started: None,
+            root_ms: None,
             open_jobs: Vec::new(),
             retargets: Vec::new(),
             roots: BTreeMap::new(),
@@ -407,6 +412,8 @@ impl FileTree {
             );
         }
         self.root = root;
+        self.root_started = self.root.as_ref().map(|_| std::time::Instant::now());
+        self.root_ms = None;
         self.dirs.clear();
         self.expanded.clear();
         self.selection.clear();
@@ -1027,6 +1034,11 @@ impl FileTree {
                 Ok(entries) => Dir { entries, state: Listing::Ready },
                 Err(e) => Dir { entries: Vec::new(), state: Listing::Failed(e) },
             };
+            if self.root.as_deref() == Some(answer.dir.as_path())
+                && let Some(started) = self.root_started.take()
+            {
+                self.root_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+            }
             self.dirs.insert(answer.dir, dir);
         }
     }
@@ -1218,6 +1230,7 @@ pub(crate) fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde
     if let Some(path) = p.get("locate").and_then(serde_json::Value::as_str) {
         app.file_tree.reveal_path(Path::new(path));
     }
+    let summary = p.get("summary").and_then(serde_json::Value::as_bool) == Some(true);
     let rows: Vec<serde_json::Value> = app
         .file_tree
         .rows()
@@ -1235,7 +1248,9 @@ pub(crate) fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde
         .collect();
     Ok(json!({
         "root": app.file_tree.root.as_ref().map(|root| root.to_string_lossy()),
-        "rows": rows,
+        "root_ms": app.file_tree.root_ms,
+        "count": rows.iter().filter(|row| row.get("state").and_then(serde_json::Value::as_str) == Some("entry")).count(),
+        "rows": if summary { serde_json::Value::Array(Vec::new()) } else { serde_json::Value::Array(rows) },
         "selection": app.file_tree.selection.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
         "focused": app.file_tree.focused,
         "clipboard": app.file_tree.clip.as_ref().map(|clip| json!({
