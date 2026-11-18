@@ -516,7 +516,13 @@ everything again.
 The model is picked at the lower right of the message box, in Mastra's own model picker: the
 models of the connection in use, newest first, with a search box and a row that opens the
 Connections page. Another provider is taken with **Switch** on its row there; the model list then
-holds that provider's models. The agent's reasoning effort is the button beside it, Mastra's
+holds that provider's models.
+
+A tool the agent calls is a row of the conversation, drawn as Mastra draws it: the row names the
+tool and the argument worth a glance (a command, a path), and opened it shows the details, a
+command with what it printed, or the arguments and the result. The agent sends a tool's arguments
+as JSON text and its result as `rawOutput`; the app reads both (as it reads an object and
+`content` from other agents), so a row is not left empty. The agent's reasoning effort is the button beside it, Mastra's
 thinking-level picker: the levels the agent names, **Off** to **Max**, in the app's language.
 
 While nothing is connected the agent has no session and the panel reads **Sign-in needed**. A turn

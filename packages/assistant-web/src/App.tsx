@@ -32,7 +32,7 @@ import { ProviderLogoMonogram } from '@/domains/llm/provider-logo-monogram';
 import { Activity, ActivityContent, ActivityHeadline, ActivityTrigger } from '@/ds/components/ai/activity';
 import type { TaskListItem } from '@/ds/components/ai/task-list';
 import { TaskList, TaskListContainer } from '@/ds/components/ai/task-list';
-import { ToolCallGroup, ToolCallOutput, presentTool } from '@/ds/components/ai/tool-call';
+import { ToolCallBody, ToolCallGroup, ToolCallOutput, presentTool } from '@/ds/components/ai/tool-call';
 import { AttachmentCard } from '@/ds/components/AttachmentCard';
 import { Badge } from '@/ds/components/Badge';
 import { Button } from '@/ds/components/Button';
@@ -178,24 +178,57 @@ function approvalBadge(approval: Approval, strings: Strings) {
   );
 }
 
-function ToolRow({ tool, approval, strings }: { tool: Tool; approval?: Approval; strings: Strings }) {
+/** A tool's arguments as the agent gave them, when what the app sent of them is still an object's JSON (a long one is cut). */
+function argsOf(input: string | null): Record<string, unknown> | undefined {
+  if (!input) return undefined;
+  try {
+    const value: unknown = JSON.parse(input);
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * One tool call. With the built-in agent (`own`) the row is Mastra's own: its presenter picks the
+ * argument worth a glance for the headline (the command, the path, the query), and its body draws
+ * the details, a command with what it printed, or the arguments and the result.
+ */
+function ToolRow({ tool, approval, strings, own }: { tool: Tool; approval?: Approval; strings: Strings; own: boolean }) {
   const { name, detail } = nameOf(tool.title);
   const waiting = approval?.answer === null;
-  const { icon: ToolIcon, label } = presentTool(name, {});
+  const args = own ? argsOf(tool.input) : undefined;
+  const shown = presentTool(name, args ?? {});
+  const { icon: ToolIcon, label } = shown;
+  const status = activityStatus(tool, waiting);
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <Activity status={activityStatus(tool, waiting)} aria-label={tool.title}>
+      <Activity status={status} aria-label={tool.title}>
         <ActivityTrigger>
           <ActivityHeadline
             icon={<ToolIcon aria-hidden />}
             label={tool.words ?? label}
-            detail={tool.words ? undefined : detail}
+            detail={tool.words ? undefined : (detail ?? shown.detail)}
+            description={tool.words ? undefined : shown.description}
             badges={approval ? approvalBadge(approval, strings) : undefined}
           />
         </ActivityTrigger>
         <ActivityContent>
-          {tool.input && <ToolCallOutput text={tool.input} />}
-          {tool.output && <ToolCallOutput text={tool.output} error={tool.status === 'failed'} />}
+          {own ? (
+            <ToolCallBody
+              toolName={name}
+              args={args}
+              argsText={args ? undefined : (tool.input ?? undefined)}
+              status={status}
+              command={shown.command}
+              result={tool.output ?? undefined}
+            />
+          ) : (
+            <>
+              {tool.input && <ToolCallOutput text={tool.input} />}
+              {tool.output && <ToolCallOutput text={tool.output} error={tool.status === 'failed'} />}
+            </>
+          )}
         </ActivityContent>
       </Activity>
       {/* Outside the row's fold: a request that arrives after the row is drawn must still be seen. */}
@@ -208,8 +241,8 @@ function ToolRow({ tool, approval, strings }: { tool: Tool; approval?: Approval;
   );
 }
 
-function Tools({ part, strings }: { part: Extract<Part, { kind: 'tools' }>; strings: Strings }) {
-  const rows = part.tools.map(({ tool, approval }) => <ToolRow key={tool.id} tool={tool} approval={approval} strings={strings} />);
+function Tools({ part, strings, own }: { part: Extract<Part, { kind: 'tools' }>; strings: Strings; own: boolean }) {
+  const rows = part.tools.map(({ tool, approval }) => <ToolRow key={tool.id} tool={tool} approval={approval} strings={strings} own={own} />);
   // A finished run of several calls folds into one line; a call that waits for the user stays in view.
   const settled = part.tools.every(({ tool, approval }) => tool.status === 'completed' && approval?.answer !== null);
   if (part.tools.length < 3 || !settled) return <div className="flex min-w-0 flex-col gap-1">{rows}</div>;
@@ -471,11 +504,14 @@ function Response({
   turn,
   busy,
   strings,
+  own,
   ways,
 }: {
   turn: Turn;
   busy: boolean;
   strings: Strings;
+  /** The agent is the built-in one: its tool rows are drawn as Mastra draws them. */
+  own: boolean;
   /** The built-in agent's connections, for the turn whose failure can still be acted on: the last one. */
   ways?: { connect: Connect; onConnections: () => void };
 }) {
@@ -504,7 +540,7 @@ function Response({
               </div>
             );
           case 'tools':
-            return <Tools key={key} part={part} strings={strings} />;
+            return <Tools key={key} part={part} strings={strings} own={own} />;
           case 'permission':
             return <PermissionCard key={key} item={part.item} />;
           case 'approval':
@@ -2183,6 +2219,7 @@ export function App({ state }: { state: AssistantState | null }) {
                           turn={turn}
                           busy={live}
                           strings={strings}
+                          own={Boolean(connect)}
                           ways={connect && index === turns.length - 1 ? { connect, onConnections: openConn } : undefined}
                         />
                       </MessageScrollerItem>

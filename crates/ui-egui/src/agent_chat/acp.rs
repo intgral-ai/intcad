@@ -583,12 +583,34 @@ fn content_text(c: &Value) -> Option<String> {
     }
 }
 
-fn tool_output(u: &Value) -> Option<String> {
-    let parts: Vec<String> = u.get("content")?.as_array()?.iter().take(16).filter_map(content_text).collect();
-    if parts.is_empty() {
-        return None;
+/// The longest `rawInput` given as text that is read as JSON: a tool's arguments, not a document.
+const MAX_RAW_INPUT: usize = 256 * 1024;
+
+/// ACP's `rawInput`: the arguments the tool was called with. They are an object, which some agents
+/// (Mastra Code's) send as its JSON text.
+fn tool_input(u: &Value) -> Option<Value> {
+    match u.get("rawInput")? {
+        given if given.is_object() => Some(given.clone()),
+        Value::String(text) if text.len() <= MAX_RAW_INPUT => serde_json::from_str::<Value>(text).ok().filter(Value::is_object),
+        _ => None,
     }
-    let mut s = parts.join("\n");
+}
+
+/// What a tool call says it returned: its `content`, or where an agent sends none of that (Mastra
+/// Code's) its `rawOutput`, a text as it is and anything else as its JSON.
+fn tool_output(u: &Value) -> Option<String> {
+    let parts: Vec<String> =
+        u.get("content").and_then(Value::as_array).map(|items| items.iter().take(16).filter_map(content_text).collect()).unwrap_or_default();
+    let mut s = if parts.is_empty() {
+        match u.get("rawOutput")? {
+            Value::Null => return None,
+            Value::String(text) if text.is_empty() => return None,
+            Value::String(text) => text.clone(),
+            other => serde_json::to_string(other).ok()?,
+        }
+    } else {
+        parts.join("\n")
+    };
     if s.len() > MAX_OUTPUT {
         let mut cut = MAX_OUTPUT;
         while !s.is_char_boundary(cut) {
@@ -686,8 +708,7 @@ fn update(u: &Value, session: &str) -> Incoming {
                 title: s("title"),
                 kind: s("kind"),
                 status: u.get("status").and_then(Value::as_str).and_then(ToolStatus::parse),
-                // ACP's `rawInput`: the arguments the tool was called with.
-                input: u.get("rawInput").filter(|v| v.is_object()).cloned(),
+                input: tool_input(u),
                 output: tool_output(u),
             },
             None => Incoming::Ignored,
@@ -1017,6 +1038,42 @@ mod tests {
         assert_eq!(parse(mode), Some(Incoming::ModeChanged("plan".into())));
         let new = json!({"sessionId": "s", "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}, {"id": "acceptEdits", "name": "Accept Edits"}]}});
         assert_eq!(modes(&new), Some(("default".into(), vec![("default".into(), "Default".into()), ("acceptEdits".into(), "Accept Edits".into())])));
+    }
+
+    /// Mastra Code's agent sends a tool's arguments as JSON text and its result as `rawOutput`,
+    /// with no `content`: the row's details were empty for every one of its tools.
+    #[test]
+    fn a_tool_call_whose_arguments_are_json_text_and_whose_result_is_raw_output_keeps_both() {
+        let started = json!({"sessionUpdate": "tool_call", "toolCallId": "t", "title": "execute_command", "status": "in_progress", "rawInput": "{\"command\":\"ls\"}"});
+        let Incoming::Tool { input, output, .. } = update(&started, "s") else { panic!() };
+        assert_eq!((input, output), (Some(json!({"command": "ls"})), None));
+        let ended = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "status": "completed", "rawOutput": "a.txt\nb.txt"});
+        let Incoming::Tool { input, output, .. } = update(&ended, "s") else { panic!() };
+        assert_eq!((input, output.as_deref()), (None, Some("a.txt\nb.txt")));
+        // A result that is not text is told as its JSON; what the tool shows as content comes first.
+        let object = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": {"ok": true}});
+        let Incoming::Tool { output, .. } = update(&object, "s") else { panic!() };
+        assert_eq!(output.as_deref(), Some(r#"{"ok":true}"#));
+        let both = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": "raw", "content": [{"type": "content", "content": {"type": "text", "text": "shown"}}]});
+        let Incoming::Tool { output, .. } = update(&both, "s") else { panic!() };
+        assert_eq!(output.as_deref(), Some("shown"));
+        // Arguments that are not an object, text that is not JSON, and an empty result are nothing.
+        for raw in [json!("not json"), json!("[1,2]"), json!(7), json!("x".repeat(MAX_RAW_INPUT + 1))] {
+            let Incoming::Tool { input, .. } = update(&json!({"sessionUpdate": "tool_call", "toolCallId": "t", "rawInput": raw}), "s") else {
+                panic!()
+            };
+            assert_eq!(input, None);
+        }
+        for raw in [json!(""), Value::Null] {
+            let Incoming::Tool { output, .. } = update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": raw}), "s")
+            else {
+                panic!()
+            };
+            assert_eq!(output, None);
+        }
+        let long = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": "é".repeat(3000)});
+        let Incoming::Tool { output: Some(cut), .. } = update(&long, "s") else { panic!() };
+        assert!(cut.len() <= MAX_OUTPUT + 3 && cut.ends_with('…'));
     }
 
     #[test]

@@ -117,9 +117,14 @@
       "packages/playground-ui/src/ds/components/ai/task-list/task-graph.tsx",
       "packages/playground-ui/src/ds/components/ai/task-list/task-list.tsx",
       "packages/playground-ui/src/ds/components/ai/task-list/use-focused-row-scroll.ts",
+      "packages/playground-ui/src/ds/components/ai/tool-call/ansi.ts",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-arguments.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-body.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-edit.tsx",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-group.tsx",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-mono.tsx",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-output.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-view.ts",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-presentation.ts",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-styles.ts",
       "packages/playground-ui/src/ds/icons/AmazonIcon.tsx",
@@ -193,6 +198,7 @@
       "packages/playground-ui/src/lib/merge-refs.ts",
       "packages/playground-ui/src/lib/string.ts",
       "packages/playground-ui/src/lib/toast-api.tsx",
+      "packages/playground-ui/src/lib/truncate-string.ts",
       "packages/playground-ui/src/lib/tw-merge-config.ts",
       "packages/playground-ui/src/lib/utils.ts",
       "packages/playground-ui/src/utils/model.ts"
@@ -1488,8 +1494,8 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1738633,
-      "sha256": "550cd297777e7ad08978747bb40dc8184e3d69d0eefe22546a57487af3cd2b5b"
+      "bytes": 1743203,
+      "sha256": "86c7d8daa8ba9c343111c557c37a615268c0de48b21f993b93302a6ba57a37ec"
     },
     "index.html": {
       "bytes": 822,
