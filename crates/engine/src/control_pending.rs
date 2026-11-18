@@ -120,6 +120,7 @@ mod tests {
     fn reads_are_told_from_changes() {
         for (m, p) in [
             ("ui.inspect", json!({})),
+            ("ui.rects", json!({"prefix": "agent_chat:"})),
             ("ui.screenshot", json!({})),
             ("document.export", json!({})),
             ("document.inspect", json!({"measure": true})),
