@@ -850,6 +850,17 @@ the agent's reply. Read the confirmed state after that reply; submitting a chang
 confirmation. The existing `model` and `mode` inputs use the corresponding configuration option
 when advertised, and retain their existing behavior for agents using legacy lists or API endpoints.
 
+With the built-in agent (`SOLIDCRAFT_MASTRA_AGENT`), `ui.agent_chat` also accepts
+`{"connection": {...}}`: one action of the Assistant's Connections page, as the page posts it
+(`{"type": "conn_login", "id": "openai-codex"}`, `{"type": "conn_code", "id", "code"}`,
+`conn_reopen`, `conn_cancel`, `{"type": "conn_logout", "id"}`, `{"type": "conn_key", "provider",
+"key"}`, `{"type": "conn_key_remove", "provider"}`, `{"type": "conn_custom", "name", "url", "key"?,
+"models"}`, `{"type": "conn_custom_remove", "id"}`, `conn_retry`). It is checked exactly as the
+page's action is, and one that is refused fails the call with the same reason. The reply's
+`connect` is what the page is told of the connections (`plans`, `keys`, `custom`, `login`,
+`problem`, `error`, `dates`, `connected`), or `null` when the agent is not the built-in one. A key
+goes to the system keychain and to the agent, and is never in a reply.
+
 `model` may also name a model the agent did not list, as the picker's custom row does: it goes to an
 API endpoint, to an agent with a model option, and to a legacy agent that listed models; the reply's
 `customModels` says whether this agent takes one. Otherwise it is ignored. A model an agent refuses

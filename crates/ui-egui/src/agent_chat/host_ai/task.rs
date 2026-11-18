@@ -491,6 +491,8 @@ impl AcpTaskExecutor {
                         }
                         Incoming::AuthStatus(_) | Incoming::Ignored => {}
                         Incoming::ModeChanged(_) | Incoming::ModelChanged(_) | Incoming::ConfigOptions { .. } => {}
+                        // Read only from the built-in agent, which runs no task.
+                        Incoming::Refused { .. } | Incoming::Connections(_) => {}
                     }
                 }
                 Ok(FromAgent::Exited(_)) => return Err(AiError::task_failed("agent_exit")),

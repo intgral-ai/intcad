@@ -460,6 +460,9 @@ pub struct Services {
     /// Open a dialog asking for a program (a slicer); `None` when the host has no such dialog.
     pub pick_program: Option<Box<dyn Fn() -> FilePickerFuture>>,
     pub show_in_folder: Option<Box<dyn Fn(&str)>>,
+    /// Open a document with the program the system has for it (the Assistant's file cards);
+    /// `None` when the host cannot.
+    pub open_file: Option<Box<dyn Fn(&str)>>,
     /// Where the host reads the anti-aliasing preference at start (a small JSON file).
     pub graphics_path: Option<String>,
     /// Linux: the window system this run uses, `wayland` or `x11` (Preferences shows it, #3083).
@@ -768,6 +771,15 @@ pub struct SolveApp {
     pub agent: agent_cursor::AgentCursor,
     /// The agent chat panel (docs/design/in-app-agent-chat.md).
     pub agent_chat: agent_chat::AgentChat,
+    /// The chat's built-in agent, looked for once when the app starts
+    /// ([`agent_chat::agents::look_for_builtin`]); `None`: the chat has none. It is the window's,
+    /// not one conversation's, so every tab's chat sees the same.
+    pub builtin_agent: Option<agent_chat::agents::Builtin>,
+    /// How often what the built-in agent is handed has changed in this window: a key or a
+    /// custom address kept or removed, a plan signed in or out. Each design's conversation has
+    /// an agent of its own, and one that is behind this count is set up again when it is shown
+    /// ([`agent_chat::connections`]).
+    pub(crate) builtin_changes: u64,
     /// Making SolidCraft available to the AI apps installed here ([`ai_connect`]).
     pub ai_connect: ai_connect::State,
     pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
@@ -953,6 +965,8 @@ impl SolveApp {
             control_rx: None,
             guarded_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             agent_chat: Default::default(),
+            builtin_agent: agent_chat::agents::look_for_builtin(),
+            builtin_changes: 0,
             ai_connect: Default::default(),
             control_held: Default::default(),
             control_job: None,

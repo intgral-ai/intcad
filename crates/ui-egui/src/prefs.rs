@@ -1592,6 +1592,10 @@ preference_settings! {
     mastra_workflow_id: String = String::new(), PAGE_ASSISTANT;
     /// How to start the Mastra runtime: its command line (empty: not configured).
     mastra_runtime_command: String = String::new(), PAGE_ASSISTANT;
+    /// The custom addresses the built-in agent is handed (the Assistant's Connections page adds
+    /// and removes them). A key is never here: it lives in the system keychain. No page reset
+    /// discards them, as none discards the agents the user added.
+    mastra_custom: Vec<crate::agent_chat::connections::CustomAddress> = Vec::new();
 
     // ---- Sketch / selection modifier bindings (classic defaults; alternate mapping is opt-in) ----
     /// Modifier that suppresses sketch auto-snap while drawing or dragging a sketch point.
@@ -3448,6 +3452,16 @@ fn theme_choices(app: &SolveApp) -> Vec<(String, String)> {
     let modes = THEMES.iter().map(|(id, label)| ((*id).to_string(), crate::i18n::tr_label(label).to_string()));
     let files = crate::theme_files::builtin().iter().chain(&app.preferences.custom_themes).map(|t| (t.id.clone(), t.name.clone()));
     modes.chain(files).collect()
+}
+
+/// The theme an installation that has never saved its preferences starts in: Black, the app's
+/// own look (INT-1480). `Prefs::default()` stays Dark: that is what a saved choice was made
+/// against and what restoring a page's defaults gives.
+pub const FIRST_RUN_THEME: &str = "black";
+
+/// Turn the first-run theme on. The desktop app calls this when it finds no saved preferences.
+pub fn start_in_first_run_theme(app: &mut SolveApp) {
+    select_theme(app, FIRST_RUN_THEME);
 }
 
 /// Turn a theme on (a mode or a theme file's id); dark follows it.

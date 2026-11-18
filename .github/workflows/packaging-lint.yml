@@ -53,6 +53,8 @@ jobs:
         run: python3 packaging/tests/web_channels_test.py
       - name: Mastra packaged-runtime gate regression
         run: python3 packaging/tests/mastra_runtime_test.py
+      - name: Built-in agent staging regression
+        run: python3 packaging/tests/mastra_agent_test.py
       - uses: dtolnay/rust-toolchain@1.99.1
       - name: Mastra source-build revision regression
         run: packaging/tests/mastra_revision.sh

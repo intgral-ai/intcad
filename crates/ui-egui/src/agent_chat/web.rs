@@ -178,8 +178,8 @@ fn picture_key(bytes: &[u8]) -> String {
 }
 
 /// The pictures the page may show now, by the name [`state`] gives each: those sent with the
-/// conversation's messages and those attached to the next one. The host serves the bytes itself;
-/// they are never part of what the page is told.
+/// conversation's messages, those tool calls handed back, and those attached to the next one.
+/// The host serves the bytes itself; they are never part of what the page is told.
 pub fn pictures(app: &SolveApp) -> Vec<(String, Arc<Vec<u8>>)> {
     let chat = &app.agent_chat;
     let sent = chat.items.iter().filter_map(|item| match item {
@@ -190,7 +190,8 @@ pub fn pictures(app: &SolveApp) -> Vec<(String, Arc<Vec<u8>>)> {
         attach::Content::Picture { bytes, .. } => Some(bytes),
         _ => None,
     });
-    sent.flatten().chain(next).map(|bytes| (picture_key(bytes), Arc::clone(bytes))).collect()
+    let handed = chat.tool_pictures.iter().map(|(_, picture)| &picture.bytes);
+    sent.flatten().chain(handed).chain(next).map(|bytes| (picture_key(bytes), Arc::clone(bytes))).collect()
 }
 
 /// The host: files were dropped on the web view. They are attached to the next message as files
@@ -285,6 +286,15 @@ pub fn state(app: &mut SolveApp) -> String {
                     "words": summary::summary(title, input.as_ref(), output.as_deref(), done, units),
                     "input": input.as_ref().map(|value| clipped(&serde_json::to_string_pretty(value).unwrap_or_default())),
                     "output": output.as_deref().map(clipped),
+                    // A picture the call handed back, opened as a message's picture is (`picture`).
+                    "index": index,
+                    "pictures": chat.tool_pictures.iter().filter(|(call, _)| call == id).map(|(_, picture)| json!({"key": picture_key(&picture.bytes), "note": picture.note, "view": false})).collect::<Vec<_>>(),
+                    // A file the call read, as a card: `preview` shows its text in the panel
+                    // (`markdown`: drawn), `open` hands it to the system's program for it (`file`).
+                    "file": chat.read_file_of(id).map(|(file, act)| json!({
+                        "name": file.file_name().map(|name| name.to_string_lossy()),
+                        "act": match act { read_file::Act::Preview { .. } => "preview", read_file::Act::Open => "open" },
+                    })),
                 })
             }
             Item::Plan(steps) => {
@@ -321,6 +331,11 @@ pub fn state(app: &mut SolveApp) -> String {
                 })
             }
             Item::Notice { text, error } => json!({"kind": "notice", "text": text, "error": error}),
+            // A notice to a page that reads no more of it; `problem` says which way out to offer.
+            Item::Problem { kind, prefix, name } => json!({
+                "kind": "notice", "text": kind.words(name), "error": true,
+                "problem": {"kind": kind.id(), "prefix": prefix, "name": name},
+            }),
         })
         .collect();
     let turn = chat.turn.as_ref().map(|turn| {
@@ -388,9 +403,12 @@ pub fn state(app: &mut SolveApp) -> String {
             .collect::<Vec<_>>()
     });
     // The known agents not found. A basic one is listed by the page as not ready, with `body`.
+    // Beside the built-in agent there is nothing to install, whatever was found before.
+    let builtin = agents::is_builtin(app);
     let missing: Vec<Value> = chat
         .detection
         .as_ref()
+        .filter(|_| !builtin)
         .map(|found| {
             let listed = |agent: &super::discover::Missing| {
                 let body = agent.basic.then(|| trf("ui.agent_chat_install_body", &[("agent", agent.name)]));
@@ -399,7 +417,7 @@ pub fn state(app: &mut SolveApp) -> String {
             found.missing.iter().map(listed).collect()
         })
         .unwrap_or_default();
-    let strings: serde_json::Map<String, Value> = [
+    let mut strings: serde_json::Map<String, Value> = [
         ("placeholder", "ui.agent_chat_placeholder"),
         ("placeholderBusy", "ui.agent_chat_placeholder_busy"),
         ("send", "ui.agent_chat_send"),
@@ -422,7 +440,6 @@ pub fn state(app: &mut SolveApp) -> String {
         ("title", "ui.assistant"),
         ("add", "ui.agent_chat_add_tip"),
         ("addFile", "ui.agent_chat_add_file"),
-        ("pastePicture", "ui.agent_chat_paste_picture"),
         ("attachView", "ui.agent_chat_attach_view"),
         ("attachSelection", "ui.agent_chat_attach_selection"),
         ("pickContext", "ui.agent_chat_pick_context"),
@@ -469,6 +486,8 @@ pub fn state(app: &mut SolveApp) -> String {
         ("modelSearch", "ui.agent_chat_model_search"),
         ("modelCustom", "ui.agent_chat_model_custom"),
         ("modelNoMatch", "ui.agent_chat_model_no_match"),
+        ("modelRefine", "ui.agent_chat_model_refine"),
+        ("modelFilter", "ui.agent_chat_model_filter"),
         ("revalidate", "ui.agent_chat_task_revalidate"),
         ("dropHint", "ui.agent_chat_drop_hint"),
         ("removeChip", "ui.agent_chat_remove_chip"),
@@ -509,12 +528,91 @@ pub fn state(app: &mut SolveApp) -> String {
         ("dfmSelected", "ui.dfm_check.selected"),
         ("dfmOff", "ui.dfm_check.off"),
         ("dfmSelect", "ui.dfm_check.selected"),
+        // The built-in agent's connections (`connect`, below): its page, the sign-ins' own
+        // names, and the sentences of a turn its connection refused.
+        ("connTitle", "ui.agent_chat_conn_title"),
+        ("connNoneTitle", "ui.agent_chat_conn_none_title"),
+        ("connBack", "ui.agent_chat_conn_back"),
+        ("connPlans", "ui.agent_chat_conn_plans"),
+        ("connKeys", "ui.agent_chat_conn_keys"),
+        ("connCustom", "ui.agent_chat_conn_custom"),
+        ("connSignedIn", "ui.agent_chat_conn_signed_in"),
+        ("connExpired", "ui.agent_chat_conn_expired"),
+        ("connSigningIn", "ui.agent_chat_conn_signing_in"),
+        ("connSignIn", "ui.agent_chat_conn_sign_in"),
+        ("connSignInAgain", "ui.agent_chat_conn_sign_in_again"),
+        ("connSignOut", "ui.agent_chat_conn_sign_out"),
+        ("connUse", "ui.agent_chat_conn_use"),
+        ("connInUse", "ui.agent_chat_conn_in_use"),
+        ("connShadowed", "ui.agent_chat_conn_shadowed"),
+        ("connKeySaved", "ui.agent_chat_conn_key_saved"),
+        ("connKeyAdd", "ui.agent_chat_conn_key_add"),
+        ("connKeyUpdate", "ui.agent_chat_conn_key_update"),
+        ("connRemove", "ui.agent_chat_conn_remove"),
+        ("connKeyTitle", "ui.agent_chat_conn_key_title"),
+        ("connKeyBody", "ui.agent_chat_conn_key_body"),
+        ("connKeyPlaceholder", "ui.agent_chat_conn_key_placeholder"),
+        ("connSave", "ui.agent_chat_conn_save"),
+        ("connCustomAdd", "ui.agent_chat_conn_custom_add"),
+        ("connCustomName", "ui.agent_chat_conn_custom_name"),
+        ("connCustomUrl", "ui.agent_chat_conn_custom_url"),
+        ("connCustomKey", "ui.agent_chat_conn_custom_key"),
+        ("connCustomModels", "ui.agent_chat_conn_custom_models"),
+        ("connCustomNeedBoth", "ui.agent_chat_conn_custom_need_both"),
+        ("connCustomNeedModel", "ui.agent_chat_conn_custom_need_model"),
+        ("connCustomTooMany", "ui.agent_chat_conn_custom_too_many"),
+        ("connCustomPlainUrl", "ui.agent_chat_conn_custom_plain_url"),
+        ("connCustomExists", "ui.agent_chat_conn_custom_exists"),
+        ("connAdd", "ui.agent_chat_conn_add"),
+        ("connWaiting", "ui.agent_chat_conn_waiting"),
+        ("connStarting", "ui.agent_chat_conn_starting"),
+        ("connReopen", "ui.agent_chat_conn_reopen"),
+        ("connCodeHint", "ui.agent_chat_conn_code_hint"),
+        ("connCodePlaceholder", "ui.agent_chat_conn_code_placeholder"),
+        ("connCodeIncomplete", "ui.agent_chat_conn_code_incomplete"),
+        ("connCodeDone", "ui.agent_chat_conn_code_done"),
+        ("connDeviceHint", "ui.agent_chat_conn_device_hint"),
+        ("connProblemPort", "ui.agent_chat_conn_problem_port"),
+        ("connProblemOffline", "ui.agent_chat_conn_problem_offline"),
+        ("connProblemFailed", "ui.agent_chat_conn_problem_failed"),
+        ("connButton", "ui.agent_chat_conn_button"),
+        ("connButtonNone", "ui.agent_chat_conn_button_none"),
+        ("connButtonTip", "ui.agent_chat_conn_button_tip"),
+        ("planOpenaiCodex", "ui.agent_chat_plan_openai_codex"),
+        ("planAnthropic", "ui.agent_chat_plan_anthropic"),
+        ("planKimiForCoding", "ui.agent_chat_plan_kimi_for_coding"),
+        ("planXai", "ui.agent_chat_plan_xai"),
+        ("planGithubCopilot", "ui.agent_chat_plan_github_copilot"),
+        ("problemAuth", "ui.agent_chat_problem_auth"),
+        ("problemKey", "ui.agent_chat_problem_key"),
+        ("problemQuota", "ui.agent_chat_problem_quota"),
+        ("problemRate", "ui.agent_chat_problem_rate"),
+        ("problemNetwork", "ui.agent_chat_problem_network"),
+        ("problemModel", "ui.agent_chat_problem_model"),
+        // The levels of an agent's reasoning effort, by the value it names them with.
+        ("effort", "ui.agent_chat_effort"),
+        ("effortOff", "ui.agent_chat_effort_off"),
+        ("effortLow", "ui.agent_chat_effort_low"),
+        ("effortMedium", "ui.agent_chat_effort_medium"),
+        ("effortHigh", "ui.agent_chat_effort_high"),
+        ("effortXhigh", "ui.agent_chat_effort_xhigh"),
+        ("effortMax", "ui.agent_chat_effort_max"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), Value::from(tr(key))))
     .collect();
+    // The group's complete name, with its two controls' own words as values: a locale puts them
+    // in its own order and punctuation. Without an effort control the page shows only the model.
+    let model_effort = if chat.config_options.as_ref().is_some_and(|options| options.iter().any(|option| option.category == "thought_level")) {
+        trf("ui.agent_chat_web_model_effort", &[("model", tr("ui.ai_model")), ("effort", tr("ui.agent_chat_effort"))])
+    } else {
+        tr("ui.ai_model").to_string()
+    };
+    strings.insert("modelEffort".into(), Value::from(model_effort));
     json!({
         "items": items,
+        // A text file open from a file card: the start of its text, read when the card was clicked.
+        "filePreview": chat.file_preview.as_ref().map(|file| json!({"name": file.name, "text": file.text, "markdown": file.markdown})),
         "state": state.id(),
         "waiting": chat.waiting(),
         "stopped": chat.stopped,
@@ -561,6 +659,9 @@ pub fn state(app: &mut SolveApp) -> String {
         "configPending": chat.config_pending,
         "notes": notes,
         "auth": auth,
+        // The built-in agent's connections: an object exactly while it is the agent, so the
+        // page shows its Connections page then and is as it was otherwise.
+        "connect": connections::told_of(app),
         "missing": missing,
         "confirmNew": chat.confirm_new,
         "left": app.preferences.agent_chat_side == "left",
@@ -576,14 +677,20 @@ pub fn state(app: &mut SolveApp) -> String {
 /// queued, stopping the running step), `stop`, `approve` (`id`, `allow`: true, false or
 /// `"always"`), `permission` (`index`, `option`), `undo` (`index`), `new_chat`, `confirm_new`
 /// (`yes`), `object` (`index`, `ref`, `label`: select the object an answer names), `picture`
-/// (`index`, `at`: open a message's picture in the viewer), `revalidate`. The queue: `send_now`,
+/// (`index`, `at`: open a message's picture in the viewer), `file` (`index`: the card of a file a
+/// tool call read: preview its text in the panel, or open it with the system's program) and
+/// `file_close`, `revalidate`. The queue: `send_now`,
 /// `remove_pending` (`index`, `text`), `edit_pending` (`index`, `was`, `text`); a queued message
 /// has no name of its own, so the page says which text it means and a queue that has moved on
 /// refuses. The composer: `permissions` (`mode`), `attach_view` / `attach_selection` (`on`),
 /// `pick_context`, `remove_picked` (`index`, `label`), `add_file`, `paste_picture`, `remove_file`
 /// (`index`), `skill` (`id`). The agent: `agent` (`id`, one of the listed agents), `connect`,
 /// `disconnect`, `agent_mode` (`id`), `model` (`id`), `custom_model` (`text`), `config` (`id`,
-/// `value`), `auth` (`id`), `refresh`, `add_agent`, `settings`. The panel: `close`, `minimize`,
+/// `value`), `auth` (`id`), `refresh`, `add_agent`, `settings`. The built-in agent's connections
+/// ([`connections::act`]): `conn_login` (`id`), `conn_code` (`id`, `code`), `conn_reopen`,
+/// `conn_cancel`, `conn_logout` (`id`), `conn_key` (`provider`, `key`), `conn_key_remove`
+/// (`provider`), `conn_custom` (`name`, `url`, `key`, `models`), `conn_custom_remove` (`id`),
+/// `conn_retry`. The panel: `close`, `minimize`,
 /// `side` (`left`); the page cannot move the Assistant to a window of its own. And `surface`
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
@@ -681,10 +788,38 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             let (at, shown) = (index("index").ok_or("picture: no index")?, index("at").ok_or("picture: no at")?);
             let pictures = match app.agent_chat.items.get(at) {
                 Some(Item::User { pictures, .. }) if shown < pictures.len() => pictures.clone(),
+                // A tool call's one picture.
+                Some(Item::Tool { id, .. }) if shown == 0 && app.agent_chat.tool_pictures.iter().any(|(call, _)| call == id) => {
+                    app.agent_chat.tool_pictures.iter().filter(|(call, _)| call == id).map(|(_, picture)| picture.clone()).collect()
+                }
                 _ => return Err("picture: that message has no such picture".into()),
             };
             app.agent_chat.gallery = Some(Gallery { pictures, at: shown });
         }
+        "file" => {
+            // The page names the row; the file is the one the app kept for that row, looked at
+            // again now: it may have gone, or been replaced by a link, since the agent read it.
+            let at = index("index").ok_or("file: no index")?;
+            let Some(Item::Tool { id, .. }) = app.agent_chat.items.get(at) else { return Err("file: no such tool call".into()) };
+            let (kept, _) = app.agent_chat.read_file_of(id).ok_or("file: that call has no file")?;
+            let name = kept.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            let kept = kept.to_string_lossy().into_owned();
+            let gone =
+                || trf("ui.agent_chat_file_error", &[("name", &name), ("error", &std::io::Error::from(std::io::ErrorKind::NotFound).to_string())]);
+            let now = app.agent_chat.work_dir.as_deref().and_then(|work| read_file::resolve(work, &kept));
+            match now {
+                None => app.agent_chat.notice(gone(), true),
+                Some((file, read_file::Act::Preview { markdown })) => match read_file::preview(&file) {
+                    Ok(text) => app.agent_chat.file_preview = Some(FilePreview { name, text, markdown }),
+                    Err(error) => app.agent_chat.notice(trf("ui.agent_chat_file_error", &[("name", &name), ("error", &error.to_string())]), true),
+                },
+                Some((file, read_file::Act::Open)) => match &app.services.open_file {
+                    Some(open) => open(&file.to_string_lossy()),
+                    None => return Err("file: this build cannot open a file with the system".into()),
+                },
+            }
+        }
+        "file_close" => app.agent_chat.file_preview = None,
         "revalidate" => {
             let offered =
                 app.agent_chat.task.is_some() && app.agent_chat.items.iter().any(|item| matches!(item, Item::Skill { terminal: Some(_), .. }));
@@ -856,6 +991,7 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             }
             app.agent_chat.authenticate(id);
         }
+        kind if connections::ACTIONS.contains(&kind) => connections::act(app, ctx, kind, &action)?,
         "refresh" => refresh(app, ctx),
         "add_agent" => settings::open_add(app),
         "settings" => crate::prefs::open_at(app, crate::prefs::PAGE_ASSISTANT),
