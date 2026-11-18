@@ -383,11 +383,12 @@ pub struct NavigatorParams {
     pub home: Option<bool>,
 }
 
-/// A view navigator type.
+/// A view navigator type (the window's own: the signed axes, the axis cube, or a custom body).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NavigatorStyle {
     Axes,
+    Cube,
     Custom,
 }
 
