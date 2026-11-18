@@ -19,7 +19,9 @@ const PARAMS: &str = "refs: 1-3 refs in any order; with?: {the method's other pa
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("construct.plane", "Plane", crate::checked!("construct.plane", plane))
         .at("SOLID", "CONSTRUCT")
-        .icon("plane_auto")
+        // The port's own "plane_auto" artwork is not in Intcad's icon set, so the umbrella tool
+        // reuses the construction icon until one is drawn for it (the panel needs distinct icons).
+        .icon("construction")
         .contract(&CONTRACT)
         .output(output_schema_for::<ConstructAutoResult>)
         .params(PARAMS),

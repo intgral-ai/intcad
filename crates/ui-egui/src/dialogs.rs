@@ -107,6 +107,12 @@ const INTERSECT_GEOMETRY: Accept = EDGES | FACES | selection::SKETCH_LINES;
 /// What Align's From and To pick: model geometry, planes and the origin, and sketch points and
 /// circles (a frame the bodies follow, #6257).
 const ALIGN_PICKS: Accept = FACES | EDGES | selection::VERTICES | PLANES | selection::ORIGIN | selection::POINTS | CURVES;
+/// What Plane, Axis and Point pick: every reference form their family's methods take, so one
+/// window serves a plane's three points, an axis's two planes and a point's face.
+const CONSTRUCT_AUTO_PICKS: Accept =
+    PLANES | PLANAR_FACES | FACES | EDGES | AXES | CURVES | selection::VERTICES | selection::POINTS | selection::CONSTRUCTION_POINTS;
+/// The most references the auto tools take (the engine's own limit).
+const CONSTRUCT_AUTO_MAX: usize = 3;
 const HOLE_TYPES: [&str; 3] = ["simple", "counterbore", "countersink"];
 const HOLE_LABELS: [&str; 3] = ["Simple", "Counterbore", "Countersink"];
 
@@ -308,6 +314,12 @@ crate::dialog_descriptor::dialog_descriptors! {
             Material {
                 index: usize,
                 editor: crate::material_editor::Editor,
+            },
+            /// Plane, Axis or Point (`construct.plane`, `construct.axis`, `construct.point`): the
+            /// window picks references and the tool builds with the first method of its family
+            /// that takes them, as the engine's tool does.
+            ConstructAuto {
+                tool: &'static str,
             },
             /// Section Analysis: cut the view by a plane, moved along its normal.
             Section {
@@ -957,6 +969,18 @@ impl Dialog {
             "mesh.convert" => Dialog::new(
                 Kind::MeshConvert { tolerance: crate::length_input::model(&s.doc, 0.05) },
                 vec![SelInput::new("Mesh body", BODIES, false)],
+            ),
+            "construct.plane" | "construct.axis" | "construct.point" => Dialog::new(
+                Kind::ConstructAuto {
+                    tool: if id == "construct.axis" {
+                        "construct.axis"
+                    } else if id == "construct.point" {
+                        "construct.point"
+                    } else {
+                        "construct.plane"
+                    },
+                },
+                vec![SelInput::new("References", CONSTRUCT_AUTO_PICKS, true)],
             ),
             "construct.plane.midplane" => Dialog::new(
                 Kind::Midplane,
@@ -2564,6 +2588,9 @@ fn title(k: &Kind) -> &'static str {
         Kind::PathPattern { .. } => "PATTERN ON PATH",
         Kind::Split => "SPLIT BODY",
         Kind::Thread { .. } => "THREAD",
+        Kind::ConstructAuto { tool: "construct.plane" } => "PLANE",
+        Kind::ConstructAuto { tool: "construct.axis" } => "AXIS",
+        Kind::ConstructAuto { .. } => "POINT",
         Kind::Section { .. } => "SECTION ANALYSIS",
         Kind::PatternRect { .. } => "RECTANGULAR PATTERN",
         Kind::PatternCirc { .. } => "CIRCULAR PATTERN",
@@ -5240,6 +5267,14 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let a = plane_arg(app, sels(d, 0).first())?;
             let b = plane_arg(app, sels(d, 1).first())?;
             ("construct.plane.midplane", json!({"a": a, "b": b}))
+        }
+        Kind::ConstructAuto { tool } => {
+            need(0, "refs")?;
+            let refs: Vec<Value> = sels(d, 0).iter().take(CONSTRUCT_AUTO_MAX).map(|sel| construct_ref(app, sel)).collect::<Result<_, _>>()?;
+            if refs.is_empty() {
+                return Err("pick the references the unit is built from".into());
+            }
+            (*tool, json!({"refs": refs}))
         }
         Kind::Construct { command, keys, t, .. } => {
             let mut p = serde_json::Map::new();
