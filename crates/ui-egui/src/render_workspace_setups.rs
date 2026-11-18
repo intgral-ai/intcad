@@ -117,7 +117,7 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                             sun: studio.sun_enabled.then_some(studio.sun),
                             area_lights: AreaLights::new(&studio.area_lights).map_err(|error| error.to_string())?,
                             directional_lights: studio.directional_lights,
-                            punctual_lights: studio.punctual_lights.clone(),
+                            punctual_lights: studio.punctual_lights,
                         })
                     } else {
                         None

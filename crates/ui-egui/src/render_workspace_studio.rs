@@ -1,8 +1,6 @@
 //! GPU studio editors. Numeric intent is portable; HDR resources cross the engine capture boundary.
 use serde_json::{Value, json};
-use solidcraft_engine::render::job::{
-    AreaLight, AreaLights, DirectionalLights, PunctualLights, StudioLighting, Sun, ThinLens, ToneMap,
-};
+use solidcraft_engine::render::job::{AreaLight, AreaLights, DirectionalLights, PunctualLights, StudioLighting, Sun, ThinLens, ToneMap};
 use solidcraft_engine::render::lighting::environment::SkyGradient;
 
 use super::hdr;

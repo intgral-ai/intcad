@@ -73,7 +73,7 @@ fn settings(app: &SolveApp) -> Result<RenderSetup, String> {
                         environment: view.studio.ambient,
                         area_lights: AreaLights::new(&view.studio.area_lights).map_err(|e| e.to_string())?,
                         directional_lights: view.studio.directional_lights,
-                        punctual_lights: view.studio.punctual_lights.clone(),
+                        punctual_lights: view.studio.punctual_lights,
                     })
                 } else {
                     None
