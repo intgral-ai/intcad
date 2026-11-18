@@ -449,6 +449,11 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v
 }
 
+/// Commands the window answers itself, outside the registry. The agent may call them too, and
+/// they read: a pick touches neither the document, the selection nor undo. Kept in step with the
+/// control channel's own dispatch, which intercepts them before `SolveApp::run`.
+pub const WINDOW_COMMANDS: &[&str] = &["view.pick"];
+
 /// The command an id names: its exact id, else the one it spells in another case. Surrounding
 /// whitespace is ignored. Command ids are ASCII, so an id with any other character names none
 /// (a look-alike letter such as a Cyrillic `е` or a fullwidth `ｆ` is never a command).
@@ -460,6 +465,13 @@ pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
     let id = normalize_command_id(id)?;
     let all = command_specs();
     all.iter().find(|c| c.id == id).or_else(|| all.iter().find(|c| c.id.eq_ignore_ascii_case(id))).copied()
+}
+
+/// The registered id `id` names, including the window-answered commands above. This is the one
+/// rule for the agent gate, the control channel and execution; `None` means nothing may run.
+pub fn resolve_command_id(id: &str) -> Option<&'static str> {
+    let id = normalize_command_id(id)?;
+    WINDOW_COMMANDS.iter().copied().find(|w| w.eq_ignore_ascii_case(id)).or_else(|| find_command(id).map(|c| c.id))
 }
 
 /// Whether two ids use common alternative verbs in the same namespace. This only ranks
