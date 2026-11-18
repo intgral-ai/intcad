@@ -8,7 +8,7 @@ fn ground_ao_follows_the_existing_plane_in_both_up_axes_without_origin_clamping(
         for bottom in [-20.0, 20.0] {
             // A 3 x 4 x 12 box has diagonal 13: the original ground offset is .014 mm.
             let bounds = Aabb3 { min: Vec3::new(-1.5, -2.0, bottom), max: Vec3::new(1.5, 2.0, bottom + 12.0) };
-            let ground = solidcraft_gpu::view::GroundAo::new(bounds, ground_height(bounds), cam.up, 2.0).unwrap();
+            let ground = solidcraft_viewport_gpu::view::GroundAo::new(bounds, ground_height(bounds), cam.up, 2.0).unwrap();
             let bytes = ground.vertices(None);
             assert_eq!(bytes.len(), 6 * crate::gpu::TRI_SIZE);
             for vertex in bytes.as_chunks::<{ crate::gpu::TRI_SIZE }>().0 {
@@ -21,7 +21,7 @@ fn ground_ao_follows_the_existing_plane_in_both_up_axes_without_origin_clamping(
         }
     }
     for (bounds, radius) in [(Aabb3::EMPTY, 2.0), (Aabb3 { min: Vec3::ZERO, max: Vec3::X }, f32::NAN)] {
-        assert!(solidcraft_gpu::view::GroundAo::new(bounds, ground_height(bounds), Camera::default().up, radius).is_none());
+        assert!(solidcraft_viewport_gpu::view::GroundAo::new(bounds, ground_height(bounds), Camera::default().up, radius).is_none());
     }
 }
 
@@ -115,7 +115,7 @@ fn ground_ao_draws_contact_pixels_without_an_ellipse_and_disappears_when_disable
                 app.cam.back().to_f32(),
                 [eye[0], eye[1], eye[2], 0.0],
                 256,
-                tess.then_some(solidcraft_gpu::SHADER),
+                tess.then_some(solidcraft_viewport_gpu::SHADER),
                 radius,
             )
         };

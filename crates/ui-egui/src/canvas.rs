@@ -555,7 +555,7 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
                 .and_then(serde_json::Value::as_array)
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default();
-            solidcraft_engine::doc::through_all_distance(&state, &plane, &targets).ok()
+            solidcraft_engine::doc::through_all_distance(&state, &plane, 0.0, &targets).ok()
         })
     } else {
         None
@@ -2031,7 +2031,7 @@ mod tests {
         let mut worst = f32::NEG_INFINITY;
         for n in [Vec3::X, Vec3::Y, Vec3::Z] {
             for dir in crate::viewport::orbit_directions() {
-                let cam = solidcraft_engine::render::Camera::default().looking_from(dir);
+                let cam = solidcraft_viewport::Camera::default().looking_from(dir);
                 let proj = Proj { cam, vp: cam.view_proj(4.0 / 3.0, 100.0), rect };
                 let h = cam.half_height() * 0.25;
                 let (Some(q), Some(c), Some(side)) =

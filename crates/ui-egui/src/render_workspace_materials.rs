@@ -11,11 +11,13 @@ use solidcraft_engine::{
         appearance_pack::{self, GlassBoundary, Recipe},
     },
     render::{
-        clear_coat::ClearCoat,
         job::textures::{BaseColorMode, PlanarFrame},
-        surface::OpaqueSurface,
         transmission::Transmission,
     },
+};
+use solidcraft_viewport::{
+    clear_coat::ClearCoat,
+    surface::OpaqueSurface,
 };
 
 #[cfg(test)]

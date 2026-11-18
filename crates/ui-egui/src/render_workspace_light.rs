@@ -55,13 +55,14 @@ fn settings(app: &SolveApp) -> Result<RenderSetup, String> {
     let job = match view.method {
         ImageMethod::Raster => RenderJob::Raster { transparent_background: false },
         ImageMethod::CpuRaytrace => RenderJob::CpuRaytrace {
-            options: CpuJob {
+            transparent_background: false,
+            options: Box::new(CpuJob {
                 lights: view.raytrace.lights.clone(),
                 preset: view.raytrace.preset,
                 punctual_lights: view.raytrace.punctual_lights.clone(),
                 area_lights: view.raytrace.area_lights.clone(),
                 ..Default::default()
-            },
+            }),
         },
         ImageMethod::GpuRaytrace => RenderJob::GpuPath {
             transparent_background: false,
@@ -71,6 +72,7 @@ fn settings(app: &SolveApp) -> Result<RenderSetup, String> {
                         sun: view.studio.sun_enabled.then_some(view.studio.sun),
                         environment: view.studio.ambient,
                         area_lights: AreaLights::new(&view.studio.area_lights).map_err(|e| e.to_string())?,
+                        ..Default::default()
                     })
                 } else {
                     None
@@ -234,18 +236,19 @@ pub(crate) fn filter_request(app: &SolveApp, mut request: Value) -> Result<Value
                 .map_err(|e| e.to_string())?;
         let mut lighting = RenderSetup {
             job: Some(RenderJob::CpuRaytrace {
-                options: CpuJob {
+                transparent_background: false,
+                options: Box::new(CpuJob {
                     lights: options.lights.clone(),
                     preset: options.preset,
                     punctual_lights: options.punctual_lights.clone(),
                     area_lights: options.area_lights.clone(),
                     ..Default::default()
-                },
+                }),
             }),
             ..Default::default()
         };
         solidcraft_engine::render_lights::filter(&mut lighting, visibility)?;
-        if let Some(RenderJob::CpuRaytrace { options: filtered }) = lighting.job {
+        if let Some(RenderJob::CpuRaytrace { options: filtered, .. }) = lighting.job {
             let mut options = options;
             options.lights = filtered.lights;
             options.preset = filtered.preset;
@@ -293,7 +296,7 @@ pub(super) fn preview(app: &SolveApp) -> Result<Vec<[f32; 16]>, String> {
             Geometry::Area { edge_u_mm: [ux, uy, uz], edge_v_mm: [vx, vy, vz], .. } => {
                 let normal = solidcore_record::Vec3::new(ux, uy, uz).cross(solidcore_record::Vec3::new(vx, vy, vz));
                 let area = normal.len();
-                let n = solidcraft_engine::render::surface::unit_direction(normal).unwrap_or(-solidcore_record::Vec3::Z);
+                let n = solidcraft_viewport::surface::unit_direction(normal).unwrap_or(-solidcore_record::Vec3::Z);
                 ([n.x, n.y, n.z], 0.0, 0.0, area, 0.001)
             }
             _ => ([0.0; 3], 0.0, 0.0, 1.0, 0.001),
@@ -540,7 +543,7 @@ fn review_preset(app: &mut SolveApp, preset: solidcraft_engine::render::job::Lig
     match setups::snapshot(app) {
         Ok(mut setup) => {
             let source = setup.clone();
-            if let Some(RenderJob::CpuRaytrace { options }) = &mut setup.job {
+            if let Some(RenderJob::CpuRaytrace { options, .. }) = &mut setup.job {
                 options.lights = None;
                 options.preset = Some(preset);
                 app.render_workspace.view.lights.review = Some(Review {
@@ -570,7 +573,7 @@ fn save_lighting(app: &mut SolveApp, setup: RenderSetup) -> Result<(), String> {
 fn update_cpu(app: &mut SolveApp, update: impl FnOnce(&mut CpuJob)) {
     let result = (|| {
         let mut setup = setups::snapshot(app)?;
-        if let Some(RenderJob::CpuRaytrace { options }) = &mut setup.job {
+        if let Some(RenderJob::CpuRaytrace { options, .. }) = &mut setup.job {
             update(options);
         }
         save_lighting(app, setup)

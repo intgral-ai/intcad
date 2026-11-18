@@ -2253,13 +2253,13 @@ pub fn view_items(app: &SolveApp, name: &str) -> Vec<Item> {
 /// The Analysis folder: the Section Analysis, while there is one (shown or hidden), with an eye
 /// to hide and show it, a double-click to edit it and a menu to delete it (#822).
 fn analysis_rows(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize, acts: &mut Actions) {
-    if app.session.section.is_some() {
+    if !app.session.section.is_empty() {
         // A section made (or remade) while an older one was hidden replaces it, shown.
         app.tree.hidden_section = None;
         app.tree.analysis_hidden = false;
         app.tree.section_hidden = false;
     }
-    if app.session.section.is_none() && app.tree.hidden_section.is_none() {
+    if app.session.section.is_empty() && app.tree.hidden_section.is_none() {
         app.tree.analysis_hidden = false;
         app.tree.section_hidden = false;
         return;
@@ -2329,7 +2329,7 @@ pub fn set_section_visible(app: &mut SolveApp, visible: bool) {
                 app.tree.hidden_section = None;
             }
         }
-    } else if let Some(section) = app.session.section
+    } else if let Some(section) = app.session.section.first().map(|p| (p.origin, p.normal))
         && app.run("inspect.section", json!({"clear": true})).is_ok()
     {
         app.tree.hidden_section = Some(section);
@@ -3602,7 +3602,7 @@ pub fn dims_overlay(app: &SolveApp, ctx: &egui::Context) {
             );
             let size = galley.size() + vec2(6.0, 2.0);
             let half = Vec2::new(f64::from(size.x) * 0.5 * px, f64::from(size.y) * 0.5 * px);
-            let lay = dim_layout_reaching(&frame, c.text.or_else(|| default_text(&frame, middle, px)), px, half, dim_reach(sk, &c.kind));
+            let lay = dim_layout_reaching(&frame, c.text.or_else(|| default_text(&frame, middle, px, half)), px, half, dim_reach(sk, &c.kind));
             for line in &lay.lines {
                 painter.add(egui::Shape::line(line.iter().filter_map(|q| to(*q)).collect(), Stroke::new(1.0, col)));
             }

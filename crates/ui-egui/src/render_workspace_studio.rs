@@ -99,6 +99,7 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
             environment: view.ambient,
             sun: view.sun_enabled.then_some(view.sun),
             area_lights: AreaLights::new(&view.area_lights).map_err(|error| error.to_string())?,
+            ..Default::default()
         };
         lighting.validate().map_err(|error| error.to_string())?;
         params["lighting"] = json!(lighting);

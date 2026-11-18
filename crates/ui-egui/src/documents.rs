@@ -10,7 +10,7 @@ use crate::ui_kit::{Container, Surface};
 use egui::{FontId, Rect, Sense, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::Session;
-use solidcraft_engine::render::Camera;
+use solidcraft_viewport::Camera;
 
 use crate::SolveApp;
 use crate::theme::Tokens;

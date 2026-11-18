@@ -13,6 +13,14 @@ solidcore-record = { workspace = true }
 solidcraft-engine = { workspace = true }
 egui = { workspace = true }
 egui-wgpu = { workspace = true }
+# The shared viewport renderer: camera and view math, pictures and picking. The engine's own
+# `render` re-export is the product renderer only.
+solidcraft-viewport = { workspace = true }
+# Analysis colours (sRGB ramps) the viewport's analysis mode and the theme's swatches share.
+solidcraft-color = { workspace = true }
+# The viewport's GPU pipelines and offscreen pictures, moved out of `solidcraft-gpu` by the
+# viewport split; `solidcraft-gpu` keeps the path tracer and the app's GPU environment.
+solidcraft-viewport-gpu = { workspace = true }
 solidcraft-gpu = { workspace = true }
 solidcraft-space-mouse = { workspace = true, features = ["serde"] }
 serde = { workspace = true }

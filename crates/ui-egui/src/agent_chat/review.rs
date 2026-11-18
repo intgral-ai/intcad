@@ -243,6 +243,9 @@ impl Copy {
                 active_sketch: s.active_sketch,
                 pending_moves: s.pending_moves.clone(),
                 visibility: s.visibility.clone(),
+                // Not an undo step: it records no section change, and `restore` leaves the
+                // section as it is, as before.
+                section: None,
             },
             undo: s.undo.clone(),
             redo: s.redo.clone(),
@@ -450,7 +453,7 @@ fn run(copy: &mut Copy, method: &str, p: &Value, now: &AtomicUsize) -> Value {
                 return err(why);
             }
             if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, copy.session.param_check, &[]) {
-                return ok(refusal.reply(steps.len()));
+                return ok(refusal.reply(steps.len(), p.get("rollback").and_then(Value::as_bool).unwrap_or(true)));
             }
             let reply = solidcraft_engine::batch::run_document_steps(
                 &mut Counting { session: &mut copy.session, now },

@@ -868,11 +868,11 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind, frame: &Mat) -> Option<(K
     let s = &app.session;
     let edge = |p: &solidcraft_engine::doc::Position| crate::dialogs::edge_sel(s, p.0);
     let (k, fill): (Surf, Vec<Vec<Sel>>) = match kind {
-        FeatureKind::SurfaceRevolve { sketch, profiles, curves, axis, angle, angle2, symmetric } => {
+        FeatureKind::SurfaceRevolve { sketch, profiles, curves, axis, angle, angle2, symmetric, .. } => {
             let (pick, stored) = match axis {
                 AxisRef::World { axis } => (Some(Sel::Axis { name: axis.to_ascii_uppercase() }), None),
                 AxisRef::SketchAxis { axis } => (Some(Sel::Axis { name: axis.to_ascii_lowercase() }), None),
-                AxisRef::SketchLine { curve } => (Some(crate::selection::curve_pick(curve, sketch.0, s.active_sketch)), None),
+                AxisRef::SketchLine { curve, sketch: owner } => (Some(crate::selection::curve_pick(curve, owner.unwrap_or(sketch.0), s.active_sketch)), None),
                 AxisRef::Construction { name } => (Some(Sel::Axis { name: name.to_string() }), None),
                 AxisRef::Line { origin, dir } => (None, Some(crate::dialogs::line_axis_value(s, frame, origin, dir.0))),
                 // An edge or face that is gone stays the reference until another is picked.
@@ -1092,7 +1092,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind, frame: &Mat) -> Option<(K
                 Some(solidcraft_engine::doc::ExtendTo::Plane(PlaneRef::Origin { name })) => {
                     extra.insert("up_to".into(), json!(name));
                 }
-                Some(solidcraft_engine::doc::ExtendTo::Plane(PlaneRef::Construction { feature })) => {
+                Some(solidcraft_engine::doc::ExtendTo::Plane(PlaneRef::Construction { feature, .. })) => {
                     let shown = s.doc.feature(feature.0).map(|f| json!(f.name)).unwrap_or_else(|| json!(feature.0));
                     extra.insert("up_to".into(), shown);
                 }

@@ -655,6 +655,8 @@ pub(crate) fn reopen(d: &mut Dialog, s: &Session, kind: &FeatureKind) {
         steep_flank,
         // Kept by the edit itself (`timeline.redefine`), not a dialog option.
         old_auto_size: _,
+        // Thread options this UI does not edit.
+        ..
     } = kind
     else {
         return;

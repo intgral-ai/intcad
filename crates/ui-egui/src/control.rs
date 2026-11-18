@@ -52,7 +52,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps};
 use solidcraft_engine::io::vfs;
-use solidcraft_engine::render::{Camera, StandardView};
+use solidcraft_viewport::{Camera, StandardView};
 use solidcraft_engine::schema::ParamCheck;
 
 use crate::SolveApp;
@@ -424,7 +424,7 @@ fn batch(app: &mut SolveApp, p: &Value, guarded: bool) -> Outcome {
             return err(why);
         }
         if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, app.session.param_check, &["view.pick"]) {
-            return ok(refusal.reply(steps.len()));
+            return ok(refusal.reply(steps.len(), p.get("rollback").and_then(Value::as_bool).unwrap_or(true)));
         }
         let rollback = p.get("rollback").and_then(Value::as_bool).unwrap_or(true);
         if rollback {
@@ -457,7 +457,7 @@ fn batch(app: &mut SolveApp, p: &Value, guarded: bool) -> Outcome {
     }
     // A step the batch would refuse at its turn refuses it now, before anything runs (#5853).
     if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, app.session.param_check, &["view.pick"]) {
-        return ok(refusal.reply(steps.len()));
+        return ok(refusal.reply(steps.len(), p.get("rollback").and_then(Value::as_bool).unwrap_or(true)));
     }
     let checkpoint_policy = if guarded { CheckpointPolicy::Required } else { CheckpointPolicy::BestEffort };
     ok(run_document_steps(app, steps, p, execute, SolveApp::run, checkpoint_policy))
@@ -487,16 +487,17 @@ pub fn request_scope(app: &SolveApp, params: &Value) -> Result<Option<vfs::PathS
 /// What a picture of the view shows: the model as the window shows it (theme and colour vision
 /// mode, the section the viewport shows: an open Section Analysis dialog's preview, a sketch's
 /// Slice), with the grid and the origin's axes as `guides` says.
-pub(crate) fn view_scene(app: &SolveApp, guides: solidcraft_engine::view::Guides) -> Result<solidcraft_engine::render::Scene, String> {
+pub(crate) fn view_scene(app: &SolveApp, guides: solidcraft_engine::view::Guides) -> Result<solidcraft_viewport::Scene, String> {
     let mut palette = crate::viewport::scene_palette(app.viewport_dark(), app.preferences.color_vision);
     // The view's own background colour (#7688).
     if let Some([r, g, b]) = app.preferences.viewport_background {
-        palette.background = (solidcraft_engine::render::Rgb(r, g, b), solidcraft_engine::render::Rgb(r, g, b));
+        palette.background = (solidcraft_viewport::Rgb(r, g, b), solidcraft_viewport::Rgb(r, g, b));
     }
+    let section = crate::viewport::shown_section(app);
     let mut scene = solidcraft_engine::view::scene_with_thread_markings(
         &app.session,
         &app.cam,
-        crate::viewport::section_plane(app),
+        &section,
         solidcraft_engine::view::world_curve_parts,
         &palette,
         guides,
@@ -527,7 +528,7 @@ pub(crate) fn view_rgba(app: &SolveApp, w: u32, h: u32) -> Result<Vec<u8>, Strin
 /// [`view_rgba`] as PNG.
 pub fn view_png(app: &SolveApp, w: u32, h: u32) -> Result<Vec<u8>, String> {
     let rgba = view_rgba(app, w, h)?;
-    solidcraft_engine::render::png(w as usize, h as usize, rgba).ok_or_else(|| "PNG encoding failed".to_string())
+    solidcraft_viewport::png(w as usize, h as usize, rgba).ok_or_else(|| "PNG encoding failed".to_string())
 }
 
 pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
@@ -2756,7 +2757,7 @@ mod tests {
         let mut s = Session::default();
         s.execute("solid.box", &json!({"length": 40, "width": 30, "height": 20, "corner": [10, -15, -10]})).unwrap();
         let mut app = SolveApp::new(s, Services::default());
-        app.cam.set_view(solidcraft_engine::render::StandardView::Front);
+        app.cam.set_view(solidcraft_viewport::StandardView::Front);
         let dir = std::env::temp_dir().join(format!("solidcraft-render-guides-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("shot.png");

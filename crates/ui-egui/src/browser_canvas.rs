@@ -98,7 +98,8 @@ pub(crate) fn click(app: &mut SolveApp, proj: &Proj, screen: Pos2) -> bool {
         return false;
     };
     let (vals, _) = doc.param_values();
-    let Ok(plane) = doc.canvas_plane(&vals, &c) else {
+    let state = crate::open_meshing::session_world(&app.session);
+    let Ok(plane) = doc.canvas_plane(&vals, &c, &state) else {
         return false;
     };
     let (origin, direction) = proj.ray(screen);
@@ -133,7 +134,8 @@ pub(crate) fn paint_marks(app: &SolveApp, painter: &egui::Painter, proj: &Proj) 
         return;
     };
     let (vals, _) = doc.param_values();
-    let Ok(plane) = doc.canvas_plane(&vals, c) else {
+    let state = crate::open_meshing::session_world(&app.session);
+    let Ok(plane) = doc.canvas_plane(&vals, c, &state) else {
         return;
     };
     let t = Tokens::get();

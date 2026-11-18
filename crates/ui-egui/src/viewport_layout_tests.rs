@@ -2,7 +2,7 @@ use super::*;
 use crate::scenario::Harness;
 use crate::viewport::NavMode;
 use serde_json::json;
-use solidcraft_engine::render::StandardView;
+use solidcraft_viewport::StandardView;
 
 fn bar_rect(canvas: Rect) -> Rect {
     crate::navigation_bar_view::measure(canvas, &Default::default(), crate::navigation::NavCaps::MODEL, |_| 0.0).rect

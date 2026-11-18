@@ -4531,7 +4531,7 @@ fn look_at_sketch_from(app: &mut SolveApp, again: bool) {
 /// be (#9029). Facing the plane alone left a sketch on a turned component tilted on screen.
 /// Along world up/down, yaw turns the image (roll stays 0, as Top/Bottom views do); elsewhere
 /// roll squares the axes.
-pub(crate) fn square_sketch_axes(mut cam: solidcraft_engine::render::Camera, sketch_x: Vec3, sketch_y: Vec3) -> solidcraft_engine::render::Camera {
+pub(crate) fn square_sketch_axes(mut cam: solidcraft_viewport::Camera, sketch_x: Vec3, sketch_y: Vec3) -> solidcraft_viewport::Camera {
     let b = cam.back();
     let in_view = |v: Vec3| v - b * v.dot(b);
     let Some(mut x) = in_view(sketch_x).normalized() else {
@@ -4563,7 +4563,7 @@ pub(crate) fn square_sketch_axes(mut cam: solidcraft_engine::render::Camera, ske
 /// zoomed out when that would not fit in the view; it never zooms in, so a zoom the user chose
 /// stays. A sketch without geometry keeps its plane's origin. Centring on the origin alone left a
 /// sketch drawn away from it (a part placed far from the origin, as imports often are) out of view.
-pub(crate) fn onto_sketch(mut to: solidcraft_engine::render::Camera, ss: &solidcraft_engine::doc::SolvedSketch) -> solidcraft_engine::render::Camera {
+pub(crate) fn onto_sketch(mut to: solidcraft_viewport::Camera, ss: &solidcraft_engine::doc::SolvedSketch) -> solidcraft_viewport::Camera {
     let Some((lo, hi)) = ss.sketch.bounds() else {
         to.target = ss.plane.origin;
         return to;
@@ -4573,7 +4573,7 @@ pub(crate) fn onto_sketch(mut to: solidcraft_engine::render::Camera, ss: &solidc
         b.add(ss.plane.to_world(p));
     }
     let keep = to.distance;
-    to.fit(&b);
+    to.fit(&solidcraft_engine::render::view_bounds(&b));
     if keep.is_finite() && keep > to.distance {
         to.distance = keep;
     }
@@ -4592,7 +4592,7 @@ fn sels(d: &Dialog, i: usize) -> &[Sel] {
 
 /// Section Analysis with a section on and no plane picked: OK turns the section off.
 fn section_turns_off(s: &Session, inputs: &[selection::SelInput]) -> bool {
-    s.section.is_some() && selection::items(inputs, 0).is_empty()
+    !s.section.is_empty() && selection::items(inputs, 0).is_empty()
 }
 
 /// Run the dialog's commands on the window thread, taking the Join its operation check already
@@ -4647,7 +4647,7 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
         }
     }
     if let Kind::Section { offset, flip, hatch } = &d.kind
-        && let Some(cut) = app.session.section
+        && let Some(cut) = app.session.section.first().map(|p| (p.origin, p.normal))
     {
         app.tree.section_dialog = if d.extra.contains_key("plane") && sels(d, 0).is_empty() {
             None // Programmatic geometry is reconstructed from the actual session, never cached.
@@ -4662,7 +4662,7 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
 /// now left it. Programmatic cuts use their actual geometry in the same existing form.
 pub fn edit_section(app: &mut SolveApp) {
     app.start_section_edit();
-    let cut = app.session.section.or(app.tree.hidden_section);
+    let cut = app.session.section.first().map(|p| (p.origin, p.normal)).or(app.tree.hidden_section);
     let last = app.tree.section_dialog.clone().filter(|last| cut.is_some_and(|c| same_cut(c, last.cut)));
     if app.preferences.viewport_section_status {
         if let Some((origin, normal)) = cut {
@@ -6290,7 +6290,7 @@ fn geo_sel(s: &Session, g: &solidcraft_engine::doc::construct::GeoRef) -> Option
 pub(crate) fn plane_sel(s: &Session, pl: &PlaneRef) -> Option<Sel> {
     match pl {
         PlaneRef::Origin { name } => Some(Sel::Plane { name: name.clone() }),
-        PlaneRef::Construction { feature } => s.doc.feature(feature.0).map(|f| Sel::Plane { name: f.name.clone() }),
+        PlaneRef::Construction { feature, .. } => s.doc.feature(feature.0).map(|f| Sel::Plane { name: f.name.clone() }),
         PlaneRef::Custom { plane } => face_sel(s, plane.origin),
         // The point picked on the face: the plane's origin can lie off the face (#3567).
         PlaneRef::Face { at, .. } => face_sel(s, *at),
@@ -6417,7 +6417,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             let ax = match axis {
                 AxisRef::World { axis } => Some(Sel::Axis { name: axis.to_ascii_uppercase() }),
                 AxisRef::SketchAxis { axis } => Some(Sel::Axis { name: axis.to_ascii_lowercase() }),
-                AxisRef::SketchLine { curve } => Some(crate::selection::curve_pick(curve, sketch.0, s.active_sketch)),
+                AxisRef::SketchLine { curve, sketch: owner } => Some(crate::selection::curve_pick(curve, owner.unwrap_or(sketch.0), s.active_sketch)),
                 AxisRef::Model { geo } => model_axis_sel(s, geo),
                 AxisRef::Construction { name } => Some(Sel::Axis { name: name.to_string() }),
                 AxisRef::Line { .. } => None,
@@ -6591,6 +6591,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             ease_out,
             to,
             references,
+            ..
         } => {
             let mut d = start("solid.hole")?;
             let mut k = hole_defaults(s);
@@ -6706,7 +6707,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Box { corner, length, width, height, operation } => {
+        FeatureKind::Box { corner, length, width, height, operation, .. } => {
             let mut d = start("solid.box")?;
             d.kind = Kind::Primitive {
                 cmd: "solid.box",
@@ -6913,7 +6914,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Pattern { features, pattern, bodies: copied } => {
+        FeatureKind::Pattern { features, pattern, bodies: copied, .. } => {
             let ids: Vec<u64> = features.iter().map(|f| f.0).collect();
             let bodies: Vec<Sel> = if copied.is_empty() {
                 st.bodies.iter().filter(|b| ids.contains(&b.feature)).map(|b| Sel::Body { name: b.name.clone() }).collect()
@@ -7162,7 +7163,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Split { body, plane, tool, sketch, line } => {
+        FeatureKind::Split { body, plane, tool, sketch, line, .. } => {
             let mut d = start("solid.split_body")?;
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = vec![Sel::Body { name: body.to_string() }];
@@ -7290,7 +7291,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Move { bodies, translate, rotate_axis, angle, copy } => {
+        FeatureKind::Move { bodies, translate, rotate_axis, angle, copy, .. } => {
             let mut d = start("solid.move")?;
             // Move stores distances in the first body's frame, which can differ from the
             // feature's component. Refill the world distances that the command accepts.

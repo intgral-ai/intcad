@@ -485,7 +485,7 @@ pub fn show(app: &mut SolveApp, ui: &egui::Ui, proj: &Proj, view: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solidcraft_engine::render::Camera;
+    use solidcraft_viewport::Camera;
 
     fn fixture() -> RunFindings {
         serde_json::from_str(include_str!("test_data/dfm_run_findings.json")).expect("the synthetic run findings")
