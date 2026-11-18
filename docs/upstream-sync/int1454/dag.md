@@ -85,13 +85,24 @@ merged and green.
 
 | Wave | Units | Why here |
 | --- | --- | --- |
-| W0 | `solidcore/` snapshot + workspace pins; leaf crates `color`, `format`, `control`, `mcp-server`, `craft-plugin`, `ui-text`, `ui-registry`, `display-units`, `viewport` | leaves; everything else consumes them |
-| W1 | `render`, `viewport-gpu`, `kernel` (source on the new snapshot), `geom`, `sketch`, `smlib` | consume W0 only |
-| W2 | `doc` (model + `format` registry + persistence), `io` (+ STEP through `solidcore-step`) | consume W1 |
-| W3 | `engine` (+ IntCAD DFM/agent commands), `gpu` | consume W0–W2; owns the command contract |
-| W4 | `mcp` (+ `mcp-server`, `control`), `craft-plugin-wasm` | consume engine |
-| W5 | `ui-egui` adaptation to the new engine/doc/render APIs | consumes the changed contracts |
-| W6 | `apps/*`, `assets/locales`, sorting/generated lists, `xtask`, CI, packaging | consume everything; no product logic |
+| W-1 | `rust-toolchain.toml` pin (1.99.1), `cargo xtask fmt` | upstream's kernel/solidcore assume the pinned compiler; cheap, unblocks everything |
+| W0 | `solidcore/` snapshot + pins; kernel/smlib/geom/dynamics on it; kernel corpora | atomic: the current pin lacks `solidcore-ops/-tess/-step`, so nothing kernel-side compiles until this lands |
+| W0.5 | `format`, `viewport`, `color`, `display-units`, `ui-text`, `ui-registry` (open crates only) | leaves needed by doc/engine |
+| W1 | `doc` (model + format registry + persistence), `io` (+ STEP through `solidcore-step`), `sketch` | consume W0/W0.5 |
+| W2 | `engine` (+ IntCAD DFM/agent commands), `gpu`, `render` | consume W0–W1; owns the command contract |
+| W3 | `mcp` (+ `mcp-server`, `control`), `craft-plugin-wasm` | consume engine |
+| W4 | `ui-egui` adaptation to the new engine/doc/render APIs | consumes the changed contracts |
+| W5 | `apps/*`, `assets/locales`, sorting/generated lists, `xtask`, CI, packaging | consume everything; no product logic |
+
+Two couplings override the tidy wave picture:
+
+1. **K5 (mesher → `solidcore-tess`) is a public-API break.** v0.44.1's kernel re-exports
+   `MeshSpec`, `PlanStats` and tolerance constants from `solidcore_tess`, and `doc`, `io`, `gpu`
+   consume them. Either the kernel PR also migrates those consumers, or it keeps a thin re-export
+   of IntCAD's current mesh types so the consumers can follow in W1–W2. Choose one in the kernel PR
+   and record it; a silent third option (keeping the old mesher) is forbidden.
+2. **K14 (`xtask/mesh-decisions.txt`) is a doc-layer artefact.** It can only shrink when doc's
+   exact-geometry work lands, so it belongs to the doc PR, not the kernel one.
 
 **Not in the waves:** `ui-kit`, `look`, `theme`, `assets/branding`, `assets/icons/app`
 (`LICENSE-BRAND`). They are excluded on licence grounds, not on difficulty.

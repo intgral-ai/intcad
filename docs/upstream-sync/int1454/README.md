@@ -14,6 +14,7 @@ work is sliced, and what still needs a human decision.
 | [pr-plan.md](pr-plan.md) | PR slicing, streams, order, rollback |
 | [risks.md](risks.md) | risk register, blockers, decision candidates |
 | [security-findings.md](security-findings.md) | verified security issues in today's tree and the upstream fixes that address them |
+| [review-brief.md](review-brief.md) | what an independent reviewer must check before the gate passes |
 | [generated/commits.tsv](generated/commits.tsv) | every non-merge upstream commit with area labels |
 
 Frozen references: upstream **v0.44.1** = `e151d5ea6866fb055e011379153fb1cae0566f22`,

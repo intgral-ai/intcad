@@ -25,15 +25,29 @@ not new upstream brand changes.
 | Path | Files | Size | Status |
 | --- | --- | --- | --- |
 | `crates/ui-kit` | 115 | 58,976 lines | Blocked (LICENSE-BRAND §1a) |
-| `crates/look` | 455 | 23,426 lines (icon masters, themes, fonts) | Blocked (§1b) |
+| `crates/look` | 455 | 15,202 text lines + 2 TTF (icon masters, themes) | Blocked (§1b) |
 | `crates/theme` | 5 | 2,677 lines | Blocked (§1c) |
-| `assets/branding` | 10 | 1,227 lines | Blocked (§1d) |
-| `assets/icons/app` | 18 | binary app icons | Blocked (§1d) |
+| `assets/branding` | 10 | 84 text lines + 4 PNG | Blocked for new content (§1d) |
+| `assets/icons/app` | 18 | 368 text lines + 12 binary | Blocked for new content (§1d) |
 | `assets/icons/ui` | **absent at v0.44.1** | — | upstream moved UI icons into `crates/look/icons` |
 
-≈ 603 files, ~97k lines, are unavailable on licence grounds. Third-party material inside those
-folders keeps its own licence (IBM Plex fonts, OFL 1.1), but that does not open the surrounding
-brand material.
+≈ 603 files, **87,233 text lines**, are unavailable on licence grounds. Third-party material
+inside those folders keeps its own licence (IBM Plex fonts, OFL 1.1), but that does not open the
+surrounding brand material.
+
+**Provenance split (matters for §5):** most of that material predates the licence. At the
+pre-brand snapshot `a3475683` the UI kit is 103 files / 50,748 lines and has no `LICENSE-BRAND`;
+the brand-taking commit is `312454f8` (2026-11-10, "Look: … as the shared crate"). Per file:
+ui-kit 104/115, look 440/455, theme 5/5, branding 10/10, app icons 18/18 were added before it.
+Growth after the licence: +12 files / +8,228 lines. IntCAD ships the pre-brand material it forked
+(it is what `crates/ui-egui/src/ui_kit` copies); what it cannot take is the *later* growth.
+
+**Licence-uncertain, not yet cleared:** post-brand changes to `ui-egui` chrome files that
+implement the components §1(a) names (`titlebar.rs`, `toolbar.rs`, `prefs*`, `shell.rs`,
+`workspace.rs`, `documents.rs`, `starting.rs`, `home.rs`, `navigation_bar_view.rs`). They carry the
+workspace MIT/Apache licence but their content is the licensed interface; §5 grandfathers only
+versions published before the licence. Default position: do not reuse until the owner/legal
+answers CD-6.
 
 Consequence: every upstream UI-icon and theme change since the fork is **Blocked**, and IntCAD
 must draw any new icon itself. This is a UI-completeness gap, allowed by the Spec to be recorded

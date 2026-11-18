@@ -69,11 +69,14 @@ when they become evidence.
 
 ## 5. Architecture facts that drive the DAG
 
-1. **Kernel dependency form changed.** Develop pins the kernel by git revision:
+1. **Kernel dependency form changed.** Develop has **no `solidcore/` tree** (`git ls-tree
+   origin/develop | grep solidcore` is empty) and pins the kernel by git revision:
    `solidcore = { git = "https://github.com/tangency-labs/solidcore", rev = "8ddce901671f1cebd9214a31d21895d725e886c8" }`
    and `solidcore-record` at a **different** rev `f5e8e9a29e0c9b7cf6c4040a5bc8878382b3c62f`.
-   v0.44.1 vendors `solidcore/` in-tree with path dependencies and adds `solidcore-ops` and
-   `solidcore-tess` to `crates/kernel`.
+   v0.44.1 vendors `solidcore/` in-tree with path dependencies and its kernel needs
+   `solidcore-ops`, `solidcore-tess` and `solidcore-step`. **The pinned revisions predate all
+   three crates** (ops/tess created 2026-11-04, step 2026-11-10), so v0.44.1's kernel cannot
+   compile at IntCAD's current pin at all. The snapshot bump is a hard prerequisite.
 2. **The UI split is upstream's, not IntCAD's.** Upstream's egui front end is split across
    `ui-egui`, `ui-kit`, `look`, `theme`, `color`, `ui-text`, `ui-registry`, `display-units`,
    `viewport*`. IntCAD keeps a single forked `crates/ui-egui`.
