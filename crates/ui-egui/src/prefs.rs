@@ -3430,6 +3430,16 @@ fn theme_choices(app: &SolveApp) -> Vec<(String, String)> {
     modes.chain(files).collect()
 }
 
+/// The theme an installation that has never saved its preferences starts in: Black, the app's
+/// own look (INT-1480). `Prefs::default()` stays Dark: that is what a saved choice was made
+/// against and what restoring a page's defaults gives.
+pub const FIRST_RUN_THEME: &str = "black";
+
+/// Turn the first-run theme on. The desktop app calls this when it finds no saved preferences.
+pub fn start_in_first_run_theme(app: &mut SolveApp) {
+    select_theme(app, FIRST_RUN_THEME);
+}
+
 /// Turn a theme on (a mode or a theme file's id); dark follows it.
 fn select_theme(app: &mut SolveApp, id: &str) {
     app.preferences.theme = id.to_string();
