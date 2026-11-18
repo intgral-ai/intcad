@@ -22,5 +22,17 @@ Frozen references: upstream **v0.44.1** = `e151d5ea6866fb055e011379153fb1cae0566
 IntCAD **develop** = `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f`, fork point
 `06749ac4`. Range covered: 4,994 commits (4,939 non-merge).
 
-Phase 0 does not authorise the migration yet: the ledger needs an independent review of its
-`Already Covered` / `Not Applicable` rows and the owner's decisions on CD-1 to CD-4.
+Phase 0 passed independent review, and the owner approved CD-1…CD-7 on 2026-11-17 (ledger §7).
+
+## Execution index
+
+| Work | Branch / PR | State |
+| --- | --- | --- |
+| Phase 0 archive | `docs/int1454-phase0`, PR #177 | open, CI green |
+| SEC-1 agent-gate bypass | `fix/int1454-agent-gate-aliases`, PR #179 | open, independent review approved |
+| Rust 1.99.1 pin + CI toolchain | `build/int1454-toolchain-pin`, PR #180 | open, CI running |
+| K0 kernel snapshot (vendored solidcore + kernel/smlib/geom/dynamics, `crates/step` removed) | `feat/int1454-kernel-snapshot` | WIP checkpoint pushed; workspace compiles; kernel tests running |
+
+Next gates per the DAG: kernel rig (`cargo xtask kernel-cases --known-failing`), then doc/engine,
+then MCP (CD-2 tool map first), then UI adaptation. Brand assets, plugin runtime and the colour
+dedup stay out by CD-5/CD-6 and ledger U4.
