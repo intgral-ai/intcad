@@ -26,11 +26,16 @@ solidcraft-gpu = { path = "crates/gpu" }
 solidcraft-doc = { path = "crates/doc" }
 # pure DFM rule layer translated from intdfm (App side; local until the fork is private)
 solidcraft-dfm-rules = { path = "crates/dfm-rules" }
+# Versioned file formats: the format tag, the version registry and its upgrade, a newer file told
+solidcraft-format = { path = "crates/format" }
 solidcraft-io = { path = "crates/io" }
 solidcraft-engine = { path = "crates/engine" }
 solidcraft-agent-task = { path = "crates/agent-task" }
 solidcraft-agent-task-engine = { path = "crates/agent-task-engine" }
 solidcraft-ui-egui = { path = "crates/ui-egui" }
+solidcraft-color = { path = "crates/color" }
+solidcraft-display-units = { path = "crates/display-units" }
+solidcraft-viewport = { path = "crates/viewport" }
 solidcraft-space-mouse = { path = "crates/space-mouse" }
 solidcraft-mcp = { path = "crates/mcp" }
 solidcraft-derive = { path = "crates/derive" }

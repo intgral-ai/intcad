@@ -5148,6 +5148,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "solidcraft-color"
+version = "0.1.1"
+
+[[package]]
 name = "solidcraft-derive"
 version = "0.1.1"
 dependencies = [
@@ -5165,6 +5169,10 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "solidcraft-display-units"
+version = "0.1.1"
 
 [[package]]
 name = "solidcraft-doc"
@@ -5220,6 +5228,15 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "web-time",
+]
+
+[[package]]
+name = "solidcraft-format"
+version = "0.1.1"
+dependencies = [
+ "serde_json",
+ "sha2 0.10.9",
+ "zip",
 ]
 
 [[package]]
@@ -5414,6 +5431,18 @@ dependencies = [
  "web-time",
  "winreg",
  "zip",
+]
+
+[[package]]
+name = "solidcraft-viewport"
+version = "0.1.1"
+dependencies = [
+ "image",
+ "serde",
+ "serde_json",
+ "solidcore-record",
+ "solidcore-tess",
+ "solidcraft-color",
 ]
 
 [[package]]
