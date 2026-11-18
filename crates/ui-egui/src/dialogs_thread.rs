@@ -653,9 +653,7 @@ pub(crate) fn reopen(d: &mut Dialog, s: &Session, kind: &FeatureKind) {
         chamfer_angle,
         chamfer_depth,
         steep_flank,
-        // Kept by the edit itself (`timeline.redefine`), not a dialog option.
-        old_auto_size: _,
-        // Thread options this UI does not edit.
+        // The rest are kept by the edit itself (`timeline.redefine`), not dialog options.
         ..
     } = kind
     else {
