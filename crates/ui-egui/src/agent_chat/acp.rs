@@ -636,9 +636,16 @@ const MAX_MEDIA_TEXT: usize = 14 * 1024 * 1024 + 4096;
 /// is the JSON text of `{"__workspaceMedia": true, "text": "<path> (<n> bytes, <type>)",
 /// "mediaType", "data": <base64>}`. Gives the line that says what it is, and the file's bytes
 /// when it is a picture. Read as any other result it is two thousand characters of base64.
+///
+/// A picture an MCP tool returns comes the same way, as the JSON text of the tool's result:
+/// `{"content": [{"type": "image", "data": <base64>, "mimeType"}, {"type": "text", "text"}]}`
+/// (the app's own `screenshot` and `compare_picture`). Its line names the picture as the other
+/// does, `image.png (<n> bytes, image/png)`, and what the tool said in text follows it.
 fn tool_media(u: &Value) -> Option<(String, Option<Vec<u8>>)> {
-    let text =
-        u.get("rawOutput")?.as_str().filter(|text| text.len() <= MAX_MEDIA_TEXT && text.starts_with('{') && text.contains("\"__workspaceMedia\""))?;
+    let text = u.get("rawOutput")?.as_str().filter(|text| text.len() <= MAX_MEDIA_TEXT && text.starts_with('{'))?;
+    if !text.contains("\"__workspaceMedia\"") {
+        return text.contains("\"image\"").then(|| mcp_picture(text)).flatten();
+    }
     let media: Value = serde_json::from_str(text).ok()?;
     if media.get("__workspaceMedia") != Some(&Value::Bool(true)) {
         return None;
@@ -648,6 +655,33 @@ fn tool_media(u: &Value) -> Option<(String, Option<Vec<u8>>)> {
     let picture = media.get("mediaType").and_then(Value::as_str).is_some_and(|kind| kind.starts_with("image/"));
     let bytes = if picture { media.get("data").and_then(Value::as_str).and_then(|data| super::backend::base64_decode(data).ok()) } else { None };
     Some((line, bytes))
+}
+
+/// The first picture in an MCP tool's result given as JSON text, and the result's text. `None`
+/// when it holds no picture that decodes: it is then read as any other result. The block's type
+/// is its `mimeType` (MCP's name) or `mediaType`; where an agent sends neither, the bytes say.
+fn mcp_picture(text: &str) -> Option<(String, Option<Vec<u8>>)> {
+    let result: Value = serde_json::from_str(text).ok()?;
+    let blocks = result.get("content")?.as_array()?;
+    let kind = |block: &Value| block.get("type").and_then(Value::as_str).map(str::to_string);
+    let (bytes, mime) = blocks.iter().filter(|block| kind(block).as_deref() == Some("image")).find_map(|block| {
+        let bytes = super::backend::base64_decode(block.get("data")?.as_str()?).ok()?;
+        let named = block.get("mimeType").or_else(|| block.get("mediaType")).and_then(Value::as_str);
+        let mime = named.or(match bytes.as_slice() {
+            [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+            [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+            [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+            _ => None,
+        })?;
+        mime.starts_with("image/").then(|| (bytes, mime.to_string()))
+    })?;
+    let mut line = format!("image.{} ({} bytes, {mime})", mime.trim_start_matches("image/"), bytes.len());
+    for said in blocks.iter().filter(|block| kind(block).as_deref() == Some("text")).filter_map(|block| block.get("text")?.as_str()) {
+        line.push('\n');
+        line.push_str(said);
+    }
+    clip_output(&mut line);
+    Some((line, Some(bytes)))
 }
 
 /// Read one line from the agent.
@@ -1111,6 +1145,45 @@ mod tests {
 
     /// Mastra Code hands back a file it read as media: the JSON text of an object with the file's
     /// bytes in base64. It is a line and a picture, never two thousand characters of base64.
+    /// The app's own screenshot comes back as an MCP result with the picture in it: it is a line
+    /// that names the picture, what the tool said, and the picture, never base64 as the result.
+    #[test]
+    fn a_picture_in_an_mcp_result_is_a_line_and_a_picture() {
+        let png = b"\x89PNG\r\n\x1a\nthe rest";
+        let base64 = super::super::backend::base64(png);
+        let returned = |result: Value| {
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": result.to_string()}), "s")
+            else {
+                panic!()
+            };
+            (output, picture)
+        };
+        let shot = json!({"content": [{"type": "image", "data": base64, "mimeType": "image/png"}, {"type": "text", "text": "{\"width\":8}"}]});
+        assert_eq!(returned(shot), (Some("image.png (16 bytes, image/png)\n{\"width\":8}".into()), Some(png.to_vec())));
+        // The picture alone, and a text block before it.
+        let alone = json!({"content": [{"type": "image", "data": base64, "mimeType": "image/jpeg"}]});
+        assert_eq!(returned(alone), (Some("image.jpeg (16 bytes, image/jpeg)".into()), Some(png.to_vec())));
+        let after = json!({"content": [{"type": "text", "text": "numbers"}, {"type": "image", "data": base64, "mimeType": "image/png"}]});
+        assert_eq!(returned(after), (Some("image.png (16 bytes, image/png)\nnumbers".into()), Some(png.to_vec())));
+        // The type under the other name, and under no name: the bytes say what the picture is.
+        let other_name = json!({"content": [{"type": "image", "data": base64, "mediaType": "image/webp"}]});
+        assert_eq!(returned(other_name), (Some("image.webp (16 bytes, image/webp)".into()), Some(png.to_vec())));
+        let unnamed = json!({"content": [{"type": "image", "data": base64}]});
+        assert_eq!(returned(unnamed), (Some("image.png (16 bytes, image/png)".into()), Some(png.to_vec())));
+        let unknown = json!({"content": [{"type": "image", "data": super::super::backend::base64(b"neither of them")}]});
+        assert_eq!(returned(unknown.clone()), (Some(unknown.to_string()), None));
+        // No picture that decodes, or only the word: read as any other result.
+        for other in [
+            json!({"content": [{"type": "image", "data": "not base64!", "mimeType": "image/png"}]}),
+            json!({"content": [{"type": "image", "data": base64, "mimeType": "application/pdf"}]}),
+            json!({"content": [{"type": "text", "text": "an \"image\" is named"}]}),
+            json!({"note": "\"image\""}),
+        ] {
+            assert_eq!(returned(other.clone()), (Some(other.to_string()), None));
+        }
+    }
+
     #[test]
     fn a_file_handed_back_as_media_is_a_line_and_a_picture() {
         let png = b"\x89PNG\r\n\x1a\nthe rest";

@@ -52,8 +52,8 @@ everything it started), the state, **Connect** while the agent is not running, *
 chat**, the panel's menu (dock on the other side, fold to a strip) and **Close**;
 the conversation, with tool calls as rows that fold, a request for approval with **Allow once**,
 **Always allow** and **Deny** always in view, the plan as a task list above the message box, and
-**Undo these changes**; and the message box, whose **+** menu has **Choose a file…**, **Paste a
-picture**, **Attach view**, **Attach selection** and **Pick context**, next to the permission
+**Undo these changes**; and the message box, whose **+** menu has **Choose a file…**, **Attach view**, **Attach selection**
+and **Pick context**, and which takes a picture pasted from the clipboard, next to the permission
 mode and the skill, and the agent's model beside **Send**: a list you search by typing, which
 also offers what you typed as a model of your own when the agent takes one. What the page shows
 and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
@@ -180,8 +180,9 @@ turn limit. Queue, Send now and Stop keep their existing behavior.
 A message can carry up to eight files, to show the agent what you mean: a concept picture, a
 sketch, a brief, a part to fit around.
 
-- **+** next to **Send** has **Choose a file…** (a file dialog for the types below) and **Paste a
-  picture** (the picture on the clipboard).
+- **+** next to **Send** has **Choose a file…** (a file dialog for the types below). A picture on
+  the clipboard is pasted into the message box with the keyboard; text on the clipboard is pasted
+  as text.
 - **Drop files on the chat.** Files dropped on the panel (or its folded strip) attach to the
   next message, and the app doesn't open them too. While files are dragged over the chat, it says
   so. The window gives no position while something is dragged, so the drop is the chat's when the
@@ -524,7 +525,9 @@ command with what it printed, or the arguments and the result. The agent sends a
 as JSON text and its result as `rawOutput`; the app reads both (as it reads an object and
 `content` from other agents), so a row is not left empty. A picture the agent reads (PNG, JPEG,
 WebP) comes back as a file's bytes in base64 inside that result: the row then says the file's name
-and size, and the picture is under the row in Mastra's attachment card. A click opens it in the
+and size, and the picture is under the row in Mastra's attachment card. A picture an MCP tool
+returns (the app's own `screenshot` and `compare_picture`) is shown the same way: the row names it,
+what the tool said in text follows, and the picture is under the row. A click opens it in the
 app's own viewer, as a picture sent with a message. The bytes are served to the page by the app
 and are never part of the page's state; a picture over 4 MiB is not kept (its row still names
 it), and only the newest 16 are.

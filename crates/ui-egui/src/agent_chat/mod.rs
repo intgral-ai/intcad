@@ -946,9 +946,11 @@ impl AgentChat {
                 }
             }
             Event::ToolPicture { id, bytes } => {
-                // Named as the call's own line names the file: "<path> (<n> bytes, <type>)".
+                // Named as the first line of the call's result names the file: "<path> (<n> bytes, <type>)".
                 let line = self.items.iter().rev().find_map(|item| match item {
-                    Item::Tool { id: shown, output, .. } if *shown == id => Some(output.clone().unwrap_or_default()),
+                    Item::Tool { id: shown, output, .. } if *shown == id => {
+                        Some(output.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_string())
+                    }
                     _ => None,
                 });
                 if let Some(line) = line.filter(|_| bytes.len() <= MAX_PICTURE_BYTES) {
