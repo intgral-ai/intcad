@@ -14,7 +14,8 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new("frame.end_cap", "End C
     .contract(&CONTRACT)
     .output(output_schema_for::<FeatureResult>)
     .at("WELDMENTS", "CREATE")
-    .icon("end_cap")
+    // No Intcad dialog yet (`workspace::AGENT_ONLY`): reuses the flange artwork.
+    .icon("flange")
     .enabled(not_in_sketch)
     .params("faces: [{face:[x,y,z],body,index,path?}] planar end faces of frame members, picked in world mm (1–256); thickness: length in design units or a parameter expression; offset?: inset of the plate from the outside of the profile, a length; ratio?: the inset as a share of the thickness (give offset or ratio, not both; neither: the plate is flush with the outside of the profile); chamfer?: corner chamfer length along each edge from the corner (default 0; a rounded corner needs at least its rounding); direction?: outward|inward (default outward: past the end; inward: the member is cut back by the thickness and the cap takes its place). One separate body per face, named `<member> End Cap`; the plate is the profile's outer outline on a closed section (tube, pipe, bar), its outside on an open one (angle, channel, beam, slotted extrusion): the edges on the rectangle round the profile with their rounds and chamfers, inward stretches closed along the rectangle. Common name/body_names fields supported.")];
 

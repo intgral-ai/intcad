@@ -22,7 +22,8 @@ const TYPE_MESSAGE: &str = "`type` must be mate, flush, distance, concentric, in
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("assembly.constraint.create", "Constrain", crate::checked!("assembly.constraint.create", create))
         .at("SOLID", "ASSEMBLE")
-        .icon("constrain")
+        // No Intcad dialog yet (`workspace::AGENT_ONLY`): reuses the constraint tool artwork.
+        .icon("constrainer")
         .contract(&CREATE_CONTRACT)
         .output(output_schema_for::<JointAddedResult>)
         .params(
