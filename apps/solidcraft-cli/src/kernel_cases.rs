@@ -492,6 +492,7 @@ fn surface_word(s: &solidcore_record::brep::Surface) -> &'static str {
         S::Torus { .. } => "torus",
         S::Spline { .. } | S::RationalSpline { .. } => "bspline",
         S::PlacedRevolution { .. } => "revolution",
+        S::Blend { .. } => "blend",
     }
 }
 

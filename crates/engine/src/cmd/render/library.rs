@@ -22,6 +22,7 @@ use crate::schema::render_library::{
     LibraryTargetsParams, Pbr, RenderTarget, ResourceSummary, SceneBounds,
 };
 use crate::{Result, Session, params::bad};
+use solidcraft_geom::MeshGeom;
 
 pub(super) const LIST_CONTRACT: TypedContract<LibraryListParams> = TypedContract::new();
 pub(super) const DESCRIBE_CONTRACT: TypedContract<LibraryDescribeParams> = TypedContract::new();

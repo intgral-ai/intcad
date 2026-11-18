@@ -9,6 +9,7 @@ use solidcraft_doc::render_settings::{RenderSettings, RenderSetup};
 use super::CommandSpec;
 use crate::params::bad;
 use crate::{Result, Session};
+use solidcraft_geom::MeshGeom;
 
 mod clear_coat;
 mod effects;

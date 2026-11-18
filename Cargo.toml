@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 # Third-party code kept with local fixes (see vendor/README.md); not linted as ours.
-exclude = ["vendor"]
+exclude = ["solidcore", "vendor"]
 
 [workspace.package]
 version = "0.1.1"
@@ -20,7 +20,6 @@ solidcraft-profile = { path = "crates/profile" }
 solidcraft-sketch = { path = "crates/sketch" }
 solidcraft-kernel = { path = "crates/kernel" }
 solidcraft-smlib = { path = "crates/smlib" }
-solidcraft-step = { path = "crates/step" }
 solidcraft-render = { path = "crates/render" }
 solidcraft-dynamics = { path = "crates/dynamics" }
 solidcraft-gpu = { path = "crates/gpu" }
@@ -36,14 +35,21 @@ solidcraft-space-mouse = { path = "crates/space-mouse" }
 solidcraft-mcp = { path = "crates/mcp" }
 solidcraft-derive = { path = "crates/derive" }
 solidcraft-3dx-client = { path = "crates/threedx-client" }
-# The Rust port of NVIDIA's SMLib (Apache-2.0), the B-rep kernel behind crates/smlib. Pinned;
-# move the rev on its own commit. For a
-# local checkout, add `[patch."https://github.com/tangency-labs/solidcore"] solidcore = { path =
-# "../solidcore/crates/solidcore" }` to a `.cargo/config.toml` outside the repository.
-solidcore = { git = "https://github.com/tangency-labs/solidcore", rev = "8ddce901671f1cebd9214a31d21895d725e886c8" }
+# The Rust port of NVIDIA's SMLib (Apache-2.0), the B-rep kernel behind crates/smlib. Vendored in
+# solidcore/ with its own history and licence files; `exclude` below keeps it out of this
+# workspace's lints. Its own tree is the source of truth (#13153).
+solidcore = { path = "solidcore/crates/solidcore" }
 # Geometry as data (solidcore's layers §1, "Record"): the B-rep record, its structural validation
-# and the native body file. Pinned like solidcore; for a local checkout, patch it as above.
-solidcore-record = { git = "https://github.com/tangency-labs/solidcore", rev = "f5e8e9a29e0c9b7cf6c4040a5bc8878382b3c62f" }
+# and the native body file. Vendored with solidcore, in the same subtree.
+solidcore-record = { path = "solidcore/crates/solidcore-record" }
+# The modelling layer (solidcore's layers §1, "Ops"): the record-level calls SolidCraft makes into
+# the kernel, converting through solidcore-convert.
+solidcore-ops = { path = "solidcore/crates/solidcore-ops" }
+# Geometry made drawable (solidcore's layers §3): the one mesher, SolidCraft's, moved into the
+# kernel.
+solidcore-tess = { path = "solidcore/crates/solidcore-tess" }
+# STEP import and export (vendored with solidcore): the Part 21 parser is solidcore-record's.
+solidcore-step = { path = "solidcore/crates/solidcore-step" }
 # test tooling: a dev-dependency only (xtask/src/layers.rs)
 solidcraft-testkit = { path = "crates/testkit" }
 

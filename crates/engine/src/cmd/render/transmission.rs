@@ -8,6 +8,7 @@ use solidcraft_render::{
     surface::{OpaqueSurface, srgb8_to_linear},
     transmission::Transmission,
 };
+use solidcraft_geom::MeshGeom;
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Raytrace {

@@ -891,7 +891,7 @@ pub(super) fn cut(st: &mut ModelState, on: ThreadOn, (tip, angle, depth): (Threa
         let mut grooves = Vec::new();
         for g in thread_grooves(&t, groove_radius, (cyl.start, cyl.end), ends, steep, ease, taper)? {
             let section = Region2 { outer: solidcore_record::Loop2::polygon(&g.section), holes: Vec::new() };
-            grooves.push(kernel::sweep_helix_radial(&g.plane, &section, g.base, g.axis, g.pitch, g.turns, &g.law)?);
+            grooves.push(kernel::sweep_helix_radial(&g.plane, &section, g.base, g.axis, g.pitch, g.turns, &g.law, false)?);
         }
         if let Some(taper) = taper
             && let Some(envelope) = taper_envelope(&t, radius, ends, taper)?

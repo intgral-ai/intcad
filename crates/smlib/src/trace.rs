@@ -1,5 +1,5 @@
 //! A trace of the operations a run makes on this crate's bodies, for the kernel rig's corpus
-//! (`intcad-cli kernel-cases --export`): each body taken from a record (its record), each
+//! (`solidcraft-cli kernel-cases --export`): each body taken from a record (its record), each
 //! operation (its name, its operand bodies, its parameters with every pick by points also given
 //! as the topology index it picked, and the bodies it made or why it failed), and each body
 //! written back as a record. Off unless [`start`]ed; while off it costs an atomic load per

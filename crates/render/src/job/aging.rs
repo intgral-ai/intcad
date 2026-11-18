@@ -1,6 +1,7 @@
 //! Original ordered procedural weathering. These are authored optical layers,
 //! not corrosion kinetics, engineering-property changes or displaced geometry.
 //! Fixed-capacity intent remains copyable, bounded and portable with a saved shot.
+use solidcraft_geom::MeshGeom;
 use super::{ErrorCode, JobError, Result};
 use crate::{ProductScene, surface::srgb8_to_linear};
 use serde::{Deserialize, Serialize, de, ser::SerializeSeq};

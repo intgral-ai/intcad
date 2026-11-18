@@ -13,6 +13,7 @@ use solidcraft_kernel::fuzz::Rng;
 pub use solidcraft_kernel::fuzz::{BoolCase, boolean_case, boolean_shapes};
 
 use crate::{EngineError, Session};
+use solidcraft_geom::MeshGeom;
 
 /// One step: the commands it runs (a sketch and its feature go together).
 #[derive(Clone, Debug, Serialize)]

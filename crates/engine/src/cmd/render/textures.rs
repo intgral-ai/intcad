@@ -7,6 +7,7 @@ use solidcraft_render::{
     texture_input::MapRole,
 };
 use std::sync::Arc;
+use solidcraft_geom::MeshGeom;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use solidcore_record::Vec3;
-use solidcraft_engine::geom::{Mesh, Vec3Geom};
+use solidcraft_engine::geom::{Mesh, MeshGeom, Vec3Geom};
 
 use crate::SolveApp;
 use crate::context_menu::{Item, act};
