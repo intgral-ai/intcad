@@ -1405,18 +1405,28 @@ fn g3_the_memory_and_node_predictions_cover_what_was_measured() {
 }
 
 /// A2: a solid part's default element size is about a 25th of it and half its thinnest side,
-/// but no finer than a mesh of about 90 000 nodes for its volume. R2's plate (200 x 50 x 2 mm, a
+/// but no finer than a mesh of about 80 000 nodes for its volume, so that its mesh check's finer
+/// run fits even at the densest mesh measured (D9). R2's plate (200 x 50 x 2 mm, a
 /// Ø10 hole) was meshed at 1.0 mm, too fine for its mesh check to fit; a compact part keeps its
 /// detail size; with no volume known the detail size stands.
 #[test]
-fn a_solid_parts_default_mesh_is_no_finer_than_about_ninety_thousand_nodes() {
+fn a_solid_parts_default_mesh_is_no_finer_than_about_eighty_thousand_nodes() {
     let plate_volume = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
     let plate_diag = (200.0f64 * 200.0 + 50.0 * 50.0 + 4.0).sqrt();
     let h = default_solid_size(plate_diag, 2.0, Some(plate_volume));
-    assert!((h - (SOLID_NODES_PER_MM3 * plate_volume / DEFAULT_SOLID_NODES).cbrt()).abs() < 1e-12 && h > 1.25 && h < 1.35, "{h}");
-    let nodes = SOLID_NODES_PER_MM3 * plate_volume / h.powi(3);
-    let (finer_nodes, finer_bytes) = predict_finer(nodes as usize, Elements::Solid);
-    assert!(finer_bytes <= MEMORY_CEILING, "the finer run fits: {finer_nodes} nodes, {finer_bytes} bytes");
+    assert!((h - (SOLID_NODES_PER_MM3 * plate_volume / DEFAULT_SOLID_NODES).cbrt()).abs() < 1e-12 && h > 1.3 && h < 1.4, "{h}");
+    // The finer run fits at the densest mesh measured, for the plate and for D9's thin disc
+    // (Ø100 x 2 mm), whose mesh check the ship review found skipped.
+    // The most nodes per mm³ measured of a curvature-sized mesh (see `SOLID_NODES_PER_MM3`).
+    const SOLID_NODES_PER_MM3_MOST: f64 = 11.3;
+    let disc_volume = std::f64::consts::PI * 50.0 * 50.0 * 2.0;
+    let disc_diag = (100.0f64 * 100.0 + 100.0 * 100.0 + 4.0).sqrt();
+    for (what, v, diag) in [("plate", plate_volume, plate_diag), ("disc", disc_volume, disc_diag)] {
+        let h = default_solid_size(diag, 2.0, Some(v));
+        let nodes = SOLID_NODES_PER_MM3_MOST * v / h.powi(3);
+        let (finer_nodes, finer_bytes) = predict_finer(nodes as usize, Elements::Solid);
+        assert!(finer_bytes <= MEMORY_CEILING, "{what}: the finer run fits: {finer_nodes} nodes, {finer_bytes} bytes");
+    }
     let bar = default_solid_size((140.0f64 * 140.0 + 28.0 * 28.0 + 16.0).sqrt(), 4.0, Some(13_120.0));
     assert_eq!(bar, 2.0, "the Peterson bar keeps two elements through its 4 mm");
     assert_eq!(default_solid_size(plate_diag, 2.0, None), 1.0);
@@ -1579,7 +1589,9 @@ fn d1_a_run_too_big_for_the_memory_is_refused_with_a_mesh_size_that_fits() {
 /// the control group read; without it the limit is half the memory free here, and the case is
 /// refused only on a computer with less than about 29 GB free.
 /// Real: the app's modelling and memory reading. Faked: nothing.
-/// Pass: refused within 15 s naming a `mesh_size`, or (with much memory free) it says so.
+/// Pass: refused naming a `mesh_size`, within 15 s when the volume alone shows the mesh too big
+/// (and within the meshing time when the mesh must be counted first), or (with much memory free)
+/// it says so.
 #[test]
 #[ignore = "runs gmsh and CalculiX"]
 fn va1_a_mesh_too_big_for_the_memory_is_refused_before_solving() {
@@ -1597,7 +1609,11 @@ fn va1_a_mesh_too_big_for_the_memory_is_refused_before_solving() {
             let e = e.to_string();
             eprintln!("VA1 refused in {took:.1} s: {e}");
             assert!(e.contains("not solved: the solid mesh") && e.contains("`mesh_size`, such as"), "{e}");
-            assert!(took < 15.0, "{took} s");
+            // Refused from the volume alone when the prediction is over twice the limit; between
+            // one and two times it, the mesh is made and counted first, which takes longer.
+            let volume = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
+            let before = memory_refusal(SOLID_NODES_PER_MM3 * volume / 0.7f64.powi(3), Elements::Solid, 0.7, cap, false).is_some();
+            assert!(took < if before { 15.0 } else { 180.0 }, "{took} s (refused before meshing: {before})");
         }
         Ok(r) => {
             eprintln!("VA1 solved in {took:.0} s ({} nodes): this computer has the memory", r["runs"][0]["nodes"]);
@@ -1749,4 +1765,123 @@ fn d7_a_bend_is_not_called_a_hole() {
     assert!(at_hole.contains("Held still: a hole Ø6.60"), "{at_hole}");
     let at_bend = setup(json!(bend));
     assert!(!at_bend.contains("hole"), "{at_bend}");
+}
+
+/// D8: one share of yield, the one the summary leads with, and a past-yield warning that names the
+/// peak that passed it.
+/// Input: peaks at 300 MPa overall against a 240 MPa yield, with the overall peak at a support or
+/// not, and the away peak under or over yield, or none. Action: `lead_stress`, `yield_warning`.
+/// Pass: the lead is the away peak only when the overall sits at a support; the warning says
+/// "only at" the support when the away peak is under yield, quotes the away peak when it is over,
+/// says nothing can be read with no away node, and keeps the plain words without a support peak;
+/// no warning under yield.
+#[test]
+fn d8_one_share_of_yield_and_the_warning_names_the_peak_that_passed_it() {
+    let peaks = |at: bool, away: Option<f64>| fea::Peaks {
+        at: at.then(|| "the fixed face".to_string()),
+        away: away.map(|v| (v, [1.0, 2.0, 3.0])),
+        distance: 3.0,
+    };
+    let near = |_: P| "the hole".to_string();
+    assert_eq!(lead_stress(300.0, &peaks(true, Some(120.0))), 120.0);
+    assert_eq!(lead_stress(300.0, &peaks(false, Some(120.0))), 300.0);
+    assert_eq!(lead_stress(300.0, &peaks(true, None)), 300.0);
+    let w = |at, away| yield_warning(300.0, &peaks(at, away), 240.0, &near).unwrap_or_default();
+    let only = w(true, Some(120.0));
+    assert!(only.contains("only at the fixed face") && only.contains("120 MPa, 50.0% of yield") && !only.contains("would yield and"), "{only}");
+    let over = w(true, Some(250.0));
+    assert!(over.starts_with("Away from the supports and loads, the highest stress (250 MPa, near the hole)"), "{over}");
+    assert!(w(true, None).contains("cannot be read from this mesh"));
+    let plain = w(false, Some(250.0));
+    assert!(plain.starts_with("The highest stress (300 MPa) is above") && plain.contains("would yield"), "{plain}");
+    assert_eq!(yield_warning(200.0, &peaks(true, Some(120.0)), 240.0, &near), None);
+}
+
+/// D9, real: a thin solid part gets its mesh check at the default settings.
+/// Input: a Ø100 x 2 mm disc, held at its rim, 100 N down on its top face, 6061-T6, no mesh size
+/// given. Action: the estimate. Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Pass: the mesh check ran (where this computer allows a 6 GB finer run and no node cap is set);
+/// `fraction_of_yield` is the share of the number the summary leads with and
+/// `fraction_of_yield_overall` the overall peak's.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn d9_a_thin_disc_gets_its_mesh_check_at_the_default_settings() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"diameter": 100, "height": 2, "body_name": "Disc"}));
+    let p = json!({"supports": [{"face": [50, 0, 1]}], "loads": [{"face": [0, 0, 2], "force": [0, 0, -100]}], "material": "6061-T6"});
+    let r = run(&mut s, CMD, p);
+    let line = r["mesh_check"]["line"].as_str().unwrap_or("");
+    eprintln!(
+        "D9 disc: {} nodes at {} mm, mesh check {line}; fraction {} (overall {}); times {:?} s",
+        r["runs"][r["runs"].as_array().map_or(0, |a| a.len().saturating_sub(1))]["nodes"],
+        r["runs"][r["runs"].as_array().map_or(0, |a| a.len().saturating_sub(1))]["mesh_size_mm"],
+        r["fraction_of_yield"],
+        r["fraction_of_yield_overall"],
+        r["runs"].as_array().map(|a| a.iter().map(|x| number(&x["seconds"])).collect::<Vec<_>>())
+    );
+    let roomy = matches!(finer_limit_here(), Limit::Memory(cap) if cap >= MEMORY_CEILING);
+    if roomy {
+        assert_eq!(r["mesh_check"]["status"], "ran", "{line}");
+    }
+    let yield_mpa = 240.0;
+    let overall = number(&r["runs"][0]["max_von_mises_mpa"]);
+    // The away peak leads only when there is one: a load over the whole top face leaves no node
+    // away from supports and loads.
+    let lead = if r["peak_at_support"].is_string() && r["peak_away"].is_object() { number(&r["peak_away"]["von_mises_mpa"]) } else { overall };
+    assert!((number(&r["fraction_of_yield"]) - lead / yield_mpa).abs() < 2e-3, "{r}");
+    assert!((number(&r["fraction_of_yield_overall"]) - overall / yield_mpa).abs() < 2e-3, "{r}");
+}
+
+/// D10: a grade's yield is warned about past the thickness its standard specifies it for.
+/// Input: 6061-T6 (to 6.3 mm), S235 (to 16 mm), 304 (no limit) and a material given with the
+/// request, at thicknesses inside and outside; then a 100 x 50 x 10 mm 6061-T6 block as a dry run.
+/// Action: `grade_thickness_warning`, the command. Pass: a warning naming the limit only for a
+/// table grade past its limit; the block's dry run carries it.
+#[test]
+fn d10_a_grade_past_the_thickness_its_yield_holds_for_is_warned() {
+    let g = |n: &str| fea::materials::grade(n).map(|g| g.material()).unwrap_or_else(|| panic!("{n}"));
+    let w = grade_thickness_warning(&g("6061-T6"), 10.0, false).unwrap_or_default();
+    assert!(w.contains("10.0 mm across its thinnest side") && w.contains("specified only up to 6.3 mm") && w.contains("certificate"), "{w}");
+    assert_eq!(grade_thickness_warning(&g("6061-T6"), 6.3, true), None);
+    assert!(grade_thickness_warning(&g("S235"), 20.0, true).is_some_and(|w| w.contains("20.0 mm thick") && w.contains("up to 16 mm")));
+    assert_eq!(grade_thickness_warning(&g("S355"), 12.0, false), None);
+    assert_eq!(grade_thickness_warning(&g("304"), 80.0, false), None);
+    let given = Material { name: "x".into(), e_mpa: 70_000.0, nu: 0.33, yield_mpa: 240.0, source: "s".into() };
+    assert_eq!(grade_thickness_warning(&given, 80.0, false), None);
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 50, "height": 10, "body_name": "Block"}));
+    let r = run(
+        &mut s,
+        CMD,
+        json!({"supports": [{"face": [0, 25, 5]}], "loads": [{"face": [100, 25, 5], "force": [0, 0, -10]}], "material": "6061-T6", "dry_run": true}),
+    );
+    assert!(r["warnings"].to_string().contains("specified only up to 6.3 mm"), "{}", r["warnings"]);
+}
+
+/// D11: a `thickness` that is not the sheet's own is warned about.
+/// Input: the angle bracket (a 1.5 mm sheet) as dry runs with `thickness` 3, 1.5 and 1.55, and
+/// 3 with both shells and solids. Action: the command, `thickness_mismatch`. Pass: 3 mm warns,
+/// naming both thicknesses, and with a solid run says the two runs are of different parts; 1.5
+/// and 1.55 (within 5 %) do not.
+#[test]
+fn d11_a_thickness_that_is_not_the_sheets_own_is_warned() {
+    let mut s = Session::default();
+    let hole = angle(&mut s);
+    let mut warnings = |t: f64, elements: &str| {
+        run(
+            &mut s,
+            CMD,
+            json!({"loads": [{"face": [5.0, 5.0, 1.5], "force": [0, 0, -5]}], "supports": [{"face": hole[0]}], "material": "6061-T6",
+                   "thickness": t, "elements": elements, "dry_run": true}),
+        )["warnings"]
+            .to_string()
+    };
+    let w = warnings(3.0, "shell");
+    assert!(w.contains("The thickness given (3.00 mm) is not this sheet's own (1.50 mm)") && !w.contains("two runs"), "{w}");
+    assert!(warnings(3.0, "both").contains("the two runs are of different parts"));
+    for t in [1.5, 1.55] {
+        let w = warnings(t, "shell");
+        assert!(!w.contains("not this sheet's own"), "{t}: {w}");
+    }
+    assert_eq!(thickness_mismatch(1.0, 0.0, false), None);
 }

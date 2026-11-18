@@ -131,7 +131,7 @@ pub struct StressEstimateParams {
     /// The largest element size, mm; curved faces get smaller elements (24 per turn, down to a
     /// fiftieth of this). Default: about a thirtieth of the body for shells; for solids the
     /// thickness of sheet metal, otherwise about a 25th of the body and half its thinnest side,
-    /// but no finer than a mesh of about 90 000 nodes.
+    /// but no finer than a mesh of about 80 000 nodes.
     #[serde(default)]
     pub mesh_size: Option<f64>,
     /// `shell`, `solid`, or `both` (the shell result is shown). Default: shell for sheet metal,
@@ -284,9 +284,15 @@ pub struct StressEstimateResult {
     pub summary: String,
     /// The solves, the shown one first (the mesh check's finer one when it ran).
     pub runs: Vec<StressRun>,
-    /// The shown run's highest stress as a fraction of the yield strength given (0.5 is half
-    /// of it). How far from yield, in one number.
+    /// The share of the yield strength given (0.5 is half of it) of the number the summary leads
+    /// with: the highest stress away from supports and loads when the highest overall sits at one
+    /// (`peak_at_support`), otherwise the shown run's highest stress. How far from yield, in one
+    /// number.
     pub fraction_of_yield: f64,
+    /// The shown run's highest stress overall as a share of the yield strength given, including a
+    /// peak at an idealised support or load that depends on the mesh. Equal to
+    /// `fraction_of_yield` when no peak sits at a support.
+    pub fraction_of_yield_overall: f64,
     /// The shell and solid results side by side, with `elements: both`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_vs_solid: Option<String>,

@@ -19,6 +19,9 @@ pub struct Grade {
     pub e_mpa: f64,
     pub nu: f64,
     pub yield_mpa: f64,
+    /// The thickest material (mm) the yield is specified for, where its standard stops or
+    /// specifies thicker material lower; `None` where the source gives no limit (PIL-294 D10).
+    pub up_to_mm: Option<f64>,
     pub source: &'static str,
 }
 
@@ -30,6 +33,7 @@ pub const GRADES: &[Grade] = &[
         e_mpa: 68_900.0,
         nu: 0.33,
         yield_mpa: 240.0,
+        up_to_mm: Some(6.3),
         source: "Yield: the ASTM B209M minimum for 6061-T6 sheet and plate 0.15 to 6.3 mm (35 ksi), as quoted by Kaiser Aluminum's \
                  sheet and plate data; thicker plate is not covered. E and Poisson's ratio: typical handbook values (ASM)",
     },
@@ -40,6 +44,7 @@ pub const GRADES: &[Grade] = &[
         e_mpa: 70_000.0,
         nu: 0.3,
         yield_mpa: 240.0,
+        up_to_mm: Some(100.0),
         source: "Yield: the EN 485-2 minimum proof stress for 6082-T6 plate over 12.5 to 100 mm, the lowest of its bands (sheet 0.4 to 6 mm \
                  is specified at 260 MPa, plate to 12.5 mm at 255 MPa), as quoted by Righton Blackburns' 6082 data sheet. E and Poisson's \
                  ratio: EN 1999-1-1 design values",
@@ -51,6 +56,7 @@ pub const GRADES: &[Grade] = &[
         e_mpa: 70_300.0,
         nu: 0.33,
         yield_mpa: 160.0,
+        up_to_mm: None,
         source: "Yield: the ASTM B209M minimum for 5052-H32 sheet and plate, as quoted by BlueScope Distribution's 5052 data sheet. E and \
                  Poisson's ratio: typical handbook values (ASM)",
     },
@@ -61,6 +67,7 @@ pub const GRADES: &[Grade] = &[
         e_mpa: 210_000.0,
         nu: 0.3,
         yield_mpa: 235.0,
+        up_to_mm: Some(16.0),
         source: "Yield: the EN 10025-2 minimum for S235 up to 16 mm thick (thicker sections are specified lower). E and Poisson's ratio: \
                  EN 1993-1-1 design values",
     },
@@ -71,6 +78,7 @@ pub const GRADES: &[Grade] = &[
         e_mpa: 210_000.0,
         nu: 0.3,
         yield_mpa: 355.0,
+        up_to_mm: Some(16.0),
         source: "Yield: the EN 10025-2 minimum for S355 up to 16 mm thick (thicker sections are specified lower). E and Poisson's ratio: \
                  EN 1993-1-1 design values",
     },
@@ -81,6 +89,7 @@ pub const GRADES: &[Grade] = &[
         e_mpa: 193_000.0,
         nu: 0.3,
         yield_mpa: 205.0,
+        up_to_mm: None,
         source: "Yield: the ASTM A240 minimum for type 304 (30 ksi), lower than EN 10088-2's 210 to 230 MPa for 1.4301, as quoted by Aalco's \
                  and Total Materia's data. E: a typical handbook value (ASM; EN 10088-1 gives 200 GPa). Poisson's ratio: 0.3 assumed, not \
                  found in a checked source",
@@ -94,6 +103,7 @@ pub const GRADES: &[Grade] = &[
         e_mpa: 193_000.0,
         nu: 0.3,
         yield_mpa: 170.0,
+        up_to_mm: None,
         source: "Yield: the ASTM A240 minimum for type 304L, annealed (25 ksi), as quoted by ATI's 304L data sheet (checked 2026-11-18); \
                  EN 10088-2 specifies 1.4307 higher (200 to 220 MPa). E: a typical handbook value (ASM), as for 304. Poisson's ratio: 0.3 \
                  assumed, not found in a checked source",

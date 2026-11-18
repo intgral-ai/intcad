@@ -47,7 +47,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              less) or still changing, with how far off it may still be; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
              this computer can spare: the smaller of 6 GB and half the memory available; SOLIDCRAFT_FEA_MAX_NODES caps its nodes instead); \
              keep_files?; dry_run?: true (check the setup, describe it and draw its supports and loads on the model; solves nothing: run \
-             it first so the user can see the faces) → estimate: true, setup, summary, runs, fraction_of_yield, peak_at_support, peak_away (the highest stress \
+             it first so the user can see the faces) → estimate: true, setup, summary, runs, fraction_of_yield (of the number the summary leads with), fraction_of_yield_overall, peak_at_support, peak_away (the highest stress \
              away from fixed supports and loads), equilibrium (supports carry vs loads applied), mesh_check, warnings, assumptions, \
              how_to_report. Meshes with gmsh and solves with CalculiX on this computer and paints the estimate on the body. Report it as \
              how_to_report says. skill_reference solidcraft-analysis has the workflow and worked setups",
@@ -610,15 +610,19 @@ pub(crate) const SHELL_MEMORY: (f64, f64, f64) = (44_500.0, 60_000.0, 0.1);
 /// 2 mm, a Ø10 hole): 11.3 at 1.5 mm, 10.1 at 1.0 mm, 8.5 at 0.7 mm.
 pub(crate) const SOLID_NODES_PER_MM3: f64 = 10.0;
 /// The most nodes a default solid mesh is sized for: a first run whose mesh check's finer run
-/// still fits [`MEMORY_CEILING`] (a first run of about 93 000 nodes, see there).
-pub(crate) const DEFAULT_SOLID_NODES: f64 = 90_000.0;
+/// still fits [`MEMORY_CEILING`] (a first run of about 93 000 nodes, see there). The mesh is sized
+/// at [`SOLID_NODES_PER_MM3`], but a real mesh has up to 13 % more (11.3 per mm³ measured), so
+/// 80 000 at the nominal density lands at or under about 90 000. At 90 000 there was no margin: at
+/// 11.3 per mm³ a first run has about 102 000 nodes, its finer run is predicted over the ceiling and
+/// the mesh check is skipped (PIL-294 D9, the review's Ø100 x 2 mm disc).
+pub(crate) const DEFAULT_SOLID_NODES: f64 = 80_000.0;
 
 /// The default element size for a solid part that is not sheet metal, mm: about 25 elements
 /// across and two through its thinnest side, but no finer than a mesh of about
 /// [`DEFAULT_SOLID_NODES`] for its `volume` (mm³). Without that, a large thin part got a mesh too
 /// big for this computer: R2's 200 x 50 x 2 mm plate was meshed at 1.0 mm (199 504 nodes), so the
 /// mesh check's finer run (595 186 nodes, 14 GB measured) never fitted; it is meshed at about
-/// 1.3 mm now. Under 0.3 mm only when given.
+/// 1.35 mm now. Under 0.3 mm only when given.
 pub(crate) fn default_solid_size(diag: f64, smallest: f64, volume: Option<f64>) -> f64 {
     let detail = (diag / 25.0).min(smallest / 2.0);
     let budget = volume.filter(|v| v.is_finite() && *v > 0.0).map_or(0.0, |v| (SOLID_NODES_PER_MM3 * v / DEFAULT_SOLID_NODES).cbrt());
@@ -1061,6 +1065,17 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             sig(diag)
         ));
     }
+    // The thickness asked for against the sheet's own (PIL-294 D11).
+    if let Some(own) = sheet_t
+        && p.get("thickness").is_some()
+        && let Some(w) = thickness_mismatch(plan.thickness, own, plan.runs.contains(&Elements::Solid))
+    {
+        warnings.push(w);
+    }
+    // A grade's yield holds up to a thickness (PIL-294 D10). A solid's stock was at least as thick
+    // as its bounding box's thinnest side.
+    let stock = if plan.sheet || !plan.runs.contains(&Elements::Solid) { plan.thickness } else { smallest };
+    warnings.extend(grade_thickness_warning(&plan.material, stock, plan.sheet || !plan.runs.contains(&Elements::Solid)));
     if p.get("dry_run").and_then(Value::as_bool).unwrap_or(false) {
         // Drawn on the model until the estimate runs or is declined: the user sees the faces.
         let (loads, supports) = markers_of(&plan, &faces);
@@ -1081,6 +1096,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 summary: "Not solved: a dry run checks the setup and describes it.".into(),
                 runs: Vec::new(),
                 fraction_of_yield: 0.0,
+                fraction_of_yield_overall: 0.0,
                 shell_vs_solid: None,
                 peak_at_support: None,
                 peak_away: None,
@@ -1197,14 +1213,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     warnings.extend(check_warnings(&check, shown, &near));
-    if shown.max_stress > plan.material.yield_mpa {
-        warnings.push(format!(
-            "The highest stress ({} MPa) is above the yield strength given ({} MPa): past yield the material no longer behaves linearly, so \
-             this estimate does not hold there; the real part would yield and the stress would spread",
-            sig(shown.max_stress),
-            sig(plan.material.yield_mpa)
-        ));
-    }
+    warnings.extend(yield_warning(shown.max_stress, &shown.peaks, plan.material.yield_mpa, &near));
     let span = if plan.sheet { (5.0 * plan.thickness).min(0.1 * diag) } else { 0.05 * diag };
     if shown.max_disp > span {
         warnings.push(format!(
@@ -1239,7 +1248,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             solver_threads: r.threads,
         })
         .collect();
-    let fraction = shown.max_stress / plan.material.yield_mpa;
+    let fraction = lead_stress(shown.max_stress, &shown.peaks) / plan.material.yield_mpa;
     let isolated = done.iter().chain(finer.iter()).all(|r| r.isolated);
     let network = if isolated {
         "Meshed and solved on this computer, with the solver's networking switched off; the part was not uploaded".to_string()
@@ -1309,6 +1318,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             summary,
             runs: run_json,
             fraction_of_yield: round_to(fraction, 3),
+            fraction_of_yield_overall: round_to(shown.max_stress / plan.material.yield_mpa, 3),
             shell_vs_solid,
             peak_at_support: shown.peaks.at.clone(),
             peak_away,
@@ -1840,6 +1850,89 @@ pub(crate) struct Outcome<'a> {
     pub done: &'a [fea::Run],
     pub shown: &'a fea::Run,
     pub check: &'a Check,
+}
+
+/// The warning when the part is thicker than its grade's yield is specified for (PIL-294 D10):
+/// thicker stock is specified lower, or not at all. `thickness`: a sheet's or shell's thickness
+/// (`sheet`), or a solid's thinnest side across, the least its stock can have been. Only for a
+/// grade from the table; numbers given with the request are the user's.
+pub(crate) fn grade_thickness_warning(material: &Material, thickness: f64, sheet: bool) -> Option<String> {
+    let g = fea::materials::GRADES.iter().find(|g| g.name == material.name && g.source == material.source)?;
+    let limit = g.up_to_mm?;
+    (thickness > limit * 1.001).then(|| {
+        let part = if sheet { format!("The part is {} mm thick", sig(thickness)) } else { format!("The part is {} mm across its thinnest side", sig(thickness)) };
+        format!(
+            "{part}, but {}'s yield ({} MPa) is specified only up to {} mm: thicker material is specified lower or not at all, so the              yield used may be too high; take it from the material's certificate (`material` with `yield_strength` and its `source`)",
+            g.name,
+            sig(g.yield_mpa),
+            limit
+        )
+    })
+}
+
+/// The warning when the `thickness` asked for is not the sheet's own (PIL-294 D11): more than 5 %
+/// apart. `solid_run`: a solid run is also asked for, which meshes the part as drawn.
+pub(crate) fn thickness_mismatch(given: f64, own: f64, solid_run: bool) -> Option<String> {
+    if !(own > 0.0) || (given - own).abs() <= 0.05 * own {
+        return None;
+    }
+    let solid = if solid_run {
+        format!("; the solid run meshes the part as drawn, {} mm thick, so the two runs are of different parts", sig(own))
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "The thickness given ({} mm) is not this sheet's own ({} mm): the shells are of a {} mm sheet, not the part as drawn{solid}",
+        sig(given),
+        sig(own),
+        sig(given)
+    ))
+}
+
+/// The stress the summary leads with, and the one `fraction_of_yield` shares (PIL-294 D8): the
+/// highest away from supports and loads when the highest overall sits at one of them (that peak
+/// depends on the mesh, not the part), otherwise the highest overall.
+pub(crate) fn lead_stress(max_stress: f64, peaks: &fea::Peaks) -> f64 {
+    match (&peaks.at, peaks.away) {
+        (Some(_), Some((away, _))) => away,
+        _ => max_stress,
+    }
+}
+
+/// The past-yield warning, naming which peak passed yield (PIL-294 D8). A peak at an idealised
+/// support or load grows without limit as the mesh is refined, so on its own it is not read as
+/// the part yielding.
+pub(crate) fn yield_warning(max_stress: f64, peaks: &fea::Peaks, yield_mpa: f64, near: &dyn Fn(P) -> String) -> Option<String> {
+    if max_stress <= yield_mpa {
+        return None;
+    }
+    const PAST: &str = "past yield the material no longer behaves linearly, so this estimate does not hold there; the real part would \
+                        yield and the stress would spread";
+    Some(match (&peaks.at, peaks.away) {
+        (Some(at), Some((away, _))) if away <= yield_mpa => format!(
+            "The highest stress ({} MPa) is above the yield strength given ({} MPa) only at {at}, where an idealised support or load \
+             concentrates stress without limit as the mesh is refined; away from it the highest is {} MPa, {}% of yield. A real clamp or \
+             fixture spreads its load, though the material right at it may yield locally; this estimate cannot say how much",
+            sig(max_stress),
+            sig(yield_mpa),
+            sig(away),
+            sig(100.0 * away / yield_mpa)
+        ),
+        (Some(_), Some((away, away_at))) => format!(
+            "Away from the supports and loads, the highest stress ({} MPa, near {}) is above the yield strength given ({} MPa): {PAST}",
+            sig(away),
+            near(away_at),
+            sig(yield_mpa)
+        ),
+        (Some(at), None) => format!(
+            "The highest stress ({} MPa) is above the yield strength given ({} MPa) at {at}, where an idealised support or load \
+             concentrates stress; no node lies away from the supports and loads, so whether the part itself passes yield cannot be read \
+             from this mesh",
+            sig(max_stress),
+            sig(yield_mpa)
+        ),
+        (None, _) => format!("The highest stress ({} MPa) is above the yield strength given ({} MPa): {PAST}", sig(max_stress), sig(yield_mpa)),
+    })
 }
 
 /// The reply's words: a summary, every assumption, and the shell and solid side by side. They

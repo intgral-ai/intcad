@@ -134,6 +134,11 @@ pub fn command(id: &str, params: &Value, undo_left: usize) -> Verdict {
     if id == "file.open_in_easyprint" {
         return Verdict::Ask(format!("{id}, upload the model to Printables' servers (EasyPrint)"));
     }
+    // A dry run starts no program: it checks the setup and draws it on the model, so it runs
+    // without asking, and the user approves once, for the solve (PIL-294 D12).
+    if id == "inspect.stress_estimate" && params.get("dry_run").and_then(Value::as_bool) == Some(true) {
+        return Verdict::Run { change: false };
+    }
     // Starts other programs on this computer: the user says yes first. The part stays here.
     if id == "inspect.stress_estimate" {
         return Verdict::Ask(format!("{id}: mesh and solve the part with gmsh and CalculiX on this computer"));
@@ -252,6 +257,32 @@ mod tests {
         let v = exec("inspect.stress_estimate", json!({"loads": [], "supports": []}));
         assert!(matches!(&v, Verdict::Ask(a) if a.contains("gmsh") && a.contains("this computer")), "{v:?}");
         assert_eq!(exec("inspect.stress_estimate.show", json!({"show": "deflection"})), Verdict::Run { change: false });
+    }
+
+    /// D12: a dry run starts no program, so it is not asked about; the solve still is.
+    /// Input: the same setup with `dry_run` true, false, absent and a non-boolean. Action: the gate.
+    /// Pass: only `dry_run: true` runs without asking; the rest ask, naming gmsh.
+    #[test]
+    fn a_stress_estimate_dry_run_runs_without_asking_and_the_solve_still_asks() {
+        let setup = |dry: Option<Value>| {
+            let mut p = json!({"loads": [{"face": 1, "force": [0, 0, -5]}], "supports": [{"face": 0}]});
+            if let Some(d) = dry {
+                p["dry_run"] = d;
+            }
+            exec("inspect.stress_estimate", p)
+        };
+        assert_eq!(setup(Some(json!(true))), Verdict::Run { change: false });
+        for asked in [Some(json!(false)), None, Some(json!("true"))] {
+            let v = setup(asked.clone());
+            assert!(matches!(&v, Verdict::Ask(a) if a.contains("gmsh")), "{asked:?}: {v:?}");
+        }
+        // In a batch too: a dry run alone asks nothing.
+        let batch = request(
+            "engine.batch",
+            &json!({"commands": [{"command": "inspect.stress_estimate", "params": {"loads": [], "supports": [], "dry_run": true}}]}),
+            5,
+        );
+        assert_eq!(batch, Verdict::Run { change: false });
     }
 
     #[test]
