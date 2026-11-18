@@ -338,7 +338,7 @@ fn a_forced_cpu_snapshot_is_the_cpu_rasterizers_and_says_so() {
     let mut cam = solidcraft_engine::view::home_camera(&s).unwrap();
     cam.set_view(solidcraft_engine::view::StandardView::Top);
     let scene = solidcraft_engine::view::scene(&s, &cam).unwrap();
-    let cpu = solidcraft_engine::render::render_png(&scene, &cam, SIZE.0 as usize, SIZE.1 as usize).unwrap();
+    let cpu = solidcraft_viewport::render_png(&scene, &cam, SIZE.0 as usize, SIZE.1 as usize).unwrap();
     assert_eq!(std::fs::read(dir.0.join("cpu.png")).unwrap(), cpu);
 }
 

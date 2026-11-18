@@ -330,6 +330,7 @@ fn document_only_atomic_tool_fallback_keeps_existing_checkpoint_rollback_behavio
 /// Screenshots are drawn by the renderer the host installs (`intcad-cli mcp` installs the GPU one).
 /// These tests install the viewport's CPU rasterizer, the same fallback a machine without a GPU
 /// adapter uses, so the MCP surface is checked without the GPU crate (the UI slice ports it).
+/// Consequence: the screenshot tests cover the CPU fallback, not the GPU rendering path.
 fn renders() -> bool {
     solidcraft_engine::capture::install(std::sync::Arc::new(|scene, cam, w, h| {
         let canvas = solidcraft_viewport::render(scene, cam, w as usize, h as usize);
@@ -6433,7 +6434,7 @@ fn legacy_design_files_and_resource_uris() {
     let saved = String::from_utf8(solidcraft_engine::io::write_design(&solidcraft_engine::doc::Document::default())).unwrap();
     assert!(saved.contains("\"solidcraft/"), "{saved}");
     let legacy = saved.replace("\"solidcraft/", "\"solvecraft/");
-    let path = std::env::temp_dir().join(format!("solidcraft-mcp-legacy-{}.solvecraft", std::process::id()));
+    let path = std::env::temp_dir().join(format!("solidcraft-mcp-legacy-res-{}.solvecraft", std::process::id()));
     std::fs::write(&path, legacy).unwrap();
     tool(&mut s, "open", json!({"path": path.to_string_lossy()}));
     let _ = std::fs::remove_file(&path);
@@ -6442,7 +6443,7 @@ fn legacy_design_files_and_resource_uris() {
 
     // `.sc` is what new designs are saved as; a `.solidcraft` file opens and `save {}` writes it
     // back under its own name.
-    let dir = std::env::temp_dir().join(format!("solidcraft-mcp-ext-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("solidcraft-mcp-ext-res-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let (new, old) = (dir.join("part.sc"), dir.join("part.solidcraft"));

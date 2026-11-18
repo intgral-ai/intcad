@@ -16,5 +16,8 @@ solidcraft-mcp-server = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# No `solidcraft-gpu`: it does not compile on this branch until the viewport/GPU slice ports it.
+# The screenshot tests install the viewport's CPU rasterizer, so they cover the CPU fallback a
+# machine without a GPU adapter uses, not the GPU path.
 # Synthetic reference pictures for the compare_picture test.
 image = { workspace = true }
