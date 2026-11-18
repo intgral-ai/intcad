@@ -741,7 +741,9 @@ fn inch_dimension_entry_survives_unit_changes_undo_and_reopen() {
 fn placing_a_two_point_dimension_picks_horizontal_vertical_or_aligned() {
     // What each placement fixes at 10 mm: the X span, the Y span, or the length.
     let spans = |a: solidcore_record::Vec2, b: solidcore_record::Vec2| [(b.x - a.x).abs(), (b.y - a.y).abs(), a.dist(b)];
-    for (at, measured) in [([6., 25.], 0), ([2., 20.], 0), ([-10., 1.], 1), ([15., 4.], 1), ([10., 4.], 2), ([-6., 22.], 2)] {
+    for (at, measured) in
+        [([6., 25.], 0), ([8., 26.], 0), ([-10., 1.], 1), ([22., 14.], 1), ([10., 4.], 2), ([-6., 22.], 2), ([2., 20.], 2), ([15., 4.], 2)]
+    {
         let mut h = line([12., 16.]);
         place(&mut h, &[[0., 0.], [12., 16.]], at);
         type_value(&mut h, "10 mm");
@@ -1433,8 +1435,8 @@ fn type_first_switching_between_aligned_horizontal_and_vertical_keeps_the_picked
     use solidcraft_engine::sketch::ConstraintKind as K;
     let end = [12., 16.];
     let mid = [6., 8.];
-    // Inside the picks' box, above it (over its middle), beside it.
-    let (across, above, beside) = ([10., 4.], [3., 20.], [-10., 1.]);
+    // Across from the picks, above them, beside them (as v0.44.1's rules place them).
+    let (across, above, beside) = ([-5., 12.], [6., 25.], [-10., 1.]);
     type Kind = fn(&K) -> bool;
     let aligned: Kind = |k| matches!(k, K::Distance { .. } | K::Length { .. });
     let horizontal: Kind = |k| matches!(k, K::DistanceX { .. });

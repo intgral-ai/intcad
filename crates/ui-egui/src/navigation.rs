@@ -2443,6 +2443,8 @@ mod tests {
         use super::*;
         use crate::space_mouse::{BridgeMotion, DeviceMotion, Motion};
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        // The eye stops at the model only in perspective: an orthographic zoom keeps the depth, so
+        // its eye never approaches the model (#16601). The held point stays under the press in both.
         let outside = |cam: &Camera| {
             let e = cam.eye();
             e.x.abs() > 20.0 - 1e-6 || e.y.abs() > 20.0 - 1e-6 || e.z.abs() > 20.0 - 1e-6
@@ -2465,7 +2467,12 @@ mod tests {
                     }
                     device(&mut h.app, rect, NavCaps::MODEL);
                 }
-                assert_eq!(outside(&h.app.cam), stop_at_model, "stop={stop_at_model} cursor={to_cursor} cap={cap}: eye {:?}", h.app.cam.eye());
+                assert_eq!(
+                    outside(&h.app.cam),
+                    stop_at_model && h.app.perspective_view(),
+                    "stop={stop_at_model} cursor={to_cursor} cap={cap}: eye {:?}",
+                    h.app.cam.eye()
+                );
                 if !stop_at_model {
                     assert_eq!(h.app.cam.target, Camera::default().target, "legacy zoom keeps the target fixed");
                 }
@@ -2492,7 +2499,12 @@ mod tests {
             for _ in 0..12 {
                 h.call("ui.drag", json!({"x0": at.x, "y0": at.y, "x1": at.x, "y1": at.y - 160.0, "steps": 40}));
             }
-            assert_eq!(outside(&h.app.cam), stop_at_model, "drag stop={stop_at_model} cursor={to_cursor}: eye {:?}", h.app.cam.eye());
+            assert_eq!(
+                outside(&h.app.cam),
+                stop_at_model && h.app.perspective_view(),
+                "drag stop={stop_at_model} cursor={to_cursor}: eye {:?}",
+                h.app.cam.eye()
+            );
             if !stop_at_model {
                 assert_eq!(h.app.cam.target, Camera::default().target, "legacy drag-zoom keeps the target fixed");
             }
