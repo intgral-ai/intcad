@@ -80,6 +80,20 @@ opened the sample, saved it (`C:/Users/Public/cd1-win.sc`, 44,940 bytes) and reo
 features 9, parameters preserved). The `open_newer_files` preference is implemented and its
 refusal path is tested. All of this is on branch commits, to be repeated at the final SHA.
 
+## 5a. Independent review record
+
+| Review | Scope | Verdict | Fixes it forced |
+| --- | --- | --- | --- |
+| Kernel slice | vendored kernel, rig, ladder, action matrix | approved after 2 rounds | rig path names, empty renamed recipe, action-matrix baseline recorded on this stack, the exact-blend `splines` check reading a `Surface::Blend`'s net |
+| Doc/format/IO slice | format 58, one persistence implementation | approved | attribution rows for the moved font and FreeCAD fixtures |
+| Engine slice | registry, DFM/project/validation preservation, CD-5 surface | approved after 2 rounds | `control_auth` compatibility shim, plugin surface removed wholesale (not just the runtime), duplicate mesh-decision rows, `.solvecraft` doc comment |
+| MCP slice | guarded envelopes, CD-2 map | approved after 2 rounds | CLI `!Send` stdio, `--compact` wired, CD-2 table corrections, ledger counts |
+| Final branch review | post-approval deltas only | **changes requested** at `e95afde4d`, then re-reviewed twice | (1) staged/wasm opens ignored `open_newer_files`; (2) the preference applied only on the next frame, and Cancel/Defaults restored it without syncing the session; (3) runtime GPU render requests dropped directional/punctual lights; (4) `EXEMPT` put non-geometry commands in the geometry backlog. Fixed in `19396bb4e` and `7aa8e008e`; F1/F3/F4 and F2 were then confirmed pass by the same reviewer, with the F2 fix verified again after the develop merge |
+
+The reviewer also corrected an overstated claim in an earlier draft of the pull request: `KNOWN_FAILING_TESTS`
+has **33 entries on `develop` and 22 here** (11 removed because their test now passes, 2 reworded to name the
+vendored kernel instead of the old pin, 0 added), not the "42 to 15" an earlier draft said.
+
 ## 6. Platform acceptance
 
 | Platform | Status |
