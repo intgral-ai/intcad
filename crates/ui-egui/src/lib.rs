@@ -662,6 +662,7 @@ pub struct SolveApp {
     /// Text a copy left for the system clipboard, written on the next frame (so a paste event
     /// follows: the window system sends one only while the clipboard holds text).
     pub(crate) clipboard_text: Option<String>,
+    pub(crate) clipboard_input: edit_clipboard::InputBatch,
     /// Component placements copied with Copy (by path): Paste places new instances of them in
     /// the active component, Paste New (Ctrl+Shift+V) independent copies.
     pub copied_placements: Vec<Vec<u64>>,
@@ -918,6 +919,7 @@ impl SolveApp {
             last_command: None,
             copied_bodies: Vec::new(),
             clipboard_text: None,
+            clipboard_input: edit_clipboard::InputBatch::default(),
             copied_placements: Vec::new(),
             cut: Default::default(),
             clipboard_stamp: 0,
@@ -3059,6 +3061,7 @@ impl SolveApp {
         issue_report::tick(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
+        edit_clipboard::begin_input(self, ctx);
         if self.issue_report.draft.is_none() && self.file_picker.is_none() {
             // Completion owns its keys before either CAD shortcuts or text editors see them.
             if !keymap::capturing(self) {
@@ -3181,6 +3184,7 @@ impl SolveApp {
         if self.file_picker.is_none() {
             issue_report::show(self, ui.ctx());
         }
+        edit_clipboard::finish_input(self, ui.ctx());
         if !self.home.open {
             agent_cursor::paint(self, ui.ctx());
         }

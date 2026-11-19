@@ -3394,6 +3394,12 @@ pub(crate) fn cancel_unfinished(app: &mut SolveApp) -> bool {
 
 /// Global keyboard shortcuts (when no text field has focus).
 pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
+    // A file question (or a text owner that closed on a previous layout pass) keeps first
+    // refusal. Its Escape must never clear CAD selection or finish the sketch underneath.
+    if app.file_tree.modal.is_some() || app.clipboard_input.entry_keyboard_owned {
+        app.viewport.key_hold = None;
+        return;
+    }
     crate::viewport_status::reconcile(app, ctx);
     crate::browser::update_folder_pick(app, ctx);
     let chat_owner = crate::agent_chat::owns_keyboard_input(app, ctx);
@@ -3498,17 +3504,18 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
             )
             .collect()
     });
-    // A theme pasted on the Interface page is a theme, not copied components (#8226).
-    crate::prefs::take_theme_paste(app, ctx);
     // Home hides the design: only New, Open and Preferences work there.
     let shown = design_shown(app);
-    if shown {
-        crate::edit_clipboard::handle(app, ctx);
-    } else {
-        crate::edit_clipboard::flush(app, ctx);
-    }
+    // Only clipboard mutation waits for current widget/dialog ownership in `finish_input`.
     for (k, repeat, mods) in keys {
         use egui::Key;
+        if app.file_tree.focused
+            && crate::right_rail::shown(app)
+            && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files)
+            && matches!(k, Key::Delete | Key::Backspace | Key::Escape)
+        {
+            continue;
+        }
         // Only Esc pressed twice in a row finishes a sketch: any other key in between resets it.
         if k != Key::Escape {
             app.last_escape = None;

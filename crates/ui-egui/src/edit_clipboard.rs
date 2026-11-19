@@ -738,6 +738,165 @@ fn paste_placements(app: &mut SolveApp, new_copy: bool, (active, base): (u64, Ve
     true
 }
 
+/// Disposition of this input batch, shared by layout passes, not by later input frames.
+/// Selection and focus remain owned by the actual widgets, never a second routing model.
+#[derive(Default)]
+pub(crate) struct InputBatch {
+    frame: Option<u64>,
+    done: bool,
+    pub(crate) files_rendered: bool,
+    pub(crate) entry_keyboard_owned: bool,
+    ambiguous: bool,
+    text_repass: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ClipboardCommand {
+    Copy,
+    Cut,
+    Paste,
+}
+
+fn clipboard_command(event: &egui::Event) -> Option<ClipboardCommand> {
+    use egui::{Event, Key};
+    match event {
+        Event::Copy => Some(ClipboardCommand::Copy),
+        Event::Cut => Some(ClipboardCommand::Cut),
+        Event::Paste(_) => Some(ClipboardCommand::Paste),
+        Event::Key { key: Key::C, pressed: true, modifiers, .. } if modifiers.command && !modifiers.shift && !modifiers.alt => {
+            Some(ClipboardCommand::Copy)
+        }
+        Event::Key { key: Key::X, pressed: true, modifiers, .. } if modifiers.command && !modifiers.shift && !modifiers.alt => {
+            Some(ClipboardCommand::Cut)
+        }
+        Event::Key { key: Key::V, pressed: true, modifiers, .. } if modifiers.command && !modifiers.alt => Some(ClipboardCommand::Paste),
+        _ => None,
+    }
+}
+
+fn keyboard_owned(app: &mut SolveApp, ctx: &egui::Context) -> bool {
+    ctx.text_edit_focused()
+        || ctx.memory(|m| m.top_modal_layer().is_some())
+        || egui::Popup::is_any_open(ctx)
+        || crate::dim_view::editing()
+        || app.file_tree.editing.is_some()
+        || app.file_tree.modal.is_some()
+        || app.file_tree.context.is_some()
+        || crate::agent_chat::owns_keyboard_input(app, ctx)
+        || crate::keymap::capturing(app)
+        || app.ui.palette_open
+        || app.issue_report.draft.is_some()
+        || app.file_picker.is_some()
+        || app.file_load.busy()
+}
+
+/// Reserve clipboard mutation until the widgets and current dialogs have seen the input.
+/// Ordered inspection detects unsafe retargeting only; it never reconstructs a selection.
+pub(crate) fn begin_input(app: &mut SolveApp, ctx: &egui::Context) {
+    let frame = ctx.cumulative_frame_nr();
+    if app.clipboard_input.frame != Some(frame) {
+        let entry_keyboard_owned = keyboard_owned(app, ctx);
+        let ambiguous = ctx.input(|i| {
+            let mut command_seen = false;
+            i.events.iter().any(|event| {
+                command_seen |= clipboard_command(event).is_some();
+                command_seen && matches!(event, egui::Event::PointerButton { .. } | egui::Event::WindowFocused(false))
+            })
+        });
+        app.clipboard_input = InputBatch { frame: Some(frame), entry_keyboard_owned, ambiguous, ..Default::default() };
+    }
+    app.clipboard_input.files_rendered = false;
+    if !ctx.input(|i| i.focused) {
+        app.file_tree.focused = false;
+    }
+}
+
+fn retire_input(ctx: &egui::Context) {
+    ctx.input_mut(|i| {
+        i.events.retain(|e| clipboard_command(e).is_none());
+        i.raw.events.retain(|e| clipboard_command(e).is_none());
+    });
+}
+
+/// One owner after real layout. Text widgets have already had first refusal, including
+/// widgets which closed or surrendered focus during this batch. Always flush menu copies.
+pub(crate) fn finish_input(app: &mut SolveApp, ctx: &egui::Context) {
+    if app.clipboard_input.done {
+        retire_input(ctx);
+        flush(app, ctx);
+        return;
+    }
+    // egui 0.36 text edits read keyboard events before acquiring focus from a click.
+    // Give the newly focused real widget one normal layout re-pass with the original events.
+    // This is not a second text editor or a replay queue; no application action has run yet.
+    if !app.clipboard_input.entry_keyboard_owned
+        && !app.clipboard_input.ambiguous
+        && !app.clipboard_input.text_repass
+        && ctx.text_edit_focused()
+        && ctx.input(|i| i.events.iter().any(|e| clipboard_command(e).is_some()))
+    {
+        app.clipboard_input.text_repass = true;
+        ctx.request_discard("deliver clipboard input to newly focused text widget");
+        if ctx.will_discard() {
+            return;
+        }
+    }
+    app.clipboard_input.done = true;
+    let rendered =
+        app.clipboard_input.files_rendered && crate::right_rail::shown(app) && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files);
+    if !rendered {
+        app.file_tree.focused = false;
+    }
+    let blocked = app.clipboard_input.entry_keyboard_owned
+        || keyboard_owned(app, ctx)
+        || app.clipboard_input.ambiguous
+        || !ctx.input(|i| i.focused)
+        || crate::issue_report::cad_input_blocked()
+        || app.embedded;
+    if !blocked {
+        // A theme on the Appearance page precedes CAD/Files. Retire replay input below too.
+        crate::prefs::take_theme_paste(app, ctx);
+        if !app.prefs_window.open && !app.keymap.open {
+            if rendered && app.file_tree.focused {
+                let commands: Vec<_> = ctx.input(|i| {
+                    i.events
+                        .iter()
+                        .filter_map(
+                            |event| {
+                                if matches!(event, egui::Event::Paste(_)) && middle_navigation(i) { None } else { clipboard_command(event) }
+                            },
+                        )
+                        .collect()
+                });
+                for command in commands {
+                    match command {
+                        ClipboardCommand::Copy => app.file_tree.copy_selection(false),
+                        ClipboardCommand::Cut => app.file_tree.copy_selection(true),
+                        ClipboardCommand::Paste => {
+                            if let Some(folder) = app.file_tree.target_folder() {
+                                app.file_tree.paste(&folder);
+                            }
+                        }
+                    }
+                }
+                if app.file_tree.busy || app.file_tree.modal.is_some() {
+                    ctx.request_repaint();
+                }
+            } else if crate::toolbar::design_shown(app) {
+                handle(app, ctx);
+            }
+        }
+    }
+    retire_input(ctx);
+    flush(app, ctx);
+}
+
+fn middle_navigation(i: &egui::InputState) -> bool {
+    i.pointer.button_down(egui::PointerButton::Middle)
+        || i.pointer.button_pressed(egui::PointerButton::Middle)
+        || i.pointer.button_released(egui::PointerButton::Middle)
+}
+
 /// The frame's Copy, Cut and Paste events (and Ctrl+C / Ctrl+X / Ctrl+V sent as key presses), plus any
 /// clipboard text a menu's Copy left. Called by the global shortcuts when no text field has the
 /// keyboard.
@@ -748,14 +907,12 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context) {
         let mut pastes = 0;
         // Firefox on Linux sends primary-selection Paste events during middle-click navigation.
         // Include release frames and clicks completed within one frame; explicit Ctrl/Cmd+V still works.
-        let middle_navigation = i.pointer.button_down(egui::PointerButton::Middle)
-            || i.pointer.button_pressed(egui::PointerButton::Middle)
-            || i.pointer.button_released(egui::PointerButton::Middle);
+        let middle_navigation = middle_navigation(i);
         for e in &i.events {
             match e {
                 egui::Event::Copy => copies += 1,
                 egui::Event::Cut => cuts += 1,
-                egui::Event::Paste(_) if !middle_navigation => pastes += 1,
+                egui::Event::Paste(text) if !text.is_empty() && !middle_navigation => pastes += 1,
                 egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. } if modifiers.command && !modifiers.shift && !modifiers.alt => {
                     copies += 1
                 }

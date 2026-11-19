@@ -419,6 +419,8 @@ impl FileTree {
         self.selection.clear();
         self.anchor = None;
         self.focus = None;
+        self.focused = false;
+        self.context = None;
         self.editing = None;
         self.report = None;
         self.notice = None;
@@ -1108,7 +1110,7 @@ impl FileTree {
             }
         }
         if !answer.no_trash.is_empty() {
-            let reason = tr("ui.files_trash_unavailable").to_string();
+            let reason = tr(if cfg!(target_os = "macos") { "ui.files_trash_unavailable_macos" } else { "ui.files_trash_unavailable" }).to_string();
             self.modal = Some(Modal::Permanent { paths: answer.no_trash, reason });
         }
         let retry: Vec<OpItem> = answer
@@ -1334,7 +1336,8 @@ pub(crate) fn tick(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
     });
     for (path, answer) in finished {
         if let Err(error) = answer {
-            let message = trf("ui.files_open_failed", &[("name", &path.display().to_string()), ("reason", &error)]);
+            let reason = if error == files::NO_ASSOCIATED_PROGRAM { tr("ui.files_no_associated_app") } else { &error };
+            let message = trf("ui.files_open_failed", &[("name", &path.display().to_string()), ("reason", reason)]);
             app.file_tree.notice = Some((message.clone(), true));
             app.file_tree.notice_reveal = Some(path);
             app.set_status(message, true);

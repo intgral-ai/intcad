@@ -59,6 +59,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+# Root-only retention of file-only Paste intent; eframe still selects the adapter's features.
+egui-winit = { version = "=0.36.2", default-features = false }
 quick-xml = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

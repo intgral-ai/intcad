@@ -21,6 +21,7 @@ const HEADER: f32 = 30.0;
 
 /// Draw the Files panel into `area` (the panel's body, below its title).
 pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
+    app.clipboard_input.files_rendered = ui.is_enabled() && area.is_positive() && ui.is_rect_visible(area);
     crate::file_tree::tick(app, ui.ctx(), app.now);
     // A click anywhere else (the ribbon, the view, another panel) takes the tree's keys away.
     let clicked_outside = ui.input(|i| i.pointer.any_click() && !i.pointer.interact_pos().is_some_and(|pos| area.contains(pos)));
@@ -29,6 +30,9 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
     }
     let t = Tokens::get();
     let mut child = ui.new_child(UiBuilder::new().max_rect(area.shrink2(vec2(t.space_8, t.space_6))).layout(Layout::top_down(Align::Min)));
+    if app.file_tree.modal.is_some() {
+        child.disable();
+    }
     let ui = &mut child;
     if app.file_tree.root().is_none() {
         open_folder_state(app, ui);
@@ -41,11 +45,14 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
     if app.file_tree.find.is_some() {
         find_row(app, ui);
     }
-    let footer = footer_height(app);
-    let list_height = (ui.available_height() - footer).max(ROW * 4.0);
+    // Lay out the actual bounded footer against the bottom first. Rows receive what remains,
+    // not a guess of one line for a padded/wrapped error plus its actions.
+    let available = ui.available_rect_before_wrap();
+    let mut footer_ui = ui.new_child(UiBuilder::new().id_salt("files_footer").max_rect(available).layout(Layout::bottom_up(Align::Min)));
+    footer_rows(app, &mut footer_ui);
+    let list_height = (available.height() - footer_ui.min_rect().height() - t.space_6).max(0.0);
     rows(app, ui, list_height);
     show_context_menu(app, ui);
-    footer_rows(app, ui);
     modals(app, ui.ctx());
 }
 
@@ -272,7 +279,7 @@ fn find_row(app: &mut SolveApp, ui: &mut egui::Ui) {
     if response.changed() {
         app.file_tree.find = Some(text.clone());
     }
-    let escape = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    let escape = ui.is_enabled() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     if escape {
         app.file_tree.find = None;
         return;
@@ -431,6 +438,9 @@ fn editing_row(ui: &mut egui::Ui, draft: &mut super::Edit, depth: usize) -> Edit
         draft.error = None;
     }
     crate::scenario::publish_target("files:edit", field);
+    if !ui.is_enabled() {
+        return Edited::Keep;
+    }
     if escape {
         return Edited::Cancel;
     }
@@ -526,16 +536,34 @@ fn row_ui(
         RowState::Entry => {}
     }
 
-    let modifiers = ui.input(|i| i.modifiers);
+    // The click's own modifiers survive a quick Command/Control release in the same batch.
+    let modifiers = ui.input(|i| {
+        i.events
+            .iter()
+            .rev()
+            .find_map(|event| {
+                if let egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: false, modifiers, .. } = event {
+                    Some(*modifiers)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(i.modifiers)
+    });
+    let secondary =
+        response.secondary_clicked() || (response.contains_pointer() && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)));
     // On macOS the secondary click of a one-button mouse is Control-click; Command-click is the
-    // one that adds a row to the selection, as Ctrl-click does elsewhere.
-    let control_click = cfg!(target_os = "macos") && modifiers.ctrl && !modifiers.command;
-    if response.clicked() && !control_click {
+    // one that adds a row to the selection, as Ctrl-click does elsewhere. Control+Command keeps
+    // the Command role instead of opening the row menu.
+    let context_click =
+        secondary || (response.clicked() && modifiers.ctrl && !modifiers.command && ui.ctx().os() == egui::os::OperatingSystem::Mac);
+    if response.clicked() && !context_click {
         app.file_tree.focused = true;
         app.file_tree.press = Some(row.path.clone());
         app.file_tree.click(&row.path, modifiers, visible);
     }
-    if response.double_clicked()
+    if !context_click
+        && response.double_clicked()
         && let Some(path) = app.file_tree.activate(&row.path)
     {
         crate::file_tree::open_path(app, &path);
@@ -553,9 +581,7 @@ fn row_ui(
         ui.scroll_to_rect(rect, Some(Align::Center));
         app.file_tree.scroll_to = None;
     }
-    let secondary =
-        response.secondary_clicked() || (response.contains_pointer() && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)));
-    if secondary || (response.clicked() && control_click) {
+    if context_click {
         if !app.file_tree.selection.contains(&row.path) {
             app.file_tree.select_only(&row.path);
         }
@@ -584,7 +610,7 @@ enum MenuAction {
 /// because the rows of a long list are only built for the visible range.
 fn show_context_menu(app: &mut SolveApp, ui: &mut egui::Ui) {
     let Some(menu) = app.file_tree.context.clone() else { return };
-    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+    if ui.is_enabled() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
         app.file_tree.context = None;
         return;
     }
@@ -688,7 +714,7 @@ pub(crate) fn request_delete(app: &mut SolveApp) {
 /// The keyboard: navigation, open, rename, delete, the clipboard and Select All. Shortcuts act
 /// only while the tree has focus.
 fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
-    if app.file_tree.editing.is_some() {
+    if !ui.is_enabled() || app.esc_handled || app.file_tree.editing.is_some() || app.file_tree.modal.is_some() {
         return;
     }
     // Keys belong to the tree after a click in it; a click elsewhere clears that, and the name
@@ -696,7 +722,6 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
     if !app.file_tree.focused {
         return;
     }
-    let command = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
         app.file_tree.find = Some(String::new());
         return;
@@ -744,15 +769,7 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
     {
         request_delete(app);
-    } else if command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::C)) {
-        app.file_tree.copy_selection(false);
-    } else if command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::X)) {
-        app.file_tree.copy_selection(true);
-    } else if command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::V)) {
-        if let Some(folder) = app.file_tree.target_folder() {
-            app.file_tree.paste(&folder);
-        }
-    } else if command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
         app.file_tree.selection = visible.iter().cloned().collect();
         app.file_tree.focus = visible.first().cloned();
         app.file_tree.anchor = visible.first().cloned();
@@ -786,21 +803,6 @@ fn select_at(app: &mut SolveApp, visible: &[std::path::PathBuf], index: usize, e
     app.file_tree.scroll_to = Some(path.clone());
 }
 
-/// How many lines the notice and the batch report need.
-fn footer_height(app: &SolveApp) -> f32 {
-    let mut height = 0.0;
-    if app.file_tree.busy {
-        height += ROW + 4.0;
-    }
-    if app.file_tree.notice.is_some() {
-        height += ROW;
-    }
-    if app.file_tree.report.is_some() {
-        height += ROW * 2.0;
-    }
-    height.min(ROW * 5.0)
-}
-
 fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     if app.file_tree.busy {
@@ -813,21 +815,30 @@ fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
         });
     }
     if let Some((notice, error)) = app.file_tree.notice.clone() {
-        ui.horizontal(|ui| {
-            let style = if error { ui_kit::Text::Error(&notice) } else { ui_kit::Text::Note(&notice) };
-            ui_kit::text(ui, &notice, style);
-            if let Some(path) = app.file_tree.notice_reveal.clone()
-                && ui_kit::button(ui, tr("ui.files_reveal"), Button::Small).clicked()
-            {
-                report_error(app, files::reveal(&path), tr("ui.files_reveal"));
-                app.file_tree.notice_reveal = None;
-            }
-            if ui_kit::button(ui, "×", Button::Ghost).clicked() {
-                app.file_tree.notice = None;
-                app.file_tree.notice_reveal = None;
-            }
+        let shown = ui.vertical(|ui| {
+            let ink = if error { t.form_error } else { t.text_dim };
+            // Keep the complete reason in a tooltip, but never let hostile diagnostic length
+            // displace the two recovery controls or the rows outside the panel.
+            ui.add(egui::Label::new(egui::RichText::new(&notice).font(FontId::proportional(t.font_small)).color(ink)).truncate())
+                .on_hover_text(&notice);
+            ui.horizontal(|ui| {
+                if let Some(path) = app.file_tree.notice_reveal.clone() {
+                    let reveal = ui_kit::button(ui, tr("ui.files_reveal"), Button::Small);
+                    crate::scenario::publish_target("files:notice_reveal", reveal.rect);
+                    if reveal.clicked() {
+                        report_error(app, files::reveal(&path), tr("ui.files_reveal"));
+                        app.file_tree.notice_reveal = None;
+                    }
+                }
+                let dismiss = ui_kit::button(ui, "×", Button::Ghost);
+                crate::scenario::publish_target("files:notice_dismiss", dismiss.rect);
+                if dismiss.clicked() {
+                    app.file_tree.notice = None;
+                    app.file_tree.notice_reveal = None;
+                }
+            });
         });
-        crate::scenario::publish_target("files:notice", ui.min_rect());
+        crate::scenario::publish_target("files:notice", shown.response.rect);
     }
     let Some(report) = app.file_tree.report.as_ref() else { return };
     let (succeeded, failed, skipped, cancelled) = (report.succeeded(), report.failed(), report.skipped(), report.cancelled);
@@ -845,7 +856,7 @@ fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
     let ink = if failed > 0 { t.form_error } else { t.text_dim };
     let mut dismiss = false;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(summary).font(FontId::proportional(t.font_small)).color(ink));
+        ui.add(egui::Label::new(egui::RichText::new(summary).font(FontId::proportional(t.font_small)).color(ink)).truncate());
         if cancelled {
             ui_kit::text(ui, tr("ui.files_cancelled"), ui_kit::Text::Note(tr("ui.files_cancelled")));
         }
@@ -858,7 +869,8 @@ fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
     if !details.is_empty() {
         let text = details.join("\n");
-        ui_kit::text(ui, &text, ui_kit::Text::Note(&text));
+        ui.add(egui::Label::new(egui::RichText::new(&text).font(FontId::proportional(t.font_small)).color(t.text_dim)).truncate())
+            .on_hover_text(&text);
     }
     if retry == usize::MAX {
         app.file_tree.retry_failed();
@@ -871,6 +883,13 @@ fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
 /// The questions a file operation asks.
 fn modals(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(modal) = app.file_tree.modal.take() else { return };
+    if !crate::issue_report::cad_input_blocked() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        // The question owns this answer, including egui's layout replay.
+        ctx.input_mut(|i| i.raw.events.retain(|event| !matches!(event, egui::Event::Key { key: egui::Key::Escape, .. })));
+        app.esc_handled = true;
+        app.last_escape = None;
+        return;
+    }
     match modal {
         Modal::Delete { paths, dirty } => delete_modal(app, ctx, paths, dirty),
         Modal::Permanent { paths, reason } => permanent_modal(app, ctx, paths, reason),
@@ -892,9 +911,17 @@ fn names_summary(names: &[String], total: usize) -> String {
 fn delete_modal(app: &mut SolveApp, ctx: &egui::Context, paths: Vec<std::path::PathBuf>, dirty: Vec<String>) {
     let names: Vec<String> = paths.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
     let title = if paths.len() == 1 { tr("ui.files_delete_title") } else { tr("ui.files_delete_many_title") };
-    let summary = trf("ui.files_delete_count", &[("n", &paths.len().to_string()), ("names", &names_summary(&names, paths.len()))]);
+    let macos = ctx.os() == egui::os::OperatingSystem::Mac;
+    let summary = trf(
+        if macos { "ui.files_delete_count_macos" } else { "ui.files_delete_count" },
+        &[("n", &paths.len().to_string()), ("names", &names_summary(&names, paths.len()))],
+    );
     let dirty_note = (!dirty.is_empty()).then(|| trf("ui.files_delete_dirty", &[("n", &dirty.len().to_string())]));
-    let ok = if dirty.is_empty() { tr("ui.files_move_to_trash") } else { tr("ui.files_discard_and_delete") };
+    let ok = if dirty.is_empty() {
+        tr(if macos { "ui.files_move_to_trash_macos" } else { "ui.files_move_to_trash" })
+    } else {
+        tr("ui.files_discard_and_delete")
+    };
     let left = (!dirty.is_empty()).then_some(tr("ui.files_save_copies_delete"));
     let (closed, action) = ui_kit::Confirm::new(egui::Id::new("sc_files_delete"), "delete", title)
         .tone(ui_kit::Tone::Danger)

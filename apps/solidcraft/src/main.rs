@@ -1241,6 +1241,9 @@ fn main() -> eframe::Result {
         "SolidCraft",
         options,
         Box::new(move |cc| {
+            // File-only clipboards have no text. Keep one Paste intent for core UI ownership;
+            // auxiliary native text viewports retain upstream's default behavior.
+            egui_winit::set_emit_empty_paste_events(&cc.egui_ctx, egui::ViewportId::ROOT, true);
             created_in_app.store(true, std::sync::atomic::Ordering::SeqCst);
             solidcraft_engine::crash::phase("app setup");
             mark("window and device ready");
