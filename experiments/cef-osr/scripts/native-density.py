@@ -615,6 +615,30 @@ def _proc_stat(pid):
     return parse_stat_line(line)
 
 
+def identity_problem(before, after, expected_starttime=None):
+    """Synthetic proc-record check: missing, reused or wrong-generation identity."""
+    if not isinstance(before, dict):
+        return "process record is missing"
+    if expected_starttime is not None and before.get("starttime") != expected_starttime:
+        return "starttime does not match the requested launch"
+    if after is not None and (after.get("pid") != before.get("pid") or after.get("starttime") != before.get("starttime")):
+        return "PID/starttime was reused during capture"
+    return None
+
+
+def helper_identity_problem(helper, parent_pid, expected_starttime=None):
+    """A CEF helper must belong to the intended parent and generation."""
+    if not isinstance(helper, dict):
+        return "helper process record is missing"
+    if helper.get("ppid") != parent_pid:
+        return "helper does not belong to the intended app PID"
+    if not isinstance(helper.get("starttime"), int) or helper["starttime"] <= 0:
+        return "helper has no valid starttime"
+    if expected_starttime is not None and helper["starttime"] != expected_starttime:
+        return "helper starttime does not match the owned launch"
+    return None
+
+
 def _resource_artifacts(cef_root):
     artifacts, problems = [], []
     count = 0
@@ -713,10 +737,8 @@ def capture_bundle(app, cef_root, pid):
         artifacts.extend(resources)
         checks.append(_check("resource_inventory", "FAIL" if resource_problems else "PASS", "; ".join(resource_problems[:4]) or f"{len(resources)} CEF resource file(s) hashed"))
         after = _proc_stat(pid)
-        if after is None or before is None or after["starttime"] != before["starttime"] or after["pid"] != before["pid"]:
-            checks.append(_check("pid_reuse", "FAIL", "PID/starttime changed while the bundle was captured"))
-        else:
-            checks.append(_check("pid_reuse", "PASS", "PID/starttime stayed stable during capture"))
+        problem = identity_problem(before, after)
+        checks.append(_check("pid_reuse", "FAIL" if problem else "PASS", problem or "PID/starttime stayed stable during capture"))
     return _report(checks, artifacts=artifacts, limitations=limitations)
 
 
@@ -943,6 +965,26 @@ def _test_supplied_app_must_match_pid_executable():
         report = capture_bundle(real, cef_root, os.getpid())
         if not any(check["name"] == "app_pid_identity" and check["status"] == "PASS" for check in report["checks"]):
             raise AssertionError("the real running executable must match")
+
+
+def _test_pid_reuse_wrong_generation_and_helper_mismatch_fail():
+    before = {"pid": 4242, "ppid": 7, "starttime": 100}
+    if identity_problem(before, before) is not None:
+        raise AssertionError("an unchanged record must be accepted")
+    if identity_problem(before, {"pid": 4242, "ppid": 7, "starttime": 101}) != "PID/starttime was reused during capture":
+        raise AssertionError("a reused PID must fail")
+    if identity_problem(before, before, expected_starttime=99) != "starttime does not match the requested launch":
+        raise AssertionError("a wrong owned generation must fail")
+    if identity_problem(None, before) != "process record is missing":
+        raise AssertionError("a missing process record must fail")
+    if helper_identity_problem({"pid": 5, "ppid": 4242, "starttime": 100}, 4242, 100) is not None:
+        raise AssertionError("an owned helper must be accepted")
+    if helper_identity_problem({"pid": 5, "ppid": 9999, "starttime": 100}, 4242, 100) != "helper does not belong to the intended app PID":
+        raise AssertionError("a foreign helper must fail")
+    if helper_identity_problem({"pid": 5, "ppid": 4242, "starttime": 101}, 4242, 100) != "helper starttime does not match the owned launch":
+        raise AssertionError("a reused helper generation must fail")
+    if helper_identity_problem(None, 4242, 100) != "helper process record is missing":
+        raise AssertionError("a missing helper record must fail")
 
 
 def _test_missing_pid_fails_instead_of_passing():
@@ -1269,6 +1311,7 @@ def _run_self_tests():
         _test_missing_authenticated_origin_is_blocked,
         _test_supplied_app_must_match_pid_executable,
         _test_missing_pid_fails_instead_of_passing,
+        _test_pid_reuse_wrong_generation_and_helper_mismatch_fail,
         _test_requested_dip_cannot_be_reconstructed_from_capture,
         _test_missing_effective_native_scale_blocks_exact_density,
         _test_same_lifetime_placement_aba_is_detected,

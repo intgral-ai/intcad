@@ -5,7 +5,9 @@ Uses the app's own rectangles (`ui.rects`) to click the composer, then checks
 the app's state for what was typed, the X clipboard for what was copied, and the
 app's log for a CEF popup surface.
 
-    scripts/app-input.py <control-port> [--log PATH] [--scope] [--move-origin] [--pid PID]
+    scripts/app-input.py <control-port> --task NAME --token-file PATH --source PATH
+        --platform linux|windows|macos --pid PID --starttime TICKS
+        [--app PATH] [--log PATH] [--scope] [--move-origin]
 
 `--scope` asserts the fixed in-app probe and therefore needs the app started with
 `SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE=1` and `--log` pointing at its output; without
@@ -146,6 +148,63 @@ def result_exit(report):
     return 0 if report.get("status") == "PASS" else (1 if report.get("status") == "FAIL" else 2)
 
 
+PLATFORMS = ("linux", "windows", "macos")
+
+
+def task_args(argv):
+    """Explicit task ownership; there is no shared token or guessed target."""
+    def value(flag):
+        if flag not in argv:
+            return None
+        at = argv.index(flag)
+        if at + 1 >= len(argv) or argv[at + 1].startswith("--"):
+            return ""
+        return argv[at + 1]
+
+    parsed = {name: value(flag) for name, flag in {
+        "task": "--task", "token_file": "--token-file", "source": "--source",
+        "platform": "--platform", "pid": "--pid", "starttime": "--starttime", "app": "--app",
+    }.items()}
+    for name in ("task", "token_file", "source", "platform", "pid", "starttime"):
+        if not parsed[name]:
+            raise ValueError(f"--{name.replace('_', '-')} is required; no shared default")
+    if parsed["platform"] not in PLATFORMS:
+        raise ValueError(f"--platform must be one of {PLATFORMS}")
+    if not Path(parsed["token_file"]).is_absolute():
+        raise ValueError("--token-file must be an absolute task-owned path")
+    try:
+        parsed["pid"] = int(parsed["pid"])
+        parsed["starttime"] = int(parsed["starttime"])
+    except ValueError as error:
+        raise ValueError(f"--pid/--starttime must be integers: {error}") from error
+    if parsed["pid"] <= 0 or parsed["starttime"] <= 0:
+        raise ValueError("--pid/--starttime must be positive")
+    return parsed
+
+
+def process_identity(pid):
+    try:
+        line = Path(f"/proc/{pid}/stat").read_text(errors="replace")
+    except OSError:
+        return None
+    right = line.rfind(")")
+    after = line[right + 1:].split()
+    if right < 0 or len(after) < 20:
+        return None
+    try:
+        return {"pid": int(line[:line.find("(")].strip()), "starttime": int(after[19])}
+    except ValueError:
+        return None
+
+
+def identity_problem(record, expected_starttime):
+    if record is None:
+        return "the requested process is missing"
+    if record.get("starttime") != expected_starttime:
+        return "starttime does not match the owned launch"
+    return None
+
+
 def xdo(*args):
     subprocess.run(["xdotool", *args], check=False, stderr=subprocess.DEVNULL)
 
@@ -230,10 +289,32 @@ def process_tree(root_pid):
 def main():
     if "--self-test" in sys.argv:
         return _run_self_tests()
+    try:
+        owned = task_args(sys.argv)
+    except ValueError as error:
+        print(f"app-input: {error}", file=sys.stderr)
+        return 2
     port = int(sys.argv[1])
     log_path = Path(sys.argv[sys.argv.index("--log") + 1]) if "--log" in sys.argv else None
     scope_requested = "--scope" in sys.argv
-    token = Path("/tmp/intcad-shot-token").read_text().strip()
+    problem = identity_problem(process_identity(owned["pid"]), owned["starttime"])
+    if problem is None and owned["app"]:
+        try:
+            if Path(f"/proc/{owned['pid']}/exe").resolve() != Path(owned["app"]).resolve():
+                problem = "supplied app is not the running executable"
+        except OSError:
+            problem = "the requested process executable is unavailable"
+    if problem is not None:
+        print(f"app-input: {problem}", file=sys.stderr)
+        return 2
+    try:
+        token = Path(owned["token_file"]).read_text().strip()
+    except OSError as error:
+        print(f"app-input: cannot read the task token: {error}", file=sys.stderr)
+        return 2
+    if not token:
+        print("app-input: the task token is empty", file=sys.stderr)
+        return 2
     control = Control(port, token)
     control.call("ui.agent_chat", {"open": True})
     deadline = time.monotonic() + 30
@@ -272,7 +353,7 @@ def main():
         xdo("windowactivate", "--sync", window)
         time.sleep(0.3)
 
-    results = {}
+    results = {"task": {key: owned[key] for key in ("task", "source", "platform", "pid", "starttime")}}
     # --- typing reaches the page's composer ---------------------------------
     # The composer sits just above the bottom bar of the panel (measured from the
     # app's own screenshot: ~0.885 of the web rect's height).
@@ -448,25 +529,22 @@ def main():
     else:
         results["origin_change"] = {"status": "NOT_RUN", "detail": "pass --move-origin to exercise a window move"}
 
-    if "--pid" in sys.argv:
-        app_pid = int(sys.argv[sys.argv.index("--pid") + 1])
-        renderers = []
-        for pid in sorted(process_tree(app_pid)):
-            try:
-                cmdline = (Path("/proc") / str(pid) / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
-            except OSError:
-                continue
-            if "--type=renderer" in cmdline:
-                renderers.append(pid)
-        one_renderer = len(renderers) == 1
-        results["process_scope"] = {
-            "renderers": renderers,
-            "one_renderer": one_renderer,
-            "status": "PASS" if one_renderer else "FAIL",
-            "detail": f"{len(renderers)} renderer(s) in the app's process tree (zygote descendants included)",
-        }
-    else:
-        results["process_scope"] = {"status": "NOT_RUN", "detail": "no --pid supplied; CEF process scoping not asserted"}
+    app_pid = owned["pid"]
+    renderers = []
+    for pid in sorted(process_tree(app_pid)):
+        try:
+            cmdline = (Path("/proc") / str(pid) / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "--type=renderer" in cmdline:
+            renderers.append(pid)
+    one_renderer = len(renderers) == 1
+    results["process_scope"] = {
+        "renderers": renderers,
+        "one_renderer": one_renderer,
+        "status": "PASS" if one_renderer else "FAIL",
+        "detail": f"{len(renderers)} renderer(s) under the owned PID {app_pid} (zygote descendants included)",
+    }
     report = result_report(results)
     results["report"] = report
     print(json.dumps(results, ensure_ascii=False))
@@ -535,13 +613,33 @@ def _run_self_tests():
         if problem is not None:
             raise AssertionError(f"the merged consumer rectangles are incomplete: {problem}")
 
+    def task_ownership_is_explicit():
+        try:
+            task_args(["--task", "t"])
+        except ValueError as error:
+            if "token-file" not in str(error):
+                raise AssertionError(f"unexpected missing-argument error: {error}")
+        else:
+            raise AssertionError("missing explicit task arguments must be refused")
+        parsed = task_args([
+            "--task", "t", "--token-file", "/tmp/opencode/task.token", "--source", "/src",
+            "--platform", "linux", "--pid", "4242", "--starttime", "99",
+        ])
+        if parsed["pid"] != 4242 or parsed["starttime"] != 99 or parsed["platform"] != "linux":
+            raise AssertionError(parsed)
+        source = Path(__file__).read_text(encoding="utf-8").split("def _run_self_tests():")[0]
+        if "/tmp/intcad-shot-token" in source:
+            raise AssertionError("a shared token default remains")
+        if identity_problem({"pid": 1, "starttime": 2}, 3) != "starttime does not match the owned launch":
+            raise AssertionError("a foreign starttime must be refused")
+
     def no_global_process_actions():
         source = Path(__file__).read_text(encoding="utf-8").split("def _run_self_tests():")[0]
         for needle in ("os.kill", "killpg", "pkill", "killall", ".terminate()"):
             if needle in source:
                 raise AssertionError(f"the script must not use {needle}")
 
-    for test in (passing, missing_is_not_pass, wrong_outranks_missing, socket_closes_on_exception, hook_matches_consumer, no_global_process_actions):
+    for test in (passing, missing_is_not_pass, wrong_outranks_missing, socket_closes_on_exception, hook_matches_consumer, task_ownership_is_explicit, no_global_process_actions):
         check(test)
     failures = 0
     for test in tests:
