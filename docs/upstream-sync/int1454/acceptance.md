@@ -72,6 +72,10 @@ distinct paths: 15357 unmatched: 0
 all commits assigned, every path matched
 ```
 
+The ledger's `Already Covered`, `Not Applicable` and `Blocked` dispositions were reviewed
+independently in Phase 0 (ledger §"Method", closing line: "Independent review: two rounds completed;
+defects fixed; the Phase 0 gate passed"), and the one `Blocked` area carries CD-5's approved deferral.
+
 
 ## 3a. Compatibility Decisions and how each is implemented
 
