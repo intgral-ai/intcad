@@ -867,6 +867,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             "documents": app.docs.count(),
             "quit_requested": app.quit_requested,
             "quitting": app.docs.quitting.is_some(),
+            "hostClose": crate::documents::host_close_status(app),
         })),
         "ui.file" => {
             let Some(path) = s("path") else { return err("path is required") };
@@ -877,7 +878,18 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             }
             ok(json!({"busy": app.file_load.busy()}))
         }
-        "ui.documents" => ok(crate::documents::control(app, p)),
+        "ui.documents" => {
+            if p.get("action").and_then(Value::as_str) == Some("quit") {
+                let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
+                match crate::documents::request_quit_programmatic(app, force) {
+                    // The quit is staged, not committed or closed: the query reports its state.
+                    Ok(()) => ok(crate::documents::control(app, &json!({}))),
+                    Err(reason) => err(reason),
+                }
+            } else {
+                ok(crate::documents::control(app, p))
+            }
+        }
         "ui.home" => {
             match p.get("open").and_then(Value::as_bool) {
                 Some(true) => {
@@ -1457,16 +1469,16 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             }
         }
         "app.quit" => {
-            // `force`: quit without asking about unsaved designs.
-            if p.get("force").and_then(Value::as_bool).unwrap_or(false) {
-                app.quit_requested = true;
-            } else {
-                crate::documents::request_quit(app);
+            // `force`: accept the current dirty states without asking; it grants no future edits.
+            let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
+            match crate::documents::request_quit_programmatic(app, force) {
+                Ok(()) => ok(json!({
+                    "quitting": app.quit_requested && app.host_close_state() == crate::documents::HostCloseState::Ready,
+                    "asking": false,
+                    "hostClose": crate::documents::host_close_status(app),
+                })),
+                Err(reason) => err(reason),
             }
-            if app.quit_requested {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            ok(json!({"quitting": app.quit_requested, "asking": app.docs.closing.is_some()}))
         }
         other => err(format!("unknown method `{other}`")),
     }

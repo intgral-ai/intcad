@@ -153,6 +153,77 @@ impl DocSlot {
     }
 }
 
+/// The desktop host's CEF close barrier. UI code never sees native types.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HostCloseState {
+    /// No unresolved native close owns the quit.
+    #[default]
+    Ready,
+    /// The user asked to quit; the host must start/await the Assistant's close.
+    Required,
+    /// A native close was requested and its matching completion is still pending.
+    Closing,
+    /// The close budget elapsed; the native owner is retained and must not be freed.
+    Quarantined,
+}
+
+/// One tab's approved state at the moment the user consented to quit it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuitDecision {
+    /// Still being asked; no consent yet.
+    Pending,
+    /// Approved because the tab was clean (or its prompt saved it successfully).
+    KeepSaved,
+    /// Approved as Don't Save: only a commit may mark it saved.
+    Discard,
+}
+
+struct QuitEntry {
+    tab: usize,
+    snapshot: solidcraft_engine::QuitSessionSnapshot,
+    decision: QuitDecision,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuitStage {
+    Prompting,
+    Staged,
+    Committed,
+}
+
+struct QuitIntent {
+    entries: Vec<QuitEntry>,
+    stage: QuitStage,
+}
+
+/// Proof of one committed quit. Non-Clone and constructible only by [`finish_quit`].
+pub struct QuitCommit {
+    _private: (),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuitIntentError {
+    Changed,
+    PendingWork,
+    Missing,
+    NotReady,
+    AlreadyCommitted,
+    Allocation,
+}
+
+impl std::fmt::Display for QuitIntentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Changed => "quit consent no longer matches the open designs",
+            Self::PendingWork => "a document operation is still running",
+            Self::Missing => "no quit is being approved",
+            Self::NotReady => "the quit is not ready to commit",
+            Self::AlreadyCommitted => "the quit was already committed",
+            Self::Allocation => "the quit consent could not be recorded",
+        })
+    }
+}
+
 /// The open designs: one slot per tab; the active tab's slot is empty (its design is in the app).
 #[derive(Default)]
 pub struct Documents {
@@ -161,7 +232,12 @@ pub struct Documents {
     /// A tab waiting for the answer to "save changes?".
     pub closing: Option<usize>,
     /// Quitting: the tabs answered so far with Don't Save (`None`: not quitting).
+    /// Kept as the workflow/mutation guard through staging until commit/cancel.
     pub quitting: Option<Vec<usize>>,
+    /// The exact per-tab consent captured for this quit (`None`: no quit intent).
+    quit_intent: Option<QuitIntent>,
+    /// Don't Save indices moved out of `quitting` at staging; applied only by commit.
+    pending_quit_discard: Option<Vec<usize>>,
     /// The "save changes?" button the arrow keys have picked; Enter gives it.
     pub choice: Answer,
     /// Save As is answering a Close/Quit prompt.
@@ -712,8 +788,34 @@ pub fn request_quit(app: &mut SolveApp) {
     if app.file_picker_busy() {
         return;
     }
+    if app.host_close_state == HostCloseState::Quarantined {
+        // The Assistant's native owner is unresolved: no new consent or prompt.
+        let text = app.tr("ui.assistant_close_incomplete").to_string();
+        app.set_status(text, true);
+        return;
+    }
+    if app.host_close_state == HostCloseState::Closing {
+        // A close is already owned; the prompt waits for its matching completion.
+        return;
+    }
     if app.docs.quitting.is_none() {
         app.docs.quitting = Some(Vec::new());
+    }
+    if app.docs.quit_intent.is_none() {
+        match capture_quit_intent(app, |_, session| {
+            if session.is_dirty() {
+                QuitDecision::Pending
+            } else {
+                QuitDecision::KeepSaved
+            }
+        }) {
+            Ok(intent) => app.docs.quit_intent = Some(intent),
+            Err(_) => {
+                // No consent token means no quit: do not prompt or discard anything.
+                app.docs.quitting = None;
+                return;
+            }
+        }
     }
     quit_step(app);
 }
@@ -730,19 +832,37 @@ fn quit_step(app: &mut SolveApp) {
             app.docs.closing = Some(i);
         }
         None => {
-            // Don't Save means discard: no recovery copy is kept for the next launch either.
-            for i in skip {
-                switch(app, i);
-                app.session.mark_saved();
-            }
-            app.docs.quitting = None;
-            app.quit_requested = true;
-            // The next launch reopens the designs saved to a file (#5542).
-            let sessions: Vec<&solidcraft_engine::Session> = match app.docs.slots.is_empty() {
-                true => vec![&app.session],
-                false => app.docs.slots.iter().map(|s| s.as_ref().map_or(&app.session, |d| &d.session)).collect(),
+            // Stage, do not discard: the effects are applied by finish_quit after the host
+            // barrier is clear and every approved snapshot still matches.
+            let mut intent = match app.docs.quit_intent.take() {
+                Some(intent) => intent,
+                None => match capture_quit_intent(app, |tab, _| {
+                    if skip.contains(&tab) {
+                        QuitDecision::Discard
+                    } else {
+                        QuitDecision::KeepSaved
+                    }
+                }) {
+                    Ok(intent) => intent,
+                    Err(_) => {
+                        app.docs.quitting = None;
+                        return;
+                    }
+                },
             };
-            app.preferences.open_designs = sessions.into_iter().filter_map(|s| s.path.clone()).collect();
+            if validate_quit_entries(app, &intent, true).is_err() {
+                cancel_quit(app);
+                return;
+            }
+            let discards: Vec<usize> =
+                intent.entries.iter().filter(|entry| entry.decision == QuitDecision::Discard).map(|entry| entry.tab).collect();
+            intent.stage = QuitStage::Staged;
+            app.docs.quit_intent = Some(intent);
+            app.docs.pending_quit_discard = Some(discards);
+            // The guard stays until commit/cancel; indices are no longer duplicated.
+            app.docs.quitting = Some(Vec::new());
+            app.quit_requested = true;
+            app.host_close_state = HostCloseState::Required;
         }
     }
 }
@@ -766,6 +886,241 @@ fn dirty(app: &SolveApp, i: usize) -> bool {
         return app.session.is_dirty();
     }
     app.docs.slots.get(i).and_then(Option::as_ref).is_some_and(|s| s.session.is_dirty())
+}
+
+/// The host's quit/close status, exactly as the control channel exposes it.
+pub fn host_close_status(app: &SolveApp) -> Value {
+    let (state, blocked) = match app.host_close_state {
+        HostCloseState::Ready => ("ready", Value::Null),
+        HostCloseState::Required => ("required", Value::Null),
+        HostCloseState::Closing => ("closing", Value::Null),
+        HostCloseState::Quarantined => ("quarantined", json!("assistant-close-incomplete")),
+    };
+    json!({
+        "state": state,
+        "pending": matches!(app.host_close_state, HostCloseState::Required | HostCloseState::Closing),
+        "blocked": blocked,
+    })
+}
+
+impl SolveApp {
+    /// The desktop host's CEF close barrier (no native types in UI code).
+    pub fn host_close_state(&self) -> HostCloseState {
+        self.host_close_state
+    }
+
+    /// The host owns the transitions; documents only read the barrier.
+    pub fn set_host_close_state(&mut self, state: HostCloseState) {
+        self.host_close_state = state;
+    }
+
+    /// Work that could still change, save or replace an open design. Conservatively
+    /// includes off-thread application, deferred/jobs, file loading/saving, agent
+    /// execution and edit-in-place, in every slot. It never polls or consumes work.
+    pub(crate) fn quit_has_pending_design_work(&self) -> bool {
+        if self.applying.is_some()
+            || self.deferred.is_some()
+            || !self.deferred_queue.is_empty()
+            || self.start_after_roll.is_some()
+            || self.delete_check.is_some()
+            || self.pending_feature_edit.is_some()
+            || self.editing_state.is_some()
+            || self.file_picker.is_some()
+            || self.file_load.busy()
+            || self.saving.is_some()
+            || self.control_job.is_some()
+            || !self.control_held.is_empty()
+            || !self.control_answering.is_empty()
+            || self.edit_in_place.refreshing()
+        {
+            return true;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.agent_chat.task.is_some() {
+            return true;
+        }
+        self.docs.slots.iter().flatten().any(|slot| {
+            slot.jobs.blocks_quit() || slot.pending_feature_edit.is_some() || slot.edit_in_place.is_some()
+        })
+    }
+}
+
+/// Capture one bounded entry per open design, in tab order, with the caller's decision.
+fn capture_quit_intent<F>(app: &SolveApp, mut decision: F) -> Result<QuitIntent, QuitIntentError>
+where
+    F: FnMut(usize, &Session) -> QuitDecision,
+{
+    let sessions = open_sessions(app);
+    if sessions.len() > MAX_OPEN {
+        return Err(QuitIntentError::Allocation);
+    }
+    let mut entries = Vec::with_capacity(sessions.len());
+    for (tab, session) in sessions.into_iter().enumerate() {
+        let snapshot = session.quit_snapshot().map_err(|_| QuitIntentError::Allocation)?;
+        entries.push(QuitEntry { tab, snapshot, decision: decision(tab, session) });
+    }
+    Ok(QuitIntent { entries, stage: QuitStage::Prompting })
+}
+
+fn validate_quit_entries(app: &SolveApp, intent: &QuitIntent, all: bool) -> Result<(), QuitIntentError> {
+    let sessions = open_sessions(app);
+    if sessions.len() != intent.entries.len() {
+        return Err(QuitIntentError::Changed);
+    }
+    for entry in &intent.entries {
+        if entry.decision == QuitDecision::Pending {
+            if all {
+                return Err(QuitIntentError::Changed);
+            }
+            continue;
+        }
+        let Some(session) = sessions.get(entry.tab) else {
+            return Err(QuitIntentError::Changed);
+        };
+        if !session.matches_quit_snapshot(&entry.snapshot) {
+            return Err(QuitIntentError::Changed);
+        }
+    }
+    Ok(())
+}
+
+/// Revalidate the consent already given: approved entries while prompting, all at staging.
+pub fn validate_quit_intent(app: &mut SolveApp) -> Result<(), QuitIntentError> {
+    let Some(intent) = app.docs.quit_intent.as_ref() else {
+        return Err(QuitIntentError::Missing);
+    };
+    match intent.stage {
+        QuitStage::Committed => Err(QuitIntentError::AlreadyCommitted),
+        QuitStage::Prompting => validate_quit_entries(app, intent, false),
+        QuitStage::Staged => validate_quit_entries(app, intent, true),
+    }
+}
+
+/// The terminal latch: no mutation is applied after the one final Close.
+pub fn quit_committed(app: &SolveApp) -> bool {
+    matches!(app.docs.quit_intent.as_ref().map(|intent| intent.stage), Some(QuitStage::Committed))
+}
+
+/// Drop staged consent without touching designs, saves, recovery or reopen data.
+pub fn cancel_quit(app: &mut SolveApp) {
+    app.docs.quit_intent = None;
+    app.docs.pending_quit_discard = None;
+    app.docs.quitting = None;
+    app.docs.closing = None;
+    app.docs.saving = false;
+    app.quit_requested = false;
+    if app.host_close_state == HostCloseState::Required {
+        app.host_close_state = HostCloseState::Ready;
+    }
+    crate::linked_source::update_changed(app);
+}
+
+fn report_quit_cancelled(app: &mut SolveApp) {
+    let text = app.tr("ui.quit_not_committed").to_string();
+    app.set_status(text, true);
+}
+
+/// Commit the staged quit once, with no re-entrant work between validation and effects.
+pub fn finish_quit(app: &mut SolveApp) -> Result<QuitCommit, QuitIntentError> {
+    if app.host_close_state != HostCloseState::Ready {
+        return Err(QuitIntentError::NotReady);
+    }
+    let Some(stage) = app.docs.quit_intent.as_ref().map(|intent| intent.stage) else {
+        return Err(QuitIntentError::Missing);
+    };
+    match stage {
+        QuitStage::Committed => return Err(QuitIntentError::AlreadyCommitted),
+        QuitStage::Prompting => return Err(QuitIntentError::NotReady),
+        QuitStage::Staged => {}
+    }
+    let validation = {
+        let intent = app.docs.quit_intent.as_ref().ok_or(QuitIntentError::Missing)?;
+        validate_quit_entries(app, intent, true)
+    };
+    if let Err(error) = validation {
+        cancel_quit(app);
+        report_quit_cancelled(app);
+        return Err(error);
+    }
+    if app.quit_has_pending_design_work() {
+        cancel_quit(app);
+        report_quit_cancelled(app);
+        return Err(QuitIntentError::PendingWork);
+    }
+    // Every check passed. The staged index vector must agree with the consent entries;
+    // indices alone are not proof, but a divergence is a stale/mutated intent.
+    let discards: Vec<usize> = app.docs.pending_quit_discard.clone().unwrap_or_default();
+    let entry_discards: Vec<usize> = app
+        .docs
+        .quit_intent
+        .as_ref()
+        .map(|intent| intent.entries.iter().filter(|e| e.decision == QuitDecision::Discard).map(|e| e.tab).collect())
+        .unwrap_or_default();
+    if discards != entry_discards {
+        cancel_quit(app);
+        return Err(QuitIntentError::Changed);
+    }
+    // Apply the staged effects once, without switching tabs.
+    for tab in discards {
+        if tab == app.docs.active || app.docs.slots.is_empty() {
+            app.session.mark_saved();
+        } else if let Some(Some(slot)) = app.docs.slots.get_mut(tab) {
+            slot.session.mark_saved();
+        }
+    }
+    let sessions: Vec<&Session> = match app.docs.slots.is_empty() {
+        true => vec![&app.session],
+        false => app.docs.slots.iter().map(|s| s.as_ref().map_or(&app.session, |d| &d.session)).collect(),
+    };
+    app.preferences.open_designs = sessions.into_iter().filter_map(|s| s.path.clone()).collect();
+    if let Some(intent) = app.docs.quit_intent.as_mut() {
+        intent.stage = QuitStage::Committed;
+    }
+    app.docs.pending_quit_discard = None;
+    app.docs.quitting = None;
+    app.docs.closing = None;
+    app.docs.saving = false;
+    app.quit_requested = false;
+    Ok(QuitCommit { _private: () })
+}
+
+/// Programmatic quit (control channel): no dialogs, exact preflight, outer error text.
+pub fn request_quit_programmatic(app: &mut SolveApp, force: bool) -> Result<(), &'static str> {
+    if app.host_close_state == HostCloseState::Quarantined {
+        return Err("quit refused: assistant-close-incomplete");
+    }
+    if app.host_close_state == HostCloseState::Closing {
+        return Err("quit refused: document-operation-pending");
+    }
+    if app.file_picker_busy()
+        || app.file_load.busy()
+        || app.quit_has_pending_design_work()
+        || app.docs.closing.is_some()
+        || app.docs.quitting.is_some()
+    {
+        return Err("quit refused: document-operation-pending");
+    }
+    let sessions = open_sessions(app);
+    let dirty: Vec<bool> = sessions.iter().map(|session| session.is_dirty()).collect();
+    if !force && dirty.iter().any(|dirty| *dirty) {
+        return Err("quit refused: unsaved-documents");
+    }
+    let mut intent = capture_quit_intent(app, |tab, _| {
+        if dirty.get(tab).copied().unwrap_or(false) {
+            QuitDecision::Discard
+        } else {
+            QuitDecision::KeepSaved
+        }
+    })
+    .map_err(|_| "quit refused: document-operation-pending")?;
+    intent.stage = QuitStage::Staged;
+    let discards: Vec<usize> = intent.entries.iter().filter(|e| e.decision == QuitDecision::Discard).map(|e| e.tab).collect();
+    app.docs.quit_intent = Some(intent);
+    app.docs.pending_quit_discard = Some(discards);
+    app.docs.quitting = Some(Vec::new());
+    app.quit_requested = true;
+    app.host_close_state = HostCloseState::Required;
+    Ok(())
 }
 
 /// Tab names (with an unsaved-changes flag), in order.
@@ -870,7 +1225,7 @@ pub fn control(app: &mut SolveApp, p: &Value) -> Value {
                 move_tab(app, from, to);
             }
         }
-        Some("quit") => request_quit(app),
+        // Quit is a control-endpoint preflight plus this query; no hidden dialog route.
         _ => {}
     }
     let answer = match p.get("answer").and_then(Value::as_str) {
@@ -905,6 +1260,7 @@ pub fn control(app: &mut SolveApp, p: &Value) -> Value {
         "read_only": app.session.read_only,
         "open_elsewhere": app.lock_prompts.len(),
         "changed_on_disk": app.disk_prompt,
+        "hostClose": host_close_status(app),
     })
 }
 
@@ -1296,19 +1652,29 @@ pub fn answer_prompt(app: &mut SolveApp, answer: Answer) {
             }
         }
         Answer::DontSave => {
-            if let Some(skip) = app.docs.quitting.as_mut() {
-                skip.push(i);
+            if app.docs.quitting.is_some() {
+                // Consent belongs to the tab's state at this answer, not to its index alone.
+                let snapshot = open_sessions(app).get(i).and_then(|session| session.quit_snapshot().ok());
+                let Some(snapshot) = snapshot else {
+                    cancel_quit(app);
+                    return;
+                };
+                if let Some(skip) = app.docs.quitting.as_mut() {
+                    skip.push(i);
+                }
+                if let Some(entry) = app.docs.quit_intent.as_mut().and_then(|intent| intent.entries.iter_mut().find(|entry| entry.tab == i)) {
+                    entry.snapshot = snapshot;
+                    entry.decision = QuitDecision::Discard;
+                }
                 app.docs.closing = None;
             } else {
                 close(app, i, true);
             }
         }
         Answer::Cancel => {
-            app.docs.closing = None;
-            app.docs.quitting = None;
+            // Cancelling clears the staged consent too; it is never reused later.
+            cancel_quit(app);
             app.docs.batch = None;
-            // The tab left in front was shown on the way without reading what it missed.
-            crate::linked_source::update_changed(app);
         }
     }
     quit_step(app);
@@ -1324,8 +1690,24 @@ pub(crate) fn saved_for_close(app: &mut SolveApp) {
     app.docs.closing = None;
     if app.docs.quitting.is_some() {
         if !saved {
-            app.docs.quitting = None;
-            crate::linked_source::update_changed(app);
+            cancel_quit(app);
+        } else {
+            // Only this Pending target becomes KeepSaved, with the state the save adopted.
+            let target = app.docs.active;
+            let snapshot = open_sessions(app).get(target).and_then(|session| session.quit_snapshot().ok());
+            match snapshot {
+                Some(snapshot) => {
+                    if let Some(entry) =
+                        app.docs.quit_intent.as_mut().and_then(|intent| intent.entries.iter_mut().find(|entry| entry.tab == target))
+                    {
+                        if entry.decision == QuitDecision::Pending {
+                            entry.snapshot = snapshot;
+                            entry.decision = QuitDecision::KeepSaved;
+                        }
+                    }
+                }
+                None => cancel_quit(app),
+            }
         }
     } else if saved {
         close(app, app.docs.active, true);
@@ -1833,7 +2215,12 @@ mod tests {
         assert!(!a.quit_requested);
         answer_prompt(&mut a, Answer::DontSave);
         assert_eq!(a.docs.closing, None);
-        assert!(a.quit_requested, "every design answered: quit");
+        assert!(a.quit_requested, "every design answered: quit is staged");
+        assert_eq!(a.docs.quitting, Some(Vec::new()), "the workflow guard stays until commit");
+        // Discard/reopen effects wait for one validated commit, not for the answer.
+        let commit = finish_quit(&mut a).unwrap();
+        drop(commit);
+        assert!(!a.quit_requested && a.docs.quitting.is_none());
         assert!(!any_dirty(&a), "Don't Save discards: nothing is kept for recovery");
         // The next launch reopens the saved design; the never-saved one has no file (#5542).
         let path = file.to_string_lossy().to_string();
@@ -2183,5 +2570,71 @@ mod tests {
         let dialog = h.app.new_project.as_ref().expect("the window stays open");
         assert_eq!(dialog.folder, target.to_string_lossy());
         assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0, "the cancelled choice wrote nothing");
+    }
+}
+
+/// W3 host barrier and state-bound quit consent. These run with the app crate; the
+/// native close callback itself is not simulated here.
+#[cfg(test)]
+mod barrier_tests {
+    use super::*;
+    use crate::SolveApp;
+
+    #[test]
+    fn host_close_pending_depends_only_on_required_or_closing_phase() {
+        let mut app = SolveApp::new(Session::default(), Default::default());
+        for (state, name, pending) in [
+            (HostCloseState::Ready, "ready", false),
+            (HostCloseState::Required, "required", true),
+            (HostCloseState::Closing, "closing", true),
+            (HostCloseState::Quarantined, "quarantined", false),
+        ] {
+            app.set_host_close_state(state);
+            let status = host_close_status(&app);
+            assert_eq!(status["state"], json!(name));
+            assert_eq!(status["pending"], json!(pending));
+            assert!(!app.quit_requested, "the barrier alone is not a quit request");
+        }
+        app.set_host_close_state(HostCloseState::Quarantined);
+        assert_eq!(host_close_status(&app)["blocked"], json!("assistant-close-incomplete"));
+        app.set_host_close_state(HostCloseState::Ready);
+        assert!(host_close_status(&app)["blocked"].is_null());
+    }
+
+    #[test]
+    fn unchanged_quit_intent_commits_once_and_keeps_the_terminal_latch() {
+        let mut app = SolveApp::new(Session::default(), Default::default());
+        request_quit(&mut app);
+        assert!(app.quit_requested);
+        let _commit = finish_quit(&mut app).expect("a clean, unchanged quit commits");
+        assert!(quit_committed(&app));
+        assert!(!app.quit_requested && app.docs.quitting.is_none());
+        assert!(matches!(finish_quit(&mut app), Err(QuitIntentError::AlreadyCommitted)));
+        assert!(!app.quit_requested, "a repeated commit revives no quit");
+    }
+
+    #[test]
+    fn dont_save_then_edit_preserves_new_dirty_state() {
+        let mut app = SolveApp::new(Session::default(), Default::default());
+        app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        request_quit(&mut app);
+        answer_prompt(&mut app, Answer::DontSave);
+        assert!(app.quit_requested && app.session.is_dirty(), "staged, not discarded yet");
+        // A direct session edit is still caught by the final per-session snapshot check.
+        app.session.execute("solid.sphere", &json!({"diameter": 4})).unwrap();
+        assert!(matches!(finish_quit(&mut app), Err(QuitIntentError::Changed)));
+        assert!(app.session.is_dirty(), "the newer edit is not marked saved");
+        assert!(!app.quit_requested && app.docs.quitting.is_none() && !quit_committed(&app));
+    }
+
+    #[test]
+    fn finish_is_not_ready_while_the_host_barrier_is_unresolved() {
+        let mut app = SolveApp::new(Session::default(), Default::default());
+        request_quit(&mut app);
+        app.set_host_close_state(HostCloseState::Closing);
+        assert!(matches!(finish_quit(&mut app), Err(QuitIntentError::NotReady)));
+        assert!(app.quit_requested, "a pending close keeps the staged quit");
+        app.set_host_close_state(HostCloseState::Ready);
+        assert!(finish_quit(&mut app).is_ok());
     }
 }

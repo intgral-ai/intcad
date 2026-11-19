@@ -197,6 +197,10 @@ fn changes_settings(event: &egui::Event) -> bool {
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The terminal quit latch: after commit only the one Close may follow.
+        if solidcraft_ui_egui::documents::quit_committed(&self.solve) {
+            return;
+        }
         if self.frames < 2 {
             self.frames += 1;
             // Before the window is shown: its title bar must be within reach (window_fit.rs).
@@ -262,6 +266,50 @@ impl eframe::App for App {
             // No page: the conversation still moves, wherever the window is.
             solidcraft_ui_egui::agent_chat::web::advance(&mut self.solve, ctx);
         }
+        // The Assistant's close is host-owned: require its matching native completion
+        // before the final Close, and never assume the request was completion.
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        if self.solve.quit_requested {
+            use solidcraft_ui_egui::documents::HostCloseState;
+            match self.assistant_cef.as_mut() {
+                Some(cef) => {
+                    self.solve.set_host_close_state(HostCloseState::Closing);
+                    match cef.begin_close() {
+                        crate::assistant_cef_lifecycle::CloseProgress::Complete => {
+                            self.solve.set_host_close_state(HostCloseState::Ready);
+                        }
+                        crate::assistant_cef_lifecycle::CloseProgress::Pending => ctx.request_repaint(),
+                        crate::assistant_cef_lifecycle::CloseProgress::Quarantined => {
+                            // Finite budget elapsed: cancel quit, keep CAD responsive, retain owners.
+                            self.solve.set_host_close_state(HostCloseState::Quarantined);
+                            solidcraft_ui_egui::documents::cancel_quit(&mut self.solve);
+                            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                            let text = self.solve.tr("ui.assistant_close_incomplete").to_string();
+                            self.solve.set_status(text, true);
+                        }
+                    }
+                }
+                None => {
+                    if self.solve.host_close_state() == HostCloseState::Required {
+                        self.solve.set_host_close_state(HostCloseState::Ready);
+                    }
+                }
+            }
+        }
+        // A late native completion may clear a quarantine, but it never revives the
+        // cancelled quit or a prompt; a fresh explicit quit must capture anew.
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        if !self.solve.quit_requested
+            && matches!(
+                self.solve.host_close_state(),
+                solidcraft_ui_egui::documents::HostCloseState::Closing
+                    | solidcraft_ui_egui::documents::HostCloseState::Quarantined
+            )
+            && let Some(cef) = self.assistant_cef.as_mut()
+            && cef.poll_close() == crate::assistant_cef_lifecycle::CloseProgress::Complete
+        {
+            self.solve.set_host_close_state(solidcraft_ui_egui::documents::HostCloseState::Ready);
+        }
         // The file chooser that opened is not the desktop's own: the user has to be told (#10159).
         #[cfg(target_os = "linux")]
         if let Some(reason) = desktop_chooser::take_reason() {
@@ -275,9 +323,6 @@ impl eframe::App for App {
         }
         // Every frame, so switching the bridge off reaches the reader while a picker is open too.
         self.nav_bridge.tick(&mut self.solve, ctx);
-        if self.solve.quit_requested {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
     }
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         #[cfg(target_os = "macos")]
@@ -295,6 +340,10 @@ impl eframe::App for App {
         self.solve.raw_input_hook(raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // Terminal latch: the committed quit permits one Close and no further UI mutation.
+        if solidcraft_ui_egui::documents::quit_committed(&self.solve) {
+            return;
+        }
         content_ui(&mut self.solve, ui);
         // After the frame's UI, which says where the Assistant panel is this frame.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -325,6 +374,24 @@ impl eframe::App for App {
             && let Some(wait) = self.prefs_writer.store(storage, self.solve.prefs(), now)
         {
             ui.ctx().request_repaint_after(wait);
+        }
+        // All mutable UI work is done. Commit the staged quit once and take its receipt
+        // for the single final Close; nothing after this may mutate the app.
+        if self.solve.quit_requested
+            && self.solve.host_close_state() == solidcraft_ui_egui::documents::HostCloseState::Ready
+        {
+            match solidcraft_ui_egui::documents::finish_quit(&mut self.solve) {
+                Ok(_commit) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                // A lost GPU cannot draw or ask: the existing forced restart closes with
+                // recovery copies, not with a fabricated quit consent.
+                Err(solidcraft_ui_egui::documents::QuitIntentError::Missing)
+                    if self.gpu.as_ref().is_some_and(|gpu| gpu.lost_at.is_some()) =>
+                {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(error) => log::debug!("quit not committed: {error}"),
+            }
+            return;
         }
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

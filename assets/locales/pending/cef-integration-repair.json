@@ -1,0 +1,26 @@
+{
+  "ar": {
+    "ui.assistant_close_incomplete": "لا يزال المساعد يُغلق. يبقى Intcad مفتوحًا؛ حاول الإنهاء مرة أخرى بعد اكتمال الإغلاق.",
+    "ui.quit_not_committed": "بقي Intcad مفتوحًا لأن أحد التصاميم المفتوحة أو عمله المعلّق تغيّر. حاول مجددًا عندما يصبح جاهزًا."
+  },
+  "en": {
+    "ui.assistant_close_incomplete": "The Assistant is still closing. Intcad stays open; try quitting again when it has closed.",
+    "ui.quit_not_committed": "Intcad stayed open because an open design or its pending work changed. Try again when it is ready."
+  },
+  "he": {
+    "ui.assistant_close_incomplete": "העוזר עדיין נסגר. Intcad נשאר פתוח; נסה לצאת שוב לאחר שהסגירה תסתיים.",
+    "ui.quit_not_committed": "Intcad נשאר פתוח מפני שעיצוב פתוח או עבודה ממתינה שלו השתנו. נסה שוב כשהוא מוכן."
+  },
+  "ja": {
+    "ui.assistant_close_incomplete": "アシスタントをまだ閉じています。Intcad は開いたままです。閉じ終わってから再度終了してください。",
+    "ui.quit_not_committed": "開いている設計または保留中の処理が変わったため、Intcad は開いたままです。準備ができてから再度お試しください。"
+  },
+  "vi": {
+    "ui.assistant_close_incomplete": "Trợ lý vẫn đang đóng. Intcad sẽ ở lại mở; hãy thử thoát lại sau khi đóng xong.",
+    "ui.quit_not_committed": "Intcad vẫn mở vì một thiết kế đang mở hoặc công việc đang chờ của nó đã thay đổi. Hãy thử lại khi sẵn sàng."
+  },
+  "zh": {
+    "ui.assistant_close_incomplete": "助手仍在关闭中。Intcad 将保持打开；请在其关闭完成后再次尝试退出。",
+    "ui.quit_not_committed": "由于打开的某个设计或其待处理工作发生了变化，Intcad 保持打开。请在其就绪后重试。"
+  }
+}

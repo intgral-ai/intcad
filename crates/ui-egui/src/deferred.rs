@@ -74,6 +74,13 @@ pub struct DocJobs {
     delete_check: Option<DeleteCheck>,
 }
 
+impl DocJobs {
+    /// Work that could still change, save or replace this design. Reads only.
+    pub(crate) fn blocks_quit(&self) -> bool {
+        self.deferred.is_some() || !self.queue.is_empty() || self.start_after_roll.is_some() || self.delete_check.is_some()
+    }
+}
+
 /// How a command asked to run off the window thread goes.
 enum Start {
     /// It computes off the window thread.

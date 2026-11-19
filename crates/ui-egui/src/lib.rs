@@ -682,6 +682,8 @@ pub struct SolveApp {
     /// The status message offers Undo (a click on it undoes the last step), as after an automatic stand-up.
     pub status_undo: bool,
     pub quit_requested: bool,
+    /// The desktop host's CEF close barrier; UI code sees only this status.
+    pub(crate) host_close_state: documents::HostCloseState,
     /// Autosave into the recovery folder (the desktop app turns it on).
     pub autosave: Option<recovery_ui::Autosaves>,
     /// Lock files next to the open designs (the desktop app turns them on; #5467).
@@ -914,6 +916,7 @@ impl SolveApp {
             status: None,
             status_undo: false,
             quit_requested: false,
+            host_close_state: documents::HostCloseState::Ready,
             autosave: None,
             locks: None,
             lock_prompts: Vec::new(),

@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 
 /// Author-selected finite close budget, measured from close start and never
 /// reset by callbacks.
-pub(super) const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Phase {
+pub(crate) enum Phase {
     Unavailable,
     Initializing,
     Running,
@@ -27,14 +27,14 @@ pub(super) enum Phase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CloseProgress {
+pub(crate) enum CloseProgress {
     Pending,
     Complete,
     Quarantined,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum LifecycleError {
+pub(crate) enum LifecycleError {
     MismatchedBrowser,
     InvalidTransition,
     IdentityExhausted,
@@ -51,7 +51,7 @@ impl std::fmt::Display for LifecycleError {
 }
 
 #[derive(Debug)]
-pub(super) struct Lifecycle {
+pub(crate) struct Lifecycle {
     phase: Phase,
     pending_creation: usize,
     live: Vec<i32>,
@@ -59,15 +59,15 @@ pub(super) struct Lifecycle {
 }
 
 impl Lifecycle {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { phase: Phase::Unavailable, pending_creation: 0, live: Vec::new(), close_started: None }
     }
 
-    pub(super) fn phase(&self) -> Phase {
+    pub(crate) fn phase(&self) -> Phase {
         self.phase
     }
 
-    pub(super) fn begin_initialization(&mut self) -> Result<(), LifecycleError> {
+    pub(crate) fn begin_initialization(&mut self) -> Result<(), LifecycleError> {
         match self.phase {
             Phase::Unavailable => {
                 self.phase = Phase::Initializing;
@@ -77,7 +77,7 @@ impl Lifecycle {
         }
     }
 
-    pub(super) fn browser_requested(&mut self) -> Result<(), LifecycleError> {
+    pub(crate) fn browser_requested(&mut self) -> Result<(), LifecycleError> {
         if !matches!(self.phase, Phase::Initializing | Phase::Running) {
             return Err(LifecycleError::InvalidTransition);
         }
@@ -90,7 +90,7 @@ impl Lifecycle {
 
     /// A browser that actually exists. While closing or quarantined it is still
     /// owned and must be closed, never leaked or treated as a fresh start.
-    pub(super) fn observe_created(&mut self, browser_id: i32) -> Result<(), LifecycleError> {
+    pub(crate) fn observe_created(&mut self, browser_id: i32) -> Result<(), LifecycleError> {
         if browser_id <= 0 {
             return Err(LifecycleError::IdentityExhausted);
         }
@@ -108,7 +108,7 @@ impl Lifecycle {
         Ok(())
     }
 
-    pub(super) fn observe_creation_cancelled(&mut self) -> Result<(), LifecycleError> {
+    pub(crate) fn observe_creation_cancelled(&mut self) -> Result<(), LifecycleError> {
         if self.pending_creation == 0 || !matches!(self.phase, Phase::Initializing | Phase::Running | Phase::Closing | Phase::Quarantined) {
             return Err(LifecycleError::InvalidTransition);
         }
@@ -118,7 +118,7 @@ impl Lifecycle {
 
     /// The DRAFT native `cef_initialize == false` branch: terminal for this
     /// launch, with no live runtime and no browser to close.
-    pub(super) fn native_initialization_returned_false(&mut self) -> Result<(), LifecycleError> {
+    pub(crate) fn native_initialization_returned_false(&mut self) -> Result<(), LifecycleError> {
         match self.phase {
             Phase::Initializing => {
                 self.phase = Phase::StartupCancelled;
@@ -130,7 +130,7 @@ impl Lifecycle {
 
     /// Start the one close budget. Repeated requests keep the original instant;
     /// an unavailable/cancelled runtime has no native owner and is already done.
-    pub(super) fn begin_close(&mut self, now: Instant) {
+    pub(crate) fn begin_close(&mut self, now: Instant) {
         match self.phase {
             Phase::Initializing | Phase::Running => {
                 self.phase = Phase::Closing;
@@ -143,7 +143,7 @@ impl Lifecycle {
         }
     }
 
-    pub(super) fn observe_closed(&mut self, browser_id: i32) -> Result<(), LifecycleError> {
+    pub(crate) fn observe_closed(&mut self, browser_id: i32) -> Result<(), LifecycleError> {
         if !matches!(self.phase, Phase::Closing | Phase::Quarantined) {
             return Err(LifecycleError::InvalidTransition);
         }
@@ -155,7 +155,7 @@ impl Lifecycle {
         Ok(())
     }
 
-    pub(super) fn poll(&mut self, now: Instant) -> CloseProgress {
+    pub(crate) fn poll(&mut self, now: Instant) -> CloseProgress {
         match self.phase {
             Phase::Closing => match self.close_started {
                 Some(start) if now.saturating_duration_since(start) >= CLOSE_TIMEOUT => {
@@ -170,7 +170,7 @@ impl Lifecycle {
         }
     }
 
-    pub(super) fn mark_shutdown(&mut self) -> Result<(), LifecycleError> {
+    pub(crate) fn mark_shutdown(&mut self) -> Result<(), LifecycleError> {
         match self.phase {
             Phase::Closed => {
                 self.phase = Phase::Shutdown;
@@ -182,7 +182,7 @@ impl Lifecycle {
 
     /// Retry means navigating the live browser in the same runtime. A close,
     /// quarantine or terminal startup cancellation never reconstructs one.
-    pub(super) fn permits_retry(&self) -> bool {
+    pub(crate) fn permits_retry(&self) -> bool {
         self.phase == Phase::Running && !self.live.is_empty()
     }
 }

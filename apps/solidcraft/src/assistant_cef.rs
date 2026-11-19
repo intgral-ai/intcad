@@ -1189,11 +1189,9 @@ impl CefAssistant {
                 Ok(welding::surface::BrowserCloseProgress::Pending) | Err(_) => {}
             }
         }
-        let progress = self.lifecycle.poll(Instant::now());
-        if progress == CloseProgress::Complete {
-            let _ = self.lifecycle.mark_shutdown();
-        }
-        progress
+        // Shutdown is not marked here: the native runtime is still live until
+        // CefAssistant::shutdown performs its one checked call.
+        self.lifecycle.poll(Instant::now())
     }
 
     pub fn close(&mut self) {
@@ -1205,7 +1203,7 @@ impl CefAssistant {
     /// observed matching close completion. Anything else is retained, never
     /// dropped into an implicit native shutdown.
     pub fn shutdown(self) -> Result<(), welding::WeldError> {
-        let Self { runtime, lease, lifecycle, producer, mut server, host, .. } = self;
+        let Self { runtime, lease, mut lifecycle, producer, mut server, host, .. } = self;
         if lifecycle.phase() != Phase::Closed {
             // Unresolved ownership is retained whole: no CEF refcount release and
             // no native shutdown. Only the Rust-side lease and the GPU/server
@@ -1228,7 +1226,10 @@ impl CefAssistant {
         runtime.shutdown().map_err(|(runtime, error)| {
             quarantine(runtime, None);
             error
-        })
+        })?;
+        // Policy bookkeeping only after the single native shutdown returned.
+        let _ = lifecycle.mark_shutdown();
+        Ok(())
     }
 
     pub fn focused(&self) -> bool {
