@@ -16,8 +16,9 @@ fn corpus() -> Vec<PathBuf> {
     v
 }
 
-/// Designs with components or joints, which scripts do not support yet.
-const ASSEMBLIES: [&str; 2] = ["components-arm", "joints-hinge"];
+// The corpus's assembly designs (`components-arm`, `joints-hinge`) take the
+// same path as the plain ones: components, occurrences and joints are part of
+// the script's contract and come back with the rest.
 
 fn bodies(s: &mut Session) -> Vec<(String, f64, f64, Value)> {
     let m = s.execute("inspect.measure", &json!({})).unwrap();
@@ -48,6 +49,146 @@ fn params(s: &Session) -> Vec<solidcraft_engine::doc::Param> {
     v
 }
 
+/// The stable part of a joint for replay comparison: only the joint's own id is removed,
+/// because `joint.create` allocates it again (`script.rs` says joint ids travel last and are
+/// referenced by name, so their position is free). A stored face, end or x stays and is compared.
+fn joint_fields(joint: &solidcraft_engine::doc::joints::Joint) -> Value {
+    let mut v = serde_json::to_value(joint).unwrap();
+    v.as_object_mut().unwrap().remove("id");
+    v
+}
+
+/// Compare joints as replay data: [`joint_fields`], except a reference the source did not store.
+/// A `CircleCenter`'s face/end are named from the same pick at creation (`round_end_at`/
+/// `pin_end`, `crates/doc/src/joints_face.rs:332-370`, through `settle` in
+/// `crates/engine/src/cmd/joints.rs:967-991`); an absent or `null` x is `None` (serde `Option`)
+/// and its turn is free. Only an x/face/end the source does not have is removed from both; a
+/// present x (array `XRef::Dir`/`Snap::Point`/`Frame`, or object `XRef::Face` with face/pick), a
+/// present face or a present end is compared, including a missing replay field.
+fn joints_for_comparison(
+    source: &[solidcraft_engine::doc::joints::Joint],
+    replay: &[solidcraft_engine::doc::joints::Joint],
+) -> (Vec<Value>, Vec<Value>) {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for (source, replay) in source.iter().zip(replay) {
+        let mut source = joint_fields(source);
+        let mut replay = joint_fields(replay);
+        for side in ["a", "b"] {
+            let snap = source.get(side).and_then(|side| side.get("snap"));
+            let present = [
+                ("x", snap.and_then(|s| s.get("x")).is_some()),
+                ("face", snap.and_then(|s| s.get("face")).is_some()),
+                ("end", snap.and_then(|s| s.get("end")).is_some()),
+            ];
+            for (key, present) in present {
+                if !present {
+                    for joint in [&mut source, &mut replay] {
+                        if let Some(snap) = joint.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
+                            snap.remove(key);
+                        }
+                    }
+                }
+            }
+        }
+        left.push(source);
+        right.push(replay);
+    }
+    (left, right)
+}
+
+#[test]
+fn joint_comparison_keeps_stored_refs_and_normalizes_only_absent_source_refs() {
+    let joint = |id: u64, snap: Value| -> solidcraft_engine::doc::joints::Joint {
+        serde_json::from_value(json!({
+            "id": id,
+            "name": "J",
+            "kind": "rigid",
+            "a": {"occurrence": 2, "snap": snap},
+            "b": {"occurrence": 3, "snap": {"type": "point", "point": [0.0, 0.0, 0.0]}},
+        }))
+        .unwrap()
+    };
+    let compare = |a: solidcraft_engine::doc::joints::Joint, b: solidcraft_engine::doc::joints::Joint| {
+        joints_for_comparison(&[a], &[b])
+    };
+    // A stored direction is part of the joint, not a pick-derived reference.
+    let (left, right) = compare(
+        joint(1, json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
+        joint(1, json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
+    );
+    assert_ne!(left, right, "a point origin's stored x direction is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "frame", "origin": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [1.0, 0.0, 0.0]})),
+        joint(1, json!({"type": "frame", "origin": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [0.0, 1.0, 0.0]})),
+    );
+    assert_ne!(left, right, "a frame's stored x direction is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
+    );
+    assert_ne!(left, right, "an XRef::Dir x is a stored direction");
+    // No source x, or an explicit null, is Option::None: only then the replay's derived x is free.
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 0.0, -1.0]})),
+    );
+    assert_eq!(left, right, "an absent x the source did not store is free");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": null})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 0.0, -1.0]})),
+    );
+    assert_eq!(left, right, "a null x is Option::None and the replay's derived x is free");
+    // A CircleCenter's face/end are named from the same pick at creation; when the source
+    // stored none, the replay's derived names are free (the corpus's old format).
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "F4:side", "end": "F4:bottom"})),
+    );
+    assert_eq!(left, right, "face/end named from the pick are free when the source stored none");
+    // A present XRef::Face x, face and end are stored references and are compared.
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "F", "end": "E", "x": {"face": "F", "pick": [1.0, 0.0, 0.0]}})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "F", "end": "E", "x": {"face": "F", "pick": [1.0, 0.0, 0.0]}})),
+    );
+    assert_eq!(left, right, "the same stored XRef::Face is equal");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "Face A"}})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "Face B"}})),
+    );
+    assert_ne!(left, right, "a different stored XRef::Face name is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "F", "pick": [1.0, 0.0, 0.0]}})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "F", "pick": [0.0, 1.0, 0.0]}})),
+    );
+    assert_ne!(left, right, "a different stored XRef::Face pick is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "F"}})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+    );
+    assert_ne!(left, right, "a stored XRef::Face missing from the replay is a change");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face A"})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face B"})),
+    );
+    assert_ne!(left, right, "a stored face name is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face A"})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+    );
+    assert_ne!(left, right, "a stored face missing from the replay is a change");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "end": "End A"})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "end": "End B"})),
+    );
+    assert_ne!(left, right, "a stored end name is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "end": "End A"})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+    );
+    assert_ne!(left, right, "a stored end missing from the replay is a change");
+}
+
 #[test]
 fn corpus_designs_replay_from_their_scripts() {
     let mut replayed = 0;
@@ -57,13 +198,8 @@ fn corpus_designs_replay_from_their_scripts() {
         s.execute("doc.open", &json!({"path": p.to_string_lossy()})).unwrap();
         let r = match s.execute("timeline.export_script", &json!({})) {
             Ok(r) => r,
-            Err(e) => {
-                assert!(ASSEMBLIES.contains(&name.as_str()), "{name}: {e}");
-                assert!(e.to_string().contains("not supported yet"), "{name}: {e}");
-                continue;
-            }
+            Err(e) => panic!("{name}: the script exports every corpus design now: {e}"),
         };
-        assert!(!ASSEMBLIES.contains(&name.as_str()), "{name} has components: the script should refuse it");
         // Through text, as a script file would carry it.
         let script: Value = serde_json::from_str(&r["script"].to_string()).unwrap();
         let mut t = Session::default();
@@ -78,6 +214,19 @@ fn corpus_designs_replay_from_their_scripts() {
         assert_eq!(t.doc.user_materials, s.doc.user_materials, "{name}: user materials");
         assert_eq!(t.doc.favorites, s.doc.favorites, "{name}: favourites");
         assert_eq!(t.doc.param_comments, s.doc.param_comments, "{name}: comments");
+        // The assembly state: components and occurrences keep their ids (the
+        // replay replays every allocation-bearing step at its original id
+        // position), and the placements the joints solved to hold stay. The
+        // joints are compared below; only the joint's own re-allocated id and
+        // references the source did not store (x/face/end, named from the pick)
+        // are normalized, while a source-present face/end/x is compared.
+        assert_eq!(t.doc.components, s.doc.components, "{name}: components");
+        assert_eq!(t.doc.occurrences, s.doc.occurrences, "{name}: occurrences");
+        assert_eq!(t.doc.parts, s.doc.parts, "{name}: standard parts");
+        assert_eq!(t.doc.links, s.doc.links, "{name}: linked designs");
+        assert_eq!(s.doc.assembly.joints.len(), t.doc.assembly.joints.len(), "{name}: joint count");
+        let (source_joints, replay_joints) = joints_for_comparison(&s.doc.assembly.joints, &t.doc.assembly.joints);
+        assert_eq!(source_joints, replay_joints, "{name}: joints");
         assert_eq!(errors(&t), errors(&s), "{name}: feature results");
         assert_eq!(bodies(&mut t), bodies(&mut s), "{name}: bodies");
         replayed += 1;

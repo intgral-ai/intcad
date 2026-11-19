@@ -40,9 +40,10 @@ pub fn default_dir() -> Option<PathBuf> {
     };
     let (dir, legacy) = dirs_under(&long_names(&root), cfg!(windows) || cfg!(target_os = "macos"));
     // Compatibility shim (docs/compatibility.md): autosaves made before Intcad had folders of its
-    // own (`solvecraft`), and in the Flatpak sandbox under an earlier app id, are copied to the
-    // new folder on first launch; the old folder is left as it was. An upstream `SolidCraft`
-    // folder is another product's and is never a source.
+    // own (`solvecraft`) are copied to the new folder on first launch; the old folder is left as
+    // it was. Intcad never had an earlier Flatpak app id of its own: an upstream `SolidCraft`
+    // folder (including one under an upstream `~/.var/app` id) is another product's and is never
+    // a source.
     for old in solidcraft_io::legacy_flatpak_paths(&dir).into_iter().chain([legacy]) {
         if let Err(e) = solidcraft_io::adopt_legacy_dir(&dir, &old) {
             log::warn!("recovery: could not copy {} to {}: {e}", old.display(), dir.display());

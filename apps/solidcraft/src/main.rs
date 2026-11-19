@@ -877,10 +877,10 @@ fn graphics_path() -> Option<std::path::PathBuf> {
 }
 
 /// Compatibility shim (docs/compatibility.md): on the first launch after the rename, copy the
-/// settings of earlier releases into the new folder. They kept `graphics.json` (and, on Linux
-/// and macOS, the recovery folder) under the old product name, and eframe's `app.ron` under the
-/// window's old app id. In the Flatpak sandbox, earlier releases kept everything under an
-/// old app id's `~/.var/app` folder; those copies come first, newest first. The old folders
+/// settings of earlier Intcad releases into the new folder. They kept `graphics.json` (and, on
+/// Linux and macOS, the recovery folder) under the old product name, and eframe's `app.ron` under
+/// the window's old app id. Intcad never had an earlier Flatpak app id of its own; upstream
+/// SolidCraft's `~/.var/app` folders are another product's and are never read. The old folders
 /// are never changed.
 fn adopt_legacy_settings() {
     let (Some(current), Some(legacy)) = (settings_dir().ok().flatten(), eframe::storage_dir(LEGACY_SETTINGS_FOLDER)) else { return };

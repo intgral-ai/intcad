@@ -248,6 +248,7 @@ settings_profile	false
 sheet	false
 sheet_rules	false
 shell	false
+shield	false
 silhouette	false
 sketch	false
 sketch_break	false
