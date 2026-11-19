@@ -373,8 +373,12 @@ reported from its existing record only.
 | Landing commit / final develop SHA | **TBD** | no landing or release has happened |
 
 The earlier engine-evidence head `61835bfaf` (parent `099e4360c`) remains a local evidence revision,
-not the current PR head. The seven-line engine allowance deletion is now validated through the
-current head (see §11.2), but no whole-head final approval follows from that.
+not the current PR head. The seven-line engine allowance deletion is included in `c5f2f42`’s
+ancestry. At `c5f2f42`, `tests/KNOWN_FAILING_TESTS` has 15 entries: 13 allowed known failures and
+the 2 `FIXED` entries noted in §11.2. That is a flat list count, not a per-case c5 PASS proof. The
+exact seven-case PASS result remains the local `61835bfaf` evidence. The independent task review and
+pinned-CI gate for the deletion remain open (§9); this checkpoint does not claim the seven tests
+individually pass at `c5f2f42`.
 
 ### 11.2 Whole-CI state at `c5f2f42` (snapshot 2026-11-19T20:39–20:45Z)
 
@@ -390,8 +394,8 @@ all have `head_sha` `c5f2f42…`, attempt 1. This is a read-only snapshot, not a
 | 44505747682 | Packaging lint | success | lint + assistant page |
 
 The actual matrix job labels are `Action matrix (2/16)` and `Action matrix (8/16)`; the shorthand
-“matrix 2/8” is not used here. Matrix 16/16 is now success, so the earlier shard-16 failure is
-closed at this head. All other lanes in CI 44505747549 passed: clippy, wasm, doc tests, reference,
+“matrix 2/8” is not used here. Action matrix 16/16 succeeded at the `c5f2f42` head. All other lanes
+in CI 44505747549 passed: clippy, wasm, doc tests, reference,
 both Mastra jobs, Windows startup/FXC, properties, determinism and matrix 1, 3–7, 9–16.
 
 Native Linux gate: the uploaded `evidence-rust` shows nextest list exit 0, nextest run exit **100**,
@@ -430,11 +434,11 @@ were filtered out and were **not executed**, so this is not a full-suite pass.
 
 - Actual corpus: a **single joint**, with no origins or links. The allocation is a local id.
 - Normalization applies **only** to source-absent derived `x`/`face`/`end`. Stored references are
-  compared in full; the negative-case table has **14** stored-reference cases.
+  compared in full. The comparison table has **14 cases in total: 7 negative and 7 equal**.
 - The earlier `2a354996a` failure was left = source absent, right = replay derived. That corrects the
   earlier reverse claim.
-- `red-green-model.py` is a **script model** of serialized operations, not a Rust test run. The 14/14
-  table is model output; the Rust evidence is the 10/10 targeted run.
+- `red-green-model.py` is a **script model** of serialized operations, not a Rust test run. The
+  **14-case** table is model output; the Rust evidence is the 10/10 targeted run.
 - No general multi-joint reallocation-reference proof exists yet. Do not generalize the single-joint
   result to multi-joint reallocation.
 
@@ -458,10 +462,16 @@ The active reconciliation worker is fixing packaging. Verified commits on `fix/i
 `fc0d9a0adde2761c6afa2311e05147ee6ec741f8` (publish only Intcad's app id), `7a6abbcc0`
 (packaging-lint SC2251 fix) and `dfc6bd789` (remove the temporary targeted workflow). The first
 packaging CI, run `44637129117`, failed on SC2251 `! grep`; the fix uses an explicit `if grep`.
-Run `44637527571` was the last active owned watch at this checkpoint: **do not query, poll or cancel
-it again**. Task review says the core behaviour is correct but returns `CHANGES_REQUIRED` for a stale
-manifest line and evidence exactness; the owner is fixing that and investigating mirrored old
+Run `44637527571` was the controller’s last-known active owned watch at this checkpoint
+(2026-11-19T23:30Z), not a current state. **Do not query, poll or cancel it here.** Task review at
+that snapshot said the core behaviour was correct but returned `CHANGES_REQUIRED` for a stale
+manifest line and evidence exactness; the owner was then fixing it and investigating mirrored old
 end-of-life metadata.
+
+Later controller snapshot (2026-11-19T23:37Z, not polled here): run `44637527571` succeeded, and run
+`44638313864` was the last reported pending run, with task review still `CHANGES_REQUIRED` for new
+docs/prune fidelity. This is a later snapshot only; the worker’s current state is not chased in this
+checkpoint.
 
 Packaging status at this checkpoint: installed Flatpak acceptance **NOT_RUN**. Local packaging tests
 were 17 tests with 1 RED, then 0 RED. The nightly execution recorded 12/9 with a missing `jq` and
@@ -478,8 +488,9 @@ source, template or implementation** in the patch; the patch is an original stra
 original tests and documentation. That finding is **not** a rights clearance.
 
 Owner disposition remains **explicitly blocked**. The owner was asked to accept the recorded incident
-for continuation of the original patch; no reply is recorded at this checkpoint. Do not invent a
-waiver, clearance or licence pass. Do not read the prohibited external code again.
+for continuation of the original patch; no reply is recorded as of this revision. **No waiver,
+clearance or licence pass exists.** Do not invent one, and do not read the prohibited external code
+again.
 
 ### 11.8 Other active work — no completion claim
 
@@ -533,3 +544,14 @@ this checkpoint.
 Revision provenance: appended by the official DeepSeek worker on 2026-11-19; base
 `182d485e2c6b31b324ff45794324f3454b63c67e`; own branch and worktree recorded in the handoff, not
 in this document. Earlier sections remain unchanged.
+
+### 11.11 Revision record
+
+- 2026-11-19T23:37Z — fresh L1 doc review fix, wording only. §11.1 no longer claims the seven-line
+  engine deletion is validated at c5; it records the c5 ancestry and the 15-entry list (13 allowed
+  known failures + 2 `FIXED`), keeps the exact seven-case result local to `61835bfaf`, and leaves
+  the independent review/pinned-CI gate open. §11.2 states the c5 Action matrix 16/16 result without
+  a historical shard claim. §11.4 corrects the table to 14 cases in total: 7 negative and 7 equal,
+  and labels it as the script model. §11.6 labels the packaging watch as a checkpoint snapshot and
+  adds a later dated controller snapshot. §11.7 records that no owner reply or waiver exists. No new
+  CI, build, metadata query or source change was made.
