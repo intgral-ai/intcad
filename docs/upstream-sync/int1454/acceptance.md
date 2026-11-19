@@ -394,8 +394,9 @@ all have `head_sha` `c5f2f42…`, attempt 1. This is a read-only snapshot, not a
 | 44505747682 | Packaging lint | success | lint + assistant page |
 
 The actual matrix job labels are `Action matrix (2/16)` and `Action matrix (8/16)`; the shorthand
-“matrix 2/8” is not used here. Action matrix 16/16 succeeded at the `c5f2f42` head. All other lanes
-in CI 44505747549 passed: clippy, wasm, doc tests, reference,
+“matrix 2/8” is not used here. The `Action matrix (16/16)` **job** passed; shards `(2/16)` and
+`(8/16)` failed, and the other shards passed. All other lanes in CI 44505747549 passed: clippy,
+wasm, doc tests, reference,
 both Mastra jobs, Windows startup/FXC, properties, determinism and matrix 1, 3–7, 9–16.
 
 Native Linux gate: the uploaded `evidence-rust` shows nextest list exit 0, nextest run exit **100**,
@@ -434,11 +435,14 @@ were filtered out and were **not executed**, so this is not a full-suite pass.
 
 - Actual corpus: a **single joint**, with no origins or links. The allocation is a local id.
 - Normalization applies **only** to source-absent derived `x`/`face`/`end`. Stored references are
-  compared in full. The comparison table has **14 cases in total: 7 negative and 7 equal**.
+  compared in full. The comparison table has **14 cases in total: 10 negative (`ne`) and 4 equal
+  (`eq`)**, not 7 and 7. The `old_ok=7/14` line is not a 7-negative split: the old helper classified
+  7 negative cases as equal. The new model reports 14/14.
 - The earlier `2a354996a` failure was left = source absent, right = replay derived. That corrects the
   earlier reverse claim.
 - `red-green-model.py` is a **script model** of serialized operations, not a Rust test run. The
-  **14-case** table is model output; the Rust evidence is the 10/10 targeted run.
+  **14-case** table is model output; the Rust evidence is the separate 10/10 targeted run, not the
+  14-case model.
 - No general multi-joint reallocation-reference proof exists yet. Do not generalize the single-joint
   result to multi-joint reallocation.
 
@@ -481,11 +485,12 @@ exit 1; it is classified **BLOCKED (environment)**, not NOT_RUN. None of this is
 
 Record: `worktrees/int1454-recon/target/int1454-recon-review-evidence/flatpak-isolation/RIGHTS-INCIDENT.md`.
 
-The worker consulted two Flatpak LGPL-2.1 source files (`common/flatpak-run.c` and `common/flatpak-dir.c`)
-while investigating the packaging behaviour, although the root rule prohibits reading GPL/LGPL/AGPL
-source. The record states this plainly and is not erased. An independent review found **no copied
-source, template or implementation** in the patch; the patch is an original straight deletion plus
-original tests and documentation. That finding is **not** a rights clearance.
+The incident record says two Flatpak LGPL-2.1 source files were inspected and additional files were
+fetched during the same investigation; the linked record is the full account, not a two-file limit.
+This happened while investigating the packaging behaviour, although the root rule prohibits reading
+GPL/LGPL/AGPL source. The record states this plainly and is not erased. An independent review
+found **no copied source, template or implementation** in the patch; the patch is an original
+straight deletion plus original tests and documentation. That finding is **not** a rights clearance.
 
 Owner disposition remains **explicitly blocked**. The owner was asked to accept the recorded incident
 for continuation of the original patch; no reply is recorded as of this revision. **No waiver,
@@ -494,11 +499,13 @@ again.
 
 ### 11.8 Other active work — no completion claim
 
-- Union fallback worktree `int1454-union-fallback`: active. Controller last-known plan/test-only
-  reference `1c8f7213b`; no GREEN or current production approval. Not re-surveyed for completion.
-- Validation-transaction worktree `int1454-valtx`: active. Controller last-known `fa12cfe47` had L3
-  `CHANGES_REQUIRED` with five findings (retention replay, conversation routing, lost wakeup,
-  duplicate overwrite, clock mismatch). No approved integrated fix.
+- Union fallback worktree `int1454-union-fallback`: active per the controller snapshot at
+  2026-11-19T23:30Z (not a fresh status). Last-known plan/test-only reference `1c8f7213b`; no GREEN
+  or current production approval. Not re-surveyed for completion.
+- Validation-transaction worktree `int1454-valtx`: active per the same controller snapshot (not a
+  fresh status). Last-known `fa12cfe47` had L3 `CHANGES_REQUIRED` with five findings (retention
+  replay, conversation routing, lost wakeup, duplicate overwrite, clock mismatch). No approved
+  integrated fix.
 - Both are uncompleted. Their work was handed to the official DeepSeek path because Go and GOAT were
   exhausted; that is a provider handoff, not a quota BLOCKED state. Do not poll or restate their
   heads as current beyond the last-known references above.
@@ -550,8 +557,17 @@ in this document. Earlier sections remain unchanged.
 - 2026-11-19T23:37Z — fresh L1 doc review fix, wording only. §11.1 no longer claims the seven-line
   engine deletion is validated at c5; it records the c5 ancestry and the 15-entry list (13 allowed
   known failures + 2 `FIXED`), keeps the exact seven-case result local to `61835bfaf`, and leaves
-  the independent review/pinned-CI gate open. §11.2 states the c5 Action matrix 16/16 result without
-  a historical shard claim. §11.4 corrects the table to 14 cases in total: 7 negative and 7 equal,
-  and labels it as the script model. §11.6 labels the packaging watch as a checkpoint snapshot and
-  adds a later dated controller snapshot. §11.7 records that no owner reply or waiver exists. No new
-  CI, build, metadata query or source change was made.
+  the independent review/pinned-CI gate open. §11.2 states that the `Action matrix (16/16)` job
+  passed while shards (2/16) and (8/16) failed. §11.4 corrects the table to 14 cases in total:
+  **10 negative and 4 equal**, and labels it as the script model. §11.6 labels the packaging watch
+  as a checkpoint snapshot and adds a later dated controller snapshot. §11.7 records that no owner
+  reply or waiver exists. No new CI, build, metadata query or source change was made.
+- 2026-11-19T23:44Z — final fresh L1 broad review correction. Verified the actual
+  `red-green-model.py` lines 42–59 and `red-green-model.txt` lines 1–16 in the read-only
+  reconciliation worktree/evidence: 14 cases = **10 `ne` + 4 `eq`**. `old_ok=7/14` is the old
+  helper misclassifying 7 negative cases; the new model is 14/14. The Rust `script_roundtrip.rs`
+  lines 120–189 at `50e605faa` carries the stored-reference assertions; the separate targeted run
+  is 10 test identities (10/10), not the 14-case model. The enumerated case evidence is in the
+  ignored review package. §11.2 now distinguishes the passed
+  (16/16) job from the failed (2/16)/(8/16) shards, and §11.7 no longer implies only two files were
+  fetched. No state poll, build, CI or source edit was made.
