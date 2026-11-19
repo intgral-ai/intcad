@@ -710,6 +710,32 @@ pub(crate) fn request_delete(app: &mut SolveApp) {
     app.file_tree.request_delete(&open);
 }
 
+/// The keys the focused tree acts on. While the tree has the keys the global shortcuts leave
+/// these alone: an arrow moves the row's focus instead of the view, F2 names the file instead of
+/// the selected body, and Delete asks about the file instead of deleting the body. Keep it in
+/// step with `keys` and the single-owner Files clipboard in `edit_clipboard`.
+pub(crate) fn takes_key(key: egui::Key, modifiers: egui::Modifiers) -> bool {
+    use egui::Key;
+    if key == Key::Escape {
+        return !modifiers.command && !modifiers.ctrl;
+    }
+    if modifiers.command {
+        return match key {
+            Key::A | Key::F => true,
+            Key::C | Key::X => !modifiers.shift && !modifiers.alt,
+            Key::V => !modifiers.alt,
+            _ => false,
+        };
+    }
+    if modifiers.ctrl {
+        return false;
+    }
+    matches!(
+        key,
+        Key::ArrowDown | Key::ArrowUp | Key::ArrowLeft | Key::ArrowRight | Key::Home | Key::End | Key::Enter | Key::F2 | Key::Delete | Key::Backspace
+    )
+}
+
 /// The keyboard: navigation, open, rename, delete, the clipboard and Select All. Shortcuts act
 /// only while the tree has focus.
 fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {

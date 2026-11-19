@@ -1592,3 +1592,105 @@ fn a_long_opener_notice_keeps_reveal_and_dismiss_inside_a_short_panel() {
         assert!(rect.is_positive());
     }
 }
+
+/// Click the named row in a Files panel already listing `root`, as a person does, and check the
+/// tree took the keys.
+fn focus_file_row(h: &mut crate::scenario::Harness, name: &str) {
+    let row = crate::scenario::rect_of(&format!("files:row:{name}")).unwrap_or_else(|| panic!("missing row {name}"));
+    h.frame_with(pointer_click(row.center(), Modifiers::NONE));
+    h.frames(2);
+    assert!(h.app.file_tree.focused, "{name}: the click gives the tree the keys");
+}
+
+/// A real arrow key in a focused Files tree moves the row's focus, not the view. The view keys
+/// used to run before the tree saw the same press: the camera turned and the row moved.
+#[test]
+fn arrows_in_a_focused_files_tree_do_not_turn_the_view() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    scratch.file("second.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.select_only(&scratch.path().join("first.txt"));
+    focus_file_row(&mut h, "first.txt");
+    let cam = h.app.cam;
+    h.step(&serde_json::json!({"key": "ArrowDown"})).unwrap();
+    h.frames(60);
+    assert_eq!(h.app.file_tree.focus, Some(scratch.path().join("second.txt")), "the tree moved its focus");
+    assert_eq!(h.app.cam, cam, "the view did not turn");
+    assert!(h.app.viewport.key_hold.is_none(), "no view key was held");
+}
+
+/// F2 in a focused Files tree opens the file's name field. It used to open the selected body's
+/// rename as well, leaving two name fields for one press.
+#[test]
+fn f2_renames_the_focused_file_and_not_the_selected_body() {
+    use crate::scenario::Harness;
+    use serde_json::json;
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.app.file_tree = listing(scratch.path());
+    h.app.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+    let body = h.app.session.model.state().bodies.last().unwrap().name.clone();
+    h.app.run("select.set", json!({"items": [{"type": "body", "name": body}]})).unwrap();
+    h.frames(5);
+    focus_file_row(&mut h, "notes.txt");
+    assert!(h.app.menu.rename.is_none(), "no model rename is open yet");
+    h.step(&json!({"key": "F2"})).unwrap();
+    h.frames(2);
+    assert!(h.app.file_tree.editing.is_some(), "the file's name field opens");
+    assert!(h.app.menu.rename.is_none(), "the selected body does not also open a rename");
+}
+
+/// Delete on a file row asks about the file and leaves the body selected in the view alone.
+#[test]
+fn delete_on_a_file_row_leaves_the_body_selected_in_the_view() {
+    use crate::scenario::Harness;
+    use serde_json::json;
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.app.file_tree = listing(scratch.path());
+    h.app.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+    let body = h.app.session.model.state().bodies.last().unwrap().name.clone();
+    h.app.run("select.set", json!({"items": [{"type": "body", "name": body}]})).unwrap();
+    h.frames(5);
+    focus_file_row(&mut h, "notes.txt");
+    h.step(&json!({"key": "Delete"})).unwrap();
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_some(), "the body stays");
+    assert!(h.app.file_tree.modal.is_some(), "the tree asks about its file");
+}
+
+/// With the Files panel closed the tree has no keys: the view's arrows and the model's Delete
+/// work as they always have.
+#[test]
+fn a_closed_files_panel_gives_arrows_and_delete_back_to_the_model() {
+    use crate::scenario::Harness;
+    use serde_json::json;
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.app.file_tree = listing(scratch.path());
+    h.app.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+    let body = h.app.session.model.state().bodies.last().unwrap().name.clone();
+    h.app.run("select.set", json!({"items": [{"type": "body", "name": body}]})).unwrap();
+    h.frames(5);
+    focus_file_row(&mut h, "notes.txt");
+    crate::right_rail::toggle(&mut h.app, crate::right_rail::Item::Files);
+    h.frames(3);
+    assert!(!h.app.file_tree.focused, "a closed panel has no keys");
+    let cam = h.app.cam;
+    h.step(&json!({"key": "ArrowDown"})).unwrap();
+    h.frames(60);
+    assert_ne!(h.app.cam, cam, "the view's arrow works again");
+    h.step(&json!({"key": "Delete"})).unwrap();
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_none(), "the model's Delete works again");
+}

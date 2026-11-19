@@ -3514,10 +3514,12 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     // Only clipboard mutation waits for current widget/dialog ownership in `finish_input`.
     for (k, repeat, mods) in keys {
         use egui::Key;
+        // A click in the Files tree gives it the keyboard until a click lands elsewhere: the keys
+        // it acts on are for the files, not also for the design or the view.
         if app.file_tree.focused
             && crate::right_rail::shown(app)
             && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files)
-            && matches!(k, Key::Delete | Key::Backspace | Key::Escape)
+            && crate::file_tree::takes_key(k, mods)
         {
             continue;
         }
