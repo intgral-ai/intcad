@@ -5959,8 +5959,6 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "welding"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e94298e32686b5d447c2abade5bb4594d4e2c4467a7116d3eb253fc7d230fed7"
 dependencies = [
  "base64 0.22.1",
  "cef",

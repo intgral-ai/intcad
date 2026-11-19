@@ -28,8 +28,27 @@ use welding::{
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
 
+#[path = "assistant_cef_config.rs"]
+mod config;
 #[path = "assistant_cef_viewport.rs"]
 mod viewport;
+
+pub use config::HostBackend;
+use config::Switch;
+
+/// The actual window-system connection, not the desktop session's environment.
+pub fn host_backend(cc: &eframe::CreationContext<'_>) -> HostBackend {
+    use welding::wgpu::rwh::{HasDisplayHandle, RawDisplayHandle};
+    match cc.display_handle().map(|display| display.as_raw()) {
+        Ok(RawDisplayHandle::Wayland(_)) => HostBackend::LinuxWayland,
+        Ok(RawDisplayHandle::Xlib(_) | RawDisplayHandle::Xcb(_)) => HostBackend::LinuxX11,
+        Ok(RawDisplayHandle::Windows(_)) => HostBackend::Windows,
+        Ok(RawDisplayHandle::AppKit(_)) => HostBackend::Macos,
+        _ => HostBackend::Unknown,
+    }
+}
+
+static WAYLAND_RUNTIME: std::sync::OnceLock<config::EffectivePolicy> = std::sync::OnceLock::new();
 
 /// The page's origin while CEF runs: a loopback server this module owns, because CEF has no
 /// custom-scheme handler here and the page's ES modules need a real origin.
@@ -207,6 +226,7 @@ pub struct CefAssistant {
     copy_request: Option<u64>,
     last_frame: Instant,
     failed: bool,
+    osr_refused: bool,
     ticks: u64,
     pushes: u64,
     frames: u64,
@@ -237,19 +257,77 @@ struct PageTarget {
 impl CefAssistant {
     /// Make the browser and its page. `None` when CEF cannot start: the panel then says why
     /// instead of drawing a second conversation.
-    pub fn new(render_state: &eframe::egui_wgpu::RenderState) -> Option<Self> {
+    pub fn new(render_state: &eframe::egui_wgpu::RenderState, backend: HostBackend) -> Option<Self> {
         let cef_path = std::env::var("CEF_PATH").ok()?;
-        let mut config = CefRuntimeConfig::new(&cef_path, sandbox());
-        config.cache_path = Some(crate::settings_dir().ok().flatten().unwrap_or_else(std::env::temp_dir).join("cef-assistant"));
-        config.command_line_switches =
-            vec![("no-first-run".into(), None), ("no-default-browser-check".into(), None), ("disable-features".into(), Some("Translate".into()))];
-        if let Some(list) = std::env::var("SOLIDCRAFT_ASSISTANT_CEF_SWITCHES").ok() {
-            config.command_line_switches.extend(list.split(',').filter(|part| !part.is_empty()).map(|part| match part.split_once('=') {
-                Some((key, value)) => (key.to_owned(), Some(value.to_owned())),
-                None => (part.to_owned(), None),
-            }));
+        let wayland_osr = backend == HostBackend::LinuxWayland;
+        #[cfg(not(target_os = "linux"))]
+        let identity = None;
+        #[cfg(target_os = "linux")]
+        let identity = if wayland_osr {
+            match CefRuntime::inspect_identity(std::path::Path::new(&cef_path)) {
+                Ok(id) => Some(config::RuntimeIdentity {
+                    cef: id.cef,
+                    chromium: id.chromium,
+                    api_version: id.api_version,
+                    platform_api_hash: id.platform_api_hash,
+                    cef_commit: id.cef_commit,
+                }),
+                Err(_) => {
+                    note("CEF: Wayland runtime identity unavailable; Assistant refused");
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        let raw = std::env::var("SOLIDCRAFT_ASSISTANT_CEF_SWITCHES").unwrap_or_default();
+        let overrides = if wayland_osr {
+            match config::parse_overrides(&raw) {
+                Ok(overrides) => overrides,
+                Err(error) => {
+                    note(&format!("CEF: Wayland override policy refused: {error:?}"));
+                    return None;
+                }
+            }
+        } else {
+            // Preserve the old parser, including permissive legacy switch
+            // spelling, on Windows/macOS and Linux X11.
+            raw.split(',')
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    let (name, value) = match part.split_once('=') {
+                        Some((name, value)) => (name, Some(value.to_owned())),
+                        None => (part, None),
+                    };
+                    Switch { name: name.to_owned(), value }
+                })
+                .collect()
+        };
+        let policy = match config::build_policy(backend, true, identity.as_ref(), &overrides) {
+            Ok(policy) => policy,
+            Err(error) => {
+                note(&format!("CEF: runtime policy refused: {error:?}"));
+                return None;
+            }
+        };
+        if wayland_osr {
+            if let Err(error) = config::claim_runtime(&WAYLAND_RUNTIME, &policy) {
+                note(&format!("CEF: runtime claim refused: {error:?}"));
+                return None;
+            }
+            // A failed initialization keeps the claim: CEF may have partially
+            // initialized global state. Never retry or shut down another owner.
+            if let Some(id) = &policy.identity {
+                note(&format!(
+                    "CEF: backend=LinuxWayland osr_only=true disabled=Translate,WaylandFractionalScaleV1 cef={:?} chromium={:?} api={} platform_hash={} commit={}",
+                    id.cef, id.chromium, id.api_version, id.platform_api_hash, id.cef_commit
+                ));
+            }
         }
-        let runtime = match CefRuntime::initialize(config) {
+        let mut runtime_config = CefRuntimeConfig::new(&cef_path, sandbox());
+        runtime_config.cache_path = Some(crate::settings_dir().ok().flatten().unwrap_or_else(std::env::temp_dir).join("cef-assistant"));
+        runtime_config.command_line_switches = policy.switches.into_iter().map(|entry| (entry.name, entry.value)).collect();
+        let runtime = match CefRuntime::initialize(runtime_config) {
             Ok(runtime) => runtime,
             Err(error) => {
                 note(&format!("CEF initialize failed: {error}"));
@@ -314,6 +392,7 @@ impl CefAssistant {
             copy_request: None,
             last_frame: Instant::now(),
             failed: false,
+            osr_refused: false,
             ticks: 0,
             pushes: 0,
             frames: 0,
@@ -328,6 +407,12 @@ impl CefAssistant {
     /// The page's messages and the app's state, whether or not the window is painted.
     pub fn logic(&mut self, solve: &mut SolveApp, ctx: &Context) {
         self.pump();
+        if self.osr_refused {
+            web::set_host(solve, false);
+            web::set_problem(solve, web::Problem::Failed);
+            web::advance(solve, ctx);
+            return;
+        }
         while let Ok(message) = self.inbox.try_recv() {
             self.receive(solve, ctx, &message);
         }
@@ -362,6 +447,9 @@ impl CefAssistant {
 
     /// Once a frame, after the app's UI: place, resize, take the texture, draw it.
     pub fn tick(&mut self, solve: &mut SolveApp, ctx: &Context, frame: &mut eframe::Frame) {
+        if self.osr_refused {
+            return;
+        }
         if web::take_retry(solve) {
             self.told.clear();
         }
@@ -751,11 +839,16 @@ impl CefAssistant {
             }
         }
         while let Some(event) = self.producer.poll_web_event() {
-            if let CefSurfaceEvent::Navigation(navigation) = &event {
-                let text = format!("{navigation:?}");
-                if text.contains("LoadEnd") || text.contains("LoadError") || text.contains("TitleChanged") || text.contains("ConsoleMessage") {
-                    note(&text.chars().take(200).collect::<String>());
+            match &event {
+                CefSurfaceEvent::Navigation(welding::NavigationEvent::BrowserCreated { browser_id, windowless }) => {
+                    note(&format!("CEF: browser={browser_id} windowless={windowless} action={}", if *windowless { "accept" } else { "refuse" }));
+                    if !windowless {
+                        self.osr_refused = true;
+                        self.queue.clear();
+                    }
                 }
+                CefSurfaceEvent::Navigation(welding::NavigationEvent::NewWindowRequested { .. }) => note("CEF: browser-popup action=cancel"),
+                _ => {}
             }
             if let CefSurfaceEvent::ScriptCompleted { id, result } = &event {
                 if self.copy_request == Some(id.get()) {

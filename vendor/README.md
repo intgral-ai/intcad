@@ -129,3 +129,22 @@ SolidCraft changes:
   (the `wp::pointer_gestures` module); drop the example and test targets.
 - `src/event.rs`, `src/changelog/unreleased.md`: the platform notes of both events and the
   changelog entry.
+
+## welding 0.15.0 (MPL-2.0, Mark Alan Boykin, https://github.com/merely-made/wgpu-weld)
+
+Exact published crate sources, normalized manifest, build script and README, without
+examples, assets, registry metadata or a nested lockfile. `welding/UPSTREAM.md` records
+the package checksum, upstream revision, original file hashes and removal criteria.
+`welding/LICENSE.txt` is Mozilla's canonical MPL-2.0 text.
+
+SolidCraft changes:
+- `src/runtime_identity.rs`, `src/runtime.rs`, `src/lib.rs`: owned, checked Linux
+  pre-initialization runtime identity, with native queries isolated in the vendor boundary.
+- `src/surface.rs`, `src/linux_cef/cef_backed.rs`: report actual browser identity/OSR
+  mode, close a host violating the OSR invariant, and test browser-popup cancellation
+  separately from OSR popup widgets. Existing root OSR settings and fd ownership stay intact.
+
+MPL-covered files are modified. Binary distributions must make this exact modified
+source available under MPL-2.0, include the notice and license, and tell recipients
+how to obtain the source. The release must publish the matching `vendor/welding/`
+tree, not merely link to the unmodified crate.

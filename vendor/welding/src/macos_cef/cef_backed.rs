@@ -1,0 +1,1012 @@
+// Copyright 2026 Mark Alan Boykin
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// SPDX-License-Identifier: MPL-2.0
+
+//! CEF handler vtables for the macOS producer: render handler (accelerated
+//! OSR paint), life-span, client, load, and display handlers.
+//!
+//! Split out of `macos_cef/mod.rs`; the producer itself stays there.
+
+use super::*;
+use cef::*;
+use std::ffi::c_void;
+
+fn push_navigation(events: &WebEventQueue, event: crate::surface::NavigationEvent) {
+    events.push(CefSurfaceEvent::Navigation(event));
+}
+
+cef::wrap_render_handler! {
+    pub(super) struct WeldRenderHandler {
+        handler: WeldRenderHandlerInner,
+    }
+
+    impl RenderHandler {
+        fn view_rect(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            rect: Option<&mut cef::Rect>,
+        ) {
+            if let Some(rect) = rect {
+                // GetViewRect is answered in DIP, not physical pixels.
+                let (w, h) = self.handler.metrics.lock().unwrap().logical();
+                rect.width = w;
+                rect.height = h;
+            }
+        }
+
+        fn screen_info(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            screen_info: Option<&mut cef::ScreenInfo>,
+        ) -> ::std::os::raw::c_int {
+            if let Some(info) = screen_info {
+                info.device_scale_factor = self.handler.metrics.lock().unwrap().scale();
+                return 1;
+            }
+            0
+        }
+
+        fn screen_point(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _view_x: ::std::os::raw::c_int,
+            _view_y: ::std::os::raw::c_int,
+            _screen_x: Option<&mut ::std::os::raw::c_int>,
+            _screen_y: Option<&mut ::std::os::raw::c_int>,
+        ) -> ::std::os::raw::c_int {
+            0
+        }
+
+        #[cfg(feature = "cef-runtime")]
+        fn on_accelerated_paint(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            type_: cef::PaintElementType,
+            _dirty_rects: Option<&[cef::Rect]>,
+            info: Option<&cef::AcceleratedPaintInfo>,
+        ) {
+            // CEF paints the popup widget (select dropdowns, autocomplete) as
+            // its own element rather than compositing it into the view, so it
+            // lands here with PET_POPUP and goes to a separate slot.
+            let is_popup = type_ == cef::PaintElementType::POPUP;
+            let Some(info) = info else { return };
+            // macOS names this field for what it is: the paint info carries an
+            // IOSurfaceRef, not the Windows shared HANDLE.
+            let io_surface = info.shared_texture_io_surface;
+            if io_surface.is_null() {
+                return;
+            }
+
+            // Retain the IOSurface so it outlives the callback.
+            // IOSurfaceRef is a CFTypeRef; use CFRetain.
+            unsafe extern "C" {
+                fn CFRetain(cf: *const c_void) -> *const c_void;
+            }
+            unsafe { CFRetain(io_surface) };
+
+            let width = info.extra.coded_size.width as u32;
+            let height = info.extra.coded_size.height as u32;
+            let format = match *info.format.as_ref() {
+                cef::sys::cef_color_type_t::CEF_COLOR_TYPE_RGBA_8888 => {
+                    wgpu::TextureFormat::Rgba8Unorm
+                }
+                _ => wgpu::TextureFormat::Bgra8Unorm,
+            };
+
+            let mut slot = if is_popup {
+                self.handler.popup_slot.lock().unwrap()
+            } else {
+                self.handler.frame_slot.lock().unwrap()
+            };
+            let generation = slot.next_generation();
+            let frame = unsafe {
+                crate::native_frame::MetalTextureRef::from_retained_raw_io_surface(
+                    io_surface as *mut c_void,
+                    PhysicalSize::new(width, height),
+                    format,
+                    generation,
+                )
+            };
+            match frame {
+                Ok(frame) => {
+                    slot.store(crate::native_frame::NativeFrame::MetalTextureRef(frame));
+                }
+                Err(error) => {
+                    log::error!("failed to wrap retained CEF IOSurface: {error}");
+                }
+            }
+        }
+
+        fn on_ime_composition_range_changed(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            selected_range: Option<&cef::Range>,
+            character_bounds: Option<&[cef::Rect]>,
+        ) {
+            let rects: Vec<crate::surface::PopupRect> = character_bounds
+                .unwrap_or(&[])
+                .iter()
+                .map(|r| crate::surface::PopupRect {
+                    x: r.x,
+                    y: r.y,
+                    width: r.width.max(0) as u32,
+                    height: r.height.max(0) as u32,
+                })
+                .collect();
+            let Some(bounds) = crate::ime::bounds_union(&rects) else { return };
+            // CEF reports these in DIP, like popup geometry.
+            let bounds = self.handler.metrics.lock().unwrap().rect_to_physical(bounds);
+            let (start, end) = selected_range
+                .map(|r| (r.from, r.to))
+                .unwrap_or((0, 0));
+            self.handler.ime.set(crate::surface::ImeComposition {
+                bounds,
+                selection_start: start,
+                selection_end: end,
+            });
+        }
+
+        fn on_popup_show(&self, _browser: Option<&mut cef::Browser>, show: ::std::os::raw::c_int) {
+            let showing = show != 0;
+            log::debug!("on_popup_show({showing})");
+            self.handler.popup.set_visible(showing);
+            if !showing {
+                // A hidden popup never paints again; drop the stale surface so
+                // acquire_popup cannot hand back a dropdown that is gone.
+                let _ = self.handler.popup_slot.lock().unwrap().take();
+            }
+        }
+
+        fn on_popup_size(&self, _browser: Option<&mut cef::Browser>, rect: Option<&cef::Rect>) {
+            let Some(rect) = rect else { return };
+            log::debug!(
+                "on_popup_size({}x{} at {},{})",
+                rect.width, rect.height, rect.x, rect.y
+            );
+            self.handler.popup.set_rect(crate::surface::PopupRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width.max(0) as u32,
+                height: rect.height.max(0) as u32,
+            });
+        }
+
+        fn start_dragging(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            drag_data: Option<&mut cef::DragData>,
+            allowed_ops: cef::DragOperationsMask,
+            x: ::std::os::raw::c_int,
+            y: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let Some(drag_data) = drag_data else { return 0 };
+            let scale = self.handler.metrics.lock().unwrap().scale();
+            push_navigation(
+                &self.handler.events,
+                crate::surface::NavigationEvent::DragStarted {
+                    payload: crate::drag::payload_from_cef(drag_data),
+                    allowed_operations: crate::DragOperations(allowed_ops.as_ref().0 as u32),
+                    x: (x as f32 * scale).round() as i32,
+                    y: (y as f32 * scale).round() as i32,
+                }
+            );
+            1
+        }
+    }
+}
+
+impl WeldRenderHandler {
+    pub fn build(inner: WeldRenderHandlerInner) -> cef::RenderHandler {
+        Self::new(inner)
+    }
+}
+
+cef::wrap_client! {
+    pub(super) struct WeldClient {
+        render_handler: cef::RenderHandler,
+        load_handler: cef::LoadHandler,
+        display_handler: cef::DisplayHandler,
+        life_span_handler: cef::LifeSpanHandler,
+        request_handler: cef::RequestHandler,
+        download_handler: cef::DownloadHandler,
+        permission_handler: cef::PermissionHandler,
+        context_menu_handler: cef::ContextMenuHandler,
+        find_handler: cef::FindHandler,
+        scripts: Arc<crate::app::PendingScripts>,
+        events: Arc<WebEventQueue>,
+    }
+
+    impl Client {
+        fn render_handler(&self) -> Option<cef::RenderHandler> {
+            Some(self.render_handler.clone())
+        }
+
+        fn load_handler(&self) -> Option<cef::LoadHandler> {
+            Some(self.load_handler.clone())
+        }
+
+        fn life_span_handler(&self) -> Option<cef::LifeSpanHandler> {
+            Some(self.life_span_handler.clone())
+        }
+
+        fn request_handler(&self) -> Option<cef::RequestHandler> {
+            Some(self.request_handler.clone())
+        }
+
+        fn download_handler(&self) -> Option<cef::DownloadHandler> {
+            Some(self.download_handler.clone())
+        }
+
+        fn permission_handler(&self) -> Option<cef::PermissionHandler> {
+            Some(self.permission_handler.clone())
+        }
+
+        fn context_menu_handler(&self) -> Option<cef::ContextMenuHandler> {
+            Some(self.context_menu_handler.clone())
+        }
+
+        fn find_handler(&self) -> Option<cef::FindHandler> {
+            Some(self.find_handler.clone())
+        }
+
+        fn display_handler(&self) -> Option<cef::DisplayHandler> {
+            Some(self.display_handler.clone())
+        }
+
+        fn on_process_message_received(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _frame: Option<&mut cef::Frame>,
+            source_process: cef::ProcessId,
+            message: Option<&mut cef::ProcessMessage>,
+        ) -> ::std::os::raw::c_int {
+            if source_process != cef::ProcessId::RENDERER { return 0; }
+            let Some(msg) = message else { return 0 };
+            let name = cef::CefString::from(&msg.name()).to_string();
+            if name == crate::app::EVAL_RESULT {
+                // The renderer answering a request_script_result.
+                if let Some(args) = msg.argument_list() {
+                    let id = cef::CefString::from(&args.string(0)).to_string();
+                    let Ok(id) = id.parse::<u64>() else {
+                        log::error!("CEF returned an invalid Weld request id: {id}");
+                        return 1;
+                    };
+                    let ok = args.int(1) != 0;
+                    let payload = cef::CefString::from(&args.string(2)).to_string();
+                    self.scripts.complete(
+                        WebRequestId::new(id),
+                        if ok { Ok(payload) } else { Err(payload) },
+                    );
+                }
+                return 1;
+            }
+            if name != "weld.message" { return 0; }
+            if let Some(args) = msg.argument_list() {
+                let text = cef::CefString::from(&args.string(0)).to_string();
+                self.events.push(CefSurfaceEvent::WebMessage(text));
+            }
+            1
+        }
+    }
+}
+
+impl WeldClient {
+    pub fn build(
+        render_handler: cef::RenderHandler,
+        load_handler: cef::LoadHandler,
+        display_handler: cef::DisplayHandler,
+        life_span_handler: cef::LifeSpanHandler,
+        request_handler: cef::RequestHandler,
+        download_handler: cef::DownloadHandler,
+        permission_handler: cef::PermissionHandler,
+        context_menu_handler: cef::ContextMenuHandler,
+        find_handler: cef::FindHandler,
+        scripts: Arc<crate::app::PendingScripts>,
+        events: Arc<WebEventQueue>,
+    ) -> cef::Client {
+        Self::new(
+            render_handler,
+            load_handler,
+            display_handler,
+            life_span_handler,
+            request_handler,
+            download_handler,
+            permission_handler,
+            context_menu_handler,
+            find_handler,
+            scripts,
+            events,
+        )
+    }
+}
+
+// ── Life-span handler: popup policy ───────────────────────────────────────
+
+cef::wrap_life_span_handler! {
+    pub(super) struct WeldLifeSpanHandler {
+        events: Arc<WebEventQueue>,
+        scripts: Arc<crate::app::PendingScripts>,
+        cookies: Arc<crate::cookies::CookieJar>,
+    }
+
+    impl LifeSpanHandler {
+        // Popup browsers are denied and reported. welding renders one surface
+        // per producer, so a second browser here would be invisible to the
+        // host. The host decides what to do with the URL.
+        #[allow(clippy::too_many_arguments)]
+        fn on_before_popup(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _frame: Option<&mut cef::Frame>,
+            _popup_id: ::std::os::raw::c_int,
+            target_url: Option<&cef::CefString>,
+            _target_frame_name: Option<&cef::CefString>,
+            _target_disposition: cef::WindowOpenDisposition,
+            user_gesture: ::std::os::raw::c_int,
+            _popup_features: Option<&cef::PopupFeatures>,
+            _window_info: Option<&mut cef::WindowInfo>,
+            _client: Option<&mut Option<cef::Client>>,
+            _settings: Option<&mut cef::BrowserSettings>,
+            _extra_info: Option<&mut Option<cef::DictionaryValue>>,
+            _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
+        ) -> ::std::os::raw::c_int {
+            let url = target_url.map(|u| u.to_string()).unwrap_or_default();
+            push_navigation(
+                &self.events,
+                crate::surface::NavigationEvent::NewWindowRequested {
+                    url,
+                    user_gesture: user_gesture != 0,
+                }
+            );
+            1 // cancel popup creation
+        }
+
+        fn on_before_close(&self, _browser: Option<&mut cef::Browser>) {
+            log::debug!("CEF on_before_close");
+            self.scripts.fail_all("browser closed");
+            self.cookies.fail_active("browser closed");
+        }
+    }
+}
+
+impl WeldLifeSpanHandler {
+    pub fn build(
+        events: Arc<WebEventQueue>,
+        scripts: Arc<crate::app::PendingScripts>,
+        cookies: Arc<crate::cookies::CookieJar>,
+    ) -> cef::LifeSpanHandler {
+        Self::new(events, scripts, cookies)
+    }
+}
+
+// ── Request handler ───────────────────────────────────────────────────────
+
+cef::wrap_request_handler! {
+    pub(super) struct WeldRequestHandler {
+        events: Arc<WebEventQueue>,
+        auth: Arc<crate::auth::AuthChallenges>,
+        scripts: Arc<crate::app::PendingScripts>,
+    }
+
+    impl RequestHandler {
+        fn auth_credentials(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            origin_url: Option<&cef::CefString>,
+            is_proxy: ::std::os::raw::c_int,
+            host: Option<&cef::CefString>,
+            port: ::std::os::raw::c_int,
+            realm: Option<&cef::CefString>,
+            scheme: Option<&cef::CefString>,
+            callback: Option<&mut cef::AuthCallback>,
+        ) -> ::std::os::raw::c_int {
+            let id = self.auth.next_id();
+            let event = crate::surface::NavigationEvent::AuthChallenged {
+                id,
+                origin_url: origin_url.map(|s| s.to_string()).unwrap_or_default(),
+                host: host.map(|s| s.to_string()).unwrap_or_default(),
+                port: port.clamp(0, u16::MAX as _) as u16,
+                realm: realm.map(|s| s.to_string()).unwrap_or_default(),
+                scheme: scheme.map(|s| s.to_string()).unwrap_or_default(),
+                is_proxy: is_proxy != 0,
+            };
+            push_navigation(&self.events, event);
+
+            let Some(callback) = callback else { return 0 };
+            if self.auth.is_enabled() {
+                // Held for the host to answer. CEF's auth callback is
+                // reference-counted and may be answered later, unlike the
+                // download destination.
+                self.auth.hold(id, callback.clone());
+            } else {
+                // Declined now rather than held: a host that never answers
+                // would otherwise keep this request open forever.
+                callback.cancel();
+            }
+            1
+        }
+
+        fn on_render_process_terminated(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _status: cef::TerminationStatus,
+            error_code: ::std::os::raw::c_int,
+            error_string: Option<&cef::CefString>,
+        ) {
+            let status = crate::surface::termination_status(_status);
+            let error_string = error_string.map(|s| s.to_string()).unwrap_or_default();
+            log::error!(
+                "weld: CEF render process terminated ({status:?}, code {error_code}, {error_string})"
+            );
+            push_navigation(
+                &self.events,
+                crate::surface::NavigationEvent::ContentProcessTerminated {
+                    status,
+                    error_code,
+                    error_string,
+                }
+            );
+            self.scripts.fail_all("CEF render process terminated");
+        }
+    }
+}
+
+impl WeldRequestHandler {
+    pub fn build(
+        events: Arc<WebEventQueue>,
+        auth: Arc<crate::auth::AuthChallenges>,
+        scripts: Arc<crate::app::PendingScripts>,
+    ) -> cef::RequestHandler {
+        Self::new(events, auth, scripts)
+    }
+}
+
+// ── Load handler ─────────────────────────────────────────────────────────
+
+cef::wrap_load_handler! {
+    pub(super) struct WeldLoadHandler {
+        inner: WeldRenderHandlerInner,
+    }
+
+    impl LoadHandler {
+        fn on_load_start(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            frame: Option<&mut cef::Frame>,
+            _transition_type: cef::TransitionType,
+        ) {
+            let is_main = frame.as_ref().map(|f| f.is_main() != 0).unwrap_or(false);
+            if !is_main { return; }
+            let url = frame.map(|f| cef::CefString::from(&f.url()).to_string()).unwrap_or_default();
+            push_navigation(
+                &self.inner.events,
+                crate::surface::NavigationEvent::LoadStart { url }
+            );
+        }
+
+        fn on_load_end(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            frame: Option<&mut cef::Frame>,
+            http_status_code: ::std::os::raw::c_int,
+        ) {
+            let is_main = frame.as_ref().map(|f| f.is_main() != 0).unwrap_or(false);
+            if !is_main { return; }
+            let url = frame.map(|f| cef::CefString::from(&f.url()).to_string()).unwrap_or_default();
+            push_navigation(
+                &self.inner.events,
+                crate::surface::NavigationEvent::LoadEnd {
+                    url,
+                    http_status: http_status_code,
+                }
+            );
+        }
+
+        fn on_load_error(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            frame: Option<&mut cef::Frame>,
+            _error_code: cef::Errorcode,
+            error_text: Option<&cef::CefString>,
+            failed_url: Option<&cef::CefString>,
+        ) {
+            let is_main = frame.as_ref().map(|f| f.is_main() != 0).unwrap_or(false);
+            if !is_main { return; }
+            let url = failed_url.map(|u| u.to_string()).unwrap_or_default();
+            let text = error_text.map(|t| t.to_string()).unwrap_or_default();
+            // Safety: Errorcode wraps cef_errorcode_t which wraps c_int;
+            // both are #[repr(transparent)] around a 4-byte integer.
+            let code: i32 = unsafe { std::mem::transmute(_error_code) };
+            push_navigation(
+                &self.inner.events,
+                crate::surface::NavigationEvent::LoadError {
+                    url,
+                    error_code: code,
+                    error_text: text,
+                }
+            );
+        }
+    }
+}
+
+impl WeldLoadHandler {
+    pub fn build(inner: WeldRenderHandlerInner) -> cef::LoadHandler {
+        Self::new(inner)
+    }
+}
+
+// ── Display handler ───────────────────────────────────────────────────────
+
+cef::wrap_display_handler! {
+    pub(super) struct WeldDisplayHandler {
+        inner: WeldRenderHandlerInner,
+    }
+
+    impl DisplayHandler {
+        fn on_address_change(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            frame: Option<&mut cef::Frame>,
+            url: Option<&cef::CefString>,
+        ) {
+            let is_main = frame.as_ref().map(|f| f.is_main() != 0).unwrap_or(false);
+            if !is_main { return; }
+            let url = url.map(|u| u.to_string()).unwrap_or_default();
+            push_navigation(
+                &self.inner.events,
+                crate::surface::NavigationEvent::AddressChanged { url }
+            );
+        }
+
+        // CEF puts OnCursorChange on the display handler, not the render
+        // handler, and types the handle differently per platform (*mut u8 here).
+        fn on_cursor_change(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _cursor: *mut u8,
+            type_: cef::CursorType,
+            _custom_cursor_info: Option<&cef::CursorInfo>,
+        ) -> ::std::os::raw::c_int {
+            self.inner.cursor.set(crate::cursor::from_cef(type_));
+            1 // handled: under OSR the host owns the pointer
+        }
+
+        fn on_console_message(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            level: cef::LogSeverity,
+            message: Option<&cef::CefString>,
+            source: Option<&cef::CefString>,
+            line: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            push_navigation(
+                &self.inner.events,
+                crate::surface::NavigationEvent::ConsoleMessage {
+                    // cef_log_severity_t is repr(u32) here and repr(i32) on
+                    // Windows, so go through the reference rather than From.
+                    level: *level.as_ref() as i32,
+                    message: message.map(|m| m.to_string()).unwrap_or_default(),
+                    source: source.map(|s| s.to_string()).unwrap_or_default(),
+                    line,
+                }
+            );
+            0 // let CEF log it as well
+        }
+
+        fn on_title_change(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            title: Option<&cef::CefString>,
+        ) {
+            let title = title.map(|t| t.to_string()).unwrap_or_default();
+            push_navigation(
+                &self.inner.events,
+                crate::surface::NavigationEvent::TitleChanged { title }
+            );
+        }
+    }
+}
+
+impl WeldDisplayHandler {
+    pub fn build(inner: WeldRenderHandlerInner) -> cef::DisplayHandler {
+        Self::new(inner)
+    }
+}
+
+// ── Download handler ──────────────────────────────────────────────────────
+
+cef::wrap_download_handler! {
+    pub(super) struct WeldDownloadHandler {
+        events: Arc<WebEventQueue>,
+        downloads: Arc<crate::downloads::Downloads>,
+    }
+
+    impl DownloadHandler {
+        fn can_download(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _url: Option<&cef::CefString>,
+            _request_method: Option<&cef::CefString>,
+        ) -> ::std::os::raw::c_int {
+            // Refuse before anything is created when there is nowhere to put it,
+            // rather than starting a transfer and cancelling it later.
+            self.downloads.is_enabled() as _
+        }
+
+        fn on_before_download(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            download_item: Option<&mut cef::DownloadItem>,
+            suggested_name: Option<&cef::CefString>,
+            callback: Option<&mut cef::BeforeDownloadCallback>,
+        ) -> ::std::os::raw::c_int {
+            let (Some(item), Some(callback)) = (download_item, callback) else {
+                return 0;
+            };
+            let suggested = suggested_name.map(|s| s.to_string()).unwrap_or_default();
+            let Some(destination) = self.downloads.destination_for(&suggested) else {
+                // Answering with nothing cancels it, which is what a host
+                // without a download directory asked for.
+                return 0;
+            };
+            let id = item.id();
+            let url = cef_string(item.url());
+            let total = item.total_bytes();
+            self.downloads.mark_started(id);
+            push_navigation(
+                &self.events,
+                crate::surface::NavigationEvent::DownloadStarted {
+                    id,
+                    url,
+                    suggested_filename: suggested,
+                    destination_path: destination.clone(),
+                    total_bytes_expected: (total > 0).then_some(total as u64),
+                }
+            );
+            let path: cef::CefString = destination.to_string_lossy().as_ref().into();
+            // false: no system save dialog. The destination is already decided,
+            // and a machine nobody is sitting at cannot answer one.
+            callback.cont(Some(&path), 0);
+            1
+        }
+
+        fn on_download_updated(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            download_item: Option<&mut cef::DownloadItem>,
+            callback: Option<&mut cef::DownloadItemCallback>,
+        ) {
+            let Some(item) = download_item else { return };
+            let id = item.id();
+            // CEF updates an item before it asks where to put it. Staying quiet
+            // until the download has been accepted keeps DownloadStarted first.
+            if !self.downloads.has_started(id) {
+                return;
+            }
+            let path = std::path::PathBuf::from(cef_string(item.full_path()));
+
+            // The host's cancel/pause/resume lands here: this callback is the
+            // only place CEF offers one, and only for the length of this call.
+            if let (Some(callback), Some(op)) = (callback, self.downloads.take_pending(id)) {
+                match op {
+                    crate::downloads::DownloadOp::Cancel => callback.cancel(),
+                    crate::downloads::DownloadOp::Pause => callback.pause(),
+                    crate::downloads::DownloadOp::Resume => callback.resume(),
+                }
+            }
+
+            let total = item.total_bytes();
+            let total_bytes_expected = (total > 0).then_some(total as u64);
+            let received = item.received_bytes().max(0) as u64;
+            let complete = item.is_complete() != 0;
+            let canceled = item.is_canceled() != 0;
+
+            if complete || canceled || self.downloads.due_for_progress(id, std::time::Instant::now()) {
+                push_navigation(&self.events, crate::surface::NavigationEvent::DownloadProgress {
+                    id,
+                    bytes_received: received,
+                    total_bytes_expected,
+                });
+            }
+            if canceled {
+                push_navigation(&self.events, crate::surface::NavigationEvent::DownloadCancelled {
+                    id,
+                    destination_path: path,
+                });
+            } else if complete {
+                let interrupted = item.is_interrupted() != 0;
+                push_navigation(&self.events, crate::surface::NavigationEvent::DownloadFinished {
+                    id,
+                    destination_path: path,
+                    error: interrupted.then(|| {
+                        format!("interrupted: {:?}", *item.interrupt_reason().as_ref() as i32)
+                    }),
+                });
+            }
+            if complete || canceled {
+                self.downloads.forget(id);
+            }
+        }
+    }
+}
+
+/// CEF hands strings back as `CefStringUserfree`, which is empty when unset.
+fn cef_string(s: cef::CefStringUserfree) -> String {
+    let raw: Option<&cef::sys::_cef_string_utf16_t> = (&s).into();
+    raw.map(|r| cef::CefStringUtf16::from(*r).to_string())
+        .unwrap_or_default()
+}
+
+impl WeldDownloadHandler {
+    pub fn build(
+        events: Arc<WebEventQueue>,
+        downloads: Arc<crate::downloads::Downloads>,
+    ) -> cef::DownloadHandler {
+        Self::new(events, downloads)
+    }
+}
+
+// ── Permission handler ────────────────────────────────────────────────────
+
+cef::wrap_permission_handler! {
+    pub(super) struct WeldPermissionHandler {
+        events: Arc<WebEventQueue>,
+        permissions: Arc<crate::permissions::Permissions>,
+    }
+
+    impl PermissionHandler {
+        fn on_show_permission_prompt(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _prompt_id: u64,
+            requesting_origin: Option<&cef::CefString>,
+            requested_permissions: u32,
+            callback: Option<&mut cef::PermissionPromptCallback>,
+        ) -> ::std::os::raw::c_int {
+            let id = self.permissions.next_id();
+            push_navigation(
+                &self.events,
+                crate::surface::NavigationEvent::PermissionRequested {
+                    id,
+                    origin: requesting_origin.map(|s| s.to_string()).unwrap_or_default(),
+                    permissions: crate::permissions::decode(requested_permissions),
+                    raw: requested_permissions,
+                }
+            );
+            let Some(callback) = callback else { return 0 };
+            if self.permissions.is_enabled() {
+                self.permissions.hold(id, crate::permissions::Pending::Prompt(callback.clone()));
+            } else {
+                // Denied now rather than held: an unanswered prompt leaves the
+                // page waiting forever.
+                callback.cont(cef::PermissionRequestResult::DENY);
+            }
+            1
+        }
+
+        fn on_request_media_access_permission(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _frame: Option<&mut cef::Frame>,
+            requesting_origin: Option<&cef::CefString>,
+            requested_permissions: u32,
+            callback: Option<&mut cef::MediaAccessCallback>,
+        ) -> ::std::os::raw::c_int {
+            let id = self.permissions.next_id();
+            push_navigation(
+                &self.events,
+                crate::surface::NavigationEvent::PermissionRequested {
+                    id,
+                    origin: requesting_origin.map(|s| s.to_string()).unwrap_or_default(),
+                    // Media capture arrives on its own callback with its own
+                    // bits, so it is decoded from the media set rather than the
+                    // prompt set.
+                    permissions: crate::permissions::decode_media(requested_permissions),
+                    raw: requested_permissions,
+                }
+            );
+            let Some(callback) = callback else { return 0 };
+            if self.permissions.is_enabled() {
+                self.permissions.hold(
+                    id,
+                    crate::permissions::Pending::Media(callback.clone(), requested_permissions),
+                );
+            } else {
+                callback.cont(0);
+            }
+            1
+        }
+    }
+}
+
+impl WeldPermissionHandler {
+    pub fn build(
+        events: Arc<WebEventQueue>,
+        permissions: Arc<crate::permissions::Permissions>,
+    ) -> cef::PermissionHandler {
+        Self::new(events, permissions)
+    }
+}
+
+// ── Context menu handler ──────────────────────────────────────────────────
+
+cef::wrap_context_menu_handler! {
+    pub(super) struct WeldContextMenuHandler {
+        events: Arc<WebEventQueue>,
+        metrics: Arc<Mutex<crate::view::ViewMetrics>>,
+    }
+
+    impl ContextMenuHandler {
+        fn on_before_context_menu(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _frame: Option<&mut cef::Frame>,
+            params: Option<&mut cef::ContextMenuParams>,
+            model: Option<&mut cef::MenuModel>,
+        ) {
+            if let Some(params) = params {
+                // CEF reports DIP; every coordinate this API hands out or takes
+                // is physical, so convert on the way out.
+                let scale = self.metrics.lock().unwrap().scale();
+                let flags = params.type_flags().as_ref().0 as u32;
+                push_navigation(
+                    &self.events,
+                    crate::surface::NavigationEvent::ContextMenuRequested {
+                        x: (params.xcoord() as f32 * scale).round() as i32,
+                        y: (params.ycoord() as f32 * scale).round() as i32,
+                        targets: crate::surface::context_menu_targets(flags),
+                        link_url: cef_string(params.link_url()),
+                        source_url: cef_string(params.source_url()),
+                        page_url: cef_string(params.page_url()),
+                        selection_text: cef_string(params.selection_text()),
+                    }
+                );
+            }
+            // Empty the menu. CEF's own has nowhere to draw itself under
+            // windowless rendering, so leaving it populated only invites CEF to
+            // try; the host draws its own from the event above.
+            if let Some(model) = model {
+                model.clear();
+            }
+        }
+
+        fn run_context_menu(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _frame: Option<&mut cef::Frame>,
+            _params: Option<&mut cef::ContextMenuParams>,
+            _model: Option<&mut cef::MenuModel>,
+            callback: Option<&mut cef::RunContextMenuCallback>,
+        ) -> ::std::os::raw::c_int {
+            // Claim it and dismiss immediately: the event has already gone out.
+            if let Some(callback) = callback {
+                callback.cancel();
+            }
+            1
+        }
+    }
+}
+
+impl WeldContextMenuHandler {
+    pub fn build(
+        events: Arc<WebEventQueue>,
+        metrics: Arc<Mutex<crate::view::ViewMetrics>>,
+    ) -> cef::ContextMenuHandler {
+        Self::new(events, metrics)
+    }
+}
+
+// ── DevTools protocol observer ────────────────────────────────────────────
+
+cef::wrap_dev_tools_message_observer! {
+    pub(super) struct WeldDevToolsObserver {
+        channel: Arc<crate::devtools::DevToolsChannel>,
+        snapshots: Arc<crate::snapshot::SnapshotChannel>,
+    }
+
+    impl DevToolsMessageObserver {
+        fn on_dev_tools_message(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            message: Option<&[u8]>,
+        ) -> ::std::os::raw::c_int {
+            // The raw wire format, results and events alike. Taking it here
+            // rather than from the parsed callbacks keeps what a host sees
+            // identical to what the protocol documents.
+            if self.channel.is_enabled()
+                && let Some(bytes) = message
+            {
+                self.channel.push(String::from_utf8_lossy(bytes).into_owned());
+            }
+            // 0: not consumed, so CEF still runs its own parsed callbacks for
+            // anything else that wants them.
+            0
+        }
+
+        fn on_dev_tools_method_result(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            message_id: ::std::os::raw::c_int,
+            success: ::std::os::raw::c_int,
+            result: Option<&[u8]>,
+        ) {
+            self.snapshots.complete(message_id, success != 0, result);
+        }
+    }
+}
+
+impl WeldDevToolsObserver {
+    pub fn build(
+        channel: Arc<crate::devtools::DevToolsChannel>,
+        snapshots: Arc<crate::snapshot::SnapshotChannel>,
+    ) -> cef::DevToolsMessageObserver {
+        Self::new(channel, snapshots)
+    }
+}
+
+// ── Find handler ──────────────────────────────────────────────────────────
+
+cef::wrap_find_handler! {
+    pub(super) struct WeldFindHandler {
+        events: Arc<WebEventQueue>,
+    }
+
+    impl FindHandler {
+        fn on_find_result(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            _identifier: ::std::os::raw::c_int,
+            count: ::std::os::raw::c_int,
+            _selection_rect: Option<&cef::Rect>,
+            active_match_ordinal: ::std::os::raw::c_int,
+            final_update: ::std::os::raw::c_int,
+        ) {
+            push_navigation(
+                &self.events,
+                crate::surface::NavigationEvent::FindResult {
+                    count,
+                    active_match: active_match_ordinal,
+                    final_update: final_update != 0,
+                }
+            );
+        }
+    }
+}
+
+impl WeldFindHandler {
+    pub fn build(events: Arc<WebEventQueue>) -> cef::FindHandler {
+        Self::new(events)
+    }
+}
+
+// ── PDF print callback ────────────────────────────────────────────────────
+
+cef::wrap_pdf_print_callback! {
+    pub(super) struct WeldPdfCallback {
+        events: Arc<WebEventQueue>,
+    }
+
+    impl PdfPrintCallback {
+        fn on_pdf_print_finished(
+            &self,
+            path: Option<&cef::CefString>,
+            ok: ::std::os::raw::c_int,
+        ) {
+            push_navigation(
+                &self.events,
+                crate::surface::NavigationEvent::PdfPrintFinished {
+                    path: path.map(|p| p.to_string()).unwrap_or_default().into(),
+                    ok: ok != 0,
+                }
+            );
+        }
+    }
+}
+
+impl WeldPdfCallback {
+    pub fn build(events: Arc<WebEventQueue>) -> cef::PdfPrintCallback {
+        Self::new(events)
+    }
+}

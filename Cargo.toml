@@ -162,6 +162,8 @@ debug = "line-tables-only"
 
 # Vendored crates with SolidCraft fixes (see vendor/README.md and ATTRIBUTION.md).
 [patch.crates-io]
+welding = { path = "vendor/welding" }
+
 # Keep OpenGL pipelines, resolve textures and CAD callbacks at the same safe sample count.
 egui-wgpu = { path = "vendor/egui-wgpu" }
 

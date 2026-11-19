@@ -1437,13 +1437,13 @@ fn main() -> eframe::Result {
             }
             // The Assistant's conversation is a web view where the host has one.
             // The Assistant's page lives in this window: CEF paints it into a texture the
-            // app's own renderer draws. Which display protocol the window uses does not
-            // matter to it.
+            // app's own renderer draws. Scope native Wayland's pre-init OSR policy to
+            // the actual display handle, not a session environment label.
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let assistant_cef = match cc
                 .wgpu_render_state
                 .as_ref()
-                .and_then(assistant_cef::CefAssistant::new)
+                .and_then(|render_state| assistant_cef::CefAssistant::new(render_state, assistant_cef::host_backend(cc)))
             {
                 Some(cef) => {
                     solidcraft_ui_egui::agent_chat::web::set_host(&mut app, true);

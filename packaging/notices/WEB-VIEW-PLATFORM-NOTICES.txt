@@ -28,10 +28,14 @@ Chromium
 
 welding / grafting (the Rust side of the integration)
   Version:   0.15.0 (welding), 0.6.x (grafting)
-  Licence:   Mozilla Public License 2.0. Linked as published; no MPL-covered file is
-             modified by this app, so no source is offered beyond the published crates.
+  Licence:   Mozilla Public License 2.0. welding is locally modified; grafting is
+             linked as published. The modified welding source is in vendor/welding/
+             of the matching Intcad source revision, including LICENSE.txt and UPSTREAM.md.
   Upstream:  https://crates.io/crates/welding, https://crates.io/crates/grafting
-  Use:       statically linked, unmodified.
+  Use:       statically linked. welding adds checked runtime identity and Linux OSR
+             browser-mode verification; grafting is unmodified. Binary distributors
+             must make the exact modified MPL-covered welding source available under
+             MPL-2.0 and provide recipients its source location with the release.
 
 Full third-party list
 ---------------------
@@ -77,8 +81,10 @@ Chromium
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Mozilla Public License 2.0
-  The full text of MPL-2.0 is at https://mozilla.org/MPL/2.0/. welding and grafting are
-  linked as published crates; their files are not modified.
+  The full text of MPL-2.0 is at https://mozilla.org/MPL/2.0/ and in
+  vendor/welding/LICENSE.txt in the matching Intcad source revision. Modified welding
+  source must accompany the release or be available from its published source location;
+  the original unmodified crate alone does not satisfy that source obligation.
 
 Notes
 -----
