@@ -403,7 +403,7 @@ pub struct CefAssistant {
     producer: Producer,
     host: HostWgpuContext,
     /// The app renderer, so every native texture id can be released exactly once.
-    renderer: std::sync::Arc<std::sync::RwLock<eframe::egui_wgpu::Renderer>>,
+    renderer: std::sync::Arc<egui::epaint::mutex::RwLock<eframe::egui_wgpu::Renderer>>,
     queue: InputQueue,
     texture: Option<(egui::TextureId, [u32; 2])>,
     /// The page's own texture: same bytes, a format egui can take as gamma values.
