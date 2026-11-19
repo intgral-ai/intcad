@@ -28,6 +28,7 @@ use welding::{
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
 use crate::assistant_cef_http::{BrowserOwnerId, DocumentAuthority, DocumentId, NavigationIdentity, PageAssets, PageServer, Pictures, ServerProgress};
+use crate::assistant_cef_lifecycle::{CloseProgress, Lifecycle, Phase};
 
 #[path = "assistant_cef_frame.rs"]
 mod admission;
@@ -342,6 +343,8 @@ impl InputQueue {
 
 pub struct CefAssistant {
     runtime: CefRuntime,
+    /// Pure transition/ownership policy; native completion stays platform-owned.
+    lifecycle: Lifecycle,
     producer: Producer,
     host: HostWgpuContext,
     queue: InputQueue,
@@ -505,6 +508,11 @@ impl CefAssistant {
         // WeldApp's existing callback. Subprocess dispatch above is unchanged.
         configure_private_runtime(&mut runtime_config, &policy);
         runtime_config.command_line_switches = policy.switches.into_iter().map(|entry| (entry.name, entry.value)).collect();
+        let mut lifecycle = Lifecycle::new();
+        if lifecycle.begin_initialization().is_err() {
+            note("CEF: lifecycle refused initialization");
+            return None;
+        }
         let runtime = match CefRuntime::initialize(runtime_config) {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -559,6 +567,13 @@ impl CefAssistant {
             background_color: None,
             ..Default::default()
         };
+        // Creation is owned before the native request; the real browser id is
+        // observed from BrowserCreated, not from a fabricated return value.
+        if lifecycle.browser_requested().is_err() {
+            note("CEF: lifecycle refused browser creation");
+            retain_failed_start(runtime, Some(server), Some(host));
+            return None;
+        }
         let producer = match create_producer(&runtime, surface, &host) {
             Ok(producer) => producer,
             Err(_) => {
@@ -570,6 +585,7 @@ impl CefAssistant {
         let max_edge = host.device.limits().max_texture_dimension_2d;
         Some(Self {
             runtime,
+            lifecycle,
             producer,
             host,
             queue: InputQueue::new(256),
@@ -1112,16 +1128,44 @@ impl CefAssistant {
         }
     }
 
+    /// Ask CEF to close exactly once and report owned progress. Completion is
+    /// the matching platform callback, never this request.
+    pub fn begin_close(&mut self) -> CloseProgress {
+        if !matches!(self.lifecycle.phase(), Phase::Closing | Phase::Quarantined | Phase::Closed | Phase::Shutdown) {
+            self.lifecycle.begin_close(Instant::now());
+            self.authority.revoke();
+            self.document = None;
+            self.server.request_stop();
+            self.queue.invalidate();
+            let _ = self.producer.ime_cancel_composition();
+            #[cfg(target_os = "linux")]
+            let _ = self.producer.set_page_focus(false);
+            self.focused = false;
+            let _ = self.producer.close();
+        }
+        self.poll_close()
+    }
+
+    /// Advance close state from the platform's owned completion only.
+    pub fn poll_close(&mut self) -> CloseProgress {
+        if self.lifecycle.phase() == Phase::Closing {
+            match self.producer.close_progress() {
+                Ok(welding::surface::BrowserCloseProgress::Complete) => {
+                    let _ = self.lifecycle.observe_closed(self.browser_id);
+                }
+                Ok(welding::surface::BrowserCloseProgress::Pending) | Err(_) => {}
+            }
+        }
+        let progress = self.lifecycle.poll(Instant::now());
+        if progress == CloseProgress::Complete {
+            let _ = self.lifecycle.mark_shutdown();
+        }
+        progress
+    }
+
     pub fn close(&mut self) {
-        self.authority.revoke();
-        self.document = None;
-        self.server.request_stop();
-        self.queue.invalidate();
-        let _ = self.producer.ime_cancel_composition();
-        #[cfg(target_os = "linux")]
-        let _ = self.producer.set_page_focus(false);
-        self.focused = false;
-        let _ = self.producer.close();
+        let progress = self.begin_close();
+        log::debug!("CEF close progress: {progress:?}");
     }
 
     pub fn focused(&self) -> bool {
@@ -1454,6 +1498,10 @@ impl CefAssistant {
             match &event {
                 CefSurfaceEvent::Navigation(welding::NavigationEvent::BrowserCreated { browser_id, windowless }) => {
                     self.browser_id = *browser_id;
+                    if self.lifecycle.observe_created(*browser_id).is_err() {
+                        // A creation we do not own cannot become a second runtime owner.
+                        note("CEF: browser creation did not match the owned request");
+                    }
                     self.browser_windowless = *windowless;
                     note(&format!("CEF_BROWSER {}", serde_json::json!({"browser_id": browser_id, "windowless": windowless, "action": "created"})));
                     if !windowless {

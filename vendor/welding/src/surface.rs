@@ -1190,6 +1190,45 @@ pub enum BrowserCloseProgress {
     Complete,
 }
 
+/// Shared close bookkeeping between one producer and its life-span callbacks.
+///
+/// The producer records the identity it asked CEF to close; `on_before_close`
+/// marks that same identity complete. A callback for another browser, or before
+/// a request, cannot complete this producer's close.
+#[cfg(feature = "cef-runtime")]
+#[derive(Debug, Default)]
+pub(crate) struct BrowserCloseState {
+    requested: std::sync::atomic::AtomicI32,
+    completed: std::sync::atomic::AtomicI32,
+}
+
+#[cfg(feature = "cef-runtime")]
+impl BrowserCloseState {
+    /// Record the single close request for `browser_id`; later requests keep the
+    /// original identity. Returns whether this call made the request.
+    pub(crate) fn request(&self, browser_id: i32) -> bool {
+        self.requested
+            .compare_exchange(0, browser_id, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub(crate) fn requested(&self) -> i32 {
+        self.requested.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Called from the native callback with the browser it is closing.
+    pub(crate) fn complete(&self, browser_id: i32) {
+        let expected = self.requested.load(std::sync::atomic::Ordering::Acquire);
+        if expected != 0 && expected == browser_id {
+            self.completed.store(browser_id, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.completed.load(std::sync::atomic::Ordering::Acquire) != 0
+    }
+}
+
 // ── Input event types ────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]

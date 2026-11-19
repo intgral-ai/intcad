@@ -27,8 +27,8 @@ use crate::{
     },
     runtime::CefRuntime,
     surface::{
-        CefSurfaceConfig, CefSurfaceEvent, CefSurfaceMode, CefSurfaceProducer, FocusDirection,
-        KeyEvent, MouseEvent, WebEventQueue, WebRequestId,
+        BrowserCloseProgress, CefSurfaceConfig, CefSurfaceEvent, CefSurfaceMode,
+        CefSurfaceProducer, FocusDirection, KeyEvent, MouseEvent, WebEventQueue, WebRequestId,
     },
 };
 
@@ -123,6 +123,8 @@ pub struct MacosCefProducer {
     next_snapshot_id: i32,
     events: Arc<WebEventQueue>,
     size: PhysicalSize<u32>,
+    #[cfg(feature = "cef-runtime")]
+    close: Arc<crate::surface::BrowserCloseState>,
 }
 
 /// A CEF context prepared for a macOS surface.
@@ -235,6 +237,7 @@ impl MacosCefProducer {
         let ime = Arc::new(crate::ime::LatestComposition::default());
         let cookies = Arc::new(crate::cookies::CookieJar::new(events.clone()));
         let scripts = Arc::new(crate::app::PendingScripts::new(events.clone()));
+        let close = Arc::new(crate::surface::BrowserCloseState::default());
         let downloads = Arc::new(crate::downloads::Downloads::default());
         let auth = Arc::new(crate::auth::AuthChallenges::default());
         auth.set_enabled(config.surface.handle_auth_challenges);
@@ -256,6 +259,7 @@ impl MacosCefProducer {
             scripts.clone(),
             cookies.clone(),
             config.surface.request_policy.clone(),
+            close.clone(),
         );
         let request_handler =
             cef_backed::WeldRequestHandler::build(events.clone(), auth.clone(), scripts.clone(), config.surface.request_policy.clone());
@@ -334,6 +338,7 @@ impl MacosCefProducer {
             next_snapshot_id: 1,
             events,
             size: initial_size,
+            close,
         })
     }
 }
@@ -1141,15 +1146,29 @@ impl CefSurfaceProducer for MacosCefProducer {
     fn close(&mut self) -> Result<(), WeldError> {
         #[cfg(feature = "cef-runtime")]
         {
+            if !self.close.request(self.browser_id) {
+                return Ok(());
+            }
             self.scripts.fail_all("browser closed");
             self.cookies.fail_active("browser closed");
             if let Some(host) = self.browser.host() {
                 host.close_browser(true as _);
             }
-            self.browser_id = 0;
             return Ok(());
         }
         self.browser_id = 0;
+        Err(pending("cef_browser_host_t::close_browser"))
+    }
+
+    fn close_progress(&mut self) -> Result<BrowserCloseProgress, WeldError> {
+        #[cfg(feature = "cef-runtime")]
+        {
+            return Ok(if self.close.is_complete() {
+                BrowserCloseProgress::Complete
+            } else {
+                BrowserCloseProgress::Pending
+            });
+        }
         Err(pending("cef_browser_host_t::close_browser"))
     }
 }

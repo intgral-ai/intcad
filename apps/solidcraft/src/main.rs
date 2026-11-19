@@ -24,6 +24,8 @@ mod app_icon;
 mod assistant_cef;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod assistant_cef_http;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+mod assistant_cef_lifecycle;
 mod assistant_page;
 mod come_forward;
 mod control_server;

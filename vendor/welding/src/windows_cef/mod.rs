@@ -40,8 +40,8 @@ use crate::{
     },
     runtime::CefRuntime,
     surface::{
-        CefSurfaceConfig, CefSurfaceEvent, CefSurfaceMode, CefSurfaceProducer, FocusDirection,
-        KeyEvent, MouseEvent, WebEventQueue, WebRequestId,
+        BrowserCloseProgress, CefSurfaceConfig, CefSurfaceEvent, CefSurfaceMode,
+        CefSurfaceProducer, FocusDirection, KeyEvent, MouseEvent, WebEventQueue, WebRequestId,
     },
 };
 
@@ -1186,10 +1186,13 @@ impl CefSurfaceProducer for WindowsCefProducer {
     fn close(&mut self) -> Result<(), WeldError> {
         #[cfg(feature = "cef-runtime")]
         {
+            // One request only: a repeat must not clear the completed state.
+            if self.close_requested.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
             self.scripts.fail_all("browser closed");
             self.cookies.fail_active("browser closed");
             self.closed.store(false, Ordering::Release);
-            self.close_requested.store(true, Ordering::Release);
             if let Some(host) = self.browser().and_then(|browser| browser.host()) {
                 log::debug!("requesting CEF browser close");
                 host.close_browser(true as _);
@@ -1200,6 +1203,14 @@ impl CefSurfaceProducer for WindowsCefProducer {
         }
         self.browser_id.store(0, Ordering::Release);
         Err(pending("cef_browser_host_t::close_browser"))
+    }
+
+    fn close_progress(&mut self) -> Result<BrowserCloseProgress, WeldError> {
+        Ok(if self.close_requested.load(Ordering::Acquire) && self.closed.load(Ordering::Acquire) {
+            BrowserCloseProgress::Complete
+        } else {
+            BrowserCloseProgress::Pending
+        })
     }
 }
 

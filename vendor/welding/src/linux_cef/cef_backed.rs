@@ -409,6 +409,7 @@ cef::wrap_life_span_handler! {
         cookies: Arc<crate::cookies::CookieJar>,
         policy: Option<crate::request_policy::RequestPolicy>,
         notified: Arc<std::sync::atomic::AtomicBool>,
+        close: Arc<crate::surface::BrowserCloseState>,
     }
 
     impl LifeSpanHandler {
@@ -460,8 +461,11 @@ cef::wrap_life_span_handler! {
             1 // cancel popup creation
         }
 
-        fn on_before_close(&self, _browser: Option<&mut cef::Browser>) {
+        fn on_before_close(&self, browser: Option<&mut cef::Browser>) {
             log::debug!("CEF on_before_close");
+            if let Some(browser) = browser {
+                self.close.complete(browser.identifier());
+            }
             self.scripts.fail_all("browser closed");
             self.cookies.fail_active("browser closed");
         }
@@ -474,8 +478,9 @@ impl WeldLifeSpanHandler {
         scripts: Arc<crate::app::PendingScripts>,
         cookies: Arc<crate::cookies::CookieJar>,
         policy: Option<crate::request_policy::RequestPolicy>,
+        close: Arc<crate::surface::BrowserCloseState>,
     ) -> cef::LifeSpanHandler {
-        Self::new(events, scripts, cookies, policy, Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        Self::new(events, scripts, cookies, policy, Arc::new(std::sync::atomic::AtomicBool::new(false)), close)
     }
 }
 
@@ -550,6 +555,7 @@ mod osr_boundary_tests {
             Arc::new(crate::app::PendingScripts::new(events.clone())),
             Arc::new(crate::cookies::CookieJar::new(events.clone())),
             None,
+            Arc::new(crate::surface::BrowserCloseState::default()),
         );
         for disposition in [
             cef::WindowOpenDisposition::NEW_POPUP,
