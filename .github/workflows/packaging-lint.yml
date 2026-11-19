@@ -74,7 +74,11 @@ jobs:
           grep -q '<id>ai.storyteller.solidcraft</id>' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in
           grep -q '<id>ai.storyteller.solvecraft</id>' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in
           grep -qx 'X-Flatpak-RenamedFrom=ai.storyteller.solidcraft.desktop;ai.storyteller.solvecraft.desktop;' assets/platforms/linux/ai.intgral.intcad.desktop
-          grep -qF -e '--end-of-life-rebase=' packaging/flatpak-site.sh
+          # Intcad publishes only its own app id; upstream ids are not rebased or imported.
+          ! grep -qF -e '--end-of-life-rebase=' packaging/flatpak-site.sh
+          ! grep -qF -e 'legacy_ids' packaging/flatpak-site.sh
+          ! grep -qF -e 'ai.storyteller' packaging/flatpak-site.sh
+          grep -qF 'app_id=ai.intgral.intcad' packaging/flatpak-site.sh
           sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in >"$RUNNER_TEMP/ai.intgral.intcad.metainfo.xml"
           appstreamcli validate --no-net --explain "$RUNNER_TEMP/ai.intgral.intcad.metainfo.xml"
           python3 -c "import yaml; m = yaml.safe_load(open('packaging/linux/flatpak/ai.intgral.intcad.bundle.yml')); assert m['id'] == 'ai.intgral.intcad' and m['command'] == 'intcad'"

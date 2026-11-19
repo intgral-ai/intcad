@@ -38,9 +38,9 @@ export DIST
 export SOLIDCRAFT_BUILD_DATE="${SOLIDCRAFT_BUILD_DATE:-${SOLVECRAFT_BUILD_DATE:-$(date -u +%Y-%m-%d)}}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 # The reverse-DNS id: Flatpak app id, desktop, metainfo and MIME file names, icon name and the
-# window's Wayland app_id / X11 class. Earlier releases used ai.storyteller.solidcraft (0.8 until
-# the move to Tangency Labs) and ai.storyteller.solvecraft (before 0.8); the Flatpak repository
-# rebases both to this one (packaging/flatpak-site.sh, docs/compatibility.md).
+# window's Wayland app_id / X11 class. Upstream's earlier ai.storyteller.* ids are its history;
+# Intcad does not rebase them or read their data (packaging/flatpak-site.sh,
+# docs/compatibility.md).
 APP_ID=ai.intgral.intcad
 export APP_ID
 

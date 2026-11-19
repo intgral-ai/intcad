@@ -16,10 +16,9 @@
 # the runtime instead of a bundled WebKitGTK module keeps the build network-free and keeps
 # WebKit's helpers and data next to the library they belong to.
 #
-# Earlier releases used the ids ai.storyteller.solidcraft (0.8 until the move to Tangency Labs)
-# and ai.storyteller.solvecraft (before 0.8). The Flatpak repository marks both end-of-life with a
-# rebase to this one, so `flatpak update` moves existing installs over (packaging/flatpak-site.sh,
-# docs/compatibility.md).
+# Upstream's earlier ids (ai.storyteller.solidcraft/solvecraft) are its history. Intcad does not
+# rebase them or read their data; a side-by-side install starts with Intcad's own settings
+# (packaging/flatpak-site.sh, docs/compatibility.md).
 id: ai.intgral.intcad
 runtime: org.gnome.Platform
 runtime-version: '51'

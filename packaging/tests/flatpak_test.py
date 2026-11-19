@@ -238,5 +238,23 @@ class DesktopProbe(unittest.TestCase):
             SMOKE.validate_assistant([page], "wayland")
 
 
+class FlatpakRepositorySource(unittest.TestCase):
+    """The Intcad Flatpak repository must not rebase or import upstream app ids."""
+
+    def test_no_foreign_end_of_life_rebase(self):
+        script = (ROOT / "packaging/flatpak-site.sh").read_text()
+        self.assertNotIn("--end-of-life-rebase", script)
+        self.assertNotIn("legacy_ids", script)
+        self.assertNotIn("ai.storyteller", script)
+        # Intcad-native publication remains: its own id, bundle import, repo update and remote file.
+        self.assertIn("app_id=ai.intgral.intcad", script)
+        self.assertIn("flatpak build-import-bundle", script)
+        self.assertIn("flatpak build-update-repo", script)
+        self.assertIn("solidcraft.flatpakrepo", script)
+        docs = (ROOT / "docs/compatibility.md").read_text()
+        self.assertNotIn("end-of-life-rebase=<old id>=ai.intgral.intcad", docs)
+        self.assertNotIn("Flatpak moves `~/.var/app/<old id>`", docs)
+
+
 if __name__ == "__main__":
     unittest.main()
