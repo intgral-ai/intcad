@@ -1,5 +1,19 @@
 # INT-1454 upstream-sync ledger
 
+## Validation terminal transaction (owner-approved, 2026-11-19)
+
+The owner approved the bounded cross-process store transaction and background
+cancellation repair after Sol diagnosis and Astra architecture audit. This fixes
+an inherited cancel/completion race; it does not change protocol, authorization,
+terminal states, acceptance or verified-report-before-marker recovery precedence.
+
+Implementation: `docs/superpowers/plans/2026-11-19-validation-terminal-transaction.md`.
+Base: `c5f2f42fe`. Task branch: `fix/int1454-validation-transaction`.
+Status: test-first implementation in progress; no passing validation claimed.
+Local baseline/builds NOT_RUN under the disk-growth gate. Use remote CI.
+Stop all validation participants before upgrade or rollback. Keep the stable
+transaction lock file and run records; mixed old/new concurrent writers are not supported.
+
 Upstream: SolidCraft **v0.44.1** = `e151d5ea6866fb055e011379153fb1cae0566f22`
 IntCAD baseline: `origin/develop` = `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f`
 Range: `06749ac464e16357d0375b78e6b3cac214066493..v0.44.1` — **4,994 commits, 4,939 non-merge**.

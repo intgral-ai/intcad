@@ -542,6 +542,60 @@ fn a_second_report_for_the_same_terminal_state_is_idempotent() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// A report is published before its state record. Both public terminal writers must recover
+/// that decision rather than publish different bytes (even when a legacy marker also exists).
+#[test]
+fn terminal_writers_recover_the_verified_report_before_state_and_marker() {
+    for cancelled in [false, true] {
+        let root = scratch("terminal-transaction-gap");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-transaction-gap", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let profile = native_basic_profile();
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        let job = port.start_next().unwrap().unwrap();
+        let running = port.load_state(&run.run_id).unwrap();
+        let winner = if cancelled {
+            port.cancel(&run.run_id).unwrap().state
+        } else {
+            port.complete(&job.run_id, RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) }).unwrap()
+        };
+        let bytes = std::fs::read(port.store.report_path(&run.run_id)).unwrap();
+        // Simulate interruption between atomic report and state publication.
+        port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+        if !port.store.marker_exists(&run.run_id) {
+            port.store.write_bytes_new(&port.store.cancel_path(&run.run_id), b"cancelled\n").unwrap();
+        }
+        let observer = read_port(&store, &candidates, clock.clone());
+        assert_eq!(observer.cancel(&run.run_id).unwrap().state, winner);
+        assert_eq!(port.complete(&job.run_id, RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() }).unwrap(), winner);
+        assert_eq!(std::fs::read(port.store.report_path(&run.run_id)).unwrap(), bytes);
+        assert_eq!(observer.report(&run.run_id).unwrap().report.state, winner);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn adoption_never_accepts_a_report_incompatible_with_an_existing_terminal_state() {
+    let root = scratch("incompatible-adoption");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-incompatible", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&native_basic_profile())), Limits::default(), clock.clone());
+    let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    let mut state = port.load_state(&run.run_id).unwrap();
+    state.state = ValidationState::Cancelled;
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &state).unwrap();
+    assert!(!port.adopt_report(&run.run_id, &port.load_admission(&run.run_id).unwrap()).unwrap());
+    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    assert!(!port.status(&run.run_id).unwrap().report_available);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn a_queued_job_cancel_is_immediate_and_idempotent() {
     let root = scratch("cancel-queued");
