@@ -140,6 +140,8 @@ the package checksum, upstream revision, original file hashes and removal criter
 SolidCraft changes:
 - `src/runtime_identity.rs`, `src/runtime.rs`, `src/lib.rs`: owned, checked Linux
   pre-initialization runtime identity, with native queries isolated in the vendor boundary.
+- `src/runtime.rs`: opt-in inherited browser-argument suppression through CEF's
+  native Settings; default/non-B behavior and subprocess dispatch are unchanged.
 - `src/surface.rs`, `src/linux_cef/cef_backed.rs`: report actual browser identity/OSR
   mode, close a host violating the OSR invariant, and test browser-popup cancellation
   separately from OSR popup widgets. Existing root OSR settings and fd ownership stay intact.

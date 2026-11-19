@@ -22,6 +22,10 @@
 - `src/runtime.rs`: `CefRuntime::inspect_identity` uses the existing loading path
   and native queries before initialization. On Linux the existing loader contract
   uses the linked `libcef.so` selected by `LD_LIBRARY_PATH`, not a new dlopen owner.
+  An opt-in `command_line_args_disabled` config field maps to the real CEF
+  Settings field before initialization. It defaults to false; the app enables
+  it only for Wayland OSR so inherited browser argv cannot bypass approved
+  callback switches. Subprocess execute-process arguments are unchanged.
 - `src/surface.rs`: `NavigationEvent::BrowserCreated` carries browser id and OSR mode.
 - `src/linux_cef/cef_backed.rs`: emit that event, close hosts violating OSR mode,
   and add callback tests separating denied browser popups from PET_POPUP widgets.

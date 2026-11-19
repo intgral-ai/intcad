@@ -326,6 +326,10 @@ impl CefAssistant {
         }
         let mut runtime_config = CefRuntimeConfig::new(&cef_path, sandbox());
         runtime_config.cache_path = Some(crate::settings_dir().ok().flatten().unwrap_or_else(std::env::temp_dir).join("cef-assistant"));
+        // The validated environment is not the only CEF ingress: ignore the
+        // browser's inherited argv in B, then apply only policy.switches through
+        // WeldApp's existing callback. Subprocess dispatch above is unchanged.
+        runtime_config.command_line_args_disabled = policy.command_line_args_disabled();
         runtime_config.command_line_switches = policy.switches.into_iter().map(|entry| (entry.name, entry.value)).collect();
         let runtime = match CefRuntime::initialize(runtime_config) {
             Ok(runtime) => runtime,

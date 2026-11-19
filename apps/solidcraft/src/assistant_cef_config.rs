@@ -32,6 +32,14 @@ pub struct EffectivePolicy {
     pub switches: Vec<Switch>,
 }
 
+impl EffectivePolicy {
+    /// Whether CEF must ignore the browser process's inherited argv and use
+    /// only the approved OnBeforeCommandLineProcessing switches.
+    pub fn command_line_args_disabled(&self) -> bool {
+        self.backend == HostBackend::LinuxWayland && self.osr_only
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PolicyError {
     InvalidSwitch,
@@ -189,6 +197,17 @@ mod tests {
 
     fn wayland(overrides: &[Switch]) -> Result<EffectivePolicy, PolicyError> {
         build_policy(HostBackend::LinuxWayland, true, Some(&identity()), overrides)
+    }
+
+    #[test]
+    fn inherited_browser_arguments_are_disabled_only_for_wayland_osr() {
+        // Empty environment overrides do not make the browser's argv trusted.
+        // CEF must suppress argv even when our approved switch list is empty
+        // apart from the defaults; subprocess dispatch is a separate entrypoint.
+        assert!(wayland(&[]).unwrap().command_line_args_disabled());
+        for host in [HostBackend::LinuxX11, HostBackend::Windows, HostBackend::Macos] {
+            assert!(!build_policy(host, true, None, &[]).unwrap().command_line_args_disabled());
+        }
     }
 
     #[test]

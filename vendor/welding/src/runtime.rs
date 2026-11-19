@@ -59,6 +59,14 @@ pub struct CefRuntimeConfig {
     /// way to reach a great many Chromium behaviours, which have no CEF API.
     pub command_line_switches: Vec<(String, Option<String>)>,
 
+    // SolidCraft: opt-in browser argv suppression; subprocess dispatch retains
+    // CEF's real process arguments. Approved switches still use WeldApp.
+    /// Ignore standard CEF/Chromium browser-process command-line arguments.
+    ///
+    /// Configuration via CefSettings and OnBeforeCommandLineProcessing still
+    /// applies. Defaults to false to preserve existing callers' behavior.
+    pub command_line_args_disabled: bool,
+
     /// Chromium process sandbox policy.
     ///
     /// Trusted-content mode passes null `sandbox_info` to CEF's process entry
@@ -87,6 +95,7 @@ impl CefRuntimeConfig {
             user_agent: None,
             user_agent_product: None,
             command_line_switches: Vec::new(),
+            command_line_args_disabled: false, // SolidCraft: opt-in only.
             sandbox,
             browser_subprocess_path: None,
             cache_path: None,
@@ -378,6 +387,9 @@ mod cef_backed {
     fn build_settings(config: &CefRuntimeConfig) -> cef::Settings {
         let mut s = cef::Settings {
             windowless_rendering_enabled: 1,
+            // SolidCraft: clear inherited browser switches before WeldApp adds
+            // the host-approved list; never change execute_process_from args.
+            command_line_args_disabled: i32::from(config.command_line_args_disabled),
             // Windows uses CEF's supported dedicated UI thread. Other platforms
             // continue to integrate CefDoMessageLoopWork into the host loop.
             multi_threaded_message_loop: cfg!(target_os = "windows") as _,
@@ -414,6 +426,34 @@ mod cef_backed {
             s.user_agent_product = product.into();
         }
         s
+    }
+
+    // SolidCraft: assert the real native Settings field, not just the app's
+    // environment parser. Requires cef-runtime; no CEF initialization here.
+    #[cfg(test)]
+    mod settings_tests {
+        use super::*;
+
+        #[test]
+        fn inherited_browser_switches_are_disabled_only_on_request() {
+            let mut config = CefRuntimeConfig::new(".", CefSandboxMode::Sandboxed);
+            let legacy = build_settings(&config);
+            assert_eq!(legacy.command_line_args_disabled, 0);
+            assert_eq!(legacy.windowless_rendering_enabled, 1);
+
+            config.command_line_args_disabled = true;
+            config.command_line_switches = vec![
+                ("ozone-platform".into(), Some("wayland".into())),
+                (
+                    "disable-features".into(),
+                    Some("Translate,WaylandFractionalScaleV1".into()),
+                ),
+            ];
+            let restricted = build_settings(&config);
+            assert_eq!(restricted.command_line_args_disabled, 1);
+            assert_eq!(restricted.windowless_rendering_enabled, 1);
+            assert_eq!(restricted.no_sandbox, legacy.no_sandbox);
+        }
     }
 
     fn sandbox_info_for(sandbox: CefSandboxMode) -> *mut u8 {
