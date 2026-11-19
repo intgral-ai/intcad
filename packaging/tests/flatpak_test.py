@@ -4,6 +4,7 @@ import importlib.util
 import itertools
 import json
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -275,6 +276,14 @@ class FlatpakRepositorySource(unittest.TestCase):
         self.assertNotIn("it copies your settings", guide)
         self.assertIn("does not adopt", guide)
         self.assertIn("remove the old app manually", guide)
+        self.assertNotIn("../../../compatibility.md", guide, "mdBook only builds docs/book/src")
+        targets = re.findall(r"\[compatibility notes\]\(([^)]+)\)", guide)
+        self.assertTrue(
+            any(target.startswith("https://github.com/intgral-ai/intcad/blob/")
+                and target.endswith("/docs/compatibility.md#linux-app-id") for target in targets),
+            targets,
+        )
+        self.assertIn("does not currently publish", guide)
 
     @staticmethod
     def _run_publication(seed_refs, fail=None):
