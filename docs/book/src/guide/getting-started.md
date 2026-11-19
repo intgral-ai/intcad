@@ -74,12 +74,12 @@ A SolidCraft remote added before the project moved to `docs.solidcraft.io` (from
 `flatpak update --user`.
 
 Earlier releases used the application IDs `ai.storyteller.solidcraft` and, up to 0.7,
-`ai.storyteller.solvecraft`. If you installed one of those from the SolidCraft remote,
-`flatpak update --user` reports it as end-of-life and offers to replace it with
-`ai.intgral.intcad`; accept, and your settings and autosaves move with it. If you
-installed a `.flatpak` bundle, install the new bundle, launch it once (it copies your settings),
-then run `flatpak uninstall --user ai.storyteller.solidcraft` (or `ai.storyteller.solvecraft`; see the
-[compatibility notes](https://github.com/tangency-labs/solidcraft/blob/main/docs/compatibility.md#linux-app-id)).
+`ai.storyteller.solvecraft`. These are upstream's IDs. Intcad is installed beside that app and
+does not adopt its settings or autosaves: `flatpak update --user` does not rebase it to Intcad or
+move its data. If you installed one of those, install Intcad, launch it with its own settings, then
+remove the old app manually: `flatpak uninstall --user ai.storyteller.solidcraft` (or
+`ai.storyteller.solvecraft`; see the
+[compatibility notes](../../../compatibility.md#linux-app-id)).
 
 Alternatively, download the release's `.flatpak` file for your architecture and run
 `flatpak install --user ./solidcraft-VERSION-linux-ARCH.flatpak`. The bundle supplies the

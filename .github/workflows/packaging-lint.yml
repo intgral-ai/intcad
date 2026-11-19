@@ -8,9 +8,9 @@ name: Packaging lint
 on:
   push:
     branches: [main, develop]
-    paths: [".github/workflows/**", "packaging/**", "assets/**", "packages/assistant-web/**"]
+    paths: [".github/workflows/**", "packaging/**", "assets/**", "packages/assistant-web/**", "docs/compatibility.md", "docs/book/src/guide/getting-started.md"]
   pull_request:
-    paths: [".github/workflows/**", "packaging/**", "assets/platforms/**", "packages/assistant-web/**"]
+    paths: [".github/workflows/**", "packaging/**", "assets/platforms/**", "packages/assistant-web/**", "docs/compatibility.md", "docs/book/src/guide/getting-started.md"]
   workflow_dispatch:
 
 permissions:
