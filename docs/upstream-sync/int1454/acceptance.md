@@ -63,6 +63,7 @@ The disposition table is `ledger.md`; the owner approved CD-1…CD-7 (§7 there)
 | Engine | 5309 passed / 4 failed (all listed); DFM acceptance 3/3; `schema/unconverted.txt` 339 → 7 |
 | MCP | 163 / 14 / 33; guarded envelopes preserved; `version` adopted, `cancel` omitted |
 | UI | 4997 passed / 2 environment-only failures; workspace compiles |
+| Kernel rig | 19/19 areas green at `e95afde4d` (re-recorded there): `--area assemblies` 96 pass / 0 known, ladder `170/170 pass, every case as the golden records it`, `--coverage` 229 commands with a case. The re-record is count-only for threads (v0.44.1 keeps one exact helical face) plus two corner-fillet refusals whose reason moved to a tangent seam, and one assembly case v0.44.1's engine fixes (#12142) |
 | Rules | `xtask layers`, `mesh-decisions`, `lists`, `assets`, `ui-containers`, `fmt` clean |
 | CI | run IDs to be recorded from PR #185's final green run |
 
@@ -88,6 +89,15 @@ refusal path is tested. All of this is on branch commits, to be repeated at the 
 | Windows native CI + VM GUI E2E | **PASS** at `f82b56372` (task `int1454w`): MSI `b1d55038d01c9452f4b534bfe93e8d365c0f08c2875518395aaccaf84890be4a`, app sha256 `ca1c34de2167f4b2ec028afe6403430d43a7a83a09ae4f7c6992dbcf036ba6c1`, installed and running, Sample Plate loaded, control channel ok. Evidence `~/.local/state/intcad-e2e/windows/runs/…/20261118T213755Z-734039` |
 | macOS native automation | not run |
 | macOS/desktop UI (PP) | not run |
+
+## 6a. Security findings
+
+| Finding | Status | Evidence |
+| --- | --- | --- |
+| SEC-1: the agent gate could be bypassed by command-id case or an id/command alias | **Fixed and merged** | PR #179 = `96a247ccb`; one `resolve_command_id` decides for the gate, the control channel and execution, with allow/ask/refuse and hostile-input regressions |
+| SEC-2: STEP import decoded `\\X2\\`/`\\X4\\` strings in quadratic time (`54b4bb3f4`) | **Adopted with the kernel** | `crates/step` (the old per-run tail search) is deleted; the fixed decoder is `solidcore/crates/solidcore-record/src/step/p21.rs` (`decode_string_with`, disjoint stretches, linear however many unterminated runs). Its hostile-input test `run_terminators_are_searched_once` decodes 100,000 unterminated tags; no other Part 21 decoder remains in `crates/` |
+| SEC-3: control channel refused a limited connection without draining (`18d82f584`) | **Landed, not yet wired** | `crates/control/src/server.rs` is byte-identical to v0.44.1 (`git diff v0.44.1 -- crates/control/src/server.rs` is empty) but the app still serves through `apps/solidcraft/src/control_server.rs`; moving the app onto the ported server is UI/platform-slice work and is listed as an open item |
+| Plugins (Wasmtime) | **Blocked per CD-5** | Runtime and every plugin command removed; see §7 |
 
 ## 7. Open items and exceptions
 
