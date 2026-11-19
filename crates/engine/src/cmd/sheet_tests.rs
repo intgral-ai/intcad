@@ -669,6 +669,123 @@ fn contour_flange_hem_and_tray() {
     assert!(rel(v, want) < 1e-4 && rel(v, 29666.234) < 1e-4, "{v} {want}");
 }
 
+/// Oracle 73: a hole on the hem leg's inner face, 0.02 mm across the hem gap from the flange.
+/// The flange lies inside the hole tool's 0.2 mm run-on clearance: it must stay out of the tool,
+/// and the hole must still be a cut-out of the hem panel's flat pattern, not refused as
+/// unsupported 3D sheet machining.
+#[test]
+fn a_hole_across_a_hem_gap_is_a_flat_cut_out_and_leaves_the_flange() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20}));
+    run(&mut s, "sheet.hem", json!({"edges": [[50, 0, 20]], "length": 8}));
+    let before = volume(&mut s);
+    let made = run(&mut s, "solid.hole", json!({"position": [51.111111111111114, 2.52, 16.339999999999996], "diameter": 1.464}));
+    assert!(made.get("error").is_none(), "{made}");
+    let r = 1.464 / 2.0;
+    let removed = PI * r * r * 2.5;
+    let after = volume(&mut s);
+    assert!(
+        (before - after - removed).abs() < 1e-3,
+        "the hole is an untapered cut through the 2.5 mm hem leg, {} removed against {removed}",
+        before - after
+    );
+    // The flange across the 0.02 mm gap is untouched; the leg is drilled through.
+    assert!(contains(&s, [51.111111111111114, 2.0, 16.339999999999996]), "the flange behind the hem gap is untouched");
+    assert!(!contains(&s, [51.111111111111114, 4.0, 16.339999999999996]), "the hole passes through the hem leg");
+    let body = &s.model.state().bodies[0].body;
+    assert!(body.validity().is_empty() && body.shell_count() == 1, "{:?}", body.validity());
+    let sheet = &s.model.state().sheets[0];
+    assert_eq!(sheet.altered_by, None, "the flat pattern still describes the body");
+    assert_eq!(sheet.holes.len(), 1, "one cut-out, in the hem panel, not a pocket in the flange");
+    assert!(sheet.pockets.is_empty(), "{:?}", sheet.pockets);
+    for result in flat_exports(&mut s) {
+        result.expect("the flat pattern, DXF and bend table include the hole");
+    }
+}
+
+/// The same hole as [`a_hole_across_a_hem_gap_is_a_flat_cut_out_and_leaves_the_flange`] but
+/// blind: the recovered certificate keeps the hole's own depth, so the flat pattern carries a
+/// pocket of 1 mm, not a through cut-out.
+#[test]
+fn a_blind_hole_across_a_hem_gap_is_a_flat_pocket_of_its_depth() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20}));
+    run(&mut s, "sheet.hem", json!({"edges": [[50, 0, 20]], "length": 8}));
+    let before = volume(&mut s);
+    let made = run(&mut s, "solid.hole", json!({"position": [51.111111111111114, 2.52, 16.339999999999996], "diameter": 1.464, "depth": 1.0}));
+    assert!(made.get("error").is_none(), "{made}");
+    let removed = PI * (1.464 / 2.0) * (1.464 / 2.0) * 1.0;
+    assert!((before - volume(&mut s) - removed).abs() < 1e-3, "{} removed against {removed}", before - volume(&mut s));
+    assert!(contains(&s, [51.111111111111114, 2.0, 16.339999999999996]), "the flange behind the hem gap is untouched");
+    assert!(!contains(&s, [51.111111111111114, 2.8, 16.339999999999996]), "the pocket is 1 mm deep from the inner face");
+    assert!(contains(&s, [51.111111111111114, 4.0, 16.339999999999996]), "the rest of the leg is untouched");
+    let sheet = &s.model.state().sheets[0];
+    assert_eq!(sheet.altered_by, None, "the flat pattern still describes the body");
+    assert!(sheet.holes.is_empty(), "a blind hole is not a through cut-out");
+    assert_eq!(sheet.pockets.len(), 1, "one pocket of its own depth");
+    for result in flat_exports(&mut s) {
+        result.expect("the flat pattern, DXF and bend table include the pocket");
+    }
+}
+
+/// A counterbore across the hem gap keeps both tools' own depths: the wide pocket and the narrow
+/// through hole, with the flange still untouched.
+#[test]
+fn a_counterbore_across_a_hem_gap_keeps_its_pocket_and_through_hole() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20}));
+    run(&mut s, "sheet.hem", json!({"edges": [[50, 0, 20]], "length": 8}));
+    let before = volume(&mut s);
+    let made = run(
+        &mut s,
+        "solid.hole",
+        json!({"position": [51.111111111111114, 2.52, 16.339999999999996], "diameter": 1.464,
+               "type": "counterbore", "cb_diameter": 2.0, "cb_depth": 0.5}),
+    );
+    assert!(made.get("error").is_none(), "{made}");
+    let (r, rc) = (1.464 / 2.0, 1.0);
+    let removed = PI * (rc * rc * 0.5 + r * r * 2.0);
+    assert!((before - volume(&mut s) - removed).abs() < 1e-3, "{} removed against {removed}", before - volume(&mut s));
+    assert!(contains(&s, [51.111111111111114, 2.0, 16.339999999999996]), "the flange behind the hem gap is untouched");
+    let (x, z) = (51.111111111111114, 16.339999999999996);
+    assert!(!contains(&s, [x + 0.85, 2.8, z]), "the counterbore's 0.5 mm pocket removes the annulus around the hole");
+    assert!(contains(&s, [x + 1.1, 2.8, z]), "outside the counterbore's rim the leg remains");
+    assert!(!contains(&s, [x, 4.0, z]), "the narrow hole goes through the leg");
+    let sheet = &s.model.state().sheets[0];
+    assert_eq!(sheet.altered_by, None, "the flat pattern still describes the body");
+    assert_eq!(sheet.holes.len(), 1, "one through cut-out");
+    assert_eq!(sheet.pockets.len(), 1, "one counterbore pocket");
+    for result in flat_exports(&mut s) {
+        result.expect("the flat pattern, DXF and bend table include both tools");
+    }
+}
+
+/// Not hem-specific: a separate body 0.1 mm above a sheet face is inside the hole's run-on
+/// clearance, yet the hole stays a flat cut-out and the body is not cut.
+#[test]
+fn a_hole_under_a_separate_body_across_a_gap_is_still_a_flat_cut_out() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "solid.box", json!({"corner": [45, 25, 2.6], "length": 10, "width": 10, "height": 3.4, "body_name": "Float"}));
+    let before = volume(&mut s);
+    let float_before = body_volume(&mut s, "Float");
+    let made = run(&mut s, "solid.hole", json!({"position": [50, 30, 2.5], "diameter": 4}));
+    assert!(made.get("error").is_none(), "{made}");
+    let removed = PI * 4.0 * 2.5;
+    assert!((before - volume(&mut s) - removed).abs() < 0.05, "{} removed against {removed}", before - volume(&mut s));
+    assert!((float_before - body_volume(&mut s, "Float")).abs() < 1e-6, "the body above the face is not cut");
+    let sheet = &s.model.state().sheets[0];
+    assert_eq!(sheet.altered_by, None, "the flat pattern still describes the body");
+    assert_eq!(sheet.holes.len(), 1, "one flat cut-out");
+    assert!(sheet.pockets.is_empty());
+    for result in flat_exports(&mut s) {
+        result.expect("the flat pattern, DXF and bend table include the hole");
+    }
+}
+
 #[test]
 fn contour_flange_takes_tangent_arcs_and_develops_their_bends() {
     // A 90° arc after a 30 mm line and before a 20 mm line. The chain turns toward the material,

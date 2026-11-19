@@ -2983,6 +2983,42 @@ fn a_hole_whose_run_on_column_cannot_be_built_keeps_its_run_on() {
     assert!(near.is_empty());
 }
 
+/// A tool that lost material above the entry face keeps a certificate for its material-side
+/// cylinder only, with its own endpoints, and only when the rest of the tool meets no sheet.
+#[test]
+fn a_recovered_hole_certificate_keeps_only_the_material_side_and_must_clear_sheets() {
+    use super::more::PrimitivePrism;
+
+    let at = Vec3::ZERO;
+    let cylinder = |base: Vec3, height: f64| PrimitivePrism::Cylinder { base, axis: Vec3::Z, radius: 2.0, height };
+    let interval = |p: PrimitivePrism| match p {
+        PrimitivePrism::Cylinder { base, radius, height, .. } => (base.z, radius, height),
+        _ => panic!("a cylinder certificate"),
+    };
+    // Crossing the entry face: z -2..3 clipped to z -2..0.
+    assert_eq!(interval(super::material_side_certificate(cylinder(Vec3::new(0.0, 0.0, -2.0), 5.0), at).unwrap()), (-2.0, 2.0, 2.0));
+    // The same interval written from its high end.
+    assert_eq!(interval(super::material_side_certificate(cylinder(Vec3::new(0.0, 0.0, 3.0), -5.0), at).unwrap()), (-2.0, 2.0, 2.0));
+    // Wholly below: unchanged, never extended to the entry face.
+    assert_eq!(interval(super::material_side_certificate(cylinder(Vec3::new(0.0, 0.0, -5.0), 3.0), at).unwrap()), (-5.0, 2.0, 3.0));
+    // Wholly above: nothing material-side to certify.
+    assert!(super::material_side_certificate(cylinder(Vec3::new(0.0, 0.0, 1.0), 2.0), at).is_none());
+    // A countersink is a cone, not a straight-cylinder certificate.
+    assert!(
+        super::material_side_certificate(PrimitivePrism::Countersink { base: at, axis: Vec3::Z, radius: 2.0, hole_radius: 1.0, angle: 1.0 }, at)
+            .is_none()
+    );
+
+    // The rest of the tool must meet no sheet: a sheet through the run-on refuses the
+    // certificate; one the certificate already covers does not.
+    let tool = kernel::cylinder(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 3.0).unwrap();
+    let cert = kernel::cylinder(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 2.0).unwrap();
+    let covered = kernel::box_solid(Vec3::new(-5.0, -5.0, 0.0), Vec3::new(5.0, 5.0, 1.0)).unwrap();
+    assert!(super::certificate_clears_bodies(&tool, &cert, &[&covered]));
+    let through = kernel::box_solid(Vec3::new(-5.0, -5.0, 0.0), Vec3::new(5.0, 5.0, 1.5)).unwrap();
+    assert!(!super::certificate_clears_bodies(&tool, &cert, &[&through]));
+}
+
 /// `n` boxes of 2 x 2 x 2 in a row, `pitch` from one to the next, joined into the first by one
 /// Combine: the model, and the Combine.
 fn boxes_joined(n: usize, pitch: f64) -> (Model, u64, Counts) {

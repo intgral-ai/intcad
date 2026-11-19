@@ -6848,7 +6848,7 @@ const RUN_ON_CLEAR: f64 = 0.2;
 /// lies wholly below the face (the part being drilled, as a rule) costs nothing more. Best
 /// effort: where the kernel cannot answer for a body (or for the column), that body keeps the
 /// run-on in its way as before, so a hole that drilled before never fails over a neighbour.
-fn hole_run_on(st: &ModelState, plane: &Plane, reach: f64, top: f64) -> (f64, Vec<Body>) {
+fn hole_run_on(st: &ModelState, plane: &Plane, reach: f64, top: f64) -> (f64, Vec<(Body, f64)>) {
     let disc = Region2 { outer: solidcore_record::Loop2::circle_from(Vec2::ZERO, reach, 0.0), holes: vec![] };
     let Some(column) = kernel::extrude(plane, &[disc], 0.0, top).ok().and_then(|mut c| c.pop()) else { return (top, Vec::new()) };
     let column_box = more::exact_box(&column);
@@ -6905,7 +6905,9 @@ fn hole_run_on(st: &ModelState, plane: &Plane, reach: f64, top: f64) -> (f64, Ve
         if low >= RUN_ON_CLEAR {
             lowest = lowest.min(low);
         } else {
-            near.push(piece);
+            // Its lowest point in the hole's frame (`z` is the height above the entry face):
+            // material at or above that face, never below it.
+            near.push((piece, low));
         }
     }
     (if lowest.is_finite() { top.min(lowest / 2.0) } else { top }, near)
@@ -6939,7 +6941,9 @@ fn hole_tools_and_prisms(
 struct HoleReach {
     size: f64,
     top: f64,
-    above: Vec<Body>,
+    /// Material above the entry face cut out of the tools, with its lowest height above that
+    /// face in the hole's frame (see [`hole_run_on`]).
+    above: Vec<(Body, f64)>,
     exits: bool,
     bore_end: f64,
 }
@@ -7025,6 +7029,83 @@ fn hole_reach(
         None => bottom,
     };
     Ok(HoleReach { size, top, above, exits, bore_end })
+}
+
+/// The material-side part of a hole tool's straight-cylinder certificate: its interval cut at
+/// the entry face through `position`, with the tool's own axis, radius and endpoints. The run-on
+/// above that face is not material the hole removes, and a certificate still spanning it would
+/// be recorded in the flat pattern of a panel across a thin gap (the flange behind a hem).
+/// `None` for a cone, or a tool wholly above the face; a tool wholly below it is already
+/// material-side.
+fn material_side_certificate(prism: more::PrimitivePrism, position: Vec3) -> Option<more::PrimitivePrism> {
+    let more::PrimitivePrism::Cylinder { base, axis, radius, height } = prism else { return None };
+    if !(base.is_finite() && axis.is_finite() && radius.is_finite() && height.is_finite() && radius > 0.0) {
+        return None;
+    }
+    let axis = axis.normalized()?;
+    // The certificate's interval as heights above the entry plane (the tool's axis points out
+    // of the material, as `plane.normal()` does where the tools are built).
+    let start = (base - position).dot(axis);
+    let end = start + height;
+    let (low, high) = if start <= end { (start, end) } else { (end, start) };
+    if !(low.is_finite() && high.is_finite()) {
+        return None;
+    }
+    if high <= 0.0 {
+        return Some(prism);
+    }
+    if low >= 0.0 {
+        return None;
+    }
+    let base = base + axis * (low - start);
+    Some(more::PrimitivePrism::Cylinder { base, axis, radius, height: -low })
+}
+
+/// Whether the material `tool` removes outside the material-side certificate `cert` meets no
+/// sheet body. When it does not, every sheet keeps exactly what `cert` cuts from it, so the flat
+/// pattern can record `cert`; when it does, or the kernel cannot tell, the certificate is not
+/// used and the ordinary sheet guard decides.
+fn certificate_clears_bodies(tool: &Body, cert: &Body, sheets: &[&Body]) -> bool {
+    let extra = match kernel::boolean(tool, cert, BoolOp::Cut) {
+        Ok(None) => return true,
+        Ok(Some(extra)) => extra,
+        Err(_) => return false,
+    };
+    let Some(extra_box) = more::exact_box(&extra) else { return false };
+    for sheet in sheets {
+        if more::boxes_apart(&more::exact_box(sheet), &Some(extra_box)) {
+            continue;
+        }
+        match kernel::boolean(sheet, &extra, BoolOp::Intersect) {
+            Ok(None) => {}
+            Ok(Some(_)) | Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// [`certificate_clears_bodies`] for every sheet body of the model.
+fn certificate_clears_sheets(st: &ModelState, tool: &Body, cert: &Body) -> bool {
+    let mut sheets = Vec::with_capacity(st.sheets.len());
+    for sheet in &st.sheets {
+        // A sheet without its body cannot be proven clear.
+        let Some(mb) = st.body(&sheet.body) else { return false };
+        sheets.push(&mb.body);
+    }
+    certificate_clears_bodies(tool, cert, &sheets)
+}
+
+/// The certificate the sheet path may use for a tool that lost material above the entry face:
+/// the tool's straight cylinder at or below the face, and only when the rest of the tool meets
+/// no sheet (see [`certificate_clears_sheets`]).
+fn recovered_certificate(st: &ModelState, tool: &Body, prism: more::PrimitivePrism, position: Vec3) -> Option<more::PrimitivePrism> {
+    let part = material_side_certificate(prism, position)?;
+    let more::PrimitivePrism::Cylinder { base, axis, radius, height } = part else { return None };
+    if !(height > 0.0) {
+        return None;
+    }
+    let cert = kernel::cylinder(base, axis, radius, height).ok()?;
+    certificate_clears_sheets(st, tool, &cert).then_some(part)
 }
 
 /// [`hole_tools_and_prisms`] with the hole's [`HoleReach`] at `position` already found.
@@ -7151,20 +7232,42 @@ fn hole_tools_reaching(
     if above.is_empty() {
         return Ok(tools);
     }
-    // The material above the face the run-on would reach, left out of each tool it meets; such
-    // a tool is no longer a plain cylinder.
+    // The material above the face the run-on would reach, left out of each tool it meets. Only
+    // pieces whose exact whole-body bound is at or above the entry face (`low >= 0`) can leave
+    // the tool below it a plain cylinder; an uncertain height disqualifies every recovered
+    // certificate, never with a tolerance.
+    let safe_above = above.iter().all(|(_, low)| low.is_finite() && *low >= 0.0);
     let mut kept = Vec::with_capacity(tools.len());
-    for (mut tool, mut prism) in tools {
-        for piece in above {
-            // Best effort: where the kernel cannot answer, the tool stays as it was before.
-            if !matches!(kernel::boolean(&tool.body, piece, BoolOp::Intersect), Ok(Some(_))) {
-                continue;
+    for (mut tool, prism) in tools {
+        let mut cert = prism;
+        let mut cut_any = false;
+        for (piece, _) in above {
+            // Best effort, as before: where the kernel cannot answer, the tool stays as it was.
+            // A certificate, though, is dropped: its below-face part can no longer be proven.
+            match kernel::boolean(&tool.body, piece, BoolOp::Intersect) {
+                Ok(None) => continue,
+                Ok(Some(_)) => cut_any = true,
+                Err(_) => {
+                    cert = None;
+                    continue;
+                }
             }
-            let Ok(Some(cut)) = kernel::boolean(&tool.body, piece, BoolOp::Cut) else { continue };
+            if !safe_above {
+                cert = None;
+            }
+            let Ok(Some(cut)) = kernel::boolean(&tool.body, piece, BoolOp::Cut) else {
+                cert = None;
+                continue;
+            };
             tool = Traced::step(cut, &[&tool, &Traced::unnamed(piece.clone())]);
-            prism = None;
         }
-        kept.push((tool, prism));
+        // A plain cylinder drilled through the face keeps its material-side part as the sheet's
+        // flat machining, but only when the rest of the tool meets no sheet: otherwise the flat
+        // pattern would silently leave material the hole takes from the folded part.
+        if cut_any && let Some(prism) = cert {
+            cert = recovered_certificate(st, &tool.body, prism, *position);
+        }
+        kept.push((tool, cert));
     }
     Ok(kept)
 }
