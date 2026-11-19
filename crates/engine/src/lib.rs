@@ -775,6 +775,74 @@ const MAX_UNDO: usize = 200;
 const MAX_CHECKPOINTS: usize = 16;
 const MAX_LOG: usize = 2000;
 
+/// The exact state a user approved when consenting to quit one open design.
+///
+/// Opaque to the UI and never serialized: it retains the real document Arcs and
+/// the existing scalars the design's identity depends on. It is consent, not a
+/// save or a renderer epoch.
+pub struct QuitSessionSnapshot {
+    uid: u64,
+    document_id: String,
+    replacements: u64,
+    /// [`Session::revision`], never `design_revision()`: `inspect` documents
+    /// that the public design revision may be reused after edit→undo.
+    revision: u64,
+    doc: Arc<Document>,
+    saved: Arc<Document>,
+    visibility: Visibility,
+    saved_visibility: Visibility,
+    pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
+    exploded: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
+    active_sketch: Option<u64>,
+    path: Option<String>,
+    disk: Option<solidcraft_io::design_lock::FileStamp>,
+    read_only: bool,
+}
+
+impl Session {
+    /// Capture this session's quit-consent token, or refuse a saturated identity.
+    pub fn quit_snapshot(&self) -> Result<QuitSessionSnapshot> {
+        if self.uid == u64::MAX || self.revision == u64::MAX || self.replacements == u64::MAX {
+            return Err(EngineError::Other("quit consent: identity or revision exhausted".into()));
+        }
+        Ok(QuitSessionSnapshot {
+            uid: self.uid,
+            document_id: self.document_id.clone(),
+            replacements: self.replacements,
+            revision: self.revision,
+            doc: Arc::clone(&self.doc),
+            saved: Arc::clone(&self.saved),
+            visibility: self.visibility.clone(),
+            saved_visibility: self.saved_visibility.clone(),
+            pending_moves: self.pending_moves.clone(),
+            exploded: self.exploded.clone(),
+            active_sketch: self.active_sketch,
+            path: self.path.clone(),
+            disk: self.disk,
+            read_only: self.read_only,
+        })
+    }
+
+    /// Whether every approved field — including revision and both retained
+    /// document Arcs — is still exactly the state the user consented to.
+    pub fn matches_quit_snapshot(&self, expected: &QuitSessionSnapshot) -> bool {
+        self.uid == expected.uid
+            && self.document_id == expected.document_id
+            && self.replacements == expected.replacements
+            && self.revision == expected.revision
+            && Arc::ptr_eq(&self.doc, &expected.doc)
+            && Arc::ptr_eq(&self.saved, &expected.saved)
+            && self.visibility == expected.visibility
+            && self.saved_visibility == expected.saved_visibility
+            && self.pending_moves == expected.pending_moves
+            && self.exploded == expected.exploded
+            && self.active_sketch == expected.active_sketch
+            && self.path == expected.path
+            && self.disk == expected.disk
+            && self.read_only == expected.read_only
+    }
+}
+
 impl Default for Session {
     fn default() -> Self {
         Session::new(Document::new("Untitled"))
