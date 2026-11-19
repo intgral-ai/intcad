@@ -92,9 +92,11 @@ above are the measured result. Nothing is `zoom`ed or scaled by transform.
 
 Text contrast: the bridge computes WCAG contrast of the theme's body text on the panel and, only
 when it falls under 4.5:1, nudges the text towards the theme's own light/dark end until it passes.
-`solarized-light` is such a theme (4.39:1 before). The JSON carries `textAdjusted: true` when that
-happened, so the deviation is visible rather than silent. The unit test asserts every built-in
-theme ends at ≥4.4:1.
+`solarized-light` is such a theme (4.39:1 before). Secondary text gets the same treatment at
+3:1 — `solidcraft-95`, a Win95-grey palette, measured 2.17:1 for its muted text. The JSON carries
+`textAdjusted` / `textDimAdjusted` when either happened, so the deviation is visible rather than
+silent. The unit test asserts every built-in theme ends at ≥4.4:1 (body), ≥2.8:1 (secondary) and
+≥3:1 (selected text on the selection).
 
 Lifecycle (`scripts/theme-lifecycle.py`):
 

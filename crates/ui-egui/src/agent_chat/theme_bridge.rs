@@ -30,11 +30,11 @@ fn alpha_hex(color: egui::Color32) -> String {
 /// WCAG AA 4.5:1 contrast on the panel, in which case it is nudged towards the theme's lighter or
 /// darker end only as far as that threshold. The theme is the source; this keeps the Assistant
 /// readable without inventing a second palette, and the page is told when it happened.
-fn readable_text(text: egui::Color32, panel: egui::Color32, dark: bool) -> (egui::Color32, bool) {
+fn readable(text: egui::Color32, panel: egui::Color32, dark: bool, minimum: f32) -> (egui::Color32, bool) {
     let target = if dark { egui::Color32::WHITE } else { egui::Color32::BLACK };
     let mut colour = text;
     for step in 1..=20 {
-        if contrast(colour, panel) >= 4.5 {
+        if contrast(colour, panel) >= minimum {
             break;
         }
         let t = step as f32 / 20.0;
@@ -48,12 +48,20 @@ fn readable_text(text: egui::Color32, panel: egui::Color32, dark: bool) -> (egui
     (colour, colour != text)
 }
 
+/// The page's body text: WCAG AA for normal text.
+fn readable_text(text: egui::Color32, panel: egui::Color32, dark: bool) -> (egui::Color32, bool) {
+    readable(text, panel, dark, 4.5)
+}
+
 /// The palette and metrics the page styles itself with, for the app's current theme.
 pub fn json(app: &crate::SolveApp) -> Value {
     let tokens: Tokens = Tokens::get();
     let id = app.preferences.theme.clone();
     let dark = crate::theme::is_dark();
     let (text, text_adjusted) = readable_text(tokens.text, tokens.panel, dark);
+    // Secondary/muted text: 3:1 (WCAG AA for large text); classic themes such as
+    // solidcraft-95 sit at 2.17:1 on their grey and would be unreadable otherwise.
+    let (text_dim, dim_adjusted) = readable(tokens.text_dim, tokens.panel, dark, 3.0);
     json!({
         "id": id,
         "dark": dark,
@@ -69,7 +77,8 @@ pub fn json(app: &crate::SolveApp) -> Value {
             // Text.
             "text": hex(text),
             "textAdjusted": text_adjusted,
-            "textDim": hex(tokens.text_dim),
+            "textDim": hex(text_dim),
+            "textDimAdjusted": dim_adjusted,
             "onAccent": hex(tokens.on_accent),
             // Lines and states.
             "border": hex(tokens.border),
@@ -153,6 +162,17 @@ mod tests {
             assert!(
                 ratio >= 4.4,
                 "{}: body text contrast {ratio:.2}:1 against the panel",
+                theme.id
+            );
+            // Secondary text (the page's muted/disabled colour) stays legible, and a selected
+            // row's text stays readable on the selection colour.
+            let (dim_text, _) = readable(tokens.text_dim, tokens.panel, theme.base.is_dark(), 3.0);
+            let dim = contrast(dim_text, tokens.panel);
+            assert!(dim >= 2.8, "{}: secondary text contrast {dim:.2}:1", theme.id);
+            let selected = contrast(tokens.selected_ink, tokens.selected_bg);
+            assert!(
+                selected >= 3.0,
+                "{}: selected text contrast {selected:.2}:1 on the selection",
                 theme.id
             );
         }
