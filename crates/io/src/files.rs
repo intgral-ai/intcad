@@ -419,7 +419,9 @@ pub fn rename(source: &Path, new_name: &str, conflict: Conflict) -> ItemResult {
     if target == source {
         return ItemResult::done(source, &target);
     }
-    if entry_exists(&target) && !same_case_entry(source, &target) {
+    let target_exists = entry_exists(&target);
+    let same_entry = target_exists && same_case_entry(source, &target);
+    if target_exists && !same_entry {
         match conflict {
             Conflict::Skip => return ItemResult::skipped(source, &target),
             Conflict::KeepBoth => target = unique_path(parent, new_name),
@@ -436,7 +438,15 @@ pub fn rename(source: &Path, new_name: &str, conflict: Conflict) -> ItemResult {
             }
         }
     }
-    match fs::rename(source, &target) {
+    let attempt = || -> io::Result<()> {
+        #[cfg(test)]
+        tests::checkpoint("rename publish", source, &target)?;
+        // A verified case-only alias needs the native rename to update stored spelling.
+        // Every ordinary rename must still be exclusive at publication, even if the
+        // selected direct/KeepBoth destination was free during conflict resolution.
+        if same_entry { fs::rename(source, &target) } else { rename_no_replace(source, &target) }
+    };
+    match attempt() {
         Ok(()) => ItemResult::done(source, &target),
         Err(e) => ItemResult::failed(source, &target, describe("rename", source, &e)),
     }

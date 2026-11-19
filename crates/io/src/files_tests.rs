@@ -851,3 +851,56 @@ fn windows_native_publication_accepts_long_parent_paths() {
     assert_eq!(fs::read(result.target).unwrap(), b"source");
     assert!(!source.exists());
 }
+
+// Transfer publication tests do not exercise rename's separate conflict-resolution path.
+// Introduce the collision after the direct/KeepBoth name has been selected, before the OS call.
+fn assert_rename_preserves_a_concurrent_destination(conflict: Conflict) {
+    for directory in [false, true] {
+        let scratch = Scratch::new();
+        let source = if directory { scratch.dir("source.sc") } else { scratch.file("source.sc", "source content") };
+        if directory {
+            fs::write(source.join("child"), "source content").unwrap();
+        }
+        let requested = scratch.path().join("requested.sc");
+        if conflict == Conflict::KeepBoth {
+            fs::write(&requested, "existing destination").unwrap();
+        }
+        let result = with_fault(
+            move |event, _, target| {
+                if event == "rename publish" {
+                    assert_eq!(target.file_name().unwrap(), if conflict == Conflict::KeepBoth { "requested (copy).sc" } else { "requested.sc" });
+                    if directory {
+                        // An empty directory is important: POSIX rename can replace it.
+                        fs::create_dir(target)?;
+                    } else {
+                        fs::write(target, "concurrent destination")?;
+                    }
+                }
+                Ok(())
+            },
+            || rename(&source, "requested.sc", conflict),
+        );
+        assert!(matches!(result.outcome, Outcome::Failed(_)), "{conflict:?} directory={directory}: {result:?}");
+        assert_stored_name(scratch.path(), "source.sc");
+        if directory {
+            assert_eq!(fs::read(source.join("child")).unwrap(), b"source content");
+            assert_eq!(fs::read_dir(&result.target).unwrap().count(), 0, "the concurrent directory must remain empty");
+        } else {
+            assert_eq!(fs::read(&source).unwrap(), b"source content");
+            assert_eq!(fs::read(&result.target).unwrap(), b"concurrent destination");
+        }
+        if conflict == Conflict::KeepBoth {
+            assert_eq!(fs::read(requested).unwrap(), b"existing destination");
+        }
+    }
+}
+
+#[test]
+fn skip_renames_preserve_a_concurrent_destination() {
+    assert_rename_preserves_a_concurrent_destination(Conflict::Skip);
+}
+
+#[test]
+fn keep_both_renames_preserve_a_concurrent_destination() {
+    assert_rename_preserves_a_concurrent_destination(Conflict::KeepBoth);
+}
