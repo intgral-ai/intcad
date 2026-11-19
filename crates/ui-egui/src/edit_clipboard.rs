@@ -747,7 +747,6 @@ pub(crate) struct InputBatch {
     pub(crate) files_rendered: bool,
     pub(crate) entry_keyboard_owned: bool,
     ambiguous: bool,
-    text_repass: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -778,6 +777,9 @@ fn keyboard_owned(app: &mut SolveApp, ctx: &egui::Context) -> bool {
     ctx.text_edit_focused()
         || ctx.memory(|m| m.top_modal_layer().is_some())
         || egui::Popup::is_any_open(ctx)
+        || crate::dialogs_save_mesh::popup_open(ctx)
+        || crate::hole_presets::name_prompt_open(ctx, app.dialog.as_ref())
+        || crate::personal_sheet_rules::name_prompt_open(ctx, app.dialog.as_ref())
         || crate::dim_view::editing()
         || app.file_tree.editing.is_some()
         || app.file_tree.modal.is_some()
@@ -825,21 +827,6 @@ pub(crate) fn finish_input(app: &mut SolveApp, ctx: &egui::Context) {
         retire_input(ctx);
         flush(app, ctx);
         return;
-    }
-    // egui 0.36 text edits read keyboard events before acquiring focus from a click.
-    // Give the newly focused real widget one normal layout re-pass with the original events.
-    // This is not a second text editor or a replay queue; no application action has run yet.
-    if !app.clipboard_input.entry_keyboard_owned
-        && !app.clipboard_input.ambiguous
-        && !app.clipboard_input.text_repass
-        && ctx.text_edit_focused()
-        && ctx.input(|i| i.events.iter().any(|e| clipboard_command(e).is_some()))
-    {
-        app.clipboard_input.text_repass = true;
-        ctx.request_discard("deliver clipboard input to newly focused text widget");
-        if ctx.will_discard() {
-            return;
-        }
     }
     app.clipboard_input.done = true;
     let rendered =

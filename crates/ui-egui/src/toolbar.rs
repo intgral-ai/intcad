@@ -3394,12 +3394,6 @@ pub(crate) fn cancel_unfinished(app: &mut SolveApp) -> bool {
 
 /// Global keyboard shortcuts (when no text field has focus).
 pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
-    // A file question (or a text owner that closed on a previous layout pass) keeps first
-    // refusal. Its Escape must never clear CAD selection or finish the sketch underneath.
-    if app.file_tree.modal.is_some() || app.clipboard_input.entry_keyboard_owned {
-        app.viewport.key_hold = None;
-        return;
-    }
     crate::viewport_status::reconcile(app, ctx);
     crate::browser::update_folder_pick(app, ctx);
     let chat_owner = crate::agent_chat::owns_keyboard_input(app, ctx);
@@ -3453,7 +3447,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
             return;
         }
     }
-    if crate::params_dialog::cancel_on_escape(app, ctx) {
+    // A file question is above the nonmodal Parameters editor. All earlier file-menu and
+    // shortcut-recorder first-refusal handlers still run in their established order.
+    if app.file_tree.modal.is_none() && crate::params_dialog::cancel_on_escape(app, ctx) {
         return;
     }
     // A dimension value that is taking the keyboard: letters belong to it (a parameter name
@@ -3492,6 +3488,12 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 app.last_escape = None;
             }
         }
+        return;
+    }
+    // Frame-entry ownership survives an editor closing or a layout re-pass, but gates only
+    // application key dispatch: reconciliation and Escape first-refusal above must still run.
+    if app.file_tree.modal.is_some() || app.clipboard_input.entry_keyboard_owned {
+        app.viewport.key_hold = None;
         return;
     }
     // A quick chord can press and release all modifiers in one frame. Dispatch each key

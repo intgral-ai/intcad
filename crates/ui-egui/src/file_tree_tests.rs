@@ -164,6 +164,182 @@ fn find_text_click_then_paste_in_the_next_frame_belongs_only_to_the_real_text_wi
     assert_eq!(fs::read(source).unwrap(), b"source");
 }
 
+/// The plain-egui focus boundary permits no insertion in this batch, not permission for
+/// Files or CAD to take the event. Exercise the actual widgets with competing clipboards.
+#[test]
+fn same_batch_find_or_rename_click_paste_has_no_background_owner_or_replay() {
+    for rename in [false, true] {
+        let scratch = Scratch::new();
+        let source = scratch.file("source.txt", "source");
+        let into = scratch.dir("into");
+        let kept = into.join("keep.txt");
+        fs::write(&kept, "kept").unwrap();
+        let mut h = clipboard_window(scratch.path());
+        if rename {
+            h.app.file_tree.start_rename(&source);
+        } else {
+            h.app.file_tree.find = Some(String::new());
+        }
+        h.frames(3);
+        h.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        let field =
+            if rename { crate::scenario::rect_of("files:edit").unwrap() } else { h.ctx.read_response(egui::Id::new("files_find")).unwrap().rect };
+        h.app.file_tree.select_only(&into);
+        h.app.file_tree.focused = true;
+        h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: true });
+        let before = cad_mark(&h);
+        let selection = h.app.file_tree.selection.clone();
+        let focus = h.app.file_tree.focus.clone();
+        let notice = h.app.file_tree.notice.clone();
+        let mut events = pointer_click(field.center(), Modifiers::NONE);
+        events.push(egui::Event::Paste("needle".into()));
+        h.frame_with(events);
+        // Do not require same-batch insertion that plain egui itself cannot provide.
+        assert!(h.ctx.text_edit_focused(), "the actual text widget acquired click focus");
+        h.frames(5);
+        assert_eq!(cad_mark(&h), before, "rename={rename}: no CAD mutation or replay");
+        assert_eq!(h.app.file_tree.selection, selection);
+        assert_eq!(h.app.file_tree.focus, focus);
+        let clip = h.app.file_tree.clip.as_ref().unwrap();
+        assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+        assert!(clip.cut);
+        assert_eq!(h.app.file_tree.notice, notice);
+        assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+        assert!(h.app.file_tree.report.is_none() && h.app.file_tree.take_answers().is_empty(), "no queued file job");
+        assert_eq!(fs::read(&source).unwrap(), b"source");
+        assert_eq!(fs::read(&kept).unwrap(), b"kept");
+        assert!(!into.join("source.txt").exists());
+        let names: Vec<_> = fs::read_dir(&into).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(names, [std::ffi::OsString::from("keep.txt")]);
+    }
+}
+
+/// Custom prompts keep ownership even in a layout pass with neither their text widget nor
+/// an egui modal layer. Open real prompts first; exercise the dispatcher with only Files
+/// rendered to isolate these existing owner signals rather than relying on generic focus.
+fn custom_prompt_blocks_clipboard(owner: &str) {
+    use serde_json::json;
+    for files_focused in [true, false] {
+        let scratch = Scratch::new();
+        let source = scratch.file("source.txt", "source");
+        let into = scratch.dir("into");
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.run("solid.box", json!({"body_name":"PromptFixture","length":40,"width":30,"height":20})).unwrap();
+        h.app.run("select.set", json!({"items":[{"type":"body","name":"PromptFixture"}]})).unwrap();
+        assert!(crate::edit_clipboard::copy(&mut h.app));
+        h.call("ui.prefs", json!({"right_rail":true,"right_rail_open":"files"}));
+        h.app.file_tree = listing(scratch.path());
+        match owner {
+            "hole" => {
+                h.app.session.selection = vec![solidcraft_engine::Sel::Face {
+                    body: "PromptFixture".into(),
+                    index: 5,
+                    point: solidcore_record::Vec3::new(10.0, 10.0, 20.0),
+                }];
+                h.app.start("solid.hole");
+                h.frames(4);
+                h.step(&json!({"click":{"handle":"dialog:section:hole_presets.title"}})).unwrap();
+                h.step(&json!({"widget":"Save new"})).unwrap();
+                assert!(crate::hole_presets::name_prompt_open(&h.ctx, h.app.dialog.as_ref()));
+            }
+            "sheet" => {
+                h.app.start("sheet.manage_rules");
+                h.frames(4);
+                h.step(&json!({"click":{"handle":"dialog:section:sheet.personal_rules.title"}})).unwrap();
+                h.step(&json!({"widget":"Save new"})).unwrap();
+                assert!(crate::personal_sheet_rules::name_prompt_open(&h.ctx, h.app.dialog.as_ref()));
+            }
+            "slicer" => {
+                h.app.services.pick_program = Some(Box::new(|| Box::pin(std::future::pending())));
+                h.app.start("file.send_to_slicer");
+                h.frames(4);
+                h.step(&json!({"click":{"handle":"dialog:Slicer"}})).unwrap();
+                assert!(crate::dialogs_save_mesh::popup_open(&h.ctx));
+            }
+            _ => panic!("unknown custom prompt: {owner}"),
+        }
+        egui::Popup::close_all(&h.ctx);
+        if owner != "slicer" {
+            // Let modal-layer history expire without deleting the actual prompt state.
+            for _ in 0..2 {
+                let _ = h.ctx.run_ui(window_input(&h.ctx, true, Vec::new()), |_| {});
+            }
+        }
+        h.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        h.app.file_tree.select_only(&into);
+        h.app.file_tree.focused = files_focused;
+        h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: true });
+        let before = cad_mark(&h);
+        let ctx = h.ctx.clone();
+        let mut raw = window_input(&ctx, true, vec![egui::Event::Paste("native prompt paste".into())]);
+        h.app.raw_input_hook(&mut raw);
+        let _ = ctx.run_ui(raw, |ui| {
+            assert!(!ui.ctx().text_edit_focused() && ui.ctx().memory(|m| m.top_modal_layer().is_none()));
+            assert!(!egui::Popup::is_any_open(ui.ctx()), "isolate the custom owner, not a generic egui popup");
+            let owns = match owner {
+                "hole" => crate::hole_presets::name_prompt_open(ui.ctx(), h.app.dialog.as_ref()),
+                "sheet" => crate::personal_sheet_rules::name_prompt_open(ui.ctx(), h.app.dialog.as_ref()),
+                _ => crate::dialogs_save_mesh::popup_open(ui.ctx()),
+            };
+            assert!(owns, "real custom prompt owner remains active");
+            crate::edit_clipboard::begin_input(&mut h.app, ui.ctx());
+            crate::toolbar::shortcuts(&mut h.app, ui.ctx());
+            let area = ui.available_rect_before_wrap();
+            panel(&mut h.app, ui, area);
+            crate::edit_clipboard::finish_input(&mut h.app, ui.ctx());
+        });
+        assert_eq!(cad_mark(&h), before, "{owner}: no CAD action behind a custom prompt");
+        let clip = h.app.file_tree.clip.as_ref().expect("a custom prompt must not paste the file cut clipboard");
+        assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+        assert!(clip.cut);
+        assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "{owner}: no file job");
+        assert!(!into.join("source.txt").exists());
+        assert_eq!(fs::read(source).unwrap(), b"source");
+    }
+}
+
+#[test]
+fn custom_hole_name_prompt_blocks_files_and_cad_without_text_focus() {
+    custom_prompt_blocks_clipboard("hole");
+}
+
+#[test]
+fn custom_sheet_name_prompt_blocks_files_and_cad_without_text_focus() {
+    custom_prompt_blocks_clipboard("sheet");
+}
+
+#[test]
+fn custom_slicer_popup_blocks_files_and_cad_without_text_focus() {
+    custom_prompt_blocks_clipboard("slicer");
+}
+
+#[test]
+fn a_file_question_keeps_escape_ahead_of_an_open_parameters_dialog() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let mut h = clipboard_window(scratch.path());
+    crate::params_dialog::open(&mut h.app);
+    h.frames(3);
+    h.app.file_tree.select_only(&source);
+    h.app.file_tree.request_delete(&[]);
+    h.frames(2);
+    let before = cad_mark(&h);
+    h.frame_with(vec![key_event(egui::Key::Escape, true, Modifiers::NONE), key_event(egui::Key::Escape, false, Modifiers::NONE)]);
+    assert!(h.app.file_tree.modal.is_none());
+    assert!(h.app.params.is_some(), "the file question, not Parameters underneath it, owns Escape");
+    assert_eq!(cad_mark(&h), before);
+    assert_eq!(fs::read(source).unwrap(), b"source");
+}
+
 fn window_input(ctx: &egui::Context, focused: bool, events: Vec<egui::Event>) -> egui::RawInput {
     egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
