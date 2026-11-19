@@ -1898,9 +1898,10 @@ impl Snapshot {
         let units_changed = app.preferences.default_units != self.prefs.default_units;
         // Update bookkeeping isn't a setting: a check that finished while the dialog was open stays.
         let update = std::mem::take(&mut app.preferences.update);
-        app.preferences = self.prefs;
+        let mut prefs = self.prefs;
+        prefs.update = update;
+        store_preferences(app, prefs);
         sync_surface_analysis(app);
-        app.preferences.update = update;
         if units_changed {
             default_units_changed(app);
         }
@@ -2310,7 +2311,9 @@ pub(crate) fn reset_preferences_for_test(p: &mut Prefs, page: usize) {
 fn defaults(app: &mut SolveApp, page: usize) {
     let (msaa, window_system, adapter) = (app.preferences.msaa, app.preferences.window_system.clone(), app.preferences.graphics_adapter.clone());
     let units = app.preferences.default_units.clone();
-    reset_preferences(&mut app.preferences, page);
+    let mut prefs = app.preferences.clone();
+    reset_preferences(&mut prefs, page);
+    store_preferences(app, prefs);
     sync_surface_analysis(app);
     if app.preferences.default_units != units {
         default_units_changed(app);
@@ -2412,8 +2415,6 @@ pub fn apply(app: &mut SolveApp, ctx: &egui::Context) {
     apply_network(&app.preferences);
     // The features computed from now on are checked as the preference says.
     app.session.set_validation(app.preferences.validation);
-    // A design a newer Intcad saved opens, or is refused, as the preference says.
-    app.session.set_open_newer_files(app.preferences.open_newer_files);
     // The profiler records while the preference is on (switched when it changes; at start-up only
     // when on, so SOLIDCRAFT_PROFILE=1 is not undone by the default).
     let profile = app.preferences.profile_operations;
@@ -2877,6 +2878,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         _ if closed => close(app, true),
         _ => {}
     }
+    if button.is_some() {
+        // The dialog edits preferences in place; on commit the session's policy follows.
+        sync_open_newer_files(app);
+    }
     // The footer was drawn before this frame's edits (and before an Apply): show Apply's new
     // state on the next frame rather than at the next input.
     if app.prefs_window.open && apply_pending(app) != pending {
@@ -3336,6 +3341,9 @@ pub fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::
         None => {}
     }
     if button.is_some() {
+        // Cancel restores the snapshot and Defaults resets after the set path: the session's
+        // policy follows the preferences here, before any command runs in the same frame.
+        sync_open_newer_files(app);
         // Cancel and Restore Defaults can change the angle too.
         follow_view_fov(app);
         out = serde_json::to_value(&app.preferences).map_err(|e| e.to_string())?;
@@ -4222,6 +4230,20 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
     apply_preferences(app, new, p)
 }
 
+/// Store preferences and give the session their newer-file policy at once: every path that
+/// assigns preferences goes through here, so a command run before the next frame never sees a
+/// value the preferences no longer hold.
+pub(crate) fn store_preferences(app: &mut SolveApp, preferences: Prefs) {
+    app.preferences = preferences;
+    sync_open_newer_files(app);
+}
+
+/// Make the session's newer-file policy the one the preferences hold. Call this wherever
+/// preferences change in place (a dialog's own button, a page's Defaults).
+fn sync_open_newer_files(app: &mut SolveApp) {
+    app.session.set_open_newer_files(app.preferences.open_newer_files);
+}
+
 /// All fallible preference checks finish before any application or file write.
 fn apply_preferences(app: &mut SolveApp, new: Prefs, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     let file = crate::theme_files::find(&new.theme, &new.custom_themes);
@@ -4240,10 +4262,7 @@ fn apply_preferences(app: &mut SolveApp, new: Prefs, p: &serde_json::Value) -> R
         crate::select_other::close(app);
     }
     app.preferences = new;
-    // The newer-file policy takes effect here, not on the next frame: a control `ui.prefs` or a
-    // dialog Apply can be followed in the same frame by `doc.open`, which must see it. The
-    // per-frame copy in `crate::prefs::apply` keeps a session set elsewhere in step.
-    app.session.set_open_newer_files(app.preferences.open_newer_files);
+    sync_open_newer_files(app);
     sync_surface_analysis(app);
     apply_file_limits(&app.preferences);
     if units_changed {
@@ -4337,6 +4356,44 @@ mod tests {
         assert!(error.contains("saved by a newer Intcad"), "{error}");
 
         super::set(&mut h.app, &json!({"open_newer_files": true})).unwrap();
+        let reply = h.app.run("doc.open", json!({"path": path})).unwrap();
+        assert_eq!(reply["newer_file"]["format"], json!(newer_format), "{reply}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The policy follows preferences through the dialog buttons that change them after the set
+    /// path: Cancel restores the snapshot and Restore Defaults resets the page. With no frame in
+    /// between, a command already sees the restored or reset value.
+    #[test]
+    fn open_newer_files_follows_cancel_and_defaults_without_a_frame() {
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("sc-intcad-open-newer-buttons-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut source = solidcraft_engine::Session::default();
+        source.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&source.doc.to_json()).unwrap();
+        let newer_format = solidcraft_engine::doc::format::FORMAT + 1;
+        file["format"] = json!(solidcraft_engine::doc::format::format_string(newer_format));
+        let path = dir.join("newer.json").to_string_lossy().to_string();
+        std::fs::write(&path, file.to_string()).unwrap();
+
+        let mut h = crate::scenario::Harness::new();
+        super::set(&mut h.app, &json!({"open_newer_files": false})).unwrap();
+        // The control channel's set path turns it on while the dialog is open...
+        super::control(&mut h.app, &json!({"open": "General", "open_newer_files": true})).unwrap();
+        assert!(h.app.preferences.open_newer_files && h.app.session.open_newer_files);
+
+        // ...and Cancel restores the snapshot's false. No frame before this open.
+        super::control(&mut h.app, &json!({"button": "cancel"})).unwrap();
+        assert!(!h.app.preferences.open_newer_files, "Cancel restores the snapshot");
+        assert!(!h.app.session.open_newer_files, "the session follows the restore at once");
+        let error = h.app.run("doc.open", json!({"path": path})).unwrap_err();
+        assert!(error.contains("saved by a newer Intcad"), "{error}");
+
+        // Restore Defaults resets General to `true`, and a newer design opens at once.
+        super::control(&mut h.app, &json!({"button": "defaults"})).unwrap();
+        assert!(h.app.preferences.open_newer_files, "Defaults resets to the default");
+        assert!(h.app.session.open_newer_files, "the session follows the reset at once");
         let reply = h.app.run("doc.open", json!({"path": path})).unwrap();
         assert_eq!(reply["newer_file"]["format"], json!(newer_format), "{reply}");
         let _ = std::fs::remove_dir_all(&dir);
