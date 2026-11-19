@@ -322,6 +322,8 @@ fn fake_run(elements: Elements, stress: f64, disp: f64) -> fea::Run {
         max_disp_at: [100.0, 0.0, 0.0],
         seconds: 1.0,
         points: Vec::new(),
+        tensors: Vec::new(),
+        cells: Vec::new(),
         isolated: true,
         equilibrium: None,
         peaks: fea::Peaks { at: None, away: Some((stress, [0.0; 3])), distance: 3.0 },
@@ -1701,6 +1703,7 @@ fn d6_the_known_keys_are_the_contracts_fields() {
     assert_eq!(props(&defs["LoadParam"]), sorted(LOAD_KEYS));
     assert_eq!(props(&defs["SupportParam"]), sorted(SUPPORT_KEYS));
     assert_eq!(props(&defs["GivenMaterial"]), sorted(MATERIAL_KEYS));
+    assert_eq!(props(&defs["ProbeParam"]), sorted(PROBE_KEYS));
 }
 
 /// D7: points on a cylinder (radius 2 about Z) with their outward normals, over `span` degrees.
@@ -1884,4 +1887,161 @@ fn d11_a_thickness_that_is_not_the_sheets_own_is_warned() {
         assert!(!w.contains("not this sheet's own"), "{t}: {w}");
     }
     assert_eq!(thickness_mismatch(1.0, 0.0, false), None);
+}
+
+/// C1: the probes' settings are checked before anything runs.
+/// Input: a 100 x 50 x 10 mm block; dry runs with a probe named `gauge` along X and an unnamed one,
+/// then `probes` as text, 51 probes, a point of two numbers, a zero direction, an empty name, a
+/// name of 61 characters, a point off the part and an unknown key. Action: the command with
+/// `dry_run: true`. Pass: the setup reads each probe in words (its name or `probe 2`, the point,
+/// the face near it, "along X"); each bad one is refused with words naming what is wrong.
+#[test]
+fn c1_probes_are_checked_and_described_before_anything_runs() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 50, "height": 10, "body_name": "Block"}));
+    let setup = |probes: Value| {
+        json!({"supports": [{"face": [0, 25, 5]}], "loads": [{"face": [100, 25, 5], "force": [0, 0, -10]}], "material": "6061-T6",
+               "dry_run": true, "probes": probes})
+    };
+    let r = run(&mut s, CMD, setup(json!([{"at": [50, 25, 10], "direction": [2, 0, 0], "name": "gauge"}, {"at": [10, 10, 5]}])));
+    let words = r["setup"].to_string();
+    assert!(words.contains("Read at gauge: the stress and strain at [50, 25, 10] mm, near ") && words.contains("along X"), "{words}");
+    assert!(words.contains("Read at probe 2: the stress and strain at [10, 10, 5] mm"), "{words}");
+    let refused = |s: &mut Session, probes: Value| s.execute(CMD, &setup(probes)).map(|_| ()).err().map(|e| e.to_string()).unwrap_or_default();
+    let many: Vec<Value> = (0..51).map(|_| json!({"at": [50, 25, 5]})).collect();
+    for (probes, says) in [
+        (json!("everywhere"), "must be a list"),
+        (Value::Array(many), "at most 50 probes"),
+        (json!([{"at": [50, 25]}]), "probes[0]: `at` must be a point"),
+        (json!([{"at": [50, 25, 5], "direction": [0, 0, 0]}]), "`direction` must be [x, y, z], not zero"),
+        (json!([{"at": [50, 25, 5], "name": " "}]), "`name` must be text of 1 to 60 characters"),
+        (json!([{"at": [50, 25, 5], "name": "x".repeat(61)}]), "`name` must be text of 1 to 60 characters"),
+        (json!([{"at": [50, 25, 5]}, {"at": [500, 25, 5], "name": "far"}]), "far: [500, 25, 5] is outside the part"),
+        (json!([{"at": [50, 25, 5], "offset": 1}]), "probes[0]: `offset` is not a setting"),
+    ] {
+        let e = refused(&mut s, probes.clone());
+        assert!(e.contains(says), "{probes}: {e}");
+    }
+}
+
+/// C1, C2, C8 (V-C6), real: strain in a bar pulled along its axis.
+/// Input: a 100 x 10 x 10 mm bar of 6061-T6 (E 68 900 MPa, ν 0.33), held only by symmetry
+/// supports on its faces at x = 0, y = 0 and z = 0 (free to thin), 1000 N along X on its end at
+/// x = 100; probes at the middle (50, 5, 5) along X and on a side face (30, 10, 5) along Y; the
+/// default mesh and the mesh check. Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// By hand: σ = F / A = 10 MPa along X; ε = σ / E = 145.1 µε along X, −ν ε = −47.9 µε across.
+/// Pass: at both probes the stress along X is within 2 % of 10 MPa, the principal stresses are
+/// 10, 0, 0 within 0.2 MPa, the strains along X and across within 2 % of the hand values
+/// (engineering shears under 1 µε); the middle's `along` reads 10 MPa and 145.1 µε within 2 %, the
+/// side's −47.9 µε within 2 %; each probe's mesh check ran and is settled.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn c6_a_bar_in_tension_reads_hookes_strain_at_its_probes() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 10, "height": 10, "body_name": "Bar"}));
+    let r = run(
+        &mut s,
+        CMD,
+        json!({"supports": [{"face": [0, 5, 5], "type": "symmetry"}, {"face": [50, 0, 5], "type": "symmetry"}, {"face": [50, 5, 0], "type": "symmetry"}],
+               "loads": [{"face": [100, 5, 5], "force": [1000, 0, 0]}], "material": "6061-T6",
+               "probes": [{"at": [50, 5, 5], "direction": [1, 0, 0], "name": "middle"}, {"at": [30, 10, 5], "direction": [0, 1, 0], "name": "side"}]}),
+    );
+    let probes = r["probes"].as_array().cloned().unwrap_or_default();
+    eprintln!("C6 bar: {}", serde_json::to_string_pretty(&probes).unwrap_or_default());
+    assert_eq!(probes.len(), 2, "{r}");
+    let (sigma, eps, nu) = (10.0, 10.0 / 68_900.0 * 1e6, 0.33);
+    let near = |a: f64, b: f64, tol: f64| (a / b - 1.0).abs() <= tol;
+    for pr in &probes {
+        let name = pr["name"].as_str().unwrap_or("?");
+        assert!(near(number(&pr["stress_mpa"]["xx"]), sigma, 0.02), "{name}: {pr}");
+        let p = &pr["principal_stress_mpa"];
+        assert!((number(&p[0]) - sigma).abs() < 0.2 && number(&p[1]).abs() < 0.2 && number(&p[2]).abs() < 0.2, "{name}: {p}");
+        let e = &pr["strain_microstrain"];
+        assert!(
+            near(number(&e["xx"]), eps, 0.02) && near(number(&e["yy"]), -nu * eps, 0.02) && near(number(&e["zz"]), -nu * eps, 0.02),
+            "{name}: {e}"
+        );
+        for g in ["gamma_xy", "gamma_yz", "gamma_zx"] {
+            assert!(number(&e[g]).abs() < 1.0, "{name} {g}: {e}");
+        }
+        assert_eq!(pr["mesh_check"]["status"], "settled", "{name}: {pr}");
+    }
+    assert!(near(number(&probes[0]["along"]["stress_mpa"]), sigma, 0.02) && near(number(&probes[0]["along"]["strain_microstrain"]), eps, 0.02));
+    assert!(near(number(&probes[1]["along"]["strain_microstrain"]), -nu * eps, 0.02), "{}", probes[1]);
+}
+
+/// C1, C2 (V-C1, V-C2), real: Lamé's thick cylinder read through its wall.
+/// Input: the review's quarter ring, a = 20, b = 40 mm, 10 mm long, free ends, 50 MPa inside, S355
+/// (E 210 GPa, ν 0.3), symmetry on its cut faces and a roller under it; probes at r = 20, 25, 30,
+/// 35 and 40 mm at 45°, mid-length, along the hoop; the default mesh and the mesh check. Real: the
+/// app's modelling, gmsh, CalculiX. Faked: nothing.
+/// By hand (Lamé): σθ(r) = p a² / (b² − a²) (1 + b² / r²), 83.3 MPa at the bore and 33.3 at the
+/// outside; at the bore σr = −p = −50 MPa and σz = 0, so the principal stresses are 83.3, 0 and
+/// −50 MPa, and the hoop strain (σθ − ν σr) / E = 468.3 µε.
+/// Pass: every probe's hoop stress (`along`) within 1.5 % of σθ(r); at the bore the principal
+/// stresses within 2 % (the middle one within 1 MPa of zero) and the largest principal strain
+/// within 2 % of 468.3 µε; a probe on the curved bore or outside face may be read up to 0.3 mm off
+/// the straight-sided elements, no more; each probe's mesh check ran and is settled.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn c1_lames_cylinder_read_through_its_wall_at_probes() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"diameter": 80, "height": 10, "body_name": "Ring"}));
+    run(&mut s, "solid.cylinder", json!({"diameter": 40, "height": 10, "operation": "cut", "targets": ["Ring"]}));
+    run(&mut s, "solid.box", json!({"length": 50, "width": 50, "height": 10, "corner": [0, 0, 0], "operation": "intersect", "targets": ["Ring"]}));
+    let (a, b, p, e, nu) = (20.0, 40.0, 50.0, 210_000.0, 0.3);
+    let c = std::f64::consts::FRAC_1_SQRT_2;
+    let radii = [20.0, 25.0, 30.0, 35.0, 40.0];
+    let probes: Vec<Value> =
+        radii.iter().map(|r| json!({"at": [r * c, r * c, 5.0], "direction": [-c, c, 0.0], "name": format!("r = {r}")})).collect();
+    let r = run(
+        &mut s,
+        CMD,
+        json!({"body": "Ring", "supports": [{"face": [0, 30, 5], "type": "symmetry"}, {"face": [30, 0, 5], "type": "symmetry"},
+               {"face": [21.2, 21.2, 0], "type": "roller"}], "loads": [{"face": [14.142136, 14.142136, 5], "pressure": "50 MPa"}],
+               "material": "S355", "probes": probes}),
+    );
+    let got = r["probes"].as_array().cloned().unwrap_or_default();
+    assert_eq!(got.len(), radii.len(), "{r}");
+    for (pr, rad) in got.iter().zip(radii) {
+        let lame = p * a * a / (b * b - a * a) * (1.0 + b * b / (rad * rad));
+        let hoop = number(&pr["along"]["stress_mpa"]);
+        eprintln!("C1 r = {rad}: hoop {hoop:.2} MPa against Lamé {lame:.2} ({:+.2}%); {}", 100.0 * (hoop / lame - 1.0), pr["line"]);
+        assert!((hoop / lame - 1.0).abs() <= 0.015, "r = {rad}: {pr}");
+        assert!(pr["outside_part_mm"].as_f64().unwrap_or(0.0) <= 0.3, "{pr}");
+        assert_eq!(pr["mesh_check"]["status"], "settled", "r = {rad}: {pr}");
+    }
+    let bore = &got[0];
+    let sp = &bore["principal_stress_mpa"];
+    let hoop_a = p * (b * b + a * a) / (b * b - a * a);
+    assert!((number(&sp[0]) / hoop_a - 1.0).abs() <= 0.02 && number(&sp[1]).abs() <= 1.0 && (number(&sp[2]) / -p - 1.0).abs() <= 0.02, "{sp}");
+    let strain = (hoop_a + nu * p) / e * 1e6;
+    assert!((number(&bore["principal_strain_microstrain"][0]) / strain - 1.0).abs() <= 0.02, "{bore}");
+}
+
+/// C1 on shells, real: a probe on a sheet's top face reads the top, one on its bottom the bottom.
+/// Input: R4's strip (100 x 20 x 1.5 mm, 5052-H32) as shells, clamped at x = 0, 0.005 MPa down on
+/// its top; probes at mid-span on the top face (50, 10, 1.5) and the bottom face (50, 10, 0), along
+/// X. Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// By hand (beam): σ(50) = (100 − 50)² / 150 = 16.7 MPa at the surface, tension on top (the strip
+/// bends down), compression below.
+/// Pass: the top reads +16.7 MPa along X within 5 % (R4's tolerance for the painted value), the
+/// bottom −16.7 within 5 %, and the two are equal and opposite within 2 %.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn c1_a_probe_on_a_sheet_reads_the_face_it_is_on() {
+    let mut s = Session::default();
+    let (_, root, _) = strip(&mut s, 100.0);
+    let r = run(
+        &mut s,
+        CMD,
+        json!({"loads": [{"face": [50, 10, 1.5], "pressure": 0.005}], "supports": [{"face": root}], "material": aluminium(), "elements": "shell",
+               "probes": [{"at": [50, 10, 1.5], "direction": [1, 0, 0], "name": "top"}, {"at": [50, 10, 0], "direction": [1, 0, 0], "name": "bottom"}]}),
+    );
+    let along = |k: usize| number(&r["probes"][k]["along"]["stress_mpa"]);
+    let (top, bottom, beam) = (along(0), along(1), 50f64.powi(2) / 150.0);
+    eprintln!("C1 shells: top {top:.2} MPa, bottom {bottom:.2} MPa against ±{beam:.2}; {} | {}", r["probes"][0]["line"], r["probes"][1]["line"]);
+    assert!((top / beam - 1.0).abs() <= 0.05, "{r}");
+    assert!((bottom / -beam - 1.0).abs() <= 0.05, "{r}");
+    assert!((top / -bottom - 1.0).abs() <= 0.02, "{top} vs {bottom}");
 }

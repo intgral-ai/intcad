@@ -12,6 +12,8 @@ fn run_with(points: Vec<(P, f64, P)>) -> Run {
         max_disp_at: [0.0; 3],
         seconds: 0.0,
         points,
+        tensors: Vec::new(),
+        cells: Vec::new(),
         isolated: false,
         equilibrium: None,
         peaks: Peaks::default(),
