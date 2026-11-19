@@ -8,19 +8,6 @@
 # bookkeeping. Each is covered by the engine's and the UI's own tests. A command added since this
 # folder stopped taking cases (tests/kernel-cases/CASES) is listed here too, its reason naming
 # where it is tested: its kernel case in solidcore's corpus, or its test in its area's test file.
-dfm.cancel                        the manual DFM run's cancel, not geometry: dfm::run_tests::a_cancelled_run_keeps_the_previous_record_and_gives_a_reason
-dfm.check                         the manual DFM entry and its saved report, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
-dfm.override                      a project's DFM number override, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
-dfm.status                        the manual DFM run's status, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
-document.snapshot.capture         snapshot capture has no geometry to grade: captured and validated in crates/engine/src/validation/tests.rs and apps/solidcraft-cli/tests/script_roundtrip.rs
-inspect.dfm                       the manual DFM run's saved report, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
-
-# Commands that make or change geometry and have no case yet. This section only shrinks: the
-# pull request that gives one a case in solidcore's corpus or a test moves its line to the section
-# above with where it is tested (the check fails on a listed command that a case here uses), and a
-# new geometry command gets its line in the section above.
-
-[to cover]
 appearance.assign                 appearance only: colours and textures
 appearance.chain                  appearance only: colours and textures
 appearance.copy                   appearance only: colours and textures
@@ -35,7 +22,6 @@ assembly.bom                      a bill of materials report
 assembly.constraint.create        assembly placement: tested in joints_relations_tests.rs
 assembly.constraint.edit          assembly placement: tested in joints_relations_tests.rs
 body.rename                       a body name
-body.repair                       repair: the solid a refused or open part becomes
 browser.collapse_all              the browser tree: order, groups and folding
 browser.expand_all                the browser tree: order, groups and folding
 browser.group                     the browser tree: order, groups and folding
@@ -76,6 +62,10 @@ component.update_links            component links
 construct.axis                    builds with the first construct.axis.* method that takes the references; that method's own feature (crates/engine/src/construct_tests.rs)
 construct.plane                   builds with the first construct.plane.* method that takes the references; that method's own feature (crates/engine/src/construct_tests.rs)
 construct.point                   builds with the first construct.point.* method that takes the references; that method's own feature (crates/engine/src/construct_tests.rs)
+dfm.cancel                        the manual DFM run's cancel, not geometry: dfm::run_tests::a_cancelled_run_keeps_the_previous_record_and_gives_a_reason
+dfm.check                         the manual DFM entry and its saved report, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
+dfm.override                      a project's DFM number override, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
+dfm.status                        the manual DFM run's status, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
 diagnostics.crash_report          crash reports
 diagnostics.crash_reports         crash reports
 diagnostics.crash_reports.clear   crash reports
@@ -92,6 +82,7 @@ document.metadata                 document metadata and revisions
 document.metadata.remove          document metadata and revisions
 document.metadata.set             document metadata and revisions
 document.revision                 document metadata and revisions
+document.snapshot.capture         snapshot capture has no geometry to grade: captured and validated in crates/engine/src/validation/tests.rs and apps/solidcraft-cli/tests/script_roundtrip.rs
 edit.checkpoint                   undo, redo and checkpoints: an earlier state restored, no new geometry
 edit.redo                         undo, redo and checkpoints: an earlier state restored, no new geometry
 edit.repeat                       repeats the last command, whose own case grades it
@@ -125,6 +116,7 @@ inspect.analysis                  display analysis: which one is on
 inspect.colored_components        display: component colours
 inspect.compare_picture           display analysis: a picture compared with the outline
 inspect.curvature_map             display analysis: shading
+inspect.dfm                       the manual DFM run's saved report, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
 inspect.draft                     inspect: the number or curves it reports
 inspect.environment_map           display analysis: shading
 inspect.parameter_sweep           inspect: results rebuilt over a parameter range
@@ -196,10 +188,7 @@ parameters.list                   parameter bookkeeping; a value change that reb
 parameters.move                   parameter bookkeeping; a value change that rebuilds is parameters.change, which cases use
 parameters.rename                 parameter bookkeeping; a value change that rebuilds is parameters.change, which cases use
 parameters.users                  parameter bookkeeping; a value change that rebuilds is parameters.change, which cases use
-parts.fastener                    standard parts: a fastener body
-parts.insert                      standard parts: a part body
 parts.library                     a listing of the parts library
-parts.resize                      standard parts: a part resized
 pointcloud.delete                 point clouds: points drawn, never a body
 pointcloud.deviation              point clouds: reads distances, changes nothing; tested in crates/engine/src/cmd/point_cloud_deviation.rs
 pointcloud.edit                   point clouds: points drawn, never a body
@@ -295,10 +284,8 @@ settings.profile.rename           settings profiles: preferences saved, applied 
 settings.profile.save             settings profiles: preferences saved, applied and shared
 sheet.rules                       a listing of sheet metal rules
 sketch.arc.tangent                2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.arc3d                      sketch: a curve kind no case profiles yet
 sketch.auto_constrain             2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.auto_constrain_from_datum  2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.auto_project               sketch from the model: curves the kernel computes from bodies
 sketch.break                      2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.break_link                 2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.cancel                     2D sketch only (the sketch solver and engine tests); no kernel operation
@@ -311,7 +298,6 @@ sketch.circle.three_point         2D sketch only (the sketch solver and engine t
 sketch.circle.three_tangent       2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.circle.two_point           2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.circle.two_tangent         2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.conic                      sketch: a curve kind no case profiles yet
 sketch.constrainer                2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.constraint.along_axis      3D sketch solve only (the 3D solver and engine tests, sketch_3d_frame_tests.rs); no kernel operation
 sketch.constraint.coincident      2D sketch only (the sketch solver and engine tests); no kernel operation
@@ -351,17 +337,12 @@ sketch.export_dxf                 2D sketch only (the sketch solver and engine t
 sketch.extend                     2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.fillet                     2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.finish_auto_constrain      2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.fit_curves_to_section      sketch from the model: curves the kernel computes from bodies
 sketch.glyphs                     2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.include_3d                 sketch from the model: curves the kernel computes from bodies
 sketch.infinite                   2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.insert_airfoil             2D sketch only; tested in crates/engine/src/cmd/sketch_import.rs (its file reader in crates/io/src/airfoil.rs, its bounds in solidcore-ops curve_fit)
 sketch.insert_dxf                 2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.insert_svg                 2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.inspect                    2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.intersect                  sketch from the model: curves the kernel computes from bodies
-sketch.intersection_curve         sketch from the model: curves the kernel computes from bodies
-sketch.isoparametric_curve        sketch from the model: curves the kernel computes from bodies
 sketch.line.midpoint              2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.loose_ends                 2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.loose_ends.tie             2D sketch only (the sketch solver and engine tests); no kernel operation
@@ -376,7 +357,6 @@ sketch.pattern.rectangular        2D sketch only (the sketch solver and engine t
 sketch.point.divide               2D sketch only; crates/engine/src/cmd/sketch_divide_tests.rs: a_line_divided_in_four_keeps_its_quarters_when_it_grows and a_spline_is_divided_into_equal_lengths_along_it
 sketch.point3d                    2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.polygon.edge               2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.project_to_surface         sketch from the model: curves the kernel computes from bodies
 sketch.rectangle.three_point      2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.redefine                   2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.replace                    2D sketch only (the sketch solver and engine tests); no kernel operation
@@ -386,14 +366,11 @@ sketch.slot.arc_three_point       2D sketch only (the sketch solver and engine t
 sketch.slot.center_point          2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.snap                       2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.solve                      2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.spline.control_point_5     sketch: a curve kind no case profiles yet
 sketch.spline.handles             2D sketch only (crates/engine/src/cmd/sketch_create.rs: fit_spline_handles_are_visible_lines_and_accept_existing_constraints); no kernel operation
 sketch.spline.insert_point        2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.spline.remove_point        2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.spline.reset_handles       2D sketch only (crates/engine/src/cmd/sketch_create.rs: blend_tests::reset_tangent_handles_gives_back_the_spline_through_its_fit_points); no kernel operation
 sketch.spline.reverse             2D sketch only (the sketch solver and engine tests); no kernel operation
-sketch.spline3d                   sketch: a curve kind no case profiles yet
-sketch.spun_profile               sketch from the model: curves the kernel computes from bodies
 sketch.toggle_diameter            2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.toggle_driven              2D sketch only (the sketch solver and engine tests); no kernel operation
 sketch.transform                  2D sketch only (the sketch solver and engine tests); no kernel operation
@@ -465,3 +442,26 @@ view.tool                         the view: camera, layout, display
 view.tool.zoom                    the view: camera, layout, display
 view.top                          the view: camera, layout, display
 view.visual_style                 the view: camera, layout, display
+
+# Commands that make or change geometry and have no case yet. This section only shrinks: the
+# pull request that gives one a case in solidcore's corpus or a test moves its line to the section
+# above with where it is tested (the check fails on a listed command that a case here uses), and a
+# new geometry command gets its line in the section above.
+
+[to cover]
+body.repair                       repair: the solid a refused or open part becomes
+parts.fastener                    standard parts: a fastener body
+parts.insert                      standard parts: a part body
+parts.resize                      standard parts: a part resized
+sketch.arc3d                      sketch: a curve kind no case profiles yet
+sketch.auto_project               sketch from the model: curves the kernel computes from bodies
+sketch.conic                      sketch: a curve kind no case profiles yet
+sketch.fit_curves_to_section      sketch from the model: curves the kernel computes from bodies
+sketch.include_3d                 sketch from the model: curves the kernel computes from bodies
+sketch.intersect                  sketch from the model: curves the kernel computes from bodies
+sketch.intersection_curve         sketch from the model: curves the kernel computes from bodies
+sketch.isoparametric_curve        sketch from the model: curves the kernel computes from bodies
+sketch.project_to_surface         sketch from the model: curves the kernel computes from bodies
+sketch.spline.control_point_5     sketch: a curve kind no case profiles yet
+sketch.spline3d                   sketch: a curve kind no case profiles yet
+sketch.spun_profile               sketch from the model: curves the kernel computes from bodies

@@ -776,7 +776,8 @@ fn step_opening(
     let Some(opening) = staged.opening.as_mut() else {
         let params = staged.params.clone();
         let validation = session.validation();
-        match scoped(scope.clone(), || watch(progress.clone(), || solidcraft_engine::OpenSteps::start(&params, validation))) {
+        match scoped(scope.clone(), || watch(progress.clone(), || solidcraft_engine::OpenSteps::start(&params, validation, session.open_newer_files)))
+        {
             Ok(Some(opening)) => staged.opening = Some(opening),
             // Options only `doc.open` takes: it opens the file at once.
             Ok(None) => {

@@ -106,7 +106,10 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
             environment: view.ambient,
             sun: view.sun_enabled.then_some(view.sun),
             area_lights: AreaLights::new(&view.area_lights).map_err(|error| error.to_string())?,
-            ..Default::default()
+            // A runtime request (temporary bindings or an unsaved HDR) sends these here too:
+            // keep the design's own directional and punctual families, as the snapshot does.
+            directional_lights: view.directional_lights,
+            punctual_lights: view.punctual_lights,
         };
         lighting.validate().map_err(|error| error.to_string())?;
         params["lighting"] = json!(lighting);

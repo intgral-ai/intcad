@@ -3451,6 +3451,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A design opened a feature at a time ([`OpenSteps`]) applies the caller's
+    /// `open_newer_files` policy, as `doc.open` does: with it off, a design a newer Intcad saved is
+    /// refused before any feature is evaluated, in both encodings; on, it opens and keeps what the
+    /// newer version wrote.
+    #[test]
+    fn a_staged_open_refuses_a_newer_design_when_opening_newer_files_is_off() {
+        use super::open_steps::OpenSteps;
+        let dir = std::env::temp_dir().join(format!("sc_staged_refuse_newer_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+        let mut file: Value = serde_json::from_str(&s.doc.to_json()).unwrap();
+        let newer_format = solidcraft_doc::format::FORMAT + 1;
+        file["format"] = json!(solidcraft_doc::format::format_string(newer_format));
+        file["features"].as_array_mut().unwrap().push(json!({"id": 900, "name": "Lattice1", "type": "gyroid_lattice", "cell": 2.5}));
+        file["future_section"] = json!([1, 2]);
+        for name in ["newer.json", "newer.sc"] {
+            let path = dir.join(name);
+            let source = solidcraft_doc::Document::from_json(&file.to_string()).unwrap();
+            let bytes = if name.ends_with(".sc") { solidcraft_io::write_design_container(&source).unwrap() } else { file.to_string().into_bytes() };
+            std::fs::write(&path, bytes).unwrap();
+            let path = path.to_string_lossy().to_string();
+            let error = OpenSteps::start(&json!({"path": path}), Default::default(), false)
+                .err()
+                .expect("with the policy off, a newer design is refused")
+                .to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "{path}: this design was saved by a newer Intcad (format {newer_format}, this version reads up to {}): update Intcad to open it",
+                    solidcraft_doc::format::FORMAT
+                )
+            );
+            let mut opened = Session::default();
+            let mut steps =
+                OpenSteps::start(&json!({"path": path}), Default::default(), true).unwrap().expect("with the policy on, a design is opened in steps");
+            while steps.step() {}
+            let reply = steps.finish(&mut opened).unwrap();
+            assert_eq!(reply["newer_file"]["format"], json!(newer_format), "{reply}");
+            assert!(reply["newer_file"]["not_understood"].to_string().contains("gyroid_lattice"), "{reply}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// #5467: a script, the CLI or the control channel never gets a prompt. A Save over a file
     /// another program or computer changed since it was opened is refused with an error naming
     /// `overwrite`, which replaces it; a design opened read-only only saves to another file.
@@ -4404,7 +4448,7 @@ mod tests {
         let opened = whole.execute("doc.open", &json!({"path": path, "read_only": true})).unwrap();
 
         let mut steps =
-            OpenSteps::start(&json!({"path": path, "read_only": true}), Default::default()).unwrap().expect("a design is opened in steps");
+            OpenSteps::start(&json!({"path": path, "read_only": true}), Default::default(), true).unwrap().expect("a design is opened in steps");
         assert_eq!(steps.path(), path);
         assert_eq!(steps.progress(), (0, features - 1), "the saved marker is where evaluation stops");
         let mut imports = 0;
@@ -4438,9 +4482,9 @@ mod tests {
 
         // Other files, and STEP-only options, are opened by `doc.open`.
         for p in [json!({"path": step}), json!({"path": "part.stl"}), json!({"path": path, "up": "y"}), json!({})] {
-            assert!(OpenSteps::start(&p, Default::default()).unwrap().is_none(), "{p}");
+            assert!(OpenSteps::start(&p, Default::default(), true).unwrap().is_none(), "{p}");
         }
-        assert!(OpenSteps::start(&json!({"path": dir.join("missing.sc").to_string_lossy()}), Default::default()).is_err());
+        assert!(OpenSteps::start(&json!({"path": dir.join("missing.sc").to_string_lossy()}), Default::default(), true).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4482,7 +4526,7 @@ mod tests {
                 }
             }
             for started in starts {
-                let mut steps = OpenSteps::start(&json!({"path": path}), started).unwrap().expect("a design is opened in steps");
+                let mut steps = OpenSteps::start(&json!({"path": path}), started, true).unwrap().expect("a design is opened in steps");
                 while steps.step() {}
                 let mut stepped = Session::default();
                 stepped.set_validation(mode);

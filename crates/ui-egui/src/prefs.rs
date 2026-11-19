@@ -4240,6 +4240,10 @@ fn apply_preferences(app: &mut SolveApp, new: Prefs, p: &serde_json::Value) -> R
         crate::select_other::close(app);
     }
     app.preferences = new;
+    // The newer-file policy takes effect here, not on the next frame: a control `ui.prefs` or a
+    // dialog Apply can be followed in the same frame by `doc.open`, which must see it. The
+    // per-frame copy in `crate::prefs::apply` keeps a session set elsewhere in step.
+    app.session.set_open_newer_files(app.preferences.open_newer_files);
     sync_surface_analysis(app);
     apply_file_limits(&app.preferences);
     if units_changed {
@@ -4301,6 +4305,41 @@ mod tests {
         h.call("ui.prefs", json!({"profile_operations": false}));
         h.frames(2);
         assert!(!solidcraft_engine::profile::enabled());
+    }
+
+    /// The newer-file policy applies as soon as the preference changes, with no frame in
+    /// between, and goes with the user across a tab switch: a design a newer Intcad saved is
+    /// refused right after `ui.prefs` turns it off, and opens again when it is turned on.
+    #[test]
+    fn open_newer_files_applies_when_it_changes_and_across_a_tab_switch() {
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("sc-intcad-open-newer-pref-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut source = solidcraft_engine::Session::default();
+        source.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&source.doc.to_json()).unwrap();
+        let newer_format = solidcraft_engine::doc::format::FORMAT + 1;
+        file["format"] = json!(solidcraft_engine::doc::format::format_string(newer_format));
+        let path = dir.join("newer.json").to_string_lossy().to_string();
+        std::fs::write(&path, file.to_string()).unwrap();
+
+        let mut h = crate::scenario::Harness::new();
+        // No frame between this and the open: the session must already hold the new policy.
+        super::set(&mut h.app, &json!({"open_newer_files": false})).unwrap();
+        assert!(!h.app.session.open_newer_files);
+        let error = h.app.run("doc.open", json!({"path": path})).unwrap_err();
+        assert!(error.contains("saved by a newer Intcad"), "{error}");
+
+        // Tabs share the user's policy (`documents::swap_in` copies it): still refused.
+        crate::documents::open_tab(&mut h.app, solidcraft_engine::Session::default()).unwrap();
+        assert!(!h.app.session.open_newer_files);
+        let error = h.app.run("doc.open", json!({"path": path})).unwrap_err();
+        assert!(error.contains("saved by a newer Intcad"), "{error}");
+
+        super::set(&mut h.app, &json!({"open_newer_files": true})).unwrap();
+        let reply = h.app.run("doc.open", json!({"path": path})).unwrap();
+        assert_eq!(reply["newer_file"]["format"], json!(newer_format), "{reply}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Preferences saved with a setting this version no longer has still load, every other

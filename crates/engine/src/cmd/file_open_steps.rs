@@ -40,7 +40,9 @@ impl OpenSteps {
     /// Read the design file `doc.open` would open with parameters `p`, without evaluating it.
     /// `None` when `p` names a file `doc.open` reads in another way (a CAD, mesh or drawing file,
     /// or a point cloud), or asks for something only those take: run `doc.open` for it.
-    pub fn start(p: &Value, validation: solidcraft_kernel::Validation) -> Result<Option<OpenSteps>> {
+    /// `open_newer_files` is the caller's policy, as `doc.open` reads it from its session: with it
+    /// off, a design a newer Intcad saved is refused here too, before any feature is evaluated.
+    pub fn start(p: &Value, validation: solidcraft_kernel::Validation, open_newer_files: bool) -> Result<Option<OpenSteps>> {
         let Some(path) = p.get("path").and_then(Value::as_str) else { return Ok(None) };
         let other = solidcraft_io::is_step_path(path)
             || solidcraft_io::is_mesh_path(path)
@@ -54,7 +56,10 @@ impl OpenSteps {
         let verify = bool_(p, "verify").unwrap_or(false);
         // Stamped before it is read, as `doc.open` does.
         let disk = solidcraft_io::design_lock::stamp(path);
-        let (mut doc, saved) = read_design(&mut Session::default(), path)?;
+        // `read_design` refuses a newer design when the policy is off, as `doc.open` does.
+        let mut reader = Session::default();
+        reader.set_open_newer_files(open_newer_files);
+        let (mut doc, saved) = read_design(&mut reader, path)?;
         // A file with provenance must not adopt its excluded cache: the shield would then vouch
         // for geometry the signature does not cover.
         let signed = solidcraft_io::has_design_provenance(path);

@@ -2883,6 +2883,42 @@ fn gpu_material_recipes_use_exact_linear_absorption_without_changing_saved_appea
     assert!(raster.get("raytrace").is_none());
 }
 
+/// A GPU image request that takes the runtime route (temporary material bindings, or an unsaved
+/// HDR) keeps the design's own directional and punctual light families, exactly as the saved
+/// snapshot does: editing the studio or rendering must not drop them.
+#[test]
+fn gpu_runtime_request_keeps_the_designs_directional_and_punctual_lights() {
+    use solidcraft_engine::render::job::{DirectionalLightOptions, DirectionalLights, PunctualLightOptions, PunctualLights};
+    let mut h = Harness::new();
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":3,"body_name":"Target"})).unwrap();
+    enter(&mut h.app, true).unwrap();
+    select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    // Any temporary binding sends the request over the runtime API instead of a saved snapshot.
+    let target = materials::read_targets(&mut h.app).unwrap().remove(0);
+    let mut binding = materials::Binding::new(target, &h.app);
+    binding.maps_enabled = true;
+    binding.maps.color = "temporary-source.png".into();
+    h.app.render_workspace.view.materials.enabled = true;
+    h.app.render_workspace.view.materials.bindings.push(binding);
+    let studio = &mut h.app.render_workspace.view.studio;
+    studio.lighting_enabled = true;
+    studio.directional_lights =
+        DirectionalLights::new(&[DirectionalLightOptions { direction: [0.0, -1.0, 0.0], color: [1.0, 0.9, 0.8], intensity: 2.0 }]).unwrap();
+    studio.punctual_lights = PunctualLights::new(&[PunctualLightOptions {
+        position_mm: [10.0, 20.0, 30.0],
+        color: [1.0, 0.5, 0.25],
+        intensity: 4.0,
+        reference_distance_mm: 100.0,
+        minimum_distance_mm: 0.01,
+        cone: None,
+    }])
+    .unwrap();
+    let request = image_request(&h.app).unwrap();
+    assert!(request.get("settings").is_some(), "a temporary binding takes the runtime route: {request}");
+    assert_eq!(request["lighting"]["directional_lights"].as_array().map(Vec::len), Some(1), "the directional family is kept: {request}");
+    assert_eq!(request["lighting"]["punctual_lights"].as_array().map(Vec::len), Some(1), "the punctual family is kept: {request}");
+}
+
 #[test]
 fn numeric_editor_save_refreshes_only_unchanged_runtime_binding_sources() {
     use solidcraft_engine::render::job::ReflectionMode;
