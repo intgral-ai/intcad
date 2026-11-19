@@ -604,3 +604,131 @@ fn an_open_failure_names_the_file_and_offers_its_folder() {
     assert!(rect_of("files:notice").is_some());
     assert!(crate::scenario::handle_at("dialog:button::Show in File Manager").is_some(), "the folder is reachable");
 }
+
+/// The Files panel open on `scratch`, with `row` clicked so the tree has the keys.
+fn panel_with_row_clicked(scratch: &Scratch, row: &str) -> crate::scenario::Harness {
+    use serde_json::json;
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.call("ui.files", json!({"root": scratch.path().to_string_lossy()}));
+    h.frames(20);
+    h.step(&json!({"click": {"handle": format!("files:row:{row}")}})).unwrap();
+    h
+}
+
+/// Frames until `done`, for what a worker thread finishes (a paste).
+fn frames_until(h: &mut crate::scenario::Harness, done: impl Fn() -> bool) -> bool {
+    for _ in 0..600 {
+        if done() {
+            return true;
+        }
+        h.frame();
+        std::thread::yield_now();
+    }
+    done()
+}
+
+fn v_key(pressed: bool) -> egui::Event {
+    egui::Event::Key { key: egui::Key::V, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE }
+}
+
+fn model_copy_spoke(h: &crate::scenario::Harness) -> bool {
+    h.app.status.as_ref().is_some_and(|status| status.0.contains("to copy"))
+}
+
+/// A real Ctrl/Cmd+C, X or V reaches the app as a Copy, Cut or Paste event, never as a key press.
+/// With a row clicked they are the tree's. They used to go to the model's clipboard alone, which
+/// answered "Select sketch geometry, bodies or timeline features to copy" while the panel did
+/// nothing; a scripted key press reached both.
+#[test]
+fn copy_cut_and_paste_from_the_keyboard_act_on_the_files_and_not_on_the_model() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let file = scratch.file("notes.txt", "n");
+    let into = scratch.dir("parts");
+    let mut h = panel_with_row_clicked(&scratch, "notes.txt");
+    h.frame_with(vec![egui::Event::Cut]);
+    assert!(h.app.file_tree.clip.as_ref().is_some_and(|clip| clip.cut && clip.paths == [file.clone()]), "cut takes the row");
+    h.frame_with(vec![egui::Event::Copy]);
+    assert!(h.app.file_tree.clip.as_ref().is_some_and(|clip| !clip.cut && clip.paths == [file.clone()]), "copy takes the row");
+    assert!(!model_copy_spoke(&h), "the model's copy stays out of it: {:?}", h.app.status);
+    h.step(&json!({"key": "C", "ctrl": true})).unwrap();
+    h.frames(2);
+    assert!(!model_copy_spoke(&h), "a scripted key press is the tree's alone too: {:?}", h.app.status);
+    h.step(&json!({"click": {"handle": "files:row:parts"}})).unwrap();
+    h.frame_with(vec![egui::Event::Paste("whatever text the clipboard also holds".into())]);
+    assert!(frames_until(&mut h, || into.join("notes.txt").exists()), "paste puts the copy in the folder clicked");
+}
+
+/// Files on the clipboard are not text, and then a real Ctrl/Cmd+V sends no event at all: only
+/// the V's release arrives. That release pastes, once, also when a Paste event came with it.
+#[test]
+fn a_paste_with_no_text_on_the_clipboard_still_pastes_once() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let into = scratch.dir("parts");
+    let mut h = panel_with_row_clicked(&scratch, "notes.txt");
+    h.frame_with(vec![egui::Event::Copy]);
+    h.step(&json!({"click": {"handle": "files:row:parts"}})).unwrap();
+    h.frame_with(vec![v_key(false)]);
+    assert!(frames_until(&mut h, || into.join("notes.txt").exists()), "the release of a V whose press never came is the paste");
+    fs::remove_file(into.join("notes.txt")).unwrap();
+    h.frame_with(vec![egui::Event::Paste("text".into())]);
+    assert!(frames_until(&mut h, || into.join("notes.txt").exists()));
+    h.frame_with(vec![v_key(false)]);
+    h.frames(3);
+    assert!(h.app.file_tree.modal.is_none(), "one paste: a second one would ask about the name now taken");
+}
+
+/// Only a V release whose press never came counts as a paste, and for one frame.
+#[test]
+fn a_typed_v_and_a_paste_that_sent_its_event_are_not_a_second_paste() {
+    let mut tree = FileTree::new();
+    let mut frame = |events: Vec<egui::Event>| {
+        tree.begin_frame(&egui::RawInput { events, ..Default::default() });
+        tree.paste_released
+    };
+    assert!(frame(vec![v_key(false)]), "the press was swallowed as a paste command");
+    assert!(!frame(Vec::new()), "it lasts one frame");
+    assert!(!frame(vec![v_key(true), v_key(false)]), "a typed v");
+    assert!(!frame(vec![v_key(true)]) && !frame(vec![v_key(false)]), "a typed v across two frames");
+    assert!(!frame(vec![egui::Event::Paste("text".into())]) && !frame(vec![v_key(false)]), "the Paste event was the paste");
+    assert!(frame(vec![v_key(false)]), "the next swallowed press counts again");
+}
+
+/// Keys the tree acts on are the tree's alone while it has them. Delete on a file row used to
+/// delete the body selected in the view as well.
+#[test]
+fn delete_on_a_file_row_leaves_the_body_selected_in_the_view() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let mut h = panel_with_row_clicked(&scratch, "notes.txt");
+    h.app.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+    let body = h.app.session.model.state().bodies.last().unwrap().name.clone();
+    h.app.run("select.set", json!({"items": [{"type": "body", "name": body}]})).unwrap();
+    h.step(&json!({"key": "Delete"})).unwrap();
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_some(), "the body stays");
+    assert!(h.app.file_tree.modal.is_some(), "the tree asks about its file");
+}
+
+/// The tree has the keys only while it is on screen: with the panel closed the model's copy
+/// works as it always has.
+#[test]
+fn a_closed_files_panel_gives_the_keys_back_to_the_model() {
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let mut h = panel_with_row_clicked(&scratch, "notes.txt");
+    assert!(h.app.file_tree.focused);
+    crate::right_rail::toggle(&mut h.app, crate::right_rail::Item::Files);
+    h.frames(2);
+    h.frame_with(vec![egui::Event::Copy]);
+    assert!(h.app.file_tree.clip.is_none(), "nothing is copied in a panel that is not there");
+    assert!(model_copy_spoke(&h), "the model's copy answers: {:?}", h.app.status);
+    h.frame_with(vec![v_key(false)]);
+    h.frames(2);
+    assert!(h.app.file_tree.modal.is_none() && !h.app.file_tree.busy, "and a stray V release pastes nothing");
+}

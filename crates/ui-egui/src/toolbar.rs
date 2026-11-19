@@ -3488,6 +3488,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         }
         return;
     }
+    // A click in the Files tree gives it the keyboard until a click lands elsewhere: the keys it
+    // acts on, and copy, cut and paste, are then for the files and not for the design.
+    let tree_keys = app.file_tree.focused;
     // A quick chord can press and release all modifiers in one frame. Dispatch each key
     // with its own modifiers, not the final frame state (an unbound Ctrl+Shift+A is not A).
     let keys: Vec<_> = ctx.input(|i| {
@@ -3496,13 +3499,14 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
             .filter_map(
                 |e| if let egui::Event::Key { key, pressed: true, repeat, modifiers, .. } = e { Some((*key, *repeat, *modifiers)) } else { None },
             )
+            .filter(|(key, _, modifiers)| !(tree_keys && crate::file_tree::takes_key(*key, *modifiers)))
             .collect()
     });
     // A theme pasted on the Interface page is a theme, not copied components (#8226).
     crate::prefs::take_theme_paste(app, ctx);
     // Home hides the design: only New, Open and Preferences work there.
     let shown = design_shown(app);
-    if shown {
+    if shown && !tree_keys {
         crate::edit_clipboard::handle(app, ctx);
     } else {
         crate::edit_clipboard::flush(app, ctx);

@@ -27,7 +27,7 @@ use solidcraft_engine::io::files::{self, Conflict, Entry, ItemResult, Kind, Outc
 use crate::SolveApp;
 use crate::i18n::{format as trf, tr};
 
-pub(crate) use panel::show as panel;
+pub(crate) use panel::{show as panel, takes_key};
 
 #[cfg(test)]
 #[path = "file_tree_tests.rs"]
@@ -224,6 +224,12 @@ pub(crate) struct FileTree {
     pub(crate) press: Option<PathBuf>,
     /// The tree had the last click inside it, so its keys act until a click lands elsewhere.
     pub(crate) focused: bool,
+    /// The panel was drawn this frame: a tree that is not on screen has no keys.
+    pub(crate) drawn: bool,
+    /// A V press or a Paste event came since the last V release (`begin_frame`).
+    v_seen: bool,
+    /// This frame released a V whose press never came: a paste with no text on the clipboard.
+    pub(crate) paste_released: bool,
     /// The row menu the person opened with the secondary button.
     pub(crate) context: Option<ContextMenu>,
     /// The click that opened the row menu is not a click outside it.
@@ -382,6 +388,9 @@ impl FileTree {
             adopted_root: false,
             press: None,
             focused: false,
+            drawn: false,
+            v_seen: false,
+            paste_released: false,
             context: None,
             context_opening: false,
             root_started: None,
@@ -662,6 +671,25 @@ impl FileTree {
     /// Stop the batch after the item being worked on; the items not started stay where they are.
     pub(crate) fn cancel_operations(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// The start of a frame. A tree that was not drawn has no keys. And a paste: a real
+    /// Ctrl/Cmd+V never arrives as a key press, because the window layer turns it into a Paste
+    /// event, and into nothing at all when the clipboard holds no text, as after a copy of files
+    /// here or in a file manager. Only the V's release still arrives then, so a release whose
+    /// press was never seen, with no Paste event since, is that paste.
+    pub(crate) fn begin_frame(&mut self, raw: &egui::RawInput) {
+        if !std::mem::take(&mut self.drawn) {
+            self.focused = false;
+        }
+        self.paste_released = false;
+        for event in &raw.events {
+            match event {
+                egui::Event::Key { key: egui::Key::V, pressed: true, .. } | egui::Event::Paste(_) => self.v_seen = true,
+                egui::Event::Key { key: egui::Key::V, pressed: false, .. } => self.paste_released = !std::mem::take(&mut self.v_seen),
+                _ => {}
+            }
+        }
     }
 
     /// Copy (or, cut, move) the selection into `destination`.

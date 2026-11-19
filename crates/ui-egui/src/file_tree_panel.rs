@@ -21,6 +21,7 @@ const HEADER: f32 = 30.0;
 
 /// Draw the Files panel into `area` (the panel's body, below its title).
 pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
+    app.file_tree.drawn = true;
     crate::file_tree::tick(app, ui.ctx(), app.now);
     // A click anywhere else (the ribbon, the view, another panel) takes the tree's keys away.
     let clicked_outside = ui.input(|i| i.pointer.any_click() && !i.pointer.interact_pos().is_some_and(|pos| area.contains(pos)));
@@ -685,6 +686,59 @@ pub(crate) fn request_delete(app: &mut SolveApp) {
     app.file_tree.request_delete(&open);
 }
 
+/// The keys `keys` acts on. While the tree has the keys the global shortcuts leave these alone:
+/// Delete on a file row is not also Delete for the body selected in the view. Keep it in step
+/// with `keys`.
+pub(crate) fn takes_key(key: egui::Key, modifiers: egui::Modifiers) -> bool {
+    use egui::Key;
+    if modifiers.command {
+        matches!(key, Key::A | Key::C | Key::F | Key::V | Key::X)
+    } else {
+        matches!(
+            key,
+            Key::ArrowDown
+                | Key::ArrowUp
+                | Key::ArrowLeft
+                | Key::ArrowRight
+                | Key::Home
+                | Key::End
+                | Key::Enter
+                | Key::F2
+                | Key::Delete
+                | Key::Backspace
+        )
+    }
+}
+
+/// This frame's copy, cut and paste from a real keyboard, taken so that nothing acts on them
+/// twice. A real Ctrl/Cmd+C, X or V is a Copy, Cut or Paste event and never a key press, and a V
+/// with no text on the clipboard is only its release (`FileTree::begin_frame`). A text field or
+/// the Assistant that has the keyboard keeps them.
+fn clipboard_events(app: &mut SolveApp, ui: &mut egui::Ui) -> (bool, bool, bool) {
+    if ui.ctx().egui_wants_keyboard_input() || crate::agent_chat::owns_keyboard_input(app, ui.ctx()) {
+        return (false, false, false);
+    }
+    let (mut copy, mut cut, mut paste) = (false, false, std::mem::take(&mut app.file_tree.paste_released));
+    ui.input_mut(|i| {
+        i.events.retain(|event| match event {
+            egui::Event::Copy => {
+                copy = true;
+                false
+            }
+            egui::Event::Cut => {
+                cut = true;
+                false
+            }
+            egui::Event::Paste(_) => {
+                paste = true;
+                false
+            }
+            _ => true,
+        });
+    });
+    (copy, cut, paste)
+}
+
 /// The keyboard: navigation, open, rename, delete, the clipboard and Select All. Shortcuts act
 /// only while the tree has focus.
 fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
@@ -706,6 +760,7 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
         return;
     }
     let shift = ui.input(|i| i.modifiers.shift);
+    let (copy, cut, paste) = clipboard_events(app, ui);
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
         move_focus(app, visible, 1, shift);
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
@@ -744,11 +799,11 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
     {
         request_delete(app);
-    } else if command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::C)) {
+    } else if copy || (command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::C))) {
         app.file_tree.copy_selection(false);
-    } else if command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::X)) {
+    } else if cut || (command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::X))) {
         app.file_tree.copy_selection(true);
-    } else if command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::V)) {
+    } else if paste || (command && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::V))) {
         if let Some(folder) = app.file_tree.target_folder() {
             app.file_tree.paste(&folder);
         }
