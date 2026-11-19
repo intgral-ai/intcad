@@ -9,7 +9,11 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
 - `agent.mjs`: the methods on the ACP agent, a model list a person can read, sessions that follow a
   sign-in or sign-out, and the reason on a turn that fails;
 - `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure;
-- `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed.
+- `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed;
+- `session.mjs`: the session a `session/new` opens. It is Mastra Code's own ACP session builder
+  (Apache-2.0), adapted so that the session has no vector store: nothing is embedded, and no
+  embedding model is needed. `../agent-package/adapted-from.json` names the SDK file it follows;
+  when a new SDK changes that file, the folder's build fails until the two are compared again.
 
 The tests are `../test/connections.test.ts`. They run these files against stand-ins: no test signs
 in anywhere, opens a browser or reads a key.

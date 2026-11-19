@@ -520,3 +520,100 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
     update: { sessionUpdate: "config_option_update", configOptions: [{ id: "model", currentValue: newest.value, options: [newest, { value: "anthropic/claude-fable-5-2", name: "anthropic/claude-fable-5-2" }] }, { id: "mode", currentValue: "build", options: [] }] },
   });
 });
+
+// ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------
+
+const { sessionBuilder } = await load("session.mjs");
+
+/** A stand-in for what the entry loads from Mastra Code, recording what the builder does with it. */
+function fakeSdk(overrides: { failed?: Json[] } = {}) {
+  const calls: Json = { configs: [] as Json[], cleanup: [] as string[] };
+  const step = (name: string) => () => {
+    calls.cleanup.push(name);
+  };
+  class RequestError extends Error {
+    static invalidParams(_data: unknown, message: string) {
+      return new RequestError(`invalid params: ${message}`);
+    }
+    static internalError(_data: unknown, message: string) {
+      return new RequestError(`internal error: ${message}`);
+    }
+  }
+  const result = {
+    controller: { listModes: () => ["build", "plan"], resolveWorkspace: async () => ({ skills: ["a skill"] }), getMastra: () => ({ stopWorkers: step("workers") }), stopIntervals: step("intervals") },
+    session: {
+      abort: step("abort"),
+      thread: { detachFromCurrent: step("detach"), clearAndReleaseLock: step("thread lock") },
+      state: { get: () => ({ thinkingLevel: undefined }) },
+      mode: { get: () => "build" },
+    },
+    releaseThreadClaims: step("claims"),
+    stopPluginSignalProviders: step("plugins"),
+    githubSignals: { stopAllPolling: step("github") },
+    threadScheduler: { stop: step("scheduler") },
+    stopNotificationDispatch: step("dispatch"),
+    mcpManager: { initInBackground: async () => ({ failed: overrides.failed ?? [] }), disconnect: step("mcp") },
+    signalsPubSub: { close: step("pubsub") },
+    storage: { close: step("storage") },
+  };
+  const sdk = {
+    RequestError,
+    createMastraCode: async (config: Json) => {
+      calls.configs.push(config);
+      return result;
+    },
+    loadSettings: () => ({ preferences: { subagentsEnabled: true } }),
+    resolveDefaultThinkingLevel: () => ({ level: "medium" }),
+    resolveSubagentsSetting: (enabled: boolean) => (enabled ? "the subagents" : undefined),
+    withCleanupFailure: (error: unknown) => error,
+  };
+  return { sdk, calls };
+}
+
+test("a session is made as Mastra Code's ACP server makes it, with no vector store", async () => {
+  const { sdk, calls } = fakeSdk();
+  const runtime = await sessionBuilder(sdk)({
+    cwd: "/project",
+    mcpServers: [
+      { name: "app", command: "intcad-cli", args: ["mcp"], env: [{ name: "A", value: "1" }] },
+      { name: "remote", type: "http", url: "http://127.0.0.1:1/mcp", headers: [{ name: "x", value: "y" }] },
+    ],
+  });
+  const config = calls.configs[0];
+  // The one difference from Mastra Code's own builder: no vector store, so nothing is ever embedded.
+  assert.equal(config.vector, false);
+  assert.equal(config.cwd, "/project");
+  assert.deepEqual(config.initialState, { projectPath: "/project", yolo: false, permissionRules: { categories: {}, tools: { ask_user: "deny" } } });
+  assert.deepEqual(config.disabledTools, ["ask_user"]);
+  assert.deepEqual([config.disableEnvFile, config.disableMcp, config.disableHooks, config.unixSocketPubSub, config.planApprovalStartsGoal], [true, false, false, false, false]);
+  assert.equal(config.subagents, "the subagents");
+  assert.deepEqual(config.mcpServers, {
+    app: { command: "intcad-cli", args: ["mcp"], env: { A: "1" }, cwd: "/project" },
+    remote: { url: "http://127.0.0.1:1/mcp", headers: { x: "y" } },
+  });
+  assert.deepEqual(runtime.modes, ["build", "plan"]);
+  assert.deepEqual(await runtime.getSkills(), ["a skill"]);
+  assert.equal(runtime.getThinkingLevel(), "medium");
+  // Ending it is done once however often it is asked, and closes the storage last.
+  await Promise.all([runtime.cleanup(), runtime.cleanup()]);
+  assert.equal(calls.cleanup.filter((name: string) => name === "storage").length, 1);
+  assert.equal(calls.cleanup.at(-1), "storage");
+  for (const name of ["claims", "abort", "detach", "plugins", "github", "scheduler", "dispatch", "thread lock", "mcp", "workers", "intervals", "pubsub"]) {
+    assert.ok(calls.cleanup.includes(name), name);
+  }
+});
+
+test("a session refuses a legacy SSE server and a repeated server name, and makes nothing", async () => {
+  const { sdk, calls } = fakeSdk();
+  const build = sessionBuilder(sdk);
+  await assert.rejects(build({ cwd: "/p", mcpServers: [{ name: "old", type: "sse", url: "http://127.0.0.1:1/sse", headers: [] }] }), /Legacy SSE/u);
+  const twice = { name: "app", command: "x", args: [], env: [] };
+  await assert.rejects(build({ cwd: "/p", mcpServers: [twice, twice] }), /Duplicate MCP server name: app/u);
+  assert.equal(calls.configs.length, 0);
+});
+
+test("a session whose MCP server does not connect is ended and says which one", async () => {
+  const { sdk, calls } = fakeSdk({ failed: [{ name: "app", error: "no such program" }, { name: "the user's own", error: "ignored" }] });
+  await assert.rejects(sessionBuilder(sdk)({ cwd: "/p", mcpServers: [{ name: "app", command: "x", args: [], env: [] }] }), /MCP server app: no such program$/u);
+  assert.ok(calls.cleanup.includes("storage"), "the session was cleaned up");
+});

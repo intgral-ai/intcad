@@ -17,6 +17,7 @@ import { holdCallbackPorts } from './callback.mjs';
 import { Connections, KEYS } from './connections.mjs';
 import { releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
+import { sessionBuilder } from './session.mjs';
 
 // ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
 const printError = console.error.bind(console);
@@ -50,11 +51,14 @@ if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createAcpSession }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox }] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox }] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
-    load('@mastra/code-sdk/dist/acp/runtime.js'),
+    load('@mastra/code-sdk/dist/index.js'),
+    load('@mastra/code-sdk/dist/onboarding/settings.js'),
+    load('@mastra/code-sdk/dist/agents/subagents/index.js'),
+    load('@mastra/code-sdk/dist/acp/errors.js'),
     load('@mastra/code-sdk/dist/auth/storage.js'),
     load('@mastra/code-sdk/dist/agents/mastracode-gateway.js'),
     load('@mastra/code-sdk/dist/agents/custom-provider-source.js'),
@@ -124,6 +128,16 @@ const connections = new Connections({
 // Until the app hands over its custom addresses there are none: Mastra's own settings file is not read for them.
 customSource.setCustomProvidersSource(() => []);
 
+// Sessions as Mastra Code's ACP server opens them, without a vector store (session.mjs).
+const createSession = sessionBuilder({
+  createMastraCode,
+  loadSettings: settings.loadSettings,
+  resolveDefaultThinkingLevel: settings.resolveDefaultThinkingLevel,
+  resolveSubagentsSetting,
+  withCleanupFailure,
+  RequestError,
+});
+
 const IntcadAgent = intcadAgent({ Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates, reloadSignIns: () => gateway.reloadAuthStorage() });
 
 // As Mastra Code's own `runAcpServer`, with the class above and the sign-in ended on the way out.
@@ -140,7 +154,7 @@ process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
 try {
   await new AgentSideConnection(connection => {
-    agent = new IntcadAgent(connection, request => createAcpSession(request));
+    agent = new IntcadAgent(connection, request => createSession(request));
     return agent;
   }, ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))).closed;
 } finally {
