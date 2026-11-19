@@ -76,6 +76,11 @@ def latest_scope(text, action=None):
     return None
 
 
+def oversize_actions(text):
+    """Actions whose probe message was replaced because it would not fit one `/ipc` line."""
+    return {value.get("of") for value in scope_messages(text) if value.get("action") == "scope_oversize"}
+
+
 def browser_receipts(text):
     receipts = []
     for line in text.splitlines():
@@ -226,8 +231,13 @@ def main():
     else:
         rects_scope = latest_scope(log_text(log_path), "rects")
         if not isinstance(rects_scope, dict):
-            scope_results["status"] = "BLOCKED"
-            scope_results["detail"] = "fixed scope probe did not report bounded DOM rects"
+            oversize = "rects" in oversize_actions(log_text(log_path))
+            scope_results["status"] = "FAIL" if oversize else "BLOCKED"
+            scope_results["detail"] = (
+                "the rects probe message exceeded the app's /ipc log cap and became a scope_oversize receipt"
+                if oversize
+                else "fixed scope probe did not report bounded DOM rects"
+            )
         else:
             def click_scope(name):
                 box = rects_scope.get(name)

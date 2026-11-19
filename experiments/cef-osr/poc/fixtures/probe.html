@@ -45,9 +45,8 @@
   <button id="__cef_scope_dialog" type="button">dialog</button>
   <button id="__cef_scope_devtools" type="button">devtools</button>
   <input id="__cef_scope_ime" placeholder="ime" autocomplete="off">
-  <span id="__cef_scope_prose">scope</span>
 </div>
-<pre id="log"></pre>
+<pre id="log" aria-live="polite"></pre>
 <script>
   const log = (line) => {
     const el = document.getElementById('log');
@@ -78,9 +77,18 @@
     log('drop ' + JSON.stringify(names));
   });
   // The same fixed test IDs the app's SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE hook
-  // installs, with the same bounded `SCOPE {json}` messages. This page is a
-  // standalone probe, not the app's shipped page.
-  const scope = (value) => log('SCOPE ' + JSON.stringify(value));
+  // installs, with the same split, bounded `SCOPE {json}` messages: one small
+  // message per action, so no evidence line can be cut mid-object. This page is a
+  // standalone probe, not the app's shipped page; only the fixture has a swatch.
+  const SCOPE_MAX_TEXT = 480;
+  const SCOPE_BUDGET = { rects: 380, fonts: 160, tokens: 340, roles: 280 };
+  const scope = (value, limit) => {
+    const text = 'SCOPE ' + JSON.stringify(value);
+    const cap = limit || SCOPE_MAX_TEXT;
+    log(text.length <= cap && text.length <= SCOPE_MAX_TEXT
+      ? text
+      : 'SCOPE ' + JSON.stringify({ action: 'scope_oversize', of: value.action, len: text.length }));
+  };
   const scopeRect = (id) => {
     const box = document.getElementById(id).getBoundingClientRect();
     return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
@@ -89,41 +97,43 @@
   const scopeReport = () => {
     const html = getComputedStyle(document.documentElement);
     const body = getComputedStyle(document.body);
+    const theme = document.documentElement.dataset.intcadTheme || null;
     const label = document.querySelector('label');
     const prose = document.querySelector('p');
     const textarea = document.querySelector('textarea');
+    const live = document.querySelector('[aria-live]');
     scope({
-      action: 'rects',
-      theme: document.documentElement.dataset.intcadTheme || null,
+      action: 'rects', theme,
       dpr: devicePixelRatio, inner: [innerWidth, innerHeight],
       root: scopeRect('__cef_scope_root'), open: scopeRect('__cef_scope_open'),
       target: scopeRect('__cef_scope_target'),
-      select: scopeRect('__cef_scope_select'), ime: scopeRect('__cef_scope_ime'),
-      fonts: {
-        root: parseFloat(html.fontSize),
-        prose: prose ? parseFloat(getComputedStyle(prose).fontSize) : null,
-        textarea: textarea ? parseFloat(getComputedStyle(textarea).fontSize) : null,
-        label: label ? parseFloat(getComputedStyle(label).fontSize) : null
-      },
-      colors: {
-        root_background: html.backgroundColor, root_text: html.color,
-        html_background: html.backgroundColor, body_background: body.backgroundColor,
-        body_text: body.color,
-        tokens: {
-          background: html.getPropertyValue('--background').trim(),
-          background2: html.getPropertyValue('--background-2').trim(),
-          border: html.getPropertyValue('--border').trim(),
-          accent: html.getPropertyValue('--intcad-accent').trim(),
-          selected: html.getPropertyValue('--intcad-selected').trim(),
-          foreground: html.getPropertyValue('--foreground').trim()
-        },
-        roles: {
-          rail: colour(document.querySelector('[data-intcad-role="rail"]'), 'backgroundColor'),
-          state: colour(document.querySelector('[data-intcad-role="state"]'), 'color'),
-          swatch: colour(document.getElementById('swatch'), 'backgroundColor')
-        }
+      select: scopeRect('__cef_scope_select'), ime: scopeRect('__cef_scope_ime')
+    }, SCOPE_BUDGET.rects);
+    scope({
+      action: 'fonts', theme,
+      root: parseFloat(html.fontSize),
+      prose: prose ? parseFloat(getComputedStyle(prose).fontSize) : null,
+      textarea: textarea ? parseFloat(getComputedStyle(textarea).fontSize) : null,
+      label: label ? parseFloat(getComputedStyle(label).fontSize) : null
+    }, SCOPE_BUDGET.fonts);
+    scope({
+      action: 'tokens', theme,
+      html_background: html.backgroundColor, body_background: body.backgroundColor,
+      tokens: {
+        background: html.getPropertyValue('--background').trim(),
+        background2: html.getPropertyValue('--background-2').trim(),
+        border: html.getPropertyValue('--border').trim(),
+        accent: html.getPropertyValue('--intcad-accent').trim(),
+        selected: html.getPropertyValue('--intcad-selected').trim(),
+        foreground: html.getPropertyValue('--foreground').trim()
       }
-    });
+    }, SCOPE_BUDGET.tokens);
+    scope({
+      action: 'roles', theme,
+      prose: colour(prose, 'color'), label: colour(label, 'color'),
+      textarea: colour(textarea, 'color'), live: colour(live, 'color'),
+      swatch: colour(document.getElementById('swatch'), 'backgroundColor')
+    }, SCOPE_BUDGET.roles);
   };
   document.getElementById('__cef_scope_open').addEventListener('click', () => {
     scope({ action: 'window_open', denied: window.open('about:blank', '_blank', 'noopener') === null });

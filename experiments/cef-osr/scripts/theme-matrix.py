@@ -7,11 +7,17 @@ the page to repaint, saves the app's screenshot, and compares the page's painted
 background with the surface colour the app reports for that theme.
 
     scripts/theme-matrix.py <exe> [--out DIR] [--ui-scales 1,1.25,1.5,2] [--themes a,b,...]
+    scripts/theme-matrix.py --self-test
 
 The colour check catches the two faults this work fixes: a page that keeps its own
 palette instead of the window's, and an sRGB texture that is decoded twice (the
 painted background comes out darker than the token). Scales are driven through the
 authenticated `ui.prefs {"ui_scale": ...}` path, not an X11 environment override.
+Page evidence arrives as four small `SCOPE` messages (rects, fonts, tokens, roles),
+each with its own size ceiling under the app's 600-character `/ipc` log cap; the
+native rail is measured from the app screenshot, and a page swatch only exists in
+the standalone probe fixture. `--self-test` runs the colour/alpha/rail/size logic
+without launching an app.
 """
 import hashlib
 import json
@@ -125,11 +131,15 @@ def css_rgb(value):
 
 
 def css_alpha(value):
+    """Alpha of a CSS colour (hex, #rrggbbaa, rgb()/rgba(), transparent)."""
     if not isinstance(value, str):
         return None
     text = value.strip().lower()
     if text == "transparent":
         return 0.0
+    short = re.fullmatch(r"#([0-9a-f]{6})([0-9a-f]{2})?", text)
+    if short:
+        return int(short.group(2), 16) / 255.0 if short.group(2) else 1.0
     match = re.fullmatch(r"rgba?\(([^)]*)\)", text)
     if not match:
         return None
@@ -139,24 +149,45 @@ def css_alpha(value):
             return float(parts[3])
         except ValueError:
             return None
-    return 1.0
+    return 1.0 if len(parts) >= 3 else None
 
 
 def norm_colour(value):
     return value.strip().lower() if isinstance(value, str) else None
 
 
-def palette_rgbs(colors):
+def palette_colours(colors):
+    """Every palette entry as (r, g, b, alpha): alpha is part of a themed colour."""
     resolved = set()
     for value in colors.values():
-        rgb = css_rgb(value) if isinstance(value, str) else None
-        if rgb is not None:
-            resolved.add(rgb)
+        if not isinstance(value, str):
+            continue
+        rgb, alpha = css_rgb(value), css_alpha(value)
+        if rgb is not None and alpha is not None:
+            resolved.add(rgb + (round(alpha, 3),))
     return resolved
 
 
-def page_token_check(scope, colors):
-    tokens = (scope.get("colors") or {}).get("tokens") or {}
+def matches_palette(value, colours):
+    """A painted colour matches only when RGB *and* alpha match a palette entry."""
+    rgb = css_rgb(value)
+    alpha = css_alpha(value)
+    if rgb is None or alpha is None:
+        return False
+    return any(entry[:3] == rgb and abs(entry[3] - alpha) <= 0.02 for entry in colours)
+
+
+# Roles the shipped Assistant page really exposes. Its rail and swatch are native chrome,
+# so the rail is measured from the app screenshot and a page swatch only exists in the
+# standalone probe fixture.
+REQUIRED_ROLES = ("prose", "label", "textarea", "live")
+
+
+def page_token_check(messages, colors):
+    message = messages.get("tokens")
+    if not isinstance(message, dict):
+        return ("BLOCKED", "the page did not report its resolved CSS variables")
+    tokens = message.get("tokens") or {}
     mapping = {
         "background": "window",
         "background2": "surface",
@@ -178,36 +209,47 @@ def page_token_check(scope, colors):
     return ("FAIL" if problems else "PASS", "; ".join(problems) or "page CSS variables carry the app's theme tokens")
 
 
-def page_transparency_check(scope):
-    colors = scope.get("colors") or {}
+def page_transparency_check(messages):
+    message = messages.get("tokens")
+    if not isinstance(message, dict):
+        return ("BLOCKED", "the page did not report its resolved CSS variables")
     problems = []
     for name in ("html_background", "body_background"):
-        alpha = css_alpha(colors.get(name))
+        alpha = css_alpha(message.get(name))
         if alpha is None:
-            problems.append(f"{name} {colors.get(name)!r} is not a resolvable colour")
+            problems.append(f"{name} {message.get(name)!r} is not a resolvable colour")
         elif alpha > 0.01:
-            problems.append(f"{name} is opaque ({colors.get(name)})")
+            problems.append(f"{name} is opaque ({message.get(name)})")
     return ("FAIL" if problems else "PASS", "; ".join(problems) or "html/body stay transparent over the native backing")
 
 
-def page_roles_check(scope, colors):
-    roles = (scope.get("colors") or {}).get("roles") or {}
-    missing = [name for name in ("rail", "state", "swatch") if not roles.get(name)]
+def page_roles_check(messages, colors):
+    message = messages.get("roles")
+    if not isinstance(message, dict):
+        return ("BLOCKED", "the page did not report its computed role colours")
+    missing = [name for name in REQUIRED_ROLES if not message.get(name)]
     if missing:
-        return ("BLOCKED", "page exposes no measurable " + ", ".join(missing) + " role element(s)")
-    allowed = palette_rgbs(colors)
+        return ("FAIL", "the page exposes no measurable " + ", ".join(missing) + " role colour")
+    colours = palette_colours(colors)
     problems = []
-    for name in ("rail", "state", "swatch"):
-        rgb = css_rgb(roles[name])
-        if rgb is None:
-            problems.append(f"{name} value {roles[name]!r} is not a colour")
-        elif rgb not in allowed:
-            problems.append(f"{name} {roles[name]} is not a themed palette colour")
-    return ("FAIL" if problems else "PASS", "; ".join(problems) or "rail/state/swatch paint themed palette colours")
+    for name in REQUIRED_ROLES:
+        if not matches_palette(message[name], colours):
+            problems.append(f"{name} {message[name]} is not a painted palette colour with palette alpha")
+    # The swatch is the standalone fixture's; it is checked when reported and never required.
+    swatch = message.get("swatch")
+    if swatch and not matches_palette(swatch, colours):
+        problems.append(f"swatch {swatch} is not a painted palette colour with palette alpha")
+    detail = "; ".join(problems) or "real page roles paint palette colours with palette alpha"
+    if swatch:
+        detail += "; swatch comes from the standalone probe fixture (the app's is native)"
+    return ("FAIL" if problems else "PASS", detail)
 
 
-def page_fonts_check(scope):
-    fonts = scope.get("fonts") or {}
+def page_fonts_check(messages):
+    message = messages.get("fonts")
+    if not isinstance(message, dict):
+        return ("BLOCKED", "the page did not report its computed font sizes")
+    fonts = message
     missing = [name for name in ("prose", "textarea", "label") if not isinstance(fonts.get(name), (int, float))]
     if missing:
         return ("BLOCKED", "no real " + ", ".join(missing) + " element measured")
@@ -221,9 +263,12 @@ def page_fonts_check(scope):
     return ("FAIL" if problems else "PASS", "; ".join(problems) or "root 12, real prose/textarea/label 12.5")
 
 
-def parse_scope_log(path):
-    """Latest fixed-hook `SCOPE {json}` line, not a transcript or a URL dump."""
-    latest = None
+SCOPE_ACTIONS = ("rects", "fonts", "tokens", "roles")
+
+
+def parse_scope_lines(path):
+    """Latest `SCOPE {json}` message per action, not a transcript or a URL dump."""
+    latest = {}
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -235,29 +280,219 @@ def parse_scope_log(path):
                     value = json.loads(line[at + len("SCOPE "):].strip())
                 except ValueError:
                     continue
-                if isinstance(value, dict) and value.get("action") == "rects":
-                    latest = value
+                if isinstance(value, dict) and isinstance(value.get("action"), str):
+                    latest[value["action"]] = value
     except OSError:
-        return None
+        return {}
     return latest
 
 
-def scope_for_theme(path, theme, timeout=2.0):
-    """Wait, bounded, for the page to report its computed styles for `theme`."""
+def scope_for_theme(path, theme, timeout=2.0, actions=SCOPE_ACTIONS):
+    """Wait, bounded, for the page to report every split message for `theme`."""
     end = time.monotonic() + timeout
     while True:
-        latest = parse_scope_log(path)
-        if latest is not None and latest.get("theme") == theme:
-            return latest
+        matched = {action: message for action, message in parse_scope_lines(path).items() if message.get("theme") == theme}
+        if all(action in matched for action in actions):
+            return matched
         if time.monotonic() >= end:
-            return None
+            return matched
         time.sleep(0.2)
+
+
+def rail_pixel_check(png, web, ppp, ox, oy, rail_dip, left, expected):
+    """The native strip beside the page is the app's panel fill, not the page's surface.
+
+    Floating, the page leaves a rail-wide strip at the panel's inner edge for the drag;
+    docked, the frame margin shows the same fill. Either way the pixel is native.
+    """
+    half = max(1.0, float(rail_dip or 8.0) / 2.0)
+    x = ox + (web["x"] + web["width"] + half if left else web["x"] - half) * ppp
+    y = oy + (web["y"] + web["height"] * 0.5) * ppp
+    actual = pixel(png, round(x), round(y))
+    want = css_rgb(expected)
+    delta = max((abs(a - b) for a, b in zip(want, actual)), default=255) if want else 255
+    return ("PASS" if want and delta <= 2 else "FAIL",
+            f"native strip {hexed(actual)} at ({round(x)}, {round(y)}) vs panel {expected} delta={delta}")
+
 
 
 def theme_report_status(checks):
     rank = {"PASS": 0, "NOT_RUN": 1, "BLOCKED": 2, "FAIL": 3}
     worst = max((rank.get(c["status"], 4) for c in checks), default=3)
     return {0: "PASS", 1: "NOT_RUN", 2: "BLOCKED", 3: "FAIL"}.get(worst, "FAIL")
+
+
+def probe_source():
+    """The fixed hook's JS and the IPC log cap, read from the real app source."""
+    text = (ROOT / "apps/solidcraft/src/assistant_cef.rs").read_text(encoding="utf-8")
+    match = re.search(r'const SCOPE_PROBE_JS: &str = r#"(.*?)"#;', text, re.S)
+    if not match:
+        raise AssertionError("SCOPE_PROBE_JS not found in assistant_cef.rs")
+    return text, match.group(1)
+
+
+def worst_case_messages():
+    """The probe's split messages with worst-case legal values (same fields as the hook)."""
+    rect = {"x": 99999, "y": 99999, "w": 99999, "h": 99999}
+    colour = "rgba(255, 255, 255, 0.5)"
+    token = "#ffffffff"
+    theme = "t" * 40
+    return {
+        "rects": {"action": "rects", "theme": theme, "dpr": 9.99, "inner": [99999, 99999],
+                  "root": rect, "open": rect, "target": rect, "select": rect, "ime": rect},
+        "fonts": {"action": "fonts", "theme": theme, "root": 12.0, "prose": 12.5, "textarea": 12.5, "label": 12.5},
+        "tokens": {"action": "tokens", "theme": theme, "html_background": colour, "body_background": colour,
+                   "tokens": {"background": token, "background2": token, "border": token,
+                              "accent": token, "selected": token, "foreground": token}},
+        "roles": {"action": "roles", "theme": theme, "prose": colour, "label": colour,
+                  "textarea": colour, "live": colour, "swatch": colour},
+    }
+
+
+def _self_test():
+    failures = 0
+
+    def check(name, test):
+        nonlocal failures
+        try:
+            test()
+        except Exception as error:  # self-test harness: report every failure, never abort early
+            failures += 1
+            print(f"FAIL {name}: {type(error).__name__}: {error}")
+        else:
+            print(f"PASS {name}")
+
+    def alpha_reads_hex_and_rgba():
+        if abs(css_alpha("#11223380") - 128 / 255) > 0.001:
+            raise AssertionError(css_alpha("#11223380"))
+        if css_alpha("#112233") != 1.0 or css_alpha("rgba(1, 2, 3, 0)") != 0.0 or css_alpha("transparent") != 0.0:
+            raise AssertionError("hex/rgba/transparent alpha")
+
+    def transparent_role_fails_even_with_matching_rgb():
+        palette = {"text": "#ffffff"}
+        roles = {"action": "roles", "theme": "t", "prose": "rgba(255, 255, 255, 0)",
+                 "label": "rgb(255, 255, 255)", "textarea": "rgb(255, 255, 255)", "live": "rgb(255, 255, 255)"}
+        status, detail = page_roles_check({"roles": roles}, palette)
+        if status != "FAIL" or "prose" not in detail:
+            raise AssertionError(f"transparent role must fail: {status} {detail}")
+
+    def wrong_role_colour_fails():
+        palette = {"text": "#ffffff"}
+        roles = {"action": "roles", "theme": "t", "prose": "rgb(255, 255, 255)", "label": "rgb(255, 255, 255)",
+                 "textarea": "rgb(255, 255, 255)", "live": "rgb(1, 2, 3)"}
+        status, _ = page_roles_check({"roles": roles}, palette)
+        if status != "FAIL":
+            raise AssertionError(f"off-palette role passed: {status}")
+
+    def missing_role_fails_and_missing_message_is_blocked():
+        palette = {"text": "#ffffff"}
+        roles = {"action": "roles", "theme": "t", "prose": "rgb(255, 255, 255)", "label": "rgb(255, 255, 255)",
+                 "textarea": "rgb(255, 255, 255)"}
+        if page_roles_check({"roles": roles}, palette)[0] != "FAIL":
+            raise AssertionError("a missing required role must FAIL")
+        if page_roles_check({}, palette)[0] != "BLOCKED":
+            raise AssertionError("an unreported roles message is BLOCKED, not PASS")
+
+    def swatch_is_fixture_only():
+        palette = {"text": "#ffffff"}
+        roles = {"action": "roles", "theme": "t", "prose": "#ffffff", "label": "#ffffff",
+                 "textarea": "#ffffff", "live": "#ffffff"}
+        status, _ = page_roles_check({"roles": roles}, palette)
+        if status != "PASS":
+            raise AssertionError("no page swatch must not block the shipped page")
+        roles["swatch"] = "rgba(255, 255, 255, 0)"
+        if page_roles_check({"roles": roles}, palette)[0] != "FAIL":
+            raise AssertionError("a transparent fixture swatch must fail")
+        roles["swatch"] = "#ffffff"
+        status, detail = page_roles_check({"roles": roles}, palette)
+        if status != "PASS" or "fixture" not in detail:
+            raise AssertionError(f"fixture swatch reason not recorded: {status} {detail}")
+
+    def rail_pixel_matches_panel_and_rejects_the_page():
+        png = (16, 16, 3, bytes([0x11, 0x22, 0x33]) * 256)
+        web = {"x": 10, "y": 0, "width": 100, "height": 100}
+        status, detail = rail_pixel_check(png, web, 1.0, 0, 0, 8.0, False, "#112233")
+        if status != "PASS":
+            raise AssertionError(detail)
+        if rail_pixel_check(png, web, 1.0, 0, 0, 8.0, False, "#ffffff")[0] != "FAIL":
+            raise AssertionError("a page-coloured rail pixel must fail")
+        # Left-docked: the strip is on the page's right.
+        if rail_pixel_check(png, web, 1.0, 0, 0, 8.0, True, "#112233")[0] != "PASS":
+            raise AssertionError("left-side rail sampling")
+
+    def split_scope_messages_parse_per_action_and_theme():
+        lines = [
+            "noise\n",
+            'SCOPE {"action":"rects","theme":"a","select":{"x":1}}\n',
+            'SCOPE {"action":"fonts","theme":"a","prose":12.5}\n',
+            'SCOPE {"action":"rects","theme":"b","select":{"x":2}}\n',
+            'SCOPE {"action":"fonts","theme":"a","pro"  (truncated)\n',
+            'SCOPE {"action":"scope_oversize","of":"tokens","len":900}\n',
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "app.log"
+            path.write_text("".join(lines), encoding="utf-8")
+            latest = parse_scope_lines(path)
+            if latest["rects"]["theme"] != "b" or latest["fonts"]["theme"] != "a":
+                raise AssertionError(latest)
+            if "pro" in latest["fonts"]:
+                raise AssertionError("a truncated line must not parse")
+            matched = scope_for_theme(path, "a", timeout=0.0)
+            if sorted(matched) != ["fonts"]:
+                raise AssertionError(f"theme filter: {sorted(matched)}")
+
+    def budgets_stay_under_the_ipc_cap():
+        text, js = probe_source()
+        cap = re.search(r"const IPC_LOG_TEXT_CAP: usize = (\d+);", text)
+        if not cap or int(cap.group(1)) != 600:
+            raise AssertionError("the /ipc log cap is not the documented 600 characters")
+        ceiling = re.search(r"const SCOPE_MAX_TEXT = (\d+);", js)
+        if not ceiling:
+            raise AssertionError("the probe has no SCOPE_MAX_TEXT ceiling")
+        ceiling = int(ceiling.group(1))
+        budget = re.search(r"SCOPE_BUDGET = \{([^}]*)\}", js)
+        if not budget:
+            raise AssertionError("the probe has no per-action SCOPE_BUDGET")
+        budgets = {name: int(value) for name, value in re.findall(r"(\w+): (\d+)", budget.group(1))}
+        if sorted(budgets) != sorted(SCOPE_ACTIONS):
+            raise AssertionError(f"budgets must cover every split action: {budgets}")
+        if not 0 < ceiling < int(cap.group(1)):
+            raise AssertionError(f"SCOPE_MAX_TEXT {ceiling} must stay under the cap {cap.group(1)}")
+        bodies = worst_case_messages()
+        for action, limit in budgets.items():
+            if limit > ceiling:
+                raise AssertionError(f"{action} budget {limit} exceeds the probe ceiling {ceiling}")
+            line = "SCOPE " + json.dumps(bodies[action], separators=(",", ":"), ensure_ascii=False)
+            if len(line) > limit:
+                raise AssertionError(f"worst-case {action} message {len(line)} > {limit}: {line}")
+
+    def probe_is_split_guarded_and_rail_free():
+        _, js = probe_source()
+        for action in SCOPE_ACTIONS:
+            if f"send({{ action: '{action}'" not in js:
+                raise AssertionError(f"the probe does not send {action} as its own message")
+        if "text.length <= cap && text.length <= SCOPE_MAX_TEXT" not in js:
+            raise AssertionError("the probe has no emit-time size guard")
+        if "scope_oversize" not in js:
+            raise AssertionError("an over-budget message must become a bounded failure")
+        if 'class*="rail"' in js or '[class*="swatch"]' in js:
+            raise AssertionError("the page must not claim a rail/swatch element it does not have")
+
+    tests = [
+        ("css_alpha_reads_hex_and_rgba", alpha_reads_hex_and_rgba),
+        ("transparent_role_fails_even_with_matching_rgb", transparent_role_fails_even_with_matching_rgb),
+        ("wrong_role_colour_fails", wrong_role_colour_fails),
+        ("missing_role_fails_and_missing_message_is_blocked", missing_role_fails_and_missing_message_is_blocked),
+        ("swatch_is_fixture_only", swatch_is_fixture_only),
+        ("rail_pixel_matches_panel_and_rejects_the_page", rail_pixel_matches_panel_and_rejects_the_page),
+        ("split_scope_messages_parse_per_action_and_theme", split_scope_messages_parse_per_action_and_theme),
+        ("budgets_stay_under_the_ipc_cap", budgets_stay_under_the_ipc_cap),
+        ("probe_is_split_guarded_and_rail_free", probe_is_split_guarded_and_rail_free),
+    ]
+    for name, test in tests:
+        check(name, test)
+    print(f"self-test: {len(tests) - failures}/{len(tests)} passed, {failures} failed")
+    return 0 if failures == 0 else 1
 
 
 def main():
@@ -269,6 +504,8 @@ def main():
     checks, artifacts, limitations = [], [], [
         "UI-scale preference coverage is not actual compositor or monitor movement.",
         "requested_scale is the app's placement scale; capture/source/import density comes from frame receipts.",
+        "The page reports its computed styles as four small SCOPE messages (rects, fonts, tokens, roles); the app's `/ipc` log keeps 600 characters, so an over-budget message is a bounded scope_oversize failure instead of truncated JSON.",
+        "The rail is native app chrome, not a page element: it is checked from the app screenshot pixel beside the web rect. A page swatch is exposed only by the standalone probe fixture.",
     ]
     if len(THEMES) != 25 or len(set(THEMES)) != 25:
         checks.append({"name": "theme_source", "status": "FAIL", "detail": f"expected 25 unique source themes, found {len(THEMES)}"})
@@ -389,10 +626,10 @@ def main():
                 "detail": f"applied={ok} reported={palette.get('id')} tokens={token_ok} surface delta={delta}",
             })
             # Page-side computed evidence, not just the app's own palette report:
-            # the tokens the page actually resolved, its real transparency, and
-            # real rail/state/swatch/prose roles. A role the page does not expose
-            # is BLOCKED, never silently omitted.
-            if theme_scope is None:
+            # the tokens the page actually resolved, its real transparency, and the
+            # real prose/label/textarea/aria-live role colours. The rail is native, so
+            # it is measured from the app screenshot instead of the page.
+            if not theme_scope:
                 all_checks.append({
                     "name": f"page_roles_{target:g}_{theme}",
                     "status": "BLOCKED",
@@ -404,6 +641,16 @@ def main():
                     ("page_transparency", page_transparency_check(theme_scope)),
                     ("page_roles", page_roles_check(theme_scope, tokens)),
                     ("role_fonts", page_fonts_check(theme_scope)),
+                    ("native_rail", rail_pixel_check(
+                        png,
+                        web,
+                        ppp,
+                        int(origin["X"]),
+                        int(origin["Y"]),
+                        (palette.get("metrics") or {}).get("space8"),
+                        bool(state.get("left")),
+                        expected,
+                    )),
                 ):
                     all_checks.append({
                         "name": f"{label}_{target:g}_{theme}",
@@ -425,6 +672,16 @@ def main():
                 "screenshot": str(shot),
             })
             print(json.dumps(results[-1]))
+
+    # The probe refuses to post a message that would be cut by the app's 600-character
+    # `/ipc` log cap; such a refusal is a failure, not a silent omission.
+    oversize = parse_scope_lines(log_path).get("scope_oversize")
+    if oversize:
+        all_checks.append({
+            "name": "page_scope_size",
+            "status": "FAIL",
+            "detail": "the page probe replaced an over-budget message: " + json.dumps(oversize),
+        })
 
     control.call("app.quit", {"force": True})
     try:
@@ -449,4 +706,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_self_test() if "--self-test" in sys.argv else main())

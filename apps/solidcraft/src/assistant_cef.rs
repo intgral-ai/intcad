@@ -573,7 +573,7 @@ impl CefAssistant {
             Some("focus") => {
                 self.focused = !self.input_quarantined && self.can_input() && value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false);
             }
-            Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
+            Some("log") => note(&bounded_log_text(value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default())),
             _ => {
                 if self.admission.is_some() && !self.can_input() {
                     return;
@@ -679,6 +679,9 @@ impl CefAssistant {
         if let Some(native) = self.producer.acquire_native_frame()
             && self.native_ready
         {
+            // The real kind of this callback, read before the frame is imported: a CPU bitmap
+            // (feature `cpu-paint-fallback`) must never produce a positive accelerated receipt.
+            let native_kind = native.kind();
             let metadata = native.capture_metadata();
             let native_size = [native.size().width, native.size().height];
             let geometry = admission::check_transport_view(self.admission.as_ref(), metadata.as_ref());
@@ -729,9 +732,11 @@ impl CefAssistant {
                                     self.record_view_admitted(metadata, native_size, imported_size, imported_generation);
                                 }
                                 self.publish(render_state(frame), texture);
-                                if !self.accelerated_recorded {
+                                if !self.accelerated_recorded && native_kind == welding::native_frame::NativeFrameKind::DmaBufImage {
+                                    // Only the DMA-BUF frame CEF actually delivered counts:
+                                    // admission alone would report success for a CPU fallback.
                                     self.accelerated_recorded = true;
-                                    emit_accelerated_limit(true, "accelerated texture import admitted");
+                                    emit_accelerated_limit(true, "DMA-BUF accelerated texture import admitted");
                                 }
                                 self.failed = false;
                             }
@@ -1778,6 +1783,26 @@ fn note(text: &str) {
     eprintln!("solidcraft: assistant (CEF): {text}");
 }
 
+/// One `/ipc` log line keeps at most this many characters, so a page cannot flood the
+/// log. Automated evidence reads these lines (scripts in `experiments/cef-osr`), so a
+/// `SCOPE` probe message over the cap must not be cut mid-object: it is replaced by a
+/// small, parseable `scope_oversize` receipt that names the action and the real length.
+const IPC_LOG_TEXT_CAP: usize = 600;
+
+fn bounded_log_text(text: &str) -> String {
+    if text.chars().count() <= IPC_LOG_TEXT_CAP {
+        return text.to_owned();
+    }
+    let action = text
+        .strip_prefix("SCOPE ")
+        .and_then(|rest| serde_json::from_str::<serde_json::Value>(rest).ok())
+        .and_then(|value| value.get("action").and_then(serde_json::Value::as_str).map(str::to_owned));
+    match action {
+        Some(action) => format!("SCOPE {}", serde_json::json!({"action": "scope_oversize", "of": action, "len": text.chars().count()})),
+        None => text.chars().take(IPC_LOG_TEXT_CAP).collect(),
+    }
+}
+
 /// One bounded accelerated-import receipt. `false` comes from the real
 /// no-DMA-BUF/refusal path; `true` only after an accelerated texture import was
 /// admitted. Absence of either is never treated as success by the validator.
@@ -1935,9 +1960,20 @@ const SCOPE_PROBE_JS: &str = r#"
 (() => {
   if (window.__intcadScopeProbeInstalled) return 'already';
   window.__intcadScopeProbeInstalled = true;
-  const send = (value) => {
+  // One `/ipc` log line keeps 600 characters (IPC_LOG_TEXT_CAP in this file), and the
+  // evidence scripts parse it. Every report is therefore its own small message with its
+  // own ceiling, and an over-budget message becomes a bounded `scope_oversize` receipt
+  // instead of being cut into unparseable JSON.
+  const SCOPE_MAX_TEXT = 480;
+  const SCOPE_BUDGET = { rects: 380, fonts: 160, tokens: 340, roles: 280 };
+  const send = (value, limit) => {
+    const text = 'SCOPE ' + JSON.stringify(value);
+    const cap = limit || SCOPE_MAX_TEXT;
+    const out = text.length <= cap && text.length <= SCOPE_MAX_TEXT
+      ? text
+      : 'SCOPE ' + JSON.stringify({ action: 'scope_oversize', of: value.action, len: text.length });
     try {
-      fetch('/ipc', { method: 'POST', body: JSON.stringify({ type: 'log', text: 'SCOPE ' + JSON.stringify(value) }) });
+      fetch('/ipc', { method: 'POST', body: JSON.stringify({ type: 'log', text: out }) });
     } catch (_) {}
   };
   const root = document.createElement('div');
@@ -1983,50 +2019,42 @@ const SCOPE_PROBE_JS: &str = r#"
   };
   const report = () => {
     // Real semantic elements only. The probe does not add its own prose/label
-    // element with a fixed font, because that would only measure itself.
+    // element with a fixed font, because that would only measure itself. The
+    // shipped page exposes prose, label, textarea and aria-live; its rail and
+    // swatch are native, so a page-side swatch is reported only when the
+    // standalone fixture defines one.
+    const theme = document.documentElement.dataset.intcadTheme || null;
     const html = computed(document.documentElement);
     const body = computed(document.body);
     const textarea = document.querySelector('textarea');
     const label = document.querySelector('[class*="text-label"], label');
     const prose = document.querySelector('[class*="text-body"], p');
-    const style = (element) => computed(element);
-    send({
-      action: 'rects',
-      theme: document.documentElement.dataset.intcadTheme || null,
-      dpr: devicePixelRatio,
-      inner: [innerWidth, innerHeight],
-      root: rect(root),
-      open: rect(document.getElementById('__cef_scope_open')),
-      target: rect(target),
-      select: rect(select),
-      ime: rect(input),
-      fonts: {
-        root: parseFloat(style(document.documentElement).fontSize),
-        prose: prose ? parseFloat(style(prose).fontSize) : null,
-        textarea: textarea ? parseFloat(style(textarea).fontSize) : null,
-        label: label ? parseFloat(style(label).fontSize) : null
-      },
-      colors: {
-        root_background: html.backgroundColor,
-        root_text: html.color,
-        html_background: html.backgroundColor,
-        body_background: body.backgroundColor,
-        body_text: body.color,
-        tokens: {
-          background: html.getPropertyValue('--background').trim(),
-          background2: html.getPropertyValue('--background-2').trim(),
-          border: html.getPropertyValue('--border').trim(),
-          accent: html.getPropertyValue('--intcad-accent').trim(),
-          selected: html.getPropertyValue('--intcad-selected').trim(),
-          foreground: html.getPropertyValue('--foreground').trim()
-        },
-        roles: {
-          rail: colour(document.querySelector('[data-intcad-role="rail"], aside, [class*="rail"]'), 'backgroundColor'),
-          state: colour(document.querySelector('[data-intcad-role="state"], [aria-live], [class*="state"]'), 'color'),
-          swatch: colour(document.querySelector('[data-intcad-role="swatch"], #swatch, [class*="swatch"]'), 'backgroundColor')
-        }
-      }
-    });
+    const live = document.querySelector('[aria-live]');
+    send({ action: 'rects', theme, dpr: devicePixelRatio, inner: [innerWidth, innerHeight],
+      root: rect(root), open: rect(document.getElementById('__cef_scope_open')),
+      target: rect(target), select: rect(select), ime: rect(input) }, SCOPE_BUDGET.rects);
+    send({ action: 'fonts', theme,
+      root: parseFloat(computed(document.documentElement).fontSize),
+      prose: prose ? parseFloat(computed(prose).fontSize) : null,
+      textarea: textarea ? parseFloat(computed(textarea).fontSize) : null,
+      label: label ? parseFloat(computed(label).fontSize) : null }, SCOPE_BUDGET.fonts);
+    send({ action: 'tokens', theme,
+      html_background: html.backgroundColor,
+      body_background: body.backgroundColor,
+      tokens: {
+        background: html.getPropertyValue('--background').trim(),
+        background2: html.getPropertyValue('--background-2').trim(),
+        border: html.getPropertyValue('--border').trim(),
+        accent: html.getPropertyValue('--intcad-accent').trim(),
+        selected: html.getPropertyValue('--intcad-selected').trim(),
+        foreground: html.getPropertyValue('--foreground').trim()
+      } }, SCOPE_BUDGET.tokens);
+    send({ action: 'roles', theme,
+      prose: colour(prose, 'color'),
+      label: colour(label, 'color'),
+      textarea: colour(textarea, 'color'),
+      live: colour(live, 'color'),
+      swatch: colour(document.getElementById('swatch'), 'backgroundColor') }, SCOPE_BUDGET.roles);
   };
   report();
   addEventListener('resize', report);
@@ -2073,6 +2101,24 @@ mod tests {
         queue.push(Queued::Mouse(MouseEvent { action: MouseAction::Released, ..mouse }));
         queue.push(Queued::Key(KeyEvent { kind: KeyEventKind::KeyUp, ..key }));
         assert!(queue.critical.is_empty(), "old releases cannot reach the new placement");
+    }
+
+    #[test]
+    fn a_scope_log_line_is_never_cut_into_unparseable_json() {
+        // The page's fixed hook splits its report; this is the app-side guarantee that a
+        // `SCOPE` message over the `/ipc` log cap still arrives as one parseable receipt.
+        let oversized = format!("SCOPE {}", serde_json::json!({"action": "rects", "pad": "x".repeat(IPC_LOG_TEXT_CAP)}));
+        assert!(oversized.chars().count() > IPC_LOG_TEXT_CAP);
+        let bounded = bounded_log_text(&oversized);
+        assert!(bounded.chars().count() <= IPC_LOG_TEXT_CAP, "{bounded}");
+        let Some(Ok(value)) = bounded.strip_prefix("SCOPE ").map(serde_json::from_str::<serde_json::Value>) else {
+            panic!("the bounded SCOPE line must stay parseable JSON: {bounded}");
+        };
+        assert_eq!(value["action"], serde_json::json!("scope_oversize"));
+        assert_eq!(value["of"], serde_json::json!("rects"));
+        // Other page text keeps the previous bounded truncation.
+        let plain = "x".repeat(IPC_LOG_TEXT_CAP + 10);
+        assert_eq!(bounded_log_text(&plain).chars().count(), IPC_LOG_TEXT_CAP);
     }
 
     #[test]

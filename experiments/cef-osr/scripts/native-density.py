@@ -975,6 +975,18 @@ def _test_offline_cli_round_trip():
             raise AssertionError(f"missing scale did not FAIL offline: exit={code} status={report.get('status')}")
 
 
+def _test_positive_accelerated_receipt_is_gated_on_native_frame_kind():
+    source = (Path(__file__).resolve().parents[3] / "apps/solidcraft/src/assistant_cef.rs").read_text(encoding="utf-8")
+    at = source.find("emit_accelerated_limit(true")
+    if at < 0:
+        raise AssertionError("the app no longer emits a positive CEF_LIMIT receipt")
+    gate = source[max(0, at - 400):at]
+    if "NativeFrameKind::DmaBufImage" not in gate or "native_kind" not in gate:
+        raise AssertionError("the positive accelerated receipt is not gated on the frame's real native kind")
+    if "emit_accelerated_limit(false" in gate:
+        raise AssertionError("the positive receipt sits beside a refusal branch")
+
+
 def _run_self_tests():
     tests = [
         _test_complete_receipts_pass,
@@ -990,6 +1002,7 @@ def _run_self_tests():
         _test_aba_same_geometry_reports_limitation_not_pass,
         _test_llvmpipe_or_no_interop_is_blocked_not_pass,
         _test_missing_accelerated_receipt_is_not_pass,
+        _test_positive_accelerated_receipt_is_gated_on_native_frame_kind,
         _test_density_physical_tolerance,
         _test_partial_visible_fails,
         _test_popup_import_mismatch_fails,
