@@ -42,9 +42,10 @@ jobs:
         env:
           EXPR: >-
             (package(solidcraft-cli) & (test(=unknown_command_suggests_the_closest_id) | test(=unknown_pending_concepts_preserve_the_open_design_and_output_files) | test(=corpus_designs_replay_from_their_scripts))) |
-            (package(solidcraft-io) & test(=legacy_dir::tests::flatpak_twins_map_our_sandbox_data_to_the_old_app_ids)) |
+            (package(solidcraft-io) & test(=legacy_dir::tests::flatpak_twins_do_not_read_upstream_solidcraft_data)) |
             (package(solidcraft-sketch) & test(=text::style_tests::bold_in_a_variable_font_sets_its_weight_axis)) |
-            (package(solidcraft-ui-egui) & (test(=requested_menu_icons_have_artwork_and_match_manifest) | test(=slot_preview))) |
+            (package(solidcraft-ui-egui) & binary(scenarios) & test(=slot_preview)) |
+            (package(solidcraft-ui-egui) & binary(icon_audit) & test(=requested_menu_icons_have_artwork_and_match_manifest)) |
             (package(solidcraft-doc) & (test(=eval::cost_tests::a_tap_marking_searches_only_the_bodies_near_it) | test(=eval::cost_tests::a_tap_marking_still_searches_the_bodies_within_its_reach)))
         run: |
           set -euo pipefail
@@ -52,16 +53,29 @@ jobs:
             --cargo-profile ci --locked --profile ci --ignore-default-filter -E "$EXPR" --message-format json > selection.json
           python3 - <<'PY'
           import json
-          n = 0
-          for line in open("selection.json"):
-              try:
-                  item = json.loads(line)
-              except ValueError:
-                  continue
-              if item.get("type") == "test":
-                  n += 1
-          print(f"selected {n} tests")
-          assert n == 9, f"expected 9 owned tests, selected {n}"
+          d = json.load(open("selection.json"))
+          selected = set()
+          for binary, suite in d["rust-suites"].items():
+              for name, case in suite.get("testcases", {}).items():
+                  if case["filter-match"]["status"] == "matches":
+                      selected.add(f"{binary}::{name}")
+          expected = {
+              "solidcraft-cli::run_results::unknown_command_suggests_the_closest_id",
+              "solidcraft-cli::run_results::unknown_pending_concepts_preserve_the_open_design_and_output_files",
+              "solidcraft-cli::script_roundtrip::corpus_designs_replay_from_their_scripts",
+              "solidcraft-io::legacy_dir::tests::flatpak_twins_do_not_read_upstream_solidcraft_data",
+              "solidcraft-sketch::text::style_tests::bold_in_a_variable_font_sets_its_weight_axis",
+              "solidcraft-ui-egui::scenarios::slot_preview",
+              "solidcraft-ui-egui::icon_audit::requested_menu_icons_have_artwork_and_match_manifest",
+              "solidcraft-doc::eval::cost_tests::a_tap_marking_searches_only_the_bodies_near_it",
+              "solidcraft-doc::eval::cost_tests::a_tap_marking_still_searches_the_bodies_within_its_reach",
+          }
+          print(f"matched {len(selected)} tests")
+          for test in sorted(selected):
+              print(test)
+          missing, extra = expected - selected, selected - expected
+          assert selected, "expected test set is empty"
+          assert not missing and not extra, f"missing={sorted(missing)} extra={sorted(extra)}"
           PY
           set +e
           cargo nextest run -p solidcraft-cli -p solidcraft-io -p solidcraft-sketch -p solidcraft-ui-egui -p solidcraft-doc \
