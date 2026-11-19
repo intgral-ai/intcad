@@ -641,6 +641,22 @@ pub enum TrashProblem {
     Refused(String),
 }
 
+/// `NSFeatureUnsupportedError` from Foundation's error list (`FoundationErrors`): the volume has
+/// no Trash this application can use.
+#[cfg(any(target_os = "macos", test))]
+const NO_TRASH_HERE: isize = 3328;
+
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+const _: () = assert!(NO_TRASH_HERE == objc2_foundation::NSFeatureUnsupportedError);
+
+/// Does a Foundation error mean "this volume has no Trash"? Only `NSFeatureUnsupportedError` in
+/// `NSCocoaErrorDomain` does: the same number in another domain is a different failure, and an
+/// access denial in the Cocoa domain is a refusal, not unavailability.
+#[cfg(any(target_os = "macos", test))]
+fn trash_error_means_no_trash(domain: &str, code: isize) -> bool {
+    code == NO_TRASH_HERE && domain == "NSCocoaErrorDomain"
+}
+
 /// Put one entry in the system's trash.
 pub fn trash(path: &Path) -> Result<(), TrashProblem> {
     #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
@@ -683,9 +699,13 @@ pub fn trash(path: &Path) -> Result<(), TrashProblem> {
             let path = std::path::absolute(path).map_err(|e| TrashProblem::Refused(describe("move to the trash", path, &e)))?;
             let url =
                 NSURL::from_file_path(&path).ok_or_else(|| TrashProblem::Refused(format!("could not make a file URL for {}", path.display())))?;
-            NSFileManager::new()
-                .trashItemAtURL_resultingItemURL_error(&url, None)
-                .map_err(|e| TrashProblem::Refused(format!("move to the trash {}: {e}", path.display())))
+            NSFileManager::new().trashItemAtURL_resultingItemURL_error(&url, None).map_err(|error| {
+                if trash_error_means_no_trash(&error.domain().to_string(), error.code()) {
+                    TrashProblem::Unavailable
+                } else {
+                    TrashProblem::Refused(format!("move to the trash {}: {error}", path.display()))
+                }
+            })
         })
     }
     #[cfg(target_arch = "wasm32")]

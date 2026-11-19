@@ -1305,6 +1305,9 @@ fn a_command_click_adds_to_the_selection_without_opening_the_row_menu() {
     let second = scratch.file("second.txt", "");
     let mut h = Harness::new();
     h.app.home.open = false;
+    // The remote fixture never set the platform, so its macOS branch could not run on Linux.
+    // Task 2 decides the click's role from the runtime OS, so name macOS explicitly.
+    h.ctx.set_os(egui::os::OperatingSystem::Mac);
     h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
     h.call("ui.files", json!({"root": scratch.path().to_string_lossy()}));
     h.frames(20);

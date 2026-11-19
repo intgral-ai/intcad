@@ -555,8 +555,7 @@ fn row_ui(
     // On macOS the secondary click of a one-button mouse is Control-click; Command-click is the
     // one that adds a row to the selection, as Ctrl-click does elsewhere. Control+Command keeps
     // the Command role instead of opening the row menu.
-    let context_click =
-        secondary || (response.clicked() && modifiers.ctrl && !modifiers.command && ui.ctx().os() == egui::os::OperatingSystem::Mac);
+    let context_click = secondary || (response.clicked() && modifiers.ctrl && !modifiers.command && ui.ctx().os() == egui::os::OperatingSystem::Mac);
     if response.clicked() && !context_click {
         app.file_tree.focused = true;
         app.file_tree.press = Some(row.path.clone());

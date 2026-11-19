@@ -537,6 +537,29 @@ fn native_trash_refuses_an_invalid_url_without_permanent_deletion() {
     assert_eq!(fs::read(keep).unwrap(), b"untouched");
 }
 
+// The Trash classification is decided from the error's domain and code, not from a bare number.
+// A Linux test can cover that decision while the Foundation call itself stays macOS-only.
+#[test]
+fn only_cocoas_feature_unsupported_error_means_there_is_no_trash() {
+    assert_eq!(NO_TRASH_HERE, 3328, "NSFeatureUnsupportedError");
+    assert!(trash_error_means_no_trash("NSCocoaErrorDomain", NO_TRASH_HERE));
+}
+
+#[test]
+fn access_denial_in_the_cocoa_domain_stays_a_refusal() {
+    // NSFileReadNoPermissionError and NSFileWriteNoPermissionError live in the same domain.
+    for code in [257, 513, 0, NO_TRASH_HERE + 1, NO_TRASH_HERE - 1] {
+        assert!(!trash_error_means_no_trash("NSCocoaErrorDomain", code), "code {code}");
+    }
+}
+
+#[test]
+fn the_feature_unsupported_code_in_another_domain_stays_a_refusal() {
+    for domain in ["NSPOSIXErrorDomain", "NSOSStatusErrorDomain", "", "com.example.intcad"] {
+        assert!(!trash_error_means_no_trash(domain, NO_TRASH_HERE), "{domain}");
+    }
+}
+
 // Faults are scoped to one thread/operation, not environment variables or global process state.
 // Only the failing OS boundary is substituted; traversal, publication and cleanup stay real.
 type Fault = Box<dyn FnMut(&str, &Path, &Path) -> io::Result<()>>;
