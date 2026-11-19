@@ -41,6 +41,49 @@ fn pointer_click(pos: egui::Pos2, modifiers: Modifiers) -> Vec<egui::Event> {
     ]
 }
 
+/// Characterize the actual egui 0.36 text focus boundary without any application hooks,
+/// Files state, CAD clipboard, custom field wrappers or clipboard finalizer.
+#[test]
+fn plain_egui_text_paste_after_click_compares_one_batch_with_two_frames() {
+    fn observe(separate_frames: bool) -> String {
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        let mut rect = egui::Rect::NOTHING;
+        let mut time = 0.0;
+        let mut frame = |events: Vec<egui::Event>| {
+            time += 1.0 / 60.0;
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    focused: true,
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 200.0))),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    rect = ui.add(egui::TextEdit::singleline(&mut text).id(egui::Id::new("plain_text"))).rect;
+                },
+            );
+            rect
+        };
+        let field = frame(Vec::new());
+        let mut events = pointer_click(field.center(), Modifiers::NONE);
+        if separate_frames {
+            frame(events);
+            frame(vec![egui::Event::Paste("needle".into())]);
+        } else {
+            events.push(egui::Event::Paste("needle".into()));
+            frame(events);
+        }
+        text
+    }
+    let same_batch = observe(false);
+    let separate_frames = observe(true);
+    eprintln!("plain egui 0.36.2 same-batch click+Paste field text = {same_batch:?}");
+    eprintln!("plain egui 0.36.2 click frame then Paste frame field text = {separate_frames:?}");
+    assert_eq!(separate_frames, "needle", "the plain already-focused widget receives one insertion");
+}
+
 #[test]
 fn native_clipboard_events_in_files_do_not_touch_the_competing_cad_clipboard() {
     for cut in [false, true] {
