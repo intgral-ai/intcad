@@ -82,3 +82,5 @@ Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and p
 - Host free space at setup 632,470,499,328 bytes. Baseline NOT_RUN: local compilation prohibited.
 - Native git `worktree add --no-checkout` used as explicitly directed; OpenCode worktree helper cannot request sparse/no-checkout creation.
 - Controller owns independent reviews and CI log extraction. No delegation or self-approval.
+- Test-first checkpoint `3c91659` pushed; RED CI `44575356172` pending at that revision.
+- Additional test-first coverage added for child-process terminal writers, invalid pending reports, late post-Stop submit and stable CLI report identity. Rust execution remains NOT_RUN pending remote CI.

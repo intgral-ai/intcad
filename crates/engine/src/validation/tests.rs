@@ -596,6 +596,102 @@ fn adoption_never_accepts_a_report_incompatible_with_an_existing_terminal_state(
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Real child-process caller for the transaction fixtures. No global test ordering or timing.
+#[test]
+fn terminal_transaction_child() {
+    let Some(root) = std::env::var_os("INTCAD_TRANSACTION_CHILD_ROOT") else { return };
+    let run_id = std::env::var("INTCAD_TRANSACTION_CHILD_RUN").unwrap();
+    let root = PathBuf::from(root);
+    let port = ValidationPort::open_read_only(root.join("validation"), root.join("candidates")).unwrap();
+    if std::env::var("INTCAD_TRANSACTION_CHILD_OPERATION").unwrap() == "cancel" {
+        assert!(port.cancel(&run_id).is_ok());
+    } else {
+        let outcome = RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() };
+        assert!(port.complete(&run_id, outcome).is_ok());
+    }
+}
+
+#[test]
+fn separate_process_terminal_writers_recover_both_report_orders() {
+    for cancelled in [false, true] {
+        let root = scratch("process-terminal-gap");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-process-gap", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let profile = native_basic_profile();
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        let job = port.start_next().unwrap().unwrap();
+        let running = port.load_state(&run.run_id).unwrap();
+        let winner = if cancelled {
+            port.cancel(&run.run_id).unwrap().state
+        } else {
+            port.complete(&job.run_id, RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) }).unwrap()
+        };
+        let bytes = std::fs::read(port.store.report_path(&run.run_id)).unwrap();
+        port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+        let spawn = |operation: &str| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "validation::tests::terminal_transaction_child", "--nocapture"])
+                .env("INTCAD_TRANSACTION_CHILD_ROOT", &root)
+                .env("INTCAD_TRANSACTION_CHILD_RUN", &run.run_id)
+                .env("INTCAD_TRANSACTION_CHILD_OPERATION", operation)
+                .spawn()
+                .unwrap()
+        };
+        let mut cancel = spawn("cancel");
+        let mut complete = spawn("complete");
+        assert!(cancel.wait().unwrap().success());
+        assert!(complete.wait().unwrap().success());
+        assert_eq!(port.status(&run.run_id).unwrap().state, winner);
+        assert_eq!(std::fs::read(port.store.report_path(&run.run_id)).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn pending_reports_with_changed_bindings_or_evidence_are_never_adopted() {
+    for corrupt in ["json", "run", "candidate", "profile", "runner", "coverage", "evidence"] {
+        let root = scratch("pending-report-rejection");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-pending-rejection", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let profile = native_basic_profile();
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        port.start_next().unwrap().unwrap();
+        let running = port.load_state(&run.run_id).unwrap();
+        port.complete(&run.run_id, RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) }).unwrap();
+        let path = port.store.report_path(&run.run_id);
+        let mut report: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        match corrupt {
+            "json" => std::fs::write(&path, b"{").unwrap(),
+            "evidence" => {
+                let artifact = report["checks"][0]["evidence"][0]["artifactId"].as_str().unwrap();
+                std::fs::write(port.store.evidence_path(&run.run_id, artifact), b"changed").unwrap();
+            }
+            _ => {
+                match corrupt {
+                    "run" => report["runId"] = json!("another-run"),
+                    "candidate" => report["candidateDigest"] = json!(format!("sha256:{}", "0".repeat(64))),
+                    "profile" => report["profile"]["version"] = json!("foreign"),
+                    "runner" => report["runner"]["version"] = json!("foreign"),
+                    "coverage" => report["checks"] = json!([]),
+                    _ => unreachable!(),
+                }
+                std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+            }
+        }
+        port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+        assert!(!port.adopt_report(&run.run_id, &port.load_admission(&run.run_id).unwrap()).unwrap(), "{corrupt}");
+        assert!(!port.status(&run.run_id).unwrap().report_available, "{corrupt}");
+        assert_eq!(port.load_state(&run.run_id).unwrap().state, ValidationState::Running);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 #[test]
 fn a_queued_job_cancel_is_immediate_and_idempotent() {
     let root = scratch("cancel-queued");

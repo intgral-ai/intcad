@@ -14207,6 +14207,32 @@ mod mastra_backend_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A host callback can enter after Stop retired its original turn. Storage must never
+    /// reopen that turn's admission simply because registration was delayed.
+    #[test]
+    fn mastra_validation_cancelled_turn_refuses_a_late_submission_without_storage() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("late-submit-cancel");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let profile = host.profile().unwrap();
+        let turn = turn_scope("s-late-cancel", "t-late-cancel", "w-late-cancel");
+        host.cancel_turn(&turn, Some(&live));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let result = host.submit(
+            &Scope::Turn(turn),
+            ValidationSubmitParams {
+                candidate,
+                profile,
+                request_id: SubmissionKey::parse(&solidcraft_engine::validation::generate_submission_key(now)).unwrap(),
+            },
+        );
+        assert!(result.is_err(), "retired turn admission must not reach the validation store");
+        assert_eq!(std::fs::read_dir(dir.join("validation/runs")).unwrap().count(), 0);
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn mastra_validation_host_accepts_only_the_matching_current_report() {
         let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
