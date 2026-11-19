@@ -14,6 +14,9 @@
 
 use dpi::PhysicalSize;
 
+// SolidCraft: copyable provenance travels with the owned Linux image.
+use crate::frame_geometry::CaptureMetadata;
+
 // ── Backend detection ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +87,14 @@ pub enum NativeFrameKind {
 }
 
 impl NativeFrame {
+    /// SolidCraft: only Linux accelerated captures currently supply provenance.
+    pub fn capture_metadata(&self) -> Option<CaptureMetadata> {
+        match self {
+            NativeFrame::DmaBufImage(frame) => frame.capture_metadata,
+            _ => None,
+        }
+    }
+
     pub fn kind(&self) -> NativeFrameKind {
         match self {
             NativeFrame::Dx12SharedTexture(_) => NativeFrameKind::Dx12SharedTexture,
@@ -426,9 +437,17 @@ pub struct DmaBufImage {
     drm_format: u32,
     modifier: u64,
     generation: u64,
+    // SolidCraft: no callback references or independent native resource owner.
+    capture_metadata: Option<CaptureMetadata>,
 }
 
 impl DmaBufImage {
+    /// SolidCraft: attach scalars without changing image identity or fd custody.
+    pub fn with_capture_metadata(mut self, metadata: CaptureMetadata) -> Self {
+        self.capture_metadata = Some(metadata);
+        self
+    }
+
     pub fn planes(&self) -> &[DmaBufPlane] {
         &self.planes
     }
@@ -481,7 +500,20 @@ pub struct PendingFrameSlot {
 
 impl PendingFrameSlot {
     pub fn next_generation(&mut self) -> u64 {
-        self.next_generation += 1;
+        // SolidCraft: retain the existing API for other producers without wrap.
+        self.next_generation = self.next_generation.saturating_add(1);
+        self.next_generation
+    }
+
+    /// SolidCraft: Linux refuses a paint when no unique identity remains.
+    pub fn try_next_generation(&mut self) -> Option<u64> {
+        self.next_generation = self.next_generation.checked_add(1)?;
+        Some(self.next_generation)
+    }
+
+    /// SolidCraft: drop the queued owner, retaining the capture high-watermark.
+    pub fn discard(&mut self) -> u64 {
+        self.frame = None;
         self.next_generation
     }
 
@@ -528,6 +560,8 @@ pub struct ImportedTexture {
     pub size: wgpu::Extent3d,
     pub format: wgpu::TextureFormat,
     pub generation: u64,
+    /// SolidCraft: provenance of this exact imported Linux image, if supplied.
+    pub capture_metadata: Option<CaptureMetadata>,
 }
 
 // ── Importer ─────────────────────────────────────────────────────────────────
@@ -685,6 +719,7 @@ impl WgpuTextureImporter {
             size,
             format: frame.format,
             generation: frame.generation,
+            capture_metadata: None,
         })
     }
 }
@@ -703,6 +738,7 @@ mod tests {
             drm_format: 0,
             modifier: 0,
             generation,
+            capture_metadata: None,
         })
     }
 
@@ -718,6 +754,40 @@ mod tests {
         assert_eq!(frame.generation(), second);
         assert_eq!(frame.size(), PhysicalSize::new(20, 10));
         assert!(!slot.has_frame());
+    }
+
+    // SolidCraft: discard is a queue boundary, not a new capture identity space.
+    #[test]
+    fn pending_frame_discard_preserves_generation_watermark() {
+        let mut slot = PendingFrameSlot::default();
+        assert_eq!(slot.discard(), 0);
+        let first = slot.next_generation();
+        slot.store(empty_dmabuf_frame(PhysicalSize::new(10, 10), first));
+        assert_eq!(slot.discard(), 1);
+        assert!(!slot.has_frame());
+        assert_eq!(slot.discard(), 1);
+        assert_eq!(slot.try_next_generation(), Some(2));
+    }
+
+    // SolidCraft: Linux must stop issuing paints instead of reusing MAX or 0.
+    #[test]
+    fn pending_frame_generation_exhaustion_refuses_repeated_identity() {
+        let mut slot = PendingFrameSlot {
+            frame: None,
+            next_generation: u64::MAX - 1,
+        };
+        assert_eq!(slot.try_next_generation(), Some(u64::MAX));
+        assert_eq!(slot.try_next_generation(), None);
+        assert_eq!(slot.discard(), u64::MAX);
+        assert_eq!(slot.try_next_generation(), None);
+        assert_eq!(slot.next_generation(), u64::MAX);
+    }
+
+    #[test]
+    fn frames_without_capture_metadata_stay_absent() {
+        let frame = empty_dmabuf_frame(PhysicalSize::new(10, 10), 7);
+        assert_eq!(frame.capture_metadata(), None);
+        assert_eq!(frame.generation(), 7);
     }
 
     #[cfg(windows)]

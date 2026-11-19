@@ -21,6 +21,7 @@ use dpi::PhysicalSize;
 
 use crate::{
     error::WeldError,
+    frame_geometry::FrameWatermarks,
     native_frame::{
         HostWgpuContext, ImportedTexture, NativeFrame, PendingFrameSlot, WgpuTextureImporter,
     },
@@ -112,6 +113,22 @@ pub struct LinuxCefProducer {
 // return looks needless to clippy but the idiom requires it.
 #[allow(clippy::needless_return)]
 impl LinuxCefProducer {
+    /// SolidCraft: drain both mailboxes on host admission reset without waiting
+    /// on a driver. Watermarks remain monotonic for the producer's lifetime.
+    pub fn discard_pending_frames(&mut self) -> Result<FrameWatermarks, WeldError> {
+        let mut view = lock_frame_slot(&self.frame_slot)?;
+        #[cfg(feature = "cef-runtime")]
+        let mut popup = lock_frame_slot(&self.popup_slot)?;
+        // Lock both before dropping either, so a lock error is not a half-reset.
+        Ok(FrameWatermarks {
+            view: view.discard(),
+            #[cfg(feature = "cef-runtime")]
+            popup: popup.discard(),
+            #[cfg(not(feature = "cef-runtime"))]
+            popup: 0,
+        })
+    }
+
     pub fn new(_runtime: &CefRuntime, config: LinuxCefConfig) -> Result<Self, WeldError> {
         #[cfg(feature = "cef-runtime")]
         {
@@ -365,14 +382,24 @@ impl CefSurfaceProducer for LinuxCefProducer {
     }
 
     fn acquire_native_frame(&mut self) -> Option<NativeFrame> {
-        self.frame_slot.lock().unwrap().take()
+        // SolidCraft: the trait's Option cannot carry a poisoned-lock error.
+        // Result-bearing acquisition below reports it instead of hiding it.
+        match lock_frame_slot(&self.frame_slot) {
+            Ok(mut slot) => slot.take(),
+            Err(error) => {
+                log::error!("failed to acquire CEF native frame: {error}");
+                None
+            }
+        }
     }
 
     fn acquire_frame(
         &mut self,
         ctx: &HostWgpuContext,
     ) -> Result<Option<ImportedTexture>, WeldError> {
-        match self.acquire_native_frame() {
+        // SolidCraft: release the mailbox guard before GPU import.
+        let frame = lock_frame_slot(&self.frame_slot)?.take();
+        match frame {
             None => Ok(None),
             Some(f) => Ok(Some(WgpuTextureImporter::import(f, ctx)?)),
         }
@@ -388,8 +415,10 @@ impl CefSurfaceProducer for LinuxCefProducer {
                 return Ok(None);
             };
             // CEF reports popup geometry in DIP; hosts draw in physical pixels.
-            let rect = self.metrics.lock().unwrap().rect_to_physical(rect);
-            let frame = self.popup_slot.lock().unwrap().take();
+            let rect = self.metrics.lock()
+                .map_err(|_| WeldError::BrowserOp("CEF view metrics lock poisoned".into()))?
+                .rect_to_physical(rect);
+            let frame = lock_frame_slot(&self.popup_slot)?.take();
             return match frame {
                 None => Ok(None),
                 Some(f) => Ok(Some(crate::surface::PopupSurface {
@@ -1082,6 +1111,29 @@ impl CefSurfaceProducer for LinuxCefProducer {
         }
         self.browser_id = 0;
         Err(pending("cef_browser_host_t::close_browser"))
+    }
+}
+
+// SolidCraft: return a normal error at the owned mailbox boundary.
+fn lock_frame_slot(
+    slot: &Mutex<PendingFrameSlot>,
+) -> Result<std::sync::MutexGuard<'_, PendingFrameSlot>, WeldError> {
+    slot.lock()
+        .map_err(|_| WeldError::BrowserOp("CEF frame slot lock poisoned".into()))
+}
+
+#[cfg(test)]
+mod frame_slot_tests {
+    use super::*;
+
+    #[test]
+    fn poisoned_mailbox_returns_error_instead_of_panicking() {
+        let slot = Mutex::new(PendingFrameSlot::default());
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = slot.lock().expect("initial lock");
+            panic!("poison the test mailbox");
+        });
+        assert!(lock_frame_slot(&slot).is_err());
     }
 }
 

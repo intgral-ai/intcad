@@ -85,6 +85,8 @@ pub(super) fn import_metal(
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     Ok(ImportedTexture {
+        // SolidCraft: Linux capture metadata does not change macOS imports.
+        capture_metadata: None,
         texture,
         view,
         size: wgpu::Extent3d {

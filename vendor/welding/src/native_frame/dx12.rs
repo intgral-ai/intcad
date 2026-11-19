@@ -347,6 +347,8 @@ pub(super) fn import_dx12(
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     Ok(ImportedTexture {
+        // SolidCraft: Linux capture metadata does not change Windows imports.
+        capture_metadata: None,
         texture,
         view,
         size: wgpu::Extent3d {

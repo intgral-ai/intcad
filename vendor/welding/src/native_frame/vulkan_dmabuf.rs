@@ -43,6 +43,7 @@ impl DmaBufImage {
             drm_format,
             modifier,
             generation,
+            capture_metadata: None,
         })
     }
 
@@ -149,6 +150,8 @@ pub(super) fn import_vulkan(
     let frame_size = frame.size;
     let frame_format = frame.format;
     let frame_generation = frame.generation;
+    // SolidCraft: copy the record before moving the descriptor owner to Graft.
+    let capture_metadata = frame.capture_metadata;
     let drm_format = frame.drm_format;
     let graft_host = grafting::HostWgpuContext::new(ctx.device.clone(), ctx.queue.clone());
     let (buffers, planes) = frame.into_owned_parts();
@@ -179,6 +182,7 @@ pub(super) fn import_vulkan(
         },
         format: frame_format,
         generation: frame_generation,
+        capture_metadata,
     })
 }
 
@@ -333,6 +337,94 @@ mod tests {
 
     fn fd_is_closed(fd: RawFd) -> bool {
         (unsafe { libc::fcntl(fd, libc::F_GETFD) }) == -1
+    }
+
+    // Occupy a just-closed number to detect a second close by the old owner.
+    fn occupy_closed_fd(raw: RawFd) -> OwnedFd {
+        assert!(fd_is_closed(raw));
+        let fd = open_pipe_read_fd();
+        if fd.as_raw_fd() == raw {
+            return fd;
+        }
+        assert_eq!(unsafe { libc::dup2(fd.as_raw_fd(), raw) }, raw);
+        unsafe { OwnedFd::from_raw_fd(raw) }
+    }
+
+    // SolidCraft: the real owned buffer table must survive scalar attachment,
+    // mailbox replacement and discard. Existing layout tests cannot catch
+    // metadata wiring accidentally rebuilding or losing the descriptor owner.
+    #[test]
+    fn capture_metadata_stays_paired_with_owned_frame_and_mailbox_drop() {
+        use crate::frame_geometry::{CaptureMetadata, FrameGeometry, FrameRect, PaintElement};
+
+        let _fd_lock = crate::lock_fd_table();
+        let rect = FrameRect { x: 0, y: 0, width: 2, height: 2 };
+        let metadata = CaptureMetadata {
+            element: PaintElement::Popup,
+            geometry: FrameGeometry {
+                coded_size: [2, 2],
+                visible_rect: rect,
+                content_rect: rect,
+                source_size: Some([2, 2]),
+            },
+            timestamp_micros: 0,
+            capture_counter: Some(0),
+            generation: 1,
+        };
+        let mut slot = PendingFrameSlot::default();
+        let first = open_pipe_read_fd();
+        let first_raw = first.as_raw_fd();
+        let generation = slot.next_generation();
+        let image = DmaBufImage::from_owned_buffers(
+            vec![first],
+            vec![DmaBufPlane::new(0, 0, 16, 8)],
+            PhysicalSize::new(2, 2),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            0,
+            DRM_FORMAT_MOD_LINEAR,
+            generation,
+        ).expect("valid owned image");
+        assert_eq!(image.capture_metadata, None);
+        let image = image.with_capture_metadata(metadata);
+        assert_eq!(image.buffer_count(), 1);
+        assert_eq!(image.buffers[0].as_raw_fd(), first_raw);
+        assert!(!fd_is_closed(first_raw));
+        let frame = NativeFrame::DmaBufImage(image);
+        assert_eq!(frame.capture_metadata(), Some(metadata));
+        assert_eq!(frame.generation(), 1);
+        slot.store(frame);
+        let frame = slot.take().expect("mailbox retains the pair");
+        assert_eq!(frame.capture_metadata(), Some(metadata));
+        assert_eq!(frame.generation(), 1);
+        assert!(!fd_is_closed(first_raw));
+        slot.store(frame);
+
+        let second = open_pipe_read_fd();
+        let second_raw = second.as_raw_fd();
+        let generation = slot.next_generation();
+        let image = DmaBufImage::from_owned_buffers(
+            vec![second],
+            vec![DmaBufPlane::new(0, 0, 16, 8)],
+            PhysicalSize::new(2, 2),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            0,
+            DRM_FORMAT_MOD_LINEAR,
+            generation,
+        ).expect("valid replacement").with_capture_metadata(CaptureMetadata {
+            generation: 2,
+            ..metadata
+        });
+        slot.store(NativeFrame::DmaBufImage(image));
+        assert!(fd_is_closed(first_raw), "replacement closes old owner");
+        assert!(!fd_is_closed(second_raw));
+        let first_sentinel = occupy_closed_fd(first_raw);
+        assert_eq!(slot.discard(), 2);
+        assert!(fd_is_closed(second_raw), "discard closes latest owner");
+        let second_sentinel = occupy_closed_fd(second_raw);
+        assert_eq!(slot.discard(), 2);
+        drop(slot);
+        assert!(!fd_is_closed(first_sentinel.as_raw_fd()), "no second close of replaced owner");
+        assert!(!fd_is_closed(second_sentinel.as_raw_fd()), "no second close on discard/drop");
     }
 
     #[test]

@@ -16,6 +16,9 @@
 ## SolidCraft local modifications
 
 - `src/lib.rs`: export the owned runtime-identity module.
+- `src/frame_geometry.rs` (new), `src/lib.rs`: export owned capture geometry,
+  element, generation and mailbox-watermark scalars, with checked std-only
+  full-surface validation and hostile-input fixtures.
 - `src/runtime_identity.rs` (new): std-only checked identity values and validation
   tests; Linux+cef-runtime native queries and null-export test. Manual FFI and
   C-string copying stay here. No runtime owner is made by inspection.
@@ -29,14 +32,26 @@
 - `src/surface.rs`: `NavigationEvent::BrowserCreated` carries browser id and OSR mode.
 - `src/linux_cef/cef_backed.rs`: emit that event, close hosts violating OSR mode,
   and add callback tests separating denied browser popups from PET_POPUP widgets.
+- `src/linux_cef/{mod.rs,cef_backed.rs}`: copy the actual common CEF capture
+  scalars and validity flags into owned Linux images; reject nonpositive signed
+  coded sizes before fd duplication; return mailbox lock errors (callbacks log
+  and refuse); expose view/popup discard watermarks for host admission reset.
+- `src/native_frame/{mod.rs,vulkan_dmabuf.rs}`: carry optional capture metadata
+  with the same owned DMABUF and imported texture. Constructors default to None.
+  Discard preserves generations; counters saturate, and Linux refuses exhausted
+  identities through checked generation allocation. Add real fd/mailbox
+  regressions (native execution must be validated separately).
+- `src/native_frame/{dx12.rs,metal.rs}`: initialize imported capture metadata
+  to None without changing the platform import paths.
 
-No changes to native CEF/Chromium, GPU imports, fd duplication/ownership,
+No changes to native CEF/Chromium, GPU import mechanics, fd duplication/ownership,
 synchronization, OSR select/fullscreen behavior or platform context-menu routing.
 App-side policy is outside this package. Local changes are marked `SolidCraft:`.
 
 Remove the patch when a published welding release provides equivalent checked
-pre-init identity and browser-mode reporting/enforcement, after revalidating the
-native Wayland OSR scope and all supported platform builds.
+pre-init identity, browser-mode reporting/enforcement and owned native capture
+metadata transport, after revalidating the native Wayland OSR scope and all
+supported platform builds.
 
 ## Distribution obligations
 

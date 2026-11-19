@@ -51,6 +51,8 @@ pub(crate) fn lock_fd_table() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub mod error;
+// SolidCraft: owned native capture geometry, with no CEF/GPU dependencies.
+pub mod frame_geometry;
 pub mod native_frame;
 pub mod runtime;
 // SolidCraft: owned pre-init runtime identity.

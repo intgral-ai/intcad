@@ -85,6 +85,36 @@ cef::wrap_render_handler! {
                 return;
             }
 
+            // SolidCraft: reject signed/empty allocations before any conversion
+            // or fd duplication. Full-surface admission is a separate host check.
+            let (Ok(width), Ok(height)) = (
+                u32::try_from(info.extra.coded_size.width),
+                u32::try_from(info.extra.coded_size.height),
+            ) else { return };
+            if width == 0 || height == 0 {
+                return;
+            }
+            // Obtain the slot before dup so a poisoned lock cannot strand raw
+            // descriptors. A callback cannot return Result to CEF: log and stop.
+            let slot = if is_popup { &self.handler.popup_slot } else { &self.handler.frame_slot };
+            let mut slot = match lock_frame_slot(slot) {
+                Ok(slot) => slot,
+                Err(error) => {
+                    log::error!("failed to lock CEF capture slot: {error}");
+                    return;
+                }
+            };
+            let Some(generation) = slot.try_next_generation() else {
+                log::error!("CEF capture generation exhausted");
+                return;
+            };
+            let metadata = capture_metadata(
+                &info.extra,
+                if is_popup { crate::frame_geometry::PaintElement::Popup }
+                else { crate::frame_geometry::PaintElement::View },
+                generation,
+            );
+
             // Map CEF color type → wgpu sRGB texture format. CEF emits
             // sRGB pixel data; importing as UNORM would double-apply
             // gamma at sample time. See cef#3687 thread.
@@ -111,15 +141,8 @@ cef::wrap_render_handler! {
                 raw_planes.push((duped, src.offset, src.size, src.stride));
             }
 
-            let width = info.extra.coded_size.width as u32;
-            let height = info.extra.coded_size.height as u32;
-
-            let mut slot = if is_popup {
-                self.handler.popup_slot.lock().unwrap()
-            } else {
-                self.handler.frame_slot.lock().unwrap()
-            };
-            let generation = slot.next_generation();
+            // SAFETY: every fd in raw_planes is an owned dup made above;
+            // the constructor consumes all of them on success or failure.
             let image = unsafe {
                 crate::native_frame::DmaBufImage::from_owned_raw_planes(
                     raw_planes,
@@ -135,7 +158,9 @@ cef::wrap_render_handler! {
             };
             match image {
                 Ok(image) => {
-                    slot.store(crate::native_frame::NativeFrame::DmaBufImage(image));
+                    slot.store(crate::native_frame::NativeFrame::DmaBufImage(
+                        image.with_capture_metadata(metadata),
+                    ));
                 }
                 Err(error) => {
                     log::error!("failed to wrap CEF DMABUF image: {error}");
@@ -180,7 +205,11 @@ cef::wrap_render_handler! {
                 // A hidden popup never paints again; drop the stale surface so
                 // acquire_popup cannot hand back a dropdown that is gone.
                 // DmaBufImage's owned buffer table closes duped plane fds.
-                let _ = self.handler.popup_slot.lock().unwrap().take();
+                // SolidCraft: discard keeps the popup capture watermark.
+                match lock_frame_slot(&self.handler.popup_slot) {
+                    Ok(mut slot) => { slot.discard(); }
+                    Err(error) => log::error!("failed to discard CEF popup: {error}"),
+                }
             }
         }
 
@@ -221,6 +250,30 @@ cef::wrap_render_handler! {
             );
             1 // host now owns the system drag loop
         }
+    }
+}
+
+// SolidCraft: copy only the actual common CEF ABI fields. No callback pointer,
+// app placement or synthetic renderer-commit epoch survives this function.
+fn capture_metadata(
+    extra: &cef::AcceleratedPaintInfoCommon,
+    element: crate::frame_geometry::PaintElement,
+    generation: u64,
+) -> crate::frame_geometry::CaptureMetadata {
+    use crate::frame_geometry::{CaptureMetadata, FrameGeometry, FrameRect};
+
+    let rect = |r: &cef::Rect| FrameRect { x: r.x, y: r.y, width: r.width, height: r.height };
+    CaptureMetadata {
+        element,
+        geometry: FrameGeometry {
+            coded_size: [extra.coded_size.width, extra.coded_size.height],
+            visible_rect: rect(&extra.visible_rect),
+            content_rect: rect(&extra.content_rect),
+            source_size: (extra.has_source_size != 0).then_some([extra.source_size.width, extra.source_size.height]),
+        },
+        timestamp_micros: extra.timestamp,
+        capture_counter: (extra.has_capture_counter != 0).then_some(extra.capture_counter),
+        generation,
     }
 }
 
@@ -426,6 +479,46 @@ impl WeldLifeSpanHandler {
 #[cfg(test)]
 mod osr_boundary_tests {
     use super::*;
+
+    // SolidCraft: exercise the real CEF binding, including valid zero timestamp
+    // and optional zeros, rather than inventing an ABI-shaped substitute.
+    #[test]
+    fn capture_scalars_respect_cef_validity_flags_and_are_owned() {
+        use crate::frame_geometry::{FrameRect, PaintElement};
+
+        let mut extra = cef::AcceleratedPaintInfoCommon {
+            timestamp: 0,
+            coded_size: cef::Size { width: 463, height: 1123 },
+            visible_rect: cef::Rect { x: 0, y: 0, width: 463, height: 1123 },
+            content_rect: cef::Rect { x: 326, y: 0, width: 248, height: 600 },
+            source_size: cef::Size { width: 463, height: 1122 },
+            capture_counter: 81,
+            ..Default::default()
+        };
+        let absent = capture_metadata(&extra, PaintElement::View, 7);
+        assert_eq!(absent.timestamp_micros, 0);
+        assert_eq!(absent.geometry.source_size, None);
+        assert_eq!(absent.capture_counter, None);
+        assert_eq!(absent.geometry.coded_size, [463, 1123]);
+        assert_eq!(absent.geometry.visible_rect, FrameRect { x: 0, y: 0, width: 463, height: 1123 });
+        assert_eq!(absent.geometry.content_rect, FrameRect { x: 326, y: 0, width: 248, height: 600 });
+        assert_eq!(absent.element, PaintElement::View);
+        assert_eq!(absent.generation, 7);
+
+        extra.has_source_size = 1;
+        extra.has_capture_counter = 1;
+        extra.capture_counter = 0;
+        extra.timestamp = 123;
+        let present = capture_metadata(&extra, PaintElement::Popup, 8);
+        extra.source_size.width = -1;
+        extra.timestamp = 999;
+        drop(extra);
+        assert_eq!(present.geometry.source_size, Some([463, 1122]));
+        assert_eq!(present.capture_counter, Some(0));
+        assert_eq!(present.timestamp_micros, 123);
+        assert_eq!(present.element, PaintElement::Popup);
+        assert_eq!(present.generation, 8);
+    }
 
     #[test]
     fn window_open_and_target_blank_are_cancelled_and_reported() {
