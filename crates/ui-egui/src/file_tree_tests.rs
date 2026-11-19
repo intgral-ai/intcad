@@ -496,6 +496,31 @@ fn a_right_click_opens_the_row_menu_and_rename_edits_in_place() {
     assert!(rect_of("files:edit").is_some(), "Rename opened the name field");
 }
 
+/// A click with the command modifier adds the row to the selection and nothing else. On macOS it
+/// used to open the row menu as well: the secondary click there is Control-click.
+#[test]
+fn a_command_click_adds_to_the_selection_without_opening_the_row_menu() {
+    use crate::scenario::{Harness, rect_of};
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let first = scratch.file("first.txt", "");
+    let second = scratch.file("second.txt", "");
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.call("ui.files", json!({"root": scratch.path().to_string_lossy()}));
+    h.frames(20);
+    let row = rect_of("files:row:first.txt").expect("the first row");
+    h.call("ui.click", json!({"x": row.center().x, "y": row.center().y}));
+    h.frames(2);
+    let row = rect_of("files:row:second.txt").expect("the second row");
+    h.call("ui.click", json!({"x": row.center().x, "y": row.center().y, "ctrl": true}));
+    h.frames(2);
+    assert!(h.app.file_tree.selection.contains(&first) && h.app.file_tree.selection.contains(&second), "{:?}", h.app.file_tree.selection);
+    assert!(h.app.file_tree.context.is_none(), "no row menu");
+    assert!(rect_of("menu:files_rename").is_none());
+}
+
 /// The Enter that finishes a rename belongs to the name field: it must not also open the row,
 /// which would put a second tab on the renamed file beside the one being edited.
 #[test]

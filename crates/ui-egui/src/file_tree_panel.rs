@@ -527,7 +527,10 @@ fn row_ui(
     }
 
     let modifiers = ui.input(|i| i.modifiers);
-    if response.clicked() {
+    // On macOS the secondary click of a one-button mouse is Control-click; Command-click is the
+    // one that adds a row to the selection, as Ctrl-click does elsewhere.
+    let control_click = cfg!(target_os = "macos") && modifiers.ctrl && !modifiers.command;
+    if response.clicked() && !control_click {
         app.file_tree.focused = true;
         app.file_tree.press = Some(row.path.clone());
         app.file_tree.click(&row.path, modifiers, visible);
@@ -552,7 +555,7 @@ fn row_ui(
     }
     let secondary =
         response.secondary_clicked() || (response.contains_pointer() && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)));
-    if secondary || (response.clicked() && modifiers.command && cfg!(target_os = "macos")) {
+    if secondary || (response.clicked() && control_click) {
         if !app.file_tree.selection.contains(&row.path) {
             app.file_tree.select_only(&row.path);
         }

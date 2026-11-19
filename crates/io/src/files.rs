@@ -366,7 +366,10 @@ pub fn rename(source: &Path, new_name: &str, conflict: Conflict) -> ItemResult {
     if target == source {
         return ItemResult::done(source, &target);
     }
-    if target.exists() {
+    // On a file system that does not tell letter case apart (the default on macOS and Windows),
+    // the new spelling of the same name "exists": it is this entry. That is a rename, not a
+    // conflict.
+    if target.exists() && !same_entry_in_another_case(source, &target) {
         match conflict {
             Conflict::Skip => return ItemResult::skipped(source, &target),
             Conflict::KeepBoth => target = unique_path(parent, new_name),
@@ -387,6 +390,21 @@ pub fn rename(source: &Path, new_name: &str, conflict: Conflict) -> ItemResult {
         Ok(()) => ItemResult::done(source, &target),
         Err(e) => ItemResult::failed(source, &target, describe("rename", source, &e)),
     }
+}
+
+/// Do `source` and `target` name one entry of the same folder in two spellings that differ only
+/// in letter case? True when the names match without regard to case and the folder lists no
+/// entry spelled exactly like the target: the target then "exists" only because the file system
+/// answers for the source. A folder that does tell case apart and holds both lists both.
+fn same_entry_in_another_case(source: &Path, target: &Path) -> bool {
+    let (Some(from), Some(to)) = (source.file_name().and_then(OsStr::to_str), target.file_name().and_then(OsStr::to_str)) else {
+        return false;
+    };
+    if from == to || from.to_lowercase() != to.to_lowercase() || source.parent() != target.parent() {
+        return false;
+    }
+    let Some(Ok(reader)) = source.parent().map(fs::read_dir) else { return false };
+    !reader.filter_map(Result::ok).any(|entry| entry.file_name().to_str() == Some(to))
 }
 
 /// Where `source` goes when the destination already holds `direct`; `None` means skip.
@@ -535,7 +553,7 @@ pub enum TrashProblem {
 
 /// Put one entry in the system's trash.
 pub fn trash(path: &Path) -> Result<(), TrashProblem> {
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
     {
         if home_trash_available() {
             return move_to_home_trash(path).map_err(TrashProblem::Refused);
@@ -567,20 +585,35 @@ pub fn trash(path: &Path) -> Result<(), TrashProblem> {
     }
     #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
     {
-        match std::process::Command::new("osascript")
-            .args(["-e", &format!("tell application \"Finder\" to delete POSIX file \"{}\"", path.display())])
-            .output()
-        {
-            Ok(output) if output.status.success() => Ok(()),
-            Ok(output) => Err(TrashProblem::Refused(describe_text(&String::from_utf8_lossy(&output.stderr)))),
-            Err(e) => Err(TrashProblem::Refused(describe_text(&e.to_string()))),
-        }
+        apple_trash(path)
     }
     #[cfg(target_arch = "wasm32")]
     {
         let _ = path;
         Err(TrashProblem::Unavailable)
     }
+}
+
+/// Put one entry in the Trash with the system's own call. It takes the path as data, so no
+/// file name can be read as a command; it needs no permission to control Finder; it answers
+/// with an error where Finder would put up a question; and a symbolic link goes to the Trash
+/// as a link.
+#[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
+fn apple_trash(path: &Path) -> Result<(), TrashProblem> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    /// `NSFeatureUnsupportedError`: the volume has no Trash.
+    const NO_TRASH_HERE: isize = 3328;
+    let Some(text) = path.to_str() else {
+        return Err(TrashProblem::Refused("the name is not readable text".into()));
+    };
+    objc2::rc::autoreleasepool(|_| {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(text));
+        match NSFileManager::defaultManager().trashItemAtURL_resultingItemURL_error(&url, None) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == NO_TRASH_HERE => Err(TrashProblem::Unavailable),
+            Err(error) => Err(TrashProblem::Refused(describe_text(&error.localizedDescription().to_string()))),
+        }
+    })
 }
 
 /// Delete one entry for good. A symbolic link is removed as a link: its target is untouched.
@@ -594,7 +627,7 @@ pub fn remove_permanent(path: &Path) -> Result<(), String> {
 }
 
 /// Is a home trash usable for `path`? (Linux and other freedesktop systems.)
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn home_trash_available() -> bool {
     match home_trash() {
         Some((files, info)) => ensure_trash_dirs(&files, &info),
@@ -602,7 +635,7 @@ fn home_trash_available() -> bool {
     }
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn home_trash() -> Option<(PathBuf, PathBuf)> {
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -612,20 +645,20 @@ fn home_trash() -> Option<(PathBuf, PathBuf)> {
     Some((trash.join("files"), trash.join("info")))
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn ensure_trash_dirs(files: &Path, info: &Path) -> bool {
     let made = fs::create_dir_all(files).and_then(|_| fs::create_dir_all(info));
     made.is_ok() && fs::metadata(files).map(|m| m.is_dir()).unwrap_or(false)
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn move_to_home_trash(path: &Path) -> Result<(), String> {
     let Some((files, info)) = home_trash() else { return Err("there is no home folder".into()) };
     move_into_trash(&files, &info, path)
 }
 
 /// A trash on the same volume, for a file the home trash should not hold (another disk).
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn volume_trash(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let mount = mount_point(path)?;
     let uid = current_uid()?;
@@ -638,12 +671,12 @@ fn volume_trash(path: &Path) -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn move_to_volume_trash(path: &Path, trash: &(PathBuf, PathBuf)) -> Result<(), String> {
     move_into_trash(&trash.0, &trash.1, path)
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), String> {
     let name = original.file_name().and_then(OsStr::to_str).unwrap_or("item");
     let mut target = files.join(name);
@@ -670,7 +703,7 @@ fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), Str
 }
 
 /// The mount point a path is on: the longest prefix of its ancestors with the same device id.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn mount_point(path: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::MetadataExt;
     let mut current = path.canonicalize().ok()?;
@@ -691,7 +724,7 @@ fn mount_point(path: &Path) -> Option<PathBuf> {
 
 /// The user id that names this user's trash on a volume, read from the home folder's owner
 /// (no extra dependency, no system call beyond `stat`).
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn current_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
     let home = std::env::var_os("HOME")?;
@@ -699,7 +732,7 @@ fn current_uid() -> Option<u32> {
 }
 
 /// `aaaa-mm-ddThh:mm:ss` in UTC, for a `.trashinfo` file, without a date-time dependency.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn utc_now() -> String {
     let seconds = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let days = seconds / 86_400;
@@ -709,7 +742,7 @@ fn utc_now() -> String {
 }
 
 /// Days since the epoch as a calendar date (Howard Hinnant's algorithm, public domain).
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -725,7 +758,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// Percent-encode a path for a `.trashinfo` file (UTF-8, with `/` kept, as the spec says).
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn percent_encode(path: &str) -> String {
     let mut encoded = String::with_capacity(path.len());
     for byte in path.bytes() {
@@ -741,7 +774,7 @@ fn percent_encode(path: &str) -> String {
 /// Some systems start a program that stays attached for its lifetime; call this on a worker so
 /// the window keeps drawing. An answer here is the opener's: a missing association is an error.
 pub fn open_default_waiting(path: &Path) -> Result<(), String> {
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
     {
         if !has_association(path) {
             return Err("no program is associated with this file".into());
@@ -760,7 +793,15 @@ pub fn open_default_waiting(path: &Path) -> Result<(), String> {
     }
     #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
     {
-        wait_for("open", &[path.as_os_str()])
+        // `open` answers a file nothing opens with LaunchServices' own error text
+        // (kLSApplicationNotFoundErr, -10814); say it as the other systems do.
+        wait_for("open", &[path.as_os_str()]).map_err(|reason| {
+            if reason.contains("kLSApplicationNotFoundErr") || reason.contains("-10814") {
+                "no program is associated with this file".to_string()
+            } else {
+                reason
+            }
+        })
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -771,7 +812,7 @@ pub fn open_default_waiting(path: &Path) -> Result<(), String> {
 
 /// Open a file (or folder) with the system's default program.
 pub fn open_default(path: &Path) -> Result<(), String> {
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
     {
         spawn_detached("xdg-open", &[path.as_os_str()])
     }
@@ -792,7 +833,7 @@ pub fn open_default(path: &Path) -> Result<(), String> {
 
 /// Show an entry in the system's file manager, with the entry selected where the platform can.
 pub fn reveal(path: &Path) -> Result<(), String> {
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
     {
         // The freedesktop file manager interface selects the entry; a plain folder open is the
         // fallback when no file manager answers.
@@ -837,7 +878,7 @@ pub fn reveal(path: &Path) -> Result<(), String> {
 #[cfg(not(target_arch = "wasm32"))]
 /// Does the system name a program for this file's type? A desktop without `xdg-mime` is given
 /// the benefit of the doubt: `xdg-open` answers for itself then.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 fn has_association(path: &Path) -> bool {
     let query = |args: &[&str]| -> Option<String> {
         let output = std::process::Command::new("xdg-mime").args(args).output().ok()?;

@@ -115,6 +115,56 @@ fn a_folder_copy_takes_its_whole_tree_as_its_own_copy() {
     fs::write(copy.target.join("a.sc"), "changed").unwrap();
     assert_eq!(fs::read(source.join("a.sc")).unwrap(), b"a");
 }
+/// A rename that only changes letter case is a rename everywhere. On a file system that does not
+/// tell case apart (macOS and Windows by default) the new spelling already "exists", as this very
+/// entry; that used to be refused as a name already taken.
+#[test]
+fn a_rename_that_only_changes_letter_case_gives_the_new_spelling() {
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "x");
+    let result = rename(&file, "Bracket.sc", Conflict::Skip);
+    assert_eq!(result.outcome, Outcome::Done, "{result:?}");
+    let names: Vec<String> = read_dir(scratch.path()).unwrap().into_iter().map(|entry| entry.name).collect();
+    assert_eq!(names, ["Bracket.sc"]);
+    let folder = scratch.dir("parts");
+    assert_eq!(rename(&folder, "Parts", Conflict::Skip).outcome, Outcome::Done);
+    assert!(read_dir(scratch.path()).unwrap().iter().any(|entry| entry.name == "Parts"));
+    // Another entry under the wanted name is still a conflict.
+    scratch.file("notes.txt", "kept");
+    let other = scratch.file("draft.txt", "moving");
+    assert_eq!(rename(&other, "notes.txt", Conflict::Skip).outcome, Outcome::Skipped);
+    assert_eq!(fs::read_to_string(scratch.path().join("notes.txt")).unwrap(), "kept");
+}
+
+/// The Trash on macOS takes the path as data: a name with a quote, a backslash or script text is
+/// an ordinary name, and a link goes to the Trash as a link (its target stays).
+#[cfg(target_vendor = "apple")]
+#[test]
+#[ignore = "puts test files in the real Trash; run on macOS with --ignored"]
+fn the_trash_takes_awkward_names_and_links_as_they_are() {
+    let scratch = Scratch::new();
+    let target = scratch.dir("real");
+    fs::write(target.join("keep.txt"), "keep").unwrap();
+    std::os::unix::fs::symlink(&target, scratch.path().join("link")).unwrap();
+    for name in ["plain.txt", "quote\"name.txt", "back\\slash.txt", "x\" & (do shell script \"true\") & \".txt"] {
+        let path = scratch.file(name, "x");
+        assert_eq!(trash(&path), Ok(()), "{name}");
+        assert!(!path.exists(), "{name} left the folder");
+    }
+    assert_eq!(trash(&scratch.path().join("link")), Ok(()));
+    assert!(fs::symlink_metadata(scratch.path().join("link")).is_err(), "the link is gone");
+    assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "keep", "its target is untouched");
+    assert!(matches!(trash(&scratch.path().join("never-there.txt")), Err(TrashProblem::Refused(_))));
+}
+
+/// A file no program opens gets the same plain reason on macOS as on the other systems.
+#[cfg(target_vendor = "apple")]
+#[test]
+fn a_file_no_program_opens_says_so_in_plain_words() {
+    let scratch = Scratch::new();
+    let path = scratch.file("orphan.intcad-no-program", "x");
+    assert_eq!(open_default_waiting(&path), Err("no program is associated with this file".to_string()));
+}
 
 #[test]
 fn a_folder_cannot_be_copied_into_itself() {
