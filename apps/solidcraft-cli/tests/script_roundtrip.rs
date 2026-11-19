@@ -49,6 +49,24 @@ fn params(s: &Session) -> Vec<solidcraft_engine::doc::Param> {
     v
 }
 
+/// A joint as the replay must return it, except the snap's persistent face/end/x refs, which
+/// `joint.create` re-derives from the pick at creation (the engine's joint tests compare those
+/// separately). Everything that makes it the same joint stays: id, name, kind, occurrence refs,
+/// values, limits, offset, angle, flags and expressions.
+fn joints(s: &Session) -> Vec<Value> {
+    let strip = |mut joint: Value| {
+        for side in ["a", "b"] {
+            if let Some(snap) = joint.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
+                snap.remove("face");
+                snap.remove("end");
+                snap.remove("x");
+            }
+        }
+        joint
+    };
+    s.doc.assembly.joints.iter().map(|j| strip(serde_json::to_value(j).unwrap())).collect()
+}
+
 #[test]
 fn corpus_designs_replay_from_their_scripts() {
     let mut replayed = 0;
@@ -76,13 +94,14 @@ fn corpus_designs_replay_from_their_scripts() {
         assert_eq!(t.doc.param_comments, s.doc.param_comments, "{name}: comments");
         // The assembly state: components and occurrences keep their ids (the
         // replay replays every allocation-bearing step at its original id
-        // position), and the placements the joints solved to hold — the joints
-        // themselves are compared where the app's own tests compare them
-        // (their face, end and x references are re-derived at creation).
+        // position), and the placements the joints solved to hold stay. The
+        // joints are compared below, leaving out only the face/end/x refs that
+        // joint.create re-derives from the pick at creation.
         assert_eq!(t.doc.components, s.doc.components, "{name}: components");
         assert_eq!(t.doc.occurrences, s.doc.occurrences, "{name}: occurrences");
         assert_eq!(t.doc.parts, s.doc.parts, "{name}: standard parts");
         assert_eq!(t.doc.links, s.doc.links, "{name}: linked designs");
+        assert_eq!(joints(&t), joints(&s), "{name}: joints");
         assert_eq!(errors(&t), errors(&s), "{name}: feature results");
         assert_eq!(bodies(&mut t), bodies(&mut s), "{name}: bodies");
         replayed += 1;

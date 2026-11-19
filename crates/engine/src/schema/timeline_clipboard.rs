@@ -363,7 +363,8 @@ fn script_path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Err
 
 /// Write the design's history as a command script that rebuilds it (`intcad-cli eval` and
 /// `run` replay it): one step per setting and feature, and a list of what the script leaves out.
-/// A design with components or joints is refused for now. The design is not changed.
+/// Components, occurrences and joints are exported; nested components and bodies moved between
+/// components are refused. The design is not changed.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ExportScriptParams {
