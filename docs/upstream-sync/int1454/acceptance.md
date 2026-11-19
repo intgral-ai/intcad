@@ -87,7 +87,7 @@ defects fixed; the Phase 0 gate passed"), and the one `Blocked` area carries CD-
 | CD-4: no opt-in plaintext HTTP | no plaintext transport was added; the loopback token rules are unchanged | `crates/control/src/auth.rs`, `crates/engine/src/control_auth.rs` shim |
 | CD-5: plugin runtime Blocked, not "Not Applicable" | runtime **and** surface removed: no `plugin.*`, `file.import`, `model.mesh`, no `craft-plugin`/`wasmtime`/`cranelift` in manifests or lock | `Cargo.lock`, engine command registry, §7 |
 | CD-6: no brand-era UI kit/look/theme/assets | Intcad's egui UI kept and adapted; no upstream UI or brand asset imported; the only moved assets are the Liberation Sans font (OFL) and the STEP/FreeCAD fixtures (attribution rows) | `git diff v0.44.1 -- crates/ui-egui` shows no wholesale import; §2b |
-| CD-7: vendored solidcore closure, no rev pins | `solidcore/` byte-identical to `v0.44.1:solidcore`; `crates/step` deleted; `deny.toml` `[sources]` has no git sources | `git diff --stat v0.44.1 -- solidcore` empty; `deny.toml` |
+| CD-7: vendored solidcore closure, no rev pins | `solidcore/` byte-identical to `v0.44.1:solidcore`; `crates/step` deleted; `deny.toml` `[sources]` has no git sources | `git diff v0.44.1 -- solidcore` is empty and both trees hash to `8b5c01445619305dcfc5072db3fe76b8cfea67be`; `deny.toml` denies unknown git sources |
 
 ## 4. Gates and evidence (to be refreshed at the final SHA)
 
