@@ -33,6 +33,9 @@ if (process.env.MASTRA_APP_DATA_DIR) {
   mkdirSync(home, { recursive: true });
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  // Mastra Code keeps small lease files for its sessions under /tmp/mc, shared by every Mastra
+  // Code of this user. Intcad's agent keeps its own, with the rest of its data.
+  process.env.MASTRACODE_SIGNALS_SOCKET_ROOT = join(process.env.MASTRA_APP_DATA_DIR, 'signals');
 }
 
 // Mastra reports feature use to its own service unless this is set (`@mastra/core`, and Mastra

@@ -136,7 +136,9 @@ The app names a data folder with `MASTRA_APP_DATA_DIR`. Mastra keeps its plan si
 own data there, apart from a Mastra Code the user may have installed. The agent also takes a home
 folder of its own inside it (`home/`): Mastra Code reads a person's own agent files from their
 home folder (instructions for agents, MCP servers, its own settings), and none of that is meant for
-Intcad's assistant or for the model it talks to. Without `MASTRA_APP_DATA_DIR` (run by hand)
+Intcad's assistant or for the model it talks to. The lease files Mastra Code keeps for its
+sessions, which it would put under `/tmp/mc` for every Mastra Code of the user, go to `signals/`
+in the same folder (`MASTRACODE_SIGNALS_SOCKET_ROOT`). Without `MASTRA_APP_DATA_DIR` (run by hand)
 nothing of this is changed. The browser is the exception: it is started with the user's own home
 folder, so it is the browser they use, with the profile they are signed in with.
 
