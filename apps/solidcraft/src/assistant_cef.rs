@@ -28,13 +28,17 @@ use welding::{
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
 
+#[path = "assistant_cef_frame.rs"]
+mod admission;
 #[path = "assistant_cef_config.rs"]
 mod config;
 #[path = "assistant_cef_viewport.rs"]
 mod viewport;
 
+use admission::{FrameAdmission, FrameReject, InputTicket, Placement, ThemeTicket};
 pub use config::HostBackend;
 use config::Switch;
+use welding::frame_geometry::{FrameRect, FrameWatermarks};
 
 /// The actual window-system connection, not the desktop session's environment.
 pub fn host_backend(cc: &eframe::CreationContext<'_>) -> HostBackend {
@@ -161,6 +165,10 @@ struct InputQueue {
     motion: Option<(i32, i32)>,
     capacity: usize,
     ready: bool,
+    ticket: Option<InputTicket>,
+    buttons: Vec<MouseButton>,
+    keys: Vec<i32>,
+    overflowed: bool,
     pub held: u64,
     pub refused: u64,
 }
@@ -175,23 +183,67 @@ enum Queued {
 
 impl InputQueue {
     fn new(capacity: usize) -> Self {
-        Self { critical: VecDeque::new(), motion: None, capacity, ready: false, held: 0, refused: 0 }
+        Self {
+            critical: VecDeque::new(),
+            motion: None,
+            capacity,
+            ready: false,
+            ticket: None,
+            buttons: Vec::new(),
+            keys: Vec::new(),
+            overflowed: false,
+            held: 0,
+            refused: 0,
+        }
     }
 
     fn push(&mut self, event: Queued) {
         if let Queued::Mouse(MouseEvent { action: MouseAction::Moved, x, y, .. }) = event {
             self.motion = Some((x, y));
             if !self.ready {
-                self.held += 1;
+                self.held = self.held.saturating_add(1);
             }
             return;
         }
         if self.critical.len() >= self.capacity {
-            self.refused += 1;
+            self.refused = self.refused.saturating_add(1);
+            self.overflowed = true;
             return;
         }
+        // Releases whose press belonged to an invalidated placement must not
+        // become a click/key-up in the newly admitted page.
+        match &event {
+            Queued::Mouse(mouse) => match mouse.action {
+                MouseAction::Pressed if !self.buttons.contains(&mouse.button) => self.buttons.push(mouse.button),
+                MouseAction::Released => {
+                    if !self.buttons.contains(&mouse.button) {
+                        return;
+                    }
+                    self.buttons.retain(|button| *button != mouse.button);
+                }
+                _ => {}
+            },
+            Queued::Key(key) => match key.kind {
+                KeyEventKind::RawKeyDown | KeyEventKind::KeyDown if !self.keys.contains(&key.windows_key_code) => {
+                    if self.keys.len() >= self.capacity {
+                        self.refused = self.refused.saturating_add(1);
+                        self.overflowed = true;
+                        return;
+                    }
+                    self.keys.push(key.windows_key_code);
+                }
+                KeyEventKind::KeyUp => {
+                    if !self.keys.contains(&key.windows_key_code) {
+                        return;
+                    }
+                    self.keys.retain(|code| *code != key.windows_key_code);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
         if !self.ready {
-            self.held += 1;
+            self.held = self.held.saturating_add(1);
         }
         self.critical.push_back(event);
     }
@@ -199,6 +251,15 @@ impl InputQueue {
     fn clear(&mut self) {
         self.critical.clear();
         self.motion = None;
+        self.buttons.clear();
+        self.keys.clear();
+        self.overflowed = false;
+    }
+
+    fn invalidate(&mut self) {
+        self.clear();
+        self.ready = false;
+        self.ticket = None;
     }
 }
 
@@ -220,6 +281,23 @@ pub struct CefAssistant {
     focused: bool,
     shown: bool,
     viewport: viewport::ViewportState,
+    /// Only B (actual native Linux Wayland) requires owned capture metadata.
+    admission: Option<FrameAdmission>,
+    placement: Option<Placement>,
+    lifetime: u64,
+    theme_revision: u64,
+    pending_theme: Option<ThemeTicket>,
+    requested_theme: String,
+    page_ready: bool,
+    native_ready: bool,
+    last_rect: Option<egui::Rect>,
+    placed_this_frame: bool,
+    popup_current: bool,
+    popup_generation: u64,
+    input_quarantined: bool,
+    input_failed: bool,
+    identity_exhausted: bool,
+    last_reject: Option<FrameReject>,
     pictures: Pictures,
     inbox: Receiver<String>,
     port: u16,
@@ -364,9 +442,6 @@ impl CefAssistant {
             // transparent there, or every transparent pixel becomes its default white and the
             // panel's corners show as white squares.
             background_color: None,
-            // Internal CEF protocol messages configure the raster scale; no remote debugging
-            // listener or DevTools window is opened.
-            devtools_protocol: true,
             ..Default::default()
         };
         let producer = match create_producer(&runtime, surface, &host) {
@@ -376,6 +451,7 @@ impl CefAssistant {
                 return None;
             }
         };
+        let max_edge = host.device.limits().max_texture_dimension_2d;
         Some(Self {
             runtime,
             producer,
@@ -390,6 +466,22 @@ impl CefAssistant {
             focused: false,
             shown: false,
             viewport: viewport::ViewportState::new(Instant::now()),
+            admission: wayland_osr.then(|| FrameAdmission::new(max_edge)),
+            placement: None,
+            lifetime: 0,
+            theme_revision: 0,
+            pending_theme: None,
+            requested_theme: String::new(),
+            page_ready: false,
+            native_ready: false,
+            last_rect: None,
+            placed_this_frame: false,
+            popup_current: false,
+            popup_generation: 0,
+            input_quarantined: false,
+            input_failed: false,
+            identity_exhausted: false,
+            last_reject: None,
             pictures,
             inbox,
             port,
@@ -410,7 +502,7 @@ impl CefAssistant {
 
     /// The page's messages and the app's state, whether or not the window is painted.
     pub fn logic(&mut self, solve: &mut SolveApp, ctx: &Context) {
-        self.pump();
+        self.pump(ctx);
         if self.osr_refused {
             web::set_host(solve, false);
             web::set_problem(solve, web::Problem::Failed);
@@ -422,6 +514,9 @@ impl CefAssistant {
         }
         // The conversation goes on while the window is behind another one.
         web::advance(solve, ctx);
+        // Page readiness/theme delivery do not depend on a panel placement or
+        // on any native texture having been admitted.
+        self.sync_page(solve, ctx);
         if let Some(text) = COPY_OUT.with(|slot| slot.borrow_mut().take()) {
             ctx.copy_text(text);
         }
@@ -434,14 +529,35 @@ impl CefAssistant {
             Some("ready") => {
                 // A reloaded page has neither the theme function nor its CSS variables: put the
                 // bridge back and send the theme again, not only when the tokens change.
-                let _ = self.producer.execute_script(THEME_BRIDGE_JS, "");
-                self.told.clear();
-                self.told_theme.clear();
-                self.viewport.reset(Instant::now());
+                self.new_page(ctx);
+                self.page_ready = true;
             }
-            Some("focus") => self.focused = value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            Some("theme-ready") => {
+                let ticket = value.get("ticket").and_then(serde_json::Value::as_str).and_then(ThemeTicket::parse);
+                if let Some(ticket) = ticket
+                    && self.pending_theme == Some(ticket)
+                    && let Some(floors) = self.drain_frames()
+                {
+                    let applied = self.admission.as_mut().is_none_or(|admission| admission.theme_applied(ticket, floors, Instant::now()));
+                    if applied {
+                        self.pending_theme = None;
+                        // Count this repaint as the first bounded frame-wait
+                        // attempt, so tick cannot request a second immediately.
+                        let due = self.admission.as_mut().is_none_or(|admission| admission.retry_due(Instant::now()));
+                        if due && let Err(error) = self.producer.request_repaint() {
+                            note(&format!("CEF: themed repaint failed: {error}"));
+                        }
+                    }
+                }
+            }
+            Some("focus") => {
+                self.focused = !self.input_quarantined && self.can_input() && value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            }
             Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
             _ => {
+                if self.admission.is_some() && !self.can_input() {
+                    return;
+                }
                 if let Err(reason) = web::act(solve, ctx, message) {
                     note(&format!("CEF: refused: {reason}"));
                 }
@@ -451,22 +567,51 @@ impl CefAssistant {
 
     /// Once a frame, after the app's UI: place, resize, take the texture, draw it.
     pub fn tick(&mut self, solve: &mut SolveApp, ctx: &Context, frame: &mut eframe::Frame) {
+        self.placed_this_frame = false;
         if self.osr_refused {
             return;
         }
         if web::take_retry(solve) {
+            self.failed = false;
+            self.input_failed = false;
+            self.viewport.reset(Instant::now());
             self.told.clear();
+            self.told_theme.clear();
+            self.pending_theme = None;
+            self.reset_admission(ctx);
+            web::set_host(solve, true);
         }
-        let Some(rect) = web::placement(solve, ctx) else {
+        let placed = web::placement(solve, ctx);
+        self.placed_this_frame = placed.is_some();
+        // While the existing failure UI offers Retry, keep processing a late
+        // compatible capture at the last target. A cached target never permits
+        // drawing or input: only a placement actually supplied by this UI does.
+        let Some(rect) = placed.or_else(|| self.failed.then_some(self.last_rect).flatten()) else {
             if self.shown {
                 self.shown = false;
                 let _ = self.producer.set_visible(false);
-                self.queue.clear();
+                self.placement = None;
+                self.reset_admission(ctx);
             }
             return;
         };
+        self.last_rect = Some(rect);
         // Align texel centres with the window framebuffer, not a fractional panel origin.
         let ppp = ctx.pixels_per_point();
+        if !ppp.is_finite() || !(0.25..=8.0).contains(&ppp) || !rect.is_finite() || rect.width() <= 0.0 || rect.height() <= 0.0 {
+            if self.placement.take().is_some() {
+                self.reset_admission(ctx);
+            }
+            return;
+        }
+        let pixels = [rect.min.x * ppp, rect.min.y * ppp, rect.max.x * ppp, rect.max.y * ppp].map(f32::round);
+        if pixels.into_iter().any(|edge| !edge.is_finite() || f64::from(edge) < f64::from(i32::MIN) || f64::from(edge) > f64::from(i32::MAX)) {
+            self.placement = None;
+            self.reset_admission(ctx);
+            self.failed = true;
+            web::set_problem(solve, web::Problem::Failed);
+            return;
+        }
         let rect = egui::Rect::from_min_max(
             egui::pos2((rect.min.x * ppp).round() / ppp, (rect.min.y * ppp).round() / ppp),
             egui::pos2((rect.max.x * ppp).round() / ppp, (rect.max.y * ppp).round() / ppp),
@@ -476,35 +621,31 @@ impl CefAssistant {
             let _ = self.producer.set_visible(true);
         }
         let physical = [(rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32];
+        let placement = Placement { origin_px: [(rect.min.x * ppp).round() as i32, (rect.min.y * ppp).round() as i32], physical, scale: ppp };
+        if self.placement != Some(placement) {
+            self.placement = Some(placement);
+            self.reset_admission(ctx);
+        }
+        if physical.into_iter().any(|edge| edge == 0 || edge > self.host.device.limits().max_texture_dimension_2d) {
+            self.failed = true;
+            web::set_problem(solve, web::Problem::Failed);
+            return;
+        }
         let target = (physical, ppp);
         if self.viewport.needs_update(target, Instant::now()) {
-            let id = self.viewport.begin(target, Instant::now());
-            // welding's native screen-info notification updates DIP layout, but CEF Linux
-            // can keep its initial DPR=1. That produced a 370px raster stretched to 463px.
-            // Configure Chromium's actual viewport and raster scale together. This changes
-            // device pixels, not CSS zoom, page scale or the native input conversion.
-            let message = serde_json::json!({
-                "id": id,
-                "method": "Emulation.setDeviceMetricsOverride",
-                "params": {
-                    "width": (physical[0] as f32 / ppp).round().max(1.0) as u32,
-                    "height": (physical[1] as f32 / ppp).round().max(1.0) as u32,
-                    "deviceScaleFactor": ppp,
-                    "mobile": false,
-                }
-            });
-            let result = self
-                .producer
-                .resize(dpi::PhysicalSize::new(physical[0], physical[1]))
-                .and_then(|()| self.producer.set_scale_factor(ppp))
-                .and_then(|()| self.producer.send_devtools_message(&message.to_string()));
+            self.native_ready = false;
+            self.viewport.begin(target);
+            // Native setters configure layout/screen density. No CDP emulation,
+            // CSS zoom or second physical→DIP input conversion.
+            let result = self.producer.resize(dpi::PhysicalSize::new(physical[0], physical[1])).and_then(|()| self.producer.set_scale_factor(ppp));
+            self.viewport.finish(target, result.is_ok(), Instant::now());
+            self.native_ready = result.is_ok();
             if let Err(error) = result {
-                self.viewport.failed(Instant::now());
                 note(&format!("CEF: viewport configuration failed: {error}"));
             }
             note(&format!("CEF: viewport physical={}x{} scale={ppp}", physical[0], physical[1]));
         }
-        self.ticks += 1;
+        self.ticks = self.ticks.saturating_add(1);
         if self.last_stats.elapsed() >= Duration::from_secs(2) {
             note(&format!("stats over 2 s: ticks={} state_pushes={} cef_frames={}", self.ticks, self.pushes, self.frames));
             self.ticks = 0;
@@ -512,7 +653,154 @@ impl CefAssistant {
             self.frames = 0;
             self.last_stats = Instant::now();
         }
-        self.pump();
+        self.pump(ctx);
+        self.sync_page(solve, ctx);
+
+        if let Some(native) = self.producer.acquire_native_frame()
+            && self.native_ready
+        {
+            let metadata = native.capture_metadata();
+            let checked = self.admission.as_ref().map_or(Ok(()), |admission| {
+                let metadata = metadata.as_ref().ok_or(FrameReject::MissingMetadata)?;
+                admission.check_view(metadata)?;
+                if native.generation() != metadata.generation
+                    || i32::try_from(native.size().width).ok() != Some(metadata.geometry.coded_size[0])
+                    || i32::try_from(native.size().height).ok() != Some(metadata.geometry.coded_size[1])
+                {
+                    return Err(FrameReject::ImportMismatch);
+                }
+                Ok(())
+            });
+            if let Err(error) = checked {
+                if self.last_reject != Some(error) {
+                    note(&format!("CEF: native view refused: {error:?}"));
+                }
+                self.last_reject = Some(error);
+            } else {
+                self.last_reject = None;
+            }
+            if checked.is_ok() {
+                match welding::WgpuTextureImporter::import(native, &self.host) {
+                    Ok(texture) => {
+                        if render_state(frame).is_none() {
+                            self.failed = true;
+                            return;
+                        }
+                        let admitted = self.admission.as_mut().map_or(Ok(None), |admission| {
+                            let metadata = metadata.as_ref().ok_or(FrameReject::MissingMetadata)?;
+                            if texture.capture_metadata != Some(*metadata)
+                                || texture.texture.width() != texture.size.width
+                                || texture.texture.height() != texture.size.height
+                                || texture.texture.depth_or_array_layers() != 1
+                            {
+                                return Err(FrameReject::ImportMismatch);
+                            }
+                            admission.admit_view(metadata, [texture.texture.width(), texture.texture.height()], texture.generation).map(Some)
+                        });
+                        match admitted {
+                            Ok(ticket) if !self.input_failed => {
+                                self.queue.ticket = ticket;
+                                self.publish(render_state(frame), texture);
+                                self.failed = false;
+                            }
+                            Ok(_) => {}
+                            Err(error) => note(&format!("CEF: imported view refused: {error:?}")),
+                        }
+                    }
+                    Err(error) => {
+                        note(&format!("CEF: the page's frame could not be imported: {error}"));
+                        self.failed = true;
+                    }
+                }
+            }
+        }
+        self.popup = self.take_popup(frame);
+        if let Some(admission) = &mut self.admission {
+            if admission.retry_due(Instant::now()) {
+                let _ = self.producer.request_repaint();
+            }
+            if let Some(error) = admission.pending_error(Instant::now()) {
+                if !self.failed {
+                    note(&format!("CEF: waiting for compatible native view: {error:?}"));
+                }
+                self.failed = true;
+            }
+        }
+        if self.failed || self.input_failed {
+            web::set_host(solve, false);
+            web::set_problem(solve, web::Problem::Failed);
+        } else {
+            web::set_host(solve, true);
+        }
+
+        if self.can_input()
+            && let Some((id, size)) = self.texture
+        {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("assistant-cef-page")));
+            // One imported texel per framebuffer pixel. A stale resize frame is clipped,
+            // never stretched; the native themed frame backs any newly exposed area.
+            let draw = egui::Rect::from_min_size(rect.min, egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp));
+            painter.with_clip_rect(rect).image(id, draw, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+            if self.popup_current
+                && let Some((popup, at, size)) = self.popup
+            {
+                // CEF reports the popup's own rectangle in physical pixels, relative to the
+                // view: a native <select> list belongs under its control, not at a fixed spot.
+                let popup_rect = egui::Rect::from_min_size(
+                    draw.min + egui::vec2(at[0] as f32 / ppp, at[1] as f32 / ppp),
+                    egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
+                );
+                painter.image(popup, popup_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+            }
+        }
+
+        // Test only: four known colours, to measure what the texture path does to the page's
+        // own values. The page is untouched otherwise.
+        if !self.test_select && self.can_input() && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_PROBE_SWATCH").is_some() {
+            self.test_select = true; // one shot, the same flag
+            let _ = self.producer.execute_script(
+                "(() => { const d = document.createElement('div'); \
+                 d.id='__intcad_swatch'; d.style.cssText='position:fixed;left:8px;top:8px;z-index:2147483647;display:flex'; \
+                 for (const c of ['#000000','#808080','#ffffff','#ff0000','#3a88ee']) { \
+                   const s=document.createElement('div'); s.style.cssText='width:32px;height:32px;background:'+c; d.appendChild(s); } \
+                 document.body.appendChild(d); })()",
+                "",
+            );
+        }
+        // Test only (SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT): a native select in the real page,
+        // so the popup surface path is exercised in the app rather than only in the probe.
+        if !self.test_select && self.can_input() && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT").is_some() {
+            self.test_select = true;
+            let _ = self.producer.execute_script(
+                "(() => { const s = document.createElement('select'); s.id = '__cef_test_select'; \
+                 s.style.cssText = 'position:fixed;left:8px;top:8px;width:120px;height:26px;z-index:2147483647'; \
+                 for (const v of ['alpha','beta','gamma']) { const o = document.createElement('option'); o.textContent = v; s.appendChild(o); } \
+                 document.body.appendChild(s); })()",
+                "",
+            );
+        }
+        // egui only tells winit to open an input method while one of its own text widgets has
+        // the keyboard. The page's editor is inside CEF, so the host asks for it itself, and
+        // without this every IME key arrived as plain Latin text.
+        self.set_ime(ctx, self.focused && self.can_input());
+        // Test only: a real browser reload, to prove the theme survives one.
+        if !self.test_reloaded
+            && self.can_input()
+            && let Some(after) = std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_RELOAD_AFTER").ok().and_then(|value| value.parse::<f32>().ok())
+            && self.started.elapsed().as_secs_f32() >= after
+        {
+            self.test_reloaded = true;
+            note("CEF: test reload");
+            self.new_page(ctx);
+            let _ = self.producer.reload();
+        }
+        self.input(solve, ctx, rect, ppp);
+        // The page paints on change; the host only has to ask soon while it is working.
+        let working = self.last_frame.elapsed() < Duration::from_millis(400);
+        ctx.request_repaint_after(if working { Duration::from_millis(16) } else { Duration::from_millis(200) });
+    }
+
+    fn sync_page(&mut self, solve: &mut SolveApp, ctx: &Context) {
         // State is pushed with the app's own logic; the page is told when it changed.
         let state = web::state(solve);
         // The palette first, every frame the tokens differ, whether or not the conversation
@@ -526,13 +814,38 @@ impl CefAssistant {
                 self.told_theme.len()
             ));
         }
-        if self.texture.is_some() {
+        if self.page_ready {
             let theme = serde_json::from_str::<serde_json::Value>(&state)
                 .ok()
                 .and_then(|value| value.get("theme").cloned())
                 .map(|theme| theme.to_string())
                 .unwrap_or_default();
-            if !theme.is_empty() && theme != self.told_theme {
+            if !theme.is_empty() && (theme != self.told_theme || theme != self.requested_theme) {
+                if theme != self.requested_theme {
+                    let Some(revision) = self.theme_revision.checked_add(1) else {
+                        self.failed = true;
+                        self.input_failed = true;
+                        self.identity_exhausted = true;
+                        self.cancel_input(ctx);
+                        web::set_problem(solve, web::Problem::Failed);
+                        return;
+                    };
+                    self.theme_revision = revision;
+                    let ticket = ThemeTicket { lifetime: self.lifetime, revision };
+                    self.cancel_input(ctx);
+                    let _ = self.drain_frames();
+                    self.popup_current = false;
+                    if let Some(admission) = &mut self.admission
+                        && let Err(error) = admission.theme_pending(ticket, Instant::now())
+                    {
+                        note(&format!("CEF: theme admission failed: {error:?}"));
+                        self.failed = true;
+                        return;
+                    }
+                    self.pending_theme = Some(ticket);
+                    self.requested_theme = theme.clone();
+                }
+                let Some(ticket) = self.pending_theme else { return };
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&theme) {
                     note(&format!(
                         "theme {} dark={} surface={} text={} font={}",
@@ -543,7 +856,8 @@ impl CefAssistant {
                         value["metrics"]["fontBody"].as_f64().unwrap_or(0.0)
                     ));
                 }
-                if self.producer.execute_script(&format!("window.__intcadTheme&&window.__intcadTheme({theme})"), "").is_ok() {
+                let script = format!("window.__intcadTheme&&window.__intcadTheme({theme},'{}:{}')", ticket.lifetime, ticket.revision);
+                if self.producer.execute_script(THEME_BRIDGE_JS, "").is_ok() && self.producer.execute_script(&script, "").is_ok() {
                     self.told_theme = theme;
                     // Test hook: report what the page actually lays out, to compare with the
                     // control height and font size the app draws its own widgets with.
@@ -568,93 +882,107 @@ impl CefAssistant {
             }
             if self.producer.execute_script(&format!("window.__assistantHost&&window.__assistantHost.state({state})"), "").is_ok() {
                 self.told = state;
-                self.pushes += 1;
+                self.pushes = self.pushes.saturating_add(1);
             }
         }
-
-        if let Some(native) = self.producer.acquire_native_frame() {
-            match welding::WgpuTextureImporter::import(native, &self.host) {
-                Ok(texture) => self.publish(render_state(frame), texture),
-                Err(error) => {
-                    note(&format!("CEF: the page's frame could not be imported: {error}"));
-                    self.failed = true;
-                }
-            }
-        }
-        self.popup = self.take_popup(frame);
-
-        if let Some((id, size)) = self.texture {
-            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("assistant-cef-page")));
-            // One imported texel per framebuffer pixel. A stale resize frame is clipped,
-            // never stretched; the native themed frame backs any newly exposed area.
-            let draw = egui::Rect::from_min_size(rect.min, egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp));
-            painter.with_clip_rect(rect).image(id, draw, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
-            if let Some((popup, at, size)) = self.popup {
-                // CEF reports the popup's own rectangle in physical pixels, relative to the
-                // view: a native <select> list belongs under its control, not at a fixed spot.
-                let popup_rect = egui::Rect::from_min_size(
-                    draw.min + egui::vec2(at[0] as f32 / ppp, at[1] as f32 / ppp),
-                    egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
-                );
-                painter.image(popup, popup_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
-            }
-        }
-
-        // Test only: four known colours, to measure what the texture path does to the page's
-        // own values. The page is untouched otherwise.
-        if !self.test_select && self.texture.is_some() && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_PROBE_SWATCH").is_some() {
-            self.test_select = true; // one shot, the same flag
-            let _ = self.producer.execute_script(
-                "(() => { const d = document.createElement('div'); \
-                 d.id='__intcad_swatch'; d.style.cssText='position:fixed;left:8px;top:8px;z-index:2147483647;display:flex'; \
-                 for (const c of ['#000000','#808080','#ffffff','#ff0000','#3a88ee']) { \
-                   const s=document.createElement('div'); s.style.cssText='width:32px;height:32px;background:'+c; d.appendChild(s); } \
-                 document.body.appendChild(d); })()",
-                "",
-            );
-        }
-        // Test only (SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT): a native select in the real page,
-        // so the popup surface path is exercised in the app rather than only in the probe.
-        if !self.test_select && self.texture.is_some() && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT").is_some() {
-            self.test_select = true;
-            let _ = self.producer.execute_script(
-                "(() => { const s = document.createElement('select'); s.id = '__cef_test_select'; \
-                 s.style.cssText = 'position:fixed;left:8px;top:8px;width:120px;height:26px;z-index:2147483647'; \
-                 for (const v of ['alpha','beta','gamma']) { const o = document.createElement('option'); o.textContent = v; s.appendChild(o); } \
-                 document.body.appendChild(s); })()",
-                "",
-            );
-        }
-        // egui only tells winit to open an input method while one of its own text widgets has
-        // the keyboard. The page's editor is inside CEF, so the host asks for it itself, and
-        // without this every IME key arrived as plain Latin text.
-        self.set_ime(ctx, self.focused);
-        // Test only: a real browser reload, to prove the theme survives one.
-        if !self.test_reloaded
-            && self.texture.is_some()
-            && let Some(after) = std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_RELOAD_AFTER").ok().and_then(|value| value.parse::<f32>().ok())
-            && self.started.elapsed().as_secs_f32() >= after
-        {
-            self.test_reloaded = true;
-            note("CEF: test reload");
-            let _ = self.producer.reload();
-        }
-        self.input(solve, ctx, rect, ppp);
-        // The page paints on change; the host only has to ask soon while it is working.
-        let working = self.last_frame.elapsed() < Duration::from_millis(400);
-        ctx.request_repaint_after(if working { Duration::from_millis(16) } else { Duration::from_millis(200) });
     }
 
     pub fn close(&mut self) {
+        self.queue.invalidate();
+        let _ = self.producer.ime_cancel_composition();
+        #[cfg(target_os = "linux")]
+        let _ = self.producer.set_page_focus(false);
+        self.focused = false;
         let _ = self.producer.close();
     }
 
     pub fn focused(&self) -> bool {
-        self.focused && self.shown
+        self.focused && self.shown && self.can_input()
     }
 
     pub fn edit_text(&mut self, redo: bool) {
+        if !self.can_input() || !self.focused {
+            return;
+        }
         let _ = self.producer.execute_script(if redo { "document.execCommand('redo')" } else { "document.execCommand('undo')" }, "");
+    }
+
+    fn can_input(&self) -> bool {
+        self.shown
+            && self.placed_this_frame
+            && self.native_ready
+            && self.queue.ready
+            && !self.input_failed
+            && !self.identity_exhausted
+            && !self.failed
+            && self.admission.as_ref().is_none_or(|admission| self.queue.ticket.is_some_and(|ticket| admission.permits_input(ticket)))
+    }
+
+    fn drain_frames(&mut self) -> Option<FrameWatermarks> {
+        #[cfg(target_os = "linux")]
+        if self.admission.is_some() {
+            return match self.producer.discard_pending_frames() {
+                Ok(floors) => Some(floors),
+                Err(error) => {
+                    note(&format!("CEF: frame drain failed: {error}"));
+                    self.input_failed = true;
+                    None
+                }
+            };
+        }
+        Some(FrameWatermarks::default())
+    }
+
+    fn cancel_input(&mut self, ctx: &Context) {
+        self.queue.invalidate();
+        // Even a down+up entirely inside this egui frame predates the reset.
+        // Discard that frame, then wait for held physical input to become neutral.
+        self.input_quarantined = true;
+        self.focused = false;
+        self.copy_request = None;
+        self.set_ime(ctx, false);
+        if let Err(error) = self.producer.ime_cancel_composition() {
+            note(&format!("CEF: IME cancellation failed: {error}"));
+            self.input_failed |= self.admission.is_some();
+        }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = self.producer.set_page_focus(false) {
+            note(&format!("CEF: native blur failed: {error}"));
+            self.input_failed |= self.admission.is_some();
+        }
+    }
+
+    fn reset_admission(&mut self, ctx: &Context) {
+        self.cancel_input(ctx);
+        self.popup_current = false;
+        self.last_reject = None;
+        self.told_theme.clear();
+        self.requested_theme.clear();
+        self.pending_theme = None;
+        let floors = self.drain_frames().unwrap_or_default();
+        if let Some(admission) = &mut self.admission
+            && let Err(error) = admission.reset(self.lifetime, self.placement, floors, Instant::now())
+        {
+            note(&format!("CEF: admission reset failed: {error:?}"));
+            self.failed = true;
+        }
+    }
+
+    fn new_page(&mut self, ctx: &Context) {
+        self.page_ready = false;
+        self.told.clear();
+        self.native_ready = false;
+        self.viewport.reset(Instant::now());
+        match self.lifetime.checked_add(1) {
+            Some(lifetime) => self.lifetime = lifetime,
+            None => {
+                note("CEF: page identity exhausted");
+                self.input_failed = true;
+                self.identity_exhausted = true;
+                self.failed = true;
+            }
+        }
+        self.reset_admission(ctx);
     }
 
     fn publish(&mut self, render_state: Option<&eframe::egui_wgpu::RenderState>, frame: ImportedTexture) {
@@ -728,23 +1056,46 @@ impl CefAssistant {
         if previous_size != Some(size) {
             note(&format!("CEF: raster {}x{}", size[0], size[1]));
         }
-        self.frames += 1;
+        self.frames = self.frames.saturating_add(1);
         if !self.queue.ready {
             self.queue.ready = true;
-            // One small function the host calls with the tokens; it owns the CSS variables the
-            // Mastra components read, and injects the font and the transparent roots.
-            let _ = self.producer.execute_script(THEME_BRIDGE_JS, "");
-            self.told_theme.clear();
-            note(&format!("CEF: first frame; replaying {} held input event(s)", self.queue.held));
+            note("CEF: native view admitted");
         }
         self.last_frame = Instant::now();
     }
 
     fn take_popup(&mut self, frame: &eframe::Frame) -> Option<(egui::TextureId, [i32; 2], [u32; 2])> {
+        if !self.can_input() {
+            self.popup_current = false;
+            return self.popup;
+        }
         let render_state = frame.wgpu_render_state()?;
         match self.producer.acquire_popup(&self.host) {
             Ok(Some(popup)) => {
                 let size = [popup.texture.size.width, popup.texture.size.height];
+                if let Some(admission) = &self.admission {
+                    let checked = popup.texture.capture_metadata.as_ref().ok_or(FrameReject::MissingMetadata).and_then(|metadata| {
+                        let width = i32::try_from(popup.rect.width).map_err(|_| FrameReject::WrongSize)?;
+                        let height = i32::try_from(popup.rect.height).map_err(|_| FrameReject::WrongSize)?;
+                        if metadata.generation <= self.popup_generation {
+                            return Err(FrameReject::OldGeneration);
+                        }
+                        if popup.texture.texture.width() != size[0]
+                            || popup.texture.texture.height() != size[1]
+                            || popup.texture.texture.depth_or_array_layers() != 1
+                        {
+                            return Err(FrameReject::ImportMismatch);
+                        }
+                        admission.check_popup(metadata, FrameRect { x: popup.rect.x, y: popup.rect.y, width, height }, size, popup.texture.generation)
+                    });
+                    if let Err(error) = checked {
+                        note(&format!("CEF: imported popup refused: {error:?}"));
+                        self.popup_current = false;
+                        return self.popup;
+                    }
+                    self.popup_generation = popup.texture.generation;
+                }
+                self.popup_current = true;
                 note(&format!("popup surface {}x{} at {},{}", size[0], size[1], popup.rect.x, popup.rect.y));
                 let plain = match popup.texture.format {
                     wgpu::TextureFormat::Bgra8UnormSrgb => Some(wgpu::TextureFormat::Bgra8Unorm),
@@ -817,7 +1168,12 @@ impl CefAssistant {
             }
             Ok(None) => {
                 if self.producer.popup_rect().is_none() {
-                    if let Some((id, _, _)) = self.popup.take() {
+                    self.popup_current = false;
+                    // Gamma-copy registrations belong to popup_page and can be
+                    // reused; don't free that id while retaining its PageTarget.
+                    if self.popup_page.is_none()
+                        && let Some((id, _, _)) = self.popup.take()
+                    {
                         render_state.renderer.write().free_texture(&id);
                     }
                 }
@@ -827,29 +1183,21 @@ impl CefAssistant {
         }
     }
 
-    fn pump(&mut self) {
+    fn pump(&mut self, ctx: &Context) {
         self.runtime.do_message_loop_work();
-        // Keep the bounded protocol queue drained, including viewport failure receipts.
-        while let Some(message) = self.producer.poll_devtools_message() {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message)
-                && let Some(id) = value.get("id").and_then(serde_json::Value::as_u64).and_then(|id| u32::try_from(id).ok())
-            {
-                let success = value.get("error").is_none() && value.get("result").is_some();
-                if self.viewport.complete(id, success, Instant::now())
-                    && let Some(error) = value.get("error")
-                {
-                    note(&format!("CEF: viewport protocol error: {error}"));
-                }
-            }
-        }
         while let Some(event) = self.producer.poll_web_event() {
             match &event {
                 CefSurfaceEvent::Navigation(welding::NavigationEvent::BrowserCreated { browser_id, windowless }) => {
                     note(&format!("CEF: browser={browser_id} windowless={windowless} action={}", if *windowless { "accept" } else { "refuse" }));
                     if !windowless {
                         self.osr_refused = true;
-                        self.queue.clear();
+                        self.cancel_input(ctx);
                     }
+                }
+                CefSurfaceEvent::Navigation(welding::NavigationEvent::LoadStart { .. }) => self.new_page(ctx),
+                CefSurfaceEvent::Navigation(welding::NavigationEvent::ContentProcessTerminated { .. }) => {
+                    self.new_page(ctx);
+                    self.failed = true;
                 }
                 CefSurfaceEvent::Navigation(welding::NavigationEvent::NewWindowRequested { .. }) => note("CEF: browser-popup action=cancel"),
                 _ => {}
@@ -871,6 +1219,19 @@ impl CefAssistant {
     }
 
     fn input(&mut self, solve: &mut SolveApp, ctx: &Context, rect: egui::Rect, ppp: f32) {
+        if self.admission.is_some() && !self.can_input() {
+            self.input_quarantined |= ctx.input(|input| input.pointer.any_down() || input.modifiers.any() || !input.keys_down.is_empty());
+            self.queue.clear();
+            self.focused = false;
+            self.set_ime(ctx, false);
+            return;
+        }
+        if self.input_quarantined {
+            self.input_quarantined = ctx.input(|input| input.pointer.any_down() || input.modifiers.any() || !input.keys_down.is_empty());
+            // Also discard the neutralizing release frame itself.
+            self.queue.clear();
+            return;
+        }
         let events = ctx.input(|input| input.events.clone());
         for event in events {
             match event {
@@ -887,10 +1248,11 @@ impl CefAssistant {
                 egui::Event::PointerButton { pos, button, pressed, modifiers } => {
                     if pressed && !rect.contains(pos) {
                         // The CAD side takes the keyboard back.
-                        self.focused = false;
-                        self.set_ime(ctx, false);
-                        self.queue.clear();
-                        continue;
+                        self.cancel_input(ctx);
+                        // Blurring does not invalidate the admitted picture.
+                        self.queue.ready = true;
+                        self.queue.ticket = self.admission.as_ref().and_then(FrameAdmission::input_ticket);
+                        return;
                     }
                     let cef_button = match button {
                         egui::PointerButton::Primary => MouseButton::Left,
@@ -899,9 +1261,17 @@ impl CefAssistant {
                         _ => continue,
                     };
                     if pressed {
+                        if !self.can_input() {
+                            continue;
+                        }
                         self.focused = true;
                         self.set_ime(ctx, true);
-                        let _ = self.producer.move_focus(FocusDirection::Forward);
+                        if let Err(error) = self.producer.move_focus(FocusDirection::Forward) {
+                            note(&format!("CEF: native focus failed: {error}"));
+                            self.input_failed |= self.admission.is_some();
+                            self.cancel_input(ctx);
+                            return;
+                        }
                     }
                     let local = (pos - rect.min) * ppp;
                     self.queue.push(Queued::Mouse(MouseEvent {
@@ -948,9 +1318,10 @@ impl CefAssistant {
                         continue; // arrives as Event::Paste
                     }
                     if key == egui::Key::Escape && pressed {
-                        self.queue.clear();
-                        self.focused = false;
-                        continue;
+                        self.cancel_input(ctx);
+                        self.queue.ready = true;
+                        self.queue.ticket = self.admission.as_ref().and_then(FrameAdmission::input_ticket);
+                        return;
                     }
                     if let Some(vk) = virtual_key(key) {
                         self.queue.push(Queued::Key(KeyEvent {
@@ -980,7 +1351,7 @@ impl CefAssistant {
                     // committed into the focused editable the way an input method commits.
                     self.queue.push(Queued::ImeCommit(text));
                 }
-                egui::Event::Ime(egui::ImeEvent::Preedit { text, active_range_chars }) => {
+                egui::Event::Ime(egui::ImeEvent::Preedit { text, active_range_chars }) if self.focused => {
                     if !text.is_empty() {
                         note(&format!("IME composition {}", text.chars().take(40).collect::<String>()));
                     }
@@ -991,7 +1362,7 @@ impl CefAssistant {
                         self.queue.push(Queued::ImeSet(text, (range.start as u32, range.end as u32)));
                     }
                 }
-                egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) if self.focused => {
                     note(&format!("IME commit {}", text.chars().take(40).collect::<String>()));
                     self.queue.push(Queued::ImeCommit(text));
                 }
@@ -999,7 +1370,15 @@ impl CefAssistant {
             }
         }
         let _ = solve;
+        if self.admission.is_some() && self.queue.overflowed {
+            self.input_failed = true;
+            self.cancel_input(ctx);
+            return;
+        }
         self.flush();
+        if self.input_failed {
+            self.cancel_input(ctx);
+        }
     }
 
     fn set_ime(&mut self, ctx: &Context, on: bool) {
@@ -1024,14 +1403,23 @@ impl CefAssistant {
         if !self.queue.ready {
             return;
         }
+        if self.admission.is_some() && !self.can_input() {
+            self.queue.invalidate();
+            return;
+        }
         if let Some((x, y)) = self.queue.motion.take() {
-            let _ = self.producer.send_mouse_input(MouseEvent {
+            if let Err(error) = self.producer.send_mouse_input(MouseEvent {
                 x,
                 y,
                 button: MouseButton::Left,
                 action: MouseAction::Moved,
                 modifiers: EventModifiers::default(),
-            });
+            }) {
+                note(&format!("CEF: motion refused: {error}"));
+                self.input_failed |= self.admission.is_some();
+                self.queue.invalidate();
+                return;
+            }
         }
         while let Some(event) = self.queue.critical.pop_front() {
             let result = match event {
@@ -1043,6 +1431,9 @@ impl CefAssistant {
             };
             if let Err(error) = result {
                 note(&format!("CEF: input refused: {error}"));
+                self.input_failed |= self.admission.is_some();
+                self.queue.invalidate();
+                return;
             }
         }
     }
@@ -1226,9 +1617,9 @@ fn serve_pages(pictures: Pictures, inbox: Sender<String>) -> std::io::Result<u16
 
 /// The page-side half of the theme bridge. The host passes the tokens it is drawing with;
 /// this function turns them into the CSS variables Mastra's components already use. It is
-/// injected once, on the first frame, and survives a theme change without a reload.
+/// installed on page readiness, without waiting for a texture.
 const THEME_BRIDGE_JS: &str = r#"
-window.__intcadTheme = (t) => {
+window.__intcadTheme = (t, ticket) => {
   const c = t.colors, m = t.metrics, root = document.documentElement, set = (k, v) => root.style.setProperty(k, v);
   set('--background', c.window); set('--background-1', c.window);
   set('--background-2', c.surface); set('--background-3', c.raised);
@@ -1268,6 +1659,11 @@ window.__intcadTheme = (t) => {
        SVG) keep their own square/circle size. */
     button:not(:has(svg)), input, select { min-height: ${m.controlHeight}px; }
   `;
+  // A bounded receipt on the existing bridge, after all token/root changes.
+  // The host checks u64 bounds and whether this is still its current request.
+  if (typeof ticket === 'string' && ticket.length <= 41 && /^[0-9]+:[0-9]+$/.test(ticket)) {
+    window.ipc.postMessage(JSON.stringify({type:'theme-ready', ticket}));
+  }
 };
 "#;
 
@@ -1292,4 +1688,54 @@ fn index_with_bridge(html: &[u8]) -> Vec<u8> {
 /// The app's own note channel for the Assistant's web view.
 fn note(text: &str) {
     eprintln!("solidcraft: assistant (CEF): {text}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Real native event types. This test needs the actual app test build; the
+    // std-only admission harness does not prove CEF cancels a drag on blur.
+    #[test]
+    fn reset_discards_queued_downs_motion_and_delayed_releases() {
+        let mut queue = InputQueue::new(256);
+        queue.ready = true;
+        queue.ticket = Some(admission::InputTicket { lifetime: 1, placement_revision: 2 });
+        let mouse = MouseEvent { x: 40, y: 50, button: MouseButton::Left, action: MouseAction::Pressed, modifiers: EventModifiers::default() };
+        let key = KeyEvent {
+            kind: KeyEventKind::RawKeyDown,
+            windows_key_code: 17,
+            native_key_code: 0,
+            character: None,
+            modifiers: EventModifiers { ctrl: true, ..Default::default() },
+        };
+        queue.push(Queued::Mouse(mouse.clone()));
+        queue.push(Queued::Key(key.clone()));
+        // The real flusher removes these events after sending them.
+        queue.critical.clear();
+        queue.push(Queued::Mouse(MouseEvent { action: MouseAction::Moved, ..mouse.clone() }));
+        queue.invalidate();
+        assert!(!queue.ready);
+        assert!(queue.ticket.is_none());
+        assert!(queue.motion.is_none());
+        queue.ready = true;
+        queue.ticket = Some(admission::InputTicket { lifetime: 1, placement_revision: 3 });
+        queue.push(Queued::Mouse(MouseEvent { action: MouseAction::Released, ..mouse }));
+        queue.push(Queued::Key(KeyEvent { kind: KeyEventKind::KeyUp, ..key }));
+        assert!(queue.critical.is_empty(), "old releases cannot reach the new placement");
+    }
+
+    #[test]
+    fn current_queue_remains_bounded_and_diagnostic_counters_saturate() {
+        let mut queue = InputQueue::new(256);
+        queue.held = u64::MAX;
+        queue.refused = u64::MAX;
+        for _ in 0..300 {
+            queue.push(Queued::ImeCancel);
+        }
+        assert_eq!(queue.critical.len(), 256);
+        assert_eq!(queue.held, u64::MAX);
+        assert_eq!(queue.refused, u64::MAX);
+        assert!(queue.overflowed);
+    }
 }

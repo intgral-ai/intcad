@@ -113,6 +113,19 @@ pub struct LinuxCefProducer {
 // return looks needless to clippy but the idiom requires it.
 #[allow(clippy::needless_return)]
 impl LinuxCefProducer {
+    /// SolidCraft: explicit OSR page focus. Moving focus backward still focuses
+    /// the browser; it cannot be used to cancel a hidden page's input.
+    pub fn set_page_focus(&mut self, focused: bool) -> Result<(), WeldError> {
+        #[cfg(feature = "cef-runtime")]
+        if let Some(host) = self.browser.host() {
+            host.set_focus(i32::from(focused));
+            return Ok(());
+        }
+        #[cfg(not(feature = "cef-runtime"))]
+        let _ = focused;
+        Err(pending("cef_browser_host_t::set_focus"))
+    }
+
     /// SolidCraft: drain both mailboxes on host admission reset without waiting
     /// on a driver. Watermarks remain monotonic for the producer's lifetime.
     pub fn discard_pending_frames(&mut self) -> Result<FrameWatermarks, WeldError> {
@@ -449,10 +462,13 @@ impl CefSurfaceProducer for LinuxCefProducer {
         self.size = size;
         #[cfg(feature = "cef-runtime")]
         {
-            self.metrics.lock().unwrap().set_size(size);
-            if let Some(host) = self.browser.host() {
-                host.was_resized();
-            }
+            // SolidCraft: native setter success must not acknowledge an absent
+            // host or panic on a poisoned metrics lock.
+            let host = self.browser.host().ok_or_else(|| pending("cef_browser_host_t::was_resized"))?;
+            self.metrics.lock()
+                .map_err(|_| WeldError::BrowserOp("CEF view metrics lock poisoned".into()))?
+                .set_size(size);
+            host.was_resized();
             return Ok(());
         }
         Err(pending("cef_browser_host_t::was_resized"))
@@ -641,15 +657,18 @@ impl CefSurfaceProducer for LinuxCefProducer {
     fn set_scale_factor(&mut self, scale: f32) -> Result<(), WeldError> {
         #[cfg(feature = "cef-runtime")]
         {
-            self.metrics.lock().unwrap().set_scale(scale);
+            // SolidCraft: report failure rather than acknowledging a partial
+            // transition or panicking on a poisoned metrics lock.
+            let host = self.browser.host().ok_or_else(|| pending("cef_browser_host_t::notify_screen_info_changed"))?;
+            self.metrics.lock()
+                .map_err(|_| WeldError::BrowserOp("CEF view metrics lock poisoned".into()))?
+                .set_scale(scale);
             // CEF only re-reads GetViewRect / GetScreenInfo when told the view
             // changed, so a scale change has to be announced like a resize or
             // nothing repaints at the new density.
-            if let Some(host) = self.browser.host() {
-                host.notify_screen_info_changed();
-                host.was_resized();
-                host.invalidate(cef::PaintElementType::default());
-            }
+            host.notify_screen_info_changed();
+            host.was_resized();
+            host.invalidate(cef::PaintElementType::default());
             return Ok(());
         }
         #[cfg(not(feature = "cef-runtime"))]

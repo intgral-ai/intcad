@@ -36,6 +36,11 @@
   scalars and validity flags into owned Linux images; reject nonpositive signed
   coded sizes before fd duplication; return mailbox lock errors (callbacks log
   and refuse); expose view/popup discard watermarks for host admission reset.
+- `src/linux_cef/mod.rs`: expose explicit `set_page_focus(bool)` through the
+  existing browser-host API so hidden OSR pages can be blurred. Backward focus
+  traversal remains unchanged and is not used as blur. Linux resize/scale setters
+  return recoverable errors for absent hosts or poisoned metrics locks instead
+  of acknowledging a failed transition or panicking.
 - `src/native_frame/{mod.rs,vulkan_dmabuf.rs}`: carry optional capture metadata
   with the same owned DMABUF and imported texture. Constructors default to None.
   Discard preserves generations; counters saturate, and Linux refuses exhausted
