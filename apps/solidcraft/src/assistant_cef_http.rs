@@ -628,12 +628,20 @@ impl PageServer {
             held.stopped = true;
         }
         self.listener = None;
-        let held = self.shared.sockets.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for stream in held.iter().flatten() {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+        {
+            let held = self.shared.sockets.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for stream in held.iter().flatten() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
         }
+        // Reap handles that already completed before this stop. A worker that is
+        // still running is left to the asynchronous poll_stop progression; it is
+        // never joined here.
+        self.reap_finished();
     }
-    pub fn poll_stop(&mut self) -> ServerProgress {
+    /// Join only workers that have already finished. Running workers are left
+    /// owned by `workers` for a later `poll_stop`; this never blocks on one.
+    fn reap_finished(&mut self) {
         let mut at = 0;
         while at < self.workers.len() {
             if self.workers.get(at).is_some_and(std::thread::JoinHandle::is_finished) {
@@ -646,6 +654,9 @@ impl PageServer {
                 at += 1;
             }
         }
+    }
+    pub fn poll_stop(&mut self) -> ServerProgress {
+        self.reap_finished();
         if self.shared.stop.load(std::sync::atomic::Ordering::Acquire) {
             return if self.workers.is_empty() { ServerProgress::Stopped } else { ServerProgress::Stopping };
         }
@@ -1312,15 +1323,72 @@ mod tests {
     }
     #[test]
     fn server_stop_reaps_owned_workers_and_rejects_enqueue() {
-        use std::io::Write;
-        let (mut server, authority, document, _) = server();
+        use std::io::{Read, Write};
+        // Idle and active readers must both be interrupted, and the owned pool
+        // must be reaped without joining a worker that is still running.
+        let authority = Arc::new(DocumentAuthority::new());
+        // Larger than any loopback socket buffer, so the serving worker really
+        // holds the response lease while the stop interrupts it.
+        let inner = Arc::new(vec![7u8; 16 * 1024 * 1024]);
+        let pictures: Pictures = Arc::new(Mutex::new(HashMap::from([("huge".to_string(), inner.clone())])));
+        let mut server = PageServer::start(PageAssets { resolve: assets, font: b"font" }, pictures, authority.clone()).unwrap();
+        let owner = bound(&authority);
+        let document = authority.begin_document(owner, [1; 32]).unwrap();
+        let url = authority.bootstrap_url(document, server.port()).unwrap();
+        authority.arm_main_navigation(NavigationIdentity { document, owner, browser_id: 7, url: url.clone() }).unwrap();
+        let identity = authority.navigation_identity(owner, 7, &url).unwrap();
+        authority.claim_main_navigation(&identity, true, false).unwrap();
+        let prefix = format!("/__assistant/{}", url.split_once("/__assistant/").unwrap().1.strip_suffix("index.html").unwrap());
         let port = server.port();
-        let mut pending = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        pending.write_all(b"GET / HTTP/1.1\r\n").unwrap();
+        let baseline = Arc::strong_count(&inner);
+        assert_eq!(server.workers.len(), WORKERS, "owned pool did not start");
+        // Idle reader: connected, no request bytes yet.
+        let _idle = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        // Active reader: holding a live response lease on the large picture.
+        let mut slow = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        slow.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        write!(slow, "GET {prefix}picture/huge HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").unwrap();
+        let mut head = [0u8; 256];
+        assert!(slow.read(&mut head).unwrap() > 0);
+        let wait = Instant::now() + Duration::from_secs(2);
+        while Arc::strong_count(&inner) <= baseline {
+            assert!(Instant::now() < wait, "worker never leased the picture");
+            std::thread::yield_now();
+        }
         server.request_stop();
-        assert!(authority.enqueue(document, "approval".into()).is_err());
-        stop(&mut server);
-        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+        assert!(authority.enqueue(document, "approval".into()).is_err(), "stop accepted a new enqueue");
+        let start = Instant::now();
+        let mut slowest = Duration::ZERO;
+        loop {
+            let poll = Instant::now();
+            let progress = server.poll_stop();
+            slowest = slowest.max(poll.elapsed());
+            if progress != ServerProgress::Stopping {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(2), "owned workers did not stop");
+            std::thread::yield_now();
+        }
+        assert!(slowest < Duration::from_millis(500), "poll joined an unfinished worker: {slowest:?}");
+        assert_eq!(server.poll_stop(), ServerProgress::Stopped);
+        assert!(server.workers.is_empty(), "owned handles were not reaped");
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "owned port stayed open");
+        assert_eq!(Arc::strong_count(&inner), baseline, "picture lease survived stop");
+        assert_eq!(server.take_failure(), None);
         assert!(server.take_batch().unwrap().is_empty());
+        drop((slow, _idle));
+
+        // A repeated stop (what shutdown and Drop perform) must reap workers
+        // that have already finished instead of detaching them.
+        let (mut again, _, _, _) = self::server();
+        again.request_stop();
+        let wait = Instant::now() + Duration::from_secs(2);
+        while !again.workers.iter().all(std::thread::JoinHandle::is_finished) {
+            assert!(Instant::now() < wait, "workers did not finish after stop");
+            std::thread::yield_now();
+        }
+        again.request_stop();
+        assert!(again.workers.is_empty(), "repeated stop did not reap finished workers");
+        assert_eq!(again.poll_stop(), ServerProgress::Stopped);
     }
 }
