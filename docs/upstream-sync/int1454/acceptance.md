@@ -352,3 +352,184 @@ This remains a draft; none of the above is a completion claim.
   head-bound).
 - E2E: the Linux report path in §6 (8/8, verified hash); the Windows run directory in §6 (smoke
   files only).
+
+## 11. Checkpoint revision 2026-11-19T23:30Z (documentation-only, append-only)
+
+Scope: this section records later verified observations. It adds no source change, no build, no CI
+dispatch, rerun or cancel, and no merge or release. It does not rewrite earlier sections; where §1
+or §6 names an older head, this section records the newer observation and keeps the old text as
+history. No sign-off, closure or completion claim is made. This checkpoint used the official
+DeepSeek API. No prohibited external source was read for it; the rights incident in §11.7 is
+reported from its existing record only.
+
+### 11.1 Fixed references observed at this checkpoint
+
+| Item | Value | Verification |
+| --- | --- | --- |
+| Base of this checkpoint | `docs/int1454-acceptance` = `182d485e2c6b31b324ff45794324f3454b63c67e`, worktree clean | `git status --porcelain` empty; `git log -1` |
+| PR #185 source head, last verified | `c5f2f42fe6f06ed5c2c4ec1df04f7e9c6aae50ad` (`feat/int1454-ui`; PR OPEN, `mergeStateStatus: BLOCKED`) | local and `origin/feat/int1454-ui` both at this SHA; CI snapshot |
+| PR #185 test-merge, last verified | `2a20b4b3974d11b68388db8f72facbd44aadedc6`; parents `9714e5b…` + `c5f2f42…` | `git rev-parse 2a20b4b^1 2a20b4b^2` |
+| Develop observed at checkpoint | `9714e5b300030f23bc775fa180b1ba7c80047f80` = `origin/develop` then | `git rev-parse origin/develop`; not guaranteed current after this checkpoint |
+| Landing commit / final develop SHA | **TBD** | no landing or release has happened |
+
+The earlier engine-evidence head `61835bfaf` (parent `099e4360c`) remains a local evidence revision,
+not the current PR head. The seven-line engine allowance deletion is now validated through the
+current head (see §11.2), but no whole-head final approval follows from that.
+
+### 11.2 Whole-CI state at `c5f2f42` (snapshot 2026-11-19T20:39–20:45Z)
+
+Source: `/tmp/opencode/int1454-ci-current/SNAPSHOT-2026-11-19T2045Z.md`. The five runs listed there
+all have `head_sha` `c5f2f42…`, attempt 1. This is a read-only snapshot, not a current-status claim.
+
+| Run | Workflow | Result | Scope / note |
+| --- | --- | --- | --- |
+| 44505747549 | CI | **failure** | native gate + Action matrix 2/16 and 8/16 + aggregate |
+| 44505747558 | Kernel rig | success | 21 rig jobs + `kernel-rig` (22 job entries) |
+| 44505747529 | Fillet rig | success | 1 job |
+| 44505747527 | PR checks | success | 4 jobs |
+| 44505747682 | Packaging lint | success | lint + assistant page |
+
+The actual matrix job labels are `Action matrix (2/16)` and `Action matrix (8/16)`; the shorthand
+“matrix 2/8” is not used here. Matrix 16/16 is now success, so the earlier shard-16 failure is
+closed at this head. All other lanes in CI 44505747549 passed: clippy, wasm, doc tests, reference,
+both Mastra jobs, Windows startup/FXC, properties, determinism and matrix 1, 3–7, 9–16.
+
+Native Linux gate: the uploaded `evidence-rust` shows nextest list exit 0, nextest run exit **100**,
+and `xtask known-failing` exit **1**. JUnit reports 16,839 tests and **24 failures**; no compile
+error. The known-failing grader reports 13 listed failures allowed, **11 off-list regressions**,
+and **2 listed-but-now-passing** entries (`FIXED`) that must be removed from
+`tests/KNOWN_FAILING_TESTS`. The aggregate job fails downstream at its verify step; it is not an
+independent test failure. Whole CI is **not green**, and PR #185 stays BLOCKED.
+
+The two `FIXED` doc-eval tests are the tap-marking cost tests. They pass at `c5f2f42`; removing their
+allowance lines is a follow-up, not a new allowance. This checkpoint does not change
+`KNOWN_FAILING_TESTS`.
+
+### 11.3 Focused fixes with remote evidence
+
+Both rows below are focused remote runs, not whole-CI green. Their task-review verdicts are recorded
+as controller provenance; no separate reviewer report file is in the cited evidence directories.
+
+| Work | Reviewed source / workflow head | Run and result | Evidence |
+| --- | --- | --- | --- |
+| MCP connect regression | source `562973ade451a5903ba23adfd97802242d8d120a`; workflow head `7aeeab3fc32f838985dfe95567ba3d9cdb7ec953`; test blob `46f1ee81c60292e5a3e289a55407504a7ea3d3b4` identical at both | run `44612760207` success; raw nextest exit **0**; **11/11 passed, 0 skipped**; Rust/cargo **1.99.1**, nextest 0.9.148 | `worktrees/int1454-mcp-connect/target/int1454-mcp-review-evidence/` (`README.md`, `nextest.exit`, `nextest.log`, `summary.txt`, `identity.txt`, `junit-status.txt`); ledger `/tmp/opencode/int1454-mcp-connect-ledger.md` |
+| Joint reconciliation | source `50e605faa5b81cfccb591182b0329445061f2933` | run `44629972383` success; exact **10 matched, 0 missing, 0 extra**; **10/10 passed**; **2,403 tests and 21 binaries skipped/not executed**; Rust **1.99.1** | `worktrees/int1454-recon/target/int1454-recon-review-evidence/run-44629972383/` (`per-test-results.txt`, `matched-identities.txt`, `selection.json`, `targeted.log`, `run-meta.json`) |
+
+MCP: the change is test-stub fidelity only. The app-options probe is intended; the two stubs now
+serve every request line on one connection until EOF. No product logic, permission, auth or parser
+semantics changed. The focused workflow did **not** archive JUnit (`junit-status.txt`); the raw
+per-test PASS lines are in `nextest.log`, and the run was not restarted just to add JUnit. Task
+review: Spec and Quality PASS (controller provenance).
+
+Recon: the earlier task review returned `CHANGES_REQUIRED`; `REVIEW-RESPONSE.md` and
+`SCOPED-REVIEW-FIX.md` record the fixes. The final targeted run is the 10/10 above. Task review:
+Spec and Quality PASS (controller provenance). The 10-test selection is exact; the 2,403 other tests
+were filtered out and were **not executed**, so this is not a full-suite pass.
+
+### 11.4 Joint-normalization scope actually proven
+
+- Actual corpus: a **single joint**, with no origins or links. The allocation is a local id.
+- Normalization applies **only** to source-absent derived `x`/`face`/`end`. Stored references are
+  compared in full; the negative-case table has **14** stored-reference cases.
+- The earlier `2a354996a` failure was left = source absent, right = replay derived. That corrects the
+  earlier reverse claim.
+- `red-green-model.py` is a **script model** of serialized operations, not a Rust test run. The 14/14
+  table is model output; the Rust evidence is the 10/10 targeted run.
+- No general multi-joint reallocation-reference proof exists yet. Do not generalize the single-joint
+  result to multi-joint reallocation.
+
+### 11.5 Prepared combination branch
+
+`prep/int1454-mcp-connect` = `1eeb7560aaed93d9e8f400f9a6882dc3e4f61325`. Its tree is
+`9ea627e37ff5ec531efaace3c1e3410377a693c0`; `git rev-parse 1eeb7560^{tree}` matches that tree.
+It combines the reviewed MCP and reconciliation source. The branch-only diagnostic workflows are
+**not** in that tree (`mcp-connect-diagnostic.yml` and `int1454-recon.yml` are absent). The branch is
+clean and pushed to `origin/prep/int1454-mcp-connect`, then frozen. It is **not** PR #185, and no
+CI has run on this combined head.
+
+### 11.6 Integration review and active packaging work
+
+Controller-recorded L2 Sol integration review: **CHANGES_REQUIRED**. Findings include a foreign
+Flatpak end-of-life rebase that may move data into the new sandbox, and bypassed sibling grants or
+empty ids. The core CLI combination has no blocker in that review. No artifact path for this review
+is recorded here.
+
+The active reconciliation worker is fixing packaging. Verified commits on `fix/int1454-recon`:
+`fc0d9a0adde2761c6afa2311e05147ee6ec741f8` (publish only Intcad's app id), `7a6abbcc0`
+(packaging-lint SC2251 fix) and `dfc6bd789` (remove the temporary targeted workflow). The first
+packaging CI, run `44637129117`, failed on SC2251 `! grep`; the fix uses an explicit `if grep`.
+Run `44637527571` was the last active owned watch at this checkpoint: **do not query, poll or cancel
+it again**. Task review says the core behaviour is correct but returns `CHANGES_REQUIRED` for a stale
+manifest line and evidence exactness; the owner is fixing that and investigating mirrored old
+end-of-life metadata.
+
+Packaging status at this checkpoint: installed Flatpak acceptance **NOT_RUN**. Local packaging tests
+were 17 tests with 1 RED, then 0 RED. The nightly execution recorded 12/9 with a missing `jq` and
+exit 1; it is classified **BLOCKED (environment)**, not NOT_RUN. None of this is release approval.
+
+### 11.7 Rights incident — explicit owner disposition still blocked
+
+Record: `worktrees/int1454-recon/target/int1454-recon-review-evidence/flatpak-isolation/RIGHTS-INCIDENT.md`.
+
+The worker consulted two Flatpak LGPL-2.1 source files (`common/flatpak-run.c` and `common/flatpak-dir.c`)
+while investigating the packaging behaviour, although the root rule prohibits reading GPL/LGPL/AGPL
+source. The record states this plainly and is not erased. An independent review found **no copied
+source, template or implementation** in the patch; the patch is an original straight deletion plus
+original tests and documentation. That finding is **not** a rights clearance.
+
+Owner disposition remains **explicitly blocked**. The owner was asked to accept the recorded incident
+for continuation of the original patch; no reply is recorded at this checkpoint. Do not invent a
+waiver, clearance or licence pass. Do not read the prohibited external code again.
+
+### 11.8 Other active work — no completion claim
+
+- Union fallback worktree `int1454-union-fallback`: active. Controller last-known plan/test-only
+  reference `1c8f7213b`; no GREEN or current production approval. Not re-surveyed for completion.
+- Validation-transaction worktree `int1454-valtx`: active. Controller last-known `fa12cfe47` had L3
+  `CHANGES_REQUIRED` with five findings (retention replay, conversation routing, lost wakeup,
+  duplicate overwrite, clock mismatch). No approved integrated fix.
+- Both are uncompleted. Their work was handed to the official DeepSeek path because Go and GOAT were
+  exhausted; that is a provider handoff, not a quota BLOCKED state. Do not poll or restate their
+  heads as current beyond the last-known references above.
+
+DAG note: no new dependency edge is recorded by this checkpoint. It adds evidence and status, not a
+change to the migration graph.
+
+### 11.9 Remaining final milestones
+
+1. Final landing method, landing commit and final `develop` SHA: **TBD**.
+2. Green whole CI at the final SHA, including the native gate and all matrix shards.
+3. Final-SHA CD-1 persistence evidence: real save/reopen files, hashes and a durable report. The
+   current GUI round trips remain transcript-only.
+4. Linux GUI acceptance at the final SHA. The historic `42f4d670a` 8/8 report is not final-SHA
+   acceptance.
+5. Full Windows `accept` at the final SHA. The `f82b56372` result is smoke only, not a full VM GUI
+   E2E.
+6. macOS native automation and macOS/desktop PP UI acceptance: **not run**.
+7. Owner/legal disposition for the rights incident and every Blocked row, including CD-6 chrome
+   provenance.
+8. Scoped whole-head final review and sign-off at the final SHA.
+
+No INT-1454 closure, no merge to `develop` and no main release is claimed.
+
+### 11.10 Evidence and commands for this checkpoint
+
+Evidence paths read (read-only):
+
+- `/tmp/opencode/int1454-ci-current/SNAPSHOT-2026-11-19T2045Z.md` and
+  `evidence-rust-c5f2f42/rust/{junit.xml,commands.json}`;
+  `native-c5f2f42-failures-2026-11-19T2039Z.txt`.
+- `worktrees/int1454-mcp-connect/target/int1454-mcp-review-evidence/` (README, identity, summary,
+  raw exit, nextest log, JUnit status).
+- `worktrees/int1454-recon/target/int1454-recon-review-evidence/run-44629972383/` (per-test results,
+  matched identities, selection, targeted log, run metadata), plus `REVIEW-RESPONSE.md`,
+  `SCOPED-REVIEW-FIX.md` and `flatpak-isolation/RIGHTS-INCIDENT.md`.
+
+Commands used: `git status`, `git log`, `git rev-parse`, `git cat-file`, `git worktree list`,
+`git merge-base --is-ancestor`, `git ls-tree`, `git ls-remote` and `sed`/`grep` on the paths above.
+No `gh` query, no CI dispatch/rerun/cancel, no local build and no source edit were performed for
+this checkpoint.
+
+Revision provenance: appended by the official DeepSeek worker on 2026-11-19; base
+`182d485e2c6b31b324ff45794324f3454b63c67e`; own branch and worktree recorded in the handoff, not
+in this document. Earlier sections remain unchanged.
