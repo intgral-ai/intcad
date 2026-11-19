@@ -50,6 +50,7 @@ mod open_documents;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod space_mouse;
 mod startup;
+mod startup_ledger;
 #[cfg(any(target_os = "windows", test))]
 mod window_fit;
 
@@ -92,8 +93,8 @@ fn mark(step: &str) {
 
 struct App {
     solve: SolveApp,
-    /// The settings folder whose start marker the first frame clears (`startup::started`).
-    starting: Option<std::path::PathBuf>,
+    /// This launch's owned startup ticket, retired by the real second frame.
+    starting: Option<startup::StartupTicket>,
     /// Frames begun; the second one means the first was drawn (startup is over).
     frames: u32,
     /// Started over the control channel: the window doesn't ask for the foreground.
@@ -229,8 +230,11 @@ impl eframe::App for App {
                     solidcraft_ui_egui::ai_connect::begin(&mut self.solve);
                     solidcraft_ui_egui::agent_chat::begin(&mut self.solve);
                 }
-                if let Some(dir) = self.starting.take() {
-                    startup::started(&dir);
+                if let Some(mut ticket) = self.starting.take() {
+                    if let Err(error) = ticket.mark_window_started() {
+                        log::warn!("startup: could not retire this launch's ticket: {error}");
+                        solidcraft_engine::note!("SolidCraft: startup history could not be retired: {error}");
+                    }
                 }
             }
         }
@@ -1221,9 +1225,20 @@ fn main() -> eframe::Result {
     // and after a few in a row this one starts in safe mode (docs/book/src/guide/troubleshooting.md).
     let mut notes: Vec<String> = Vec::new();
     let mut failed_starts = 0;
+    let mut startup_ticket = None;
     if let Some(dir) = &settings {
         notes.extend(startup::check_settings(dir, &[solidcraft_ui_egui::prefs::STORAGE_KEY, solidcraft_ui_egui::prefs::LEGACY_STORAGE_KEY]));
-        failed_starts = startup::begin(dir);
+        match startup::begin_owned(dir) {
+            Ok(ticket) => {
+                failed_starts = ticket.prior_failed_starts();
+                startup_ticket = Some(ticket);
+            }
+            Err(error) => {
+                // Damaged/busy history is not invented zero: no safe-mode escalation from it,
+                // and no controlled-cancel capability for this launch.
+                notes.push(format!("Startup history unavailable: {error}"));
+            }
+        }
     }
     if failed_starts >= startup::FAILED_STARTS_FOR_SAFE_MODE && !safe_mode {
         safe_mode = true;
@@ -1329,12 +1344,15 @@ fn main() -> eframe::Result {
     open_documents::install();
     let created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let created_in_app = created.clone();
-    let starting = settings.clone();
     // A panic on the window's thread ends the app without `on_exit`; this disconnects from the
     // 3D mouse driver then too.
     #[cfg(target_os = "macos")]
     let _driver_client = DriverClient;
     mark("run_native");
+    // The creator closure takes the ticket only when an App is actually built;
+    // an error path retires it as the handled no-window attempt.
+    let startup_ticket = std::sync::Arc::new(std::sync::Mutex::new(startup_ticket));
+    let startup_ticket_in_app = startup_ticket.clone();
     let result = eframe::run_native(
         "SolidCraft",
         options,
@@ -1547,7 +1565,7 @@ fn main() -> eframe::Result {
                 // Before `app` moves: the settings as read, already on disk.
                 prefs_writer: PrefsWriter::read(app.prefs()),
                 solve: app,
-                starting,
+                starting: startup_ticket_in_app.lock().ok().and_then(|mut slot| slot.take()),
                 frames: 0,
                 take_focus_unwanted: control_port.is_some(),
                 come_forward: come_forward::ComeForward::default(),
@@ -1565,7 +1583,15 @@ fn main() -> eframe::Result {
     );
     control_server::remove_token_file();
     match result {
-        Err(e) if !created.load(std::sync::atomic::Ordering::SeqCst) => no_window(e, cpu_renderer, started, settings.as_deref()),
+        Err(e) if !created.load(std::sync::atomic::Ordering::SeqCst) => {
+            if let Ok(mut slot) = startup_ticket.lock()
+                && let Some(mut ticket) = slot.take()
+                && let Err(error) = ticket.retire_no_window_attempt()
+            {
+                log::warn!("startup: could not retire the handled no-window attempt: {error}");
+            }
+            no_window(e, cpu_renderer, started, settings.as_deref())
+        }
         r => r,
     }
 }
@@ -1626,10 +1652,7 @@ fn wgpu_options(cpu: bool, preference: Option<&str>) -> eframe::egui_wgpu::WgpuC
 fn no_window(error: eframe::Error, tried_cpu: bool, failed: eframe::wgpu::Backends, settings: Option<&std::path::Path>) -> eframe::Result {
     log::error!("the window could not open: {error}");
     solidcraft_engine::note!("SolidCraft: the window could not open: {error}");
-    // This failure was handled, so neither the marker nor the journal should call it a crash.
-    if let Some(dir) = settings {
-        startup::started(dir);
-    }
+    // This failure was handled, so neither the launch ticket nor the journal should call it a crash.
     solidcraft_engine::crash::end_session();
     let explicit = std::env::var(startup::WGPU_BACKEND_ENV).is_ok_and(|v| !v.trim().is_empty());
     if let Some(next) = startup::fallback_backend(cfg!(target_os = "windows"), explicit, tried_cpu, failed)

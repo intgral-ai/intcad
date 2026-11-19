@@ -20,6 +20,7 @@ pub const SAFE_MODE_ENV: &str = "SOLIDCRAFT_SAFE_MODE";
 pub const RENDERER_ENV: &str = "SOLIDCRAFT_RENDERER";
 /// Consecutive launches that died before the window was up, after which safe mode starts.
 pub const FAILED_STARTS_FOR_SAFE_MODE: u32 = 2;
+#[cfg(test)]
 const MARKER: &str = "starting";
 
 /// Explicit application-settings isolation for side-by-side builds and native UI
@@ -98,21 +99,8 @@ pub fn check_settings(dir: &Path, prefs_keys: &[&str]) -> Vec<String> {
     notes
 }
 
-/// A launch begins: count it in the marker in `dir`. Returns how many launches before this one
-/// died before their window was up.
-pub fn begin(dir: &Path) -> u32 {
-    let marker = dir.join(MARKER);
-    let before = std::fs::read_to_string(&marker).ok().and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0).min(1000);
-    if std::fs::create_dir_all(dir).is_ok() {
-        let _ = std::fs::write(&marker, (before + 1).to_string());
-    }
-    before
-}
-
-/// The window is up: this launch did not fail to start.
-pub fn started(dir: &Path) {
-    let _ = std::fs::remove_file(dir.join(MARKER));
-}
+/// Launch-owned startup history and its lifetime ticket (see `startup_ledger`).
+pub use crate::startup_ledger::{StartupError, StartupTicket, begin_owned};
 
 /// The software adapter among `adapters` (WARP on Windows, lavapipe or llvmpipe elsewhere), else
 /// the first one that can draw to `surface`.
@@ -569,14 +557,24 @@ mod tests {
     #[test]
     fn launches_that_never_got_a_window_are_counted_until_one_does() {
         let d = scratch("marker");
-        assert_eq!(begin(&d), 0);
-        assert_eq!(begin(&d), 1);
-        assert_eq!(begin(&d), FAILED_STARTS_FOR_SAFE_MODE);
-        started(&d);
-        assert_eq!(begin(&d), 0);
-        // A damaged marker counts as none.
+        let first = begin_owned(&d).unwrap();
+        assert_eq!(first.prior_failed_starts(), 0);
+        drop(first);
+        let second = begin_owned(&d).unwrap();
+        assert_eq!(second.prior_failed_starts(), 1);
+        drop(second);
+        let mut third = begin_owned(&d).unwrap();
+        assert_eq!(third.prior_failed_starts(), 2);
+        third.mark_window_started().unwrap();
+        let mut fourth = begin_owned(&d).unwrap();
+        assert_eq!(fourth.prior_failed_starts(), 0);
+        fourth.cancel_controlled().unwrap();
+        drop(fourth);
+        // After migration the ledger, not the legacy marker, is authoritative.
         std::fs::write(d.join(MARKER), "zz").unwrap();
-        assert_eq!(begin(&d), 0);
+        let fifth = begin_owned(&d).unwrap();
+        assert_eq!(fifth.prior_failed_starts(), 0);
+        drop(fifth);
         let _ = std::fs::remove_dir_all(&d);
     }
 
