@@ -1139,6 +1139,21 @@ impl CefSurfaceProducer for MacosCefProducer {
         ))
     }
 
+    fn requested_view_metrics(&self) -> Result<crate::surface::RequestedViewMetrics, WeldError> {
+        #[cfg(feature = "cef-runtime")]
+        {
+            let metrics = self
+                .metrics
+                .lock()
+                .map_err(|_| WeldError::BrowserOp("CEF view metrics lock poisoned".into()))?;
+            return Ok(metrics.requested());
+        }
+        #[cfg(not(feature = "cef-runtime"))]
+        {
+            Err(WeldError::FeatureRequired("cef-runtime"))
+        }
+    }
+
     fn browser_id(&self) -> i32 {
         self.browser_id
     }

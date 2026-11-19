@@ -58,6 +58,7 @@ pub mod request_policy;
 pub mod runtime;
 // SolidCraft: owned pre-init runtime identity.
 pub mod runtime_identity;
+pub mod requested_metrics;
 pub mod surface;
 pub mod text_input;
 

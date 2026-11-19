@@ -464,7 +464,7 @@ pub struct CefAssistant {
     /// One explicit accelerated-import receipt per Assistant lifetime; absence is never success.
     accelerated_recorded: bool,
     /// One admitted receipt per view geometry/requested scale keeps logs bounded.
-    last_view_receipt: Option<([i32; 2], u32)>,
+    last_view_receipt: Option<([i32; 2], [u32; 2], [i32; 2], u32, u64)>,
     last_frame_reason: Option<String>,
     /// The window's input method is on because the page has the keyboard.
     ime_on: bool,
@@ -2197,14 +2197,14 @@ impl CefAssistant {
         decision: &str,
         reason: &str,
     ) {
-        let scale = self.placement.map(|placement| placement.scale);
-        let dip = match (physical, scale) {
-            (Some([width, height]), Some(scale)) if scale.is_finite() && scale > 0.0 => {
-                let round = |value: u32| ((f64::from(value) / f64::from(scale)) * 1000.0).round() / 1000.0;
-                serde_json::json!([round(width), round(height)])
-            }
-            _ => serde_json::Value::Null,
-        };
+        // Requested geometry comes from the producer's actual metrics lock, not
+        // from reversing a capture. Effective native scale stays unknown here.
+        let requested = self.producer.requested_view_metrics().ok();
+        let scale = requested.map(|metrics| metrics.scale).or_else(|| self.placement.map(|placement| placement.scale));
+        let dip = requested
+            .map(|metrics| serde_json::json!([metrics.dip[0], metrics.dip[1]]))
+            .unwrap_or(serde_json::Value::Null);
+        let requested_physical = requested.map(|metrics| serde_json::json!(metrics.physical)).unwrap_or(serde_json::Value::Null);
         let rect = |rect: FrameRect| serde_json::json!([rect.x, rect.y, rect.width, rect.height]);
         let (coded, visible, content, source, generation, capture_counter) = match metadata {
             Some(metadata) => (
@@ -2241,6 +2241,8 @@ impl CefAssistant {
                 "capture_counter": capture_counter,
                 "requested_scale": scale,
                 "dip": dip,
+                "requested_physical": requested_physical,
+                "effective_native_scale": serde_json::Value::Null,
                 "physical": physical,
                 "coded": coded,
                 "visible": visible,
@@ -2255,7 +2257,22 @@ impl CefAssistant {
     }
 
     fn record_view_admitted(&mut self, metadata: &CaptureMetadata, physical: [u32; 2], imported_size: [u32; 2], imported_generation: u64) {
-        let signature = (metadata.geometry.coded_size, self.placement.map(|placement| placement.scale.to_bits()).unwrap_or(0));
+        let requested = self.producer.requested_view_metrics().ok();
+        let revision = self
+            .queue
+            .ticket
+            .map(|ticket| ticket.placement_revision)
+            .or_else(|| self.admission.as_ref().map(admission::FrameAdmission::revision))
+            .unwrap_or(0);
+        // Dedupe by placement identity and requested metrics, never by coded size
+        // and scale alone: a pending B transition must not be hidden.
+        let signature = (
+            metadata.geometry.coded_size,
+            requested.map(|metrics| metrics.physical).unwrap_or([0, 0]),
+            requested.map(|metrics| metrics.dip).unwrap_or([0, 0]),
+            requested.map(|metrics| metrics.scale.to_bits()).unwrap_or(0),
+            revision,
+        );
         self.last_frame_reason = None;
         if self.last_view_receipt != Some(signature) {
             self.last_view_receipt = Some(signature);

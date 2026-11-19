@@ -27,6 +27,7 @@
 
 use dpi::PhysicalSize;
 
+use crate::requested_metrics::{RequestedViewMetrics, sane_scale};
 use crate::surface::PopupRect;
 
 #[derive(Debug, Clone, Copy)]
@@ -55,11 +56,16 @@ impl ViewMetrics {
         self.scale
     }
 
+    /// What the host asked CEF to lay out: acquisition-independent requested metrics.
+    pub(crate) fn requested(&self) -> RequestedViewMetrics {
+        RequestedViewMetrics::new([self.size.width, self.size.height], self.scale)
+    }
+
     /// What `GetViewRect` should report: the view in DIP.
     pub(crate) fn logical(&self) -> (i32, i32) {
-        let w = (self.size.width as f32 / self.scale).round().max(1.0);
-        let h = (self.size.height as f32 / self.scale).round().max(1.0);
-        (w as i32, h as i32)
+        // One rounding contract with the requested-metrics receipt.
+        let dip = self.requested().dip;
+        (dip[0], dip[1])
     }
 
     /// Host physical coordinates to the DIP that CEF expects for input.
@@ -78,17 +84,6 @@ impl ViewMetrics {
             width: (rect.width as f32 * self.scale).round() as u32,
             height: (rect.height as f32 * self.scale).round() as u32,
         }
-    }
-}
-
-/// A zero or negative scale would divide the view to nothing, and CEF rejects
-/// absurd factors anyway. Clamp rather than panic: a bad scale from a host is
-/// not worth taking the browser down for.
-fn sane_scale(scale: f32) -> f32 {
-    if scale.is_finite() {
-        scale.clamp(0.25, 8.0)
-    } else {
-        1.0
     }
 }
 

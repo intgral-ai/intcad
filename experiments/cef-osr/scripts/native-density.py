@@ -170,8 +170,8 @@ def _pair_positive(value, limit=65536):
 def _frame_problem(frame):
     required = (
         "lifetime", "placement_revision", "element", "generation", "capture_counter",
-        "requested_scale", "dip", "physical", "coded", "visible", "content",
-        "source", "imported_size", "imported_generation", "decision", "reason",
+        "requested_scale", "dip", "requested_physical", "physical", "coded", "visible",
+        "content", "source", "imported_size", "imported_generation", "decision", "reason",
     )
     for name in required:
         if name not in frame:
@@ -191,6 +191,11 @@ def _frame_problem(frame):
         return "invalid requested_scale"
     if not _pair_positive(frame.get("dip")):
         return "invalid dip"
+    if not _pair_size(frame.get("requested_physical")):
+        return "invalid requested_physical"
+    effective = frame.get("effective_native_scale")
+    if effective is not None and (not _finite_number(effective) or not (0.25 <= float(effective) <= 8.0)):
+        return "invalid effective_native_scale"
     if not _pair_size(frame.get("physical")):
         return "invalid physical"
     if not _pair_size(frame.get("coded")):
@@ -375,6 +380,7 @@ def validate_receipts(records, expected_scales=DEFAULT_SCALES):
     ]
     scale_checks = []
     for scale in expected:
+        bad, blocked = [], []
         matches = [frame for frame in view_frames if abs(float(frame["requested_scale"]) - scale) <= 1e-4]
         if not matches:
             scale_checks.append(_check(f"scale_{scale:g}", "FAIL", "no admitted view frame at this requested scale"))
@@ -387,14 +393,25 @@ def validate_receipts(records, expected_scales=DEFAULT_SCALES):
             dip, physical = frame["dip"], frame["physical"]
             actual_scale = float(frame["requested_scale"])
             wanted = [math.ceil(float(dip[0]) * actual_scale), math.ceil(float(dip[1]) * actual_scale)]
-            # `dip` is reconstructed from physical/scale, so rounding can put the
-            # expected value one physical pixel away; ±1 is the precision of the
-            # receipt, not a density allowance.
-            if any(abs(int(got) - int(want)) > 1 for got, want in zip(physical, wanted)):
-                bad.append(f"density {dip} DIP at {actual_scale:g} gave {physical}, expected {wanted}")
+            requested_physical = frame["requested_physical"]
+            # Round the reported DIP, then ceil the physical extent. There is no
+            # ±1 density allowance: one missing pixel is the defect under test.
+            if requested_physical != wanted:
+                bad.append(f"requested {dip} DIP at {actual_scale:g} is {requested_physical}, expected {wanted}")
+            if physical != wanted:
+                bad.append(f"capture physical {physical} is not the requested {wanted}")
             if physical != frame["coded"]:
                 bad.append("native physical differs from coded size")
-        scale_checks.append(_check(f"scale_{scale:g}", "FAIL" if bad else "PASS", "; ".join(sorted(set(bad))[:3]) or f"{len(matches)} admitted view frame(s), exact ceiling density"))
+            effective = frame.get("effective_native_scale")
+            if effective is None:
+                blocked.append(f"no independent native scale for {dip} DIP at {actual_scale:g}")
+            elif abs(float(effective) - actual_scale) > 1e-6:
+                bad.append(f"independently observed scale {effective} differs from requested {actual_scale}")
+        detail = "; ".join(sorted(set(bad))[:3])
+        if not detail:
+            detail = "; ".join(sorted(set(blocked))[:3]) or f"{len(matches)} admitted view frame(s), exact ceiling density"
+        status = "FAIL" if bad else ("BLOCKED" if blocked else "PASS")
+        scale_checks.append(_check(f"scale_{scale:g}", status, detail))
     checks.extend(scale_checks)
 
     popup_problems = []
@@ -439,16 +456,36 @@ def validate_receipts(records, expected_scales=DEFAULT_SCALES):
         checks.append(_check("accelerated_import", "NOT_RUN", "no CEF_LIMIT accelerated receipt"))
         limitations.append("No explicit accelerated-import receipt: accelerated OSR remains unproven for this run.")
 
-    sequence = []
-    for frame in view_frames:
-        key = (frame["lifetime"], tuple(frame["physical"]))
-        if not sequence or sequence[-1][1] != key:
-            sequence.append((frame, key))
-    if len(sequence) >= 3:
-        first, middle, third = sequence[0][1], sequence[1][1], sequence[2][1]
-        if first[0] == third[0] and first[1] == third[1] and middle[1] == first[1] and middle[0] != first[0]:
-            checks.append(_check("causal_freshness", "NOT_RUN", "A→B→A geometry repeated; capture identities do not prove renderer freshness"))
+    sequence = [(frame["lifetime"], frame["placement_revision"]) for frame in view_frames]
+    aba = False
+    for index, key in enumerate(sequence):
+        if key in sequence[:index]:
+            between = sequence[sequence.index(key) + 1:index]
+            if any(item[0] == key[0] and item[1] != key[1] for item in between):
+                aba = True
+                break
+    geometry_sequence = [(frame["lifetime"], tuple(frame["physical"])) for frame in view_frames]
+    if len(geometry_sequence) >= 3:
+        first, middle, third = geometry_sequence[0], geometry_sequence[1], geometry_sequence[2]
+        if first[0] == third[0] and first[1] == third[1] and middle[0] != first[0]:
+            aba = True
             limitations.append("late same-geometry A→B→A capture identities remain indistinguishable from causal freshness; no native epoch is inferred.")
+    if aba:
+        checks.append(_check("causal_freshness", "NOT_RUN", "same-geometry or same-lifetime A→B→A revisions; capture identities do not prove renderer freshness"))
+        limitations.append("late same-lifetime A→B→A revisions remain indistinguishable from causal freshness; no native epoch is inferred.")
+
+    revisions = {}
+    identities = {}
+    for frame in view_frames:
+        revisions.setdefault(frame["lifetime"], set()).add(frame["placement_revision"])
+        key = (frame["lifetime"], frame["placement_revision"], tuple(frame["dip"]), tuple(frame["requested_physical"]), float(frame["requested_scale"]))
+        identities.setdefault(key, []).append(frame)
+    if any(len(found) > 1 for found in revisions.values()) and not aba:
+        checks.append(_check("placement_identity", "NOT_RUN", "placement revision changed; admission dedupe cannot be read as freshness"))
+        limitations.append("a pending placement transition is visible only as separate revisions; its admitted frame is not causal freshness proof.")
+    if any(len(frames) > 1 for frames in identities.values()):
+        checks.append(_check("causal_freshness", "NOT_RUN", "new capture counters/generations under one placement identity are not causal freshness"))
+        limitations.append("new capture_counter/document nonce under the same placement identity does not prove a renderer epoch.")
 
     return _report(checks, limitations=limitations)
 
@@ -654,7 +691,8 @@ def _fixture_records(scales=DEFAULT_SCALES, lifetimes=None, postlude=True, limit
         records.append({"tag": TAG_FRAME, "data": {
             "lifetime": lifetime, "placement_revision": 1, "element": "view",
             "generation": generation, "capture_counter": generation + 400,
-            "requested_scale": scale, "dip": dip, "physical": physical,
+            "requested_scale": scale, "dip": dip, "requested_physical": physical,
+            "effective_native_scale": scale, "physical": physical,
             "coded": physical, "visible": [0, 0, physical[0], physical[1]],
             "content": [0, 0, physical[0], physical[1]], "source": physical,
             "imported_size": physical, "imported_generation": generation,
@@ -816,21 +854,104 @@ def _test_missing_accelerated_receipt_is_not_pass():
 
 
 def _test_density_physical_tolerance():
-    scale = 1.5
-    physical = [1003, 1347]
-    records = _fixture_records((scale,))
+    # There is no ±1 tolerance: a capture one pixel short of the exact request fails.
+    records = _fixture_records((1.25,))
     frame = records[2]["data"]
     frame.update({
-        "requested_scale": scale,
-        "dip": [668.667, 898.0],
-        "physical": physical,
-        "coded": physical,
-        "visible": [0, 0, physical[0], physical[1]],
-        "content": [0, 0, physical[0], physical[1]],
-        "source": physical,
-        "imported_size": physical,
+        "dip": [370, 898],
+        "requested_physical": [463, 1123],
+        "physical": [463, 1122],
+        "coded": [463, 1122],
+        "visible": [0, 0, 463, 1122],
+        "content": [0, 0, 463, 1122],
+        "source": [463, 1122],
+        "imported_size": [463, 1122],
+        "effective_native_scale": 1.25,
     })
-    _assert_status(validate_receipts(records, (scale,)), "PASS")
+    report = validate_receipts(records, (1.25,))
+    _assert_status(report, "FAIL")
+    if not any(check["name"] == "scale_1.25" and check["status"] == "FAIL" for check in report["checks"]):
+        raise AssertionError("a one-pixel capture mismatch must fail exact density")
+    # The exact 463x1123 fixture passes.
+    _assert_status(validate_receipts(_fixture_records((1.25,)), (1.25,)), "PASS")
+
+
+def _revision_records(revisions, lifetime=10, scale=1.25, counters=None):
+    source = _fixture_records((scale,), limits=False, postlude=False)
+    records = source[:2]
+    base = source[2]["data"]
+    for index, revision in enumerate(revisions):
+        frame = dict(base)
+        frame.update({
+            "lifetime": lifetime,
+            "placement_revision": revision,
+            "generation": 30 + index,
+            "imported_generation": 30 + index,
+            "capture_counter": (counters or [])[index] if counters and index < len(counters) else 700 + index,
+        })
+        records.append({"tag": TAG_FRAME, "data": frame})
+    records.append({"tag": TAG_LIMIT, "data": {"accelerated": True, "reason": "accelerated texture import admitted"}})
+    return records
+
+
+def _checks(report, name):
+    return [check for check in report["checks"] if check["name"] == name]
+
+
+def _test_requested_dip_cannot_be_reconstructed_from_capture():
+    records = _fixture_records((1.25,))
+    frame = records[2]["data"]
+    frame.update({
+        "dip": [370, 898],
+        "requested_physical": [463, 1123],
+        "physical": [464, 1122],
+        "coded": [464, 1122],
+        "visible": [0, 0, 464, 1122],
+        "content": [0, 0, 464, 1122],
+        "source": [464, 1122],
+        "imported_size": [464, 1122],
+    })
+    report = validate_receipts(records, (1.25,))
+    _assert_status(report, "FAIL")
+    if not any("capture physical" in check["detail"] for check in _checks(report, "scale_1.25")):
+        raise AssertionError("the capture size must not be used to reconstruct the requested DIP")
+
+
+def _test_missing_effective_native_scale_blocks_exact_density():
+    records = _fixture_records((1.25,))
+    records[2]["data"].pop("effective_native_scale")
+    report = validate_receipts(records, (1.25,))
+    _assert_status(report, "BLOCKED")
+    if not _checks(report, "scale_1.25") or _checks(report, "scale_1.25")[0]["status"] != "BLOCKED":
+        raise AssertionError("unknown native scale must BLOCK exact density")
+
+
+def _test_same_lifetime_placement_aba_is_detected():
+    report = validate_receipts(_revision_records([1, 2, 1]), (1.25,))
+    if report["status"] == "PASS":
+        raise AssertionError("A→B→A revisions must not PASS")
+    if not any(check["name"] == "causal_freshness" and check["status"] == "NOT_RUN" for check in report["checks"]):
+        raise AssertionError("same-lifetime revision ABA must stay NOT_RUN")
+
+
+def _test_later_aba_after_unrelated_prefix_is_detected():
+    report = validate_receipts(_revision_records([1, 2, 3, 2]), (1.25,))
+    if not any(check["name"] == "causal_freshness" and check["status"] != "PASS" for check in report["checks"]):
+        raise AssertionError("a later A→B→A must still be detected")
+
+
+def _test_pending_b_transition_is_not_hidden_by_admission_dedup():
+    report = validate_receipts(_revision_records([1, 2]), (1.25,))
+    if not any(check["name"] == "placement_identity" and check["status"] == "NOT_RUN" for check in report["checks"]):
+        raise AssertionError("a pending B transition must not be hidden as one placement")
+
+
+def _test_new_capture_counter_or_document_nonce_is_not_causal_proof():
+    report = validate_receipts(_revision_records([1, 1], counters=[700, 900]), (1.25,))
+    if report["status"] == "PASS":
+        raise AssertionError("new counters under one placement identity must not PASS")
+    if not any(check["name"] == "causal_freshness" and check["status"] == "NOT_RUN" for check in report["checks"]):
+        raise AssertionError("a new capture counter is not causal proof")
 
 
 def _test_partial_visible_fails():
@@ -1004,6 +1125,12 @@ def _run_self_tests():
         _test_missing_accelerated_receipt_is_not_pass,
         _test_positive_accelerated_receipt_is_gated_on_native_frame_kind,
         _test_density_physical_tolerance,
+        _test_requested_dip_cannot_be_reconstructed_from_capture,
+        _test_missing_effective_native_scale_blocks_exact_density,
+        _test_same_lifetime_placement_aba_is_detected,
+        _test_later_aba_after_unrelated_prefix_is_detected,
+        _test_pending_b_transition_is_not_hidden_by_admission_dedup,
+        _test_new_capture_counter_or_document_nonce_is_not_causal_proof,
         _test_partial_visible_fails,
         _test_popup_import_mismatch_fails,
         _test_empty_log_with_valid_manifest_fails,

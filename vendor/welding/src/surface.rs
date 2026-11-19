@@ -8,6 +8,8 @@ use std::{collections::VecDeque, sync::Mutex};
 
 use dpi::PhysicalSize;
 
+pub use crate::requested_metrics::RequestedViewMetrics;
+
 use crate::{
     auth::AuthId,
     downloads::DownloadId,
@@ -1162,6 +1164,15 @@ pub trait CefSurfaceProducer {
     }
 
     fn open_devtools(&self) -> Result<(), WeldError>;
+
+    /// What this producer asked CEF to lay out (physical extent, DIP, scale).
+    ///
+    /// This is requested geometry, never an independently observed native DSF.
+    /// Default: unsupported, so unrelated producers cannot be mistaken for
+    /// identified density.
+    fn requested_view_metrics(&self) -> Result<RequestedViewMetrics, WeldError> {
+        Err(WeldError::PlatformUnsupported("requested view metrics"))
+    }
 
     /// CEF-internal browser identifier. Useful for routing multi-browser
     /// callback events in the `CefClient` vtable.
