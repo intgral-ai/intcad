@@ -481,8 +481,17 @@ this works with WSL's default networking. If you moved WSL's drive mounts away f
 Intcad can run with an agent of its own in place of the agents on the computer: Mastra Code's ACP
 agent with Intcad's additions. The environment variable `SOLIDCRAFT_MASTRA_AGENT` names its
 program: the absolute path of an executable that takes no arguments. It is read once, when the app
-starts. Without it, or when it does not name a file, nothing changes: the chat uses the agents it
-finds and the ones you added, as described above.
+starts. Without it, or when it does not name a file, the app looks in the package it runs from for
+a folder `mastra-agent` (`Contents/Resources/mastra-agent` in a macOS app, `lib/intcad/mastra-agent`
+beside `bin` on Linux, `mastra-agent` beside the program on Windows) holding a Node program
+(`node`, `node.exe`), the agent's entry (`agent/main.mjs`) and Mastra Code's SDK (`node_modules`),
+and starts that Node with the entry. A package that has the folder has the built-in agent and
+nothing else: if the folder is damaged the agent fails to start and the Assistant says so, and
+the agents found on the computer are not offered. Only a test package built with
+`--with-mastra-agent` carries the folder
+([mastra-packaging.md](mastra-packaging.md#the-built-in-agent-in-test-packages)); ordinary
+packages do not. With neither, nothing changes: the chat uses the agents it finds and the ones
+you added, as described above.
 
 With the built-in agent the agent list is that agent alone, **Mastra**. Nothing is looked for on
 the computer, and Preferences → AI shows neither **Agents** nor the choice of how turns run. The
