@@ -158,6 +158,18 @@ pub type NativeAdapterSelectorMethod = Arc<
         + Sync,
 >;
 
+/// SolidCraft: optional device creation on the already selected CAD adapter.
+/// `None` or a fully cleaned-up error uses the unchanged base descriptor on
+/// that same adapter. A factory must release all temporary native owners before
+/// returning either; it must not attempt an unproven cleanup/fallback path.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NativeDeviceCreator = Arc<
+    dyn Fn(&wgpu::Adapter, &wgpu::DeviceDescriptor<'static>)
+        -> Result<Option<(wgpu::Device, wgpu::Queue)>, String>
+        + Send
+        + Sync,
+>;
+
 /// Configuration for creating a new wgpu setup.
 ///
 /// Used for [`WgpuSetup::CreateNew`].
@@ -202,6 +214,10 @@ pub struct WgpuSetupCreateNew {
     ///
     /// Defaults to `None`.
     pub native_adapter_selector: Option<NativeAdapterSelectorMethod>,
+
+    /// SolidCraft: native-only; never performs adapter or surface selection.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub native_device_creator: Option<NativeDeviceCreator>,
 
     /// Configuration passed on device request, given an adapter
     pub device_descriptor:
@@ -257,6 +273,8 @@ impl WgpuSetupCreateNew {
                 .unwrap_or(wgpu::PowerPreference::HighPerformance),
 
             native_adapter_selector: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_device_creator: None,
 
             device_descriptor: Arc::new(|adapter| {
                 let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
@@ -300,6 +318,8 @@ impl Clone for WgpuSetupCreateNew {
             display_handle: self.display_handle.clone(),
             power_preference: self.power_preference,
             native_adapter_selector: self.native_adapter_selector.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_device_creator: self.native_device_creator.clone(),
             device_descriptor: Arc::clone(&self.device_descriptor),
         }
     }
@@ -312,17 +332,22 @@ impl core::fmt::Debug for WgpuSetupCreateNew {
             display_handle,
             power_preference,
             native_adapter_selector,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_device_creator,
             device_descriptor: _,
         } = self;
-        f.debug_struct("WgpuSetupCreateNew")
+        let mut debug = f.debug_struct("WgpuSetupCreateNew");
+        debug
             .field("instance_descriptor", instance_descriptor)
             .field("display_handle", display_handle)
             .field("power_preference", power_preference)
             .field(
                 "native_adapter_selector",
                 &native_adapter_selector.is_some(),
-            )
-            .finish_non_exhaustive()
+            );
+        #[cfg(not(target_arch = "wasm32"))]
+        debug.field("native_device_creator", &native_device_creator.is_some());
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -335,4 +360,24 @@ pub struct WgpuSetupExisting {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_factory_defaults_and_clone_preserve_configuration() {
+        let mut setup = WgpuSetupCreateNew::without_display_handle();
+        assert!(setup.native_device_creator.is_none());
+        let factory: NativeDeviceCreator = Arc::new(|_, _| Ok(None));
+        setup.native_device_creator = Some(factory.clone());
+        let copy = setup.clone();
+        assert!(Arc::ptr_eq(copy.native_device_creator.as_ref().unwrap(), &factory));
+        assert!(Arc::ptr_eq(&copy.device_descriptor, &setup.device_descriptor));
+        assert_eq!(copy.instance_descriptor.backends, setup.instance_descriptor.backends);
+        assert_eq!(copy.instance_descriptor.flags, setup.instance_descriptor.flags);
+        assert_eq!(copy.power_preference, setup.power_preference);
+        assert!(format!("{copy:?}").contains("native_device_creator"));
+    }
 }

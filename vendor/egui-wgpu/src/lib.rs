@@ -28,6 +28,8 @@ pub use setup::{
     EguiDisplayHandle, NativeAdapterSelectorMethod, WgpuSetup, WgpuSetupCreateNew,
     WgpuSetupExisting,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use setup::NativeDeviceCreator;
 
 /// Helpers for capturing screenshots of the UI.
 #[cfg(feature = "capture")]
@@ -420,6 +422,8 @@ impl RenderState {
                 display_handle: _,
                 power_preference,
                 native_adapter_selector: _native_adapter_selector,
+                #[cfg(not(target_arch = "wasm32"))]
+                native_device_creator,
                 device_descriptor,
             }) => {
                 let adapter = {
@@ -460,9 +464,26 @@ impl RenderState {
                 startup_step(STEP_DEVICE, "");
                 let (device, queue) = {
                     profiling::scope!("request_device");
-                    adapter
-                        .request_device(&(*device_descriptor)(&adapter))
-                        .await?
+                    // SolidCraft: evaluate CAD's descriptor exactly once, after
+                    // surface-compatible adapter selection. Never replace setup.
+                    let base_descriptor = (*device_descriptor)(&adapter);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let custom = match native_device_creator {
+                        Some(create) => match create(&adapter, &base_descriptor) {
+                            Ok(device) => device,
+                            Err(error) => {
+                                log::warn!("native device factory refused after cleanup: {error}");
+                                None
+                            }
+                        },
+                        None => None,
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    let custom: Option<(wgpu::Device, wgpu::Queue)> = None;
+                    match custom {
+                        Some(device) => device,
+                        None => adapter.request_device(&base_descriptor).await?,
+                    }
                 };
 
                 (instance.clone(), adapter, device, queue)

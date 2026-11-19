@@ -152,56 +152,50 @@ fn sandbox() -> CefSandboxMode {
     }
 }
 
-/// The device egui draws with **and** the DMA-BUF importer can take: on Linux the Vulkan device
-/// has to be opened with `VK_EXT_queue_family_foreign`, which `adapter.request_device` cannot
-/// add. `None` leaves eframe's own device creation alone.
-pub fn interop_setup() -> Option<eframe::egui_wgpu::WgpuSetup> {
-    // Only Linux shares memory through a device extension that has to be enabled at creation
-    // (Vulkan DMA-BUF). Windows' D3D12 shared handles and macOS' IOSurfaces are imported on the
-    // device eframe makes, so those platforms leave device creation alone.
-    #[cfg(not(target_os = "linux"))]
-    {
+/// Preserve the full selected CAD descriptor; add only supported interop.
+#[cfg(any(target_os = "linux", test))]
+fn interop_descriptor(
+    base: &wgpu::DeviceDescriptor<'static>, backend: wgpu::Backend, supported: wgpu::Features,
+) -> Option<wgpu::DeviceDescriptor<'static>> {
+    if backend != wgpu::Backend::Vulkan || !supported.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
         return None;
+    }
+    let mut descriptor = base.clone();
+    descriptor.required_features |= wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
+    Some(descriptor)
+}
+
+/// Source repair is not native cleanup/ABI proof. No runtime/env switch may
+/// bypass this gate. W2's cleanup audit records the still-unexecuted cases.
+#[cfg(target_os = "linux")]
+const NATIVE_INTEROP_CLEANUP_VERIFIED: bool = false;
+
+/// Install only on CAD's existing setup, after all its descriptor/adapter policy.
+/// Coarse eligibility asserts no display backend and initializes no CEF runtime.
+pub fn configure_interop(setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew, eligible: bool) -> Result<(), String> {
+    if !eligible { return Ok(()); }
+    if setup.native_device_creator.is_some() {
+        return Err("CEF interop refused: a native device factory is already installed".into());
     }
     #[cfg(target_os = "linux")]
     {
-        // Test only: pretend the device cannot import DMA-BUF, to check what the app does when a
-        // machine's GPU interop is missing. The Assistant must say so and CAD must keep working.
-        if std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP").is_some() {
-            note("CEF: interop disabled by SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP");
-            emit_accelerated_limit(false, "interop disabled by SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP");
-            return None;
-        }
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = wgpu::Backends::VULKAN;
-        let instance = wgpu::Instance::new(descriptor);
-        let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))
-        .ok() else {
-            emit_accelerated_limit(false, "no Vulkan adapter for DMA-BUF interop");
-            return None;
-        };
-        let features = adapter.features();
-        if !features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
-            note("CEF: this Vulkan device cannot import DMA-BUF (no VULKAN_EXTERNAL_MEMORY_DMA_BUF)");
-            emit_accelerated_limit(false, "no VULKAN_EXTERNAL_MEMORY_DMA_BUF");
-            return None;
-        }
-        let device_descriptor = wgpu::DeviceDescriptor {
-            label: Some("intcad-cef-interop"),
-            required_features: features & wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF,
-            ..Default::default()
-        };
-        let Some((device, queue)) = welding::build_dmabuf_capable_device(&adapter, &device_descriptor).ok() else {
-            emit_accelerated_limit(false, "DMA-BUF capable device setup failed");
-            return None;
-        };
-        Some(eframe::egui_wgpu::WgpuSetup::Existing(eframe::egui_wgpu::WgpuSetupExisting { instance, adapter, device, queue }))
+        setup.native_device_creator = Some(Arc::new(|adapter, base| {
+            let Some(descriptor) = interop_descriptor(base, adapter.get_info().backend, adapter.features()) else {
+                emit_accelerated_limit(false, "selected CAD adapter does not support Vulkan DMA-BUF");
+                return Ok(None);
+            };
+            if !NATIVE_INTEROP_CLEANUP_VERIFIED {
+                emit_accelerated_limit(false, "native interop cleanup and ABI validation blocked");
+                return Ok(None);
+            }
+            // This call remains disabled until every failure path has native
+            // proof of release before returning to ordinary CAD request_device.
+            welding::build_dmabuf_capable_device(adapter, &descriptor)
+                .map(Some)
+                .map_err(|_| "CEF interop device creation refused".into())
+        }));
     }
+    Ok(())
 }
 
 /// The platform's producer: every platform paints into its own kind of texture, and
@@ -425,6 +419,13 @@ impl CefAssistant {
     /// instead of drawing a second conversation.
     pub fn new(render_state: &eframe::egui_wgpu::RenderState, backend: HostBackend) -> Option<Self> {
         if FAILED_START.load(Ordering::Acquire) { return None; }
+        #[cfg(target_os = "linux")]
+        if !NATIVE_INTEROP_CLEANUP_VERIFIED
+            || !render_state.device.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF)
+        {
+            emit_accelerated_limit(false, "selected CAD device interop is unavailable or native validation is blocked");
+            return None;
+        }
         let cef_path = std::env::var("CEF_PATH").ok()?;
         let wayland_osr = backend == HostBackend::LinuxWayland;
         #[cfg(not(target_os = "linux"))]
@@ -2172,6 +2173,47 @@ const SCOPE_PROBE_JS: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_device_descriptor_retains_cad_features_and_limits() {
+        let base = wgpu::DeviceDescriptor {
+            label: Some("CAD-selected-device"),
+            required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES | crate::startup::FLOAT_DEPTH_STENCIL,
+            required_limits: wgpu::Limits { max_texture_dimension_2d: 8192, ..Default::default() },
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            ..Default::default()
+        };
+        let supported = base.required_features | wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
+        let augmented = interop_descriptor(&base, wgpu::Backend::Vulkan, supported).unwrap();
+        assert!(augmented.required_features.contains(base.required_features));
+        assert_eq!(augmented.required_features, supported);
+        assert_eq!(augmented.required_limits, base.required_limits);
+        assert_eq!(augmented.label, base.label);
+        assert_eq!(format!("{:?}", augmented.memory_hints), format!("{:?}", base.memory_hints));
+        assert_eq!(format!("{:?}", augmented.experimental_features), format!("{:?}", base.experimental_features));
+        assert_eq!(format!("{:?}", augmented.trace), format!("{:?}", base.trace));
+        assert!(interop_descriptor(&base, wgpu::Backend::Gl, supported).is_none());
+        assert!(interop_descriptor(&base, wgpu::Backend::Vulkan, base.required_features).is_none());
+        assert!(!base.required_features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF));
+    }
+
+    #[test]
+    fn early_interop_configuration_preserves_cad_and_never_replaces_foreign_factory() {
+        let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+        let descriptor = setup.device_descriptor.clone();
+        let backends = setup.instance_descriptor.backends;
+        configure_interop(&mut setup, false).unwrap();
+        assert!(setup.native_device_creator.is_none());
+        configure_interop(&mut setup, true).unwrap();
+        assert!(Arc::ptr_eq(&descriptor, &setup.device_descriptor));
+        assert_eq!(setup.instance_descriptor.backends, backends);
+        #[cfg(target_os = "linux")]
+        {
+            let installed = setup.native_device_creator.clone().unwrap();
+            assert!(configure_interop(&mut setup, true).is_err());
+            assert!(Arc::ptr_eq(setup.native_device_creator.as_ref().unwrap(), &installed));
+        }
+    }
 
     #[test]
     fn navigation_policy_rejects_consumed_permit_redirect_and_foreign_frame() {

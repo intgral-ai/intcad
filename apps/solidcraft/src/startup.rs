@@ -162,6 +162,11 @@ pub fn choose_adapter(adapters: &[AdapterChoice], environment: Option<&str>, pre
         .or_else(|| find(&|a| a.name.eq_ignore_ascii_case(name), false))
 }
 
+/// Coarse prerequisites only: no display/backend/CEF initialization claim.
+pub fn cef_interop_eligible(cpu: bool, runtime_path_available: bool, disabled: bool) -> bool {
+    !cpu && runtime_path_available && !disabled
+}
+
 /// Leave Automatic on wgpu's normal request path; named choices may defer to it too.
 pub fn configure_adapter(setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew, cpu: bool, environment: Option<String>, preference: Option<String>) {
     if cpu {
@@ -428,6 +433,14 @@ mod tests {
         assert_eq!(choose_adapter(&cards, Some(""), Some("Discrete small")), Some(1));
         assert_eq!(choose_adapter(&cards, None, Some("discrete small")), Some(1), "preference matches without regard to case");
         assert_eq!(choose_adapter(&cards, None, Some("Discrete")), None, "a preference is the full name, not a substring");
+    }
+
+    #[test]
+    fn cpu_recovery_and_missing_cef_do_not_install_interop() {
+        assert!(cef_interop_eligible(false, true, false));
+        assert!(!cef_interop_eligible(true, true, false));
+        assert!(!cef_interop_eligible(false, false, false));
+        assert!(!cef_interop_eligible(false, true, true));
     }
 
     #[test]

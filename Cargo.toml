@@ -164,6 +164,10 @@ debug = "line-tables-only"
 [patch.crates-io]
 welding = { path = "vendor/welding" }
 
+# Locked 30.0.1 only: release the owned Vulkan device on early layout failure.
+# Native cleanup/ABI proof still gates Assistant interop enablement.
+wgpu-hal = { path = "vendor/wgpu-hal" }
+
 # Keep OpenGL pipelines, resolve textures and CAD callbacks at the same safe sample count.
 egui-wgpu = { path = "vendor/egui-wgpu" }
 

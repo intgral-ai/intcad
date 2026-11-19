@@ -1527,12 +1527,14 @@ fn wgpu_options(cpu: bool, preference: Option<&str>) -> eframe::egui_wgpu::WgpuC
             d.required_features |= adapter.features() & startup::FLOAT_DEPTH_STENCIL;
             d
         });
-    }
-    // CEF's page comes in as a DMA-BUF: the Vulkan device has to be opened with the interop
-    // extensions, which the descriptor alone cannot add. When it cannot, eframe keeps its own
-    // device and the Assistant says why (assistant_cef::CefAssistant::new refuses).
-    if let Some(setup) = assistant_cef::interop_setup() {
-        options.wgpu_setup = setup;
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        {
+            let runtime_available = std::env::var_os("CEF_PATH").is_some_and(|path| std::path::Path::new(&path).is_dir());
+            let eligible = startup::cef_interop_eligible(cpu, runtime_available, std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP").is_some());
+            if assistant_cef::configure_interop(setup, eligible).is_err() {
+                log::warn!("CEF interop unavailable: existing native device factory retained");
+            }
+        }
     }
     options
 }
