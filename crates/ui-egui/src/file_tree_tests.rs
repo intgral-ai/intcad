@@ -81,6 +81,7 @@ fn plain_egui_text_paste_after_click_compares_one_batch_with_two_frames() {
     let separate_frames = observe(true);
     eprintln!("plain egui 0.36.2 same-batch click+Paste field text = {same_batch:?}");
     eprintln!("plain egui 0.36.2 click frame then Paste frame field text = {separate_frames:?}");
+    assert_eq!(same_batch, "", "egui 0.36 acquires click focus after reading keyboard events");
     assert_eq!(separate_frames, "needle", "the plain already-focused widget receives one insertion");
 }
 
@@ -125,7 +126,7 @@ fn same_frame_row_click_then_native_paste_uses_the_accepted_row_not_cad() {
 }
 
 #[test]
-fn same_frame_find_text_click_then_paste_belongs_only_to_the_real_text_widget() {
+fn find_text_click_then_paste_in_the_next_frame_belongs_only_to_the_real_text_widget() {
     let scratch = Scratch::new();
     let source = scratch.file("source.txt", "source");
     let mut h = clipboard_window(scratch.path());
@@ -133,35 +134,211 @@ fn same_frame_find_text_click_then_paste_belongs_only_to_the_real_text_widget() 
     h.frames(3);
     h.app.file_tree.select_only(&source);
     h.app.file_tree.focused = true;
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: true });
     let field = h.ctx.read_response(egui::Id::new("files_find")).unwrap().rect;
     let before = cad_mark(&h);
-    eprintln!(
-        "text-click trace before: field={field:?}, focus={:?}, text_focus={}, top_modal={:?}",
-        h.ctx.memory(|m| m.focused()),
-        h.ctx.text_edit_focused(),
-        h.ctx.memory(|m| m.top_modal_layer())
-    );
-    let mut events = pointer_click(field.center(), Modifiers::NONE);
-    events.push(egui::Event::Paste("needle".into()));
-    eprintln!("text-click trace events: {events:?}");
-    h.frame_with(events);
-    let response = h.ctx.read_response(egui::Id::new("files_find")).unwrap();
-    eprintln!(
-        "text-click trace after: rect={:?}, clicked={}, enabled={}, focus={:?}, text_focus={}, files_focus={}, field_text={:?}, pass={}, effective={:?}, replay={:?}",
-        response.rect,
-        response.clicked(),
-        response.enabled(),
-        h.ctx.memory(|m| m.focused()),
-        h.ctx.text_edit_focused(),
-        h.app.file_tree.focused,
-        h.app.file_tree.find,
-        h.ctx.current_pass_index(),
-        h.ctx.input(|i| i.events.clone()),
-        h.ctx.input(|i| i.raw.events.clone())
-    );
+    // Plain egui's characterization above establishes that click focus must precede the
+    // keyboard batch. Do not reconstruct or replay its pointer prefix in application code.
+    h.frame_with(pointer_click(field.center(), Modifiers::NONE));
+    assert!(h.ctx.text_edit_focused());
+    let ctx = h.ctx.clone();
+    let mut raw = window_input(&ctx, true, vec![egui::Event::Paste("needle".into())]);
+    h.app.raw_input_hook(&mut raw);
+    assert!(matches!(raw.events.as_slice(), [egui::Event::Paste(text)] if text == "needle"));
+    let _ = ctx.run_ui(raw, |ui| {
+        h.app.logic(ui.ctx());
+        assert!(h.app.clipboard_input.entry_keyboard_owned, "exercise the broad early toolbar guard");
+        assert!(
+            ui.input(|i| matches!(i.events.as_slice(), [egui::Event::Paste(text)] if text == "needle")),
+            "early logic/toolbar must leave Paste for the focused widget"
+        );
+        eprintln!("focused text Paste trace: raw hook retained Paste; early guard retained Paste");
+        h.app.ui(ui);
+    });
+    h.frames(3);
     assert_eq!(h.app.file_tree.find.as_deref(), Some("needle"), "real text edit receives Paste once");
     assert_eq!(cad_mark(&h), before, "text Paste must not also paste the CAD clipboard");
     assert!(!h.app.file_tree.busy);
+    assert!(h.app.file_tree.modal.is_none());
+    assert!(h.app.file_tree.clip.as_ref().unwrap().cut, "the file clipboard was not copied or pasted");
+    assert_eq!(fs::read(source).unwrap(), b"source");
+}
+
+fn window_input(ctx: &egui::Context, focused: bool, events: Vec<egui::Event>) -> egui::RawInput {
+    egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
+        focused,
+        events,
+        time: Some(ctx.input(|i| i.time) + 0.01),
+        ..Default::default()
+    }
+}
+
+fn window_frame(h: &mut crate::scenario::Harness, focused: bool, events: Vec<egui::Event>, draw: bool) {
+    let ctx = h.ctx.clone();
+    let mut raw = window_input(&ctx, focused, events);
+    h.app.raw_input_hook(&mut raw);
+    let _ = ctx.run_ui(raw, |ui| {
+        h.app.logic(ui.ctx());
+        if draw {
+            h.app.ui(ui);
+        }
+    });
+}
+
+#[test]
+fn unfocused_window_and_logic_only_input_do_not_replay_files_or_cad_paste() {
+    for focused in [false, true] {
+        let scratch = Scratch::new();
+        let source = scratch.file("source.txt", "source");
+        let into = scratch.dir("into");
+        let mut h = clipboard_window(scratch.path());
+        let row = crate::scenario::rect_of("files:row:into").unwrap();
+        h.frame_with(pointer_click(row.center(), Modifiers::NONE));
+        h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+        let before = cad_mark(&h);
+        let events = if focused {
+            vec![egui::Event::Paste("logic-only".into())]
+        } else {
+            vec![egui::Event::WindowFocused(false), egui::Event::Paste("unfocused".into())]
+        };
+        window_frame(&mut h, focused, events, !focused);
+        assert!(!h.app.file_tree.busy, "focused={focused}");
+        assert!(!into.join("source.txt").exists());
+        assert_eq!(cad_mark(&h), before);
+        h.frames(3);
+        assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "no hidden-batch replay");
+        assert!(!into.join("source.txt").exists());
+        assert_eq!(cad_mark(&h), before);
+        // A later accepted list interaction and native command still work.
+        h.frame_with(pointer_click(row.center(), Modifiers::NONE));
+        h.frame_with(vec![egui::Event::Paste("later legitimate input".into())]);
+        h.frames(30);
+        assert_eq!(fs::read(into.join("source.txt")).unwrap(), b"source");
+        assert_eq!(cad_mark(&h), before);
+    }
+}
+
+#[test]
+fn popup_chat_keymap_report_and_picker_exclude_files_and_cad_clipboard() {
+    use serde_json::json;
+    for owner in ["popup", "chat", "keymap", "report", "picker"] {
+        let scratch = Scratch::new();
+        let source = scratch.file("source.txt", "source");
+        let into = scratch.dir("into");
+        let mut h = clipboard_window(scratch.path());
+        h.app.file_tree.select_only(&into);
+        h.app.file_tree.focused = true;
+        h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: true });
+        match owner {
+            "popup" => {
+                h.step(&json!({"click": {"handle": "files:new"}})).unwrap();
+                assert!(egui::Popup::is_any_open(&h.ctx), "the actual menu owns input");
+            }
+            "chat" => {
+                h.app.agent_chat.open = true;
+                h.app.preferences.ai_features = true;
+                h.app.preferences.agent_chat_minimized = false;
+                h.frames(4);
+                let field = h.ctx.read_response(egui::Id::new("sc_agent_chat_input")).expect("actual Assistant input").rect;
+                h.frame_with(pointer_click(field.center(), Modifiers::NONE));
+                assert!(h.ctx.text_edit_focused());
+            }
+            "keymap" => {
+                h.call("ui.prefs", json!({"open": "Keyboard Shortcuts"}));
+                let (handle, _) = crate::scenario::handles("keymap:capture:").into_iter().next().expect("visible recording control");
+                h.step(&json!({"click": {"handle": handle}})).unwrap();
+                assert!(crate::keymap::capturing(&h.app));
+            }
+            "report" => {
+                h.app.issue_report.draft = Some(crate::issue_report::draft_for(&h.app, None, None));
+                h.frames(4);
+                assert!(h.ctx.text_edit_focused());
+            }
+            "picker" => {
+                // Only the OS picker service waits; the application's real picker barrier runs.
+                h.app.services.pick_open = Some(Box::new(|_| Box::pin(std::future::pending())));
+                h.app.pick_open(|_, _| {});
+                h.frames(2);
+                assert!(h.app.file_picker.is_some());
+            }
+            _ => panic!("unknown input owner: {owner}"),
+        }
+        // Challenge stale Files ownership as well as the already-primed real CAD clipboard.
+        h.app.file_tree.focused = true;
+        let before = cad_mark(&h);
+        for event in [egui::Event::Copy, egui::Event::Cut, egui::Event::Paste("needle".into()), egui::Event::Paste(String::new())] {
+            h.frame_with(vec![event]);
+            assert_eq!(cad_mark(&h), before, "{owner}: no CAD side effect");
+            assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "{owner}: no file operation");
+            assert!(h.app.file_tree.clip.as_ref().unwrap().cut, "{owner}: Files must not overwrite its clipboard");
+            assert!(!into.join("source.txt").exists(), "{owner}");
+        }
+        assert_eq!(fs::read(source).unwrap(), b"source");
+        if owner == "chat" {
+            assert_eq!(h.app.agent_chat.input, "needle", "text owner receives nonempty Paste once");
+        }
+    }
+}
+
+#[test]
+fn report_capture_holds_native_paste_and_releases_it_once_without_background_actions() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.select_only(&into);
+    h.app.file_tree.focused = true;
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    let before = cad_mark(&h);
+    crate::issue_report::begin(&mut h.app, &h.ctx, None, None);
+    assert!(crate::issue_report::pending(&h.app));
+    h.frame_with(vec![egui::Event::Paste("held needle".into())]);
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+    assert_eq!(cad_mark(&h), before);
+    assert!(!into.join("source.txt").exists());
+    let token = h.app.shot_token;
+    crate::issue_report::receive(&mut h.app, token, std::sync::Arc::new(egui::ColorImage::new([2, 2], vec![egui::Color32::TRANSPARENT; 4])));
+    assert!(!crate::issue_report::pending(&h.app));
+    let mut resumed = window_input(&h.ctx, true, Vec::new());
+    h.app.raw_input_hook(&mut resumed);
+    assert!(
+        matches!(resumed.events.as_slice(), [egui::Event::Paste(text)] if text == "held needle"),
+        "capture retains the native event, not a reconstructed command"
+    );
+    let mut next = window_input(&h.ctx, true, Vec::new());
+    h.app.raw_input_hook(&mut next);
+    assert!(next.events.is_empty(), "held input releases only once");
+    assert_eq!(cad_mark(&h), before);
+    assert_eq!(fs::read(source).unwrap(), b"source");
+}
+
+#[test]
+fn a_dirty_open_document_follows_a_case_only_file_tree_rename() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let old = scratch.path().join("bracket.sc");
+    let new = scratch.path().join("Bracket.sc");
+    let mut session = Session::default();
+    session.execute("file.save_as", &json!({"path": old.to_string_lossy(), "cache": false})).unwrap();
+    session.execute("solid.box", &json!({"length": 3, "width": 3, "height": 3})).unwrap();
+    let mut app = crate::SolveApp::new(session, Default::default());
+    app.file_tree = listing(scratch.path());
+    let undo = app.session.undo.len();
+    let features = serde_json::to_value(&app.session.doc.features).unwrap();
+    app.file_tree.start_rename(&old);
+    app.file_tree.editing.as_mut().unwrap().name = "Bracket.sc".into();
+    assert!(app.file_tree.commit_edit().is_none(), "rename must not open another document");
+    tick(&mut app, &egui::Context::default(), 1.0);
+    assert_eq!(app.session.path.as_deref(), new.to_str());
+    assert_eq!(app.session.doc.name, "Bracket");
+    assert!(app.session.is_dirty(), "unsaved geometry follows the renamed file");
+    assert_eq!(app.session.undo.len(), undo);
+    assert_eq!(serde_json::to_value(&app.session.doc.features).unwrap(), features);
+    assert_eq!(app.docs.count(), 1);
+    let stored: Vec<_> = fs::read_dir(scratch.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert!(stored.contains(&std::ffi::OsString::from("Bracket.sc")));
+    assert!(!stored.contains(&std::ffi::OsString::from("bracket.sc")), "check stored spelling, not case-insensitive exists()");
 }
 
 #[test]
@@ -321,11 +498,50 @@ fn mac_control_primary_is_a_context_click_and_cmd_primary_only_toggles() {
     h.frame_with(pointer_click(row.center(), cmd));
     assert!(h.app.file_tree.selection.contains(&a) && h.app.file_tree.selection.contains(&b));
     assert!(h.app.file_tree.context.is_none(), "Cmd click is selection, never a menu");
-    // Move away to avoid interpreting the next tap as a double-click.
+    // Separate taps, rather than a double-click which activates a file.
+    h.frames(40);
+    h.frame_with(pointer_click(row.center(), cmd));
+    assert!(!h.app.file_tree.selection.contains(&b), "Cmd click toggles the selected row off");
+    assert!(h.app.file_tree.selection.contains(&a) && h.app.file_tree.context.is_none());
+    h.frames(40);
+    h.frame_with(pointer_click(row.center(), cmd));
     h.frames(40);
     h.frame_with(pointer_click(row.center(), Modifiers::CTRL));
     assert!(h.app.file_tree.context.is_some(), "Control-primary opens the context menu on macOS");
     assert_eq!(h.app.file_tree.selection.len(), 2, "context-click preserves a selected multi-selection");
+}
+
+#[test]
+fn secondary_click_preserves_multi_selection_and_non_mac_control_click_toggles() {
+    for os in [egui::os::OperatingSystem::Mac, egui::os::OperatingSystem::Windows] {
+        let scratch = Scratch::new();
+        let a = scratch.file("a.txt", "a");
+        let b = scratch.file("b.txt", "b");
+        let mut h = clipboard_window(scratch.path());
+        h.ctx.set_os(os);
+        h.app.file_tree.select_only(&a);
+        h.app.file_tree.selection.insert(b.clone());
+        let row = crate::scenario::rect_of("files:row:b.txt").unwrap();
+        let before = cad_mark(&h);
+        h.frame_with(vec![
+            egui::Event::PointerMoved(row.center()),
+            egui::Event::PointerButton { pos: row.center(), button: egui::PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE },
+            egui::Event::PointerButton { pos: row.center(), button: egui::PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE },
+        ]);
+        assert_eq!(h.app.file_tree.selection.len(), 2);
+        assert_eq!(h.app.file_tree.context.as_ref().unwrap().path, b);
+        assert_eq!(cad_mark(&h), before);
+    }
+    let scratch = Scratch::new();
+    let a = scratch.file("a.txt", "a");
+    let b = scratch.file("b.txt", "b");
+    let mut h = clipboard_window(scratch.path());
+    h.ctx.set_os(egui::os::OperatingSystem::Windows);
+    h.app.file_tree.select_only(&a);
+    let row = crate::scenario::rect_of("files:row:b.txt").unwrap();
+    h.frame_with(pointer_click(row.center(), Modifiers::CTRL | Modifiers::COMMAND));
+    assert!(h.app.file_tree.selection.contains(&a) && h.app.file_tree.selection.contains(&b));
+    assert!(h.app.file_tree.context.is_none(), "other platforms retain Ctrl selection");
 }
 
 fn key_event(key: egui::Key, pressed: bool, modifiers: Modifiers) -> egui::Event {
