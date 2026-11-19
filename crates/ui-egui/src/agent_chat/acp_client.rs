@@ -35,6 +35,10 @@ const ENV_REMOVE: &[&str] = &["SOLIDCRAFT_CONTROL_TOKEN"];
 /// The variable that tells the built-in agent where to keep its sign-ins and its own data.
 pub const DATA_DIR_ENV: &str = "MASTRA_APP_DATA_DIR";
 
+/// Mastra's own switch for its usage reporting. The built-in agent is always started with it
+/// set, whatever program it is; the agent's entry sets it for itself as well.
+pub const TELEMETRY_OFF_ENV: &str = "MASTRA_TELEMETRY_DISABLED";
+
 pub struct AcpBackend {
     proc: AgentProcess,
     cwd: std::path::PathBuf,
@@ -72,8 +76,10 @@ impl AcpBackend {
     /// the keys ([`ChatBackend::connections`]) and opens the session ([`ChatBackend::new_session`]).
     /// `data`: the folder of the app's own where the agent keeps its sign-ins and its other
     /// data (`MASTRA_APP_DATA_DIR`), so it shares none with a Mastra Code the user installed.
+    /// Mastra's usage reporting is switched off for it ([`TELEMETRY_OFF_ENV`]).
     pub fn start_builtin(argv: &[String], ctx: StartContext, data: Option<&std::path::Path>) -> Result<AcpBackend, String> {
-        let env: Vec<(&str, &std::ffi::OsStr)> = data.iter().map(|folder| (DATA_DIR_ENV, folder.as_os_str())).collect();
+        let mut env: Vec<(&str, &std::ffi::OsStr)> = data.iter().map(|folder| (DATA_DIR_ENV, folder.as_os_str())).collect();
+        env.push((TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1")));
         let mut backend = AcpBackend::start_with_env(argv, ctx, &env)?;
         backend.built_in = true;
         Ok(backend)
@@ -778,13 +784,14 @@ mod tests {
     }
 
     /// The built-in agent's process is told where to keep its sign-ins and its own data
-    /// (`MASTRA_APP_DATA_DIR`), and what the entry reads for itself is not taken from it.
+    /// (`MASTRA_APP_DATA_DIR`) and is started with Mastra's usage reporting off, and what the
+    /// entry reads for itself is not taken from it.
     #[test]
     fn the_built_in_agent_is_started_with_its_data_folder() {
         let dir = std::env::temp_dir().join(format!("intcad-builtin-env-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (seen, data) = (dir.join("seen"), dir.join("settings").join("mastra"));
-        let script = r#"printf '%s\n' "$MASTRA_APP_DATA_DIR" > "$0"; while IFS= read -r line; do :; done"#;
+        let script = r#"printf '%s|%s\n' "$MASTRA_APP_DATA_DIR" "$MASTRA_TELEMETRY_DISABLED" > "$0"; while IFS= read -r line; do :; done"#;
         let argv = ["sh".to_string(), "-c".to_string(), script.to_string(), seen.to_string_lossy().into_owned()];
         let ctx = || StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
         let read = |seen: &std::path::Path| {
@@ -800,12 +807,15 @@ mod tests {
             }
         };
         let mut backend = AcpBackend::start_builtin(&argv, ctx(), Some(&data)).unwrap();
-        assert_eq!(read(&seen).trim_end(), data.to_string_lossy());
+        assert_eq!(read(&seen).trim_end(), format!("{}|1", data.to_string_lossy()));
         backend.shutdown(true);
         // Any other agent gets no such variable from the app: only what this process has itself.
         std::fs::remove_file(&seen).unwrap();
         let mut other = AcpBackend::start(&argv, ctx()).unwrap();
-        assert_eq!(read(&seen).trim_end(), std::env::var(DATA_DIR_ENV).unwrap_or_default());
+        assert_eq!(
+            read(&seen).trim_end(),
+            format!("{}|{}", std::env::var(DATA_DIR_ENV).unwrap_or_default(), std::env::var(TELEMETRY_OFF_ENV).unwrap_or_default())
+        );
         other.shutdown(true);
         assert!(!ENV_REMOVE.contains(&"SOLIDCRAFT_MASTRA_SDK") && !ENV_REMOVE.contains(&DATA_DIR_ENV), "{ENV_REMOVE:?}");
         let _ = std::fs::remove_dir_all(&dir);
