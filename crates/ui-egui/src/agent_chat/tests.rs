@@ -14498,12 +14498,24 @@ mod mastra_backend_tests {
     /// Shutdown must take the same queue mutex that the worker holds while it checks the wait
     /// predicate. Otherwise a notify between the check and the wait is lost and the control
     /// worker never exits.
+    /// Clear the process-wide test barriers even when a fixture panics, so one failing test
+    /// cannot park another test's control worker.
+    struct BarrierCleanup;
+
+    impl Drop for BarrierCleanup {
+        fn drop(&mut self) {
+            mastra_backend::HostValidation::clear_prewait_barrier_for_test();
+            mastra_backend::HostValidation::clear_completion_barriers_for_test();
+        }
+    }
+
     #[test]
     fn mastra_validation_shutdown_takes_the_queue_predicate_lock() {
         let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = scratch_validation("cancel-shutdown-lock");
         let barrier = Arc::new(std::sync::Barrier::new(2));
         mastra_backend::HostValidation::install_prewait_barrier_for_test(Arc::clone(&barrier));
+        let _cleanup = BarrierCleanup;
         let host = host_validation(&dir);
         barrier.wait(); // the control worker holds the queue mutex before its wait
         let (send, receive) = channel();
@@ -14540,6 +14552,7 @@ mod mastra_backend_tests {
         let completion_release = Arc::new(std::sync::Barrier::new(2));
         mastra_backend::HostValidation::install_runner_gate_for_test(Arc::clone(&runner_gate));
         mastra_backend::HostValidation::install_completion_barriers_for_test(Arc::clone(&completion_reached), Arc::clone(&completion_release));
+        let _cleanup = BarrierCleanup;
         let host = host_validation(&dir);
         runner_gate.wait(); // the runner worker is parked before it can start the run
 
