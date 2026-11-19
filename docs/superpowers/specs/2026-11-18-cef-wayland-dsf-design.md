@@ -1,12 +1,15 @@
 # CEF Assistant: native Wayland density and compatible frames
 
-**Design proposal — human approval required before implementation.**
+**Human-approved design — user answered “批准按此实施” for sections 1–5.**
+Approved direction: bounded approach B, native Wayland OSR configuration, not a
+custom CEF fork. Implementation awaits controller review of the implementation
+plan; no runtime acceptance or binary validation is implied by design approval.
 
 Risk **L3**: native runtime configuration, GPU-frame ownership, input and artifact
 identity. Worktree `worktrees/cef-osr`, branch `probe/cef-welding-osr`, source
 baseline `2284165658172c0ed528ed5f8377eab11b16b748`.
 
-## Design for approval
+## Approved design
 
 ### 1. Outcome and selected proposal
 
@@ -23,7 +26,8 @@ This is not a general Chromium policy or a promise to preserve windowed CEF
 behavior in unrelated applications. That stricter contract belongs to fallback
 approach A, not to the user's original requirement. Independent Astra guidance
 now prefers bounded B over a custom CEF build, subject to scope and regression
-proof. Neither mechanism nor this document is yet approved for implementation.
+proof. The user approved bounded B; A remains fallback research, not permission
+to start a native fork/build.
 
 **Acceptance contract:** native Wayland OSR preserves live density at 1/1.25/1.5/2,
 shows compatible themed frames and readable semantic text with aligned input,
@@ -176,15 +180,16 @@ bounded diagnostics, not silently become newly built/accepted outputs.
 
 | State | Meaning |
 |---|---|
-| Design proposed — current | Await human approval; no product implementation |
+| Design approved — current | Human-approved bounded B; controller plan review precedes product implementation |
 | Source-ready | Scoped source/patch/config and reviews complete; lists unrun builds/tests |
 | Binary-validated | Identified bundle built/verified and actual required native checks run |
 | Accepted | Required VM/visual/independent gates and final host user approval satisfied |
 
-No product code, new dependencies, native source patch, build, commit or push is
-authorized by this Spec stage. No new provider, public posting, release, artifact
-service, fleet or persistent native fork is authorized. There is presently no
-additional material product question; approval of this document is the next gate.
+The design approval authorizes planning bounded B, with product work gated on
+controller review of that plan. No build, commit or push is authorized by this
+planning stage. No new provider, public posting, release, artifact service, fleet
+or persistent native fork is authorized. There is presently no additional
+material product question.
 
 ## Research and evidence appendices
 
