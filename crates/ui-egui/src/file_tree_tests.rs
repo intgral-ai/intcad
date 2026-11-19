@@ -1666,6 +1666,121 @@ fn delete_on_a_file_row_leaves_the_body_selected_in_the_view() {
     assert!(h.app.file_tree.modal.is_some(), "the tree asks about its file");
 }
 
+/// A Files panel listing `notes.txt` beside a design with one selected body.
+fn cad_body_and_files(scratch: &Scratch) -> (crate::scenario::Harness, String) {
+    use crate::scenario::Harness;
+    use serde_json::json;
+    let mut h = Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+    h.app.file_tree = listing(scratch.path());
+    h.app.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+    let body = h.app.session.model.state().bodies.last().unwrap().name.clone();
+    h.app.run("select.set", json!({"items": [{"type": "body", "name": body}]})).unwrap();
+    h.frames(5);
+    (h, body)
+}
+
+/// On macOS the panel declines Control+Backspace (no Command), and that chord used to reach the
+/// CAD selection and delete the body. A destructive chord the tree does not act on must not fall
+/// through to CAD, while Control+Arrow stays the view's.
+#[test]
+fn macos_control_backspace_in_focused_files_does_not_delete_the_selected_body() {
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let (mut h, body) = cad_body_and_files(&scratch);
+    h.ctx.set_os(egui::os::OperatingSystem::Mac);
+    focus_file_row(&mut h, "notes.txt");
+    let control = Modifiers { ctrl: true, ..Default::default() };
+    h.frame_with(vec![key_event(egui::Key::Backspace, true, control), key_event(egui::Key::Backspace, false, control)]);
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_some(), "Control+Backspace must not delete the CAD body");
+    assert!(h.app.file_tree.modal.is_none(), "the tree declines the Control chord without asking about a file");
+    assert!(h.app.file_tree.editing.is_none());
+}
+
+/// A Files row click and Delete in one batch: before layout the old CAD focus made the pre-layout
+/// guard miss, so Delete deleted the CAD body before Files took the keys.
+#[test]
+fn same_batch_files_row_click_and_delete_does_not_delete_the_cad_selection() {
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let (mut h, body) = cad_body_and_files(&scratch);
+    assert!(!h.app.file_tree.focused, "CAD has the keys before the batch");
+    let row = crate::scenario::rect_of("files:row:notes.txt").unwrap();
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(key_event(egui::Key::Delete, true, Modifiers::NONE));
+    events.push(key_event(egui::Key::Delete, false, Modifiers::NONE));
+    h.frame_with(events);
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_some(), "the click and Delete in one batch must not delete CAD");
+    assert!(h.app.file_tree.focused, "the Files row takes the keys");
+    assert!(h.app.file_tree.modal.is_some(), "Files asks about its own file");
+}
+
+/// The reverse transition loses the ambiguous destructive key rather than guessing: a click that
+/// closes Files and Delete in one batch changes nothing.
+#[test]
+fn same_batch_click_away_from_files_and_delete_changes_nothing() {
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let (mut h, body) = cad_body_and_files(&scratch);
+    focus_file_row(&mut h, "notes.txt");
+    let item = crate::scenario::rect_of("rail:item:files").unwrap();
+    let mut events = pointer_click(item.center(), Modifiers::NONE);
+    events.push(key_event(egui::Key::Delete, true, Modifiers::NONE));
+    events.push(key_event(egui::Key::Delete, false, Modifiers::NONE));
+    h.frame_with(events);
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_some(), "the ambiguous Delete deletes neither owner's selection");
+    assert!(h.app.file_tree.modal.is_none(), "the closed panel asks about no file");
+    assert!(!h.app.file_tree.focused);
+}
+
+/// A window too narrow to draw the Files panel has no Files body to own the keys: CAD Delete
+/// must work even in the frame the panel disappears.
+#[test]
+fn a_narrow_frame_that_omits_files_lets_cad_delete() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let (mut h, body) = cad_body_and_files(&scratch);
+    focus_file_row(&mut h, "notes.txt");
+    let wide_panel = h.app.shell.right_rail_panel.expect("the wide Files panel was drawn");
+    h.call("ui.resize", json!({"width": 500, "height": 700}));
+    assert!(h.app.shell.right_rail_panel.is_none(), "the panel cannot be drawn in this window");
+    // The frame that shrinks the window still carries the previous frame's focus and panel:
+    // reproduce that one transition frame and feed Delete into it.
+    h.app.file_tree.focused = true;
+    h.app.shell.right_rail_panel = Some(wide_panel);
+    h.frame_with(vec![key_event(egui::Key::Delete, true, Modifiers::NONE), key_event(egui::Key::Delete, false, Modifiers::NONE)]);
+    h.frames(3);
+    assert!(h.app.session.model.state().body(&body).is_none(), "a panel that cannot be drawn must not suppress CAD Delete");
+    assert!(!h.app.file_tree.focused);
+    assert!(h.app.file_tree.modal.is_none());
+}
+
+/// With the Files panel open but not focused, CAD still owns Delete.
+#[test]
+fn settled_cad_focus_still_deletes_with_files_panel_open() {
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let (mut h, body) = cad_body_and_files(&scratch);
+    assert!(!h.app.file_tree.focused);
+    h.step(&serde_json::json!({"key": "Delete"})).unwrap();
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_none(), "the model still owns Delete while Files is open but unfocused");
+}
+
+/// Destructive keys are the ambiguity boundary; Control+Arrow is not claimed by Files.
+#[test]
+fn files_key_ownership_leaves_control_arrows_to_the_view() {
+    let control = Modifiers { ctrl: true, ..Default::default() };
+    assert!(!crate::file_tree::takes_key(egui::Key::ArrowLeft, control), "Control+Arrow is not a Files key");
+    assert!(!crate::file_tree::takes_key(egui::Key::ArrowRight, control));
+    assert!(crate::file_tree::takes_key(egui::Key::ArrowLeft, Modifiers::NONE), "a plain arrow is");
+}
+
 /// With the Files panel closed the tree has no keys: the view's arrows and the model's Delete
 /// work as they always have.
 #[test]

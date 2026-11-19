@@ -3511,16 +3511,28 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     });
     // Home hides the design: only New, Open and Preferences work there.
     let shown = design_shown(app);
+    // The Files tree can have the keyboard only while it is the open panel and the window is wide
+    // enough to draw its body. A content width below the panel-plus-view minimum cannot fit; above
+    // it, the last frame's drawn panel is the pre-layout evidence.
+    let files_rail = crate::right_rail::shown(app) && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files);
+    let files_fit = ctx.content_rect().width() >= crate::right_rail::MIN_VIEW + crate::right_rail::MIN_PANEL;
+    let files_panel = if files_rail && files_fit { app.shell.right_rail_panel } else { None };
+    let files_keys = app.file_tree.focused && files_panel.is_some();
+    // A click inside the drawn Files body can move the keys there after this pre-layout pass.
+    let click_into_files =
+        files_panel.is_some_and(|rect| ctx.input(|i| i.pointer.any_click() && i.pointer.latest_pos().is_some_and(|pos| rect.contains(pos))));
     // Only clipboard mutation waits for current widget/dialog ownership in `finish_input`.
     for (k, repeat, mods) in keys {
         use egui::Key;
+        // Delete and Backspace are destructive. While Files owns the keys, or a click can move
+        // them into or out of Files in this same batch, neither owner may receive them from the
+        // stale pre-layout focus.
+        if matches!(k, Key::Delete | Key::Backspace) && (files_keys || click_into_files) {
+            continue;
+        }
         // A click in the Files tree gives it the keyboard until a click lands elsewhere: the keys
         // it acts on are for the files, not also for the design or the view.
-        if app.file_tree.focused
-            && crate::right_rail::shown(app)
-            && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files)
-            && crate::file_tree::takes_key(k, mods)
-        {
+        if files_keys && crate::file_tree::takes_key(k, mods) {
             continue;
         }
         // Only Esc pressed twice in a row finishes a sketch: any other key in between resets it.
