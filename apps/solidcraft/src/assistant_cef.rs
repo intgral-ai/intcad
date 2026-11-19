@@ -791,6 +791,13 @@ impl CefAssistant {
             return;
         }
         if web::take_retry(solve) {
+            if !self.lifecycle.permits_retry() {
+                // Closing, quarantined or not-yet-created: Retry must not make a
+                // second runtime owner or navigate a browser that is going away.
+                note("CEF: Retry refused: no live browser in an open runtime");
+                web::set_problem(solve, web::Problem::Failed);
+                return;
+            }
             self.failed = false;
             self.input_failed = false;
             self.viewport.reset(Instant::now());
