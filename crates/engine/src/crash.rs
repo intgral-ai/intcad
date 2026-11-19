@@ -112,6 +112,34 @@ struct State {
 /// The startup step that ends startup: the app is up and drawing.
 pub const RUNNING: &str = "running";
 
+/// Checked failure of the launch-owned crash-journal API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrashError {
+    Io,
+    Ownership,
+    NotPreDocument,
+    Poisoned,
+}
+
+impl std::fmt::Display for CrashError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Io => "crash journal could not be updated",
+            Self::Ownership => "crash journal ownership does not match this launch",
+            Self::NotPreDocument => "crash journal already holds design or crash evidence",
+            Self::Poisoned => "crash journal state is poisoned",
+        })
+    }
+}
+
+/// Opaque token for this launch's pre-document journal generation.
+///
+/// No path input, no CEF reference; a replayed or foreign token is refused.
+#[derive(Debug)]
+pub struct StartupSessionTicket {
+    generation: u64,
+}
+
 static STATE: OnceLock<State> = OnceLock::new();
 /// The hook is writing a report (a panic inside it must not write another).
 static IN_HOOK: AtomicBool = AtomicBool::new(false);
@@ -412,18 +440,107 @@ fn remove_stray_native_files(dir: &Path) {
 }
 
 /// The app is closing normally: its journal goes, and repeat counts are written.
+/// Ordinary callers keep their best-effort behavior; the checked API below surfaces
+/// ownership/poison/IO failures instead.
 pub fn end_session() {
-    let Some(s) = STATE.get() else { return };
-    if let Ok(mut j) = s.journal.lock()
-        && let Some(path) = j.path.take()
-    {
-        j.file = None;
-        let _ = fs::remove_file(path);
+    let Some(state) = STATE.get() else { return };
+    match state.journal.lock() {
+        Ok(mut journal) => {
+            let _ = finish_session(state, &mut journal, false);
+        }
+        // The old best-effort path still persisted repeat counts with a poisoned journal.
+        Err(_) => {
+            let _ = persist_counts(state);
+        }
     }
-    let counts: Vec<(u64, String)> = s.known.lock().map(|k| k.values().filter(|(n, _)| *n > 0).cloned().collect()).unwrap_or_default();
+}
+
+/// The checked form of [`end_session`]: the caller must handle IO/ownership failures.
+pub fn end_session_checked() -> Result<(), CrashError> {
+    let state = STATE.get().ok_or(CrashError::Ownership)?;
+    let mut journal = state.journal.lock().map_err(|_| CrashError::Poisoned)?;
+    finish_session(state, &mut journal, false)
+}
+
+/// Retire this process's journal through the one shared path. `allow_unlink_failure`
+/// is used only after a durable terminal record makes the unlink non-authoritative.
+fn finish_session(state: &State, journal: &mut Journal, allow_unlink_failure: bool) -> Result<(), CrashError> {
+    let path = journal.path.take();
+    // Release the journal's own lock before unlinking it (Windows).
+    journal.file = None;
+    let mut unlink_error = false;
+    if let Some(path) = path {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) if allow_unlink_failure => {}
+            Err(_) => unlink_error = true,
+        }
+    }
+    // Repeat-count persistence is preserved even when the unlink failed.
+    persist_counts(state)?;
+    if unlink_error { return Err(CrashError::Io); }
+    Ok(())
+}
+
+fn persist_counts(state: &State) -> Result<(), CrashError> {
+    let counts: Vec<(u64, String)> = state
+        .known
+        .lock()
+        .map_err(|_| CrashError::Poisoned)?
+        .values()
+        .filter(|(n, _)| *n > 0)
+        .cloned()
+        .collect();
     for (n, id) in counts {
-        bump(&s.dir, &id, n);
+        bump(&state.dir, &id, n);
     }
+    Ok(())
+}
+
+/// Capture this launch's journal generation, if a persisted journal exists.
+pub fn startup_session_ticket() -> Result<Option<StartupSessionTicket>, CrashError> {
+    let Some(state) = STATE.get() else {
+        return Ok(None);
+    };
+    let journal = state.journal.lock().map_err(|_| CrashError::Poisoned)?;
+    if journal.file.is_none() || journal.path.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(StartupSessionTicket { generation: journal.generation }))
+}
+
+/// Durably record a controlled pre-document cancellation, then retire this journal.
+///
+/// Refused when the journal already holds commands, RUNNING phase, reports or native
+/// crash evidence; genuine crashes are never suppressed.
+pub fn cancel_startup_session(ticket: &mut StartupSessionTicket) -> Result<(), CrashError> {
+    let state = STATE.get().ok_or(CrashError::Ownership)?;
+    let mut journal = state.journal.lock().map_err(|_| CrashError::Poisoned)?;
+    if ticket.generation == 0 || journal.generation != ticket.generation || journal.file.is_none() || journal.path.is_none() {
+        return Err(CrashError::Ownership);
+    }
+    let path = journal.path.clone().ok_or(CrashError::Ownership)?;
+    let read = journal.file.as_ref().and_then(|file| file.try_clone().ok()).map(read_journal_file).unwrap_or_default();
+    if !read.pre_document_empty() {
+        return Err(CrashError::NotPreDocument);
+    }
+    let (native, dump) = native_paths_for(&path);
+    if native.exists() || dump.exists() {
+        return Err(CrashError::NotPreDocument);
+    }
+    let line = json!({ "controlled_startup_cancel": true }).to_string();
+    journal.write(&line);
+    if journal.file.is_none() {
+        return Err(CrashError::Io);
+    }
+    if let Some(file) = journal.file.as_ref() {
+        file.sync_all().map_err(|_| CrashError::Io)?;
+    }
+    // The terminal record is durable: an unlink failure is not a cancellation failure.
+    finish_session(state, &mut journal, true)?;
+    ticket.generation = 0;
+    Ok(())
 }
 
 /// The panic hook. Returns true when the panic was recorded for a command or the kernel (which
@@ -641,6 +758,8 @@ pub(crate) fn rebased(s: &Session, file: Option<&Path>, autosave: bool) {
 // The journal
 
 struct Journal {
+    /// Process-local identity for the checked startup ticket (0 for report-only journals).
+    generation: u64,
     path: Option<PathBuf>,
     file: Option<File>,
     bytes: u64,
@@ -665,6 +784,7 @@ impl Journal {
         let file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path).ok().filter(|f| f.try_lock().is_ok());
         let header = json!({ "start": utc(started), "pid": std::process::id(), "version": build.version, "commit": build.commit }).to_string();
         let mut j = Journal {
+            generation: seq,
             path: file.as_ref().map(|_| path),
             file,
             bytes: 0,
@@ -767,6 +887,22 @@ struct JournalRead {
     phase: Option<(String, u64)>,
     /// The renderer, once known.
     environment: Option<String>,
+    /// A controlled pre-document cancellation recorded before the journal was retired.
+    controlled_cancel: bool,
+}
+
+impl JournalRead {
+    /// An otherwise empty pre-document journal: no design base, no commands, no RUNNING,
+    /// no report and no completed/failed command history.
+    fn pre_document_empty(&self) -> bool {
+        self.header.is_object()
+            && self.base == json!("new")
+            && !self.reported
+            && self.in_flight.is_none()
+            && self.recent.is_empty()
+            && self.replay.is_empty()
+            && !matches!(self.phase.as_ref().map(|(step, _)| step.as_str()), Some(RUNNING))
+    }
 }
 
 // Read through the lock-owning file object. On Windows an independently opened
@@ -828,6 +964,8 @@ fn read_journal_file(mut file: File) -> JournalRead {
             r.phase = Some((p.to_string(), v.get("ms").and_then(Value::as_u64).unwrap_or(0)));
         } else if let Some(e) = v.get("environment").and_then(Value::as_str) {
             r.environment = Some(e.to_string());
+        } else if v.get("controlled_startup_cancel").is_some() {
+            r.controlled_cancel = true;
         }
     }
     r.in_flight = running;
@@ -854,6 +992,13 @@ fn unclean_exit(dir: &Path, build: &Build, journal: &Path) {
     let (native_file, dump_file) = native_paths_for(journal);
     let native = fs::read(&native_file).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object);
     if j.reported {
+        return;
+    }
+    // A controlled pre-document cancellation is not an unclean exit. Actual commands,
+    // RUNNING, reports or native evidence above keep the genuine crash path.
+    if j.controlled_cancel && j.pre_document_empty() && native.is_none() {
+        let _ = fs::remove_file(&native_file);
+        let _ = fs::remove_file(&dump_file);
         return;
     }
     let was = j.header.get("version").and_then(Value::as_str).unwrap_or("?");
@@ -913,6 +1058,7 @@ fn unclean_exit(dir: &Path, build: &Build, journal: &Path) {
         build: build.clone(),
         environment: Mutex::new(j.environment.clone().unwrap_or_default()),
         journal: Mutex::new(Journal {
+            generation: 0,
             path: None,
             file: None,
             bytes: 0,

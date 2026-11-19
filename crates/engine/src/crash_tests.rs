@@ -20,6 +20,17 @@ fn child() {
     };
     let fresh = install(PathBuf::from(dir), build());
     println!("FRESH {}", serde_json::to_string(&fresh).unwrap());
+    // A controlled pre-document cancellation retires its own journal with no report;
+    // this child is checked before any design command exists.
+    if mode == "controlled_cancel" {
+        phase("window");
+        phase("device creation");
+        let mut ticket = startup_session_ticket().unwrap().unwrap();
+        cancel_startup_session(&mut ticket).unwrap();
+        assert!(startup_session_ticket().unwrap().is_none(), "the retired journal has no ticket");
+        println!("CONTROLLED_CANCEL_OK");
+        return;
+    }
     // Dying while starting up, before any command: in a graphics driver, with or without what
     // a native crash handler caught.
     if mode == "startup" || mode == "native" || mode == "signal" {
@@ -677,4 +688,114 @@ fn without_install_nothing_is_recorded() {
     s.execute("solid.box", &json!({"length": 1, "width": 1, "height": 1})).unwrap();
     assert!(!enabled());
     assert!(PENDING.with(|p| p.borrow().is_empty()));
+}
+
+/// A controlled cancellation is a real journal record, not a fabricated report.
+#[test]
+fn controlled_startup_cancel_makes_no_report_and_no_failed_start() {
+    let d = fresh_dir("controlled-cancel");
+    let (out, ok) = run_child(&d, "controlled_cancel");
+    assert!(ok, "{out}");
+    assert!(out.contains("CONTROLLED_CANCEL_OK"), "{out}");
+    assert!(list(&d).is_empty(), "a controlled cancellation is not a crash");
+    // The next normal launch finds nothing unclean and has nothing to tell about.
+    let (out, ok) = run_child(&d, "none");
+    assert!(ok, "{out}");
+    assert!(out.contains("FRESH []"), "{out}");
+    assert!(list(&d).is_empty());
+    let _ = fs::remove_dir_all(&d);
+}
+
+fn journal_file(dir: &Path, lines: &[Value]) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let sessions = dir.join("sessions");
+    let _ = fs::create_dir_all(&sessions);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = sessions.join(format!("{}-{}-{n}.jsonl", now(), std::process::id()));
+    let mut text = String::new();
+    for line in lines {
+        text.push_str(&line.to_string());
+        text.push('\n');
+    }
+    fs::write(&path, text).unwrap();
+    path
+}
+
+fn header() -> Value {
+    json!({ "start": "2026-11-19 00:00:00", "pid": 4242, "version": "9.9.9", "commit": "abc1234" })
+}
+
+#[test]
+fn only_an_otherwise_empty_pre_document_journal_is_a_controlled_cancel() {
+    let d = fresh_dir("terminal-read");
+    let terminal = journal_file(
+        &d,
+        &[header(), json!({"base":"new"}), json!({"phase":"window","ms":5}), json!({"controlled_startup_cancel":true})],
+    );
+    let read = read_journal(&terminal);
+    assert!(read.controlled_cancel);
+    assert!(read.pre_document_empty(), "a retired pre-document journal is empty of design evidence");
+
+    let with_command = journal_file(
+        &d,
+        &[
+            header(),
+            json!({"base":"new"}),
+            json!({"run":"solid.box","params":{"length":1,"width":1,"height":1}}),
+            json!({"controlled_startup_cancel":true}),
+        ],
+    );
+    let read = read_journal(&with_command);
+    assert!(read.controlled_cancel);
+    assert!(!read.pre_document_empty(), "a command is genuine evidence");
+
+    let running = journal_file(&d, &[header(), json!({"base":"new"}), json!({"phase":"running","ms":9}), json!({"controlled_startup_cancel":true})]);
+    assert!(!read_journal(&running).pre_document_empty(), "RUNNING ends the pre-document window");
+
+    let filed = journal_file(
+        &d,
+        &[header(), json!({"base":{"file":"/tmp/design.solidcraft"}}), json!({"controlled_startup_cancel":true})],
+    );
+    assert!(!read_journal(&filed).pre_document_empty(), "an opened design is not pre-document");
+    assert!(!read_journal(&filed).header.is_null());
+
+    let reported = journal_file(&d, &[header(), json!({"base":"new"}), json!({"reported":"sig"}), json!({"controlled_startup_cancel":true})]);
+    assert!(!read_journal(&reported).pre_document_empty(), "a written report is genuine evidence");
+    let _ = fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_next_install_skips_a_terminal_cancel_but_reports_genuine_evidence() {
+    let d = fresh_dir("terminal-install");
+    let terminal = journal_file(
+        &d,
+        &[header(), json!({"base":"new"}), json!({"phase":"window","ms":4}), json!({"controlled_startup_cancel":true})],
+    );
+    unclean_exit(&d, &build(), &terminal);
+    assert!(list(&d).is_empty(), "an otherwise-empty terminal cancel is not an unclean exit");
+    let _ = fs::remove_file(&terminal);
+
+    let real = journal_file(
+        &d,
+        &[
+            header(),
+            json!({"base":"new"}),
+            json!({"run":"solid.box","params":{"length":2,"width":2,"height":2}}),
+            json!({"controlled_startup_cancel":true}),
+        ],
+    );
+    unclean_exit(&d, &build(), &real);
+    let reports = list(&d);
+    assert_eq!(reports.len(), 1, "commands override the cancellation record");
+    assert_eq!(reports[0].kind, "unclean_exit");
+    let _ = fs::remove_dir_all(&d);
+}
+
+#[test]
+fn foreign_or_replayed_startup_session_ticket_is_refused() {
+    // No install happened in this test process: no process journal exists.
+    assert!(matches!(startup_session_ticket(), Ok(None)));
+    let mut foreign = StartupSessionTicket { generation: 77 };
+    assert_eq!(cancel_startup_session(&mut foreign), Err(CrashError::Ownership));
+    assert!(matches!(end_session_checked(), Err(CrashError::Ownership)));
 }
