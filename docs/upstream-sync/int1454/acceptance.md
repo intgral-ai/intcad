@@ -1,7 +1,9 @@
 # INT-1454 acceptance package (draft — incomplete until sign-off)
 
-Status: the v0.44.1 sync is integrated in PR #185 and CI is running at `b06d531e5`. This package is
-not a completion claim; it records what exists, what is verified, and what is still open.
+Status: the v0.44.1 sync is integrated in PR #185, head `099e4360c`. Its pull-request workflows
+(`CI` 44472128741, `Kernel rig` 44472128721, `Fillet rig` 44472128632, `PR checks`, `Packaging lint`)
+were running when this line was written. This package is not a completion claim; it records what
+exists, what is verified, and what is still open.
 
 ## 1. Fixed references
 
@@ -11,7 +13,7 @@ not a completion claim; it records what exists, what is verified, and what is st
 | Vendored kernel | solidcore `524be9e16707f726586a7ab8696d87fd633e2096`, tree `8b5c01445619305dcfc5072db3fe76b8cfea67be` |
 | Pre-sync develop baseline | `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f` |
 | Fork point | `06749ac464e16357d0375b78e6b3cac214066493` |
-| Sync head under review | `b06d531e5` (PR #185) |
+| Sync head under review | `099e4360c` (PR #185) |
 | Final develop SHA | **TBD after merge** |
 
 ## 2. Merged work
@@ -71,6 +73,18 @@ all commits assigned, every path matched
 ```
 
 
+## 3a. Compatibility Decisions and how each is implemented
+
+| Decision | Implementation | Evidence |
+| --- | --- | --- |
+| CD-1: one persistence implementation, format 58 | `solidcraft_format`'s registry/container is the only writer; `doc`/`io` use it; the five Intcad `format_pending` names are the same bytes as v0.44.1's `v51` files | `design::tests::a_design_saved_at_format_51_with_its_pending_changes_saves_and_reopens`, the snapshot-budget test, and the GUI round trip in §5 |
+| CD-2: MCP map, no legacy alias layer | 21 → 22 tools; `version` adopted; `cancel` and batch's `path` script input **not** adopted (no app `control.cancel`; a file-reading input is a behaviour change); every schema delta classified as equivalent or behaviour-changing | `docs/mcp.md`, the MCP slice review record in §5a, `crates/mcp/src/tests.rs` |
+| CD-3: control channel stays on by default | no default change adopted; `crates/control` ported with its auth/loopback rules | `crates/control/src/server.rs` (byte-identical to v0.44.1), control tests 33 passed |
+| CD-4: no opt-in plaintext HTTP | no plaintext transport was added; the loopback token rules are unchanged | `crates/control/src/auth.rs`, `crates/engine/src/control_auth.rs` shim |
+| CD-5: plugin runtime Blocked, not "Not Applicable" | runtime **and** surface removed: no `plugin.*`, `file.import`, `model.mesh`, no `craft-plugin`/`wasmtime`/`cranelift` in manifests or lock | `Cargo.lock`, engine command registry, §7 |
+| CD-6: no brand-era UI kit/look/theme/assets | Intcad's egui UI kept and adapted; no upstream UI or brand asset imported; the only moved assets are the Liberation Sans font (OFL) and the STEP/FreeCAD fixtures (attribution rows) | `git diff v0.44.1 -- crates/ui-egui` shows no wholesale import; §2b |
+| CD-7: vendored solidcore closure, no rev pins | `solidcore/` byte-identical to `v0.44.1:solidcore`; `crates/step` deleted; `deny.toml` `[sources]` has no git sources | `git diff --stat v0.44.1 -- solidcore` empty; `deny.toml` |
+
 ## 4. Gates and evidence (to be refreshed at the final SHA)
 
 | Gate | Evidence |
@@ -117,7 +131,7 @@ vendored kernel instead of the old pin, 0 added), not the "42 to 15" an earlier 
 
 | Platform | Status |
 | --- | --- |
-| Linux native CI | PR #185 runs (dispatched 44402787343; pending final) |
+| Linux native CI | PR #185 pull-request runs at `099e4360c` (CI 44472128741, `Native Linux Clippy`, `Native Linux selected regression gate` in full scope; pending final) |
 | Linux GUI E2E | **PASS 8/8** at `42f4d670a` (task `int1454`): sample open, orbit drag, face select, Assistant open/resize/control. Evidence `~/.local/state/intcad-e2e/runs/intcad-e2e-int1454-ui-c28767d6c085-int1454/20261118T212022Z-681395/REPORT.md`; artifact sha256 `e6da03a57c438530d1640a0a171b0f1f220768aa95e3a1d5a54cef246b5a83cc` |
 | Windows native CI + VM GUI E2E | **PASS** at `f82b56372` (task `int1454w`): MSI `b1d55038d01c9452f4b534bfe93e8d365c0f08c2875518395aaccaf84890be4a`, app sha256 `ca1c34de2167f4b2ec028afe6403430d43a7a83a09ae4f7c6992dbcf036ba6c1`, installed and running, Sample Plate loaded, control channel ok. Evidence `~/.local/state/intcad-e2e/windows/runs/…/20261118T213755Z-734039` |
 | macOS native automation | not run |
