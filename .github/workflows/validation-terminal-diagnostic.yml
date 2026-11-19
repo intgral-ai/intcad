@@ -25,7 +25,7 @@ env:
   CARGO_TERM_COLOR: never
   CARGO_TARGET_DIR: target
   CARGO_INCREMENTAL: "0"
-  VALTX_STAGE: red
+  VALTX_STAGE: green
 
 jobs:
   terminal-regression:
@@ -48,16 +48,17 @@ jobs:
       - name: Capture source identity and run actual regressions
         shell: bash
         run: |
+          source_dirty="$(git status --porcelain)"
           mkdir -p evidence
           git rev-parse HEAD > evidence/source.txt
-          git status --porcelain > evidence/dirty.txt
+          printf '%s\n' "$source_dirty" > evidence/dirty.txt
           git rev-parse HEAD:crates/engine/src/validation/tests.rs > evidence/engine-test-blob.txt
           git rev-parse HEAD:crates/ui-egui/src/agent_chat/tests.rs > evidence/ui-test-blob.txt
           rustc --version --verbose > evidence/rustc.txt
           cargo --version > evidence/cargo.txt
           df -B1 . > evidence/disk-before.txt
           python3 - <<'PY'
-          import json, os, pathlib, subprocess, sys
+          import json, os, pathlib, signal, subprocess, sys
           out = pathlib.Path("evidence")
           if os.environ["VALTX_STAGE"] == "red":
               selections = [
@@ -84,15 +85,41 @@ jobs:
                       command += ["--exact"]
                   command += ["--nocapture"]
               prefix = out / f"command-{number}"
+              timed_out = False
               with prefix.with_suffix(".stdout").open("wb") as stdout, prefix.with_suffix(".stderr").open("wb") as stderr:
-                  result = subprocess.run(command, stdout=stdout, stderr=stderr)
+                  process = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
+                  try:
+                      exit_code = process.wait(timeout=1800)
+                  except subprocess.TimeoutExpired:
+                      timed_out = True
+                      os.killpg(process.pid, signal.SIGKILL)
+                      process.wait()
+                      exit_code = 124
               text = prefix.with_suffix(".stdout").read_text(errors="replace")
               selected = "running 1 test\n" in text if os.environ["VALTX_STAGE"] == "red" else "running 0 tests\n" not in text and "running " in text
-              records.append({"argv": command, "exitCode": result.returncode, "selectionVerified": selected, "features": "package defaults; no extra features"})
+              records.append({"argv": command, "exitCode": exit_code, "selectionVerified": selected, "timedOut": timed_out, "features": "package defaults; no extra features"})
               (out / "commands.json").write_text(json.dumps(records, indent=2) + "\n")
-              print(f"{selection}: exit={result.returncode}, selectionVerified={selected}", flush=True)
+              print(f"{selection}: exit={exit_code}, selectionVerified={selected}, timedOut={timed_out}", flush=True)
+              if timed_out:
+                  break
           sys.exit(1 if any(r["exitCode"] != 0 or not r["selectionVerified"] for r in records) else 0)
           PY
+      - name: Changed native crates Clippy
+        if: always() && env.VALTX_STAGE == 'green'
+        run: |
+          set +e
+          timeout --kill-after=10s 25m cargo clippy --profile ci --locked -p solidcraft-engine -p solidcraft-ui-egui --all-targets -- -D warnings > evidence/clippy.stdout 2> evidence/clippy.stderr
+          result=$?
+          echo "$result" > evidence/clippy.exit
+          exit "$result"
+      - name: Formatting
+        if: always() && env.VALTX_STAGE == 'green'
+        run: |
+          set +e
+          cargo fmt --all -- --check > evidence/fmt.stdout 2> evidence/fmt.stderr
+          result=$?
+          echo "$result" > evidence/fmt.exit
+          exit "$result"
       - name: Final resource sample
         if: always()
         run: |

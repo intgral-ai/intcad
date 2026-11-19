@@ -4,7 +4,9 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -88,7 +90,55 @@ pub(super) struct Store {
     pub root: PathBuf,
 }
 
+/// Independent open-file description per transaction. Closing releases the native lock,
+/// including after process death. The stable name is never replaced or retained-run cleanup.
+pub(super) struct TransactionGuard {
+    _file: fs::File,
+}
+
 impl Store {
+    fn transaction_file(&self) -> Result<fs::File, ValidationError> {
+        let path = self.root.join("transaction.lock");
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
+            return Err(ValidationError::internal("validation transaction lock is not a regular file"));
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| ValidationError::internal(format!("validation transaction lock: {error}")))?;
+        if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+            return Err(ValidationError::internal("validation transaction lock is not a regular file"));
+        }
+        Ok(file)
+    }
+
+    pub fn transaction(&self) -> Result<TransactionGuard, ValidationError> {
+        let file = self.transaction_file()?;
+        file.lock().map_err(|error| ValidationError::internal(format!("validation transaction lock: {error}")))?;
+        Ok(TransactionGuard { _file: file })
+    }
+
+    pub fn transaction_until(&self, deadline: Instant, stop: &AtomicBool) -> Result<TransactionGuard, ValidationError> {
+        let file = self.transaction_file()?;
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Err(ValidationError::cancelled("validation cancellation control stopped before storage admission"));
+            }
+            if Instant::now() >= deadline {
+                return Err(ValidationError::timeout("validation cancellation could not acquire its storage transaction before the deadline"));
+            }
+            match file.try_lock() {
+                Ok(()) => return Ok(TransactionGuard { _file: file }),
+                Err(fs::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(2)),
+                Err(fs::TryLockError::Error(error)) => {
+                    return Err(ValidationError::internal(format!("validation transaction lock: {error}")));
+                }
+            }
+        }
+    }
     pub fn open(root: PathBuf) -> Result<Self, ValidationError> {
         let store = Store { root };
         store.ensure_dirs()?;
@@ -368,7 +418,7 @@ impl Store {
     /// Remove every record for a completed run older than the retention window. Active
     /// (nonterminal) runs are never touched; an orphaned admission older than the window is
     /// removed too.
-    pub fn purge_older_than(&self, now_ms: u64, retention_ms: u64) -> Vec<(String, Option<String>)> {
+    pub fn purge_older_than(&self, now_ms: u64, retention_ms: u64, _transaction: &TransactionGuard) -> Vec<(String, Option<String>)> {
         let mut removed: Vec<(String, Option<String>)> = Vec::new();
         for run_id in self.all_run_ids() {
             let state = self.read_optional_json::<StateRecord>(&self.state_path(&run_id), 64 << 10).ok().flatten();

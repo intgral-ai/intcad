@@ -537,7 +537,10 @@ fn a_second_report_for_the_same_terminal_state_is_idempotent() {
         ValidationState::Cancelled,
         Some(ValidationError::cancelled("a second observer cancelled the job")),
     );
-    assert!(port.commit_report(&run.run_id, second, ValidationState::Cancelled).is_ok());
+    {
+        let transaction = port.store.transaction().unwrap();
+        assert_eq!(port.commit_report(&run.run_id, second, ValidationState::Cancelled, &transaction).unwrap(), ValidationState::Cancelled);
+    }
     assert_eq!(port.report(&run.run_id).unwrap().report.state, ValidationState::Cancelled);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -590,25 +593,229 @@ fn adoption_never_accepts_a_report_incompatible_with_an_existing_terminal_state(
     let mut state = port.load_state(&run.run_id).unwrap();
     state.state = ValidationState::Cancelled;
     port.store.write_json_replace(&port.store.state_path(&run.run_id), &state).unwrap();
-    assert!(!port.adopt_report(&run.run_id, &port.load_admission(&run.run_id).unwrap()).unwrap());
+    {
+        let transaction = port.store.transaction().unwrap();
+        assert!(!port.adopt_report(&run.run_id, &port.load_admission(&run.run_id).unwrap(), &transaction).unwrap());
+    }
     assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Cancelled);
     assert!(!port.status(&run.run_id).unwrap().report_available);
     let _ = std::fs::remove_dir_all(root);
 }
 
 /// Real child-process caller for the transaction fixtures. No global test ordering or timing.
+pub(super) fn persisted(step: &str) {
+    use std::io::Write;
+    if std::env::var("INTCAD_TRANSACTION_STOP").as_deref() == Ok(step) {
+        std::process::exit(71);
+    }
+    if std::env::var("INTCAD_TRANSACTION_PAUSE").as_deref() == Ok(step) {
+        println!("PERSISTED {step}");
+        std::io::stdout().flush().unwrap();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "CONTINUE");
+    }
+}
+
 #[test]
 fn terminal_transaction_child() {
+    use std::io::Write;
     let Some(root) = std::env::var_os("INTCAD_TRANSACTION_CHILD_ROOT") else { return };
     let run_id = std::env::var("INTCAD_TRANSACTION_CHILD_RUN").unwrap();
     let root = PathBuf::from(root);
     let port = ValidationPort::open_read_only(root.join("validation"), root.join("candidates")).unwrap();
-    if std::env::var("INTCAD_TRANSACTION_CHILD_OPERATION").unwrap() == "cancel" {
-        assert!(port.cancel(&run_id).is_ok());
-    } else {
-        let outcome = RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() };
-        assert!(port.complete(&run_id, outcome).is_ok());
+    println!("CALLING");
+    std::io::stdout().flush().unwrap();
+    match std::env::var("INTCAD_TRANSACTION_CHILD_OPERATION").unwrap().as_str() {
+        "cancel" => assert!(port.cancel(&run_id).is_ok()),
+        "pass" => {
+            let profile = port.store.read_profile(&run_id).unwrap();
+            let outcome = RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: pass_checks(&profile) };
+            assert_eq!(port.complete(&run_id, outcome).unwrap(), ValidationState::Passed);
+        }
+        "cleanup" => assert_eq!(port.cleanup(u64::MAX), 1),
+        "start" => {
+            let _ = port.start_next().unwrap();
+        }
+        _ => {
+            let outcome = RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() };
+            assert!(port.complete(&run_id, outcome).is_ok());
+        }
     }
+}
+
+fn transaction_child(root: &Path, run_id: &str, operation: &str) -> std::process::Command {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", "validation::tests::terminal_transaction_child", "--nocapture"])
+        .env("INTCAD_TRANSACTION_CHILD_ROOT", root)
+        .env("INTCAD_TRANSACTION_CHILD_RUN", run_id)
+        .env("INTCAD_TRANSACTION_CHILD_OPERATION", operation);
+    child
+}
+
+fn child_message(reader: &mut impl std::io::BufRead, message: &str) {
+    loop {
+        let mut line = String::new();
+        assert_ne!(reader.read_line(&mut line).unwrap(), 0, "child ended before {message}");
+        if line.trim() == message {
+            return;
+        }
+    }
+}
+
+/// The first process is paused *inside* the report/state gap with the native lock held.
+/// The second caller announces its entry before release. No sleep chooses the winner.
+#[test]
+fn native_transaction_excludes_process_writers_in_both_orders_and_retention() {
+    use std::io::{BufReader, Write};
+    use std::process::Stdio;
+    for first in ["cancel", "pass", "retention", "claim", "cancel-before-claim"] {
+        let root = scratch("native-transaction-orders");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-native-orders", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&native_basic_profile())), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        if !matches!(first, "claim" | "cancel-before-claim") {
+            port.start_next().unwrap().unwrap();
+        }
+        let cancellation_first = first.starts_with("cancel");
+        let step = if first == "claim" { "running" } else { "report" };
+        let mut winner = transaction_child(
+            &root,
+            &run.run_id,
+            if cancellation_first {
+                "cancel"
+            } else if first == "claim" {
+                "start"
+            } else {
+                "pass"
+            },
+        )
+        .env("INTCAD_TRANSACTION_PAUSE", step)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+        let mut winner_out = BufReader::new(winner.stdout.take().unwrap());
+        child_message(&mut winner_out, &format!("PERSISTED {step}"));
+        let bytes = std::fs::read(port.store.report_path(&run.run_id)).ok();
+        let probe = std::fs::OpenOptions::new().read(true).write(true).open(store.join("transaction.lock")).unwrap();
+        assert!(matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock)), "the report/state gap must remain exclusively locked");
+        let mut loser = transaction_child(
+            &root,
+            &run.run_id,
+            if first == "retention" {
+                "cleanup"
+            } else if first == "cancel-before-claim" {
+                "start"
+            } else if first == "cancel" {
+                "complete"
+            } else {
+                "cancel"
+            },
+        )
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+        let mut loser_out = BufReader::new(loser.stdout.take().unwrap());
+        child_message(&mut loser_out, "CALLING");
+        winner.stdin.take().unwrap().write_all(b"CONTINUE\n").unwrap();
+        assert!(winner.wait().unwrap().success());
+        assert!(loser.wait().unwrap().success());
+        if first == "retention" {
+            assert!(!port.store.admission_path(&run.run_id).exists());
+            assert_eq!(
+                port.complete(&run.run_id, RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() }).unwrap_err().code,
+                ErrorCode::NotFound
+            );
+            assert!(!port.store.state_path(&run.run_id).exists());
+            assert!(!port.store.report_path(&run.run_id).exists());
+        } else {
+            let expected = if cancellation_first || first == "claim" { ValidationState::Cancelled } else { ValidationState::Passed };
+            assert_eq!(port.status(&run.run_id).unwrap().state, expected);
+            assert_eq!(port.report(&run.run_id).unwrap().report.state, expected);
+            if let Some(bytes) = bytes {
+                assert_eq!(std::fs::read(port.store.report_path(&run.run_id)).unwrap(), bytes);
+            }
+        }
+        assert!(store.join("transaction.lock").is_file(), "retention never deletes the stable lock");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn simultaneous_cancellations_from_independent_ports_keep_one_report() {
+    let root = scratch("simultaneous-cancellation");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-simultaneous", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let first = Arc::new(port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone()));
+    let run = first.submit(&candidate, &native_reference(&first), &generate_submission_key(clock.now_ms())).unwrap();
+    let second = Arc::new(read_port(&store, &candidates, Arc::new(ManualClock::new(clock.now_ms() + 1000))));
+    let barrier = Arc::new(Barrier::new(3));
+    let spawn = |port: Arc<ValidationPort>| {
+        let id = run.run_id.clone();
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            port.cancel(&id).unwrap().state
+        })
+    };
+    let a = spawn(Arc::clone(&first));
+    let b = spawn(Arc::clone(&second));
+    barrier.wait();
+    assert_eq!(a.join().unwrap(), ValidationState::Cancelled);
+    assert_eq!(b.join().unwrap(), ValidationState::Cancelled);
+    let report = first.report(&run.run_id).unwrap();
+    assert_eq!(second.cancel(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    assert_eq!(second.report(&run.run_id).unwrap(), report);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn native_transaction_is_released_after_each_terminal_crash_window() {
+    for step in ["marker", "report", "state", "unpin"] {
+        let root = scratch("native-transaction-crash");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-native-crash", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&native_basic_profile())), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        port.start_next().unwrap().unwrap();
+        mark_host_dead(&store, &run.run_id);
+        let status = transaction_child(&root, &run.run_id, "cancel").env("INTCAD_TRANSACTION_STOP", step).status().unwrap();
+        assert_eq!(status.code(), Some(71), "child must stop at {step}");
+        let stop = AtomicBool::new(false);
+        drop(port.store.transaction_until(Instant::now() + Duration::from_secs(2), &stop).unwrap());
+        let recovered = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+        assert_eq!(recovered.status(&run.run_id).unwrap().state, ValidationState::Cancelled, "{step}");
+        assert_eq!(recovered.report(&run.run_id).unwrap().report.state, ValidationState::Cancelled);
+        assert!(!candidate::is_pinned(&candidates, "cand-native-crash"), "{step}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn cancelled_storage_admission_and_deadline_do_not_publish_a_marker() {
+    let root = scratch("cancel-control-deadline");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-control-deadline", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+    let _transaction = port.store.transaction().unwrap();
+    let stopped = AtomicBool::new(true);
+    assert_eq!(port.cancel_until(&run.run_id, Instant::now() + Duration::from_secs(1), &stopped).unwrap_err().code, ErrorCode::Cancelled);
+    assert_eq!(port.cancel_until(&run.run_id, Instant::now(), &AtomicBool::new(false)).unwrap_err().code, ErrorCode::Timeout);
+    assert!(!port.store.marker_exists(&run.run_id));
+    drop(_transaction);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -685,7 +892,10 @@ fn pending_reports_with_changed_bindings_or_evidence_are_never_adopted() {
             }
         }
         port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
-        assert!(!port.adopt_report(&run.run_id, &port.load_admission(&run.run_id).unwrap()).unwrap(), "{corrupt}");
+        {
+            let transaction = port.store.transaction().unwrap();
+            assert!(!port.adopt_report(&run.run_id, &port.load_admission(&run.run_id).unwrap(), &transaction).unwrap(), "{corrupt}");
+        }
         assert!(!port.status(&run.run_id).unwrap().report_available, "{corrupt}");
         assert_eq!(port.load_state(&run.run_id).unwrap().state, ValidationState::Running);
         let _ = std::fs::remove_dir_all(root);

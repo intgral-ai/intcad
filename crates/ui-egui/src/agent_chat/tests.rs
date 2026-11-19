@@ -14234,6 +14234,139 @@ mod mastra_backend_tests {
     }
 
     #[test]
+    fn mastra_validation_stop_does_not_wait_for_an_external_store_transaction() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("stop-storage-lock");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-stop-storage", "t-stop-storage", "w-stop-storage");
+        let scope = Scope::Turn(turn.clone());
+        let key = solidcraft_engine::validation::generate_submission_key(solidcraft_engine::validation::now_ms());
+        let submitted = host
+            .submit(&scope, ValidationSubmitParams { candidate, profile: host.profile().unwrap(), request_id: SubmissionKey::parse(&key).unwrap() })
+            .unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).write(true).open(dir.join("validation/transaction.lock")).unwrap();
+        lock.lock().unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let stopping = Arc::clone(&host);
+        let retired = turn.clone();
+        let current = live.clone();
+        let window = std::thread::spawn(move || send.send(stopping.cancel_turn(&retired, Some(&current))).unwrap());
+        // Timeout is a deadlock guard, not a race-order mechanism: the external lock is held
+        // until the memory-only Stop has returned.
+        let identities = receive.recv_timeout(Duration::from_secs(2)).expect("Stop must not await the external store lock");
+        window.join().unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_ne!(identities[0].state, "cancelled", "queued cancellation is not a persisted terminal state");
+        assert_eq!(identities[0].cancellation_status.as_deref(), Some("queued; not yet persisted"));
+        assert!(!dir.join(format!("validation/runs/{}.cancel", submitted.run_id)).exists());
+        drop(lock);
+        host.wait_cancellations_for_test().unwrap();
+        let report = host.report(&scope, ValidationReportParams { run_id: submitted.run_id.clone() }).unwrap();
+        assert!(!host.accept(&turn, &submitted.run_id, &report.reference, Some(&live)).accepted);
+        assert_eq!(host.history_identity(submitted.run_id.as_str(), Some(&live)).unwrap().cancellation_status.as_deref(), Some("persisted"));
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_inflight_registration_inherits_original_turn_cancellation() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("cancel-inflight-registration");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-inflight", "t-inflight", "w-inflight");
+        let scope = Scope::Turn(turn.clone());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let submitter = Arc::clone(&host);
+        let submit_scope = scope.clone();
+        let submit_barrier = Arc::clone(&barrier);
+        let profile = host.profile().unwrap();
+        let key = solidcraft_engine::validation::generate_submission_key(solidcraft_engine::validation::now_ms());
+        let submit = std::thread::spawn(move || {
+            mastra_backend::HostValidation::pause_submission_for_test(submit_barrier);
+            submitter.submit(&submit_scope, ValidationSubmitParams { candidate, profile, request_id: SubmissionKey::parse(&key).unwrap() }).unwrap()
+        });
+        barrier.wait(); // admitted in memory, not yet at the disk port
+        assert!(host.cancel_turn(&turn, Some(&live)).is_empty());
+        assert_eq!(std::fs::read_dir(dir.join("validation/runs")).unwrap().count(), 0);
+        barrier.wait();
+        let submitted = submit.join().unwrap();
+        host.wait_cancellations_for_test().unwrap();
+        let identity = host.history_identity(submitted.run_id.as_str(), Some(&live)).unwrap();
+        assert_eq!(identity.cancellation_status.as_deref(), Some("persisted"), "late registration must enqueue its original run");
+        let report = host.report(&scope, ValidationReportParams { run_id: submitted.run_id.clone() }).unwrap();
+        assert!(!host.accept(&turn, &submitted.run_id, &report.reference, Some(&live)).accepted);
+        let other = Scope::Turn(turn_scope("s-inflight", "t-other", "w-other"));
+        assert!(host.status(&other, ValidationStatusParams { run_id: submitted.run_id }).is_err(), "cancellation cannot transfer ownership");
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_control_coalesces_and_reports_saturation_start_and_shutdown_failure() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("cancel-control-failures");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-control", "t-control", "w-control");
+        let scope = Scope::Turn(turn.clone());
+        let profile = host.profile().unwrap();
+        let (run, _) = submit_validation(&host, &scope, &candidate, &profile);
+        let harness = host.cancellation_harness_for_test(&run).unwrap();
+        for n in 0..harness.capacity() {
+            harness.enqueue(&format!("queued-{n}")).unwrap();
+        }
+        harness.enqueue("queued-0").unwrap(); // duplicate does not consume another slot
+        assert!(harness.enqueue("overflow").unwrap_err().contains("full"));
+        harness.shutdown();
+        assert!(harness.enqueue("after-shutdown").unwrap_err().contains("shut down"));
+        assert!(host.cancellation_start_failure_for_test().contains("could not start"));
+        // A service can remain alive while its cancellation lane is shutting down. A later
+        // in-flight registration must report failure, never silently reopen the retired turn.
+        host.shutdown_cancellation_for_test();
+        host.cancel_turn(&turn, Some(&live));
+        assert!(
+            !host.accept(&turn, &run, &host.report(&scope, ValidationReportParams { run_id: run.clone() }).unwrap().reference, Some(&live)).accepted
+        );
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_shutdown_records_failed_late_cancellation_without_reopening_authority() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("cancel-shutdown-registration");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-shutdown", "t-shutdown", "w-shutdown");
+        let scope = Scope::Turn(turn.clone());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let submit_barrier = Arc::clone(&barrier);
+        let submitter = Arc::clone(&host);
+        let profile = host.profile().unwrap();
+        let key = solidcraft_engine::validation::generate_submission_key(solidcraft_engine::validation::now_ms());
+        let submit_scope = scope.clone();
+        let submit = std::thread::spawn(move || {
+            mastra_backend::HostValidation::pause_submission_for_test(submit_barrier);
+            submitter.submit(&submit_scope, ValidationSubmitParams { candidate, profile, request_id: SubmissionKey::parse(&key).unwrap() }).unwrap()
+        });
+        barrier.wait();
+        host.cancel_turn(&turn, Some(&live));
+        host.shutdown_cancellation_for_test();
+        barrier.wait();
+        let submitted = submit.join().unwrap();
+        host.wait_cancellations_for_test().unwrap();
+        let identity = host.history_identity(submitted.run_id.as_str(), Some(&live)).unwrap();
+        assert!(identity.cancellation_status.unwrap().contains("shut down"));
+        assert!(!dir.join(format!("validation/runs/{}.cancel", submitted.run_id)).exists());
+        // This flag is presentation/authority only; it must not invent a durable Cancelled.
+        assert_ne!(host.status(&scope, ValidationStatusParams { run_id: submitted.run_id.clone() }).unwrap().state, ValidationState::Cancelled);
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn mastra_validation_host_accepts_only_the_matching_current_report() {
         let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = scratch_validation("accept");

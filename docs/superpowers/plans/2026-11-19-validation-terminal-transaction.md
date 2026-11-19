@@ -36,11 +36,11 @@
 **Files:** existing `crates/engine/src/validation/tests.rs`, `crates/ui-egui/src/agent_chat/tests.rs`, `apps/solidcraft-cli/tests/script_roundtrip.rs`.
 **Interfaces:** existing public port/host operations; persisted-state fixtures use existing record shapes.
 
-- [ ] Add deterministic report/state-gap, pending pass plus marker, incompatible report and actual-state regressions.
-- [ ] Add native lock contention/child crash, writer-order, claim/cancel and retention fixtures in existing tests.
-- [ ] Add Stop/reset, late registration, saturation/start/shutdown control tests; no sleeps as race-order proof.
-- [ ] Extend existing CLI cancellation test with verified terminal report and stable repeat-cancel digest.
-- [ ] Commit test-only checkpoint; push only task branch; dispatch CI `affected`; observe revision-bound RED.
+- [x] Add deterministic report/state-gap, pending pass plus marker, incompatible report and actual-state regressions.
+- [x] Add native lock contention/child crash, writer-order, claim/cancel and retention fixtures in existing tests.
+- [x] Add Stop/shared-reset retirement, late registration, saturation/start/shutdown control tests; no sleeps as race-order proof.
+- [x] Extend existing CLI cancellation test with verified terminal report and stable repeat-cancel digest.
+- [x] Commit test-only checkpoint; push only task branch; observe revision-bound behavioral RED in the authorized diagnostic lane.
 
 Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and pending Passed report plus marker cannot be cancelled consistently.
 
@@ -49,10 +49,10 @@ Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and p
 **Files:** `crates/engine/src/validation/{mod.rs,store.rs,tests.rs}`.
 **Interfaces:** `Store::transaction() -> Result<TransactionGuard>`; locked helpers require `&TransactionGuard`; commit returns actual `ValidationState`.
 
-- [ ] Add independently opened native lock guard; unsupported/error fails closed.
-- [ ] Move all persistence mutation decisions under the guard, including retention eligibility/deletion and state repair.
-- [ ] Make verified-report recovery compatible with current terminal state; reject unverified/foreign reports.
-- [ ] Remove live report remove/recreate; choose marker before publishing; propagate actual state.
+- [x] Add independently opened native lock guard; unsupported/error fails closed.
+- [x] Move all persistence mutation decisions under the guard, including retention eligibility/deletion and state repair.
+- [x] Make verified-report recovery compatible with current terminal state; reject unverified/foreign reports.
+- [x] Remove live report remove/recreate; choose marker before publishing; propagate actual state.
 - [ ] Verify deterministic native tests in remote CI; inspect source diff and lightweight formatting.
 - [ ] Commit recoverable engine checkpoint.
 
@@ -61,16 +61,16 @@ Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and p
 **Files:** `crates/ui-egui/src/agent_chat/mastra_backend.rs`, new native helper beside it if needed, existing `tests.rs`.
 **Interfaces:** memory-only `cancel_turn` retires a binding and enqueues work; one control worker owns disk cancellation independently of runner pump.
 
-- [ ] Add bounded coalescing cancellation queue with explicit pending/completed/failed states and original binding.
-- [ ] Register in-flight submissions before disk admission; cancelled registration queues its eventual run without restoring authority.
-- [ ] Process cancellation outside book/queue locks; bounded deadline and shutdown interrupt lock acquisition.
-- [ ] Keep wire cancellation authorized and off-thread, returning actual persisted result.
-- [ ] Keep UI event state truthful: queued cancellation is historical/cancelled presentation, not persisted Cancelled.
+- [x] Add bounded coalescing cancellation queue with explicit pending/completed/failed states and original binding.
+- [x] Check retirement before disk admission and again at registration; cancelled registration queues its eventual run without restoring authority.
+- [x] Process cancellation outside book/queue locks; bounded deadline and shutdown interrupt lock acquisition.
+- [x] Keep wire cancellation authorized and off-thread, returning actual persisted result.
+- [x] Keep UI event state truthful: queued cancellation is historical/cancelled presentation, not persisted Cancelled.
 - [ ] Verify remote UI/engine/CLI suite and commit.
 
 ### Task 4: Evidence and delivery
 
-- [ ] Document upgrade/rollback coordination, stable lock lifetime, failures and resource limits.
+- [x] Document upgrade/rollback coordination, stable lock lifetime, failures and resource limits.
 - [ ] Dispatch GREEN CI on final task revision; retain exact RED/GREEN commands, runs and raw evidence paths.
 - [ ] Record tests NOT_RUN or BLOCKED rather than infer passing.
 - [ ] Hand off branch/diff/ledger to controller for independent review; no integration or merge.
@@ -84,3 +84,10 @@ Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and p
 - Controller owns independent reviews and CI log extraction. No delegation or self-approval.
 - Test-first checkpoint `3c91659` pushed; RED CI `44575356172` pending at that revision.
 - Additional test-first coverage added for child-process terminal writers, invalid pending reports, late post-Stop submit and stable CLI report identity. Rust execution remains NOT_RUN pending remote CI.
+- Superseding targeted behavioral RED: run `44589009058`, source `7f5bdde70`, engine test blob `14eddc3dde0e6a346e42dbad8bb3a2a666a07d83`, UI blob `407e5fd103ab4ce968dee78c2ca7859ac10e8feb`. Three engine assertions and the retired-turn UI assertion failed with exactly one selected outer test each; binding/evidence rejection already passed.
+- Raw RED: `/tmp/opencode/int1454-valtx-targeted-red/{source.txt,commands.json,command-0.stderr,command-1.stderr,command-2.stderr,command-4.stderr}`. Toolchain is the artifact's `rustc.txt`/`cargo.txt`; package defaults, no extra features.
+- Full run `44575356172` did not establish behavioral RED; test execution is unknown. No timing inference is used.
+- Production checkpoint implements native persistence serialization and independent cancellation control; additional process barriers/crash points/queue/late-registration fixtures added. GREEN and independent review remain pending.
+- RED source tracked files were unchanged; raw dirty metadata includes only the generated `evidence/` directory. GREEN records dirtiness before generating evidence.
+- Ruling: 64 outstanding control requests matches bounded run history; 5 s lock-admission deadline follows contract §4. A 4,096-entry retirement ledger closes admission on exhaustion rather than evicting a possible in-flight binding.
+- Verification pending: native Windows/macOS lock behavior, full required CI and GUI evidence. No local compilation or new target; direct Rust 1.99.1 rustfmt parsing and `git diff --check` only.

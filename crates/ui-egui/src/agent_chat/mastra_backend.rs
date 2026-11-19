@@ -11,6 +11,8 @@
 //! The turn binding is frozen when [`ChatBackend::prompt`] is called: workflow, connection,
 //! model, session and turn ids are copied then. Picker changes reach the next turn only.
 
+mod validation_control;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -119,7 +121,8 @@ pub(crate) struct HostValidation {
     profile: validation_port::ProfileRef,
     profile_checks: Vec<validation_port::CheckRequirement>,
     runner: validation_port::RunnerIdentity,
-    book: Mutex<ValidationBook>,
+    book: Arc<Mutex<ValidationBook>>,
+    cancellation_control: validation_control::Control,
     worker_stop: Arc<AtomicBool>,
 }
 
@@ -129,6 +132,15 @@ struct ValidationBook {
     run_order: VecDeque<String>,
     reports: HashMap<String, CachedValidationReport>,
     report_order: VecDeque<String>,
+    retired_turns: HashSet<(String, String, String)>,
+    admission_closed: bool,
+}
+
+#[derive(Clone)]
+enum CancellationStatus {
+    Queued,
+    Persisted,
+    Failed(String),
 }
 
 #[derive(Clone)]
@@ -140,6 +152,8 @@ struct ValidationRunRecord {
     candidate: solidcraft_engine::schema::snapshot::CandidateRef,
     profile: validation_port::ProfileRef,
     state: validation_port::ValidationState,
+    cancellation: Option<CancellationStatus>,
+    cancellation_dirty: bool,
 }
 
 #[derive(Clone)]
@@ -170,6 +184,7 @@ pub(crate) struct ValidationIdentity {
     pub live_revision: Option<String>,
     pub live_changed: bool,
     pub historical: bool,
+    pub cancellation_status: Option<String>,
 }
 
 impl ValidationIdentity {
@@ -188,6 +203,7 @@ impl ValidationIdentity {
             "liveDocument": self.live_document_id.as_ref().zip(self.live_revision.as_ref()).map(|(document, revision)| serde_json::json!({"documentId": document, "revision": revision})),
             "liveChanged": self.live_changed,
             "historical": self.historical,
+            "cancellation": self.cancellation_status,
         })
     }
 }
@@ -206,24 +222,30 @@ impl HostValidation {
         let port = Arc::new(validation_port::ValidationPort::open(store, candidate_root).map_err(|error| format!("{error}"))?);
         let native = validation_port::native_basic_profile();
         let profile = validation_port::profile_ref(&native).map_err(|error| format!("{error}"))?;
+        let book = Arc::new(Mutex::new(ValidationBook::default()));
+        let cancellation_control = validation_control::Control::start(Arc::clone(&port), Arc::clone(&book))?;
         let host = HostValidation {
             port: Arc::clone(&port),
             profile,
             profile_checks: native.checks,
             runner: validation_port::local_runner_identity(),
-            book: Mutex::new(ValidationBook::default()),
+            book,
+            cancellation_control,
             worker_stop: Arc::new(AtomicBool::new(false)),
         };
         let stop = Arc::clone(&host.worker_stop);
-        let _ = std::thread::Builder::new().name("mastra-validation-worker".into()).spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                if port.pump().is_err() {
-                    // A failed job is already a persisted terminal record; never restart it as
-                    // new work. The next queued job can still run.
+        std::thread::Builder::new()
+            .name("mastra-validation-worker".into())
+            .spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    if port.pump().is_err() {
+                        // A failed job is already a persisted terminal record; never restart it as
+                        // new work. The next queued job can still run.
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
                 }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-        });
+            })
+            .map_err(|error| format!("validation runner control could not start: {error}"))?;
         Ok(host)
     }
 
@@ -260,9 +282,20 @@ impl HostValidation {
                 "the submitted profile is not the host-frozen turn profile",
             )));
         }
+        {
+            let book = self.book.lock().map_err(|_| local_error(ErrorCode::InternalError))?;
+            if book.admission_closed {
+                return Err(local_error(ErrorCode::ResourceExhausted));
+            }
+            if book.is_retired(turn) {
+                return Err(cancelled_error("validation.submit"));
+            }
+        }
+        #[cfg(test)]
+        validation_control::submission_barrier();
         let result =
             self.port.submit_for(&candidate, &profile, params.request_id.as_str(), turn.workflow_run_id.as_str()).map_err(validation_wire)?;
-        {
+        let cancel_late_registration = {
             let mut book = self.book.lock().map_err(|_| local_error(ErrorCode::InternalError))?;
             let record = ValidationRunRecord {
                 run_id: result.run_id.to_string(),
@@ -272,8 +305,20 @@ impl HostValidation {
                 candidate: result.candidate.clone(),
                 profile: result.profile.clone(),
                 state: result.state,
+                cancellation: None,
+                cancellation_dirty: false,
             };
-            book.insert_run(result.run_id.as_str(), record);
+            let mut record = record;
+            let retired = book.is_retired(turn);
+            if retired {
+                record.cancellation = Some(CancellationStatus::Queued);
+                record.cancellation_dirty = true;
+            }
+            book.insert_run(result.run_id.as_str(), record.clone());
+            retired.then_some(record)
+        };
+        if let Some(record) = cancel_late_registration {
+            self.enqueue_cancellation(record);
         }
         encode_wire(&result)
     }
@@ -346,13 +391,16 @@ impl HostValidation {
     /// Execute the authoritative §9.3 check at the terminal transition.
     pub(crate) fn accept(&self, scope: &TurnScope, run_id: &Id, claimed: &ArtifactRef, live: Option<&DocumentStamp>) -> ValidationAcceptance {
         let run_id = run_id.as_str();
-        let (run, report) = {
+        let (run, report, retired) = {
             let book = match self.book.lock() {
                 Ok(book) => book,
                 Err(_) => return self.rejected(run_id, live, "The host validation state is unavailable.".into(), false),
             };
-            (book.runs.get(run_id).cloned(), book.reports.get(run_id).cloned())
+            (book.runs.get(run_id).cloned(), book.reports.get(run_id).cloned(), book.is_retired(scope))
         };
+        if retired {
+            return self.rejected(run_id, live, "The owning turn was cancelled; its report is history, not approval.".into(), true);
+        }
         let Some(run) = run else {
             return self.rejected(run_id, live, "This run was not submitted by the current turn.".into(), false);
         };
@@ -435,6 +483,7 @@ impl HostValidation {
                     live_revision: live.map(|stamp| stamp.revision.to_string()),
                     live_changed: live.is_some(),
                     historical,
+                    cancellation_status: None,
                 },
             },
         }
@@ -469,6 +518,11 @@ impl HostValidation {
                 stamp.document_id.as_str() != run.candidate.source.document_id || stamp.revision.as_u64().to_string() != run.candidate.source.revision
             }),
             historical,
+            cancellation_status: run.cancellation.as_ref().map(|status| match status {
+                CancellationStatus::Queued => "queued; not yet persisted".into(),
+                CancellationStatus::Persisted => "persisted".into(),
+                CancellationStatus::Failed(error) => format!("failed; {error}"),
+            }),
         }
     }
 
@@ -544,40 +598,90 @@ impl HostValidation {
     /// history, and return the identities the panel should show as cancelled rather than
     /// approval. An already-passed report remains history because the active turn is gone.
     pub(crate) fn cancel_turn(&self, scope: &TurnScope, live: Option<&DocumentStamp>) -> Vec<ValidationIdentity> {
-        let run_ids: Vec<String> = match self.book.lock() {
-            Ok(book) => book
+        let (requests, identities) = {
+            let Ok(mut book) = self.book.lock() else { return Vec::new() };
+            let key = (scope.session_id.to_string(), scope.turn_id.to_string(), scope.workflow_run_id.to_string());
+            // Match the protocol's bounded request ledger. Never evict a retirement binding
+            // that an in-flight submission could still need: exhaustion closes admission.
+            if book.retired_turns.len() < 4096 || book.retired_turns.contains(&key) {
+                book.retired_turns.insert(key);
+            } else {
+                book.admission_closed = true;
+            }
+            let mut requests = Vec::new();
+            for run in book.runs.values_mut().filter(|run| {
+                run.session_id == scope.session_id.as_str()
+                    && run.turn_id == scope.turn_id.as_str()
+                    && run.workflow_run_id == scope.workflow_run_id.as_str()
+            }) {
+                if !run.state.is_terminal() {
+                    run.cancellation = Some(CancellationStatus::Queued);
+                    requests.push(run.clone());
+                }
+            }
+            let identities = book
                 .runs
                 .iter()
                 .filter(|(_, run)| {
                     run.session_id == scope.session_id.as_str()
                         && run.turn_id == scope.turn_id.as_str()
                         && run.workflow_run_id == scope.workflow_run_id.as_str()
-                        && !run.state.is_terminal()
                 })
-                .map(|(run_id, _)| run_id.clone())
-                .collect(),
-            Err(_) => Vec::new(),
+                .map(|(run_id, run)| self.identity(run, book.reports.get(run_id), live, "cancelled", true))
+                .collect();
+            (requests, identities)
         };
-        for run_id in &run_ids {
-            if let Ok(result) = self.port.cancel(run_id)
-                && let Ok(mut book) = self.book.lock()
-                && let Some(record) = book.runs.get_mut(run_id)
-            {
-                record.state = result.state;
+        // Both bookkeeping and turn authority are already retired. Do not hold the book while
+        // touching the queue, and never perform disk IO from this Stop/reset path.
+        for request in requests {
+            self.enqueue_cancellation(request);
+        }
+        identities
+    }
+
+    fn enqueue_cancellation(&self, run: ValidationRunRecord) {
+        if let Err(error) = self.cancellation_control.enqueue(run.clone()) {
+            validation_control::record(&self.book, &run, Err(error));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_cancellations_for_test(&self) -> Result<(), String> {
+        self.cancellation_control.wait_idle()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_submission_for_test(barrier: Arc<std::sync::Barrier>) {
+        validation_control::install_submission_barrier(barrier);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancellation_harness_for_test(&self, run: &Id) -> Result<validation_control::Harness, String> {
+        let book = self.book.lock().map_err(|_| "validation book poisoned".to_string())?;
+        let run = book.runs.get(run.as_str()).cloned().ok_or_else(|| "missing validation run".to_string())?;
+        Ok(validation_control::Harness::new(run))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancellation_start_failure_for_test(&self) -> String {
+        validation_control::start_failure(Arc::clone(&self.port), Arc::clone(&self.book))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shutdown_cancellation_for_test(&self) {
+        self.cancellation_control.shutdown();
+    }
+
+    fn cancellation_updates(&self, live: Option<&DocumentStamp>) -> Vec<ValidationIdentity> {
+        let Ok(mut book) = self.book.lock() else { return Vec::new() };
+        let mut changed = Vec::new();
+        for run in book.runs.values_mut() {
+            if run.cancellation_dirty {
+                run.cancellation_dirty = false;
+                changed.push(run.clone());
             }
         }
-        let Ok(book) = self.book.lock() else {
-            return Vec::new();
-        };
-        book.runs
-            .iter()
-            .filter(|(_, run)| {
-                run.session_id == scope.session_id.as_str()
-                    && run.turn_id == scope.turn_id.as_str()
-                    && run.workflow_run_id == scope.workflow_run_id.as_str()
-            })
-            .map(|(run_id, run)| self.identity(run, book.reports.get(run_id), live, "cancelled", true))
-            .collect()
+        changed.iter().map(|run| self.identity(run, book.reports.get(&run.run_id), live, "cancelled", true)).collect()
     }
 }
 
@@ -591,6 +695,11 @@ impl Drop for HostValidation {
 }
 
 impl ValidationBook {
+    fn is_retired(&self, scope: &TurnScope) -> bool {
+        self.admission_closed
+            || self.retired_turns.contains(&(scope.session_id.to_string(), scope.turn_id.to_string(), scope.workflow_run_id.to_string()))
+    }
+
     fn insert_run(&mut self, run_id: &str, record: ValidationRunRecord) {
         self.runs.insert(run_id.to_owned(), record);
         if !self.run_order.iter().any(|known| known == run_id) {
@@ -2219,6 +2328,10 @@ impl ChatBackend for MastraBackend {
         let reported = self.config.connection_auth.lock().ok().and_then(|mut reported| reported.take());
         if let Some(available) = reported {
             self.push(Event::ConnectionAuth { available });
+        }
+        let updates = self.config.validation.as_ref().map(|service| service.cancellation_updates(self.document.as_ref())).unwrap_or_default();
+        for identity in updates {
+            self.push_validation_history(&identity, ToolStatus::Failed);
         }
         self.events.drain(..).collect()
     }

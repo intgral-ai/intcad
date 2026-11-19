@@ -9,7 +9,9 @@ terminal states, acceptance or verified-report-before-marker recovery precedence
 
 Implementation: `docs/superpowers/plans/2026-11-19-validation-terminal-transaction.md`.
 Base: `c5f2f42fe`. Task branch: `fix/int1454-validation-transaction`.
-Status: test-first implementation in progress; no passing validation claimed.
+Status: targeted behavioral RED observed at `7f5bdde70` (run `44589009058`);
+transaction and cancellation control implementation in progress. No GREEN or independent
+review claimed. The earlier full run's test execution remains unknown.
 Local baseline/builds NOT_RUN under the disk-growth gate. Use remote CI.
 Stop all validation participants before upgrade or rollback. Keep the stable
 transaction lock file and run records; mixed old/new concurrent writers are not supported.

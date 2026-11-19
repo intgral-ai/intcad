@@ -813,6 +813,33 @@ before terminal commit. If it wins, a late passing worker result cannot overwrit
 still cannot be promoted. Local runner sessions are isolated from the live document
 and read immutable inputs; this validation isolation does not isolate earlier modeling.
 
+Native participants serialize persistence decisions using the stable
+`transaction.lock` file in the validation store root, outside retained run records.
+Each transaction independently opens its native lock handle. Report publication and
+matching state publication share that transaction; runner computation does not.
+A fully verified pending report is recovered before consulting a cancel marker,
+including legacy report/state gaps. Unverifiable reports never become passing evidence.
+Retention checks and deletion use the same transaction, so a late completion cannot
+recreate an expired run.
+
+Stop/reset retire turn authority synchronously in memory. Disk-backed cancellation
+uses one separate control worker, independent of the runner pump, with at most 64
+outstanding distinct run requests. Repeated requests coalesce without extending the
+original five-second storage-admission deadline. Queue saturation, start refusal,
+deadline expiry and shutdown are failures, not confirmation of durable cancellation.
+History keeps the real run state separate from queued/failed cancellation. A submission
+already waiting at storage registration inherits its original turn's retirement when
+it registers; a later submission for that retired turn is refused before storage.
+The retirement ledger retains at most 4,096 bindings; exhaustion closes validation
+admission until that host service is reopened rather than evicting an in-flight binding.
+Shutdown interrupts cancellation lock acquisition and never joins a disk-blocked worker
+on the window thread. An admitted transaction's filesystem operations are not forcibly
+interrupted.
+
+All participants must be stopped before upgrade or rollback. Keep the stable lock
+file and existing run records. Mixed old/new concurrent writers are unsupported:
+an older binary does not participate in this advisory transaction protocol.
+
 ### 9.3 Reports and host acceptance
 
 `ValidationReport` requires:
