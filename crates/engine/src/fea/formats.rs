@@ -271,12 +271,15 @@ pub fn read_dat_total(text: &str, set: &str) -> Option<P> {
 }
 
 /// What the solver's results file holds: the nodes it reports on, with their displacement (mm)
-/// and their stress tensor (MPa: xx, yy, zz, xy, yz, zx) where it gave them.
+/// and their stress tensor (MPa: xx, yy, zz, xy, yz, zx) where it gave them, and its elements.
 #[derive(Debug, Default)]
 pub struct Frd {
     pub nodes: HashMap<u64, P>,
     pub disp: HashMap<u64, P>,
     pub stress: HashMap<u64, [f64; 6]>,
+    /// Each element's type number (6: a 10-node tetrahedron; 5: a 15-node wedge, a shell
+    /// expanded through its thickness) and its node ids, as the file lists them.
+    pub elements: Vec<(u32, Vec<u64>)>,
 }
 
 /// One data line of an `.frd` block: ` -1`, the node id, then values of 12 characters each. The
@@ -301,13 +304,15 @@ fn frd_values(line: &str, count: usize) -> Option<(u64, Vec<f64>)> {
     Some((id, out))
 }
 
-/// Read an `.frd` results file (ASCII): its nodes, the `DISP` block and the `STRESS` block.
+/// Read an `.frd` results file (ASCII): its nodes, its elements, the `DISP` block and the `STRESS`
+/// block.
 pub fn read_frd(text: &str) -> Result<Frd, String> {
     let mut out = Frd::default();
     #[derive(Clone, Copy, PartialEq)]
     enum Block {
         None,
         Nodes,
+        Elements,
         Disp,
         Stress,
         Other,
@@ -316,6 +321,30 @@ pub fn read_frd(text: &str) -> Result<Frd, String> {
     for line in text.lines() {
         if line.starts_with("    2C") {
             block = Block::Nodes;
+            continue;
+        }
+        if line.starts_with("    3C") {
+            block = Block::Elements;
+            continue;
+        }
+        // An element: ` -1` with its id, type, group and material, then its node ids on ` -2`
+        // lines (ten to a line).
+        if block == Block::Elements {
+            let mut words = line.split_whitespace();
+            match words.next() {
+                Some("-1") => {
+                    if let Some(kind) = words.nth(1).and_then(|w| w.parse().ok()) {
+                        out.elements.push((kind, Vec::new()));
+                    }
+                }
+                Some("-2") => {
+                    if let Some((_, ids)) = out.elements.last_mut() {
+                        ids.extend(words.filter_map(|w| w.parse::<u64>().ok()));
+                    }
+                }
+                Some("-3") => block = Block::None,
+                _ => {}
+            }
             continue;
         }
         if line.starts_with(" -4") {
@@ -356,7 +385,7 @@ pub fn read_frd(text: &str) -> Result<Frd, String> {
                     out.stress.insert(id, [a, b, c, d, e, f]);
                 }
             }
-            Block::None | Block::Other => {}
+            Block::None | Block::Elements | Block::Other => {}
         }
     }
     if out.nodes.is_empty() || out.disp.is_empty() || out.stress.is_empty() {

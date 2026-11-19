@@ -15,8 +15,8 @@ use crate::fea::{
 };
 use crate::params::bad;
 use crate::schema::stress::{
-    StressEquilibrium, StressEstimateParams, StressEstimateResult, StressMeshCheck, StressPeak, StressRun, StressSettling, StressShowParams,
-    StressShowResult,
+    StrainComponents, StressAlong, StressComponents, StressEquilibrium, StressEstimateParams, StressEstimateResult, StressMeshCheck, StressPeak,
+    StressProbe, StressProbeRun, StressRun, StressSettling, StressShowParams, StressShowResult,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
@@ -47,9 +47,13 @@ pub static COMMANDS: &[CommandSpec] = &[
              less) or still changing, with how far off it may still be; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
              this computer can spare: the smaller of 6 GB and half the memory available; SOLIDCRAFT_FEA_MAX_NODES caps its nodes instead); \
              keep_files?; dry_run?: true (check the setup, describe it and draw its supports and loads on the model; solves nothing: run \
-             it first so the user can see the faces) → estimate: true, setup, summary, runs, fraction_of_yield (of the number the summary leads with), fraction_of_yield_overall, peak_at_support, peak_away (the highest stress \
-             away from fixed supports and loads), equilibrium (supports carry vs loads applied), mesh_check, warnings, assumptions, \
-             how_to_report. Meshes with gmsh and solves with CalculiX on this computer and paints the estimate on the body. Report it as \
+             it first so the user can see the faces); probes?: [{at: [x,y,z] mm, direction?: [x,y,z], name?}] (at most 50: the stress \
+             tensor, principal stresses and directions, elastic strain in microstrain (shears as engineering γ), displacement, and along \
+             `direction` the stress and strain a gauge laid that way reads, at each point, read inside the solver's element that holds \
+             it, with its own mesh check; a point up to 1 mm outside the part is read at its nearest point; on shells a point on the top \
+             or bottom face reads that face) → estimate: true, setup, summary, runs, fraction_of_yield (of the number the summary leads with), fraction_of_yield_overall, peak_at_support, peak_away (the highest stress \
+             away from fixed supports and loads, with its principal stresses and strains), equilibrium (supports carry vs loads applied), \
+             mesh_check, probes, warnings, assumptions, how_to_report. Meshes with gmsh and solves with CalculiX on this computer and paints the estimate on the body. Report it as \
              how_to_report says. skill_reference solidcraft-analysis has the workflow and worked setups",
         ),
     CommandSpec::new(SHOW, "Show Stress Estimate", crate::checked!("inspect.stress_estimate.show", show))
@@ -85,6 +89,9 @@ pub(crate) const HOW_TO_REPORT: &[&str] = &[
      changing).",
     "Quote the `equilibrium` line (what the supports carry against the loads applied); if a warning says the forces do not balance, say the \
      result is suspect before any number.",
+    "For a point in `probes`, quote the values the user asked for (von Mises, a principal stress, a strain, the value `along` a direction) \
+     with that probe's own mesh check; principal stresses are positive in tension and negative in compression; strains are microstrain \
+     (µε) and shear strains are engineering (γ).",
 ];
 
 fn json_of(cmd: &str, reply: impl serde::Serialize) -> Result<Value> {
@@ -571,8 +578,66 @@ struct Plan {
     mesh_size: Option<f64>,
     keep_files: bool,
     mesh_check: bool,
+    probes: Vec<Probe>,
     notes: Vec<String>,
     setup: Vec<String>,
+}
+
+/// A point to read the stress and strain at, checked.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Probe {
+    pub name: String,
+    pub at: P,
+    /// A unit vector.
+    pub direction: Option<P>,
+}
+
+/// At most this many probes in one estimate.
+pub(crate) const MAX_PROBES: usize = 50;
+
+/// The setup's probes, checked: a finite point, a direction that is not zero, a name of 1 to 60
+/// characters (`probe 1`, `probe 2`, ... by default).
+pub(crate) fn probes_of(p: &Value) -> Result<Vec<Probe>> {
+    let list = match p.get("probes") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(v) => v.as_array().ok_or_else(|| bad(CMD, "`probes` must be a list: [{at: [x, y, z], direction?, name?}]"))?,
+    };
+    if list.len() > MAX_PROBES {
+        return Err(bad(CMD, format!("give at most {MAX_PROBES} probes")));
+    }
+    let mut out = Vec::new();
+    for (i, v) in list.iter().enumerate() {
+        let what = format!("probes[{i}]");
+        let at = v.get("at").and_then(finite3).ok_or_else(|| bad(CMD, format!("{what}: `at` must be a point [x, y, z] in mm")))?;
+        let direction = match v.get("direction") {
+            None | Some(Value::Null) => None,
+            Some(d) => {
+                Some(finite3(d).and_then(fea::model::unit).ok_or_else(|| bad(CMD, format!("{what}: `direction` must be [x, y, z], not zero")))?)
+            }
+        };
+        let name = match v.get("name") {
+            None | Some(Value::Null) => format!("probe {}", i + 1),
+            Some(n) => n
+                .as_str()
+                .map(str::trim)
+                .filter(|n| !n.is_empty() && n.chars().count() <= 60)
+                .ok_or_else(|| bad(CMD, format!("{what}: `name` must be text of 1 to 60 characters")))?
+                .to_string(),
+        };
+        out.push(Probe { name, at, direction });
+    }
+    Ok(out)
+}
+
+/// A point for a sentence: `[50, 10, 1.5]`.
+fn point_words(p: P) -> String {
+    format!("[{}, {}, {}]", coord(p[0], 1.0), coord(p[1], 1.0), coord(p[2], 1.0))
+}
+
+/// A probe in the setup's words.
+fn probe_words(pr: &Probe, near: &str) -> String {
+    let along = pr.direction.map_or_else(String::new, |d| format!(", and {}", along_words(d)));
+    format!("Read at {}: the stress and strain at {} mm, near {near}{along}", pr.name, point_words(pr.at))
 }
 
 /// The mesh check solves again with the element size divided by this.
@@ -652,8 +717,22 @@ pub(crate) const REMAINING_PER_CHANGE: f64 = 2.0;
 /// The setup's keys, by where they go: one the estimate does not know is refused, not ignored,
 /// because a dropped load or support changes the answer without a word (PIL-294 D6). Kept equal
 /// to the contracts in `schema/stress.rs` by a test.
-pub(crate) const ESTIMATE_KEYS: &[&str] =
-    &["body", "loads", "supports", "material", "thickness", "mesh_size", "elements", "show", "scale", "mesh_check", "keep_files", "dry_run"];
+pub(crate) const ESTIMATE_KEYS: &[&str] = &[
+    "body",
+    "loads",
+    "supports",
+    "material",
+    "thickness",
+    "mesh_size",
+    "elements",
+    "show",
+    "scale",
+    "mesh_check",
+    "keep_files",
+    "dry_run",
+    "probes",
+];
+pub(crate) const PROBE_KEYS: &[&str] = &["at", "direction", "name"];
 pub(crate) const LOAD_KEYS: &[&str] = &["face", "type", "pressure", "force", "direction", "magnitude"];
 pub(crate) const SUPPORT_KEYS: &[&str] = &["face", "type"];
 pub(crate) const MATERIAL_KEYS: &[&str] = &["name", "youngs_modulus", "poisson_ratio", "yield_strength", "source"];
@@ -686,7 +765,7 @@ pub(crate) fn check_keys(p: &Value) -> Result<()> {
         Ok(())
     }
     check(p, ESTIMATE_KEYS, "the setup")?;
-    for (list, allowed, name) in [("loads", LOAD_KEYS, "loads"), ("supports", SUPPORT_KEYS, "supports")] {
+    for (list, allowed, name) in [("loads", LOAD_KEYS, "loads"), ("supports", SUPPORT_KEYS, "supports"), ("probes", PROBE_KEYS, "probes")] {
         for (i, v) in p.get(list).and_then(Value::as_array).into_iter().flatten().enumerate() {
             check(v, allowed, &format!("{name}[{i}]"))?;
         }
@@ -898,6 +977,10 @@ fn plan(p: &Value, faces: &BodyFaces, body: &solidcraft_doc::ModelBody, sheet_t:
     } else {
         "Mesh check: off (mesh_check: false), so whether the numbers have settled will be unknown".to_string()
     });
+    let probes = probes_of(p)?;
+    for pr in &probes {
+        setup.push(probe_words(pr, &faces.near(pr.at)));
+    }
     setup.extend(notes.iter().cloned());
     Ok(Plan {
         body: body.name.clone(),
@@ -912,6 +995,7 @@ fn plan(p: &Value, faces: &BodyFaces, body: &solidcraft_doc::ModelBody, sheet_t:
         mesh_size,
         keep_files,
         mesh_check,
+        probes,
         notes,
         setup,
     })
@@ -1047,6 +1131,21 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, format!("`{}` has nothing to mesh", body.name)));
     }
     let smallest = extent.iter().copied().fold(f64::INFINITY, f64::min).max(1e-3);
+    // A probe off the part is refused before anything runs; one inside its box is read in the
+    // solve, or named in a warning when no element is within reach of it.
+    let reach = fea::probe::REACH;
+    if let Some(pr) = plan.probes.iter().find(|pr| (0..3).any(|k| pr.at[k] < lo[k] - reach || pr.at[k] > hi[k] + reach)) {
+        return Err(bad(
+            CMD,
+            format!(
+                "{}: {} is outside the part, which spans {} to {} mm",
+                pr.name,
+                point_words(pr.at),
+                point_words(lo.map(|x| round_to(x, 3))),
+                point_words(hi.map(|x| round_to(x, 3)))
+            ),
+        ));
+    }
     // For the distance away from supports and loads (`section_size`); only solids that are not
     // sheets measure it.
     let volume = if plan.sheet || !plan.runs.contains(&Elements::Solid) { None } else { body.body.volume_at(tol) };
@@ -1102,6 +1201,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 peak_away: None,
                 equilibrium: None,
                 mesh_check: None,
+                probes: Vec::new(),
                 warnings,
                 assumptions: Vec::new(),
                 how_to_report: HOW_TO_REPORT.iter().map(|x| x.to_string()).collect(),
@@ -1222,8 +1322,30 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         ));
     }
 
+    // The probes, read in every solve; the mesh check compares the first and the finer.
+    let all: Vec<(&fea::Run, bool)> = finer.iter().map(|r| (r, true)).chain(done.iter().map(|r| (r, false))).collect();
+    let pair = match (&check, done.first(), finer.as_ref()) {
+        (Check::Ran { .. }, Some(first), Some(fine)) => Some((first, fine)),
+        _ => None,
+    };
+    let mut probes = Vec::new();
+    for pr in &plan.probes {
+        match probe_reading(pr, shown, &all, pair, &plan.material, &near) {
+            Ok(r) => probes.push(r),
+            Err(w) => warnings.push(w),
+        }
+    }
+
     let outcome = Outcome { done: &done, shown, check: &check };
-    let (summary, assumptions, shell_vs_solid) = wording(&plan.material, &plan.loads, &plan.supports, &outcome, plan.thickness, &near);
+    let (mut summary, assumptions, shell_vs_solid) = wording(&plan.material, &plan.loads, &plan.supports, &outcome, plan.thickness, &near);
+    if !probes.is_empty() {
+        if probes.len() <= 3 {
+            let lines: Vec<&str> = probes.iter().map(|r| r.line.as_str()).collect();
+            summary = format!("{summary} {}", lines.join(" "));
+        } else {
+            summary = format!("{summary} {} probes are read in `probes`.", probes.len());
+        }
+    }
     let run_json: Vec<StressRun> = finer
         .iter()
         .map(|r| (r, true))
@@ -1267,12 +1389,19 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         mismatch_percent: round_to(100.0 * e.mismatch(), 3),
         line: equilibrium_line(&e),
     });
-    let peak_away = shown.peaks.away.map(|(v, at)| StressPeak {
-        von_mises_mpa: round_to(v, 2),
-        near: near(at),
-        at_mm: at.map(|c| round_to(c, 3)),
-        fraction_of_yield: round_to(v / plan.material.yield_mpa, 3),
-        away_from_supports_mm: round_to(shown.peaks.distance, 3),
+    let peak_away = shown.peaks.away.map(|(v, at)| {
+        // The peak is a node of the run: its own tensor.
+        let tensor = shown.points.iter().position(|x| x.0 == at).and_then(|i| shown.tensors.get(i));
+        StressPeak {
+            von_mises_mpa: round_to(v, 2),
+            near: near(at),
+            at_mm: at.map(|c| round_to(c, 3)),
+            fraction_of_yield: round_to(v / plan.material.yield_mpa, 3),
+            away_from_supports_mm: round_to(shown.peaks.distance, 3),
+            principal_stress_mpa: tensor.map(|s| fea::probe::principal(s).0.map(|x| round_to(x, 2))),
+            principal_strain_microstrain: tensor
+                .map(|s| fea::probe::principal(&fea::probe::strain(s, plan.material.e_mpa, plan.material.nu)).0.map(|x| round_to(x * 1e6, 1))),
+        }
     });
     let mesh_check = Some(mesh_check_json(&check));
 
@@ -1324,6 +1453,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             peak_away,
             equilibrium,
             mesh_check,
+            probes,
             warnings,
             assumptions,
             how_to_report: HOW_TO_REPORT.iter().map(|x| x.to_string()).collect(),
@@ -1744,6 +1874,136 @@ pub(crate) fn check_line(check: &Check) -> String {
     }
 }
 
+fn settling_json(s: &Settling) -> StressSettling {
+    StressSettling {
+        quantity: s.quantity.into(),
+        unit: s.unit.into(),
+        first: round_to(s.first, 4),
+        finer: round_to(s.finer, 4),
+        change_percent: round_to(s.change(), 2),
+        status: s.status().into(),
+        may_be_off_percent: s.may_be_off().map(|r| round_to(r, 1)),
+    }
+}
+
+/// What a probe's mesh check compares.
+pub(crate) const PROBE_QUANTITY: &str = "von Mises stress at the probe";
+
+/// A probe read in the shown run, with its von Mises stress in every run (`all`: each run and
+/// whether it is the mesh check's finer one) and, when the mesh check ran (`pair`: the first run
+/// and the finer), how it moved. `Err` is the warning when the shown run cannot read the point.
+pub(crate) fn probe_reading(
+    pr: &Probe,
+    shown: &fea::Run,
+    all: &[(&fea::Run, bool)],
+    pair: Option<(&fea::Run, &fea::Run)>,
+    material: &Material,
+    near: &dyn Fn(P) -> String,
+) -> std::result::Result<StressProbe, String> {
+    let read = |r: &fea::Run| fea::probe::sample(&r.cells, &r.points, &r.tensors, pr.at);
+    let s = read(shown).map_err(|miss| {
+        let why = match miss {
+            fea::probe::Miss::Outside(d) => {
+                format!("the part's nearest element is {} mm from it, and a point is read up to {} mm outside the part", sig(d), fea::probe::REACH)
+            }
+            fea::probe::Miss::NoElements => "the solver's results have no elements to read it in".to_string(),
+        };
+        format!("{} at {} mm was not read: {why}", pr.name, point_words(pr.at))
+    })?;
+    let vm = fea::formats::von_mises(&s.stress);
+    let (principal, directions) = fea::probe::principal(&s.stress);
+    let strain = fea::probe::strain(&s.stress, material.e_mpa, material.nu);
+    let (principal_strain, _) = fea::probe::principal(&strain);
+    // `+ 0.0` reads a rounded −0 as 0.
+    let micro = |x: f64| round_to(x * 1e6, 1) + 0.0;
+    let mpa = |x: f64| round_to(x, 2) + 0.0;
+    let settling = pair.and_then(|(first, fine)| {
+        let (a, b) = (read(first).ok()?, read(fine).ok()?);
+        Some(Settling {
+            quantity: PROBE_QUANTITY,
+            unit: "MPa",
+            first: fea::formats::von_mises(&a.stress),
+            finer: fea::formats::von_mises(&b.stress),
+            at_support: false,
+        })
+    });
+    let runs = all
+        .iter()
+        .filter_map(|(r, fine)| {
+            let x = read(r).ok()?;
+            Some(StressProbeRun {
+                elements: r.elements.word().into(),
+                mesh_size_mm: round_to(r.mesh_size, 3),
+                mesh_check_run: *fine,
+                von_mises_mpa: mpa(fea::formats::von_mises(&x.stress)),
+            })
+        })
+        .collect();
+    let along = pr.direction.map(|d| StressAlong {
+        direction: d.map(|c| round_to(c, 4)),
+        stress_mpa: mpa(fea::probe::along(&s.stress, d)),
+        strain_microstrain: micro(fea::probe::along(&strain, d)),
+    });
+    let near_words = near(pr.at);
+    let check_words = settling.as_ref().map_or_else(
+        || "mesh check: not run".to_string(),
+        |st| {
+            let off = st.may_be_off().map_or_else(String::new, |r| format!(", may be off by about {r:.1}%"));
+            format!("mesh check: {} ({:+.1}%{off})", st.status(), st.change())
+        },
+    );
+    let gauge = match (&along, pr.direction) {
+        (Some(a), Some(d)) => format!("; {}: {} MPa, {} µε", along_words(d), sig(a.stress_mpa), sig(a.strain_microstrain)),
+        _ => String::new(),
+    };
+    let line = format!(
+        "At {} ({} mm, near {near_words}): von Mises {} MPa ({:.0}% of the yield strength given); principal stresses {}, {}, {} MPa; \
+         principal strains {}, {}, {} µε{gauge}; {check_words}.",
+        pr.name,
+        point_words(pr.at),
+        sig(vm),
+        100.0 * vm / material.yield_mpa,
+        sig(principal[0]),
+        sig(principal[1]),
+        sig(principal[2]),
+        sig(principal_strain[0] * 1e6),
+        sig(principal_strain[1] * 1e6),
+        sig(principal_strain[2] * 1e6),
+    );
+    Ok(StressProbe {
+        name: pr.name.clone(),
+        at_mm: pr.at,
+        outside_part_mm: (s.outside > 1e-3).then(|| round_to(s.outside, 3)),
+        near: near_words,
+        von_mises_mpa: mpa(vm),
+        fraction_of_yield: round_to(vm / material.yield_mpa, 3),
+        stress_mpa: StressComponents {
+            xx: mpa(s.stress[0]),
+            yy: mpa(s.stress[1]),
+            zz: mpa(s.stress[2]),
+            xy: mpa(s.stress[3]),
+            yz: mpa(s.stress[4]),
+            zx: mpa(s.stress[5]),
+        },
+        principal_stress_mpa: principal.map(mpa),
+        principal_directions: directions.map(|d| d.map(|c| round_to(c, 4))),
+        strain_microstrain: StrainComponents {
+            xx: micro(strain[0]),
+            yy: micro(strain[1]),
+            zz: micro(strain[2]),
+            gamma_xy: micro(2.0 * strain[3]),
+            gamma_yz: micro(2.0 * strain[4]),
+            gamma_zx: micro(2.0 * strain[5]),
+        },
+        principal_strain_microstrain: principal_strain.map(micro),
+        along,
+        displacement_mm: s.disp.map(|c| round_to(c, 5)),
+        mesh_check: settling.as_ref().map(settling_json),
+        runs,
+        line,
+    })
+}
+
 fn mesh_check_json(check: &Check) -> StressMeshCheck {
     let line = check_line(check);
     match check {
@@ -1752,18 +2012,7 @@ fn mesh_check_json(check: &Check) -> StressMeshCheck {
             reason: None,
             first_mesh_mm: Some(round_to(*first_h, 3)),
             finer_mesh_mm: Some(round_to(*finer_h, 3)),
-            quantities: items
-                .iter()
-                .map(|s| StressSettling {
-                    quantity: s.quantity.into(),
-                    unit: s.unit.into(),
-                    first: round_to(s.first, 4),
-                    finer: round_to(s.finer, 4),
-                    change_percent: round_to(s.change(), 2),
-                    status: s.status().into(),
-                    may_be_off_percent: s.may_be_off().map(|r| round_to(r, 1)),
-                })
-                .collect(),
+            quantities: items.iter().map(settling_json).collect(),
             line,
         },
         Check::Skipped { nodes, bytes, limit } => StressMeshCheck {

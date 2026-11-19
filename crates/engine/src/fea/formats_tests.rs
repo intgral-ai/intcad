@@ -62,6 +62,37 @@ fn solver_results_read_in_short_and_long_form() {
     }
 }
 
+/// The results file's elements: each one's type and its node ids, over as many ` -2` lines as it
+/// takes. Input: an element block as CalculiX 2.21 wrote it for a shell (a 15-node wedge over two
+/// lines, copied from a solved job) and a 10-node tetrahedron on one line, with stray lines
+/// around. Action: `read_frd`. Pass: two elements, types 5 and 6, with their 15 and 10 ids in the
+/// file's order.
+#[test]
+fn solver_results_list_their_elements() {
+    let text = [
+        "    2C                             2                                     1".to_string(),
+        line(10, 7, &[0.0, 0.0, -0.5]),
+        " -3".into(),
+        "    3C                             2                                     1".into(),
+        " -1         1    5    0    1".into(),
+        " -2         7        10        13         9        12        15        16        19        22         8".into(),
+        " -2        11        14        18        21        24".into(),
+        " -1         2    6    0    1".into(),
+        " -2         1         2         3         4         5         6         7         8         9        10".into(),
+        " -2 x".into(),
+        " -3".into(),
+        " -4  DISP        4    1".into(),
+        line(10, 7, &[0.0, 0.0, 0.0]),
+        " -3".into(),
+        " -4  STRESS      6    1".into(),
+        line(10, 7, &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        " -3".into(),
+    ]
+    .join("\n");
+    let r = read_frd(&text).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(r.elements, vec![(5, vec![7, 10, 13, 9, 12, 15, 16, 19, 22, 8, 11, 14, 18, 21, 24]), (6, (1..=10).collect::<Vec<u64>>())],);
+}
+
 #[test]
 fn results_without_stresses_and_hostile_lines_are_refused_without_a_panic() {
     assert!(read_frd("").is_err());

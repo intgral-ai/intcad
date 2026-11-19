@@ -159,6 +159,28 @@ pub struct StressEstimateParams {
     /// Check the setup and describe it, and solve nothing (what the approval card shows).
     #[serde(default)]
     pub dry_run: Option<bool>,
+    /// Points to read the stress and strain at (at most 50): each gives the stress tensor, its
+    /// principal values and directions, the elastic strain and the displacement there, read inside
+    /// the solver's element that holds the point, and how the value moved in the mesh check.
+    #[serde(default)]
+    pub probes: Option<Vec<ProbeParam>>,
+}
+
+/// A point to read the stress and strain at.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ProbeParam {
+    /// The point `[x, y, z]`, mm: inside the part or on its surface (a point up to 1 mm outside is
+    /// read at the part's nearest point). On sheet metal solved as shells, a point on the top or
+    /// bottom face reads that face.
+    pub at: [f64; 3],
+    /// A direction `[x, y, z]` (any length) to also give the stress and strain along, as a strain
+    /// gauge laid that way reads them.
+    #[serde(default)]
+    pub direction: Option<[f64; 3]>,
+    /// A name for it in the reply (`fillet`, `gauge 1`). Default: `probe 1`, `probe 2`, ...
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// One solve.
@@ -219,6 +241,101 @@ pub struct StressPeak {
     /// part's thickness (a shell's or sheet's; for other solids twice the volume over the surface
     /// area), over which a clamp's or a force's local stress fades (Saint-Venant).
     pub away_from_supports_mm: f64,
+    /// The principal stresses there, MPa, largest first: positive is tension, negative
+    /// compression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_stress_mpa: Option<[f64; 3]>,
+    /// The principal elastic strains there, microstrain (µε, 1e-6), largest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_strain_microstrain: Option<[f64; 3]>,
+}
+
+/// A stress tensor's components, MPa, in the design's X, Y and Z.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StressComponents {
+    pub xx: f64,
+    pub yy: f64,
+    pub zz: f64,
+    pub xy: f64,
+    pub yz: f64,
+    pub zx: f64,
+}
+
+/// An elastic strain's components, microstrain (µε, 1e-6), in the design's X, Y and Z. The shears
+/// are engineering shear strains (γ, twice the tensor component), as strain gauges and most
+/// finite-element programs report them.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StrainComponents {
+    pub xx: f64,
+    pub yy: f64,
+    pub zz: f64,
+    pub gamma_xy: f64,
+    pub gamma_yz: f64,
+    pub gamma_zx: f64,
+}
+
+/// The stress and strain along a direction, as a strain gauge laid that way reads them.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StressAlong {
+    /// The direction, as a unit vector.
+    pub direction: [f64; 3],
+    /// The normal stress along it, MPa.
+    pub stress_mpa: f64,
+    /// The normal strain along it, microstrain.
+    pub strain_microstrain: f64,
+}
+
+/// A probe's von Mises stress in one solve.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StressProbeRun {
+    /// `shell` or `solid`.
+    pub elements: String,
+    pub mesh_size_mm: f64,
+    /// The mesh check's finer solve.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mesh_check_run: bool,
+    pub von_mises_mpa: f64,
+}
+
+/// The stress and strain at a probe's point (shown run), read inside the solver's element that
+/// holds it with the element's shape functions.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StressProbe {
+    /// Its name: the one given, or `probe 1`, `probe 2`, ...
+    pub name: String,
+    /// The point given, mm.
+    pub at_mm: [f64; 3],
+    /// How far the point was outside the part, mm, when it was read at the part's nearest point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outside_part_mm: Option<f64>,
+    /// The face nearest it.
+    pub near: String,
+    pub von_mises_mpa: f64,
+    /// Von Mises as a share of the yield strength given.
+    pub fraction_of_yield: f64,
+    /// The stress tensor, MPa.
+    pub stress_mpa: StressComponents,
+    /// The principal stresses, MPa, largest first: positive is tension, negative compression.
+    pub principal_stress_mpa: [f64; 3],
+    /// Their directions (unit vectors), in the same order.
+    pub principal_directions: [[f64; 3]; 3],
+    /// The elastic strain, microstrain.
+    pub strain_microstrain: StrainComponents,
+    /// The principal strains, microstrain, largest first (along the principal stresses'
+    /// directions, in a material that is the same in every direction).
+    pub principal_strain_microstrain: [f64; 3],
+    /// Along the direction given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub along: Option<StressAlong>,
+    /// The displacement, mm.
+    pub displacement_mm: [f64; 3],
+    /// Its von Mises stress on the first mesh and the finer one, when the mesh check ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_check: Option<StressSettling>,
+    /// Its von Mises stress in every solve.
+    pub runs: Vec<StressProbeRun>,
+    /// The probe in one line, for the user.
+    pub line: String,
 }
 
 /// What the supports carry against the loads applied: they should cancel.
@@ -308,6 +425,10 @@ pub struct StressEstimateResult {
     /// Whether the numbers settle with a finer mesh. Absent on a dry run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh_check: Option<StressMeshCheck>,
+    /// The stress and strain at each point of `probes` that could be read (a point that could not
+    /// is a warning).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probes: Vec<StressProbe>,
     /// Where the estimate says little (above yield, large deflection, a thick part as shells):
     /// tell the user before the numbers.
     pub warnings: Vec<String>,
