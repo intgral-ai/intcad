@@ -170,6 +170,15 @@ fn interop_descriptor(
 #[cfg(target_os = "linux")]
 const NATIVE_INTEROP_CLEANUP_VERIFIED: bool = false;
 
+/// Later policy decision on the device CAD already created. It reads only the
+/// announced features: it never selects an adapter, opens a device or mutates
+/// the retained CAD setup. False leaves the selected CAD device untouched.
+#[cfg(target_os = "linux")]
+fn interop_device_admissible(features: wgpu::Features) -> bool {
+    NATIVE_INTEROP_CLEANUP_VERIFIED
+        && features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF)
+}
+
 /// Install only on CAD's existing setup, after all its descriptor/adapter policy.
 /// Coarse eligibility asserts no display backend and initializes no CEF runtime.
 pub fn configure_interop(setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew, eligible: bool) -> Result<(), String> {
@@ -420,9 +429,7 @@ impl CefAssistant {
     pub fn new(render_state: &eframe::egui_wgpu::RenderState, backend: HostBackend) -> Option<Self> {
         if FAILED_START.load(Ordering::Acquire) { return None; }
         #[cfg(target_os = "linux")]
-        if !NATIVE_INTEROP_CLEANUP_VERIFIED
-            || !render_state.device.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF)
-        {
+        if !interop_device_admissible(render_state.device.features()) {
             emit_accelerated_limit(false, "selected CAD device interop is unavailable or native validation is blocked");
             return None;
         }
@@ -2213,6 +2220,101 @@ mod tests {
             assert!(configure_interop(&mut setup, true).is_err());
             assert!(Arc::ptr_eq(setup.native_device_creator.as_ref().unwrap(), &installed));
         }
+    }
+
+    /// Real wgpu types and a native Vulkan adapter; needs the authorized app test
+    /// build. A scalar bitmap or invented adapter is not a substitute.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "BLOCKED: requires authorized real Vulkan adapter/device execution"]
+    fn unsupported_interop_uses_original_selected_adapter() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .expect("an authorized native Vulkan adapter");
+        let base = wgpu::DeviceDescriptor {
+            label: Some("CAD-selected-device"),
+            required_features: adapter.features() & crate::startup::FLOAT_DEPTH_STENCIL,
+            required_limits: wgpu::Limits { max_texture_dimension_2d: 8192, ..Default::default() },
+            ..Default::default()
+        };
+        // Non-Vulkan backends never enter the interop helper.
+        assert!(interop_descriptor(&base, wgpu::Backend::Gl, adapter.features()).is_none());
+        // The original descriptor is copied, never mutated: the selected adapter
+        // and base request remain the CAD path when interop is unsupported.
+        let original = base.clone();
+        for backend in [wgpu::Backend::Vulkan, wgpu::Backend::Gl] {
+            let _ = interop_descriptor(&base, backend, adapter.features());
+            assert_eq!(format!("{:?}", base.required_features), format!("{:?}", original.required_features));
+            assert_eq!(base.required_limits, original.required_limits);
+        }
+        if !adapter.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
+            assert!(interop_descriptor(&base, wgpu::Backend::Vulkan, adapter.features()).is_none());
+            // The unchanged base descriptor still opens the ordinary CAD device.
+            let (device, _queue) = pollster::block_on(adapter.request_device(&base))
+                .expect("the ordinary CAD device request stays available");
+            drop(device);
+        }
+    }
+
+    /// The later display/device refusal must be a read-only policy decision.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn later_display_handle_refusal_keeps_selected_cad_device() {
+        let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+        configure_interop(&mut setup, true).unwrap();
+        let descriptor = setup.device_descriptor.clone();
+        let factory = setup.native_device_creator.clone();
+        let backends = setup.instance_descriptor.backends;
+        assert!(!interop_device_admissible(wgpu::Features::empty()));
+        assert_eq!(
+            interop_device_admissible(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF),
+            NATIVE_INTEROP_CLEANUP_VERIFIED,
+            "the cleanup/ABI gate alone decides after the feature exists"
+        );
+        // Refusal reached the same retained configuration; nothing re-selected
+        // the adapter, replaced the descriptor or removed the installed factory.
+        assert!(Arc::ptr_eq(&descriptor, &setup.device_descriptor));
+        assert!(Arc::ptr_eq(factory.as_ref().expect("installed factory"), setup.native_device_creator.as_ref().expect("retained factory")));
+        assert_eq!(backends, setup.instance_descriptor.backends);
+    }
+
+    /// Unproven cleanup must not open a native owner that CAD then cannot inherit.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "BLOCKED: requires authorized real Vulkan adapter plus native cleanup evidence"]
+    fn interop_failure_releases_native_owners_before_cad_request() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .expect("an authorized native Vulkan adapter");
+        let base = wgpu::DeviceDescriptor {
+            label: Some("CAD-selected-device"),
+            required_features: adapter.features() & crate::startup::FLOAT_DEPTH_STENCIL,
+            required_limits: wgpu::Limits { max_texture_dimension_2d: 8192, ..Default::default() },
+            ..Default::default()
+        };
+        let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+        configure_interop(&mut setup, true).unwrap();
+        let factory = setup.native_device_creator.clone().expect("installed factory");
+        // With cleanup proof withdrawn the factory refuses before the DMA-BUF
+        // helper, so no temporary native owner exists to release.
+        let result = factory(&adapter, &base).expect("refusal is a clean fallback, not an error");
+        assert!(result.is_none());
+        // CAD then opens its ordinary device on the same adapter/descriptor.
+        let (device, _queue) = pollster::block_on(adapter.request_device(&base))
+            .expect("the ordinary CAD device request stays available");
+        drop(device);
+        // Native release of an actually opened owner is covered by the four
+        // ignored HAL boundary tests; this test never claims that proof.
     }
 
     #[test]
