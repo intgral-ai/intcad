@@ -11,6 +11,21 @@ pub fn utf16_units(ch: char) -> ([u16; 2], usize) {
     (units, len)
 }
 
+/// The UTF-16 units of one character after the first, in send order.
+///
+/// Empty when there is no character (`len == 0`, as for a normal key-down or
+/// key-up) or when the character is a single BMP unit. A non-BMP character
+/// yields its trailing low surrogate, so `units[0]` plus this tail is the whole
+/// character. `len` is clamped to the two-unit buffer.
+pub fn utf16_tail(units: &[u16; 2], len: usize) -> &[u16] {
+    let end = len.min(units.len());
+    if end <= 1 {
+        &[]
+    } else {
+        &units[1..end]
+    }
+}
+
 /// Convert a character range within `text` to a UTF-16 code-unit range.
 ///
 /// `None` when the range is reversed or outside the text, or when the offsets do
@@ -85,6 +100,42 @@ mod tests {
         assert_eq!(utf16_units('😀'), ([0xD83D, 0xDE00], 2));
         assert_eq!(utf16_units('中'), ([0x4E2D, 0], 1));
         assert_eq!(utf16_units('a'), ([0x61, 0], 1));
+    }
+
+    #[test]
+    fn no_character_has_no_utf16_tail_for_down_or_up() {
+        // Normal key-down/key-up events carry no character: the production
+        // composition yields `([0, 0], 0)` and must not slice `units[1..0]`.
+        let (units, len) = Option::<char>::None.map(utf16_units).unwrap_or(([0, 0], 0));
+        assert_eq!(utf16_tail(&units, len), &[] as &[u16]);
+    }
+
+    #[test]
+    fn bmp_character_has_no_utf16_tail() {
+        let (units, len) = utf16_units('中');
+        assert_eq!(utf16_tail(&units, len), &[] as &[u16]);
+    }
+
+    #[test]
+    fn non_bmp_character_tail_is_its_low_surrogate() {
+        let (units, len) = utf16_units('😀');
+        assert_eq!(utf16_tail(&units, len), &[0xDE00u16][..]);
+        // The helper is a host-input boundary: never index past the two units.
+        assert_eq!(utf16_tail(&units, usize::MAX), &[0xDE00u16][..]);
+    }
+
+    #[test]
+    fn lead_and_tail_rebuild_the_character_in_order() {
+        for ch in ['a', '中', '😀'] {
+            let mut expected = [0u16; 2];
+            let expected_len = ch.encode_utf16(&mut expected).len();
+            let (units, len) = utf16_units(ch);
+            let tail = utf16_tail(&units, len);
+            let mut sent = [0u16; 2];
+            sent[0] = units[0];
+            sent[1..1 + tail.len()].copy_from_slice(tail);
+            assert_eq!(&sent[..1 + tail.len()], &expected[..expected_len], "{ch:?}");
+        }
     }
 
     #[test]

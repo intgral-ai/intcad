@@ -81,6 +81,7 @@ fn cef_button(b: MouseButton) -> cef::MouseButtonType {
 
 /// Send a key event. A character's UTF-16 units are all delivered: a non-BMP
 /// character sends its surrogate pair as two CHAR events, never a truncated cast.
+/// A key-down/key-up without a character has no trailing units.
 #[rustfmt::skip]
 pub fn send_key(host: &cef::BrowserHost, ev: &KeyEvent) {
     let type_ = match ev.kind {
@@ -100,7 +101,7 @@ pub fn send_key(host: &cef::BrowserHost, ev: &KeyEvent) {
         ..cef::KeyEvent::default()
     };
     host.send_key_event(Some(&cef_ev));
-    for unit in &units[1..len] {
+    for unit in crate::text_input::utf16_tail(&units, len) {
         let extra = cef::KeyEvent {
             type_: cef::KeyEventType::CHAR,
             modifiers: modifiers(ev.modifiers),
