@@ -56,6 +56,7 @@ pub mod summary;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod task_runtime;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod theme_bridge;
 pub mod web;
 
 use std::sync::Arc;
@@ -3399,6 +3400,9 @@ pub fn status(app: &SolveApp) -> Value {
         #[cfg(target_arch = "wasm32")]
         let web_view = json!({"host": false, "page": false});
         state.insert("webView".into(), web_view);
+        // The window's own palette, for the page to style itself with. One source of truth:
+        // the tokens the app is drawing this frame with.
+        state.insert("theme".into(), theme_bridge::json(app));
         #[cfg(not(target_arch = "wasm32"))]
         state.insert(
             "webProblem".into(),

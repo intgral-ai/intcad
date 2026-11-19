@@ -565,6 +565,9 @@ pub fn state(app: &mut SolveApp) -> String {
         "confirmNew": chat.confirm_new,
         "left": app.preferences.agent_chat_side == "left",
         "dark": crate::theme::is_dark(),
+        // The window's palette and metrics, for the page's CSS variables. Kept beside `dark`
+        // for the hosts that still read only that bit.
+        "theme": super::theme_bridge::json(app),
         "strings": strings,
         "dfm": dfm,
     })

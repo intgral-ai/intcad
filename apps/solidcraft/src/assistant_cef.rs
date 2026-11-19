@@ -215,8 +215,12 @@ pub struct CefAssistant {
     host: HostWgpuContext,
     queue: InputQueue,
     texture: Option<(egui::TextureId, [u32; 2])>,
-    popup: Option<egui::TextureId>,
+    /// The page's own texture: same bytes, a format egui can take as gamma values.
+    page: Option<PageTarget>,
+    popup: Option<(egui::TextureId, [i32; 2], [u32; 2])>,
+    popup_page: Option<PageTarget>,
     told: String,
+    told_theme: String,
     focused: bool,
     shown: bool,
     placed: Option<[u32; 2]>,
@@ -234,6 +238,21 @@ pub struct CefAssistant {
     test_select: bool,
     /// The window's input method is on because the page has the keyboard.
     ime_on: bool,
+}
+
+/// The page as egui reads it.
+///
+/// CEF's frame is a GPU texture in an sRGB format, and egui's shader treats a sampled texture
+/// as gamma-encoded: it multiplies by the vertex colour and converts to linear itself before
+/// the sRGB surface encodes on write. Sampling an sRGB view decodes twice and the page comes out
+/// darker than its own CSS. WebGPU will not let a view pick the non-sRGB format unless the
+/// texture was created with it in `view_formats`, and CEF's texture is not ours to create, so
+/// the frame is copied on the GPU once per painted frame into this texture and read through a
+/// non-sRGB view. No readback, no CPU work, and the page's bytes reach egui unchanged.
+struct PageTarget {
+    id: egui::TextureId,
+    texture: wgpu::Texture,
+    size: [u32; 2],
 }
 
 impl CefAssistant {
@@ -291,6 +310,10 @@ impl CefAssistant {
             initial_size: dpi::PhysicalSize::new(900, 600),
             scale_factor: 1.0,
             prefer_accelerated: true,
+            // The page's own CSS is see-through outside its rounded surface: CEF must paint
+            // transparent there, or every transparent pixel becomes its default white and the
+            // panel's corners show as white squares.
+            background_color: None,
             ..Default::default()
         };
         let producer = match create_producer(&runtime, surface, &host) {
@@ -306,8 +329,11 @@ impl CefAssistant {
             host,
             queue: InputQueue::new(256),
             texture: None,
+            page: None,
             popup: None,
+            popup_page: None,
             told: String::new(),
+            told_theme: String::new(),
             focused: false,
             shown: false,
             placed: None,
@@ -395,6 +421,43 @@ impl CefAssistant {
         self.pump();
         // State is pushed with the app's own logic; the page is told when it changed.
         let state = web::state(solve);
+        // The palette first, every frame the tokens differ, whether or not the conversation
+        // changed: a theme switch must reach the page on its own.
+        if std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_THEME_TRACE").is_some() {
+            note(&format!(
+                "theme trace: texture={} state={} bytes has_theme={} told={}",
+                self.texture.is_some(),
+                state.len(),
+                state.contains("\"theme\""),
+                self.told_theme.len()
+            ));
+        }
+        if self.texture.is_some() {
+            let theme = serde_json::from_str::<serde_json::Value>(&state)
+                .ok()
+                .and_then(|value| value.get("theme").cloned())
+                .map(|theme| theme.to_string())
+                .unwrap_or_default();
+            if !theme.is_empty() && theme != self.told_theme {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&theme) {
+                    note(&format!(
+                        "theme {} dark={} surface={} text={} font={}",
+                        value["id"].as_str().unwrap_or("?"),
+                        value["dark"].as_bool().unwrap_or(false),
+                        value["colors"]["surface"].as_str().unwrap_or("?"),
+                        value["colors"]["text"].as_str().unwrap_or("?"),
+                        value["metrics"]["fontBody"].as_f64().unwrap_or(0.0)
+                    ));
+                }
+                if self
+                    .producer
+                    .execute_script(&format!("window.__intcadTheme&&window.__intcadTheme({theme})"), "")
+                    .is_ok()
+                {
+                    self.told_theme = theme;
+                }
+            }
+        }
         if state != self.told {
             if let Ok(mut held) = self.pictures.lock() {
                 *held = web::pictures(solve).into_iter().collect();
@@ -434,10 +497,12 @@ impl CefAssistant {
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
-            if let Some(popup) = self.popup {
+            if let Some((popup, at, size)) = self.popup {
+                // CEF reports the popup's own rectangle in physical pixels, relative to the
+                // view: a native <select> list belongs under its control, not at a fixed spot.
                 let popup_rect = egui::Rect::from_min_size(
-                    draw.min + egui::vec2(80.0, 80.0),
-                    egui::vec2(320.0, 200.0),
+                    draw.min + egui::vec2(at[0] as f32 / ppp, at[1] as f32 / ppp),
+                    egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
                 );
                 painter.image(
                     popup,
@@ -448,6 +513,22 @@ impl CefAssistant {
             }
         }
 
+        // Test only: four known colours, to measure what the texture path does to the page's
+        // own values. The page is untouched otherwise.
+        if !self.test_select
+            && self.texture.is_some()
+            && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_PROBE_SWATCH").is_some()
+        {
+            self.test_select = true; // one shot, the same flag
+            let _ = self.producer.execute_script(
+                "(() => { const d = document.createElement('div'); \
+                 d.id='__intcad_swatch'; d.style.cssText='position:fixed;left:8px;top:8px;z-index:2147483647;display:flex'; \
+                 for (const c of ['#000000','#808080','#ffffff','#ff0000','#3a88ee']) { \
+                   const s=document.createElement('div'); s.style.cssText='width:32px;height:32px;background:'+c; d.appendChild(s); } \
+                 document.body.appendChild(d); })()",
+                "",
+            );
+        }
         // Test only (SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT): a native select in the real page,
         // so the popup surface path is exercised in the app rather than only in the probe.
         if !self.test_select
@@ -499,20 +580,102 @@ impl CefAssistant {
     ) {
         let Some(render_state) = render_state else { return };
         let size = [frame.size.width, frame.size.height];
+        let plain = match frame.format {
+            wgpu::TextureFormat::Bgra8UnormSrgb => Some(wgpu::TextureFormat::Bgra8Unorm),
+            wgpu::TextureFormat::Rgba8UnormSrgb => Some(wgpu::TextureFormat::Rgba8Unorm),
+            _ => None,
+        };
         let mut renderer = render_state.renderer.write();
-        if let Some((id, _)) = self.texture.take() {
-            renderer.free_texture(&id);
+        match plain {
+            Some(plain) => {
+                let stale = self
+                    .page
+                    .as_ref()
+                    .is_none_or(|page| page.size != size);
+                if stale {
+                    let formats = [plain];
+                    let texture = self.host.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("assistant-page"),
+                        size: wgpu::Extent3d {
+                            width: size[0],
+                            height: size[1],
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: frame.format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                            | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &formats,
+                    });
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                        format: Some(plain),
+                        ..Default::default()
+                    });
+                    let id = renderer.register_native_texture(
+                        &self.host.device,
+                        &view,
+                        wgpu::FilterMode::Linear,
+                    );
+                    if let Some(old) = self.page.take() {
+                        renderer.free_texture(&old.id);
+                    }
+                    if let Some((old, _)) = self.texture.take() {
+                        if old != id {
+                            renderer.free_texture(&old);
+                        }
+                    }
+                    self.page = Some(PageTarget { id, texture, size });
+                }
+                if let Some(page) = &self.page {
+                    let mut encoder = self.host.device.create_command_encoder(
+                        &wgpu::CommandEncoderDescriptor { label: Some("assistant-page-copy") },
+                    );
+                    encoder.copy_texture_to_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &frame.texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &page.texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        wgpu::Extent3d {
+                            width: size[0],
+                            height: size[1],
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                    self.host.queue.submit([encoder.finish()]);
+                    self.texture = Some((page.id, size));
+                }
+            }
+            None => {
+                // A non-sRGB frame needs no copy: egui reads it as it is.
+                if let Some((id, _)) = self.texture.take() {
+                    renderer.free_texture(&id);
+                }
+                let id = renderer.register_native_texture(
+                    &self.host.device,
+                    &frame.view,
+                    wgpu::FilterMode::Linear,
+                );
+                self.texture = Some((id, size));
+            }
         }
-        let id = renderer.register_native_texture(
-            &self.host.device,
-            &frame.view,
-            wgpu::FilterMode::Linear,
-        );
         drop(renderer);
         self.frames += 1;
-        self.texture = Some((id, size));
         if !self.queue.ready {
             self.queue.ready = true;
+            // One small function the host calls with the tokens; it owns the CSS variables the
+            // Mastra components read, and injects the font and the transparent roots.
+            let _ = self.producer.execute_script(THEME_BRIDGE_JS, "");
+            self.told_theme.clear();
             note(&format!(
                 "CEF: first frame; replaying {} held input event(s)",
                 self.queue.held
@@ -521,28 +684,111 @@ impl CefAssistant {
         self.last_frame = Instant::now();
     }
 
-    fn take_popup(&mut self, frame: &eframe::Frame) -> Option<egui::TextureId> {
+    fn take_popup(&mut self, frame: &eframe::Frame) -> Option<(egui::TextureId, [i32; 2], [u32; 2])> {
         let render_state = frame.wgpu_render_state()?;
         match self.producer.acquire_popup(&self.host) {
             Ok(Some(popup)) => {
+                let size = [popup.texture.size.width, popup.texture.size.height];
                 note(&format!(
                     "popup surface {}x{} at {},{}",
-                    popup.texture.size.width, popup.texture.size.height, popup.rect.x, popup.rect.y
+                    size[0], size[1], popup.rect.x, popup.rect.y
                 ));
+                let plain = match popup.texture.format {
+                    wgpu::TextureFormat::Bgra8UnormSrgb => Some(wgpu::TextureFormat::Bgra8Unorm),
+                    wgpu::TextureFormat::Rgba8UnormSrgb => Some(wgpu::TextureFormat::Rgba8Unorm),
+                    _ => None,
+                };
                 let mut renderer = render_state.renderer.write();
-                if let Some(id) = self.popup.take() {
-                    renderer.free_texture(&id);
+                match plain {
+                    Some(plain) => {
+                        // The same gamma contract as the page: egui reads gamma values.
+                        let stale = self
+                            .popup_page
+                            .as_ref()
+                            .is_none_or(|page| page.size != size);
+                        if stale {
+                            let formats = [plain];
+                            let texture = self.host.device.create_texture(&wgpu::TextureDescriptor {
+                                label: Some("assistant-popup"),
+                                size: wgpu::Extent3d {
+                                    width: size[0],
+                                    height: size[1],
+                                    depth_or_array_layers: 1,
+                                },
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: popup.texture.format,
+                                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                    | wgpu::TextureUsages::COPY_DST,
+                                view_formats: &formats,
+                            });
+                            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                                format: Some(plain),
+                                ..Default::default()
+                            });
+                            let id = renderer.register_native_texture(
+                                &self.host.device,
+                                &view,
+                                wgpu::FilterMode::Linear,
+                            );
+                            if let Some(old) = self.popup_page.take() {
+                                renderer.free_texture(&old.id);
+                            }
+                            if let Some((old, _, _)) = self.popup.take() {
+                                if old != id {
+                                    renderer.free_texture(&old);
+                                }
+                            }
+                            self.popup_page = Some(PageTarget { id, texture, size });
+                        }
+                        if let Some(page) = &self.popup_page {
+                            let mut encoder = self.host.device.create_command_encoder(
+                                &wgpu::CommandEncoderDescriptor { label: Some("assistant-popup-copy") },
+                            );
+                            encoder.copy_texture_to_texture(
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: &popup.texture.texture,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d::ZERO,
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: &page.texture,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d::ZERO,
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                wgpu::Extent3d {
+                                    width: size[0],
+                                    height: size[1],
+                                    depth_or_array_layers: 1,
+                                },
+                            );
+                            self.host.queue.submit([encoder.finish()]);
+                            self.popup = Some((page.id, [popup.rect.x, popup.rect.y], size));
+                        }
+                    }
+                    None => {
+                        if let Some((id, _, _)) = self.popup.take() {
+                            renderer.free_texture(&id);
+                        }
+                        self.popup = Some((
+                            renderer.register_native_texture(
+                                &self.host.device,
+                                &popup.texture.view,
+                                wgpu::FilterMode::Linear,
+                            ),
+                            [popup.rect.x, popup.rect.y],
+                            size,
+                        ));
+                    }
                 }
-                let id = renderer.register_native_texture(
-                    &self.host.device,
-                    &popup.texture.view,
-                    wgpu::FilterMode::Linear,
-                );
-                Some(id)
+                self.popup
             }
             Ok(None) => {
                 if self.producer.popup_rect().is_none() {
-                    if let Some(id) = self.popup.take() {
+                    if let Some((id, _, _)) = self.popup.take() {
                         render_state.renderer.write().free_texture(&id);
                     }
                 }
@@ -870,6 +1116,13 @@ fn serve_pages(pictures: Pictures, inbox: Sender<String>) -> std::io::Result<u16
                         }
                         None => (404, "text/plain", "default-src 'none'", b"not found".to_vec()),
                     }
+                } else if path == "/intcad-plex.ttf" {
+                    (
+                        200,
+                        "font/ttf",
+                        "default-src 'none'",
+                        include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Variable.ttf").to_vec(),
+                    )
                 } else if path == "/ipc.js" {
                     (200, "text/javascript; charset=utf-8", "default-src 'none'", IPC_SHIM.as_bytes().to_vec())
                 } else {
@@ -902,6 +1155,39 @@ fn serve_pages(pictures: Pictures, inbox: Sender<String>) -> std::io::Result<u16
         })?;
     Ok(port)
 }
+
+/// The page-side half of the theme bridge. The host passes the tokens it is drawing with;
+/// this function turns them into the CSS variables Mastra's components already use. It is
+/// injected once, on the first frame, and survives a theme change without a reload.
+const THEME_BRIDGE_JS: &str = r#"
+window.__intcadTheme = (t) => {
+  const c = t.colors, m = t.metrics, root = document.documentElement, set = (k, v) => root.style.setProperty(k, v);
+  set('--background', c.window); set('--background-1', c.window);
+  set('--background-2', c.surface); set('--background-3', c.raised);
+  set('--card', c.raised); set('--popover', c.popup); set('--muted', c.field);
+  set('--foreground', c.text); set('--muted-foreground', c.textDim);
+  set('--border', c.borderStrong); set('--border-strong', c.border); set('--border-focus', c.accent);
+  set('--color-background', c.window); set('--color-brand-blue', c.accent);
+  set('--intcad-accent', c.accent); set('--intcad-selected', c.selected);
+  const text = [c.text, c.text, c.text, c.textDim, c.textDim, c.textDim, c.border, c.control, c.raised, c.window];
+  const ramp = t.dark ? text.slice().reverse() : text;
+  ramp.forEach((v, i) => set('--gray-' + (i + 1), v));
+  set('--radius-sm', m.radiusSm + 'px'); set('--radius-md', m.radiusMd + 'px');
+  set('--radius-lg', m.radiusLg + 'px'); set('--radius-xl', m.radiusXl + 'px'); set('--radius', m.radiusMd + 'px');
+  set('--font-body', "'Intcad Sans','IBM Plex Sans','Mona Sans',system-ui,sans-serif");
+  root.style.fontSize = m.fontBody + 'px';
+  root.style.colorScheme = t.dark ? 'dark' : 'light';
+  root.dataset.intcadTheme = t.id;
+  let style = document.getElementById('intcad-theme');
+  if (!style) { style = document.createElement('style'); style.id = 'intcad-theme'; document.head.appendChild(style); }
+  style.textContent = `
+    @font-face { font-family:'Intcad Sans'; src:url('/intcad-plex.ttf') format('truetype'); font-weight:100 700; font-display:block; }
+    html, body, #root { background: transparent !important; }
+    ::selection { background: ${c.selected}; color: ${c.selectedText}; }
+    button, input, textarea, select { font-family: inherit; }
+  `;
+};
+"#;
 
 /// The page's IPC shim, served as `/ipc.js` so the policy's `script-src 'self'` admits it.
 const IPC_SHIM: &str = "window.ipc = { postMessage(message) { fetch('/ipc', { method: 'POST', body: message }); } };\n";

@@ -1,0 +1,252 @@
+[
+ {
+  "theme": "1-bit",
+  "applied": true,
+  "reported_id": "1-bit",
+  "dark": false,
+  "expected_surface": "#ffffff",
+  "painted_surface": "#ffffff",
+  "match": true,
+  "screenshot": "/tmp/themes200/1-bit.png"
+ },
+ {
+  "theme": "1-bit-dark",
+  "applied": true,
+  "reported_id": "1-bit-dark",
+  "dark": true,
+  "expected_surface": "#000000",
+  "painted_surface": "#000000",
+  "match": true,
+  "screenshot": "/tmp/themes200/1-bit-dark.png"
+ },
+ {
+  "theme": "akari",
+  "applied": true,
+  "reported_id": "akari",
+  "dark": false,
+  "expected_surface": "#efece8",
+  "painted_surface": "#efece8",
+  "match": true,
+  "screenshot": "/tmp/themes200/akari.png"
+ },
+ {
+  "theme": "amber-phosphor",
+  "applied": true,
+  "reported_id": "amber-phosphor",
+  "dark": true,
+  "expected_surface": "#100b04",
+  "painted_surface": "#100b04",
+  "match": true,
+  "screenshot": "/tmp/themes200/amber-phosphor.png"
+ },
+ {
+  "theme": "black",
+  "applied": true,
+  "reported_id": "black",
+  "dark": true,
+  "expected_surface": "#0d0d0d",
+  "painted_surface": "#0d0d0d",
+  "match": true,
+  "screenshot": "/tmp/themes200/black.png"
+ },
+ {
+  "theme": "blueprint",
+  "applied": true,
+  "reported_id": "blueprint",
+  "dark": true,
+  "expected_surface": "#0c223c",
+  "painted_surface": "#0c223c",
+  "match": true,
+  "screenshot": "/tmp/themes200/blueprint.png"
+ },
+ {
+  "theme": "catppuccin-mocha",
+  "applied": true,
+  "reported_id": "catppuccin-mocha",
+  "dark": true,
+  "expected_surface": "#1e1e2e",
+  "painted_surface": "#1e1e2e",
+  "match": true,
+  "screenshot": "/tmp/themes200/catppuccin-mocha.png"
+ },
+ {
+  "theme": "cga",
+  "applied": true,
+  "reported_id": "cga",
+  "dark": true,
+  "expected_surface": "#000000",
+  "painted_surface": "#000000",
+  "match": true,
+  "screenshot": "/tmp/themes200/cga.png"
+ },
+ {
+  "theme": "clay",
+  "applied": true,
+  "reported_id": "clay",
+  "dark": false,
+  "expected_surface": "#f4eee3",
+  "painted_surface": "#f4eee3",
+  "match": true,
+  "screenshot": "/tmp/themes200/clay.png"
+ },
+ {
+  "theme": "clay-dark",
+  "applied": true,
+  "reported_id": "clay-dark",
+  "dark": true,
+  "expected_surface": "#221e1a",
+  "painted_surface": "#221e1a",
+  "match": true,
+  "screenshot": "/tmp/themes200/clay-dark.png"
+ },
+ {
+  "theme": "cupertino",
+  "applied": true,
+  "reported_id": "cupertino",
+  "dark": false,
+  "expected_surface": "#ececec",
+  "painted_surface": "#ececec",
+  "match": true,
+  "screenshot": "/tmp/themes200/cupertino.png"
+ },
+ {
+  "theme": "graphite",
+  "applied": true,
+  "reported_id": "graphite",
+  "dark": true,
+  "expected_surface": "#25272b",
+  "painted_surface": "#25272b",
+  "match": true,
+  "screenshot": "/tmp/themes200/graphite.png"
+ },
+ {
+  "theme": "green-phosphor",
+  "applied": true,
+  "reported_id": "green-phosphor",
+  "dark": true,
+  "expected_surface": "#061009",
+  "painted_surface": "#061009",
+  "match": true,
+  "screenshot": "/tmp/themes200/green-phosphor.png"
+ },
+ {
+  "theme": "gruvbox-dark",
+  "applied": true,
+  "reported_id": "gruvbox-dark",
+  "dark": true,
+  "expected_surface": "#282828",
+  "painted_surface": "#282828",
+  "match": true,
+  "screenshot": "/tmp/themes200/gruvbox-dark.png"
+ },
+ {
+  "theme": "gruvbox-light",
+  "applied": true,
+  "reported_id": "gruvbox-light",
+  "dark": false,
+  "expected_surface": "#fbf1c7",
+  "painted_surface": "#fbf1c7",
+  "match": true,
+  "screenshot": "/tmp/themes200/gruvbox-light.png"
+ },
+ {
+  "theme": "high-contrast",
+  "applied": true,
+  "reported_id": "high-contrast",
+  "dark": true,
+  "expected_surface": "#000000",
+  "painted_surface": "#000000",
+  "match": true,
+  "screenshot": "/tmp/themes200/high-contrast.png"
+ },
+ {
+  "theme": "nord",
+  "applied": true,
+  "reported_id": "nord",
+  "dark": true,
+  "expected_surface": "#2e3440",
+  "painted_surface": "#2e3440",
+  "match": true,
+  "screenshot": "/tmp/themes200/nord.png"
+ },
+ {
+  "theme": "nosferatu",
+  "applied": true,
+  "reported_id": "nosferatu",
+  "dark": true,
+  "expected_surface": "#282a36",
+  "painted_surface": "#282a36",
+  "match": true,
+  "screenshot": "/tmp/themes200/nosferatu.png"
+ },
+ {
+  "theme": "okibi",
+  "applied": true,
+  "reported_id": "okibi",
+  "dark": true,
+  "expected_surface": "#15171a",
+  "painted_surface": "#15171a",
+  "match": true,
+  "screenshot": "/tmp/themes200/okibi.png"
+ },
+ {
+  "theme": "one-dark",
+  "applied": true,
+  "reported_id": "one-dark",
+  "dark": true,
+  "expected_surface": "#21252b",
+  "painted_surface": "#21252b",
+  "match": true,
+  "screenshot": "/tmp/themes200/one-dark.png"
+ },
+ {
+  "theme": "onyx",
+  "applied": true,
+  "reported_id": "onyx",
+  "dark": true,
+  "expected_surface": "#232526",
+  "painted_surface": "#232526",
+  "match": true,
+  "screenshot": "/tmp/themes200/onyx.png"
+ },
+ {
+  "theme": "platinum-9",
+  "applied": true,
+  "reported_id": "platinum-9",
+  "dark": false,
+  "expected_surface": "#dddddd",
+  "painted_surface": "#dddddd",
+  "match": true,
+  "screenshot": "/tmp/themes200/platinum-9.png"
+ },
+ {
+  "theme": "solarized-light",
+  "applied": true,
+  "reported_id": "solarized-light",
+  "dark": false,
+  "expected_surface": "#eee8d5",
+  "painted_surface": "#eee8d5",
+  "match": true,
+  "screenshot": "/tmp/themes200/solarized-light.png"
+ },
+ {
+  "theme": "solidcraft-95",
+  "applied": true,
+  "reported_id": "solidcraft-95",
+  "dark": false,
+  "expected_surface": "#c0c0c0",
+  "painted_surface": "#c0c0c0",
+  "match": true,
+  "screenshot": "/tmp/themes200/solidcraft-95.png"
+ },
+ {
+  "theme": "tokyo-night",
+  "applied": true,
+  "reported_id": "tokyo-night",
+  "dark": true,
+  "expected_surface": "#1a1b26",
+  "painted_surface": "#1a1b26",
+  "match": true,
+  "screenshot": "/tmp/themes200/tokyo-night.png"
+ }
+]

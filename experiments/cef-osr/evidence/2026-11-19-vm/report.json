@@ -1,0 +1,89 @@
+{
+  "run": "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740",
+  "platform": "linux",
+  "task": "cef-theme",
+  "source_root": "/home/hyjing/Code/intgral/intcad/worktrees/cef-osr",
+  "commit": "219916a85709946de16f942f02ef2420ccb95617",
+  "dirty_files": 7,
+  "vm": "intcad-e2e-cef-osr-76ade07ca5d0-cef-theme",
+  "package": "linux-direct",
+  "artifact": "/home/hyjing/.local/state/intcad-e2e/builds/cef-osr-76ade07ca5d0/219916a85709-c26aa9b5ea0e",
+  "artifact_sha256": "f25bb0acfb586eab4aa0f1fe77842f4a9199d7859c280d54935a698fd66694a8",
+  "guest_executable": "/home/intcad/intcad-e2e/run/solidcraft",
+  "started": "2026-11-19T01:51:09Z",
+  "updated": "2026-11-19T01:52:23Z",
+  "overall": "FAIL",
+  "steps": [
+    {
+      "id": 1,
+      "name": "build the selected source",
+      "status": "PASS",
+      "reason": "artifact f25bb0acfb586eab4aa0f1fe77842f4a9199d7859c280d54935a698fd66694a8; 219916a85709946de16f942f02ef2420ccb95617",
+      "evidence": [
+        "/home/hyjing/.local/state/intcad-e2e/builds/cef-osr-76ade07ca5d0/219916a85709-c26aa9b5ea0e/artifact.json",
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/logs/build.log"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "deploy and start from the expected path",
+      "status": "PASS",
+      "reason": "guest /home/intcad/intcad-e2e/run/solidcraft sha256=f25bb0acfb586eab4aa0f1fe77842f4a9199d7859c280d54935a698fd66694a8; expected f25bb0acfb586eab4aa0f1fe77842f4a9199d7859c280d54935a698fd66694a8",
+      "evidence": [
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/screenshots/01-started.png",
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/logs/run.log",
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/logs/app.log"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "open sample and see model",
+      "status": "PASS",
+      "reason": "sample=True; clicked (576,387); hover={'body': 'Plate', 'index': 16, 'mid': [0.0, 25.0, 8.0], 'point': [0.0, 26.454409655744534, 8.0], 'type': 'edge'}",
+      "evidence": [
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/screenshots/10-model.png",
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/logs/documents.json"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "real drag rotates the model",
+      "status": "PASS",
+      "reason": "camera before={\"distance\": 127.10017644681146, \"fov\": 0.0, \"pitch\": 0.6154797086703874, \"roll\": 0.0, \"target\": [28.51827060951336, 14.81248548554642, 12.29421487603306], \"up\" after={\"distance\": 127.10017644681146, \"fov\": 0.0, \"pitch\": 0.29555783367038735, \"roll\": 0.0, \"target\": [28.51827060951336, 14.81248548554642, 12.29421487603306], \"up",
+      "evidence": [
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/screenshots/11-rotated.png"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "click a face selects it",
+      "status": "PASS",
+      "reason": "clicked at (648,405); selection=[{\"body\": \"Plate\", \"index\": 13, \"point\": [36.1336988799481, 15.178415790171186, 22.00000000000003], \"type\": \"face\"}]",
+      "evidence": [
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/screenshots/12-face-selected.png",
+        "/home/hyjing/.local/state/intcad-e2e/runs/intcad-e2e-cef-osr-76ade07ca5d0-cef-theme/20261119T015109Z-1152740/logs/selection.json"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "open Assistant and a control responds",
+      "status": "BLOCKED",
+      "reason": "Assistant input/control failed: Assistant not open/page: {\"agent\": \"\", \"agents\": [], \"askHere\": {\"open\": false, \"text\": \"\"}, \"attachments\": [], \"authMethods\": [], \"authStatus\": null, \"configOptions\": null, \"configPending\": false, \"connectAtStart\": false, \"currentAgent\": null, \"customModels\": false, \"detection\": {\"found\": [], \"missing\": [{\"basic\": true, \"i",
+      "evidence": []
+    },
+    {
+      "id": 7,
+      "name": "resize and Assistant stays in place",
+      "status": "BLOCKED",
+      "reason": "step 6 failed; not executed",
+      "evidence": []
+    },
+    {
+      "id": 8,
+      "name": "panel control after resize responds",
+      "status": "BLOCKED",
+      "reason": "step 6 failed; not executed",
+      "evidence": []
+    }
+  ]
+}
