@@ -2,6 +2,8 @@
 name: INT-1454 targeted diagnostic
 
 on:
+  push:
+    branches: [fix/int1454-union-fallback]
   workflow_dispatch:
 
 permissions:
