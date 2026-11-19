@@ -13356,6 +13356,13 @@ mod mastra_backend_tests {
         Arc::new(mastra_backend::HostValidation::open(dir.join("validation"), dir.join("candidates")).expect("the host validation port opens"))
     }
 
+    fn host_validation_with_runner_gate(dir: &std::path::Path, gate: Arc<std::sync::Barrier>) -> Arc<mastra_backend::HostValidation> {
+        Arc::new(
+            mastra_backend::HostValidation::open_with_runner_gate(dir.join("validation"), dir.join("candidates"), gate)
+                .expect("the host validation port opens"),
+        )
+    }
+
     fn submit_validation(host: &mastra_backend::HostValidation, scope: &Scope, candidate: &CandidateRef, profile: &ProfileRef) -> (Id, ArtifactRef) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         let key = solidcraft_engine::validation::generate_submission_key(now);
@@ -14550,10 +14557,9 @@ mod mastra_backend_tests {
         let runner_gate = Arc::new(std::sync::Barrier::new(2));
         let completion_reached = Arc::new(std::sync::Barrier::new(2));
         let completion_release = Arc::new(std::sync::Barrier::new(2));
-        mastra_backend::HostValidation::install_runner_gate_for_test(Arc::clone(&runner_gate));
         mastra_backend::HostValidation::install_completion_barriers_for_test(Arc::clone(&completion_reached), Arc::clone(&completion_release));
         let _cleanup = BarrierCleanup;
-        let host = host_validation(&dir);
+        let host = host_validation_with_runner_gate(&dir, Arc::clone(&runner_gate));
         runner_gate.wait(); // the runner worker is parked before it can start the run
 
         let turn = turn_scope("s-late-settled", "t-late-settled", "w-late-settled");

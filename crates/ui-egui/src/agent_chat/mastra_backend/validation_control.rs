@@ -157,18 +157,6 @@ thread_local! {
 }
 
 #[cfg(test)]
-static RUNNER_GATE: Mutex<Option<Arc<std::sync::Barrier>>> = Mutex::new(None);
-
-#[cfg(test)]
-pub(super) fn runner_gate() {
-    let gate = RUNNER_GATE.lock().ok().and_then(|mut slot| slot.take());
-    if let Some(gate) = gate {
-        gate.wait();
-        gate.wait();
-    }
-}
-
-#[cfg(test)]
 fn prewait_barrier() {
     let barrier = PREWAIT_BARRIER.lock().ok().and_then(|slot| slot.clone());
     if let Some(barrier) = barrier {
@@ -246,13 +234,6 @@ pub(super) fn registration_barrier() {
 #[cfg(test)]
 pub(super) fn install_registration_barrier(barrier: Arc<std::sync::Barrier>) {
     REGISTRATION_BARRIER.with(|slot| *slot.borrow_mut() = Some(barrier));
-}
-
-#[cfg(test)]
-pub(super) fn install_runner_gate(barrier: Arc<std::sync::Barrier>) {
-    if let Ok(mut slot) = RUNNER_GATE.lock() {
-        *slot = Some(barrier);
-    }
 }
 
 #[cfg(test)]

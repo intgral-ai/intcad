@@ -219,6 +219,17 @@ impl HostValidation {
     /// Open the local port and start its single worker loop. The store and candidate directories
     /// are the same ones `document.snapshot.capture` writes to.
     pub(crate) fn open(store: PathBuf, candidate_root: PathBuf) -> Result<Self, String> {
+        Self::open_inner(store, candidate_root, None)
+    }
+
+    /// The test fixture's runner gate belongs to this host's worker only; a retiring host's
+    /// worker cannot steal another test's gate.
+    #[cfg(test)]
+    pub(crate) fn open_with_runner_gate(store: PathBuf, candidate_root: PathBuf, runner_gate: Arc<std::sync::Barrier>) -> Result<Self, String> {
+        Self::open_inner(store, candidate_root, Some(runner_gate))
+    }
+
+    fn open_inner(store: PathBuf, candidate_root: PathBuf, runner_gate: Option<Arc<std::sync::Barrier>>) -> Result<Self, String> {
         let port = Arc::new(validation_port::ValidationPort::open(store, candidate_root).map_err(|error| format!("{error}"))?);
         let native = validation_port::native_basic_profile();
         let profile = validation_port::profile_ref(&native).map_err(|error| format!("{error}"))?;
@@ -237,9 +248,12 @@ impl HostValidation {
         std::thread::Builder::new()
             .name("mastra-validation-worker".into())
             .spawn(move || {
+                let mut runner_gate = runner_gate;
                 while !stop.load(Ordering::Acquire) {
-                    #[cfg(test)]
-                    validation_control::runner_gate();
+                    if let Some(gate) = runner_gate.take() {
+                        gate.wait();
+                        gate.wait();
+                    }
                     if port.pump().is_err() {
                         // A failed job is already a persisted terminal record; never restart it as
                         // new work. The next queued job can still run.
@@ -667,11 +681,6 @@ impl HostValidation {
     #[cfg(test)]
     pub(crate) fn install_registration_barrier_for_test(barrier: Arc<std::sync::Barrier>) {
         validation_control::install_registration_barrier(barrier);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn install_runner_gate_for_test(barrier: Arc<std::sync::Barrier>) {
-        validation_control::install_runner_gate(barrier);
     }
 
     #[cfg(test)]
