@@ -49,6 +49,31 @@
 - `src/native_frame/{dx12.rs,metal.rs}`: initialize imported capture metadata
   to None without changing the platform import paths.
 
+- `src/text_input.rs` (new, std-only): UTF-16 units/selection conversion and
+  physical-page-relative IME window-point geometry, with tests. No CEF types.
+- `src/requested_metrics.rs` (new, std-only): requested physical/DIP/scale
+  metrics with bounded scale and round-DIP→ceil-physical reproduction; tests keep
+  the fractional 463×1122@1.25 contract. It is requested geometry only, never an
+  observed native DSF.
+- `src/view.rs`: expose `requested()` from the existing metrics lock; `logical`
+  shares the same rounding contract.
+- `src/surface.rs`: `BrowserCloseProgress`/default `close_progress` refusal,
+  `BrowserCloseState` (single identity-matched request/completion),
+  `RequestedViewMetrics` re-export and a default `requested_view_metrics` refusal.
+- `src/ime.rs`: checked candidate-bounds union (i64, i32/u32 refusal, 200k bound)
+  and a poison-tolerant composition mailbox.
+- `src/cef_input.rs`: send every UTF-16 unit of a character; a non-BMP character
+  sends its surrogate pair as CHAR events instead of a scalar→u16 cast.
+- `src/runtime.rs`: `RuntimeLease`/init-thread/owner-returning `shutdown`
+  (Drop makes no native call), opaque `PreparedCefRuntime` and an owned direct-sys
+  `initialize_prepared` frame that retains all init inputs on native false and
+  drops them on success. The zero-post-false CEF/loader/ABI conformance gate is
+  **NOT proven**; the seam is unwired.
+- `src/{linux_cef,macos_cef,windows_cef}/{mod.rs,cef_backed.rs}`: `close_progress`
+  backed by the matching life-span completion (Windows reuses its
+  closed/close_requested pair), single close request, identity-matched
+  `on_before_close`, and `requested_view_metrics` from the actual metrics lock.
+
 No changes to native CEF/Chromium, GPU import mechanics, fd duplication/ownership,
 synchronization, OSR select/fullscreen behavior or platform context-menu routing.
 App-side policy is outside this package. Local changes are marked `SolidCraft:`.

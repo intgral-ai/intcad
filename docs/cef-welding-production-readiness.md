@@ -5,6 +5,12 @@
 
 ## 结论：**CONDITIONAL GO**
 
+> **2026-11-19 修复波状态说明：** 本文件记录的是第二轮历史验证，截图和数字保持原样，不因本轮
+> 源代码修复而重新认定为当前通过。当前修复分支的 Cargo/原生/GPU/VM/视觉与四倍率、
+> 全部主题验收仍为 **BLOCKED / NOT_RUN**；本轮只完成源码、Python 离线自检和静态检查。
+> 详情和精确缺口见 `.superpowers/sdd/2026-11-19-cef-integration-repair/repair-report.md`。
+
+
 - Linux 原生 Wayland 与 X11（经 XWayland）的 GPU OSR、输入、生命周期、GPU 资源管理、
   Linux 沙箱均通过；剪贴板在 CEF 原生路径上**不可用**（上游 cef#4341），但主机侧桥接已验证
   可用。

@@ -469,6 +469,15 @@ def page_swatches_check(messages, png, web, ppp):
 PLATFORMS = ("linux", "windows", "macos")
 
 
+def theme_source_problem(ids):
+    """Every source theme must be covered; the count itself is not a contract."""
+    if not ids:
+        return "no built-in theme files were found"
+    if len(set(ids)) != len(ids):
+        return "duplicate built-in theme ids"
+    return None
+
+
 def task_identity_problem(task, source, platform):
     """Explicit task identity for an owned run; no discovered defaults."""
     if not isinstance(task, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", task):
@@ -954,6 +963,19 @@ def _self_test():
         finally:
             globals()["probe_source"] = original
 
+    def current_theme_set_not_literal_25_controls_matrix():
+        if theme_source_problem([]) is None:
+            raise AssertionError("an empty theme source must fail")
+        if theme_source_problem(["a", "a"]) is None:
+            raise AssertionError("duplicate theme ids must fail")
+        # 24, 25 and 26 names are all valid: the source set, not a literal, decides.
+        for count in (24, 25, 26):
+            ids = [f"theme-{index}" for index in range(count)]
+            if theme_source_problem(ids) is not None:
+                raise AssertionError(f"a real set of {count} themes must be accepted")
+        if not THEMES or theme_source_problem(THEMES) is not None:
+            raise AssertionError("the current source theme set must be valid")
+
     def task_identity_is_explicit():
         if task_identity_problem("", "/tmp", "linux") is None:
             raise AssertionError("an empty task name must be refused")
@@ -1072,6 +1094,7 @@ def _self_test():
         ("swatch_pixels_validate_synthetic_composited_buffers", swatch_pixels_validate_synthetic_composited_buffers),
         ("incomplete_or_substituted_swatches_never_pass", incomplete_or_substituted_swatches_never_pass),
         ("swatch_validator_requires_real_hook_parity", swatch_validator_requires_real_hook_parity),
+        ("current_theme_set_not_literal_25_controls_matrix", current_theme_set_not_literal_25_controls_matrix),
         ("task_identity_is_explicit", task_identity_is_explicit),
         ("offscreen_pixel_checks_do_not_clamp_to_an_edge", offscreen_pixel_checks_do_not_clamp_to_an_edge),
         ("split_scope_messages_parse_per_action_and_theme", split_scope_messages_parse_per_action_and_theme),
@@ -1114,10 +1137,8 @@ def main():
         "Missing prose/label/textarea/aria-live at probe time is unobserved coverage (BLOCKED) only if every present measured style is correct; a present wrong style always FAILs.",
         "ui.screenshot is a window image. Samples use current ui.rects window points/pixelsPerPoint and pixel-aligned CEF placement edges, never an OS screen origin.",
     ]
-    if len(THEMES) != 25 or len(set(THEMES)) != 25:
-        checks.append({"name": "theme_source", "status": "FAIL", "detail": f"expected 25 unique source themes, found {len(THEMES)}"})
-    else:
-        checks.append({"name": "theme_source", "status": "PASS", "detail": "25 built-in themes enumerated from source"})
+    theme_problem = theme_source_problem(THEMES)
+    checks.append({"name": "theme_source", "status": "FAIL" if theme_problem else "PASS", "detail": theme_problem or f"{len(THEMES)} built-in themes enumerated from source"})
 
     work = Path(tempfile.mkdtemp(prefix="intcad-theme-"))
     env = dict(os.environ)

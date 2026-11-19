@@ -31,6 +31,21 @@ packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt and packaging/notices/CEF-CREDIT
 There is no system WebView, GTK, WebKitGTK, WebView2 or WKWebView in this build. These are
 notices, not a legal clearance.
 
+Vendored graphics HAL. wgpu-hal 30.0.1 is copied into vendor/wgpu-hal from the
+locked registry archive (SHA-256 b6b7fb58561a792bc237628ba0792e332de418fefe145f13b5ed8201e6d52f58),
+with its original MIT and Apache-2.0 licence texts unchanged and a same-version
+Cargo path patch. Its sole local delta is src/vulkan/adapter.rs (early layout
+error ownership); vendor/README.md records the change, hashes and removal
+criteria. This is modified MIT OR Apache-2.0 source, not a legal clearance.
+
+Modified MPL-2.0 source in vendor/welding/ must be published with the matching
+Intcad source revision; the exact covered files and original file hashes are in
+vendor/welding/UPSTREAM.md and vendor/README.md. CEF/Chromium runtime provenance,
+package signing/notarization, sandbox/helper packaging, the generated credits
+version/hash and any bundled LGPL human authorization remain unclosed release
+gates, not satisfied by this source tree.
+
+
 Some code is adapted from sibling projects in the storytold family (CADCraft, GridCraft), which are
 licensed MIT OR Apache-2.0; ATTRIBUTION.md lists the files.
 The release packaging (.github/workflows/release.yml, packaging/) is adapted from PhotoCraft

@@ -11,8 +11,8 @@ merged with `Translate`, with explicit conflict/identity checks and inherited-ar
 Native frame geometry/admission and the native DSF notification/retry are also in source. A
 no-emulation diagnostic on a pre-existing stock CEF binary with that feature flag produced an
 effective native DSF of 1.25 and a 463×1123 native capture at 1.25. That is not current-binary
-validation: the compiled app, native CEF/GPU execution and the 1/1.25/1.5/2 native matrix, all
-25 themes and input/IME remain BLOCKED/NOT RUN. No CEF fork or custom Chromium build is required
+validation: the compiled app, native CEF/GPU execution and the 1/1.25/1.5/2 native matrix, every
+source theme and input/IME remain BLOCKED/NOT RUN. No CEF fork or custom Chromium build is required
 or approved; the per-window Chromium guard is unapproved research (approach A).
 
 > **Correction (2026-11-19):** earlier text in this file described research approach A (a
@@ -152,8 +152,8 @@ validation. In particular, the 25×3 matrix compared flat surface colours at sam
 does **not** prove native raster resolution or readable type, and it cannot be cited as
 all-theme or all-DPI acceptance.
 
-Theme matrix, 25 built-in themes, each applied through `ui.prefs {theme}` at runtime in a
-historical binary, page background measured from the app's own screenshot and compared with the
+Theme matrix generated from **every** source theme (25 JSON files at that revision), each
+applied through `ui.prefs {theme}` at runtime in a historical binary, page background measured from the app's own screenshot and compared with the
 token it was given:
 
 ```
@@ -162,8 +162,9 @@ themes=25 mismatched=0            (200 % DPI, /tmp/themes200/matrix-2_0.json)
 themes=25 mismatched=0            (100 % DPI, /tmp/themes100/matrix-1_0.json)
 ```
 
-The 25 ids below are exactly the `assets/styles/ui/themes/*.json` files; the current matrix
-script enumerates them from source rather than a hard-coded list. Screenshots:
+The ids below are the files present at that revision. The current matrix script, its fixtures
+and the app hook enumerate `assets/styles/ui/themes/*.json` from source; there is no literal
+25-theme gate, and the requirement is to cover every source theme, whatever the count. Screenshots:
 `/tmp/themes/<id>.png` for all 25 ids (`1-bit`, `1-bit-dark`, `akari`,
 `amber-phosphor`, `black`, `blueprint`, `catppuccin-mocha`, `cga`, `clay`, `clay-dark`,
 `cupertino`, `graphite`, `green-phosphor`, `gruvbox-dark`, `gruvbox-light`, `high-contrast`,
@@ -256,22 +257,33 @@ Other checks:
 - The page's icons and logo art are the Assistant's own; they are not recoloured by the bridge.
 
 ## 4.1 Adding a theme later (no Assistant change)
+### Theme and density evidence chain
 
-The current build has 25 built-in themes; their source of truth is every JSON file under
-`assets/styles/ui/themes/` (do not hard-code the count elsewhere). Each is resolved by the
+A theme reaches the page in observable stages, and each is separate evidence:
+`assets/styles/ui/themes/*.json` → the existing theme resolver (`Tokens`, colour-vision
+modes and user files) → `agent_chat::theme_bridge::json` (semantic values only) → the page's
+injected CSS variables → computed DOM styles/rects reported as bounded `SCOPE` messages →
+the composited pixels in an app-owned window screenshot. A PASS at one stage is not a PASS at
+another: requested DIP/scale is not an observed native DSF, computed CSS is not painted pixels,
+and a historical screenshot is not current-source visual acceptance.
+
+
+The current build's themes are every JSON file under `assets/styles/ui/themes/` (25 at this
+revision; do not hard-code the count elsewhere). Each is resolved by the
 existing theme system into `Tokens`, including colour-vision modes and user theme files, and
 the bridge forwards those tokens; the page applies them as CSS variables. There is **no
 per-theme branch in the Assistant**, no new CSS file and no rebuild of the page. A new
 built-in theme is therefore one JSON file with a complete palette; the `theme_bridge` unit
 test walks `theme_files::builtin()`, so a theme that does not resolve to a complete palette
 fails the test instead of showing a half-styled panel. The current `theme-matrix.py`
-self-test enumerates the same source files rather than a fixed list.
+self-test enumerates the same source files rather than a fixed list and accepts 24, 25 or 26
+names (the set is the contract, not the number).
 
 Verification limits: the 25×3 historical matrix proves sampled flat colours, not native
 raster resolution, type sizes or every interactive state; it was produced by executables of
 unproven source identity and was not rerun. Source-level checks that do run in this task are
 the config, vendor `runtime_identity`, geometry, viewport and admission Rust modules and the
-Python self-tests. The compiled app, the real 1/1.25/1.5/2 capture matrix, all 25 themes on a
+Python self-tests. The compiled app, the real 1/1.25/1.5/2 capture matrix, every source theme on a
 trusted current binary, hover/focus and OS IME remain **BLOCKED / NOT RUN**.
 
 The few semantic values IntCAD's palette does not name directly are filled in the bridge and are

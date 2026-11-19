@@ -95,10 +95,34 @@ SolidCraft changes:
   the surface (the window closing for the restart) then panicked in wgpu-hal ("Trying to
   destroy a SwapchainAcquireSemaphore that is still in use by a SurfaceTexture", #7148); the
   destroy takes the image back whatever the device's state.
+- `src/setup.rs`, `src/lib.rs`: optional `NativeDeviceCreator` installed on the CAD-selected
+  setup; the factory runs after surface-compatible adapter selection and the CAD descriptor
+  is evaluated exactly once. A refusal falls back to the ordinary request on that same adapter.
 - `src/lib.rs`: creation of the egui renderer uses validation, internal and out-of-memory
   error scopes, awaiting every result before returning it. A refused UI pipeline (D3D12
   `egui_pipeline` shader compilation, #6648) returns `WgpuError::CreateRendererError` through
   eframe so startup can retry another backend instead of invoking wgpu's panic handler.
+
+## wgpu-hal 30.0.1 (MIT OR Apache-2.0, wgpu contributors, https://github.com/gfx-rs/wgpu)
+
+Faithful copy of the locked `wgpu-hal 30.0.1` crate source (registry package SHA-256
+`b6b7fb58561a792bc237628ba0792e332de418fefe145f13b5ed8201e6d52f58`), wired by a
+same-version `[patch.crates-io]` path source in the workspace `Cargo.toml`; the lock entry
+only changes from registry to that path source, with no version or dependency churn. Original
+`LICENSE-APACHE` and `LICENSE-MIT` are unchanged. 85 of the 86 regular files are byte-identical
+to the archive; the sole local delta is `src/vulkan/adapter.rs`.
+
+Local change:
+- `src/vulkan/adapter.rs`: on the early descriptor-set-layout failure that happens before
+  `DeviceShared` exists, a `None` drop callback owns no `DropGuard`; destroy the raw device
+  once before returning the mapped error. A `Some` callback keeps its existing single
+  invocation, and success/later failures retain the original destruction order. Fault tests in
+  that file are real native Vulkan tests and remain NOT_RUN here.
+
+Removal: drop this copy and the Cargo patch when the locked upstream release (or a reviewed
+newer release with no other churn) provides the same early-error ownership. Later cleanup,
+partial-allocation, FD/refcount and ABI behaviour remain native proof gates, not consequences
+of this patch.
 
 ## winit 0.30.13 (Apache-2.0, © The winit contributors, https://github.com/rust-windowing/winit)
 
