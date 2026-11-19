@@ -16890,3 +16890,13 @@ fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none(
     assert!(review::accept(&mut app, id).is_err(), "the design moved since the preview");
     assert_eq!(app.agent_chat.dfm.fired, before, "a stale accept runs nothing");
 }
+
+/// The theme bridge is pure data: it must exist in a build without the desktop
+/// web host, or the page has no theme state at all.
+#[test]
+fn theme_state_is_available_without_desktop_web() {
+    let app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    let state = super::theme_bridge::json(&app);
+    assert!(state.is_object());
+    assert!(state.get("colors").and_then(|v| v.as_object()).is_some_and(|colors| !colors.is_empty()));
+}

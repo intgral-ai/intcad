@@ -55,7 +55,6 @@ pub mod skill;
 pub mod summary;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod task_runtime;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod theme_bridge;
 pub mod web;
 
