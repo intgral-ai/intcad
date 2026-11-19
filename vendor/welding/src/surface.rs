@@ -1212,10 +1212,6 @@ impl BrowserCloseState {
             .is_ok()
     }
 
-    pub(crate) fn requested(&self) -> i32 {
-        self.requested.load(std::sync::atomic::Ordering::Acquire)
-    }
-
     /// Called from the native callback with the browser it is closing.
     pub(crate) fn complete(&self, browser_id: i32) {
         let expected = self.requested.load(std::sync::atomic::Ordering::Acquire);

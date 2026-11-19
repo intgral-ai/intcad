@@ -1171,9 +1171,10 @@ impl CefAssistant {
         self.poll_close()
     }
 
-    /// Advance close state from the platform's owned completion only.
+    /// Advance close state from the platform's owned completion only. A late
+    /// callback after quarantine may finish cleanup, but it cannot resume quit.
     pub fn poll_close(&mut self) -> CloseProgress {
-        if self.lifecycle.phase() == Phase::Closing {
+        if matches!(self.lifecycle.phase(), Phase::Closing | Phase::Quarantined) {
             match self.producer.close_progress() {
                 Ok(welding::surface::BrowserCloseProgress::Complete) => {
                     let _ = self.lifecycle.observe_closed(self.browser_id);

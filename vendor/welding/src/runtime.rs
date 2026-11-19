@@ -150,9 +150,6 @@ mod cef_backed {
     use cef::args::Args;
     use cef::*;
 
-    // Minimal no-op App impl: CEF requires an App on all initialize paths; this
-    // satisfies that without requiring callers to depend on the cef crate.
-    #[derive(Clone)]
     /// Live users of one runtime. A producer or the app holds a
     /// [`RuntimeLease`]; checked shutdown requires all of them released.
     #[derive(Debug, Default)]
