@@ -483,8 +483,19 @@ pub struct CefAssistant {
 /// non-sRGB view. No readback, no CPU work, and the page's bytes reach egui unchanged.
 struct PageTarget {
     id: egui::TextureId,
-    texture: wgpu::Texture,
+    /// The gamma-copy target; `None` when egui samples the imported view directly.
+    copy: Option<wgpu::Texture>,
     key: PageKey,
+    kind: RegistrationKind,
+}
+
+/// Whether a registration samples an app-owned gamma copy or the imported view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegistrationKind {
+    /// Reusable while the extent and both formats match.
+    GammaCopy,
+    /// An imported view belongs to one frame; a new frame needs a new registration.
+    DirectView,
 }
 
 /// Everything a gamma-copy registration depends on. A format change with an
@@ -494,6 +505,47 @@ struct PageKey {
     size: [u32; 2],
     source: wgpu::TextureFormat,
     sampled: wgpu::TextureFormat,
+}
+
+/// The extent, formats and registration kind implied by one imported frame.
+fn page_registration(size: [u32; 2], source: wgpu::TextureFormat) -> (PageKey, RegistrationKind) {
+    let (sampled, kind) = match source {
+        wgpu::TextureFormat::Bgra8UnormSrgb => (wgpu::TextureFormat::Bgra8Unorm, RegistrationKind::GammaCopy),
+        wgpu::TextureFormat::Rgba8UnormSrgb => (wgpu::TextureFormat::Rgba8Unorm, RegistrationKind::GammaCopy),
+        other => (other, RegistrationKind::DirectView),
+    };
+    (PageKey { size, source, sampled }, kind)
+}
+
+/// A gamma copy can be updated in place for the same key; a direct view cannot be
+/// reused because the next import is a different texture.
+fn registration_reuses(current: PageKey, current_kind: RegistrationKind, next: PageKey, next_kind: RegistrationKind) -> bool {
+    current_kind == RegistrationKind::GammaCopy && next_kind == RegistrationKind::GammaCopy && current == next
+}
+
+/// Ids that a registration release must free. The display handle aliases the
+/// owner in normal operation; if it does not, it is still not left registered.
+fn registration_free_ids(owner: Option<egui::TextureId>, display: Option<egui::TextureId>) -> [Option<egui::TextureId>; 2] {
+    match (owner, display) {
+        (Some(owner), Some(display)) if owner != display => [Some(owner), Some(display)],
+        (Some(owner), _) => [Some(owner), None],
+        (None, Some(display)) => [Some(display), None],
+        (None, None) => [None, None],
+    }
+}
+
+/// Every distinct id one teardown must free, page and popup together.
+fn registration_release_order(
+    page: (Option<egui::TextureId>, Option<egui::TextureId>),
+    popup: (Option<egui::TextureId>, Option<egui::TextureId>),
+) -> Vec<egui::TextureId> {
+    let mut ids = Vec::new();
+    for id in registration_free_ids(page.0, page.1).into_iter().chain(registration_free_ids(popup.0, popup.1)).flatten() {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 impl CefAssistant {
@@ -1367,42 +1419,41 @@ impl CefAssistant {
     }
 
     fn release_page_registration(&mut self) {
-        if let Some(page) = self.page.take() {
-            if self.texture.as_ref().is_some_and(|(id, _)| *id == page.id) {
-                self.texture = None;
-            }
-            self.renderer.write().free_texture(&page.id);
+        let page = self.page.take();
+        let display = self.texture.take().map(|(id, _)| id);
+        let ids = registration_free_ids(page.as_ref().map(|page| page.id), display);
+        let mut renderer = self.renderer.write();
+        for id in ids.into_iter().flatten() {
+            renderer.free_texture(&id);
         }
+        drop(page);
     }
 
     fn release_popup_registration(&mut self) {
-        if let Some(page) = self.popup_page.take() {
-            if self.popup.as_ref().is_some_and(|(id, _, _)| *id == page.id) {
-                self.popup = None;
-            }
-            self.renderer.write().free_texture(&page.id);
+        let page = self.popup_page.take();
+        let display = self.popup.take().map(|(id, _, _)| id);
+        let ids = registration_free_ids(page.as_ref().map(|page| page.id), display);
+        let mut renderer = self.renderer.write();
+        for id in ids.into_iter().flatten() {
+            renderer.free_texture(&id);
         }
+        drop(page);
     }
 
     /// Release each native texture id once. Display handles that alias a
     /// registration id are cleared first, so they are never freed twice.
     fn release_all_textures(&mut self) {
-        let mut freed = Vec::new();
-        if let Some(page) = self.page.take() {
-            freed.push(page.id);
-        }
-        if let Some(page) = self.popup_page.take() {
-            freed.push(page.id);
-        }
+        let page = self.page.take();
+        let popup_page = self.popup_page.take();
+        let ids = registration_release_order(
+            (page.as_ref().map(|page| page.id), self.texture.take().map(|(id, _)| id)),
+            (popup_page.as_ref().map(|page| page.id), self.popup.take().map(|(id, _, _)| id)),
+        );
         let mut renderer = self.renderer.write();
-        for id in &freed {
+        for id in &ids {
             renderer.free_texture(id);
         }
-        for id in [self.texture.take().map(|(id, _)| id), self.popup.take().map(|(id, _, _)| id)].into_iter().flatten() {
-            if !freed.contains(&id) {
-                renderer.free_texture(&id);
-            }
-        }
+        drop((page, popup_page));
     }
 
     fn new_page(&mut self, ctx: &Context) {
@@ -1433,18 +1484,13 @@ impl CefAssistant {
         let Some(render_state) = render_state else { return };
         let size = [frame.size.width, frame.size.height];
         let previous_size = self.texture.map(|(_, size)| size);
-        let plain = match frame.format {
-            wgpu::TextureFormat::Bgra8UnormSrgb => Some(wgpu::TextureFormat::Bgra8Unorm),
-            wgpu::TextureFormat::Rgba8UnormSrgb => Some(wgpu::TextureFormat::Rgba8Unorm),
-            _ => None,
-        };
+        let (key, kind) = page_registration(size, frame.format);
         let _ = render_state;
-        match plain {
-            Some(plain) => {
-                let key = PageKey { size, source: frame.format, sampled: plain };
-                if self.page.as_ref().is_none_or(|page| page.key != key) {
-                    self.release_page_registration();
-                    let formats = [plain];
+        if self.page.as_ref().is_none_or(|page| !registration_reuses(page.key, page.kind, key, kind)) {
+            self.release_page_registration();
+            match kind {
+                RegistrationKind::GammaCopy => {
+                    let formats = [key.sampled];
                     let texture = self.host.device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("assistant-page"),
                         size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
@@ -1455,37 +1501,38 @@ impl CefAssistant {
                         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                         view_formats: &formats,
                     });
-                    let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(plain), ..Default::default() });
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(key.sampled), ..Default::default() });
                     let id = self.renderer.write().register_native_texture(&self.host.device, &view, wgpu::FilterMode::Linear);
-                    self.page = Some(PageTarget { id, texture, key });
+                    self.page = Some(PageTarget { id, copy: Some(texture), key, kind });
                 }
-                if let Some(page) = &self.page {
-                    let mut encoder = self.host.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("assistant-page-copy") });
-                    encoder.copy_texture_to_texture(
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &frame.texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &page.texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-                    );
-                    self.host.queue.submit([encoder.finish()]);
-                    self.texture = Some((page.id, size));
+                RegistrationKind::DirectView => {
+                    // A non-sRGB frame needs no copy: egui reads it as it is.
+                    let id = self.renderer.write().register_native_texture(&self.host.device, &frame.view, wgpu::FilterMode::Linear);
+                    self.page = Some(PageTarget { id, copy: None, key, kind });
                 }
             }
-            None => {
-                // A non-sRGB frame needs no copy: egui reads it as it is.
-                self.release_page_registration();
-                let id = self.renderer.write().register_native_texture(&self.host.device, &frame.view, wgpu::FilterMode::Linear);
-                self.texture = Some((id, size));
+        }
+        if let Some(page) = &self.page {
+            if let Some(copy) = &page.copy {
+                let mut encoder = self.host.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("assistant-page-copy") });
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &frame.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: copy,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                );
+                self.host.queue.submit([encoder.finish()]);
             }
+            self.texture = Some((page.id, size));
         }
         if previous_size != Some(size) {
             note(&format!("CEF: raster {}x{}", size[0], size[1]));
@@ -1553,19 +1600,14 @@ impl CefAssistant {
                 );
                 self.popup_current = true;
                 note(&format!("popup surface {}x{} at {},{}", size[0], size[1], popup.rect.x, popup.rect.y));
-                let plain = match popup.texture.format {
-                    wgpu::TextureFormat::Bgra8UnormSrgb => Some(wgpu::TextureFormat::Bgra8Unorm),
-                    wgpu::TextureFormat::Rgba8UnormSrgb => Some(wgpu::TextureFormat::Rgba8Unorm),
-                    _ => None,
-                };
+                let (key, kind) = page_registration(size, popup.texture.format);
                 let _ = render_state;
-                match plain {
-                    Some(plain) => {
-                        // The same gamma contract as the page: egui reads gamma values.
-                        let key = PageKey { size, source: popup.texture.format, sampled: plain };
-                        if self.popup_page.as_ref().is_none_or(|page| page.key != key) {
-                            self.release_popup_registration();
-                            let formats = [plain];
+                if self.popup_page.as_ref().is_none_or(|page| !registration_reuses(page.key, page.kind, key, kind)) {
+                    self.release_popup_registration();
+                    match kind {
+                        RegistrationKind::GammaCopy => {
+                            // The same gamma contract as the page: egui reads gamma values.
+                            let formats = [key.sampled];
                             let texture = self.host.device.create_texture(&wgpu::TextureDescriptor {
                                 label: Some("assistant-popup"),
                                 size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
@@ -1576,49 +1618,46 @@ impl CefAssistant {
                                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                                 view_formats: &formats,
                             });
-                            let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(plain), ..Default::default() });
+                            let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(key.sampled), ..Default::default() });
                             let id = self.renderer.write().register_native_texture(&self.host.device, &view, wgpu::FilterMode::Linear);
-                            self.popup_page = Some(PageTarget { id, texture, key });
+                            self.popup_page = Some(PageTarget { id, copy: Some(texture), key, kind });
                         }
-                        if let Some(page) = &self.popup_page {
-                            let mut encoder =
-                                self.host.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("assistant-popup-copy") });
-                            encoder.copy_texture_to_texture(
-                                wgpu::TexelCopyTextureInfo {
-                                    texture: &popup.texture.texture,
-                                    mip_level: 0,
-                                    origin: wgpu::Origin3d::ZERO,
-                                    aspect: wgpu::TextureAspect::All,
-                                },
-                                wgpu::TexelCopyTextureInfo {
-                                    texture: &page.texture,
-                                    mip_level: 0,
-                                    origin: wgpu::Origin3d::ZERO,
-                                    aspect: wgpu::TextureAspect::All,
-                                },
-                                wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
-                            );
-                            self.host.queue.submit([encoder.finish()]);
-                            self.popup = Some((page.id, [popup.rect.x, popup.rect.y], size));
+                        RegistrationKind::DirectView => {
+                            // A non-sRGB frame needs no copy: egui reads it as it is.
+                            let id = self.renderer.write().register_native_texture(&self.host.device, &popup.texture.view, wgpu::FilterMode::Linear);
+                            self.popup_page = Some(PageTarget { id, copy: None, key, kind });
                         }
                     }
-                    None => {
-                        // A non-sRGB frame needs no copy: egui reads it as it is.
-                        self.release_popup_registration();
-                        let id = self.renderer.write().register_native_texture(&self.host.device, &popup.texture.view, wgpu::FilterMode::Linear);
-                        self.popup = Some((id, [popup.rect.x, popup.rect.y], size));
+                }
+                if let Some(page) = &self.popup_page {
+                    if let Some(copy) = &page.copy {
+                        let mut encoder =
+                            self.host.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("assistant-popup-copy") });
+                        encoder.copy_texture_to_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &popup.texture.texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::TexelCopyTextureInfo {
+                                texture: copy,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                        );
+                        self.host.queue.submit([encoder.finish()]);
                     }
+                    self.popup = Some((page.id, [popup.rect.x, popup.rect.y], size));
                 }
                 self.popup
             }
             Ok(None) => {
                 if self.producer.popup_rect().is_none() {
                     self.popup_current = false;
-                    if self.popup_page.is_some() {
-                        self.release_popup_registration();
-                    } else if let Some((id, _, _)) = self.popup.take() {
-                        self.renderer.write().free_texture(&id);
-                    }
+                    self.release_popup_registration();
                 }
                 self.popup
             }
@@ -2833,18 +2872,107 @@ mod w4_input_tests {
     }
 }
 
-/// W5 registration identity: the gamma copy is valid only for one extent and one
-/// pair of formats. GPU-bound page/popup tests remain NOT_RUN.
+/// W5 registration identity: one owner per page/popup registration, valid only
+/// for one extent and pair of formats. GPU-bound execution remains NOT_RUN; these
+/// tests exercise the real id/key transition and release accounting.
 #[cfg(test)]
 mod w5_registration_tests {
     use super::*;
 
+    #[derive(Clone, Copy)]
+    struct Slot {
+        id: egui::TextureId,
+        key: PageKey,
+        kind: RegistrationKind,
+    }
+
+    fn admit(slot: &mut Option<Slot>, next: Slot, freed: &mut Vec<egui::TextureId>) {
+        if slot.is_some_and(|current| registration_reuses(current.key, current.kind, next.key, next.kind)) {
+            return;
+        }
+        let old = slot.replace(next).map(|current| current.id);
+        for id in registration_free_ids(old, old).into_iter().flatten() {
+            freed.push(id);
+        }
+        assert!(!slot.is_none_or(|current| freed.contains(&current.id)), "the retained target references a freed id");
+    }
+
     #[test]
-    fn page_key_separates_extent_and_both_formats() {
-        let base = PageKey { size: [4, 5], source: wgpu::TextureFormat::Bgra8UnormSrgb, sampled: wgpu::TextureFormat::Bgra8Unorm };
-        assert_eq!(base, base);
+    fn page_gamma_cache_keys_extent_and_formats() {
+        let (base, kind) = page_registration([4, 5], wgpu::TextureFormat::Bgra8UnormSrgb);
+        assert_eq!(kind, RegistrationKind::GammaCopy);
+        assert_eq!(base, PageKey { size: [4, 5], source: wgpu::TextureFormat::Bgra8UnormSrgb, sampled: wgpu::TextureFormat::Bgra8Unorm });
         assert_ne!(base, PageKey { size: [4, 6], ..base }, "extent");
         assert_ne!(base, PageKey { source: wgpu::TextureFormat::Rgba8UnormSrgb, ..base }, "source format");
         assert_ne!(base, PageKey { sampled: wgpu::TextureFormat::Rgba8Unorm, ..base }, "sampled format");
+        let (plain, direct) = page_registration([4, 5], wgpu::TextureFormat::Bgra8Unorm);
+        assert_eq!(direct, RegistrationKind::DirectView);
+        assert_eq!(plain.sampled, plain.source, "a non-sRGB frame is sampled as imported");
+        assert_ne!(base, plain);
+        assert!(!registration_reuses(base, kind, plain, direct));
+        assert!(!registration_reuses(plain, direct, plain, direct), "an imported view belongs to one frame");
+    }
+
+    #[test]
+    fn popup_gamma_cache_keys_extent_and_formats() {
+        let (popup, kind) = page_registration([9, 7], wgpu::TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(kind, RegistrationKind::GammaCopy);
+        assert_eq!(popup, PageKey { size: [9, 7], source: wgpu::TextureFormat::Rgba8UnormSrgb, sampled: wgpu::TextureFormat::Rgba8Unorm });
+        assert!(registration_reuses(popup, kind, popup, kind), "the same copy can be updated in place");
+        assert!(!registration_reuses(popup, kind, PageKey { size: [9, 8], ..popup }, kind), "extent");
+        let (plain, direct) = page_registration([9, 7], wgpu::TextureFormat::Rgba8Unorm);
+        assert_eq!(direct, RegistrationKind::DirectView);
+        assert_ne!(popup, plain);
+        assert!(!registration_reuses(plain, direct, plain, direct), "popup direct views are per-frame");
+        assert!(!registration_reuses(popup, kind, plain, direct));
+    }
+
+    #[test]
+    fn srgb_plain_srgb_replaces_registration_exactly_once() {
+        let id = |n| egui::TextureId::User(n);
+        let mut slot = None;
+        let mut freed = Vec::new();
+        let mut transition = |format, frame_id, freed: &mut Vec<egui::TextureId>| {
+            let (key, kind) = page_registration([8, 8], format);
+            admit(&mut slot, Slot { id: frame_id, key, kind }, freed);
+        };
+        transition(wgpu::TextureFormat::Bgra8UnormSrgb, id(1), &mut freed);
+        assert!(freed.is_empty());
+        transition(wgpu::TextureFormat::Rgba8UnormSrgb, id(2), &mut freed);
+        assert_eq!(freed, vec![id(1)], "source-format change frees the old copy once");
+        transition(wgpu::TextureFormat::Rgba8Unorm, id(3), &mut freed);
+        assert_eq!(freed, vec![id(1), id(2)], "sRGB->plain frees the copy");
+        transition(wgpu::TextureFormat::Rgba8Unorm, id(4), &mut freed);
+        assert_eq!(freed, vec![id(1), id(2), id(3)], "each plain frame frees its direct registration");
+        transition(wgpu::TextureFormat::Rgba8UnormSrgb, id(5), &mut freed);
+        assert_eq!(freed, vec![id(1), id(2), id(3), id(4)], "plain->sRGB frees the direct registration");
+        let hidden = slot.take().expect("a live registration");
+        for free in registration_free_ids(Some(hidden.id), Some(hidden.id)).into_iter().flatten() {
+            freed.push(free);
+        }
+        assert_eq!(freed, vec![id(1), id(2), id(3), id(4), id(5)], "hidden/teardown releases the last registration once");
+    }
+
+    #[test]
+    fn closed_assistant_releases_each_registration_once() {
+        let page = egui::TextureId::User(11);
+        let popup = egui::TextureId::User(12);
+        assert_eq!(
+            registration_release_order((Some(page), Some(page)), (Some(popup), Some(popup))),
+            vec![page, popup],
+            "display handles alias their owner and must not be freed twice"
+        );
+        let stale_display = egui::TextureId::User(13);
+        let order = registration_release_order((Some(page), Some(stale_display)), (Some(popup), Some(stale_display)));
+        assert_eq!(order, vec![page, stale_display, popup], "an unowned display id is still released once");
+        assert_eq!(
+            registration_release_order((None, Some(stale_display)), (Some(popup), Some(popup))),
+            vec![stale_display, popup],
+            "a display handle without an owner is not leaked"
+        );
+        let mut unique = order.clone();
+        unique.sort_by_key(|id| format!("{id:?}"));
+        unique.dedup();
+        assert_eq!(unique.len(), order.len(), "no id is released twice");
     }
 }
