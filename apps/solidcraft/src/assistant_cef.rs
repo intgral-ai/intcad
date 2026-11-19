@@ -1965,7 +1965,7 @@ const SCOPE_PROBE_JS: &str = r#"
   // own ceiling, and an over-budget message becomes a bounded `scope_oversize` receipt
   // instead of being cut into unparseable JSON.
   const SCOPE_MAX_TEXT = 480;
-  const SCOPE_BUDGET = { rects: 380, fonts: 160, tokens: 340, roles: 280 };
+  const SCOPE_BUDGET = { rects: 380, fonts: 160, tokens: 340, roles: 300, swatches: 460 };
   const send = (value, limit) => {
     const text = 'SCOPE ' + JSON.stringify(value);
     const cap = limit || SCOPE_MAX_TEXT;
@@ -2008,6 +2008,25 @@ const SCOPE_PROBE_JS: &str = r#"
   input.style.cssText = 'font:12.5px system-ui;width:60px';
   root.appendChild(input);
   document.body.appendChild(root);
+  // Fixed analytic test patches under the same opt-in hook. They are test fixtures,
+  // not product style tokens: opaque midtones whose painted pixel moves far beyond the
+  // evidence tolerance if the pipeline decodes sRGB twice.
+  const SWATCHES = [
+    { id: 'mid', css: '#808080' },
+    { id: 'blue', css: '#336699' },
+    { id: 'warm', css: '#e08040' }
+  ];
+  const strip = document.createElement('div');
+  strip.id = '__cef_scope_swatches';
+  strip.style.cssText = 'position:fixed;left:8px;top:8px;z-index:2147483647;display:flex;gap:4px;padding:2px;background:#000';
+  const patches = SWATCHES.map((fixture) => {
+    const patch = document.createElement('div');
+    patch.id = '__cef_scope_swatch_' + fixture.id;
+    patch.style.cssText = 'width:20px;height:20px;background:' + fixture.css;
+    strip.appendChild(patch);
+    return patch;
+  });
+  document.body.appendChild(strip);
   const rect = (element) => {
     const box = element.getBoundingClientRect();
     return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
@@ -2020,9 +2039,10 @@ const SCOPE_PROBE_JS: &str = r#"
   const report = () => {
     // Real semantic elements only. The probe does not add its own prose/label
     // element with a fixed font, because that would only measure itself. The
-    // shipped page exposes prose, label, textarea and aria-live; its rail and
-    // swatch are native, so a page-side swatch is reported only when the
-    // standalone fixture defines one.
+    // shipped page exposes prose, label, textarea and aria-live; its rail is
+    // native. A page-level `#swatch` element exists only in the standalone
+    // fixture, while the fixed analytic patches below are test instrumentation
+    // drawn by this opt-in hook in both the app page and the fixture.
     const theme = document.documentElement.dataset.intcadTheme || null;
     const html = computed(document.documentElement);
     const body = computed(document.body);
@@ -2055,6 +2075,12 @@ const SCOPE_PROBE_JS: &str = r#"
       textarea: colour(textarea, 'color'),
       live: colour(live, 'color'),
       swatch: colour(document.getElementById('swatch'), 'backgroundColor') }, SCOPE_BUDGET.roles);
+    send({ action: 'swatches', theme, inner: [innerWidth, innerHeight],
+      patches: SWATCHES.map((fixture, index) => ({
+        css: fixture.css,
+        computed: colour(patches[index], 'backgroundColor'),
+        rect: rect(patches[index])
+      })) }, SCOPE_BUDGET.swatches);
   };
   report();
   addEventListener('resize', report);

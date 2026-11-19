@@ -79,9 +79,11 @@
   // The same fixed test IDs the app's SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE hook
   // installs, with the same split, bounded `SCOPE {json}` messages: one small
   // message per action, so no evidence line can be cut mid-object. This page is a
-  // standalone probe, not the app's shipped page; only the fixture has a swatch.
+  // standalone probe, not the app's shipped page; its page-level `#swatch` control
+  // is fixture-only, while the fixed analytic patches below are test
+  // instrumentation shared with the app hook.
   const SCOPE_MAX_TEXT = 480;
-  const SCOPE_BUDGET = { rects: 380, fonts: 160, tokens: 340, roles: 280 };
+  const SCOPE_BUDGET = { rects: 380, fonts: 160, tokens: 340, roles: 300, swatches: 460 };
   const scope = (value, limit) => {
     const text = 'SCOPE ' + JSON.stringify(value);
     const cap = limit || SCOPE_MAX_TEXT;
@@ -94,6 +96,23 @@
     return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
   };
   const colour = (element, part) => element ? getComputedStyle(element)[part] : null;
+  // Same analytic test patches as the app hook: opaque midtones, not style tokens.
+  const SWATCHES = [
+    { id: 'mid', css: '#808080' },
+    { id: 'blue', css: '#336699' },
+    { id: 'warm', css: '#e08040' }
+  ];
+  const strip = document.createElement('div');
+  strip.id = '__cef_scope_swatches';
+  strip.style.cssText = 'position:fixed;left:8px;top:8px;z-index:2147483647;display:flex;gap:4px;padding:2px;background:#000';
+  const patches = SWATCHES.map((fixture) => {
+    const patch = document.createElement('div');
+    patch.id = '__cef_scope_swatch_' + fixture.id;
+    patch.style.cssText = 'width:20px;height:20px;background:' + fixture.css;
+    strip.appendChild(patch);
+    return patch;
+  });
+  document.body.appendChild(strip);
   const scopeReport = () => {
     const html = getComputedStyle(document.documentElement);
     const body = getComputedStyle(document.body);
@@ -134,6 +153,14 @@
       textarea: colour(textarea, 'color'), live: colour(live, 'color'),
       swatch: colour(document.getElementById('swatch'), 'backgroundColor')
     }, SCOPE_BUDGET.roles);
+    scope({
+      action: 'swatches', theme, inner: [innerWidth, innerHeight],
+      patches: SWATCHES.map((fixture, index) => ({
+        css: fixture.css,
+        computed: colour(patches[index], 'backgroundColor'),
+        rect: scopeRect('__cef_scope_swatch_' + fixture.id)
+      }))
+    }, SCOPE_BUDGET.swatches);
   };
   document.getElementById('__cef_scope_open').addEventListener('click', () => {
     scope({ action: 'window_open', denied: window.open('about:blank', '_blank', 'noopener') === null });
