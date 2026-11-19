@@ -2254,7 +2254,8 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
     let reply = s.execute("solid.extrude", &json!({"face": FRONT_TRIANGLE_FACE, "distance": 5.0, "operation": "join"})).unwrap();
     assert_eq!(s.model.state().bodies.len(), 1, "the join makes one body");
     let (got, validity, shells, face_count, edge_count, history) = {
-        let body = s.model.state().body("FrontTriangle").unwrap();
+        let state = s.model.state();
+        let body = state.body("FrontTriangle").unwrap();
         let history = body.body.history().expect("the join kept its history").clone();
         (volume(&s, "FrontTriangle"), body.body.validity().to_vec(), body.body.shell_count(), body.body.face_count(), body.body.edge_count(), history)
     };
@@ -2271,7 +2272,7 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
     assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap());
     let (target_after, tool_after) = {
         let state = s.model.state();
-        (solidcraft_doc::naming::face_names_at(state, &[target_point]), solidcraft_doc::naming::face_names_at(state, &[tool_point]))
+        (solidcraft_doc::naming::face_names_at(&state, &[target_point]), solidcraft_doc::naming::face_names_at(&state, &[tool_point]))
     };
     assert_eq!(target_after[0], target_name, "the target face away from the contact kept its name");
     let feature = reply.get("feature").and_then(Value::as_u64).or_else(|| s.doc.features.last().map(|f| f.id)).expect("the join's feature");
@@ -2294,7 +2295,8 @@ fn front_triangle_press_pull_keeps_exact_history_and_names() {
     s.execute("solid.press_pull", &json!({"face": FRONT_TRIANGLE_FACE, "distance": 5.0})).unwrap();
     assert_eq!(s.model.state().bodies.len(), 1, "press pull makes one body");
     let (got, validity, shells, face_count, edge_count, history) = {
-        let body = s.model.state().body("FrontTriangle").unwrap();
+        let state = s.model.state();
+        let body = state.body("FrontTriangle").unwrap();
         let history = body.body.history().expect("the press pull kept its history").clone();
         (volume(&s, "FrontTriangle"), body.body.validity().to_vec(), body.body.shell_count(), body.body.face_count(), body.body.edge_count(), history)
     };
