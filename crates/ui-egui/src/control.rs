@@ -33,7 +33,8 @@
 //!   menu, or a browser menu with `target: {type: body|sketch|component, …}`); without a point,
 //!   the open menu and its items. `ui.menuPick {item}` runs an item by id or label;
 //!   `ui.rename {text?, commit?}` finishes the rename box
-//! - `ui.window {action: minimize|maximize|restore|toggle|close}`: what the title bar's buttons do
+//! - `ui.window {action: minimize|maximize|restore|toggle|close}`: what the title bar's buttons do;
+//!   close stages the ordinary quit and the host sends the final Close after its close barrier
 //! - `ui.confirm {accept?}`: the Delete confirmation (without `accept`: what it lists)
 //! - `ui.shortcut {command, key?, slot?, replace?}`: a command's keys, or bind one ("" clears)
 //! - `ui.help {item?: about|updates|shortcuts|report}`: the Help menu; returns the version and diagnostics

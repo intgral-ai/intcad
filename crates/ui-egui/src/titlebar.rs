@@ -55,19 +55,20 @@ pub fn toggle_maximize(ctx: &egui::Context) {
 
 /// Window actions for the control channel (`ui.window`): minimize, maximize, restore, toggle
 /// (maximize or restore), close.
+///
+/// Close stages the ordinary quit (asking about unsaved designs first); it never sends the
+/// viewport Close itself. The desktop host starts and awaits the Assistant's native close,
+/// commits the staged intent at the tail of `App::ui`, and that one receipt sends the final
+/// Close.
 pub fn window_action(app: &mut SolveApp, ctx: &egui::Context, action: &str) -> Result<(), String> {
     match action {
         "minimize" => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
         "maximize" => ctx.send_viewport_cmd(ViewportCommand::Maximized(true)),
         "restore" => ctx.send_viewport_cmd(ViewportCommand::Maximized(false)),
         "toggle" => toggle_maximize(ctx),
-        "close" => {
-            // Unsaved designs are asked about first; the window closes once they are answered.
-            crate::documents::request_quit(app);
-            if app.quit_requested {
-                ctx.send_viewport_cmd(ViewportCommand::Close);
-            }
-        }
+        // Stage only. A direct Close here would bypass the host's close barrier and the
+        // committed-quit receipt that gates the one final Close.
+        "close" => crate::documents::request_quit(app),
         other => return Err(format!("unknown window action `{other}` (minimize, maximize, restore, toggle, close)")),
     }
     Ok(())
@@ -380,8 +381,23 @@ mod tests {
         assert!(w.click(max).contains(&ViewportCommand::Maximized(true)));
         w.maximized = true;
         assert!(w.click(max).contains(&ViewportCommand::Maximized(false)), "Restore");
-        assert!(w.click(close).contains(&ViewportCommand::Close));
+        // The title bar's × stages the ordinary quit; the desktop host sends the one final
+        // Close after its Assistant close barrier is ready and the staged quit commits.
+        let cmds = w.click(close);
+        assert!(!cmds.iter().any(|c| matches!(c, ViewportCommand::Close)), "the title bar sent the final Close: {cmds:?}");
         assert!(w.app.quit_requested);
+        assert_eq!(w.app.host_close_state(), crate::documents::HostCloseState::Required);
+    }
+
+    #[test]
+    fn close_stages_the_host_barrier_instead_of_sending_the_final_close() {
+        let mut w = Win::new(1200.0);
+        w.frame(vec![]);
+        let close = w.caption(Caption::Close).center();
+        let cmds = w.click(close);
+        assert!(!cmds.iter().any(|c| matches!(c, ViewportCommand::Close)), "direct Close from the title bar: {cmds:?}");
+        assert!(w.app.quit_requested);
+        assert_eq!(w.app.host_close_state(), crate::documents::HostCloseState::Required);
     }
 
     #[test]
