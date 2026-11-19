@@ -660,9 +660,10 @@ impl CefAssistant {
             && self.native_ready
         {
             let metadata = native.capture_metadata();
-            let checked = self.admission.as_ref().map_or(Ok(()), |admission| {
+            let geometry = admission::check_transport_view(self.admission.as_ref(), metadata.as_ref());
+            let checked = self.admission.as_ref().map_or(Ok(()), |_| {
+                geometry?;
                 let metadata = metadata.as_ref().ok_or(FrameReject::MissingMetadata)?;
-                admission.check_view(metadata)?;
                 if native.generation() != metadata.generation
                     || i32::try_from(native.size().width).ok() != Some(metadata.geometry.coded_size[0])
                     || i32::try_from(native.size().height).ok() != Some(metadata.geometry.coded_size[1])
@@ -960,11 +961,18 @@ impl CefAssistant {
         self.requested_theme.clear();
         self.pending_theme = None;
         let floors = self.drain_frames().unwrap_or_default();
-        if let Some(admission) = &mut self.admission
-            && let Err(error) = admission.reset(self.lifetime, self.placement, floors, Instant::now())
-        {
-            note(&format!("CEF: admission reset failed: {error:?}"));
-            self.failed = true;
+        match admission::reset_transport(self.admission.as_mut(), self.lifetime, self.placement, floors, Instant::now()) {
+            Ok(true) => {
+                if let Err(error) = self.producer.request_repaint() {
+                    note(&format!("CEF: reset repaint failed: {error}"));
+                    self.failed = true;
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                note(&format!("CEF: admission reset failed: {error:?}"));
+                self.failed = true;
+            }
         }
     }
 

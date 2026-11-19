@@ -52,6 +52,27 @@ pub(super) enum FrameReject {
     Timeout,
 }
 
+/// Reset transport admission; return whether the caller must explicitly ask
+/// the native producer for a new frame. B has its bounded admission retries.
+pub(super) fn reset_transport(
+    admission: Option<&mut FrameAdmission>,
+    lifetime: u64,
+    placement: Option<Placement>,
+    floors: FrameWatermarks,
+    now: Instant,
+) -> Result<bool, FrameReject> {
+    if let Some(admission) = admission {
+        admission.reset(lifetime, placement, floors, now)?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Legacy transports have no capture metadata contract. B never bypasses it.
+pub(super) fn check_transport_view(admission: Option<&FrameAdmission>, metadata: Option<&CaptureMetadata>) -> Result<(), FrameReject> {
+    admission.map_or(Ok(()), |admission| admission.check_view(metadata.ok_or(FrameReject::MissingMetadata)?))
+}
+
 pub(super) struct FrameAdmission {
     max_edge: u32,
     revision: u64,
@@ -302,6 +323,41 @@ mod tests {
         assert_eq!(state.theme_pending(theme, now), Ok(()));
         assert!(state.theme_applied(theme, FrameWatermarks::default(), now));
         state
+    }
+
+    // Catch non-B resets waiting forever for an unrelated native paint when
+    // neither dimensions nor scale changed. The returned action is consumed
+    // directly by the real reset path, not by a mock producer.
+    #[test]
+    fn non_b_same_size_move_and_retry_request_native_repaint() {
+        let now = Instant::now();
+        let a = placement([463, 1122], 1.25);
+        let moved = Placement { origin_px: [a.origin_px[0] + 10, a.origin_px[1]], ..a };
+        for target in [moved, moved] {
+            // origin-only move, then Retry at the identical target
+            assert_eq!(reset_transport(None, 1, Some(target), FrameWatermarks::default(), now), Ok(true));
+            assert_eq!(check_transport_view(None, None), Ok(()), "legacy None metadata remains valid");
+        }
+    }
+
+    #[test]
+    fn b_reset_keeps_missing_metadata_theme_and_input_gates() {
+        let now = Instant::now();
+        let target = placement([463, 1122], 1.25);
+        let mut state = prepared(target, now);
+        let old = state.admit_view(&capture([463, 1123], 1), [463, 1123], 1).unwrap();
+        let moved = Placement { origin_px: [20, 20], ..target };
+        assert_eq!(reset_transport(Some(&mut state), 1, Some(moved), FrameWatermarks { view: 1, popup: 0 }, now), Ok(false));
+        assert!(!state.permits_input(old));
+        assert_eq!(check_transport_view(Some(&state), None), Err(FrameReject::MissingMetadata));
+        assert_eq!(check_transport_view(Some(&state), Some(&capture([463, 1123], 2))), Err(FrameReject::ThemePending));
+        assert!(state.retry_due(now), "B retains its existing bounded repaint path");
+        assert!(!state.retry_due(now));
+        let theme = ThemeTicket { lifetime: 1, revision: 2 };
+        state.theme_pending(theme, now).unwrap();
+        assert!(state.theme_applied(theme, FrameWatermarks { view: 2, popup: 0 }, now));
+        assert_eq!(check_transport_view(Some(&state), Some(&capture([463, 1123], 2))), Err(FrameReject::OldGeneration));
+        assert!(state.admit_view(&capture([463, 1123], 3), [463, 1123], 3).is_ok());
     }
 
     // Catch accepting a DIP raster or resampling a rounded-up native allocation.
