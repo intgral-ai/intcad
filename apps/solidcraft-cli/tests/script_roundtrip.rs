@@ -58,12 +58,13 @@ fn joint_fields(joint: &solidcraft_engine::doc::joints::Joint) -> Value {
     v
 }
 
-/// Compare joints as replay data: [`joint_fields`], except an x the source did not store.
-/// An absent or `null` x is `None` (serde `Option`); the replay's chosen x is then a valid
-/// realization of "any direction square to z" and only that is removed. A present x (array
-/// `XRef::Dir`/`Snap::Point`/`Frame`, or object `XRef::Face` with its face/pick), and a present
-/// face or end, are kept as-is: a different object, pick, face, end, or a missing replay field
-/// fails.
+/// Compare joints as replay data: [`joint_fields`], except a reference the source did not store.
+/// A `CircleCenter`'s face/end are named from the same pick at creation (`round_end_at`/
+/// `pin_end`, `crates/doc/src/joints_face.rs:332-370`, through `settle` in
+/// `crates/engine/src/cmd/joints.rs:967-991`); an absent or `null` x is `None` (serde `Option`)
+/// and its turn is free. Only an x/face/end the source does not have is removed from both; a
+/// present x (array `XRef::Dir`/`Snap::Point`/`Frame`, or object `XRef::Face` with face/pick), a
+/// present face or a present end is compared, including a missing replay field.
 fn joints_for_comparison(
     source: &[solidcraft_engine::doc::joints::Joint],
     replay: &[solidcraft_engine::doc::joints::Joint],
@@ -74,11 +75,18 @@ fn joints_for_comparison(
         let mut source = joint_fields(source);
         let mut replay = joint_fields(replay);
         for side in ["a", "b"] {
-            let source_has_x = source.get(side).and_then(|side| side.get("snap")).and_then(|snap| snap.get("x")).is_some();
-            if !source_has_x {
-                for joint in [&mut source, &mut replay] {
-                    if let Some(snap) = joint.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
-                        snap.remove("x");
+            let snap = source.get(side).and_then(|side| side.get("snap"));
+            let present = [
+                ("x", snap.and_then(|s| s.get("x")).is_some()),
+                ("face", snap.and_then(|s| s.get("face")).is_some()),
+                ("end", snap.and_then(|s| s.get("end")).is_some()),
+            ];
+            for (key, present) in present {
+                if !present {
+                    for joint in [&mut source, &mut replay] {
+                        if let Some(snap) = joint.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
+                            snap.remove(key);
+                        }
                     }
                 }
             }
@@ -90,7 +98,7 @@ fn joints_for_comparison(
 }
 
 #[test]
-fn joint_comparison_keeps_stored_x_face_and_end_and_normalizes_only_an_absent_x() {
+fn joint_comparison_keeps_stored_refs_and_normalizes_only_absent_source_refs() {
     let joint = |id: u64, snap: Value| -> solidcraft_engine::doc::joints::Joint {
         serde_json::from_value(json!({
             "id": id,
@@ -131,6 +139,13 @@ fn joint_comparison_keeps_stored_x_face_and_end_and_normalizes_only_an_absent_x(
         joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 0.0, -1.0]})),
     );
     assert_eq!(left, right, "a null x is Option::None and the replay's derived x is free");
+    // A CircleCenter's face/end are named from the same pick at creation; when the source
+    // stored none, the replay's derived names are free (the corpus's old format).
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "F4:side", "end": "F4:bottom"})),
+    );
+    assert_eq!(left, right, "face/end named from the pick are free when the source stored none");
     // A present XRef::Face x, face and end are stored references and are compared.
     let (left, right) = compare(
         joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "F", "end": "E", "x": {"face": "F", "pick": [1.0, 0.0, 0.0]}})),
@@ -203,8 +218,8 @@ fn corpus_designs_replay_from_their_scripts() {
         // replay replays every allocation-bearing step at its original id
         // position), and the placements the joints solved to hold stay. The
         // joints are compared below; only the joint's own re-allocated id and
-        // an x the source did not store are normalized, while a stored
-        // face/end/x is compared.
+        // references the source did not store (x/face/end, named from the pick)
+        // are normalized, while a source-present face/end/x is compared.
         assert_eq!(t.doc.components, s.doc.components, "{name}: components");
         assert_eq!(t.doc.occurrences, s.doc.occurrences, "{name}: occurrences");
         assert_eq!(t.doc.parts, s.doc.parts, "{name}: standard parts");

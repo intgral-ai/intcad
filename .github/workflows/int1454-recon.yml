@@ -41,7 +41,7 @@ jobs:
       - name: Run the owned reconciliation tests
         env:
           EXPR: >-
-            (package(solidcraft-cli) & (test(=unknown_command_suggests_the_closest_id) | test(=unknown_pending_concepts_preserve_the_open_design_and_output_files) | test(=corpus_designs_replay_from_their_scripts) | test(=joint_comparison_keeps_stored_x_face_and_end_and_normalizes_only_an_absent_x))) |
+            (package(solidcraft-cli) & (test(=unknown_command_suggests_the_closest_id) | test(=unknown_pending_concepts_preserve_the_open_design_and_output_files) | test(=corpus_designs_replay_from_their_scripts) | test(=joint_comparison_keeps_stored_refs_and_normalizes_only_absent_source_refs))) |
             (package(solidcraft-io) & test(=legacy_dir::tests::flatpak_twins_do_not_read_upstream_solidcraft_data)) |
             (package(solidcraft-sketch) & test(=text::style_tests::bold_in_a_variable_font_sets_its_weight_axis)) |
             (package(solidcraft-ui-egui) & binary(scenarios) & test(=slot_preview)) |
@@ -63,7 +63,7 @@ jobs:
               "solidcraft-cli::run_results::unknown_command_suggests_the_closest_id",
               "solidcraft-cli::run_results::unknown_pending_concepts_preserve_the_open_design_and_output_files",
               "solidcraft-cli::script_roundtrip::corpus_designs_replay_from_their_scripts",
-              "solidcraft-cli::script_roundtrip::joint_comparison_keeps_stored_x_face_and_end_and_normalizes_only_an_absent_x",
+              "solidcraft-cli::script_roundtrip::joint_comparison_keeps_stored_refs_and_normalizes_only_absent_source_refs",
               "solidcraft-io::legacy_dir::tests::flatpak_twins_do_not_read_upstream_solidcraft_data",
               "solidcraft-sketch::text::style_tests::bold_in_a_variable_font_sets_its_weight_axis",
               "solidcraft-ui-egui::scenarios::slot_preview",
