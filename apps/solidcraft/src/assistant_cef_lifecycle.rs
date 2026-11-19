@@ -109,9 +109,7 @@ impl Lifecycle {
     }
 
     pub(super) fn observe_creation_cancelled(&mut self) -> Result<(), LifecycleError> {
-        if self.pending_creation == 0
-            || !matches!(self.phase, Phase::Initializing | Phase::Running | Phase::Closing | Phase::Quarantined)
-        {
+        if self.pending_creation == 0 || !matches!(self.phase, Phase::Initializing | Phase::Running | Phase::Closing | Phase::Quarantined) {
             return Err(LifecycleError::InvalidTransition);
         }
         self.pending_creation -= 1;
