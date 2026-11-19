@@ -1,0 +1,26 @@
+{
+ "startup_theme": "dark",
+ "switched_surface": {
+  "expected": "#2e3440",
+  "painted_at_once": "#2e3440"
+ },
+ "after_reopen_theme": "nord",
+ "after_reopen_page": true,
+ "leak_warm": [
+  931.7,
+  409,
+  9
+ ],
+ "leak_round1": [
+  977.8,
+  419,
+  9
+ ],
+ "leak_round2": [
+  1000.7,
+  429,
+  9
+ ],
+ "switches": 55,
+ "restart_theme": "gruvbox-light"
+}

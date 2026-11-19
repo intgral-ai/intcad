@@ -455,6 +455,20 @@ impl CefAssistant {
                     .is_ok()
                 {
                     self.told_theme = theme;
+                    // Test hook: report what the page actually lays out, to compare with the
+                    // control height and font size the app draws its own widgets with.
+                    if std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_PROBE_DOM").is_some() {
+                        let _ = self.producer.execute_script(
+                            "(() => { const cs = getComputedStyle(document.documentElement); \
+                             const h = e => Math.round(e.getBoundingClientRect().height); \
+                             const buttons = [...document.querySelectorAll('button')].slice(0,6).map(h); \
+                             const inputs = [...document.querySelectorAll('input,textarea')].slice(0,4).map(h); \
+                             const ta = document.querySelector('textarea'); \
+                             const composer = ta ? { w: Math.round(ta.getBoundingClientRect().width), h: h(ta) } : null; \
+                             fetch('/ipc', { method:'POST', body: JSON.stringify({ type:'log', text: 'DOM ' + JSON.stringify({ font: cs.fontSize, buttons, inputs, composer }) }) }); })()",
+                            "",
+                        );
+                    }
                 }
             }
         }
@@ -1185,6 +1199,10 @@ window.__intcadTheme = (t) => {
     html, body, #root { background: transparent !important; }
     ::selection { background: ${c.selected}; color: ${c.selectedText}; }
     button, input, textarea, select { font-family: inherit; }
+    /* Native controls are 28 pt tall (Tokens::control_height); scaled rems alone left the
+       page's buttons at 21. A minimum, not a fixed height: larger controls keep their size. */
+    button, [role="button"], input, select { min-height: ${m.controlHeight}px; }
+    button, [role="button"], input { border-radius: ${m.radiusMd}px; }
   `;
 };
 "#;

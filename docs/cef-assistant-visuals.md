@@ -77,6 +77,39 @@ Screenshots: `/tmp/themes/<id>.png` for all 25 ids (`1-bit`, `1-bit-dark`, `akar
 `nord`, `nosferatu`, `okibi`, `one-dark`, `onyx`, `platinum-9`, `solarized-light`,
 `solidcraft-95`, `tokyo-night`).
 
+Typography and density, measured in the page (`getBoundingClientRect`) against `Tokens`:
+
+```
+font: 12px (= Tokens::font_body)
+buttons: 28, 28, 28, 28, 27, 28  (Tokens::control_height = 28)
+composer textarea: 30px high, 435 wide   inputs: 30
+```
+
+Before the density rule the same measurement gave buttons of 21 px: scaling only the root font
+size shrank the components below the native control height. The bridge now also applies
+`min-height: control_height` and `radius-md` to the page's buttons and inputs, and the numbers
+above are the measured result. Nothing is `zoom`ed or scaled by transform.
+
+Text contrast: the bridge computes WCAG contrast of the theme's body text on the panel and, only
+when it falls under 4.5:1, nudges the text towards the theme's own light/dark end until it passes.
+`solarized-light` is such a theme (4.39:1 before). The JSON carries `textAdjusted: true` when that
+happened, so the deviation is visible rather than silent. The unit test asserts every built-in
+theme ends at ≥4.4:1.
+
+Lifecycle (`scripts/theme-lifecycle.py`):
+
+```
+startup_theme: dark                    (default theme at start)
+switch to nord: painted #2e3440 at once, no white/black flash frame
+reopen panel: theme nord, page true
+restart (same settings): gruvbox-light persisted
+55 switches: RSS 932 -> 1001 MB, fds 401 -> 429
+```
+
+The descriptor growth is tied to the switch path: 25 *identical-theme* prefs calls in the same
+build left fds at 398–401, so it is not the query/state path; the browser is never recreated.
+It is recorded as an open item to re-measure over a longer run.
+
 Other checks:
 
 - sRGB swatches in the page: `#ffffff`, `#ff0000`, `#3a88ee` measured exactly (after the fix);
