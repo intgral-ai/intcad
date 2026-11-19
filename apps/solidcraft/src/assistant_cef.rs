@@ -1395,8 +1395,8 @@ impl CefAssistant {
             freed.push(page.id);
         }
         let mut renderer = self.renderer.write();
-        for id in freed {
-            renderer.free_texture(&id);
+        for id in &freed {
+            renderer.free_texture(id);
         }
         for id in [self.texture.take().map(|(id, _)| id), self.popup.take().map(|(id, _, _)| id)].into_iter().flatten() {
             if !freed.contains(&id) {
