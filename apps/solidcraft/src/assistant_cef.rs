@@ -54,6 +54,13 @@ pub fn host_backend(cc: &eframe::CreationContext<'_>) -> HostBackend {
 
 static WAYLAND_RUNTIME: std::sync::OnceLock<config::EffectivePolicy> = std::sync::OnceLock::new();
 
+fn configure_private_runtime(runtime: &mut CefRuntimeConfig, policy: &config::EffectivePolicy) {
+    // Keep the B policy's predicate authoritative there; every other private
+    // HTTP host must suppress inherited browser argv as well.
+    runtime.command_line_args_disabled = policy.command_line_args_disabled() || policy.backend != HostBackend::LinuxWayland;
+    runtime.log_severity = welding::CefLogSeverity::Disable;
+}
+
 /// The page's origin while CEF runs: a loopback server this module owns, because CEF has no
 /// custom-scheme handler here and the page's ES modules need a real origin.
 const PAGE_HOST: &str = "127.0.0.1";
@@ -399,6 +406,10 @@ impl CefAssistant {
                 })
                 .collect()
         };
+        if config::validate_private_http_overrides(&overrides).is_err() {
+            note("CEF: private-page diagnostic override refused");
+            return None;
+        }
         let policy = match config::build_policy(backend, true, identity.as_ref(), &overrides) {
             Ok(policy) => policy,
             Err(error) => {
@@ -418,9 +429,9 @@ impl CefAssistant {
         let mut runtime_config = CefRuntimeConfig::new(&cef_path, sandbox());
         runtime_config.cache_path = Some(crate::settings_dir().ok().flatten().unwrap_or_else(std::env::temp_dir).join("cef-assistant"));
         // The validated environment is not the only CEF ingress: ignore the
-        // browser's inherited argv in B, then apply only policy.switches through
+        // browser's inherited argv on every private HTTP host, then apply only policy.switches through
         // WeldApp's existing callback. Subprocess dispatch above is unchanged.
-        runtime_config.command_line_args_disabled = policy.command_line_args_disabled();
+        configure_private_runtime(&mut runtime_config, &policy);
         runtime_config.command_line_switches = policy.switches.into_iter().map(|entry| (entry.name, entry.value)).collect();
         let runtime = match CefRuntime::initialize(runtime_config) {
             Ok(runtime) => runtime,
@@ -2097,6 +2108,19 @@ const SCOPE_PROBE_JS: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_http_runtime_suppresses_browser_argv_and_native_logs() {
+        // Real runtime types/configuration only. Does not load/initialize CEF.
+        // Execution is gated with the app crate, never replaced by a fake type.
+        for backend in [HostBackend::Windows, HostBackend::Macos, HostBackend::LinuxX11] {
+            let policy = config::build_policy(backend, true, None, &[]).unwrap();
+            let mut runtime = CefRuntimeConfig::new("unused-test-runtime", CefSandboxMode::Sandboxed);
+            configure_private_runtime(&mut runtime, &policy);
+            assert!(runtime.command_line_args_disabled);
+            assert!(matches!(runtime.log_severity, welding::CefLogSeverity::Disable));
+        }
+    }
 
     // Real native event types. This test needs the actual app test build; the
     // std-only admission harness does not prove CEF cancels a drag on blur.

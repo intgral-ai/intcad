@@ -51,6 +51,23 @@ pub enum PolicyError {
     ConflictingRuntime,
 }
 
+/// Private HTTP must not leak its ephemeral document capability to native logs.
+pub fn validate_private_http_overrides(overrides: &[Switch]) -> Result<(), PolicyError> {
+    for entry in overrides {
+        // The non-B legacy parser accepts mixed-case names. Containment must
+        // cover those too without changing its unrelated feature semantics.
+        let name = entry.name.to_ascii_lowercase();
+        if name.contains("log")
+            || name.starts_with("trace")
+            || matches!(name.as_str(), "v" | "vmodule" | "auto-open-devtools-for-tabs")
+            || name.starts_with("remote-debugging")
+        {
+            return Err(PolicyError::InvalidSwitch);
+        }
+    }
+    Ok(())
+}
+
 pub fn parse_overrides(raw: &str) -> Result<Vec<Switch>, PolicyError> {
     if raw.len() > 16 * 1024 {
         return Err(PolicyError::InvalidSwitch);
@@ -184,6 +201,31 @@ fn switch(name: &str, value: Option<&str>) -> Switch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_http_overrides_refuse_url_logging_on_every_backend() {
+        for name in [
+            "enable-logging",
+            "LOG-file",
+            "log-net-log",
+            "log-severity",
+            "net-log-capture-mode",
+            "trace-startup",
+            "trace-to-file",
+            "v",
+            "vmodule",
+            "REMOTE-debugging-port",
+            "auto-open-devtools-for-tabs",
+        ] {
+            let overrides = [Switch { name: name.into(), value: Some("stderr".into()) }];
+            assert_eq!(validate_private_http_overrides(&overrides), Err(PolicyError::InvalidSwitch), "{name}");
+        }
+        let switches = parse_overrides("enable-features=HarmlessFeature,ozone-platform=wayland").unwrap();
+        assert!(validate_private_http_overrides(&switches).is_ok());
+        // Generic non-private consumers keep their legacy parser/defaults.
+        assert!(parse_overrides("enable-logging=stderr").is_ok());
+        assert!(build_policy(HostBackend::Windows, true, None, &parse_overrides("enable-logging").unwrap()).is_ok());
+    }
 
     fn identity() -> RuntimeIdentity {
         RuntimeIdentity {
