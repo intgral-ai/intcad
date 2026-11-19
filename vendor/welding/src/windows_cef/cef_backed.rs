@@ -237,6 +237,8 @@ cef::wrap_life_span_handler! {
     pub(super) struct WeldLifeSpanHandler {
         state: WeldLifeSpanState,
         events: Arc<WebEventQueue>,
+        policy: Option<crate::request_policy::RequestPolicy>,
+        notified: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl LifeSpanHandler {
@@ -261,7 +263,7 @@ cef::wrap_life_span_handler! {
             _extra_info: Option<&mut Option<cef::DictionaryValue>>,
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
-            let url = target_url.map(|u| u.to_string()).unwrap_or_default();
+            let url = if self.policy.is_some() { String::new() } else { target_url.map(|u| u.to_string()).unwrap_or_default() };
             self.events.push(CefSurfaceEvent::Navigation(
                 crate::surface::NavigationEvent::NewWindowRequested {
                     url,
@@ -274,6 +276,18 @@ cef::wrap_life_span_handler! {
         fn on_after_created(&self, browser: Option<&mut cef::Browser>) {
             let Some(browser) = browser else { return };
             let browser_id = browser.identifier();
+            let host = browser.host();
+            let windowless = host.as_ref().is_some_and(|host| host.is_window_rendering_disabled() != 0);
+            let permitted = self.policy.is_none() || (windowless && crate::request_policy::native::created(self.policy.as_ref(), browser_id));
+            if self.policy.is_none() || !self.notified.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                self.events.push(CefSurfaceEvent::Navigation(
+                crate::surface::NavigationEvent::BrowserCreated { browser_id, windowless }
+                ));
+            }
+            if !permitted {
+                if let Some(host) = host { host.close_browser(1); }
+                return;
+            }
             *self.state.browser.lock().unwrap() = Some(browser.clone());
             self.state.browser_id.store(browser_id, Ordering::Release);
             if let Some(host) = browser.host() {
@@ -302,8 +316,8 @@ cef::wrap_life_span_handler! {
 }
 
 impl WeldLifeSpanHandler {
-    pub fn build(state: WeldLifeSpanState, events: Arc<WebEventQueue>) -> cef::LifeSpanHandler {
-        Self::new(state, events)
+    pub fn build(state: WeldLifeSpanState, events: Arc<WebEventQueue>, policy: Option<crate::request_policy::RequestPolicy>) -> cef::LifeSpanHandler {
+        Self::new(state, events, policy, Arc::new(std::sync::atomic::AtomicBool::new(false)))
     }
 }
 
@@ -314,9 +328,30 @@ cef::wrap_request_handler! {
         events: Arc<WebEventQueue>,
         auth: Arc<crate::auth::AuthChallenges>,
         scripts: Arc<crate::app::PendingScripts>,
+        policy: Option<crate::request_policy::RequestPolicy>,
     }
 
     impl RequestHandler {
+        fn on_open_urlfrom_tab(
+            &self, _browser: Option<&mut cef::Browser>, _frame: Option<&mut cef::Frame>,
+            _target_url: Option<&cef::CefString>, _target_disposition: cef::WindowOpenDisposition,
+            _user_gesture: i32,
+        ) -> i32 {
+            i32::from(self.policy.is_some())
+        }
+        fn on_before_browse(
+            &self, browser: Option<&mut cef::Browser>, frame: Option<&mut cef::Frame>,
+            request: Option<&mut cef::Request>, _user_gesture: i32, is_redirect: i32,
+        ) -> i32 {
+            crate::request_policy::native::before_browse(self.policy.as_ref(), browser, frame, request, is_redirect)
+        }
+        fn resource_request_handler(
+            &self, browser: Option<&mut cef::Browser>, frame: Option<&mut cef::Frame>,
+            request: Option<&mut cef::Request>, _is_navigation: i32, is_download: i32,
+            _request_initiator: Option<&cef::CefString>, _disable_default_handling: Option<&mut i32>,
+        ) -> Option<cef::ResourceRequestHandler> {
+            crate::request_policy::native::resource_handler(self.policy.as_ref(), browser, frame, request, is_download)
+        }
         fn auth_credentials(
             &self,
             _browser: Option<&mut cef::Browser>,
@@ -328,6 +363,10 @@ cef::wrap_request_handler! {
             scheme: Option<&cef::CefString>,
             callback: Option<&mut cef::AuthCallback>,
         ) -> ::std::os::raw::c_int {
+            if self.policy.is_some() {
+                if let Some(callback) = callback { callback.cancel(); }
+                return 1;
+            }
             let id = self.auth.next_id();
             let event = crate::surface::NavigationEvent::AuthChallenged {
                 id,
@@ -362,7 +401,8 @@ cef::wrap_request_handler! {
             error_string: Option<&cef::CefString>,
         ) {
             let status = crate::surface::termination_status(_status);
-            let error_string = error_string.map(|s| s.to_string()).unwrap_or_default();
+            let error_string = if self.policy.is_some() { "private renderer terminated".into() }
+                else { error_string.map(|s| s.to_string()).unwrap_or_default() };
             log::error!(
                 "weld: CEF render process terminated ({status:?}, code {error_code}, {error_string})"
             );
@@ -383,8 +423,9 @@ impl WeldRequestHandler {
         events: Arc<WebEventQueue>,
         auth: Arc<crate::auth::AuthChallenges>,
         scripts: Arc<crate::app::PendingScripts>,
+        policy: Option<crate::request_policy::RequestPolicy>,
     ) -> cef::RequestHandler {
-        Self::new(events, auth, scripts)
+        Self::new(events, auth, scripts, policy)
     }
 }
 

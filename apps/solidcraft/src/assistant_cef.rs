@@ -8,7 +8,7 @@
 //! production path stays `assistant_web.rs` until that switch is removed in the cutover.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,7 @@ use welding::{
 
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
+use crate::assistant_cef_http::{BrowserOwnerId, DocumentAuthority, DocumentId, NavigationIdentity, PageAssets, PageServer, Pictures, ServerProgress};
 
 #[path = "assistant_cef_frame.rs"]
 mod admission;
@@ -63,7 +64,65 @@ fn configure_private_runtime(runtime: &mut CefRuntimeConfig, policy: &config::Ef
 
 /// The page's origin while CEF runs: a loopback server this module owns, because CEF has no
 /// custom-scheme handler here and the page's ES modules need a real origin.
-const PAGE_HOST: &str = "127.0.0.1";
+static FAILED_START: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // Failure-only retention, never a clean shutdown receipt. W3 owns explicit
+    // native completion/shutdown; TLS teardown must not drop live CEF inputs.
+    static FAILED_OWNERS: std::cell::RefCell<Option<std::mem::ManuallyDrop<FailedOwners>>> = const { std::cell::RefCell::new(None) };
+}
+struct FailedOwners {
+    _runtime: CefRuntime,
+    _server: Option<PageServer>,
+    _host: Option<HostWgpuContext>,
+}
+fn retain_failed_start(runtime: CefRuntime, mut server: Option<PageServer>, host: Option<HostWgpuContext>) {
+    FAILED_START.store(true, Ordering::Release);
+    if let Some(server) = &mut server { server.request_stop(); }
+    let owners = std::mem::ManuallyDrop::new(FailedOwners { _runtime: runtime, _server: server, _host: host });
+    FAILED_OWNERS.with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            if slot.is_none() { *slot = Some(owners); }
+            // A second bundle also remains non-dropping; never replace/release
+            // an older owner if an impossible re-entrant failure is observed.
+        }
+    });
+}
+
+fn private_request_policy(
+    authority: Arc<DocumentAuthority>, owner: BrowserOwnerId, renewal: Arc<AtomicBool>,
+) -> welding::request_policy::RequestPolicy {
+    use welding::request_policy::{RequestCheck, RequestDecision};
+    Arc::new(move |check| match check {
+        RequestCheck::BrowserCreated { browser_id } => {
+            if authority.bind_browser(owner, browser_id).is_ok() { RequestDecision::Allow } else { RequestDecision::Cancel }
+        }
+        RequestCheck::BeforeBrowse { browser_id, main_frame, target_url, is_redirect } => {
+            if authority.check_inert_navigation(owner, browser_id, target_url, main_frame, is_redirect).is_ok() {
+                return RequestDecision::Allow;
+            }
+            let result = authority.navigation_identity(owner, browser_id, target_url)
+                .and_then(|identity| authority.claim_main_navigation(&identity, main_frame, is_redirect));
+            match result {
+                Ok(_) => RequestDecision::Allow,
+                Err(crate::assistant_cef_http::TransportError::PermitConsumed) if main_frame && !is_redirect => {
+                    renewal.store(true, Ordering::Release);
+                    RequestDecision::RenewDocument
+                }
+                _ => RequestDecision::Cancel,
+            }
+        }
+        RequestCheck::Resource { browser_id, target_url, is_image } |
+        RequestCheck::Redirect { browser_id, target_url, is_image } => {
+            let authorized = authority.check_resource(owner, browser_id, target_url, is_image).is_ok();
+            let asset = (is_image && (target_url.starts_with("data:image/") || target_url.starts_with("blob:")))
+                || target_url.contains("/picture/")
+                || target_url.rsplit('/').next().is_some_and(|name| {
+                    matches!(name, "ipc" | "ipc.js" | "intcad-plex.ttf") || crate::assistant_page::page_file(name).is_some()
+                });
+            if authorized && asset { RequestDecision::Allow } else { RequestDecision::Cancel }
+        }
+    })
+}
 
 /// CEF re-executes this binary for its renderer, GPU and utility processes. Must run before
 /// any thread is started (winit, wgpu, the app's pools).
@@ -278,9 +337,6 @@ impl InputQueue {
     }
 }
 
-/// One picture the page may show, served off the app's own state.
-type Pictures = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
-
 pub struct CefAssistant {
     runtime: CefRuntime,
     producer: Producer,
@@ -314,9 +370,16 @@ pub struct CefAssistant {
     identity_exhausted: bool,
     last_reject: Option<FrameReject>,
     pictures: Pictures,
-    inbox: Receiver<String>,
-    port: u16,
-    copy_request: Option<u64>,
+    server: PageServer,
+    authority: Arc<DocumentAuthority>,
+    browser_owner: BrowserOwnerId,
+    document: Option<DocumentId>,
+    renewal: Arc<AtomicBool>,
+    deferred_theme_ack: Option<ThemeTicket>,
+    copy_request: Option<(u64, DocumentId)>,
+    script_serial: u64,
+    transport_probe: Option<(u64, DocumentId)>,
+    probe_due: Instant,
     last_frame: Instant,
     failed: bool,
     osr_refused: bool,
@@ -361,6 +424,7 @@ impl CefAssistant {
     /// Make the browser and its page. `None` when CEF cannot start: the panel then says why
     /// instead of drawing a second conversation.
     pub fn new(render_state: &eframe::egui_wgpu::RenderState, backend: HostBackend) -> Option<Self> {
+        if FAILED_START.load(Ordering::Acquire) { return None; }
         let cef_path = std::env::var("CEF_PATH").ok()?;
         let wayland_osr = backend == HostBackend::LinuxWayland;
         #[cfg(not(target_os = "linux"))]
@@ -441,25 +505,43 @@ impl CefAssistant {
             }
         };
 
-        let pictures: Pictures = Arc::new(Mutex::new(HashMap::new()));
-        let (sender, inbox) = channel();
-        let port = match serve_pages(pictures.clone(), sender) {
-            Ok(port) => port,
-            Err(error) => {
-                note(&format!("CEF: the page server could not start: {error}"));
-                return None;
-            }
-        };
         let host = HostWgpuContext::new(render_state.device.clone(), render_state.queue.clone());
         #[cfg(target_os = "linux")]
         if !host.device.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
             note("CEF: the app's device has no VULKAN_EXTERNAL_MEMORY_DMA_BUF; the page cannot be shown");
             emit_accelerated_limit(false, "app device has no VULKAN_EXTERNAL_MEMORY_DMA_BUF");
+            retain_failed_start(runtime, None, Some(host));
             return None;
         }
-        let url = format!("http://{PAGE_HOST}:{port}/index.html");
+        let pictures: Pictures = Arc::new(Mutex::new(HashMap::new()));
+        let authority = Arc::new(DocumentAuthority::new());
+        let browser_owner = match authority.reserve_browser_owner() {
+            Ok(owner) => owner,
+            Err(_) => {
+                retain_failed_start(runtime, None, Some(host));
+                return None;
+            }
+        };
+        let mut server = match PageServer::start(
+            PageAssets { resolve: crate::assistant_page::page_file,
+                font: include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Variable.ttf") },
+            pictures.clone(), authority.clone(),
+        ) {
+            Ok(server) => server,
+            Err(_) => {
+                note("CEF: private page server unavailable");
+                retain_failed_start(runtime, None, Some(host));
+                return None;
+            }
+        };
+        if server.take_failure().is_some() || server.poll_stop() != ServerProgress::Running {
+            retain_failed_start(runtime, Some(server), Some(host));
+            return None;
+        }
+        let renewal = Arc::new(AtomicBool::new(false));
         let surface = CefSurfaceConfig {
-            initial_url: url,
+            initial_url: "about:blank".into(),
+            request_policy: Some(private_request_policy(authority.clone(), browser_owner, renewal.clone())),
             initial_size: dpi::PhysicalSize::new(900, 600),
             scale_factor: 1.0,
             prefer_accelerated: true,
@@ -471,8 +553,9 @@ impl CefAssistant {
         };
         let producer = match create_producer(&runtime, surface, &host) {
             Ok(producer) => producer,
-            Err(error) => {
-                note(&format!("CEF: the page could not be created: {error}"));
+            Err(_) => {
+                note("CEF: the private page could not be created");
+                retain_failed_start(runtime, Some(server), Some(host));
                 return None;
             }
         };
@@ -508,9 +591,16 @@ impl CefAssistant {
             identity_exhausted: false,
             last_reject: None,
             pictures,
-            inbox,
-            port,
+            server,
+            authority,
+            browser_owner,
+            document: None,
+            renewal,
+            deferred_theme_ack: None,
             copy_request: None,
+            script_serial: 16,
+            transport_probe: None,
+            probe_due: Instant::now(),
             last_frame: Instant::now(),
             failed: false,
             osr_refused: false,
@@ -534,14 +624,48 @@ impl CefAssistant {
     /// The page's messages and the app's state, whether or not the window is painted.
     pub fn logic(&mut self, solve: &mut SolveApp, ctx: &Context) {
         self.pump(ctx);
+        if !self.failed && (self.document.is_none() || self.renewal.swap(false, Ordering::AcqRel)) {
+            match self.authority.bound_browser(self.browser_owner) {
+                Ok(Some(_)) => {
+                    if self.navigate_private(ctx).is_err() {
+                        self.failed = true;
+                        self.close();
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.failed = true;
+                    self.close();
+                }
+            }
+        }
         if self.osr_refused {
             web::set_host(solve, false);
             web::set_problem(solve, web::Problem::Failed);
             web::advance(solve, ctx);
             return;
         }
-        while let Ok(message) = self.inbox.try_recv() {
-            self.receive(solve, ctx, &message);
+        match self.server.take_batch() {
+            Ok(batch) => {
+                if !batch.is_empty() { ctx.request_repaint(); }
+                for entry in batch {
+                let admitted = self.can_input();
+                let authority = self.authority.clone();
+                // Only the bounded business decision runs under this lease.
+                // CEF/native housekeeping is deliberately deferred below.
+                if let Ok(_lease) = authority.dispatch_lease(entry.document) {
+                    self.receive(solve, ctx, &entry.body, admitted);
+                }
+                self.apply_theme_ack();
+                }
+            }
+            Err(_) => self.failed = true,
+        }
+        if self.server.take_failure().is_some() {
+            self.failed = true;
+        }
+        if self.failed {
+            web::set_problem(solve, web::Problem::Failed);
         }
         // The conversation goes on while the window is behind another one.
         web::advance(solve, ctx);
@@ -554,46 +678,61 @@ impl CefAssistant {
     }
 
     /// What the page says: the same contract as the WRY host (`assistant_web::receive`).
-    fn receive(&mut self, solve: &mut SolveApp, ctx: &Context, message: &str) {
+    fn receive(&mut self, solve: &mut SolveApp, ctx: &Context, message: &str, admitted: bool) {
         let value = serde_json::from_str::<serde_json::Value>(message).unwrap_or_default();
         match value.get("type").and_then(serde_json::Value::as_str) {
             Some("ready") => {
                 // A reloaded page has neither the theme function nor its CSS variables: put the
                 // bridge back and send the theme again, not only when the tokens change.
-                self.new_page(ctx);
                 self.page_ready = true;
             }
             Some("theme-ready") => {
                 let ticket = value.get("ticket").and_then(serde_json::Value::as_str).and_then(ThemeTicket::parse);
-                if let Some(ticket) = ticket
-                    && self.pending_theme == Some(ticket)
-                    && let Some(floors) = self.drain_frames()
-                {
-                    let applied = self.admission.as_mut().is_none_or(|admission| admission.theme_applied(ticket, floors, Instant::now()));
-                    if applied {
-                        self.pending_theme = None;
-                        // Count this repaint as the first bounded frame-wait
-                        // attempt, so tick cannot request a second immediately.
-                        let due = self.admission.as_mut().is_none_or(|admission| admission.retry_due(Instant::now()));
-                        if due && let Err(error) = self.producer.request_repaint() {
-                            note(&format!("CEF: themed repaint failed: {error}"));
-                        }
-                    }
-                }
+                if ticket.is_some() && self.pending_theme == ticket { self.deferred_theme_ack = ticket; }
             }
             Some("focus") => {
-                self.focused = !self.input_quarantined && self.can_input() && value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                self.focused = !self.input_quarantined && admitted && value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false);
             }
-            Some("log") => note(&bounded_log_text(value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default())),
+            Some("log") => {
+                let text = value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default();
+                let scope = text.starts_with("SCOPE ") && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE").is_some();
+                let dom = text.starts_with("DOM ") && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_PROBE_DOM").is_some();
+                if scope || dom { note(&bounded_log_text(&crate::assistant_cef_http::sanitized_diagnostic(text))); }
+            }
             _ => {
-                if self.admission.is_some() && !self.can_input() {
+                if self.admission.is_some() && !admitted {
                     return;
                 }
-                if let Err(reason) = web::act(solve, ctx, message) {
-                    note(&format!("CEF: refused: {reason}"));
+                if web::act(solve, ctx, message).is_err() {
+                    note("CEF: private action refused");
                 }
             }
         }
+    }
+
+    fn apply_theme_ack(&mut self) {
+        let Some(ticket) = self.deferred_theme_ack.take() else { return };
+        if self.document.is_none_or(|id| !self.authority.permits(id)) || self.pending_theme != Some(ticket) { return; }
+        let Some(floors) = self.drain_frames() else { return };
+        if self.admission.as_mut().is_none_or(|a| a.theme_applied(ticket, floors, Instant::now())) {
+            self.pending_theme = None;
+            let due = self.admission.as_mut().is_none_or(|a| a.retry_due(Instant::now()));
+            if due && self.producer.request_repaint().is_err() { note("CEF: themed repaint failed"); }
+        }
+    }
+
+    fn navigate_private(&mut self, ctx: &Context) -> Result<(), crate::assistant_cef_http::TransportError> {
+        use crate::assistant_cef_http::TransportError;
+        if self.document.take().is_some() { self.authority.revoke(); }
+        self.new_page(ctx);
+        let mut random = [0; 32];
+        getrandom::fill(&mut random).map_err(|_| TransportError::Io)?;
+        let document = self.authority.begin_document(self.browser_owner, random)?;
+        let url = self.authority.bootstrap_url(document, self.server.port())?;
+        let browser_id = self.authority.bound_browser(self.browser_owner)?.ok_or(TransportError::BrowserMismatch)?;
+        self.authority.arm_main_navigation(NavigationIdentity { document, owner: self.browser_owner, browser_id, url: url.clone() })?;
+        self.document = Some(document);
+        self.producer.navigate_to_url(&url).map_err(|_| TransportError::Io)
     }
 
     /// Once a frame, after the app's UI: place, resize, take the texture, draw it.
@@ -610,7 +749,17 @@ impl CefAssistant {
             self.told_theme.clear();
             self.pending_theme = None;
             self.reset_admission(ctx);
+            if self.navigate_private(ctx).is_err() {
+                self.failed = true;
+                self.close();
+                web::set_problem(solve, web::Problem::Failed);
+            }
             web::set_host(solve, true);
+        }
+        if self.document.is_none_or(|id| !self.authority.permits(id)) {
+            self.popup_current = false;
+            self.queue.invalidate();
+            return;
         }
         let placed = web::placement(solve, ctx);
         self.placed_this_frame = placed.is_some();
@@ -850,8 +999,7 @@ impl CefAssistant {
         {
             self.test_reloaded = true;
             note("CEF: test reload");
-            self.new_page(ctx);
-            let _ = self.producer.reload();
+            if self.navigate_private(ctx).is_err() { self.failed = true; self.close(); }
         }
         // Test only: a fixed, in-source scope probe, once per page lifetime.
         if !self.scope_injected && self.page_ready && self.shown && std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE").ok().as_deref() == Some("1")
@@ -868,6 +1016,8 @@ impl CefAssistant {
     }
 
     fn sync_page(&mut self, solve: &mut SolveApp, ctx: &Context) {
+        if !self.page_ready || self.document.is_none_or(|id| !self.authority.permits(id)) { return; }
+        self.check_transport();
         // State is pushed with the app's own logic; the page is told when it changed.
         let state = web::state(solve);
         // The palette first, every frame the tokens differ, whether or not the conversation
@@ -936,7 +1086,7 @@ impl CefAssistant {
                              const inputs = [...document.querySelectorAll('input,textarea')].slice(0,4).map(h); \
                              const ta = document.querySelector('textarea'); \
                              const r = ta ? ta.getBoundingClientRect() : null; const composer = r ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } : null; \
-                             fetch('/ipc', { method:'POST', body: JSON.stringify({ type:'log', text: 'DOM ' + JSON.stringify({ font: cs.fontSize, iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio, buttons, inputs, composer }) }) }); })()",
+                             window.ipc.postMessage(JSON.stringify({ type:'log', text: 'DOM ' + JSON.stringify({ font: cs.fontSize, iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio, buttons, inputs, composer }) })); })()",
                             "",
                         );
                     }
@@ -955,6 +1105,9 @@ impl CefAssistant {
     }
 
     pub fn close(&mut self) {
+        self.authority.revoke();
+        self.document = None;
+        self.server.request_stop();
         self.queue.invalidate();
         let _ = self.producer.ime_cancel_composition();
         #[cfg(target_os = "linux")]
@@ -975,7 +1128,8 @@ impl CefAssistant {
     }
 
     fn can_input(&self) -> bool {
-        self.shown
+        self.document.is_some_and(|id| self.authority.permits(id))
+            && self.shown
             && self.placed_this_frame
             && self.native_ready
             && self.queue.ready
@@ -1044,6 +1198,10 @@ impl CefAssistant {
 
     fn new_page(&mut self, ctx: &Context) {
         self.page_ready = false;
+        self.deferred_theme_ack = None;
+        self.transport_probe = None;
+        self.probe_due = Instant::now();
+        COPY_OUT.with(|slot| *slot.borrow_mut() = None);
         self.scope_injected = false;
         self.last_view_receipt = None;
         self.last_frame_reason = None;
@@ -1295,8 +1453,11 @@ impl CefAssistant {
                         self.cancel_input(ctx);
                     }
                 }
-                CefSurfaceEvent::Navigation(welding::NavigationEvent::LoadStart { .. }) => self.new_page(ctx),
+                // LoadStart/ready are observations, never authority renewal.
+                CefSurfaceEvent::Navigation(welding::NavigationEvent::LoadStart { .. }) => {}
                 CefSurfaceEvent::Navigation(welding::NavigationEvent::ContentProcessTerminated { .. }) => {
+                    self.authority.revoke();
+                    self.document = None;
                     self.new_page(ctx);
                     self.failed = true;
                 }
@@ -1307,9 +1468,19 @@ impl CefAssistant {
                 _ => {}
             }
             if let CefSurfaceEvent::ScriptCompleted { id, result } = &event {
-                if self.copy_request == Some(id.get()) {
+                if self.transport_probe.is_some_and(|(pending, _)| pending == id.get()) {
+                    let current = self.transport_probe.take().is_some_and(|(_, document)| {
+                        self.document == Some(document) && self.authority.permits(document)
+                    });
+                    if current && result.as_ref().is_ok_and(|json| json == "true") { self.failed = true; }
+                    self.probe_due = Instant::now() + Duration::from_millis(500);
+                }
+                if self.copy_request.is_some_and(|(pending, _)| pending == id.get()) {
+                    let current = self.copy_request.is_some_and(|(_, document)| {
+                        self.document == Some(document) && self.authority.permits(document)
+                    });
                     self.copy_request = None;
-                    if let Ok(json) = result {
+                    if current && let Ok(json) = result {
                         let text = json_string(json);
                         if !text.is_empty() {
                             note(&format!("CEF: copied {} byte(s) out of the page", text.len()));
@@ -1457,7 +1628,6 @@ impl CefAssistant {
                 }
                 egui::Event::Ime(egui::ImeEvent::Preedit { text, active_range_chars }) if self.focused => {
                     if !text.is_empty() {
-                        note(&format!("IME composition {}", text.chars().take(40).collect::<String>()));
                     }
                     if text.is_empty() {
                         self.queue.push(Queued::ImeCancel);
@@ -1467,7 +1637,6 @@ impl CefAssistant {
                     }
                 }
                 egui::Event::Ime(egui::ImeEvent::Commit(text)) if self.focused => {
-                    note(&format!("IME commit {}", text.chars().take(40).collect::<String>()));
                     self.queue.push(Queued::ImeCommit(text));
                 }
                 _ => {}
@@ -1493,14 +1662,33 @@ impl CefAssistant {
     }
 
     fn request_copy(&mut self) {
-        self.copy_request = Some(7);
-        let _ = self.producer.request_script_result(
-            WebRequestId::new(7),
+        if self.copy_request.is_some() { return; }
+        let Some(document) = self.document.filter(|id| self.authority.permits(*id)) else { return };
+        let Some(id) = self.next_script_id() else { return };
+        if self.producer.request_script_result(
+            WebRequestId::new(id),
             "(() => { const el = document.activeElement; \
              if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) { \
                return el.value.substring(el.selectionStart, el.selectionEnd); } \
              return window.getSelection().toString(); })()",
-        );
+        ).is_ok() { self.copy_request = Some((id, document)); }
+    }
+
+    fn next_script_id(&mut self) -> Option<u64> {
+        match self.script_serial.checked_add(1) {
+            Some(id) => { self.script_serial = id; Some(id) }
+            None => { self.identity_exhausted = true; self.failed = true; None }
+        }
+    }
+
+    fn check_transport(&mut self) {
+        if self.transport_probe.is_some() || Instant::now() < self.probe_due { return; }
+        let Some(document) = self.document.filter(|id| self.authority.permits(*id)) else { return };
+        let Some(id) = self.next_script_id() else { return };
+        self.probe_due = Instant::now() + Duration::from_millis(500);
+        if self.producer.request_script_result(WebRequestId::new(id), "Boolean(window.__intcadTransportFailed)").is_ok() {
+            self.transport_probe = Some((id, document));
+        }
     }
 
     fn flush(&mut self) {
@@ -1613,112 +1801,6 @@ fn virtual_key(key: egui::Key) -> Option<i32> {
     })
 }
 
-/// Serve the embedded page over loopback: CEF has no custom-scheme API in welding, and the
-/// page's ES modules need a real origin. `POST /ipc` is `window.ipc.postMessage`.
-fn serve_pages(pictures: Pictures, inbox: Sender<String>) -> std::io::Result<u16> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpListener;
-    let listener = TcpListener::bind((PAGE_HOST, 0))?;
-    let port = listener.local_addr()?.port();
-    note(&format!("page server on http://{PAGE_HOST}:{port}/index.html"));
-    std::thread::Builder::new()
-        .name("assistant-cef-page".into())
-        .spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
-                let mut reader = BufReader::new(match stream.try_clone() {
-                    Ok(stream) => stream,
-                    Err(_) => continue,
-                });
-                let mut request = String::new();
-                if reader.read_line(&mut request).is_err() {
-                    continue;
-                }
-                let mut length = 0usize;
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        length = value.trim().parse().unwrap_or(0);
-                    }
-                }
-                let mut body = vec![0u8; length];
-                if length > 0 {
-                    use std::io::Read;
-                    if reader.read_exact(&mut body).is_err() {
-                        continue;
-                    }
-                }
-                let mut parts = request.split_whitespace();
-                let method = parts.next().unwrap_or("");
-                let path = parts.next().unwrap_or("/");
-                let mut policy_override: Option<&str> = None;
-                let (status, kind, policy, payload) = if method == "POST" && path == "/ipc" {
-                    let message = String::from_utf8_lossy(&body).into_owned();
-                    eprintln!(
-                        "solidcraft: assistant (CEF): page said {}",
-                        message.chars().take(160).collect::<String>()
-                    );
-                    let _ = inbox.send(message);
-                    (200u16, "text/plain; charset=utf-8", "default-src 'none'", b"ok".to_vec())
-                } else if let Some(key) = path.strip_prefix("/picture/") {
-                    match pictures.lock().ok().and_then(|held| held.get(key).cloned()) {
-                        Some(bytes) => {
-                            let kind = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-                                "image/png"
-                            } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-                                "image/jpeg"
-                            } else if bytes.starts_with(b"RIFF") {
-                                "image/webp"
-                            } else {
-                                "application/octet-stream"
-                            };
-                            (200, kind, "default-src 'none'; sandbox", bytes.to_vec())
-                        }
-                        None => (404, "text/plain", "default-src 'none'", b"not found".to_vec()),
-                    }
-                } else if path == "/intcad-plex.ttf" {
-                    (
-                        200,
-                        "font/ttf",
-                        "default-src 'none'",
-                        include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Variable.ttf").to_vec(),
-                    )
-                } else if path == "/ipc.js" {
-                    (200, "text/javascript; charset=utf-8", "default-src 'none'", IPC_SHIM.as_bytes().to_vec())
-                } else {
-                    let name = path.trim_start_matches('/');
-                    match crate::assistant_page::page_file(if name.is_empty() { "index.html" } else { name }) {
-                        Some((kind, bytes)) => {
-                            if name.is_empty() || name == "index.html" {
-                                // The page asks its own host for `POST /ipc` (the ipc shim);
-                                // the shipped policy forbids every connection.
-                                policy_override = Some("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'");
-                            }
-                            (200, kind, crate::assistant_page::page_policy(), bytes.to_vec())
-                        }
-                        None => (404, "text/plain", "default-src 'none'", b"not found".to_vec()),
-                    }
-                };
-                let payload = if path == "/" || path == "/index.html" {
-                    index_with_bridge(&payload)
-                } else {
-                    payload
-                };
-                let policy = policy_override.unwrap_or(policy);
-                let head = format!(
-                    "HTTP/1.1 {status} OK\r\nContent-Type: {kind}\r\nContent-Security-Policy: {policy}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-                    payload.len()
-                );
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(&payload);
-            }
-        })?;
-    Ok(port)
-}
-
 /// The page-side half of the theme bridge. The host passes the tokens it is drawing with;
 /// this function turns them into the CSS variables Mastra's components already use. It is
 /// installed on page readiness, without waiting for a texture.
@@ -1753,7 +1835,7 @@ window.__intcadTheme = (t, ticket) => {
   let style = document.getElementById('intcad-theme');
   if (!style) { style = document.createElement('style'); style.id = 'intcad-theme'; document.head.appendChild(style); }
   style.textContent = `
-    @font-face { font-family:'Intcad Sans'; src:url('/intcad-plex.ttf') format('truetype'); font-weight:100 700; font-display:block; }
+    @font-face { font-family:'Intcad Sans'; src:url('intcad-plex.ttf') format('truetype'); font-weight:100 700; font-display:block; }
     html, body, #root { background: transparent !important; }
     ::selection { background: ${c.selected}; color: ${c.selectedText}; }
     button, input, textarea, select { font-family: inherit; }
@@ -1771,27 +1853,9 @@ window.__intcadTheme = (t, ticket) => {
 };
 "#;
 
-/// The page's IPC shim, served as `/ipc.js` so the policy's `script-src 'self'` admits it.
-const IPC_SHIM: &str = "window.ipc = { postMessage(message) { fetch('/ipc', { method: 'POST', body: message }); } };\n";
-
-/// The page's HTML with the IPC shim and a CSP that allows it. The shim defines the one call
-/// the page makes and nothing else; the bundle is untouched.
-fn index_with_bridge(html: &[u8]) -> Vec<u8> {
-    let text = String::from_utf8_lossy(html);
-    // A file of the page's own origin: an inline script would be refused by the policy.
-    let shim = r#"<script src="/ipc.js"></script>"#;
-    let text = text.replace("connect-src 'none'", "connect-src 'self'");
-    let text = if let Some(at) = text.find("<script type=\"module\"") {
-        format!("{}{}{}", &text[..at], shim, &text[at..])
-    } else {
-        text.replace("<body>", &format!("<body>{shim}"))
-    };
-    text.into_bytes()
-}
-
 /// The app's own note channel for the Assistant's web view.
 fn note(text: &str) {
-    eprintln!("solidcraft: assistant (CEF): {text}");
+    eprintln!("solidcraft: assistant (CEF): {}", crate::assistant_cef_http::sanitized_diagnostic(text));
 }
 
 /// One `/ipc` log line keeps at most this many characters, so a page cannot flood the
@@ -1984,7 +2048,7 @@ const SCOPE_PROBE_JS: &str = r#"
       ? text
       : 'SCOPE ' + JSON.stringify({ action: 'scope_oversize', of: value.action, len: text.length });
     try {
-      fetch('/ipc', { method: 'POST', body: JSON.stringify({ type: 'log', text: out }) });
+      window.ipc.postMessage(JSON.stringify({ type: 'log', text: out }));
     } catch (_) {}
   };
   const root = document.createElement('div');
@@ -2108,6 +2172,55 @@ const SCOPE_PROBE_JS: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_policy_rejects_consumed_permit_redirect_and_foreign_frame() {
+        use welding::request_policy::{RequestCheck, RequestDecision};
+        let authority = Arc::new(DocumentAuthority::new());
+        let owner = authority.reserve_browser_owner().unwrap();
+        let policy = private_request_policy(authority.clone(), owner, Arc::new(AtomicBool::new(false)));
+        assert!(matches!(policy(RequestCheck::BrowserCreated { browser_id: 7 }), RequestDecision::Allow));
+        let document = authority.begin_document(owner, [1; 32]).unwrap();
+        let url = authority.bootstrap_url(document, 43123).unwrap();
+        authority.arm_main_navigation(NavigationIdentity { document, owner, browser_id: 7, url: url.clone() }).unwrap();
+        for (browser_id, main_frame, is_redirect) in [(8, true, false), (7, false, false), (7, true, true)] {
+            assert!(matches!(policy(RequestCheck::BeforeBrowse { browser_id, main_frame, target_url: &url, is_redirect }), RequestDecision::Cancel));
+        }
+        assert!(!authority.permits(document), "refusals cannot consume the permit");
+        assert!(matches!(policy(RequestCheck::BeforeBrowse { browser_id: 7, main_frame: true, target_url: &url, is_redirect: false }), RequestDecision::Allow));
+        assert!(authority.permits(document));
+        for target_url in ["https://outside.invalid/picture/key", "data:text/html,evil", "about:blank"] {
+            assert!(matches!(policy(RequestCheck::Resource { browser_id: 7, target_url, is_image: false }), RequestDecision::Cancel));
+        }
+        let image = url.replace("index.html", "picture/key");
+        assert!(matches!(policy(RequestCheck::Resource { browser_id: 7, target_url: &image, is_image: true }), RequestDecision::Allow));
+        assert!(matches!(policy(RequestCheck::Redirect { browser_id: 7, target_url: "https://outside.invalid/index.html", is_image: false }), RequestDecision::Cancel));
+    }
+
+    #[test]
+    fn blocked_reload_requests_host_renewal_without_rearming_old_document() {
+        use welding::request_policy::{RequestCheck, RequestDecision};
+        let authority = Arc::new(DocumentAuthority::new());
+        let owner = authority.reserve_browser_owner().unwrap();
+        authority.bind_browser(owner, 7).unwrap();
+        let renewal = Arc::new(AtomicBool::new(false));
+        let policy = private_request_policy(authority.clone(), owner, renewal.clone());
+        let document = authority.begin_document(owner, [1; 32]).unwrap();
+        let url = authority.bootstrap_url(document, 43123).unwrap();
+        authority.arm_main_navigation(NavigationIdentity { document, owner, browser_id: 7, url: url.clone() }).unwrap();
+        let browse = || RequestCheck::BeforeBrowse { browser_id: 7, main_frame: true, target_url: &url, is_redirect: false };
+        assert!(matches!(policy(browse()), RequestDecision::Allow));
+        assert!(matches!(policy(browse()), RequestDecision::RenewDocument));
+        assert!(renewal.swap(false, Ordering::AcqRel));
+        // The host consumes the bounded notification and revokes before entropy,
+        // scripts or navigation; no callback is allowed to rearm this tuple.
+        authority.revoke();
+        assert!(!authority.permits(document));
+        assert!(matches!(policy(browse()), RequestDecision::Cancel));
+        assert!(!renewal.load(Ordering::Acquire));
+        assert!(authority.begin_document(owner, [1; 32]).is_err());
+        assert!(authority.begin_document(owner, [2; 32]).is_ok());
+    }
 
     #[test]
     fn private_http_runtime_suppresses_browser_argv_and_native_logs() {

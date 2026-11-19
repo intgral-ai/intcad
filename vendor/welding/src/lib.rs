@@ -54,6 +54,7 @@ pub mod error;
 // SolidCraft: owned native capture geometry, with no CEF/GPU dependencies.
 pub mod frame_geometry;
 pub mod native_frame;
+pub mod request_policy;
 pub mod runtime;
 // SolidCraft: owned pre-init runtime identity.
 pub mod runtime_identity;

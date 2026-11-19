@@ -15918,6 +15918,23 @@ fn the_web_page_edits_the_queue_and_selects_only_what_it_names_rightly() {
 /// queue goes once the agent has ended it. A message sent with Ctrl+Enter goes the same way,
 /// with what was typed.
 #[test]
+fn web_send_preserves_scalar_and_serialized_limits() {
+    // Real web action and existing controlled agent fixture; no live provider.
+    let (mut app, _script, ctx) = app_with_script();
+    web::act(&mut app, &ctx, r#"{"type":"send","text":"start"}"#).unwrap();
+    let accepted = "a".repeat(100_000);
+    web::act(&mut app, &ctx, &json!({"type": "send", "text": accepted}).to_string()).unwrap();
+    assert_eq!(texts(&app), [accepted.as_str()]);
+    let too_many_scalars = json!({"type": "send", "text": "a".repeat(100_001)}).to_string();
+    assert!(too_many_scalars.len() < 400_000);
+    assert_eq!(web::act(&mut app, &ctx, &too_many_scalars).unwrap_err(), "send: text too long");
+    let too_many_bytes = json!({"type": "send", "text": "😀".repeat(100_000)}).to_string();
+    assert!(too_many_bytes.len() > 400_000);
+    assert_eq!(web::act(&mut app, &ctx, &too_many_bytes).unwrap_err(), "message too long");
+    assert_eq!(texts(&app), [accepted.as_str()], "refused messages never enter the queue");
+}
+
+#[test]
 fn the_web_page_steers_with_send_now_and_with_a_message_sent_now() {
     let (mut app, script, ctx) = app_with_script();
     let act = |app: &mut SolveApp, action: Value| web::act(app, &ctx, &action.to_string());

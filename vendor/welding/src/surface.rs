@@ -593,6 +593,9 @@ pub struct ImeComposition {
 
 /// Configuration for a single CEF browser surface.
 pub struct CefSurfaceConfig {
+    /// Optional synchronous navigation/resource authorization. No callbacks
+    /// may grant document authority through the asynchronously polled queue.
+    pub request_policy: Option<crate::request_policy::RequestPolicy>,
     pub initial_url: String,
     pub initial_size: PhysicalSize<u32>,
     /// What CEF paints where the page itself paints nothing (no CSS
@@ -671,6 +674,7 @@ pub struct CefSurfaceConfig {
 impl Default for CefSurfaceConfig {
     fn default() -> Self {
         CefSurfaceConfig {
+            request_policy: None,
             initial_url: "about:blank".into(),
             initial_size: PhysicalSize::new(800, 600),
             background_color: Some([255, 255, 255]),

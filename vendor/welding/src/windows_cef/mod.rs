@@ -220,13 +220,14 @@ impl WindowsCefProducer {
 
             let render_handler = cef_backed::WeldRenderHandler::build(inner.clone());
             let life_span_handler =
-                cef_backed::WeldLifeSpanHandler::build(life_span_state, events.clone());
+                cef_backed::WeldLifeSpanHandler::build(life_span_state, events.clone(), config.surface.request_policy.clone());
             let load_handler = cef_backed::WeldLoadHandler::build(inner.clone());
             let display_handler = cef_backed::WeldDisplayHandler::build(inner);
             let request_handler = cef_backed::WeldRequestHandler::build(
                 events.clone(),
                 auth.clone(),
                 scripts.clone(),
+                config.surface.request_policy.clone(),
             );
             downloads.set_dir(config.surface.download_dir.clone());
             let download_handler =

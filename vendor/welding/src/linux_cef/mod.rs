@@ -179,11 +179,13 @@ impl LinuxCefProducer {
                 events.clone(),
                 scripts.clone(),
                 cookies.clone(),
+                config.surface.request_policy.clone(),
             );
             let request_handler = cef_backed::WeldRequestHandler::build(
                 events.clone(),
                 auth.clone(),
                 scripts.clone(),
+                config.surface.request_policy.clone(),
             );
             downloads.set_dir(config.surface.download_dir.clone());
             let download_handler =

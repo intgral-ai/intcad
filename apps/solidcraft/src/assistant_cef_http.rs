@@ -5,6 +5,44 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
 
 pub(super) type Pictures = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
+
+/// Remove capability-shaped credentials even when embedded in a native error.
+pub(super) fn sanitized_diagnostic(text: &str) -> String {
+    if text.len() > MAX_HEAD {
+        return "Assistant diagnostic refused (oversize)".into();
+    }
+    let mut output = String::new();
+    if output.try_reserve(text.len().min(MAX_HEAD)).is_err() {
+        return "Assistant diagnostic unavailable".into();
+    }
+    let mut at = 0;
+    while let Some(byte) = text.as_bytes().get(at) {
+        if output.len() >= MAX_HEAD {
+            return "Assistant diagnostic refused (oversize)".into();
+        }
+        let tail = text.get(at..).unwrap_or_default();
+        if tail.starts_with("http://") || tail.starts_with("https://") {
+            let end = tail.find(|ch: char| ch.is_whitespace() || "\"'<>,;)]}".contains(ch)).unwrap_or(tail.len());
+            at += end;
+            output.push_str("[private]");
+        } else if byte.is_ascii_hexdigit() {
+            let start = at;
+            while text.as_bytes().get(at).is_some_and(u8::is_ascii_hexdigit) {
+                at += 1;
+            }
+            if at - start >= 64 {
+                output.push_str("[private]");
+            } else if let Some(part) = text.get(start..at) {
+                output.push_str(part);
+            }
+        } else {
+            let Some(ch) = text.get(at..).and_then(|s| s.chars().next()) else { break };
+            output.push(ch);
+            at += ch.len_utf8();
+        }
+    }
+    output
+}
 const MAX_BODY: usize = 400_000;
 const MAX_HEAD: usize = 16_384;
 const MAX_LINE: usize = 2_048;
@@ -849,6 +887,21 @@ pub(super) fn index_with_bridge(html: &[u8]) -> Result<Vec<u8>, TransportError> 
 mod tests {
     use super::*;
 
+    #[test]
+    fn transport_errors_never_log_capability_or_business_text() {
+        let secret = "abcd".repeat(16);
+        let text = format!("failure http://127.0.0.1:43123/__assistant/{secret}/index.html; secret={secret}; {}", secret.to_uppercase());
+        let clean = sanitized_diagnostic(&text);
+        assert!(!clean.contains(&secret));
+        assert!(!clean.contains(&secret.to_uppercase()));
+        assert!(clean.contains("[private]"));
+        assert!(!clean.contains("http://127.0.0.1:43123/"));
+        assert!(!clean.contains("/__assistant/"));
+        assert_eq!(sanitized_diagnostic("error https://outside.invalid/navigation"), "error [private]");
+        assert_eq!(sanitized_diagnostic(&"x".repeat(MAX_HEAD + 1)), "Assistant diagnostic refused (oversize)");
+        assert_eq!(sanitized_diagnostic("CEF_VIEWPORT {\"scale\":1.25}"), "CEF_VIEWPORT {\"scale\":1.25}");
+    }
+
     fn bound(a: &DocumentAuthority) -> BrowserOwnerId {
         let owner = a.reserve_browser_owner().unwrap();
         a.bind_browser(owner, 7).unwrap();
@@ -1167,6 +1220,52 @@ mod tests {
         }
         assert_eq!(server.poll_stop(), ServerProgress::Stopped);
     }
+    #[test]
+    fn actual_embedded_files_are_private_and_bootstrap_shim_precedes_module() {
+        // Actual production resolver and shipped bytes, not an ABI/native test.
+        let authority = Arc::new(DocumentAuthority::new());
+        let mut server = PageServer::start(
+            PageAssets { resolve: crate::assistant_page::page_file, font: b"font" },
+            Arc::new(Mutex::new(HashMap::new())),
+            authority.clone(),
+        )
+        .unwrap();
+        let owner = bound(&authority);
+        let document = authority.begin_document(owner, [1; 32]).unwrap();
+        let url = authority.bootstrap_url(document, server.port()).unwrap();
+        authority.arm_main_navigation(NavigationIdentity { document, owner, browser_id: 7, url: url.clone() }).unwrap();
+        let prefix = url.strip_prefix(&format!("http://127.0.0.1:{}", server.port())).unwrap().strip_suffix("index.html").unwrap();
+        assert!(request(server.port(), "GET", &(prefix.to_owned() + "index.html"), "", b"").starts_with(b"HTTP/1.1 404 "));
+        let identity = authority.navigation_identity(owner, 7, &url).unwrap();
+        authority.claim_main_navigation(&identity, true, false).unwrap();
+        let names = [
+            "index.html",
+            "assistant.js",
+            "style.css",
+            "CommitMono-400-Regular.woff2",
+            "CommitMono-700-Regular.woff2",
+            "MonaSans-VariableFont_wdth-wght.ttf",
+        ];
+        for name in names {
+            assert!(request(server.port(), "GET", &format!("/{name}"), "", b"").starts_with(b"HTTP/1.1 404 "));
+            let response = request(server.port(), "GET", &(prefix.to_owned() + name), "", b"");
+            assert!(response.starts_with(b"HTTP/1.1 200 "), "{name}");
+            let payload_at = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let payload = &response[payload_at..];
+            if name == "index.html" {
+                let html = std::str::from_utf8(payload).unwrap();
+                assert!(html.find("<script src=\"ipc.js\">").unwrap() < html.find("<script type=\"module\"").unwrap());
+            } else {
+                assert_eq!(payload, crate::assistant_page::page_file(name).unwrap().1);
+            }
+        }
+        authority.revoke();
+        for name in names {
+            assert!(request(server.port(), "GET", &(prefix.to_owned() + name), "", b"").starts_with(b"HTTP/1.1 404 "));
+        }
+        stop(&mut server);
+    }
+
     #[test]
     fn server_authenticates_before_body_read_and_serves_only_current_assets() {
         let (mut server, authority, _, prefix) = server();
