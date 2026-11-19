@@ -239,13 +239,19 @@ impl eframe::App for App {
         self.solve.session.crash_journal = solidcraft_engine::crash::enabled();
         // The OS closing the window (Alt+F4, Cmd+Q, the window manager): ask about unsaved
         // designs first; the window closes once they are answered (`quit_requested`).
-        if ctx.input(|i| i.viewport().close_requested()) && !self.solve.quit_requested {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !solidcraft_ui_egui::documents::quit_committed(&self.solve)
+        {
+            // Every direct OS Close is intercepted until the committed receipt, including a
+            // second request while a staged quit is already waiting for the host barrier.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            solidcraft_ui_egui::documents::request_quit(&mut self.solve);
-            // Closed from the taskbar or a window switcher while another app had the focus: the
-            // "save changes?" prompt is only seen once the window comes forward.
             if !self.solve.quit_requested {
-                self.come_forward.start(std::time::Instant::now());
+                solidcraft_ui_egui::documents::request_quit(&mut self.solve);
+                // Closed from the taskbar or a window switcher while another app had the focus:
+                // the "save changes?" prompt is only seen once the window comes forward.
+                if !self.solve.quit_requested {
+                    self.come_forward.start(std::time::Instant::now());
+                }
             }
         }
         self.come_forward.tick(ctx, _frame);
@@ -310,6 +316,8 @@ impl eframe::App for App {
         {
             self.solve.set_host_close_state(solidcraft_ui_egui::documents::HostCloseState::Ready);
         }
+        // Owner-thread work is done: a changed approved design cancels stale quit consent now.
+        solidcraft_ui_egui::documents::invalidate_stale_quit(&mut self.solve);
         // The file chooser that opened is not the desktop's own: the user has to be told (#10159).
         #[cfg(target_os = "linux")]
         if let Some(reason) = desktop_chooser::take_reason() {

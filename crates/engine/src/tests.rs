@@ -5878,3 +5878,37 @@ fn a_command_check_that_panics_refuses_the_command() {
     assert!(matches!(r, Err(EngineError::Internal(..))), "{r:?}");
     assert!(s.doc.features.is_empty());
 }
+
+/// R1 quit consent: edit→undo→same content is still a different design state.
+#[test]
+fn quit_snapshot_rejects_undo_redo_content_aba() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    let approved = s.quit_snapshot().unwrap();
+    assert!(s.matches_quit_snapshot(&approved), "the captured state matches itself");
+
+    run(&mut s, "edit.undo", json!({}));
+    assert!(!s.matches_quit_snapshot(&approved), "undo changed the design after consent");
+
+    run(&mut s, "edit.redo", json!({}));
+    assert!(!s.matches_quit_snapshot(&approved), "content ABA must not restore old consent");
+}
+
+/// Saving, hiding and replacing a design are each a different approved state.
+#[test]
+fn quit_snapshot_detects_save_visibility_and_replacement() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    let approved = s.quit_snapshot().unwrap();
+
+    s.mark_saved();
+    assert!(!s.matches_quit_snapshot(&approved), "a save blesses a new baseline");
+
+    let saved = s.quit_snapshot().unwrap();
+    run(&mut s, "browser.visibility", json!({"items": ["Body1"], "visible": false}));
+    assert!(!s.matches_quit_snapshot(&saved), "visibility is part of the consent");
+
+    let visible = s.quit_snapshot().unwrap();
+    s.replace_design(Session::default());
+    assert!(!s.matches_quit_snapshot(&visible), "another design is another consent");
+}

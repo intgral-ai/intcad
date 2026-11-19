@@ -996,6 +996,18 @@ pub fn validate_quit_intent(app: &mut SolveApp) -> Result<(), QuitIntentError> {
     }
 }
 
+/// Cancel a staged quit as soon as an approved design no longer matches its consent.
+/// Called after owner-thread work; Pending prompt targets are not judged here.
+pub fn invalidate_stale_quit(app: &mut SolveApp) {
+    if app.docs.quit_intent.is_none() {
+        return;
+    }
+    if matches!(validate_quit_intent(app), Err(QuitIntentError::Changed)) {
+        cancel_quit(app);
+        report_quit_cancelled(app);
+    }
+}
+
 /// The terminal latch: no mutation is applied after the one final Close.
 pub fn quit_committed(app: &SolveApp) -> bool {
     matches!(app.docs.quit_intent.as_ref().map(|intent| intent.stage), Some(QuitStage::Committed))
