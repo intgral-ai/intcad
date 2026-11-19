@@ -49,67 +49,95 @@ fn params(s: &Session) -> Vec<solidcraft_engine::doc::Param> {
     v
 }
 
-/// A joint as the replay must return it, except the snap's persistent face/end names and an
-/// `XRef::Face` x, which `joint.create` re-derives from the pick at creation (the engine's joint
-/// tests compare those separately). A stored x direction (`Snap::Point`/`Frame`, `XRef::Dir`)
-/// stays: it is part of the joint's meaning. Everything else stays too: id, name, kind,
-/// occurrence refs, values, limits, offset, angle, flags and expressions.
-fn joint_projection(joints: &[solidcraft_engine::doc::joints::Joint]) -> Vec<Value> {
-    let strip = |mut joint: Value| {
+/// The stable part of a joint for replay comparison. The joint's own id is allocated again
+/// (`joint.create` calls `allocate_id`; `script.rs` says joint ids travel last and are
+/// referenced by name, so their position is free). The snap's persistent face/end names are
+/// re-derived. A stored x direction stays.
+fn joint_fields(joint: &solidcraft_engine::doc::joints::Joint) -> Value {
+    let mut v = serde_json::to_value(joint).unwrap();
+    v.as_object_mut().unwrap().remove("id");
+    for side in ["a", "b"] {
+        if let Some(snap) = v.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
+            snap.remove("face");
+            snap.remove("end");
+        }
+    }
+    v
+}
+
+/// Compare joints as replay data: [`joint_fields`], except an x the source did not store.
+/// `Snap::Point`/`Frame` and `XRef::Dir` x are directions (arrays); `XRef::Face` is an object
+/// re-derived from its pick. When the source has no array x, the replay's chosen x is a valid
+/// realization of "any direction square to z" and is not compared. When the source has one,
+/// both are kept, so a stored direction difference fails.
+fn joints_for_comparison(
+    source: &[solidcraft_engine::doc::joints::Joint],
+    replay: &[solidcraft_engine::doc::joints::Joint],
+) -> (Vec<Value>, Vec<Value>) {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for (source, replay) in source.iter().zip(replay) {
+        let mut source = joint_fields(source);
+        let mut replay = joint_fields(replay);
         for side in ["a", "b"] {
-            if let Some(snap) = joint.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
-                snap.remove("face");
-                snap.remove("end");
-                // `XRef` is untagged: a direction (and Snap::Point/Frame's x) is an array; an
-                // XRef::Face is an object found again by its persistent name/pick.
-                if snap.get("x").is_some_and(|x| !x.is_array()) {
-                    snap.remove("x");
+            let stored_direction = source.get(side).and_then(|side| side.get("snap")).and_then(|snap| snap.get("x")).is_some_and(Value::is_array);
+            if !stored_direction {
+                for joint in [&mut source, &mut replay] {
+                    if let Some(snap) = joint.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
+                        snap.remove("x");
+                    }
                 }
             }
         }
-        joint
-    };
-    joints.iter().map(|j| strip(serde_json::to_value(j).unwrap())).collect()
-}
-
-fn joints(s: &Session) -> Vec<Value> {
-    joint_projection(&s.doc.assembly.joints)
+        left.push(source);
+        right.push(replay);
+    }
+    (left, right)
 }
 
 #[test]
 fn joint_projection_keeps_directions_and_drops_re_derived_face_refs() {
-    let joint = |snap: Value| {
-        joint_projection(&[serde_json::from_value(json!({
-            "id": 1,
+    let joint = |id: u64, snap: Value| -> solidcraft_engine::doc::joints::Joint {
+        serde_json::from_value(json!({
+            "id": id,
             "name": "J",
             "kind": "rigid",
             "a": {"occurrence": 2, "snap": snap},
             "b": {"occurrence": 3, "snap": {"type": "point", "point": [0.0, 0.0, 0.0]}},
         }))
-        .unwrap()])
+        .unwrap()
+    };
+    let compare = |a: solidcraft_engine::doc::joints::Joint, b: solidcraft_engine::doc::joints::Joint| {
+        joints_for_comparison(&[a], &[b])
     };
     // A stored direction is part of the joint, not a pick-derived reference.
-    assert_ne!(
-        joint(json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
-        joint(json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
-        "a point origin's stored x direction is semantic"
+    let (left, right) = compare(
+        joint(1, json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
+        joint(1, json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
     );
-    assert_ne!(
-        joint(json!({"type": "frame", "origin": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [1.0, 0.0, 0.0]})),
-        joint(json!({"type": "frame", "origin": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [0.0, 1.0, 0.0]})),
-        "a frame's stored x direction is semantic"
+    assert_ne!(left, right, "a point origin's stored x direction is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "frame", "origin": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [1.0, 0.0, 0.0]})),
+        joint(1, json!({"type": "frame", "origin": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [0.0, 1.0, 0.0]})),
     );
-    assert_ne!(
-        joint(json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
-        joint(json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
-        "an XRef::Dir x is a stored direction"
+    assert_ne!(left, right, "a frame's stored x direction is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
     );
+    assert_ne!(left, right, "an XRef::Dir x is a stored direction");
+    // The source storing no x leaves the turn free; the replay's chosen direction is not a change.
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 0.0, -1.0]})),
+    );
+    assert_eq!(left, right, "an x the source did not store is free");
     // A face found by name, and the snap's face/end names, are re-derived at creation.
-    assert_eq!(
-        joint(json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face A", "end": "End A", "x": {"face": "Face A"}})),
-        joint(json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face B", "end": "End B", "x": {"face": "Face B"}})),
-        "persistent face/end names and an XRef::Face x are re-derived"
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face A", "end": "End A", "x": {"face": "Face A"}})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face B", "end": "End B", "x": {"face": "Face B"}})),
     );
+    assert_eq!(left, right, "persistent face/end names and an XRef::Face x are re-derived");
 }
 
 #[test]
@@ -146,7 +174,9 @@ fn corpus_designs_replay_from_their_scripts() {
         assert_eq!(t.doc.occurrences, s.doc.occurrences, "{name}: occurrences");
         assert_eq!(t.doc.parts, s.doc.parts, "{name}: standard parts");
         assert_eq!(t.doc.links, s.doc.links, "{name}: linked designs");
-        assert_eq!(joints(&t), joints(&s), "{name}: joints");
+        assert_eq!(s.doc.assembly.joints.len(), t.doc.assembly.joints.len(), "{name}: joint count");
+        let (source_joints, replay_joints) = joints_for_comparison(&s.doc.assembly.joints, &t.doc.assembly.joints);
+        assert_eq!(source_joints, replay_joints, "{name}: joints");
         assert_eq!(errors(&t), errors(&s), "{name}: feature results");
         assert_eq!(bodies(&mut t), bodies(&mut s), "{name}: bodies");
         replayed += 1;
