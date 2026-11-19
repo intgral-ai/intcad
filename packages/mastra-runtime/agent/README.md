@@ -116,6 +116,11 @@ Plan sign-ins are different: Mastra keeps them itself, in `auth.json` in its dat
 A custom address without a key is given the word `none` in the key's place, because Mastra counts
 an address without a key as not connected; a service that needs no key ignores it.
 
+## What it does not do by itself
+
+The entry sets Mastra's own switch `MASTRA_TELEMETRY_DISABLED` before anything of Mastra's is
+loaded, so no usage is reported.
+
 ## What it keeps, and where
 
 The app names a data folder with `MASTRA_APP_DATA_DIR`. Mastra keeps its plan sign-ins and its

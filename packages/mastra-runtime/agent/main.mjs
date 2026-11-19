@@ -34,6 +34,11 @@ if (process.env.MASTRA_APP_DATA_DIR) {
   process.env.USERPROFILE = home;
 }
 
+// Mastra reports feature use to its own service unless this is set (`@mastra/core`, and Mastra
+// Code's analytics). Intcad's agent reports nothing: it is set here, before anything of Mastra's is
+// loaded, so it holds however the agent was started.
+process.env.MASTRA_TELEMETRY_DISABLED = '1';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const sdkRoot = resolve(process.env.SOLIDCRAFT_MASTRA_SDK || join(here, '..', 'node_modules'));
 // The files are named in full: an absolute path does not go through a package's export map, and a
