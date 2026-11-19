@@ -158,7 +158,7 @@ pub fn child(dir: &Path, name: &str) -> Result<PathBuf, String> {
 /// `bracket (copy 2).sc`, and so on. The extension stays at the end.
 pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
     let first = dir.join(name);
-    if !first.exists() {
+    if !entry_exists(&first) {
         return first;
     }
     let path = first.as_path();
@@ -170,7 +170,7 @@ pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
     };
     let mut candidate = dir.join(named(" (copy)"));
     let mut number = 2u32;
-    while candidate.exists() {
+    while entry_exists(&candidate) {
         candidate = dir.join(named(&format!(" (copy {number})")));
         number = number.saturating_add(1);
     }
@@ -209,7 +209,8 @@ pub enum Outcome {
     Done,
     /// The item was left as it was (a conflict the person chose to skip, or a folder conflict).
     Skipped,
-    /// Nothing was changed for this item; the reason says what the file system answered.
+    /// The operation did not finish. The reason includes any retained recovery path or
+    /// complete destination when a move's source could not be removed.
     Failed(String),
 }
 
@@ -255,31 +256,8 @@ pub fn copy_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemR
     if target == source {
         return ItemResult::failed(source, &direct, "the item is already there");
     }
-    if target.exists() && conflict == Conflict::Replace {
-        // Copy next to the destination first: a copy that fails part-way must not truncate the
-        // file being replaced.
-        let Some(parent) = target.parent() else {
-            return ItemResult::failed(source, &target, "the destination has no folder");
-        };
-        let Some(replace_name) = target.file_name().and_then(OsStr::to_str) else {
-            return ItemResult::failed(source, &target, "the destination name is not readable");
-        };
-        let temporary = temporary_sibling(parent, replace_name);
-        if let Err(e) = fs::copy(source, &temporary) {
-            let _ = fs::remove_file(&temporary);
-            return ItemResult::failed(source, &target, describe("copy", source, &e));
-        }
-        let copy = temporary.clone();
-        let to = target.clone();
-        return match swap_in(&target, || fs::rename(&copy, &to).map_err(|e| describe("copy", source, &e))) {
-            Ok(()) => ItemResult::done(source, &target),
-            Err(e) => {
-                let _ = fs::remove_file(&temporary);
-                ItemResult::failed(source, &target, e)
-            }
-        };
-    }
-    match copy_entry(source, &target) {
+    let replacing = conflict == Conflict::Replace && is_plain_file(source) && is_plain_file(&target);
+    match staged_copy(source, &target, replacing) {
         Ok(()) => ItemResult::done(source, &target),
         Err(e) => ItemResult::failed(source, &target, e),
     }
@@ -290,34 +268,118 @@ pub fn copy_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemR
 /// file. If both the replacement and the restore fail, the error names the kept file.
 fn swap_in(destination: &Path, replace: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     let Some(parent) = destination.parent() else { return Err("the destination has no folder".into()) };
-    let Some(name) = destination.file_name().and_then(OsStr::to_str) else {
-        return Err("the destination name is not readable".into());
-    };
-    let backup = temporary_sibling(parent, name);
-    fs::rename(destination, &backup).map_err(|e| describe("replace", destination, &e))?;
-    match replace() {
-        Ok(()) => remove_permanent(&backup)
-            .map_err(|e| format!("the replacement is in place, but the previous entry could not be removed from {}: {e}", backup.display())),
-        Err(e) => match fs::rename(&backup, destination) {
-            Ok(()) => Err(e),
-            Err(restore) => Err(format!("{e}; the previous entry is kept at {} because it could not be put back: {restore}", backup.display())),
+    let staging = owned_sibling(parent, "replace")?;
+    let backup = staging.join("previous");
+    let result = match fs::rename(destination, &backup) {
+        Err(e) => Err(describe("replace", destination, &e)),
+        Ok(()) => match replace() {
+            Ok(()) => Ok(()),
+            Err(e) => match fs::rename(&backup, destination) {
+                Ok(()) => Err(e),
+                // Never clean the only remaining copy when restoration failed.
+                Err(restore) => {
+                    return Err(format!("{e}; the previous entry is kept at {} because it could not be put back: {restore}", backup.display()));
+                }
+            },
         },
+    };
+    finish_staging(&staging, result)
+}
+
+/// Reserve an exclusive sibling directory. Never adopt an existing path, including a
+/// dangling symlink. Its fixed-size name also works beside a maximum-length filename.
+fn owned_sibling(parent: &Path, purpose: &str) -> Result<PathBuf, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..1000 {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".intcad-{purpose}-{}-{n}", std::process::id()));
+        let builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        let builder = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
+            builder.mode(0o700);
+            builder
+        };
+        match builder.create(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(describe("reserve staging", &candidate, &e)),
+        }
+    }
+    Err(format!("could not reserve staging in {}", parent.display()))
+}
+
+fn finish_staging(staging: &Path, result: Result<(), String>) -> Result<(), String> {
+    let cleanup = || -> io::Result<()> {
+        #[cfg(test)]
+        tests::checkpoint("cleanup", staging, staging)?;
+        fs::remove_dir_all(staging)
+    };
+    match cleanup() {
+        Ok(()) => result,
+        Err(e) => {
+            let reason = result.err().unwrap_or_else(|| "the complete destination is in place".into());
+            Err(format!("{reason}; staging could not be removed; recover it at {}: {e}", staging.display()))
+        }
     }
 }
 
-/// A hidden sibling path for a replace, free at the moment it is chosen. The process id and a
-/// counter keep two replaces in one folder apart.
-fn temporary_sibling(parent: &Path, name: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    for _ in 0..1000 {
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(".intcad-replace-{}-{n}-{name}", std::process::id()));
-        if !candidate.exists() {
-            return candidate;
-        }
+/// No public destination exists until every entry has been copied. Replacement is a single
+/// native rename of a complete entry, so a failed publication leaves the old file intact.
+fn staged_copy(source: &Path, target: &Path, replacing: bool) -> Result<(), String> {
+    let Some(parent) = target.parent() else { return Err("the destination has no folder".into()) };
+    let staging = owned_sibling(parent, "stage")?;
+    let payload = staging.join("entry");
+    let result = copy_entry(source, &payload).and_then(|()| {
+        #[cfg(test)]
+        tests::checkpoint("publish", &payload, target).map_err(|e| describe("publish", target, &e))?;
+        let published = if replacing { fs::rename(&payload, target) } else { rename_no_replace(&payload, target) };
+        published.map_err(|e| describe("publish", target, &e))
+    });
+    finish_staging(&staging, result)
+}
+
+/// Atomic no-clobber publication, not an exists-check followed by a clobbering rename.
+fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        renameat_with(CWD, source, CWD, target, RenameFlags::NOREPLACE).map_err(Into::into)
     }
-    parent.join(format!(".intcad-replace-{}-{name}", std::process::id()))
+    #[cfg(windows)]
+    {
+        // This safe wrapper does not change source attributes or require hard links.
+        // Resolve only the parents for verbatim/long paths; never follow the source link.
+        atomicwrites::move_atomic(&windows_entry_path(source)?, &windows_entry_path(target)?)
+    }
+    #[cfg(not(any(windows, target_vendor = "apple", target_os = "linux", target_os = "android")))]
+    {
+        // An exclusive hard link publishes file/link entries without overwriting. If unlink
+        // fails, both complete entries remain; never remove the public destination on error.
+        fs::hard_link(source, target)?;
+        fs::remove_file(source).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("the complete destination is at {}, but {} could not be removed: {e}", target.display(), source.display()),
+            )
+        })
+    }
+}
+
+#[cfg(windows)]
+fn windows_entry_path(path: &Path) -> io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+    // atomicwrites' Win32 conversion appends NUL, so validate before crossing that boundary.
+    if path.as_os_str().encode_wide().any(|c| c == 0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "a path contains NUL"));
+    }
+    let absolute = std::path::absolute(path)?;
+    let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name()) else {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "the entry has no parent or name"));
+    };
+    Ok(fs::canonicalize(parent)?.join(name))
 }
 
 /// Move `source` into the folder `destination`, following `conflict`. Across volumes the
@@ -338,17 +400,8 @@ pub fn move_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemR
     if target == source {
         return ItemResult::failed(source, &direct, "the item is already there");
     }
-    if target.exists() {
-        // Replace keeps the old destination aside until the move is complete; a failed move
-        // puts it back, so a replace never loses the only copy (#INT-1484 review).
-        let from = source.to_path_buf();
-        let to = target.clone();
-        return match swap_in(&target, || move_entry(&from, &to)) {
-            Ok(()) => ItemResult::done(source, &target),
-            Err(e) => ItemResult::failed(source, &target, e),
-        };
-    }
-    match move_entry(source, &target) {
+    let replacing = conflict == Conflict::Replace && is_plain_file(source) && is_plain_file(&target);
+    match move_entry_with(source, &target, replacing) {
         Ok(()) => ItemResult::done(source, &target),
         Err(e) => ItemResult::failed(source, &target, e),
     }
@@ -366,10 +419,7 @@ pub fn rename(source: &Path, new_name: &str, conflict: Conflict) -> ItemResult {
     if target == source {
         return ItemResult::done(source, &target);
     }
-    // On a file system that does not tell letter case apart (the default on macOS and Windows),
-    // the new spelling of the same name "exists": it is this entry. That is a rename, not a
-    // conflict.
-    if target.exists() && !same_entry_in_another_case(source, &target) {
+    if entry_exists(&target) && !same_case_entry(source, &target) {
         match conflict {
             Conflict::Skip => return ItemResult::skipped(source, &target),
             Conflict::KeepBoth => target = unique_path(parent, new_name),
@@ -392,24 +442,38 @@ pub fn rename(source: &Path, new_name: &str, conflict: Conflict) -> ItemResult {
     }
 }
 
-/// Do `source` and `target` name one entry of the same folder in two spellings that differ only
-/// in letter case? True when the names match without regard to case and the folder lists no
-/// entry spelled exactly like the target: the target then "exists" only because the file system
-/// answers for the source. A folder that does tell case apart and holds both lists both.
-fn same_entry_in_another_case(source: &Path, target: &Path) -> bool {
-    let (Some(from), Some(to)) = (source.file_name().and_then(OsStr::to_str), target.file_name().and_then(OsStr::to_str)) else {
-        return false;
-    };
-    if from == to || from.to_lowercase() != to.to_lowercase() || source.parent() != target.parent() {
+/// A filesystem alias is not a second hardlink or a link to the same target. Inspect the
+/// parent's stored names (without following links), and require exactly one case-equivalent
+/// entry, with the source's exact spelling. On sensitive volumes a distinct target is listed
+/// separately. Conservatively refuse names whose case equivalence cannot be established.
+fn same_case_entry(source: &Path, target: &Path) -> bool {
+    let (Some(parent), Some(from), Some(to)) = (source.parent(), source.file_name(), target.file_name()) else { return false };
+    let (Some(from_text), Some(to_text)) = (from.to_str(), to.to_str()) else { return false };
+    if from_text.to_lowercase() != to_text.to_lowercase() {
         return false;
     }
-    let Some(Ok(reader)) = source.parent().map(fs::read_dir) else { return false };
-    !reader.filter_map(Result::ok).any(|entry| entry.file_name().to_str() == Some(to))
+    let Ok(entries) = fs::read_dir(parent) else { return false };
+    let mut found = false;
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let name = entry.file_name();
+        if name.to_str().is_some_and(|name| name.to_lowercase() == to_text.to_lowercase()) {
+            if name != from || found {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
+}
+
+fn entry_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
 }
 
 /// Where `source` goes when the destination already holds `direct`; `None` means skip.
 fn resolve(source: &Path, direct: &Path, conflict: Conflict) -> Result<Option<PathBuf>, String> {
-    if !direct.exists() {
+    if !entry_exists(direct) {
         return Ok(Some(direct.to_path_buf()));
     }
     match conflict {
@@ -454,6 +518,12 @@ fn copy_entry(source: &Path, target: &Path) -> Result<(), String> {
     if metadata.is_dir() {
         return copy_dir(source, target, 0);
     }
+    copy_file(source, target)
+}
+
+fn copy_file(source: &Path, target: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    tests::checkpoint("copy", source, target).map_err(|e| describe("copy", source, &e))?;
     fs::copy(source, target).map(|_| ()).map_err(|e| describe("copy", source, &e))
 }
 
@@ -475,7 +545,7 @@ fn copy_dir(source: &Path, target: &Path, depth: usize) -> Result<(), String> {
         } else if metadata.is_dir() {
             copy_dir(&from, &to, depth + 1)?;
         } else {
-            fs::copy(&from, &to).map_err(|e| describe("copy", &from, &e))?;
+            copy_file(&from, &to)?;
         }
     }
     // Keep the folder's own time where the platform allows it (best effort; a copy that worked
@@ -511,12 +581,22 @@ fn copy_link(source: &Path, target: &Path) -> Result<(), String> {
 }
 
 /// Move one entry, copying across volumes and removing the source only after the copy is in.
-fn move_entry(source: &Path, target: &Path) -> Result<(), String> {
-    match fs::rename(source, target) {
+fn move_entry_with(source: &Path, target: &Path, replacing: bool) -> Result<(), String> {
+    let attempt = || -> io::Result<()> {
+        #[cfg(test)]
+        tests::checkpoint("move", source, target)?;
+        if replacing { fs::rename(source, target) } else { rename_no_replace(source, target) }
+    };
+    match attempt() {
         Ok(()) => Ok(()),
         Err(e) if is_cross_device(&e) => {
-            copy_entry(source, target)?;
-            remove_permanent(source).map_err(|e| format!("copied to {}, but the source could not be removed: {e}", target.display()))
+            staged_copy(source, target, replacing)?;
+            let remove = || -> Result<(), String> {
+                #[cfg(test)]
+                tests::checkpoint("remove source", source, target).map_err(|e| describe("remove source", source, &e))?;
+                remove_permanent(source)
+            };
+            remove().map_err(|e| format!("copied to {}, but the source could not be removed: {e}", target.display()))
         }
         Err(e) => Err(describe("move", source, &e)),
     }
@@ -553,7 +633,7 @@ pub enum TrashProblem {
 
 /// Put one entry in the system's trash.
 pub fn trash(path: &Path) -> Result<(), TrashProblem> {
-    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
     {
         if home_trash_available() {
             return move_to_home_trash(path).map_err(TrashProblem::Refused);
@@ -583,37 +663,26 @@ pub fn trash(path: &Path) -> Result<(), TrashProblem> {
             Err(e) => Err(TrashProblem::Refused(describe_text(&e.to_string()))),
         }
     }
-    #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     {
-        apple_trash(path)
+        use objc2_foundation::{NSFileManager, NSURL};
+        // Files operations run on Rust workers, which need their own Cocoa autorelease pool.
+        objc2::rc::autoreleasepool(|_| {
+            // Keep the entry path intact: canonicalizing would trash a symlink's target.
+            // Foundation receives a file URL as data, never executable AppleScript.
+            let path = std::path::absolute(path).map_err(|e| TrashProblem::Refused(describe("move to the trash", path, &e)))?;
+            let url =
+                NSURL::from_file_path(&path).ok_or_else(|| TrashProblem::Refused(format!("could not make a file URL for {}", path.display())))?;
+            NSFileManager::new()
+                .trashItemAtURL_resultingItemURL_error(&url, None)
+                .map_err(|e| TrashProblem::Refused(format!("move to the trash {}: {e}", path.display())))
+        })
     }
     #[cfg(target_arch = "wasm32")]
     {
         let _ = path;
         Err(TrashProblem::Unavailable)
     }
-}
-
-/// Put one entry in the Trash with the system's own call. It takes the path as data, so no
-/// file name can be read as a command; it needs no permission to control Finder; it answers
-/// with an error where Finder would put up a question; and a symbolic link goes to the Trash
-/// as a link.
-#[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
-fn apple_trash(path: &Path) -> Result<(), TrashProblem> {
-    use objc2_foundation::{NSFileManager, NSString, NSURL};
-    /// `NSFeatureUnsupportedError`: the volume has no Trash.
-    const NO_TRASH_HERE: isize = 3328;
-    let Some(text) = path.to_str() else {
-        return Err(TrashProblem::Refused("the name is not readable text".into()));
-    };
-    objc2::rc::autoreleasepool(|_| {
-        let url = NSURL::fileURLWithPath(&NSString::from_str(text));
-        match NSFileManager::defaultManager().trashItemAtURL_resultingItemURL_error(&url, None) {
-            Ok(()) => Ok(()),
-            Err(error) if error.code() == NO_TRASH_HERE => Err(TrashProblem::Unavailable),
-            Err(error) => Err(TrashProblem::Refused(describe_text(&error.localizedDescription().to_string()))),
-        }
-    })
 }
 
 /// Delete one entry for good. A symbolic link is removed as a link: its target is untouched.
@@ -627,7 +696,7 @@ pub fn remove_permanent(path: &Path) -> Result<(), String> {
 }
 
 /// Is a home trash usable for `path`? (Linux and other freedesktop systems.)
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn home_trash_available() -> bool {
     match home_trash() {
         Some((files, info)) => ensure_trash_dirs(&files, &info),
@@ -635,7 +704,7 @@ fn home_trash_available() -> bool {
     }
 }
 
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn home_trash() -> Option<(PathBuf, PathBuf)> {
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -645,20 +714,20 @@ fn home_trash() -> Option<(PathBuf, PathBuf)> {
     Some((trash.join("files"), trash.join("info")))
 }
 
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn ensure_trash_dirs(files: &Path, info: &Path) -> bool {
     let made = fs::create_dir_all(files).and_then(|_| fs::create_dir_all(info));
     made.is_ok() && fs::metadata(files).map(|m| m.is_dir()).unwrap_or(false)
 }
 
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn move_to_home_trash(path: &Path) -> Result<(), String> {
     let Some((files, info)) = home_trash() else { return Err("there is no home folder".into()) };
     move_into_trash(&files, &info, path)
 }
 
 /// A trash on the same volume, for a file the home trash should not hold (another disk).
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn volume_trash(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let mount = mount_point(path)?;
     let uid = current_uid()?;
@@ -671,12 +740,12 @@ fn volume_trash(path: &Path) -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn move_to_volume_trash(path: &Path, trash: &(PathBuf, PathBuf)) -> Result<(), String> {
     move_into_trash(&trash.0, &trash.1, path)
 }
 
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), String> {
     let name = original.file_name().and_then(OsStr::to_str).unwrap_or("item");
     let mut target = files.join(name);
@@ -693,7 +762,7 @@ fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), Str
     if let Err(e) = fs::rename(original, &target) {
         let _ = fs::remove_file(&info_file);
         if is_cross_device(&e) {
-            copy_entry(original, &target)?;
+            staged_copy(original, &target, false)?;
             remove_permanent(original)?;
             return Ok(());
         }
@@ -703,7 +772,7 @@ fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), Str
 }
 
 /// The mount point a path is on: the longest prefix of its ancestors with the same device id.
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn mount_point(path: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::MetadataExt;
     let mut current = path.canonicalize().ok()?;
@@ -724,7 +793,7 @@ fn mount_point(path: &Path) -> Option<PathBuf> {
 
 /// The user id that names this user's trash on a volume, read from the home folder's owner
 /// (no extra dependency, no system call beyond `stat`).
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn current_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
     let home = std::env::var_os("HOME")?;
@@ -732,7 +801,7 @@ fn current_uid() -> Option<u32> {
 }
 
 /// `aaaa-mm-ddThh:mm:ss` in UTC, for a `.trashinfo` file, without a date-time dependency.
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn utc_now() -> String {
     let seconds = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let days = seconds / 86_400;
@@ -742,7 +811,7 @@ fn utc_now() -> String {
 }
 
 /// Days since the epoch as a calendar date (Howard Hinnant's algorithm, public domain).
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -758,7 +827,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// Percent-encode a path for a `.trashinfo` file (UTF-8, with `/` kept, as the spec says).
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn percent_encode(path: &str) -> String {
     let mut encoded = String::with_capacity(path.len());
     for byte in path.bytes() {
@@ -770,14 +839,17 @@ fn percent_encode(path: &str) -> String {
     encoded
 }
 
+/// Stable category for a positively identified missing default-program association.
+pub const NO_ASSOCIATED_PROGRAM: &str = "no program is associated with this file";
+
 /// Open a file (or folder) with the system's default program, waiting for the opener to answer.
 /// Some systems start a program that stays attached for its lifetime; call this on a worker so
 /// the window keeps drawing. An answer here is the opener's: a missing association is an error.
 pub fn open_default_waiting(path: &Path) -> Result<(), String> {
-    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
     {
         if !has_association(path) {
-            return Err("no program is associated with this file".into());
+            return Err(NO_ASSOCIATED_PROGRAM.into());
         }
         wait_for("xdg-open", &[path.as_os_str()])
     }
@@ -787,21 +859,13 @@ pub fn open_default_waiting(path: &Path) -> Result<(), String> {
         // this file?" picker. Ask the registry first, so the panel can give the reason and the
         // folder instead of a picker the application cannot see.
         if !has_association(path) {
-            return Err("no program is associated with this file".into());
+            return Err(NO_ASSOCIATED_PROGRAM.into());
         }
         wait_for("cmd", &[OsStr::new("/C"), OsStr::new("start"), OsStr::new(""), path.as_os_str()])
     }
-    #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     {
-        // `open` answers a file nothing opens with LaunchServices' own error text
-        // (kLSApplicationNotFoundErr, -10814); say it as the other systems do.
-        wait_for("open", &[path.as_os_str()]).map_err(|reason| {
-            if reason.contains("kLSApplicationNotFoundErr") || reason.contains("-10814") {
-                "no program is associated with this file".to_string()
-            } else {
-                reason
-            }
-        })
+        wait_for("open", &[path.as_os_str()])
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -812,7 +876,7 @@ pub fn open_default_waiting(path: &Path) -> Result<(), String> {
 
 /// Open a file (or folder) with the system's default program.
 pub fn open_default(path: &Path) -> Result<(), String> {
-    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
     {
         spawn_detached("xdg-open", &[path.as_os_str()])
     }
@@ -820,7 +884,7 @@ pub fn open_default(path: &Path) -> Result<(), String> {
     {
         spawn_detached("cmd", &[OsStr::new("/C"), OsStr::new("start"), OsStr::new(""), path.as_os_str()])
     }
-    #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     {
         spawn_detached("open", &[path.as_os_str()])
     }
@@ -833,7 +897,7 @@ pub fn open_default(path: &Path) -> Result<(), String> {
 
 /// Show an entry in the system's file manager, with the entry selected where the platform can.
 pub fn reveal(path: &Path) -> Result<(), String> {
-    #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
     {
         // The freedesktop file manager interface selects the entry; a plain folder open is the
         // fallback when no file manager answers.
@@ -863,7 +927,7 @@ pub fn reveal(path: &Path) -> Result<(), String> {
     {
         spawn_detached("explorer", &[format!("/select,{}", path.display()).as_ref()])
     }
-    #[cfg(all(target_vendor = "apple", not(target_arch = "wasm32")))]
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     {
         spawn_detached("open", &[OsStr::new("-R"), path.as_os_str()])
     }
@@ -874,11 +938,9 @@ pub fn reveal(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Start a program without waiting for it; a program that is missing is reported, not hidden.
-#[cfg(not(target_arch = "wasm32"))]
 /// Does the system name a program for this file's type? A desktop without `xdg-mime` is given
 /// the benefit of the doubt: `xdg-open` answers for itself then.
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn has_association(path: &Path) -> bool {
     let query = |args: &[&str]| -> Option<String> {
         let output = std::process::Command::new("xdg-mime").args(args).output().ok()?;
@@ -889,7 +951,8 @@ fn has_association(path: &Path) -> bool {
     };
     let Some(mime) = query(&["query", "filetype", &path.to_string_lossy()]) else { return true };
     if mime.is_empty() {
-        return false;
+        // No MIME answer is not positive evidence of a missing application.
+        return true;
     }
     query(&["query", "default", &mime]).is_none_or(|default| !default.is_empty())
 }
@@ -955,7 +1018,16 @@ fn wait_for(program: &str, args: &[&OsStr]) -> Result<(), String> {
         return Ok(());
     }
     let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(if reason.is_empty() { format!("{program}: no program is associated with this file") } else { reason })
+    log::warn!("system opener {program} failed ({}): {reason}", output.status);
+    // Do not infer "no association" from an empty error, a general failure exit code, or
+    // a status number in an arbitrary filename. Recognize LaunchServices' specific answer.
+    let is_open = Path::new(program).file_name() == Some(OsStr::new("open"));
+    let missing_application =
+        reason.rsplit_once(" (Error Domain=").is_some_and(|(_, detail)| detail.starts_with("NSOSStatusErrorDomain Code=-10814 "));
+    if is_open && reason.starts_with("No application knows how to open URL ") && missing_application {
+        return Err(NO_ASSOCIATED_PROGRAM.into());
+    }
+    Err(if reason.is_empty() { format!("{program}: opener failed ({})", output.status) } else { reason })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -969,7 +1041,7 @@ fn describe(what: &str, path: &Path, error: &io::Error) -> String {
     format!("{what} {}: {error}", path.display())
 }
 
-#[cfg(any(windows, target_vendor = "apple"))]
+#[cfg(windows)]
 fn describe_text(text: &str) -> String {
     let text = text.trim();
     if text.is_empty() { "the system refused the operation".into() } else { text.to_string() }
