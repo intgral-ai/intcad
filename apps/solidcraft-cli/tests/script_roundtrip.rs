@@ -49,22 +49,67 @@ fn params(s: &Session) -> Vec<solidcraft_engine::doc::Param> {
     v
 }
 
-/// A joint as the replay must return it, except the snap's persistent face/end/x refs, which
-/// `joint.create` re-derives from the pick at creation (the engine's joint tests compare those
-/// separately). Everything that makes it the same joint stays: id, name, kind, occurrence refs,
-/// values, limits, offset, angle, flags and expressions.
-fn joints(s: &Session) -> Vec<Value> {
+/// A joint as the replay must return it, except the snap's persistent face/end names and an
+/// `XRef::Face` x, which `joint.create` re-derives from the pick at creation (the engine's joint
+/// tests compare those separately). A stored x direction (`Snap::Point`/`Frame`, `XRef::Dir`)
+/// stays: it is part of the joint's meaning. Everything else stays too: id, name, kind,
+/// occurrence refs, values, limits, offset, angle, flags and expressions.
+fn joint_projection(joints: &[solidcraft_engine::doc::joints::Joint]) -> Vec<Value> {
     let strip = |mut joint: Value| {
         for side in ["a", "b"] {
             if let Some(snap) = joint.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
                 snap.remove("face");
                 snap.remove("end");
-                snap.remove("x");
+                // `XRef` is untagged: a direction (and Snap::Point/Frame's x) is an array; an
+                // XRef::Face is an object found again by its persistent name/pick.
+                if snap.get("x").is_some_and(|x| !x.is_array()) {
+                    snap.remove("x");
+                }
             }
         }
         joint
     };
-    s.doc.assembly.joints.iter().map(|j| strip(serde_json::to_value(j).unwrap())).collect()
+    joints.iter().map(|j| strip(serde_json::to_value(j).unwrap())).collect()
+}
+
+fn joints(s: &Session) -> Vec<Value> {
+    joint_projection(&s.doc.assembly.joints)
+}
+
+#[test]
+fn joint_projection_keeps_directions_and_drops_re_derived_face_refs() {
+    let joint = |snap: Value| {
+        joint_projection(&[serde_json::from_value(json!({
+            "id": 1,
+            "name": "J",
+            "kind": "rigid",
+            "a": {"occurrence": 2, "snap": snap},
+            "b": {"occurrence": 3, "snap": {"type": "point", "point": [0.0, 0.0, 0.0]}},
+        }))
+        .unwrap()])
+    };
+    // A stored direction is part of the joint, not a pick-derived reference.
+    assert_ne!(
+        joint(json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
+        joint(json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
+        "a point origin's stored x direction is semantic"
+    );
+    assert_ne!(
+        joint(json!({"type": "frame", "origin": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [1.0, 0.0, 0.0]})),
+        joint(json!({"type": "frame", "origin": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [0.0, 1.0, 0.0]})),
+        "a frame's stored x direction is semantic"
+    );
+    assert_ne!(
+        joint(json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
+        joint(json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
+        "an XRef::Dir x is a stored direction"
+    );
+    // A face found by name, and the snap's face/end names, are re-derived at creation.
+    assert_eq!(
+        joint(json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face A", "end": "End A", "x": {"face": "Face A"}})),
+        joint(json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face B", "end": "End B", "x": {"face": "Face B"}})),
+        "persistent face/end names and an XRef::Face x are re-derived"
+    );
 }
 
 #[test]
