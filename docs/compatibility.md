@@ -178,9 +178,9 @@ Two things keep working for what was published under the earlier names:
   (`packaging/tests/web_channels_test.py`).
 
 Intcad does not present itself as the successor of upstream's app: `io.tangencylabs.solidcraft`
-is not added to the AppStream `<replaces>`, `X-Flatpak-RenamedFrom` or the Flatpak rebase list,
-and settings kept in a Flatpak sandbox under that ID are not read. The older IDs listed below
-are upstream's own history and are left as upstream wrote them.
+is not added to the AppStream `<replaces>` or `X-Flatpak-RenamedFrom`, and settings kept in a
+Flatpak sandbox under that ID are not read. The older IDs listed below are upstream's own history
+and are left as upstream wrote them; Intcad does not rebase them or mark them end-of-life.
 
 Unchanged, and still shared with upstream by design: the design format (`.sc`, `solidcraft/N`,
 `application/x-solidcraft`), `SOLIDCRAFT_*` variables, crate and Cargo package names
@@ -190,7 +190,7 @@ Unchanged, and still shared with upstream by design: the design format (`.sc`, `
 
 | Package | Decision | Why |
 |---|---|---|
-| Flatpak app ID / Linux desktop ID | changed in 0.8 from `ai.storyteller.solvecraft` to `ai.storyteller.solidcraft`, then with the move to Tangency Labs to `io.tangencylabs.solidcraft` | The project's own reverse-DNS domain. The `.desktop`, metainfo and MIME file names, the icon name, and the Wayland `app_id` / X11 class follow it. Existing installs are moved over; see [Linux app ID](#linux-app-id). |
+| Flatpak app ID / Linux desktop ID | changed in 0.8 from `ai.storyteller.solvecraft` to `ai.storyteller.solidcraft`, then with the move to Tangency Labs to `io.tangencylabs.solidcraft` | The project's own reverse-DNS domain. The `.desktop`, metainfo and MIME file names, the icon name, and the Wayland `app_id` / X11 class follow it. Upstream's old installs are left as upstream wrote them; Intcad does not rebase them or move their data; see [Linux app ID](#linux-app-id). |
 | Flatpak remote file | `solidcraft.flatpakrepo`, plus a legacy `solvecraft.flatpakrepo` copy | Old links keep working; existing remotes point at the repo URL, which is unchanged. |
 | macOS bundle ID | changed to `ai.storyteller.solidcraft`, then to `io.tangencylabs.solidcraft`; the CLI's signing identifier is `io.tangencylabs.solidcraft.cli` (was `ai.storyteller.solidcraft-cli`) | No updater depends on it; the app is drag-installed and replaces the old `SolidCraft.app`. Settings live in folders named after the product, not the bundle ID, so they stay. macOS ties privacy permissions (such as access to Documents or Downloads) to the bundle ID, so it asks for them once more after the update. |
 | MSI `UpgradeCode` | **kept** (also through the `io.tangencylabs` move; the Windows build sets no AppUserModelID and its ProgIDs `Solidcraft.Design` / `Solidcraft.Model` don't carry the app ID, so nothing there changes) | So the new MSI upgrades the old install in place. Product name is SolidCraft; the default folder becomes `Program Files\SolidCraft` (the major upgrade removes the old folder). A custom install folder isn't remembered across this one upgrade. |

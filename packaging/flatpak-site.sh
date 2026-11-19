@@ -38,6 +38,13 @@ if curl --fail --silent --location --output /dev/null "$previous_url/summary"; t
   ostree --repo="$repo_dir" remote add --no-gpg-verify previous "$previous_url"
   ostree --repo="$repo_dir" pull --mirror previous
   ostree --repo="$repo_dir" remote delete previous
+  # Keep only Intcad's own refs: a previous deploy may still contain foreign apps' refs.
+  ostree --repo="$repo_dir" refs | while IFS= read -r ref; do
+    case "$ref" in
+      "app/$app_id/"*) ;;
+      *) ostree --repo="$repo_dir" refs --delete "$ref" ;;
+    esac
+  done
 fi
 published_id=$app_id
 for arch in x86_64 aarch64; do

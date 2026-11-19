@@ -40,7 +40,7 @@ finish-args:
   - --filesystem=xdg-documents
   # No compatibility grant for the upstream SolidCraft/SolveCraft folders: Intcad has no earlier
   # Flatpak app id of its own, and another product's settings and autosaves are never read
-  # (docs/compatibility.md). The end-of-life rebase in the repository moves old installs here.
+  # (docs/compatibility.md). Intcad does not rebase those upstream ids or move their data.
   # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
   # the sandbox; `flatpak override --user --share=network ai.intgral.intcad` exposes it to
   # host agents) and home/host filesystem access.
