@@ -238,6 +238,8 @@ impl HostValidation {
             .name("mastra-validation-worker".into())
             .spawn(move || {
                 while !stop.load(Ordering::Acquire) {
+                    #[cfg(test)]
+                    validation_control::runner_gate();
                     if port.pump().is_err() {
                         // A failed job is already a persisted terminal record; never restart it as
                         // new work. The next queued job can still run.
@@ -295,6 +297,8 @@ impl HostValidation {
         validation_control::submission_barrier();
         let result =
             self.port.submit_for(&candidate, &profile, params.request_id.as_str(), turn.workflow_run_id.as_str()).map_err(validation_wire)?;
+        #[cfg(test)]
+        validation_control::registration_barrier();
         let cancel_late_registration = {
             let mut book = self.book.lock().map_err(|_| local_error(ErrorCode::InternalError))?;
             let record = ValidationRunRecord {
@@ -653,6 +657,36 @@ impl HostValidation {
     #[cfg(test)]
     pub(crate) fn pause_submission_for_test(barrier: Arc<std::sync::Barrier>) {
         validation_control::install_submission_barrier(barrier);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_prewait_barrier_for_test(barrier: Arc<std::sync::Barrier>) {
+        validation_control::install_prewait_barrier(barrier);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_registration_barrier_for_test(barrier: Arc<std::sync::Barrier>) {
+        validation_control::install_registration_barrier(barrier);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_runner_gate_for_test(barrier: Arc<std::sync::Barrier>) {
+        validation_control::install_runner_gate(barrier);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_prewait_barrier_for_test() {
+        validation_control::clear_prewait_barrier();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_completion_barriers_for_test(reached: Arc<std::sync::Barrier>, release: Arc<std::sync::Barrier>) {
+        validation_control::install_completion_barriers(reached, release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_completion_barriers_for_test() {
+        validation_control::clear_completion_barriers();
     }
 
     #[cfg(test)]
@@ -1269,6 +1303,11 @@ impl MastraBackend {
             workflow_run_id: workflow_run_id.to_string(),
         };
         let scope = TurnScope { session_id: session.clone(), turn_id, workflow_run_id };
+        self.push(Event::TurnOwner {
+            session_id: scope.session_id.to_string(),
+            turn_id: scope.turn_id.to_string(),
+            workflow_run_id: scope.workflow_run_id.to_string(),
+        });
         let profile = match self.config.validation.as_ref() {
             Some(validation) => match validation.profile() {
                 Some(profile) => profile,

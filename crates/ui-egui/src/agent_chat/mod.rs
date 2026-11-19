@@ -316,6 +316,9 @@ struct Turn {
     /// This conversation's identity for the message; an accepted preview refers to it after the
     /// reply has ended.
     id: u64,
+    /// The Mastra session/turn/workflow run that owns this turn's validation cards. `None`
+    /// until the backend reports it; a validation card is never appended to another turn.
+    owner: Option<(String, String, String)>,
     /// Deferred requests stop being valid when this turn ends or its tab is left.
     active: Arc<std::sync::atomic::AtomicBool>,
     /// The design and the undo depth before it.
@@ -896,6 +899,11 @@ impl AgentChat {
                 }
                 if !append_agent_text(&mut self.items, thought, &text) {
                     self.push(Item::Agent { thought, text });
+                }
+            }
+            Event::TurnOwner { session_id, turn_id, workflow_run_id } => {
+                if let Some(turn) = self.turn.as_mut() {
+                    turn.owner = Some((session_id, turn_id, workflow_run_id));
                 }
             }
             Event::Tool { id, title, kind, status, input, output } => {
@@ -2105,6 +2113,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     let turn_id = app.agent_chat.next_turn;
     app.agent_chat.turn = Some(Turn {
         id: turn_id,
+        owner: None,
         active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         start_doc: app.session.doc.clone(),
         start_undo: app.session.undo.len(),

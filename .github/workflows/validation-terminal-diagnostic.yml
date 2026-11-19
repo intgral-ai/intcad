@@ -13,6 +13,13 @@ on:
       - crates/ui-egui/src/agent_chat/tests.rs
       - apps/solidcraft-cli/tests/script_roundtrip.rs
   workflow_dispatch:
+    inputs:
+      stage:
+        description: "red or green"
+        required: true
+        default: green
+        type: choice
+        options: [red, green]
 
 permissions:
   contents: read
@@ -25,7 +32,7 @@ env:
   CARGO_TERM_COLOR: never
   CARGO_TARGET_DIR: target
   CARGO_INCREMENTAL: "0"
-  VALTX_STAGE: green
+  VALTX_STAGE: ${{ inputs.stage || 'green' }}
 
 jobs:
   terminal-regression:
@@ -67,12 +74,17 @@ jobs:
                   ("solidcraft-engine", "--lib", "validation::tests::separate_process_terminal_writers_recover_both_report_orders"),
                   ("solidcraft-engine", "--lib", "validation::tests::pending_reports_with_changed_bindings_or_evidence_are_never_adopted"),
                   ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::mastra_validation_cancelled_turn_refuses_a_late_submission_without_storage"),
+                  ("solidcraft-engine", "--lib", "validation::tests::a_retired_terminal_key_replays_its_outcome_without_resurrecting_a_queued_run"),
+                  ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::a_retired_turns_validation_card_never_appears_in_the_next_turns_history"),
+                  ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::mastra_validation_shutdown_takes_the_queue_predicate_lock"),
+                  ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::mastra_validation_late_registration_does_not_downgrade_a_persisted_cancellation"),
               ]
           else:
               selections = [
                   ("solidcraft-engine", "--lib", "validation::tests::"),
                   ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::mastra_validation_"),
-                  ("solidcraft-cli", "--test", "script_roundtrip"),
+                  ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::a_retired_turns_validation_card_never_appears_in_the_next_turns_history"),
+                  ("solidcraft-cli", "--test", "cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit"),
               ]
           records = []
           for number, (package, target, selection) in enumerate(selections):

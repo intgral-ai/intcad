@@ -623,7 +623,16 @@ fn terminal_transaction_child() {
     let Some(root) = std::env::var_os("INTCAD_TRANSACTION_CHILD_ROOT") else { return };
     let run_id = std::env::var("INTCAD_TRANSACTION_CHILD_RUN").unwrap();
     let root = PathBuf::from(root);
-    let port = ValidationPort::open_read_only(root.join("validation"), root.join("candidates")).unwrap();
+    // The child must judge queue deadlines against the same clock as the parent fixture. The
+    // system clock is years ahead of the fixed test clock, which expired the queued job before
+    // the transaction barrier the fixture is about.
+    let port = ValidationPort::open_read_only_with(
+        root.join("validation"),
+        root.join("candidates"),
+        Limits::default(),
+        Arc::new(ManualClock::new(1_760_000_000_000)),
+    )
+    .unwrap();
     println!("CALLING");
     std::io::stdout().flush().unwrap();
     match std::env::var("INTCAD_TRANSACTION_CHILD_OPERATION").unwrap().as_str() {
@@ -886,7 +895,8 @@ fn pending_reports_with_changed_bindings_or_evidence_are_never_adopted() {
                     "profile" => report["profile"]["version"] = json!("foreign"),
                     "runner" => report["runner"]["version"] = json!("foreign"),
                     "coverage" => report["checks"] = json!([]),
-                    _ => unreachable!(),
+                    // "json" and "evidence" are handled above; nothing else rewrites JSON.
+                    _ => {}
                 }
                 std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
             }
@@ -1085,6 +1095,38 @@ fn retention_removes_only_finished_jobs() {
     assert_eq!(port.cleanup(clock.now_ms()), 1);
     assert!(port.status(&done.run_id).is_err());
     assert_eq!(port.status(&active.run_id).unwrap().state, ValidationState::Queued);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Retention may retire a terminal run while its submission key is still valid for idempotency.
+/// Replaying that key must return the durable terminal outcome; it must never recreate the
+/// admission/state as a new Queued run after the retention sweep deleted them.
+#[test]
+fn a_retired_terminal_key_replays_its_outcome_without_resurrecting_a_queued_run() {
+    let root = scratch("retired-key-replay");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-retired-key", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let limits = Limits { retention: std::time::Duration::from_millis(10), ..Limits::default() };
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), limits, clock.clone());
+    let key = generate_submission_key(clock.now_ms());
+    let run = port.submit(&candidate, &reference, &key).unwrap();
+    port.pump().unwrap();
+    let terminal = port.status(&run.run_id).unwrap().state;
+    assert!(terminal.is_terminal(), "the fixture starts from a durable terminal run");
+    clock.advance(1000);
+    assert_eq!(port.cleanup(clock.now_ms()), 1);
+    assert!(!port.store.admission_path(&run.run_id).exists(), "retention removed the job admission");
+    assert!(!port.store.state_path(&run.run_id).exists(), "retention removed the current state");
+
+    let replay = port.submit(&candidate, &reference, &key).unwrap();
+    assert_eq!(replay.run_id, run.run_id, "the same key names the same retired run");
+    assert_eq!(replay.state, terminal, "the retired key must replay the durable outcome, not a new Queued run");
+    assert!(!port.store.admission_path(&run.run_id).exists(), "replay must not recreate the retired admission");
+    assert!(!port.store.state_path(&run.run_id).exists(), "replay must not recreate a live state for the retired run");
     let _ = std::fs::remove_dir_all(root);
 }
 
