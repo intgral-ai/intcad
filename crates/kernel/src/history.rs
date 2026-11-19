@@ -27,6 +27,19 @@ impl From<solidcore_record::brep::history::Failed> for KernelError {
     }
 }
 
+/// The history of a two-operand operation whose operands were run swapped: operand 0 and 1
+/// exchange places, including both sides of a meeting edge (canonicalized again by
+/// `EdgeOrigin::meet`). [`Body::with_history`] then checks it over the original `[a, b]`.
+///
+/// Temporary INT-1454 fallback: see `ops::boolean` and
+/// `docs/superpowers/plans/2026-11-19-int1454-union-fallback.md`.
+pub(crate) fn swap_operands(history: &History) -> Result<History> {
+    if history.operands != 2 {
+        return Err(KernelError::Invalid("a swapped history needs two operands".into()));
+    }
+    Ok(history.clone().renumbered(&[Some(1), Some(0)], 2)?)
+}
+
 /// What a [`History`] needs a kernel body for: the history types belong to
 /// `solidcore_record::brep::history`, so a backend can report them without this crate.
 pub trait BodyHistory {

@@ -35,6 +35,16 @@ jobs:
           mkdir -p evidence
           set -o pipefail
           cargo test -p solidcraft-engine front_triangle_ --locked -- --nocapture 2>&1 | tee evidence/front-triangle.log
+      - name: Kernel fallback guards
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test -p solidcraft-kernel --lib union_fallback_gate_is_exact_and_fails_closed --locked -- --nocapture 2>&1 | tee evidence/kernel-guard.log
+      - name: Kernel history permutation
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test -p solidcraft-kernel --lib swapped_history_maps_every_origin_back --locked -- --nocapture 2>&1 | tee evidence/kernel-history.log
       - name: Kernel and engine Clippy
         if: always()
         run: |

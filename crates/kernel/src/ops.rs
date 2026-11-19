@@ -19,46 +19,117 @@ pub enum BoolOp {
     Intersect,
 }
 
+/// The exact SMLib union failure the temporary IntCAD fallback below is gated to. It names the
+/// vendored topology step, not a message class: any other wording, operation or a changed
+/// upstream algorithm must not retry.
+pub(crate) const UNION_PROTO_EDGE: &str = "SMLib boolean: operation: solidcore: SmApiBoolean: topology::proto_topology::p1: the proto edge is not listed";
+
 /// Boolean of two bodies in SMLib. The result may be empty (`Ok(None)`) for a cut that removes
 /// everything or an intersection of disjoint bodies. A result SMLib's check refuses is an error.
 ///
 /// The result carries its exact history ([`Body::history`]) over the operands `[a, b]`, from
 /// SMLib's own tags, or none where a body's order cannot be matched to SMLib's. A cut by a tool
 /// apart from the body is the body itself (its faces and edges kept), and their intersection empty.
+///
+/// Temporary INT-1454 fallback: where the ordinary union fails with the exact
+/// [`UNION_PROTO_EDGE`] fingerprint on two single-region B-rep operands, one retry runs SMLib
+/// with the operands reversed and maps its history back over `[a, b]`. The original path always
+/// runs first; nothing else retries. See [`boolean_original_order`] for the removal audit and
+/// `docs/superpowers/plans/2026-11-19-int1454-union-fallback.md`.
 pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
     // Stopped by its watch (an agent's request cancelled while it computes, #1989): no more
     // booleans. One SMLib already runs to its end.
     if crate::watch::cancelled() {
         return Err(crate::watch::cancelled_error("boolean"));
     }
-    crate::profile::timed(crate::profile::Kind::Boolean, "boolean", || {
-        // A tool apart from the body (their exact boxes, grown by the tolerances, do not meet)
-        // leaves a cut the body itself and an intersection nothing, with no intersection work.
-        if matches!(op, BoolOp::Cut | BoolOp::Intersect) && apart(a, b)? {
-            return Ok(match op {
-                BoolOp::Cut => Some(crate::boolean_record::operand(a, 0, &crate::record::counts(&[a, b]))),
-                _ => None,
-            });
-        }
-        // A union whose first operand is in several pieces, only some of which meet the tool,
-        // would nest the others inside the result as voids (#55): union the pieces that meet
-        // and join the rest back untouched. Where that does not apply (one piece, every piece
-        // meeting, or the pieces cannot be told apart) the ordinary union keeps its fast path.
-        if op == BoolOp::Union {
-            match guard("union by lump", || union_by_lumps(a, b)) {
-                Ok(Some(by_lump)) => return Ok(Some(by_lump)),
-                Ok(None) => {}
-                Err(e) => {
-                    // Do not hide a by-lump refusal behind the ordinary path: under validation
-                    // that checks nothing it could return the nested body this path avoids.
-                    log::debug!(target: "smlib", "union by lump: {e}");
-                    return Err(e);
-                }
+    crate::profile::timed(crate::profile::Kind::Boolean, "boolean", || match ordinary_boolean(a, b, op) {
+        Err(error) => fallback_if_applicable(a, b, op, error, || retry_swapped(a, b)),
+        result => result,
+    })
+}
+
+/// The ordinary union path with no fallback, for the INT-1454 removal audit: on the next
+/// solidcore upgrade this diagnoses whether the reversed-order retry is still needed. It is not
+/// a second product path.
+pub fn boolean_original_order(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
+    if crate::watch::cancelled() {
+        return Err(crate::watch::cancelled_error("boolean"));
+    }
+    crate::profile::timed(crate::profile::Kind::Boolean, "boolean original order", || ordinary_boolean(a, b, op))
+}
+
+/// Apply the one retry to an ordinary union error, or return that error unchanged. Any retry
+/// failure is the original error: no result is accepted without a checked history.
+pub(crate) fn fallback_if_applicable(
+    a: &Body,
+    b: &Body,
+    op: BoolOp,
+    error: KernelError,
+    retry: impl FnOnce() -> Result<Body>,
+) -> Result<Option<Body>> {
+    if !retry_applies(a, b, op, &error) {
+        return Err(error);
+    }
+    match retry() {
+        Ok(body) => Ok(Some(body)),
+        Err(_) => Err(error),
+    }
+}
+
+/// Whether the ordinary union may retry reversed: union only, the exact failure fingerprint, and
+/// two B-rep bodies of exactly one material region each (so a multi-lump refusal is never hidden).
+pub(crate) fn retry_applies(a: &Body, b: &Body, op: BoolOp, error: &KernelError) -> bool {
+    op == BoolOp::Union
+        && matches!(error, KernelError::Failed(message) if message == UNION_PROTO_EDGE)
+        && !a.is_mesh()
+        && !b.is_mesh()
+        && a.record().material_regions().len() == 1
+        && b.record().material_regions().len() == 1
+}
+
+/// The one retry: SMLib sees `[b, a]`; every history origin is mapped back `0 <-> 1`
+/// (including both sides of an edge `Meet`, which canonicalizes again) and checked over the
+/// original `[a, b]` bodies. Any failure is the caller's to turn back into the original error.
+fn retry_swapped(a: &Body, b: &Body) -> Result<Body> {
+    let swapped = guard("SMLib boolean", || crate::smlib_boolean::smlib_boolean(b, a, BoolOp::Union))?;
+    let Some(swapped) = swapped else {
+        return Err(KernelError::Failed("the reversed union returned no result".into()));
+    };
+    let history = swapped.history().ok_or_else(|| KernelError::Failed("the reversed union kept no history".into()))?;
+    let history = crate::history::swap_operands(history)?;
+    let body = swapped.with_history(history, &[a, b])?;
+    // Roles over the original operands, exactly as the ordinary union would attach them.
+    with_operand_roles(a, b, BoolOp::Union, Ok(Some(body)))?.ok_or_else(|| KernelError::Failed("the reversed union returned no result".into()))
+}
+
+/// The ordinary boolean path shared by [`boolean`] and [`boolean_original_order`].
+fn ordinary_boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
+    // A tool apart from the body (their exact boxes, grown by the tolerances, do not meet)
+    // leaves a cut the body itself and an intersection nothing, with no intersection work.
+    if matches!(op, BoolOp::Cut | BoolOp::Intersect) && apart(a, b)? {
+        return Ok(match op {
+            BoolOp::Cut => Some(crate::boolean_record::operand(a, 0, &crate::record::counts(&[a, b]))),
+            _ => None,
+        });
+    }
+    // A union whose first operand is in several pieces, only some of which meet the tool,
+    // would nest the others inside the result as voids (#55): union the pieces that meet
+    // and join the rest back untouched. Where that does not apply (one piece, every piece
+    // meeting, or the pieces cannot be told apart) the ordinary union keeps its fast path.
+    if op == BoolOp::Union {
+        match guard("union by lump", || union_by_lumps(a, b)) {
+            Ok(Some(by_lump)) => return Ok(Some(by_lump)),
+            Ok(None) => {}
+            Err(e) => {
+                // Do not hide a by-lump refusal behind the ordinary path: under validation
+                // that checks nothing it could return the nested body this path avoids.
+                log::debug!(target: "smlib", "union by lump: {e}");
+                return Err(e);
             }
         }
-        let r = guard("SMLib boolean", || crate::smlib_boolean::smlib_boolean(a, b, op));
-        with_operand_roles(a, b, op, r)
-    })
+    }
+    let r = guard("SMLib boolean", || crate::smlib_boolean::smlib_boolean(a, b, op));
+    with_operand_roles(a, b, op, r)
 }
 
 /// `a` union `b` when `a` is in several pieces and `b` is one: each piece whose exact box meets

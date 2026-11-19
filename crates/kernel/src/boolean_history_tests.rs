@@ -573,6 +573,72 @@ fn stacked_pieces_of_one_cylinder_keep_their_walls() {
     }
 }
 
+/// INT-1454: the temporary reversed-union retry's history permutation. Every origin maps
+/// `0 <-> 1`, both sides of a meeting edge canonically, and a history that is not over two
+/// operands is refused.
+#[test]
+fn swapped_history_maps_every_origin_back() {
+    use crate::history::{EdgeProv, FaceProv};
+    let target = FaceOrigin::Face { operand: 0, face: 3 };
+    let tool = FaceOrigin::Offset { operand: 1, face: 7 };
+    let history = History {
+        operands: 2,
+        faces: vec![
+            FaceProv { origins: vec![target], change: Change::Kept },
+            FaceProv { origins: vec![tool], change: Change::Modified },
+        ],
+        edges: vec![
+            EdgeProv { faces: vec![0], origins: vec![EdgeOrigin::Edge { operand: 0, edge: 4 }] },
+            EdgeProv {
+                faces: vec![1],
+                origins: vec![EdgeOrigin::meet(Side::new([target]).unwrap(), Side::new([tool]).unwrap())],
+            },
+        ],
+    };
+    let swapped = crate::history::swap_operands(&history).unwrap();
+    assert_eq!(swapped.operands, 2);
+    assert_eq!(swapped.faces[0].origins, vec![FaceOrigin::Face { operand: 1, face: 3 }]);
+    assert_eq!(swapped.faces[1].origins, vec![FaceOrigin::Offset { operand: 0, face: 7 }]);
+    assert_eq!(swapped.edges[0].origins, vec![EdgeOrigin::Edge { operand: 1, edge: 4 }]);
+    assert_eq!(
+        swapped.edges[1].origins,
+        vec![EdgeOrigin::meet(
+            Side::new([FaceOrigin::Face { operand: 0, face: 7 }]).unwrap(),
+            Side::new([FaceOrigin::Face { operand: 1, face: 3 }]).unwrap()
+        )]
+    );
+    let mut one = history.clone();
+    one.operands = 1;
+    assert!(crate::history::swap_operands(&one).is_err());
+}
+
+/// INT-1454 guard: the retry is Union only, on the exact fingerprint, and only for two B-rep
+/// bodies of one material region. A failed retry returns the original error and leaves both
+/// operands as they were.
+#[test]
+fn union_fallback_gate_is_exact_and_fails_closed() {
+    use crate::KernelError;
+    use crate::ops::{fallback_if_applicable, retry_applies};
+    let a = boxed(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
+    let b = boxed(10.0, 0.0, 0.0, 20.0, 10.0, 10.0);
+    let exact = KernelError::Failed(crate::ops::UNION_PROTO_EDGE.to_string());
+    assert!(retry_applies(&a, &b, BoolOp::Union, &exact));
+    assert!(!retry_applies(&a, &b, BoolOp::Cut, &exact));
+    assert!(!retry_applies(&a, &b, BoolOp::Intersect, &exact));
+    assert!(!retry_applies(&a, &b, BoolOp::Union, &KernelError::Failed(format!("{} ", crate::ops::UNION_PROTO_EDGE))));
+    assert!(!retry_applies(&a, &b, BoolOp::Union, &KernelError::Invalid(crate::ops::UNION_PROTO_EDGE.to_string())));
+    let multi = crate::ops::join_apart(&[boxed(0.0, 0.0, 40.0, 1.0, 1.0, 41.0), boxed(0.0, 0.0, 50.0, 1.0, 1.0, 51.0)])
+        .unwrap()
+        .expect("two apart pieces");
+    assert_eq!(multi.record().material_regions().len(), 2);
+    assert!(!retry_applies(&multi, &b, BoolOp::Union, &exact));
+
+    let before = (a.face_count(), a.edge_count(), b.face_count(), b.edge_count());
+    let failed = fallback_if_applicable(&a, &b, BoolOp::Union, exact.clone(), || Err(KernelError::Failed("retry failed".into()))).unwrap_err();
+    assert_eq!(failed.to_string(), exact.to_string());
+    assert_eq!((a.face_count(), a.edge_count(), b.face_count(), b.edge_count()), before);
+}
+
 /// The same booleans through SMLib: its tags, renumbered into the operands' and the result's
 /// face and edge order, give a history that holds against the geometry.
 mod smlib {

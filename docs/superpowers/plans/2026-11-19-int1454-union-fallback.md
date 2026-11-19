@@ -7,8 +7,10 @@ Status: approved narrow workaround; source-only. This plan and its tests are the
 - Source base: `feat/int1454-ui` `c5f2f42fe6f06ed5c2c4ec1df04f7e9c6aae50ad`
   (diagnosis head `61835bfafb151c7d6803aeab195e824b6d8458d3`, one commit earlier; the
   relevant boolean path is byte-identical).
-- Vendored solidcore: snapshot `524be9e1…`, upstream target `v0.44.1`, tree `e151d5ea6`.
-  The vendored tree stays byte-identical. Do not edit `solidcore/`.
+- Vendored solidcore: snapshot `524be9e1…`, upstream target **commit**
+  `e151d5ea6866fb055e011379153fb1cae0566f22` (`v0.44.1`), vendored **tree**
+  `8b5c01445619305dcfc5072db3fe76b8cfea67be`. The vendored tree stays byte-identical.
+  Do not edit `solidcore/`.
 - Evidence: `/tmp/opencode/int1454-front-triangle-diagnosis/` (`ROOT-CAUSE.md`, `FACTS.md`,
   `REPRO.md`, exported operands and hash manifest).
 

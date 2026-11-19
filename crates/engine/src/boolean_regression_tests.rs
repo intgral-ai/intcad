@@ -2312,3 +2312,37 @@ fn front_triangle_press_pull_keeps_exact_history_and_names() {
         .unwrap();
     assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap());
 }
+
+/// The removal audit: the unpatched ordinary order still fails with the exact fingerprint, while
+/// the product entry retries. Other operations never take the retry and stay identical to it.
+#[test]
+fn front_triangle_original_order_audit_and_other_operations() {
+    use solidcraft_kernel::{BoolOp, boolean, boolean_original_order};
+
+    let target = front_triangle();
+    let target_body = target.model.state().body("FrontTriangle").unwrap().body.clone();
+    let tool = front_triangle_tool(5.0);
+    let tool_body = tool.model.state().body("Body1").unwrap().body.clone();
+
+    let fingerprint = "SMLib boolean: operation: solidcore: SmApiBoolean: topology::proto_topology::p1: the proto edge is not listed";
+    let ordinary = boolean_original_order(&target_body, &tool_body, BoolOp::Union).expect_err("the ordinary union still fails");
+    assert_eq!(ordinary.to_string(), format!("the operation failed: {fingerprint}"), "the audit still sees the exact upstream failure");
+    let joined = boolean(&target_body, &tool_body, BoolOp::Union).unwrap().expect("the temporary fallback makes one body");
+    assert!(joined.validity().is_empty(), "{:?}", joined.validity());
+    assert_eq!(joined.shell_count(), 1);
+
+    for op in [BoolOp::Cut, BoolOp::Intersect] {
+        let ordinary = boolean_original_order(&target_body, &tool_body, op);
+        let product = boolean(&target_body, &tool_body, op);
+        match (ordinary, product) {
+            (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string(), "{op:?}: only Union may retry"),
+            (Ok(None), Ok(None)) => {}
+            (Ok(Some(a)), Ok(Some(b))) => {
+                let (va, vb) = (solidcraft_kernel::measure(&a).unwrap().volume, solidcraft_kernel::measure(&b).unwrap().volume);
+                assert!((va - vb).abs() <= 1e-9 * va.abs().max(1.0), "{op:?}: {va} vs {vb}");
+                assert_eq!((a.face_count(), a.edge_count()), (b.face_count(), b.edge_count()), "{op:?}");
+            }
+            _ => panic!("{op:?}: the product path differs from the ordinary path"),
+        }
+    }
+}
