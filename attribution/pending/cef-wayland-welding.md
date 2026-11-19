@@ -1,4 +1,4 @@
-| Asset | Author | Licence | Source | Modifications |
-| --- | --- | --- | --- | --- |
-| welding 0.15.0 Rust sources, manifest, build script and README (`vendor/welding/`) | Mark Alan Boykin | MPL-2.0 | https://crates.io/crates/welding/0.15.0 (upstream `1836887569367fe8476b014ed8563d302a5c829e`) | Checked Linux pre-init identity and OSR host-mode event/invariant; see `vendor/welding/UPSTREAM.md`. Exact modified source must be made available with binary distributions. |
-| MPL-2.0 license text (`vendor/welding/LICENSE.txt`) | Mozilla Foundation | MPL-2.0 | https://www.mozilla.org/media/MPL/2.0/index.txt | None; canonical license text. |
+| File | Author | Source | Licence |
+|---|---|---|---|
+| vendor/welding/ | Mark Alan Boykin; local changes by Intcad contributors | welding 0.15.0, https://crates.io/crates/welding/0.15.0 (upstream `1836887569367fe8476b014ed8563d302a5c829e`), modified; package checksum, deltas and removal criteria in `vendor/welding/UPSTREAM.md` | MPL-2.0 |
+| vendor/welding/LICENSE.txt | Mozilla Foundation | https://www.mozilla.org/media/MPL/2.0/index.txt (canonical text) | MPL-2.0 |

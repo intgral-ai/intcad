@@ -19,14 +19,17 @@ modifications (listed in vendor/README.md and marked in the source); its licence
 vendor/truck-shapeops/LICENSE. Copyright (c) RICOS Co. Ltd.
 
 Desktop web view. The Assistant's interface is drawn by the Chromium Embedded Framework
-(CEF 154, Chromium 154) that every package ships: the app loads the CEF distribution as an
-unmodified library and imports its frames as GPU textures through the welding and grafting
-Rust crates (MPL-2.0, unmodified). CEF and Chromium are BSD 3-Clause; the complete list of
-third-party components in the Chromium build, with their licences, is CEF-CREDITS.html,
-shipped with the app. Copyright notices, licence texts and what each package must ship are
-in docs/web-view-licences.md, packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt and
-packaging/notices/CEF-CREDITS.html. There is no system WebView, GTK, WebKitGTK, WebView2 or
-WKWebView in this build. These are notices, not a legal clearance.
+(CEF 154, Chromium 154) that the app is built against. Where a package includes the CEF
+runtime, the app loads that distribution as an unmodified library and imports its frames as
+GPU textures through the welding and grafting Rust crates (MPL-2.0; grafting is linked as
+published, welding is locally modified, and its modified source is in vendor/welding/ of the
+matching source revision, recorded in vendor/welding/UPSTREAM.md). CEF and Chromium are BSD
+3-Clause; the complete list of third-party components in the Chromium build, with their
+licences, is CEF-CREDITS.html, installed with the app's notices. Copyright notices, licence
+texts and what each package must ship are in docs/web-view-licences.md,
+packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt and packaging/notices/CEF-CREDITS.html.
+There is no system WebView, GTK, WebKitGTK, WebView2 or WKWebView in this build. These are
+notices, not a legal clearance.
 
 Some code is adapted from sibling projects in the storytold family (CADCraft, GridCraft), which are
 licensed MIT OR Apache-2.0; ATTRIBUTION.md lists the files.

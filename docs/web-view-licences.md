@@ -1,18 +1,27 @@
 # Desktop web-view licences and notices
 
 > **Update (CEF cutover):** the Assistant no longer uses system GTK/WebKitGTK. Its page is
-> drawn by the CEF distribution the app ships (BSD 3-Clause, third-party list in
-> `packaging/notices/CEF-CREDITS.html`), integrated through welding/grafting (MPL-2.0,
-> unmodified). `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` carries the CEF/Chromium
-> notice; the WebKitGTK sections below are kept as the record of the WRY era and no longer
-> describe what is installed. Human legal review is still open.
+> drawn by the CEF distribution the app is built against (BSD 3-Clause, third-party list in
+> `packaging/notices/CEF-CREDITS.html`), integrated through welding/grafting (MPL-2.0;
+> grafting unmodified, welding locally modified, source and record in `vendor/welding/` and
+> `vendor/welding/UPSTREAM.md`). `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` carries
+> the CEF/Chromium notice; the WebKitGTK sections below are kept as the record of the WRY
+> era and no longer describe what is installed. Human legal review is still open.
+>
+> Current CEF/welding records: `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt` (CEF,
+> Chromium and welding/grafting notices), `packaging/notices/CEF-CREDITS.html` (generated
+> Chromium third-party list) and `vendor/welding/UPSTREAM.md` (modified-welding provenance
+> and source-availability obligation). The Components table below is the WRY-era record,
+> not the current component list.
 
 **Status:** engineering notes, attribution and shipping notices for the Assistant's web view.
 This is **not** rights clearance and not a legal opinion. The exception in
 [`../skills/solidcraft-ground-rules/SKILL.md`](../skills/solidcraft-ground-rules/SKILL.md)
-permits these components only as unmodified, dynamically linked, system-provided desktop
-libraries. The open human legal-review questions are at the end; a lawyer has not answered
-them.
+permits the WRY-era system GTK/WebKitGTK components only as unmodified, dynamically linked,
+system-provided desktop libraries. The CEF/Chromium runtime is BSD 3-Clause with its own
+third-party notices, and welding/grafting are MPL-2.0; welding is locally modified as
+recorded above and in `vendor/welding/UPSTREAM.md`. The open human legal-review questions
+are at the end; a lawyer has not answered them.
 
 The Assistant draws its interface in a web view (`apps/solidcraft/src/assistant_web.rs`).
 The page itself (`packages/assistant-web/dist`) has separate notices in

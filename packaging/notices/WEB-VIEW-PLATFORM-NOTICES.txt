@@ -12,8 +12,10 @@ Components
 ----------
 
 Chromium Embedded Framework (CEF)
-  Version:   the binary distribution the app ships (154.0.34, Chromium 154.0.8037.98 in the
-             build this notice was written for; the exact version is printed by the build)
+  Version:   the CEF distribution the app is built against (154.0.34, Chromium 154.0.8037.98
+             in the build this notice was written for; the exact version is printed by the
+             build). The package scripts in this revision do not yet stage a verified whole
+             CEF runtime; see "Packaging status and source availability" below.
   Licence:   BSD 3-Clause (below), plus the third-party components listed in the
              accompanying CEF-CREDITS.html.
   Upstream:  https://github.com/chromiumembedded/cef
@@ -35,7 +37,9 @@ welding / grafting (the Rust side of the integration)
   Use:       statically linked. welding adds checked runtime identity and Linux OSR
              browser-mode verification; grafting is unmodified. Binary distributors
              must make the exact modified MPL-covered welding source available under
-             MPL-2.0 and provide recipients its source location with the release.
+             MPL-2.0 and provide recipients its source location with the release. The
+             concrete release URL/tag is not fixed or asserted in this revision; the
+             matching source tree contains vendor/welding/ and its UPSTREAM.md record.
 
 Full third-party list
 ---------------------
@@ -47,6 +51,34 @@ must be installed with the app. The package scripts copy both files:
   Linux:   /usr/share/doc/intcad/            (or the AppImage's licence folder)
   macOS:   Intcad.app/Contents/Resources/Licenses/
   Windows: the install directory, next to the executable.
+
+CEF bundles third-party components under their own licences, including LGPL-2.1 components
+such as FFmpeg; their texts are in CEF-CREDITS.html. No such source is vendored in this
+repository. This disclosure is not a licence exception and does not clear the open legal
+review.
+
+Packaging status and source availability
+----------------------------------------
+
+This notice records the intended release; it is not proof that a given package contains a
+CEF runtime. In this revision the Linux/macOS/Windows package scripts do not stage
+libcef.so, Resources/, icudtl.dat, snapshot blobs, chrome-sandbox or the CEF helper
+processes, and flake.nix still lists the WRY-era GTK/WebKitGTK packages. A binary release
+must therefore:
+
+  - stage the actual CEF runtime it was built against and record its exact version and
+    whole-file hashes;
+  - record the CEF-CREDITS.html generator and provenance against that runtime;
+  - publish the matching modified welding source and tell recipients the concrete URL/tag
+    or archive from which to obtain it (MPL-2.0 requires a location, not only an
+    obligation);
+  - state the source location for the unmodified grafting crate as well; and
+  - complete the human legal review, including the CEF distribution's bundled LGPL
+    components.
+
+Source is available in the matching Intcad source revision under vendor/welding/, with
+provenance in vendor/welding/UPSTREAM.md. Until the release location is fixed, no URL or
+tag is asserted here.
 
 Licence texts
 -------------

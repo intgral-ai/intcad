@@ -4,11 +4,22 @@ Branch `probe/cef-welding-osr`. Scope: the Assistant's page as an egui texture �
 colour, transparency, typography and every built-in theme. The CAD renderer, the chat/MCP
 contract and the CEF single-implementation cutover are unchanged.
 
-**Current status: WIP, not visual acceptance.** The manual-review follow-up's first GPU run
-logged a native 463×1122 viewport at scale 1.25, but imported rasters changed from 463×1122 to
-370×898. A high-resolution CDP screenshot is therefore insufficient proof of accelerated OSR
-resolution. The viewport-protocol approach below remains under investigation; do not treat it
-as a verified fix. Font-role and backing-colour unit tests pass independently.
+**Current status: source WIP, not visual or native-density acceptance.** The approved bounded
+design B is implemented and source-reviewed: stock CEF 154 with `WaylandFractionalScaleV1`
+disabled before initialization on Linux native Wayland Assistant OSR only, version-verified and
+merged with `Translate`, with explicit conflict/identity checks and inherited-argv suppression.
+Native frame geometry/admission and the native DSF notification/retry are also in source. A
+no-emulation diagnostic on a pre-existing stock CEF binary with that feature flag produced an
+effective native DSF of 1.25 and a 463×1123 native capture at 1.25. That is not current-binary
+validation: the compiled app, native CEF/GPU execution and the 1/1.25/1.5/2 native matrix, all
+25 themes and input/IME remain BLOCKED/NOT RUN. No CEF fork or custom Chromium build is required
+or approved; the per-window Chromium guard is unapproved research (approach A).
+
+> **Correction (2026-11-19):** earlier text in this file described research approach A (a
+> Chromium source guard / custom CEF build) as required and said the matrix must wait for a CEF
+> fix. That was wrong: the approved design B is the stock-CEF feature-disable configuration above.
+> The earlier wording and the corresponding report text are corrected here; raw diagnostic logs
+> are untouched.
 
 ## 1. Root causes
 
@@ -56,27 +67,64 @@ Prose and labels follow `font_label` (12.5), the same role used by native Assist
 form labels in `ui_kit`. Caption, menu and heading roles retain separate token mappings. The root
 stays 12 for layout spacing; there is no CSS `zoom`, transform scaling or per-control patch.
 
-### 1.5 Low-resolution text and the black resize rail (manual-review follow-up)
+### 1.5 Low native capture density at fractional scale (root cause historical; design B implemented)
 
-At native `pixelsPerPoint=1.25`, the running page reported `devicePixelRatio=1`, a 370×898 CSS
-viewport and a 370×898 raw CEF screenshot. The host stretched that raster across the physical
-panel. Matching flat background colours at several DPI settings did not detect this defect.
+At native `pixelsPerPoint=1.25` the page lays out a 370×898 CSS viewport, while native CEF
+without the design-B configuration produced only a 370×898 raster. The root cause is known
+from native callback telemetry, GDB and the unmodified Chromium source:
 
-The producer already calls `notify_screen_info_changed`, `was_resized` and `invalidate` when its
-scale changes, but the observed Chromium DPR remained 1. Explicitly configuring the Chromium
-viewport through its existing internal protocol changed the raw raster to 463×1123 at DPR 1.25
-without changing the CSS viewport. The host now configures that viewport together with the native
-producer's scale, including scale-only changes. It uses no remote listener in production.
-Acknowledgements are correlated; failures and lost receipts retry with bounded backoff.
+1. welding answers `GetViewRect` in DIP and `GetScreenInfo` with DSF=1.25 correctly.
+2. CEF converts that into Chromium `ScreenInfo` with DSF=1.25.
+3. Chromium 154 `RenderWidgetHostViewBase::UpdateScreenInfo` overrides the screen DSF when
+   Ozone supports per-window scaling: `GetPreferredScaleFactorForView(GetNativeView())`
+   falls back to 1.0.
+4. A CEF windowless OSR view has no native view, so Wayland's per-window fallback replaces
+   welding's 1.25 with 1.
+5. CEF consequently produces a 370×898 native raster. Stretching it to 463×1122 blurred it;
+   drawing it 1:1 at physical size makes the same page undersized.
 
-The host draws imported texels at native physical size from a pixel-aligned origin, clipping
-stale resize frames rather than stretching them. Input uses that same origin. Native popup
-surfaces are not clipped to the page's rectangle.
+The decisive line from the unmodified Chromium log is `UpdateScreenInfo: Overriding scale
+for screen '' from 1.25 with windows scale 1`. A task-owned debugger counterfactual that
+skipped only that Ozone override block produced native and imported 463×1123 (correct
+ceiling for 898×1.25) on the same app, CEF, hardware and settings. That is evidence for
+research approach A; A (a Chromium source guard or custom CEF build) is **unapproved and
+unimplemented**, and the selected design does not require it.
 
-The black strip was independently traced to the native resize rail: the page reports its startup
-surface before receiving theme tokens, and `web_canvas` retained that old colour. Pixel samples
-were `(13,13,13)` in the rail versus `(39,43,52)` in the themed page. Native frame/backing now use
-the same `Tokens::panel` source as the theme bridge. The existing page-readiness IPC is unchanged.
+Selected design B (implemented and source-reviewed; not runtime-accepted): before
+`CefRuntime::initialize`, `assistant_cef_config` builds one effective policy for Linux
+native-Wayland Assistant OSR only. It merges the feature names `Translate` and
+`WaylandFractionalScaleV1` into one deduplicated `disable-features` value, rejects an
+`enable-features` conflict, an incompatible Ozone/headless choice, an unknown runtime
+identity or a conflicting second initialization, and suppresses inherited browser argv. It
+version-verifies CEF 154.0.34 / Chromium 154.0.8037.98 (API 15400, commit `14c5a08…`);
+Windows/macOS and other Linux backends keep their previous settings. Tasks 1–3 also added
+the geometry/admission seam and native DSF notification/retry. No CEF fork, Chromium patch,
+registry edit or X11 fallback is used or approved.
+
+No-emulation flag proof (historical pre-existing stock CEF binary; no
+`Emulation.setDeviceMetricsOverride`, no `LD_PRELOAD`, no X11): with
+`WaylandFractionalScaleV1` disabled, effective native `GetDeviceScaleFactor` became 1.25 and
+the native callback settled at coded/content/source 463×1123 while CSS layout stayed
+370×898; the page capture was 463×1123. Only 1.25 was measured, on the baseline artifact.
+It supports the mechanism, not current-binary or 1/1.5/2 acceptance.
+
+The former `Emulation.setDeviceMetricsOverride` attempt changed the JS DPR but did not repair
+native density; it has been removed from the app, together with the app-only density protocol
+enablement and polling. The native producer's `notify_screen_info_changed`, `was_resized` and
+`invalidate` calls and the host's correlated, bounded retry remain.
+
+Current source behaviour: imported texels are drawn at native physical size from a
+pixel-aligned origin, stale resize frames are clipped rather than stretched, input uses the
+same origin, and native popup surfaces are not clipped to the page rectangle. Source-level
+config/identity/geometry/viewport/admission tests pass; the compiled app, native CEF/GPU
+execution, the 1/1.25/1.5/2 capture/import/input matrix and all-theme visuals are
+**BLOCKED / NOT RUN** until a trusted stock-CEF build runs them.
+
+The black strip was independently traced to the native resize rail: the page reports its
+startup surface before receiving theme tokens, and `web_canvas` retained that old colour.
+Pixel samples were `(13,13,13)` in the rail versus `(39,43,52)` in the themed page (historical
+measurement). Native frame/backing now use the same `Tokens::panel` source as the theme
+bridge. The existing page-readiness IPC is unchanged.
 
 ## 2. The bridge
 
@@ -92,12 +140,21 @@ the same `Tokens::panel` source as the theme bridge. The existing page-readiness
 whenever the tokens change (so a theme switch repaints the page without reloading the browser),
 and the JSON is also in `web::state`, beside the old `dark` bit. `theme_bridge` has a unit test
 that resolves **every** built-in theme and requires complete colours, a positive body font and a
-control height.
+control height. That test is source-reviewed here but was not executed in this task (it needs
+the UI crate and Cargo).
 
-## 3. Evidence (Linux, real app)
+## 3. Evidence (Linux, real app; historical unless marked current-source)
 
-Theme matrix, 25 built-in themes, each applied through `ui.prefs {theme}` at runtime, page
-background measured from the app's own screenshot and compared with the token it was given:
+**Evidence status.** Everything in this section is historical: it came from app binaries
+whose source/binary SHA identity was not established, and those cached executables were not
+rerun for this task. It is retained as the record of what was observed, not as current-source
+validation. In particular, the 25×3 matrix compared flat surface colours at sampled pixels; it
+does **not** prove native raster resolution or readable type, and it cannot be cited as
+all-theme or all-DPI acceptance.
+
+Theme matrix, 25 built-in themes, each applied through `ui.prefs {theme}` at runtime in a
+historical binary, page background measured from the app's own screenshot and compared with the
+token it was given:
 
 ```
 themes=25 mismatched=0            (125 % DPI, /tmp/themes/matrix-1_25.json)
@@ -105,7 +162,9 @@ themes=25 mismatched=0            (200 % DPI, /tmp/themes200/matrix-2_0.json)
 themes=25 mismatched=0            (100 % DPI, /tmp/themes100/matrix-1_0.json)
 ```
 
-Screenshots: `/tmp/themes/<id>.png` for all 25 ids (`1-bit`, `1-bit-dark`, `akari`,
+The 25 ids below are exactly the `assets/styles/ui/themes/*.json` files; the current matrix
+script enumerates them from source rather than a hard-coded list. Screenshots:
+`/tmp/themes/<id>.png` for all 25 ids (`1-bit`, `1-bit-dark`, `akari`,
 `amber-phosphor`, `black`, `blueprint`, `catppuccin-mocha`, `cga`, `clay`, `clay-dark`,
 `cupertino`, `graphite`, `green-phosphor`, `gruvbox-dark`, `gruvbox-light`, `high-contrast`,
 `nord`, `nosferatu`, `okibi`, `one-dark`, `onyx`, `platinum-9`, `solarized-light`,
@@ -198,11 +257,22 @@ Other checks:
 
 ## 4.1 Adding a theme later (no Assistant change)
 
-A new built-in theme is one JSON file under `assets/styles/ui/themes/`. It is resolved by the
-existing theme system into `Tokens`, and the bridge forwards those tokens; the page applies them
-as CSS variables. There is **no per-theme branch in the Assistant**, no new CSS file and no
-rebuild of the page. The `theme_bridge` unit test walks `theme_files::builtin()`, so a theme that
-does not resolve to a complete palette fails the test instead of showing a half-styled panel.
+The current build has 25 built-in themes; their source of truth is every JSON file under
+`assets/styles/ui/themes/` (do not hard-code the count elsewhere). Each is resolved by the
+existing theme system into `Tokens`, including colour-vision modes and user theme files, and
+the bridge forwards those tokens; the page applies them as CSS variables. There is **no
+per-theme branch in the Assistant**, no new CSS file and no rebuild of the page. A new
+built-in theme is therefore one JSON file with a complete palette; the `theme_bridge` unit
+test walks `theme_files::builtin()`, so a theme that does not resolve to a complete palette
+fails the test instead of showing a half-styled panel. The current `theme-matrix.py`
+self-test enumerates the same source files rather than a fixed list.
+
+Verification limits: the 25×3 historical matrix proves sampled flat colours, not native
+raster resolution, type sizes or every interactive state; it was produced by executables of
+unproven source identity and was not rerun. Source-level checks that do run in this task are
+the config, vendor `runtime_identity`, geometry, viewport and admission Rust modules and the
+Python self-tests. The compiled app, the real 1/1.25/1.5/2 capture matrix, all 25 themes on a
+trusted current binary, hover/focus and OS IME remain **BLOCKED / NOT RUN**.
 
 The few semantic values IntCAD's palette does not name directly are filled in the bridge and are
 the only place to review a mapping change:
@@ -226,4 +296,5 @@ the only place to review a mapping change:
 The Linux E2E guest renders with **llvmpipe** and has no `VK_EXT_external_memory_dma_buf`, so by
 design the app cannot show the page there: it must report the missing GPU interop and keep CAD
 working. That is the no-interop gate, not a visual test. Visual/theme acceptance is on the host
-(the instruction for this round: build and run in VMs first, host last).
+(build and run in VMs first, host last). In this task no VM, host session, live CEF run or
+screenshot was performed; those gates remain **NOT RUN**.

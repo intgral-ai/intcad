@@ -134,8 +134,10 @@ SolidCraft changes:
 
 Exact published crate sources, normalized manifest, build script and README, without
 examples, assets, registry metadata or a nested lockfile. `welding/UPSTREAM.md` records
-the package checksum, upstream revision, original file hashes and removal criteria.
-`welding/LICENSE.txt` is Mozilla's canonical MPL-2.0 text.
+the package checksum, upstream revision, original file hashes, the full 11-path delta
+(9 modified upstream files plus 2 new files) and removal criteria. This entry is a
+summary; the full delta list is in `UPSTREAM.md`. `welding/LICENSE.txt` is Mozilla's
+canonical MPL-2.0 text.
 
 SolidCraft changes:
 - `src/runtime_identity.rs`, `src/runtime.rs`, `src/lib.rs`: owned, checked Linux
@@ -145,8 +147,19 @@ SolidCraft changes:
 - `src/surface.rs`, `src/linux_cef/cef_backed.rs`: report actual browser identity/OSR
   mode, close a host violating the OSR invariant, and test browser-popup cancellation
   separately from OSR popup widgets. Existing root OSR settings and fd ownership stay intact.
+- `src/linux_cef/mod.rs`: explicit `set_page_focus(bool)` through the existing browser-host
+  API, and recoverable errors for absent hosts or poisoned metrics locks in the Linux
+  resize/scale setters instead of a false success or panic.
+- `src/frame_geometry.rs` (new): owned capture geometry, element, generation and
+  mailbox-watermark scalars with checked full-surface validation and hostile-input tests.
+- `src/native_frame/{mod.rs,vulkan_dmabuf.rs,dx12.rs,metal.rs}`: optional capture metadata
+  transported with the existing owned frame, discard watermarks/generations, saturating
+  counters and fd/mailbox regressions; the platform import paths are otherwise unchanged.
 
 MPL-covered files are modified. Binary distributions must make this exact modified
 source available under MPL-2.0, include the notice and license, and tell recipients
 how to obtain the source. The release must publish the matching `vendor/welding/`
-tree, not merely link to the unmodified crate.
+tree, not merely link to the unmodified crate. Remove the patch when a published welding
+release provides equivalent checked pre-init identity, browser-mode reporting/enforcement
+and owned native capture-metadata transport, after revalidating the native Wayland OSR
+scope and all supported platform builds.
