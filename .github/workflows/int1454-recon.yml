@@ -3,6 +3,8 @@
 name: INT-1454 targeted reconciliation
 
 on:
+  push:
+    branches: [fix/int1454-recon]
   workflow_dispatch:
 
 permissions:
