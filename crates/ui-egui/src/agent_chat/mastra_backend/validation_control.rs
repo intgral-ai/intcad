@@ -180,8 +180,7 @@ fn prewait_barrier() {
 #[cfg(test)]
 fn completion_barrier() {
     let pair = COMPLETION_BARRIERS.lock().ok().and_then(|slot| slot.clone());
-    if let Some(pair) = pair {
-        let (reached, release) = &*pair;
+    if let Some((reached, release)) = pair {
         reached.wait();
         release.wait();
     }
@@ -191,7 +190,7 @@ fn completion_barrier() {
 static PREWAIT_BARRIER: Mutex<Option<Arc<std::sync::Barrier>>> = Mutex::new(None);
 
 #[cfg(test)]
-static COMPLETION_BARRIERS: Mutex<Option<Arc<(std::sync::Barrier, std::sync::Barrier)>>> = Mutex::new(None);
+static COMPLETION_BARRIERS: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>> = Mutex::new(None);
 
 /// Pause the control worker immediately before it waits for work, while it still holds the queue
 /// mutex. The test proves `shutdown` takes that same mutex instead of racing the wait predicate.
@@ -213,7 +212,7 @@ pub(super) fn clear_prewait_barrier() {
 #[cfg(test)]
 pub(super) fn install_completion_barriers(reached: Arc<std::sync::Barrier>, release: Arc<std::sync::Barrier>) {
     if let Ok(mut slot) = COMPLETION_BARRIERS.lock() {
-        *slot = Some(Arc::new((reached, release)));
+        *slot = Some((reached, release));
     }
 }
 

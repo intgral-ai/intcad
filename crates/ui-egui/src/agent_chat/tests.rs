@@ -13192,6 +13192,7 @@ fn a_picture_only_prompt_and_a_thought_have_no_copy_message_action() {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod mastra_backend_tests {
+    use super::app_with_script;
     use crate::agent_chat::backend::ChatBackend;
     use crate::agent_chat::context::{self, Context, Entry, Kind as ContextKind};
     use crate::agent_chat::host_ai;
@@ -13199,10 +13200,11 @@ mod mastra_backend_tests {
     use crate::agent_chat::mastra_protocol::*;
     use crate::agent_chat::runtime_client;
     use crate::agent_chat::runtime_client::{ClientNotice, IdSource};
-    use crate::agent_chat::{self, Item, RuntimeStatus, State, agents, poll, send, send_now};
+    use crate::agent_chat::{self, Event, Item, RuntimeStatus, State, ToolStatus, agents, end_turn, poll, send, send_now, start_turn};
     use crate::{ControlRequest, SolveApp};
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc::channel;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
