@@ -23,6 +23,7 @@ without launching an app.
 """
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -239,44 +240,48 @@ def page_roles_check(messages, colors):
     message = messages.get("roles")
     if not isinstance(message, dict):
         return ("BLOCKED", "the page did not report its computed role colours")
-    missing = [name for name in REQUIRED_ROLES if not message.get(name)]
-    if missing:
-        # A correct page may render no prose/answer yet (empty conversation), so an absent
-        # role is unobserved coverage, not a styled-but-wrong role. Present wrong styling
-        # still FAILs below.
-        return ("BLOCKED", "coverage not observed: no rendered " + ", ".join(missing) + " element at probe time")
+    missing = [name for name in REQUIRED_ROLES if message.get(name) is None]
     colours = palette_colours(colors)
     problems = []
     for name in REQUIRED_ROLES:
-        if not matches_palette(message[name], colours):
+        if name not in missing and not matches_palette(message[name], colours):
             problems.append(f"{name} {message[name]} is not a painted palette colour with palette alpha")
     # A page-side swatch is optional test instrumentation, never evidence for the app's
     # native swatch; it is checked when reported so a wrong one cannot hide.
     swatch = message.get("swatch")
-    if swatch and not matches_palette(swatch, colours):
+    if swatch is not None and not matches_palette(swatch, colours):
         problems.append(f"swatch {swatch} is not a painted palette colour with palette alpha")
-    detail = "; ".join(problems) or "real page roles paint palette colours with palette alpha"
+    # Check every present value before reporting unobserved coverage. The hook uses
+    # null for an absent element; a present empty/malformed colour is wrong styling.
+    if problems:
+        return ("FAIL", "; ".join(problems))
+    if missing:
+        return ("BLOCKED", "coverage not observed: no rendered " + ", ".join(missing) + " element at probe time")
+    detail = "real page roles paint palette colours with palette alpha"
     if swatch:
         detail += "; page swatch is fixture instrumentation, not the app's native swatch"
-    return ("FAIL" if problems else "PASS", detail)
+    return ("PASS", detail)
 
 
 def page_fonts_check(messages):
     message = messages.get("fonts")
     if not isinstance(message, dict):
         return ("BLOCKED", "the page did not report its computed font sizes")
-    fonts = message
-    missing = [name for name in ("prose", "textarea", "label") if not isinstance(fonts.get(name), (int, float))]
+    expected = {"root": 12.0, "prose": 12.5, "textarea": 12.5, "label": 12.5}
+    missing = [name for name in expected if message.get(name) is None]
+    problems = []
+    for name, want in expected.items():
+        if name in missing:
+            continue
+        value = message[name]
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or abs(value - want) > 0.1):
+            problems.append(f"{name} font {value!r} != {want:g}")
+    if problems:
+        return ("FAIL", "; ".join(problems))
     if missing:
         return ("BLOCKED", "no real " + ", ".join(missing) + " element measured")
-    root = fonts.get("root")
-    problems = []
-    if not isinstance(root, (int, float)) or abs(float(root) - 12.0) > 0.1:
-        problems.append(f"root font {root} != 12")
-    values = [fonts["prose"], fonts["textarea"], fonts["label"]]
-    if any(abs(float(value) - 12.5) > 0.1 for value in values):
-        problems.append(f"prose/textarea/label fonts {values} != 12.5")
-    return ("FAIL" if problems else "PASS", "; ".join(problems) or "root 12, real prose/textarea/label 12.5")
+    return ("PASS", "root 12, real prose/textarea/label 12.5")
 
 
 SCOPE_ACTIONS = ("rects", "fonts", "tokens", "roles", "swatches")
@@ -315,7 +320,41 @@ def scope_for_theme(path, theme, timeout=2.0, actions=SCOPE_ACTIONS):
         time.sleep(0.2)
 
 
-def rail_sample_point(state, web, ppp, ox, oy, rail_dip):
+def rounded_pixel(value):
+    """Match the CEF host's f32::round edge alignment (ties away from zero)."""
+    return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
+
+
+def window_pixel_point(x, y, ppp):
+    """ui.rects points -> ui.screenshot pixels, with NO OS/screen translation.
+
+    control.rs returns window points and ctx.pixels_per_point(); lib.rs saves the
+    viewport Screenshot image directly. Neither contract includes a screen origin.
+    """
+    return rounded_pixel(x * ppp), rounded_pixel(y * ppp)
+
+
+def web_pixel_bounds(web, ppp):
+    """CEF aligns both placement edges, not only its width (assistant_cef.rs)."""
+    return (*window_pixel_point(web["x"], web["y"], ppp),
+            *window_pixel_point(web["x"] + web["width"], web["y"] + web["height"], ppp))
+
+
+def page_pixel_point(web, ppp, x, y):
+    """Browser getBoundingClientRect CSS DIP -> aligned window image pixels."""
+    left, top = window_pixel_point(web["x"], web["y"], ppp)
+    return rounded_pixel(left + x * ppp), rounded_pixel(top + y * ppp)
+
+
+def surface_pixel(png, web, ppp):
+    left, top, right, bottom = web_pixel_bounds(web, ppp)
+    x, y = rounded_pixel(left + (right - left) * 0.5), rounded_pixel(top + (bottom - top) * 0.62)
+    if not (0 <= x < png[0] and 0 <= y < png[1]):
+        raise ValueError(f"surface sample ({x}, {y}) is outside the window screenshot")
+    return pixel(png, x, y)
+
+
+def rail_sample_point(state, web, ppp, rail_dip):
     """Where the native strip beside the page is, from the control state's real `side`.
 
     `ui.agent_chat` reports `side` ("left"/"right"); the page-facing `web::state` object is a
@@ -323,26 +362,35 @@ def rail_sample_point(state, web, ppp, ox, oy, rail_dip):
     """
     left = state.get("side") == "left"
     half = max(1.0, float(rail_dip or 8.0) / 2.0)
-    x = ox + (web["x"] + web["width"] + half if left else web["x"] - half) * ppp
-    y = oy + (web["y"] + web["height"] * 0.5) * ppp
-    return round(x), round(y)
+    x0, y0, x1, y1 = web_pixel_bounds(web, ppp)
+    return rounded_pixel(x1 + half * ppp if left else x0 - half * ppp), rounded_pixel((y0 + y1) / 2.0)
 
 
-def rail_pixel_check(png, state, web, ppp, ox, oy, rail_dip, expected):
-    """The native strip beside the page is the app's panel fill, not the page's surface.
+def rail_pixel_check(png, state, web, ppp, rail_dip, expected):
+    """The native strip beside the page shares its themed backing surface.
 
     Floating, the page leaves a rail-wide strip at the panel's inner edge for the drag;
     docked, the frame margin shows the same fill. Either way the pixel is native.
+    web::frame/backing use Tokens.panel, exposed as theme.colors.surface by the
+    theme bridge. theme.colors.panel is Tokens.panel_header, NOT this backing.
     """
-    x, y = rail_sample_point(state, web, ppp, ox, oy, rail_dip)
+    x, y = rail_sample_point(state, web, ppp, rail_dip)
+    if not (0 <= x < png[0] and 0 <= y < png[1]):
+        return ("FAIL", f"native strip sample ({x}, {y}) is outside the window screenshot")
     actual = pixel(png, x, y)
     want = css_rgb(expected)
     delta = max((abs(a - b) for a, b in zip(want, actual)), default=255) if want else 255
     return ("PASS" if want and delta <= 2 else "FAIL",
-            f"native strip {hexed(actual)} at ({x}, {y}) vs panel {expected} delta={delta}")
+            f"native strip {hexed(actual)} at ({x}, {y}) vs native surface {expected} delta={delta}")
 
 
-def page_swatches_check(messages, png, web, ppp, ox, oy):
+# Exact fixed analytic fixtures, never inferred from a receipt or a test image.
+# Parity with the real hook is checked on the production validation path as well
+# as in self-tests: a changed/unavailable source contract cannot silently PASS.
+EXPECTED_SWATCH_COLOURS = ("#808080", "#336699", "#e08040")
+
+
+def page_swatches_check(messages, png, web, ppp):
     """App-page swatch patches: screenshot pixels against their declared CSS colours.
 
     The hook draws fixed analytic patches (not product colours) and reports each patch's
@@ -353,10 +401,19 @@ def page_swatches_check(messages, png, web, ppp, ox, oy):
     message = messages.get("swatches")
     if not isinstance(message, dict):
         return ("BLOCKED", "the app page did not report its fixed swatch patches")
+    try:
+        _, js = probe_source()
+        if hook_swatch_colours(js) != EXPECTED_SWATCH_COLOURS:
+            return ("BLOCKED", "the real hook's fixed swatch declaration differs from the validator contract")
+    except (OSError, AssertionError, ValueError) as error:
+        return ("BLOCKED", f"cannot verify the real hook's fixed swatch declaration: {error}")
     patches = message.get("patches")
     inner = message.get("inner")
-    if not isinstance(patches, list) or not 1 <= len(patches) <= 8:
-        return ("FAIL", f"swatch patches are missing or unbounded: {patches!r}")
+    if not isinstance(patches, list) or len(patches) != len(EXPECTED_SWATCH_COLOURS):
+        return ("FAIL", f"exactly {len(EXPECTED_SWATCH_COLOURS)} fixed swatch patches required: {patches!r}")
+    declared_colours = [norm_colour(patch.get("css")) if isinstance(patch, dict) else None for patch in patches]
+    if len(set(declared_colours)) != len(EXPECTED_SWATCH_COLOURS) or set(declared_colours) != set(EXPECTED_SWATCH_COLOURS):
+        return ("FAIL", f"missing, duplicate or substituted fixed swatch colours: {declared_colours!r}")
     if not (isinstance(inner, list) and len(inner) == 2 and all(isinstance(v, (int, float)) for v in inner)):
         return ("FAIL", f"swatch viewport is not measurable: {inner!r}")
     width, height = float(inner[0]), float(inner[1])
@@ -390,19 +447,18 @@ def page_swatches_check(messages, png, web, ppp, ox, oy):
                 and float(rect["x"]) + box_w <= width and float(rect["y"]) + box_h <= height):
             problems.append(f"{name} patch is clipped by the viewport: {rect!r} in {inner!r}")
             continue
-        sx = ox + (web["x"] + float(rect["x"]) + box_w / 2.0) * ppp
-        sy = oy + (web["y"] + float(rect["y"]) + box_h / 2.0) * ppp
+        sx, sy = page_pixel_point(web, ppp, float(rect["x"]) + box_w / 2.0, float(rect["y"]) + box_h / 2.0)
         if not (0 <= sx < image_w and 0 <= sy < image_h):
             problems.append(f"{name} patch centre ({sx:.0f}, {sy:.0f}) is outside the screenshot")
             continue
-        actual = pixel(png, round(sx), round(sy))
+        actual = pixel(png, sx, sy)
         delta = max(abs(a - b) for a, b in zip(rgb, actual))
         if delta > 2:
             problems.append(f"{name} painted {hexed(actual)} at ({sx:.0f}, {sy:.0f}) != declared {declared} delta={delta}")
         seen.add(declared)
         luminances.append(relative_luminance(rgb))
-    if len(seen) < 2:
-        problems.append("fewer than two distinct swatch colours were measured")
+    if seen != set(EXPECTED_SWATCH_COLOURS):
+        problems.append("not all three fixed swatch colours were measured")
     if luminances and not any(0.15 <= value <= 0.85 for value in luminances):
         problems.append("no nontrivial midtone: a double sRGB decode could not be distinguished")
     return ("FAIL" if problems else "PASS",
@@ -512,6 +568,26 @@ def _swatch_patch_count(js):
     if not match:
         raise AssertionError("the hook declares no SWATCHES fixtures")
     return len(_js_items("[" + match.group(1) + "]"))
+
+
+def hook_swatch_colours(js):
+    """Read every declared fixture, not just colour-looking fragments of the hook."""
+    match = re.search(r"const SWATCHES = (\[.*?\]);", js, re.S)
+    if not match:
+        raise AssertionError("the hook declares no SWATCHES fixtures")
+    colours, ids = [], []
+    for item in _js_items(match.group(1)):
+        fields = _js_object_fields(item, 0)
+        if len(fields) != 2 or {key for key, _ in fields} != {"id", "css"}:
+            raise AssertionError(f"unrecognised fixed swatch declaration: {item}")
+        values = dict(fields)
+        if not re.fullmatch(r"'[a-z]+'", values["id"]) or not re.fullmatch(r"'#[0-9a-f]{6}'", values["css"]):
+            raise AssertionError(f"nonliteral fixed swatch declaration: {item}")
+        ids.append(values["id"][1:-1])
+        colours.append(values["css"][1:-1])
+    if not colours or len(set(ids)) != len(ids) or len(set(colours)) != len(colours):
+        raise AssertionError("empty or duplicate fixed swatch declaration")
+    return tuple(colours)
 
 
 def _patch_object_bound(js):
@@ -624,6 +700,39 @@ def _self_test():
         if page_roles_check({}, palette)[0] != "BLOCKED":
             raise AssertionError("an unreported roles message is BLOCKED, not PASS")
 
+    def missing_roles_do_not_hide_present_wrong_styles():
+        palette = {"text": "#ffffff"}
+        for role, value in (
+            ("textarea", "#010203"),
+            ("label", "rgba(255, 255, 255, 0)"),
+            ("live", ""),
+            ("swatch", "#010203"),
+        ):
+            status, detail = page_roles_check({"roles": {role: value}}, palette)
+            if status != "FAIL" or role not in detail:
+                raise AssertionError(f"missing prose must not hide wrong {role}: {status} {detail}")
+        for roles in ({}, {"prose": None}, {"textarea": "#ffffff"}):
+            if page_roles_check({"roles": roles}, palette)[0] != "BLOCKED":
+                raise AssertionError(f"genuinely incomplete, correct role coverage must be BLOCKED: {roles}")
+
+    def missing_fonts_do_not_hide_present_wrong_sizes():
+        for fonts in (
+            {"root": 12.0, "textarea": 14.0},
+            {"root": 16.0, "label": 12.5},
+            {"root": 12.0, "label": "12.5"},
+            {"root": 12.0, "textarea": float("nan")},
+            {"root": 12.0, "label": True},
+        ):
+            status, detail = page_fonts_check({"fonts": fonts})
+            if status != "FAIL":
+                raise AssertionError(f"missing prose must not hide wrong measured fonts {fonts}: {status} {detail}")
+        for fonts in ({}, {"root": None, "prose": None}, {"root": 12.0, "textarea": 12.5}):
+            if page_fonts_check({"fonts": fonts})[0] != "BLOCKED":
+                raise AssertionError(f"genuinely incomplete, correct font coverage must be BLOCKED: {fonts}")
+        fonts = {"root": 12.0, "prose": 12.5, "textarea": 12.5, "label": 12.5}
+        if page_fonts_check({"fonts": fonts})[0] != "PASS":
+            raise AssertionError("all real roles at their reviewed sizes must PASS")
+
     def optional_role_swatch_is_fixture_instrumentation():
         palette = {"text": "#ffffff"}
         roles = {"action": "roles", "theme": "t", "prose": "#ffffff", "label": "#ffffff",
@@ -641,73 +750,208 @@ def _self_test():
 
     def rail_uses_the_control_side_not_the_page_left_field():
         web = {"x": 100, "y": 0, "width": 50, "height": 100}
-        x_left, _ = rail_sample_point({"side": "left"}, web, 1.0, 0, 0, 8.0)
-        x_right, _ = rail_sample_point({"side": "right"}, web, 1.0, 0, 0, 8.0)
+        x_left, _ = rail_sample_point({"side": "left"}, web, 1.0, 8.0)
+        x_right, _ = rail_sample_point({"side": "right"}, web, 1.0, 8.0)
         if not x_left > web["x"] + web["width"]:
             raise AssertionError(f"left dock must sample right of the page: {x_left}")
         if not x_right < web["x"]:
             raise AssertionError(f"right dock must sample left of the page: {x_right}")
-        if rail_sample_point({}, web, 1.0, 0, 0, 8.0)[0] != x_right:
+        if rail_sample_point({}, web, 1.0, 8.0)[0] != x_right:
             raise AssertionError("a state without `side` must not guess the left dock")
         # The page-facing payload's `left` boolean must not steer this: `side` is authoritative.
         poisoned = {"side": "right", "left": True}
-        if rail_sample_point(poisoned, web, 1.0, 0, 0, 8.0)[0] != x_right:
+        if rail_sample_point(poisoned, web, 1.0, 8.0)[0] != x_right:
             raise AssertionError("the page state's `left` field must not be used for the rail")
 
     def rail_pixel_matches_panel_and_rejects_the_page():
         png = (160, 160, 3, bytes([0x11, 0x22, 0x33]) * (160 * 160))
         web = {"x": 10, "y": 0, "width": 100, "height": 100}
-        status, detail = rail_pixel_check(png, {"side": "right"}, web, 1.0, 0, 0, 8.0, "#112233")
+        status, detail = rail_pixel_check(png, {"side": "right"}, web, 1.0, 8.0, "#112233")
         if status != "PASS":
             raise AssertionError(detail)
-        if rail_pixel_check(png, {"side": "right"}, web, 1.0, 0, 0, 8.0, "#ffffff")[0] != "FAIL":
+        if rail_pixel_check(png, {"side": "right"}, web, 1.0, 8.0, "#ffffff")[0] != "FAIL":
             raise AssertionError("a page-coloured rail pixel must fail")
         # Left-docked: the strip is on the page's right.
-        if rail_pixel_check(png, {"side": "left"}, web, 1.0, 0, 0, 8.0, "#112233")[0] != "PASS":
+        if rail_pixel_check(png, {"side": "left"}, web, 1.0, 8.0, "#112233")[0] != "PASS":
             raise AssertionError("left-side rail sampling")
 
-    def swatch_pixels_prove_the_composited_page():
-        def halves(left, right, width=64, height=64):
-            row = bytes(left) * (width // 2) + bytes(right) * (width // 2)
-            return (width, height, 3, row * height)
+    def window_pixel_fixture(measured_ppp=1.25):
+        # Window PNG for an OS window at (137,83), NOT a screen capture. Only
+        # the hand-calculated window-relative sample pixels have the right colours.
+        # ui.rects supplies points; CEF rounds its origin/edges to physical pixels.
+        message, _, _ = swatch_test_image()
+        px = bytearray(400 * 300 * 3)
+        samples = (
+            (52, 63, (128, 128, 128)),
+            (82, 63, (51, 102, 153)),
+            (112, 63, (224, 128, 64)),
+            (22, 78, (17, 34, 51)),    # right dock: rail at the page's left
+            (152, 78, (17, 34, 51)),   # left dock: rail at the page's right
+            (87, 88, (17, 34, 51)),    # interior surface, within aligned bounds
+        ) if measured_ppp == 1.25 else (
+            # 1.26 is within the matrix's 0.02 measured-ppp tolerance. The
+            # same actual controls now distinguish rounding the CEF origin
+            # BEFORE a CSS offset from rounding their unaligned sum.
+            (52, 63, (128, 128, 128)),
+            (82, 63, (51, 102, 153)),
+            (113, 63, (224, 128, 64)),
+            (22, 78, (17, 34, 51)),
+            (153, 78, (17, 34, 51)),
+            (88, 88, (17, 34, 51)),
+        )
+        for x, y, rgb in samples:
+            offset = (y * 400 + x) * 3
+            px[offset:offset + 3] = bytes(rgb)
+        return {
+            "png": (400, 300, 3, bytes(px)),
+            "web": {"name": "agent_chat:web", "x": 21.2, "y": 30.0, "width": 96, "height": 64},
+            "ppp": measured_ppp, "origin": {"X": 137, "Y": 83},
+            "state": {"side": "right", "left": True},
+            "palette": {"metrics": {"space8": 8.0}},
+            "expected": "#112233", "theme_scope": message,
+        }
 
-        png = halves((0x80, 0x80, 0x80), (0x33, 0x66, 0x99))
-        web = {"x": 0, "y": 0, "width": 64, "height": 64}
+    def actual_main_pixel_expression(name, values):
+        # Execute the real production caller expressions, not copies that could
+        # quietly drop the offset while main still adds it. No app/IPC is run.
+        import ast
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        main_node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        if name == "surface":
+            nodes = [node.value for node in ast.walk(main_node) if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "bg" for target in node.targets)]
+        else:
+            nodes = [node for node in ast.walk(main_node) if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name) and node.func.id == name]
+        if len(nodes) != 1:
+            raise AssertionError(f"expected one real main {name} caller, found {len(nodes)}")
+        return eval(compile(ast.Expression(nodes[0]), __file__, "eval"), globals(), values)
+
+    def rail_caller_samples_window_pixels_at_nonzero_os_origin():
+        for ppp in (1.25, 1.26):
+            values = window_pixel_fixture(ppp)
+            for side in ("right", "left"):
+                values["state"]["side"] = side
+                status, detail = actual_main_pixel_expression("rail_pixel_check", values)
+                if status != "PASS":
+                    raise AssertionError(f"{side} dock, OS origin (137,83), ppp={ppp}: {status} {detail}")
+        values["png"] = (400, 300, 3, bytes(400 * 300 * 3))
+        if actual_main_pixel_expression("rail_pixel_check", values)[0] != "FAIL":
+            raise AssertionError("the actual rail caller must reject wrong window pixels")
+
+    def swatch_caller_samples_window_pixels_at_nonzero_os_origin():
+        for ppp in (1.25, 1.26):
+            values = window_pixel_fixture(ppp)
+            status, detail = actual_main_pixel_expression("page_swatches_check", values)
+            if status != "PASS":
+                raise AssertionError(f"OS origin (137,83), ppp={ppp}: {status} {detail}")
+        values["png"] = (400, 300, 3, bytes(400 * 300 * 3))
+        if actual_main_pixel_expression("page_swatches_check", values)[0] != "FAIL":
+            raise AssertionError("the actual swatch caller must reject wrong window pixels")
+
+    def surface_caller_samples_window_pixels_at_nonzero_os_origin():
+        for ppp in (1.25, 1.26):
+            actual = actual_main_pixel_expression("surface", window_pixel_fixture(ppp))
+            if actual != (17, 34, 51):
+                raise AssertionError(f"OS origin (137,83), ppp={ppp}: surface sampled {actual}, expected (17,34,51)")
+
+    def swatch_test_image():
+        # Independently transcribed from the real hook's three 20px controls at
+        # left:8px + padding:2px, gap:4px; never built from the validator's expected set.
+        row = bytes((0x80, 0x80, 0x80)) * 32 + bytes((0x33, 0x66, 0x99)) * 24 + bytes((0xe0, 0x80, 0x40)) * 40
+        png = (96, 64, 3, row * 64)
+        web = {"x": 0, "y": 0, "width": 96, "height": 64}
         message = {
             "swatches": {
-                "action": "swatches", "theme": "t", "inner": [64, 64],
+                "action": "swatches", "theme": "t", "inner": [96, 64],
                 "patches": [
-                    {"css": "#808080", "computed": "rgb(128, 128, 128)", "rect": {"x": 2, "y": 2, "w": 20, "h": 20}},
-                    {"css": "#336699", "computed": "rgb(51, 102, 153)", "rect": {"x": 40, "y": 2, "w": 20, "h": 20}},
+                    {"css": "#808080", "computed": "rgb(128, 128, 128)", "rect": {"x": 10, "y": 10, "w": 20, "h": 20}},
+                    {"css": "#336699", "computed": "rgb(51, 102, 153)", "rect": {"x": 34, "y": 10, "w": 20, "h": 20}},
+                    {"css": "#e08040", "computed": "rgb(224, 128, 64)", "rect": {"x": 58, "y": 10, "w": 20, "h": 20}},
                 ],
             }
         }
-        status, detail = page_swatches_check(message, png, web, 1.0, 0, 0)
+        return message, png, web
+
+    def swatch_pixels_validate_synthetic_composited_buffers():
+        # Pure offline PNG-buffer logic, NOT evidence of actual app/GPU rendering.
+        message, png, web = swatch_test_image()
+        status, detail = page_swatches_check(message, png, web, 1.0)
         if status != "PASS":
             raise AssertionError(detail)
-        if page_swatches_check({}, png, web, 1.0, 0, 0)[0] != "BLOCKED":
+        if page_swatches_check({}, png, web, 1.0)[0] != "BLOCKED":
             raise AssertionError("missing app swatch coverage must be BLOCKED, never fixture-only PASS")
-        if page_swatches_check(message, halves((0x33, 0x66, 0x99), (0x80, 0x80, 0x80)), web, 1.0, 0, 0)[0] != "FAIL":
+        black = (96, 64, 3, bytes(96 * 64 * 3))
+        if page_swatches_check(message, black, web, 1.0)[0] != "FAIL":
             raise AssertionError("a wrong composited pixel must fail")
         mismatch = json.loads(json.dumps(message))
         mismatch["swatches"]["patches"][1]["computed"] = "rgb(128, 128, 128)"
-        if page_swatches_check(mismatch, png, web, 1.0, 0, 0)[0] != "FAIL":
+        if page_swatches_check(mismatch, png, web, 1.0)[0] != "FAIL":
             raise AssertionError("computed CSS that disagrees with the declared colour must fail")
         oversized = json.loads(json.dumps(message))
-        oversized["swatches"]["patches"][0]["rect"] = {"x": 2, "y": 2, "w": 4, "h": 20}
-        if page_swatches_check(oversized, png, web, 1.0, 0, 0)[0] != "FAIL":
+        oversized["swatches"]["patches"][0]["rect"] = {"x": 10, "y": 10, "w": 4, "h": 20}
+        if page_swatches_check(oversized, png, web, 1.0)[0] != "FAIL":
             raise AssertionError("a clipped/oversized patch must fail")
         outside = json.loads(json.dumps(message))
-        outside["swatches"]["patches"][0]["rect"] = {"x": 60, "y": 2, "w": 20, "h": 20}
-        if page_swatches_check(outside, png, web, 1.0, 0, 0)[0] != "FAIL":
+        outside["swatches"]["patches"][0]["rect"] = {"x": 90, "y": 10, "w": 20, "h": 20}
+        if page_swatches_check(outside, png, web, 1.0)[0] != "FAIL":
             raise AssertionError("a patch clipped by the viewport must fail")
-        flat = {"swatches": {"action": "swatches", "theme": "t", "inner": [64, 64],
-                             "patches": [{"css": "#000000", "computed": "rgb(0, 0, 0)",
-                                          "rect": {"x": 2, "y": 2, "w": 20, "h": 20}},
-                                         {"css": "#ffffff", "computed": "rgb(255, 255, 255)",
-                                          "rect": {"x": 40, "y": 2, "w": 20, "h": 20}}]}}
-        if page_swatches_check(flat, halves((0, 0, 0), (255, 255, 255)), web, 1.0, 0, 0)[0] != "FAIL":
-            raise AssertionError("no midtone means a double sRGB decode is not distinguished")
+        partial = json.loads(json.dumps(message))
+        partial["swatches"]["patches"][2]["computed"] = None
+        if page_swatches_check(partial, png, web, 1.0)[0] != "FAIL":
+            raise AssertionError("all three patches must be measured, not only two")
+
+    def incomplete_or_substituted_swatches_never_pass():
+        message, png, web = swatch_test_image()
+        patches = message["swatches"]["patches"]
+        variants = {
+            "missing warm": patches[:2],
+            "missing mid": patches[1:],
+            "empty": [],
+            "duplicate replacing warm": patches[:2] + [patches[0]],
+            "extra duplicate": patches + [patches[0]],
+            "substituted midtone": patches[:2] + [
+                {"css": "#808081", "computed": "rgb(128, 128, 129)", "rect": patches[0]["rect"]}],
+        }
+        for name, bad_patches in variants.items():
+            bad = {"swatches": dict(message["swatches"], patches=bad_patches)}
+            status, detail = page_swatches_check(bad, png, web, 1.0)
+            if status not in ("FAIL", "BLOCKED"):
+                raise AssertionError(f"{name} must never PASS: {status} {detail}")
+
+    def swatch_validator_requires_real_hook_parity():
+        message, png, web = swatch_test_image()
+        original = globals()["probe_source"]
+        text, js = original()
+        try:
+            # Only the read-only source boundary is replaced, never the validator.
+            # A full otherwise-PASS image must stop passing if its declaration
+            # cannot be verified against the real hook.
+            globals()["probe_source"] = lambda: (text, js.replace("'#e08040'", "'#e08041'"))
+            if page_swatches_check(message, png, web, 1.0)[0] != "BLOCKED":
+                raise AssertionError("source/validator fixture drift must block the production validator")
+
+            def unavailable():
+                raise OSError("source unavailable (self-test)")
+
+            globals()["probe_source"] = unavailable
+            if page_swatches_check(message, png, web, 1.0)[0] != "BLOCKED":
+                raise AssertionError("unavailable hook declaration must block the production validator")
+        finally:
+            globals()["probe_source"] = original
+
+    def offscreen_pixel_checks_do_not_clamp_to_an_edge():
+        png = (64, 64, 3, bytes((17, 34, 51)) * (64 * 64))
+        web = {"x": 1, "y": 0, "width": 50, "height": 60}
+        if rail_pixel_check(png, {"side": "right"}, web, 1.0, 8.0, "#112233")[0] != "FAIL":
+            raise AssertionError("offscreen native rail must not PASS on a clamped edge pixel")
+        message, png, web = swatch_test_image()
+        # The warm centre 68.6 rounds to 69, just OUTSIDE this 69px PNG. If the
+        # bounds test uses the unrounded centre, pixel() clamps to a matching warm edge.
+        cropped = b"".join(png[3][y * 96 * 3:(y * 96 + 69) * 3] for y in range(64))
+        message["swatches"]["patches"][2]["rect"]["x"] = 58.6
+        if page_swatches_check(message, (69, 64, 3, cropped), web, 1.0)[0] != "FAIL":
+            raise AssertionError("a rounded-offscreen swatch centre must FAIL, never clamp to a matching pixel")
 
     def split_scope_messages_parse_per_action_and_theme():
         lines = [
@@ -770,6 +1014,8 @@ def _self_test():
         rollup = lambda text: {name: int(value) for name, value in re.findall(r"(\w+): (\d+)", text)}
         if rollup(app.group(1)) != rollup(fixture_budget.group(1)):
             raise AssertionError("the standalone fixture's budgets drifted from the app hook's")
+        if hook_swatch_colours(js) != EXPECTED_SWATCH_COLOURS or hook_swatch_colours(fixture) != EXPECTED_SWATCH_COLOURS:
+            raise AssertionError("app/standalone swatch declarations must match the production validator's exact fixture contract")
         for action in SCOPE_ACTIONS:
             if f"action: '{action}'" not in fixture:
                 raise AssertionError(f"the fixture does not send {action}")
@@ -791,10 +1037,18 @@ def _self_test():
         ("transparent_role_fails_even_with_matching_rgb", transparent_role_fails_even_with_matching_rgb),
         ("wrong_role_colour_fails", wrong_role_colour_fails),
         ("missing_role_is_blocked_not_failed", missing_role_is_blocked_not_failed),
+        ("missing_roles_do_not_hide_present_wrong_styles", missing_roles_do_not_hide_present_wrong_styles),
+        ("missing_fonts_do_not_hide_present_wrong_sizes", missing_fonts_do_not_hide_present_wrong_sizes),
         ("optional_role_swatch_is_fixture_instrumentation", optional_role_swatch_is_fixture_instrumentation),
         ("rail_uses_the_control_side_not_the_page_left_field", rail_uses_the_control_side_not_the_page_left_field),
         ("rail_pixel_matches_panel_and_rejects_the_page", rail_pixel_matches_panel_and_rejects_the_page),
-        ("swatch_pixels_prove_the_composited_page", swatch_pixels_prove_the_composited_page),
+        ("rail_caller_samples_window_pixels_at_nonzero_os_origin", rail_caller_samples_window_pixels_at_nonzero_os_origin),
+        ("swatch_caller_samples_window_pixels_at_nonzero_os_origin", swatch_caller_samples_window_pixels_at_nonzero_os_origin),
+        ("surface_caller_samples_window_pixels_at_nonzero_os_origin", surface_caller_samples_window_pixels_at_nonzero_os_origin),
+        ("swatch_pixels_validate_synthetic_composited_buffers", swatch_pixels_validate_synthetic_composited_buffers),
+        ("incomplete_or_substituted_swatches_never_pass", incomplete_or_substituted_swatches_never_pass),
+        ("swatch_validator_requires_real_hook_parity", swatch_validator_requires_real_hook_parity),
+        ("offscreen_pixel_checks_do_not_clamp_to_an_edge", offscreen_pixel_checks_do_not_clamp_to_an_edge),
         ("split_scope_messages_parse_per_action_and_theme", split_scope_messages_parse_per_action_and_theme),
         ("budgets_stay_under_the_ipc_cap", budgets_stay_under_the_ipc_cap),
         ("probe_fixture_matches_the_app_budgets", probe_fixture_matches_the_app_budgets),
@@ -818,7 +1072,8 @@ def main():
         "The page reports its computed styles as small SCOPE messages (rects, fonts, tokens, roles, swatches); the app's `/ipc` log keeps 600 characters, so an over-budget message is a bounded scope_oversize failure instead of truncated JSON.",
         "The rail is native app chrome, not a page element: it is checked from the app screenshot pixel beside the web rect, using the control state's `side`.",
         "App swatch pixels are fixed analytic test patches drawn only under SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE=1 (opaque midtones, never product colours); the app screenshot pixel is compared with the patch's declared and computed CSS colour.",
-        "Missing prose/label/textarea/aria-live at probe time is unobserved coverage (BLOCKED), not a styling pass or failure.",
+        "Missing prose/label/textarea/aria-live at probe time is unobserved coverage (BLOCKED) only if every present measured style is correct; a present wrong style always FAILs.",
+        "ui.screenshot is a window image. Samples use current ui.rects window points/pixelsPerPoint and pixel-aligned CEF placement edges, never an OS screen origin.",
     ]
     if len(THEMES) != 25 or len(set(THEMES)) != 25:
         checks.append({"name": "theme_source", "status": "FAIL", "detail": f"expected 25 unique source themes, found {len(THEMES)}"})
@@ -868,15 +1123,6 @@ def main():
 
     rects = control.call("ui.rects", {"prefix": "agent_chat:"}).get("result") or {}
     ppp = rects.get("pixelsPerPoint") or 1.0
-    web = next(r for r in rects.get("rects", []) if r["name"] == "agent_chat:web")
-    win = subprocess.run(["xdotool", "search", "--name", "Intcad"], capture_output=True, text=True).stdout.split()
-    origin = {"X": 0, "Y": 0}
-    if win:
-        for line in subprocess.run(["xdotool", "getwindowgeometry", "--shell", win[0]], capture_output=True, text=True).stdout.splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                origin[k] = v
-        subprocess.run(["xdotool", "windowactivate", "--sync", win[0]], stderr=subprocess.DEVNULL)
     baseline = control.call("ui.prefs", {}).get("result")
     baseline = baseline if isinstance(baseline, dict) else {}
     base_scale = baseline.get("ui_scale")
@@ -917,12 +1163,16 @@ def main():
             state = control.call("ui.agent_chat").get("result") or {}
             palette = state.get("theme") or {}
             theme_scope = scope_for_theme(log_path, theme)
+            # A scale/theme/layout change can move every point. Use current window
+            # geometry, with the last published rect authoritative (ui.rects contract).
+            rects = control.call("ui.rects", {"prefix": "agent_chat:"}).get("result") or {}
+            ppp = rects["pixelsPerPoint"]
+            web = next(r for r in reversed(rects.get("rects", [])) if r["name"] == "agent_chat:web")
             shot = out / f"{theme}-{target_text.replace('.', '_')}.png"
             control.call("ui.screenshot", {"path": str(shot)})
             time.sleep(0.15)
             png = read_png(shot)
-            bg = pixel(png, round((web["x"] + web["width"] * 0.5) * ppp + int(origin["X"])),
-                       round((web["y"] + web["height"] * 0.62) * ppp + int(origin["Y"])))
+            bg = surface_pixel(png, web, ppp)
             expected = (palette.get("colors") or {}).get("surface")
             want = expected.lstrip("#") if expected else ""
             delta = max(
@@ -959,8 +1209,6 @@ def main():
                         state,
                         web,
                         ppp,
-                        int(origin["X"]),
-                        int(origin["Y"]),
                         (palette.get("metrics") or {}).get("space8"),
                         expected,
                     )),
@@ -969,8 +1217,6 @@ def main():
                         png,
                         web,
                         ppp,
-                        int(origin["X"]),
-                        int(origin["Y"]),
                     )),
                 ):
                     all_checks.append({
