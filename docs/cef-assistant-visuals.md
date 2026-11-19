@@ -108,6 +108,34 @@ restart (same settings): gruvbox-light persisted
 55 switches: RSS 932 -> 1001 MB, fds 401 -> 429
 ```
 
+Real browser reload (test hook `SOLIDCRAFT_ASSISTANT_CEF_TEST_RELOAD_AFTER`): after a reload the
+page comes back and the theme is applied again — measured `#2e3440` (nord's surface) at two points
+of the panel, `webView {host: true, page: true}`. This exposed a real bug, now fixed: the theme
+function lived only in the page's JS context, so after a reload it was gone and the re-apply call
+was a no-op; `ready` now reinstalls the bridge before asking for the theme.
+
+200 theme switches sampled every 50 (`evidence/2026-11-19-states/leak-200-switches.json`):
+
+```
+switch   0: RSS 915 MB, fds 399
+switch  50: RSS 1026 MB, fds 429
+switch 100: RSS 1064 MB, fds 456
+switch 150: RSS 1084 MB, fds 480
+switch 200: RSS 1101 MB, fds 504
+```
+
+RSS is flattening (+99, +37, +20, +17 MB per 50); **fds grow linearly (+25 per 50)** and do not
+plateau, so a descriptor is retained per switch somewhere in the CEF/execute-script path. It is an
+open defect, recorded rather than hidden.
+
+Hover/focus/disabled per theme: the disabled send control is visible in every one of the 25 theme
+screenshots. Hover and keyboard focus could **not** be captured reliably on this host: pointer and
+key injection go through XWayland, where the compositor's real pointer is not addressed by
+xdotool, so the page's `:hover`/`:focus-visible` states did not trigger (34 pixels differed between
+"pointer away" and "pointer over the button", none of them on the button). The variables behind
+those states (`hover`, `border-focus`, `selected`) are set from the theme and covered by the
+contrast test; the visual state matrix is UNTESTED and needs a session with real input.
+
 The descriptor growth is tied to the switch path: 25 *identical-theme* prefs calls in the same
 build left fds at 398–401, so it is not the query/state path; the browser is never recreated.
 It is recorded as an open item to re-measure over a longer run.

@@ -238,6 +238,8 @@ pub struct CefAssistant {
     test_select: bool,
     /// The window's input method is on because the page has the keyboard.
     ime_on: bool,
+    started: Instant,
+    test_reloaded: bool,
 }
 
 /// The page as egui reads it.
@@ -349,6 +351,8 @@ impl CefAssistant {
             last_stats: Instant::now(),
             test_select: false,
             ime_on: false,
+            started: Instant::now(),
+            test_reloaded: false,
         })
     }
 
@@ -369,7 +373,13 @@ impl CefAssistant {
     fn receive(&mut self, solve: &mut SolveApp, ctx: &Context, message: &str) {
         let value = serde_json::from_str::<serde_json::Value>(message).unwrap_or_default();
         match value.get("type").and_then(serde_json::Value::as_str) {
-            Some("ready") => self.told.clear(),
+            Some("ready") => {
+                // A reloaded page has neither the theme function nor its CSS variables: put the
+                // bridge back and send the theme again, not only when the tokens change.
+                let _ = self.producer.execute_script(THEME_BRIDGE_JS, "");
+                self.told.clear();
+                self.told_theme.clear();
+            }
             Some("focus") => self.focused = value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false),
             Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
             _ => {
@@ -464,8 +474,8 @@ impl CefAssistant {
                              const buttons = [...document.querySelectorAll('button')].slice(0,6).map(h); \
                              const inputs = [...document.querySelectorAll('input,textarea')].slice(0,4).map(h); \
                              const ta = document.querySelector('textarea'); \
-                             const composer = ta ? { w: Math.round(ta.getBoundingClientRect().width), h: h(ta) } : null; \
-                             fetch('/ipc', { method:'POST', body: JSON.stringify({ type:'log', text: 'DOM ' + JSON.stringify({ font: cs.fontSize, buttons, inputs, composer }) }) }); })()",
+                             const r = ta ? ta.getBoundingClientRect() : null; const composer = r ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } : null; \
+                             fetch('/ipc', { method:'POST', body: JSON.stringify({ type:'log', text: 'DOM ' + JSON.stringify({ font: cs.fontSize, iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio, buttons, inputs, composer }) }) }); })()",
                             "",
                         );
                     }
@@ -562,6 +572,18 @@ impl CefAssistant {
         // the keyboard. The page's editor is inside CEF, so the host asks for it itself, and
         // without this every IME key arrived as plain Latin text.
         self.set_ime(ctx, self.focused);
+        // Test only: a real browser reload, to prove the theme survives one.
+        if !self.test_reloaded
+            && self.texture.is_some()
+            && let Some(after) = std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_RELOAD_AFTER")
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok())
+            && self.started.elapsed().as_secs_f32() >= after
+        {
+            self.test_reloaded = true;
+            note("CEF: test reload");
+            let _ = self.producer.reload();
+        }
         self.input(solve, ctx, rect, ppp);
         // The page paints on change; the host only has to ask soon while it is working.
         let working = self.last_frame.elapsed() < Duration::from_millis(400);
@@ -1201,8 +1223,9 @@ window.__intcadTheme = (t) => {
     button, input, textarea, select { font-family: inherit; }
     /* Native controls are 28 pt tall (Tokens::control_height); scaled rems alone left the
        page's buttons at 21. A minimum, not a fixed height: larger controls keep their size. */
-    button, [role="button"], input, select { min-height: ${m.controlHeight}px; }
-    button, [role="button"], input { border-radius: ${m.radiusMd}px; }
+    /* Text buttons grow to the native control height; icon buttons (a button whose child is an
+       SVG) keep their own square/circle size. */
+    button:not(:has(svg)), input, select { min-height: ${m.controlHeight}px; }
   `;
 };
 "#;

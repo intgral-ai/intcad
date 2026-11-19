@@ -1,0 +1,1 @@
+[{"switch": 0, "rss_mb": 915.3, "fds": 399, "procs": 9}, {"switch": 50, "rss_mb": 1026.1, "fds": 429, "procs": 9}, {"switch": 100, "rss_mb": 1063.5, "fds": 456, "procs": 9}, {"switch": 150, "rss_mb": 1083.8, "fds": 480, "procs": 9}, {"switch": 200, "rss_mb": 1101.0, "fds": 504, "procs": 9}]
