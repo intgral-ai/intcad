@@ -843,35 +843,29 @@ pub(crate) fn finish_input(app: &mut SolveApp, ctx: &egui::Context) {
     if !blocked {
         // A theme on the Appearance page precedes CAD/Files. Retire replay input below too.
         crate::prefs::take_theme_paste(app, ctx);
-        if !app.prefs_window.open && !app.keymap.open {
-            if rendered && app.file_tree.focused {
-                let commands: Vec<_> = ctx.input(|i| {
-                    i.events
-                        .iter()
-                        .filter_map(
-                            |event| {
-                                if matches!(event, egui::Event::Paste(_)) && middle_navigation(i) { None } else { clipboard_command(event) }
-                            },
-                        )
-                        .collect()
-                });
-                for command in commands {
-                    match command {
-                        ClipboardCommand::Copy => app.file_tree.copy_selection(false),
-                        ClipboardCommand::Cut => app.file_tree.copy_selection(true),
-                        ClipboardCommand::Paste => {
-                            if let Some(folder) = app.file_tree.target_folder() {
-                                app.file_tree.paste(&folder);
-                            }
+        if rendered && app.file_tree.focused {
+            let commands: Vec<_> = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|event| if matches!(event, egui::Event::Paste(_)) && middle_navigation(i) { None } else { clipboard_command(event) })
+                    .collect()
+            });
+            for command in commands {
+                match command {
+                    ClipboardCommand::Copy => app.file_tree.copy_selection(false),
+                    ClipboardCommand::Cut => app.file_tree.copy_selection(true),
+                    ClipboardCommand::Paste => {
+                        if let Some(folder) = app.file_tree.target_folder() {
+                            app.file_tree.paste(&folder);
                         }
                     }
                 }
-                if app.file_tree.busy || app.file_tree.modal.is_some() {
-                    ctx.request_repaint();
-                }
-            } else if crate::toolbar::design_shown(app) {
-                handle(app, ctx);
             }
+            if app.file_tree.busy || app.file_tree.modal.is_some() {
+                ctx.request_repaint();
+            }
+        } else if crate::toolbar::design_shown(app) {
+            handle(app, ctx);
         }
     }
     retire_input(ctx);

@@ -3412,9 +3412,12 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     // File is a custom Area, so it must claim Escape before the underlying editors and
-    // sketch shortcuts. Clear raw events too: egui may replay them on a layout pass.
+    // sketch shortcuts. A file question or the shortcut recorder has first refusal.
+    // Clear raw events too: egui may replay them on a layout pass.
     let file_menu_id = egui::Id::new("sc_file_menu");
-    if !app.native_file_menu
+    if app.file_tree.modal.is_none()
+        && !crate::keymap::capturing(app)
+        && !app.native_file_menu
         && ctx.data(|d| d.get_temp::<bool>(file_menu_id).unwrap_or(false))
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {

@@ -340,6 +340,166 @@ fn a_file_question_keeps_escape_ahead_of_an_open_parameters_dialog() {
     assert_eq!(fs::read(source).unwrap(), b"source");
 }
 
+#[test]
+fn file_question_takes_escape_before_custom_file_menu() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let mut h = clipboard_window(scratch.path());
+    h.app.native_file_menu = false;
+    let menu = egui::Id::new("sc_file_menu");
+    h.ctx.data_mut(|data| data.insert_temp(menu, true));
+    h.app.file_tree.select_only(&source);
+    h.app.file_tree.request_delete(&[]);
+    assert!(h.app.file_tree.modal.is_some());
+    let before = cad_mark(&h);
+    h.frame_with(vec![key_event(egui::Key::Escape, true, Modifiers::NONE), key_event(egui::Key::Escape, false, Modifiers::NONE)]);
+    assert!(h.app.file_tree.modal.is_none(), "the question receives the first Escape");
+    h.frames(3);
+    assert_eq!(cad_mark(&h), before, "no CAD action or replay");
+    assert_eq!(fs::read(source).unwrap(), b"source");
+}
+
+#[test]
+fn nonmodal_preferences_allows_focused_files_paste() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.call("ui.prefs", serde_json::json!({"open":"General"}));
+    h.frames(3);
+    let row = crate::scenario::rect_of("files:row:into").unwrap();
+    h.frame_with(pointer_click(row.center(), Modifiers::NONE));
+    assert!(h.app.prefs_window.open);
+    assert!(h.app.file_tree.focused, "the Files row accepted the click");
+    assert!(!h.ctx.text_edit_focused());
+    let before = cad_mark(&h);
+    h.frame_with(vec![egui::Event::Paste("ordinary".into())]);
+    h.frames(30);
+    assert_eq!(fs::read(into.join("source.txt")).unwrap(), b"source");
+    assert_eq!(fs::read(source).unwrap(), b"source");
+    assert_eq!(cad_mark(&h), before, "CAD must not also paste");
+    assert!(!into.join("source (copy).txt").exists(), "no replay");
+}
+
+#[test]
+fn nonmodal_preferences_lets_the_cad_viewport_use_its_clipboard() {
+    use serde_json::json;
+    for page in ["General", "Keyboard Shortcuts"] {
+        let scratch = Scratch::new();
+        let source = scratch.file("source.txt", "source");
+        let into = scratch.dir("into");
+        let mut h = clipboard_window(scratch.path());
+        h.call("ui.prefs", json!({"open": page}));
+        h.frames(3);
+        assert!(h.app.prefs_window.open, "{page}");
+        h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: true });
+        h.app.file_tree.select_only(&into);
+        h.app.file_tree.focused = true;
+        let sketch = h.app.session.active_sketch.expect("sketch");
+        let before_curves = h.app.session.doc.sketch(sketch).unwrap().curves.len();
+        let before = cad_mark(&h);
+        let viewport = h.app.viewport.rect.expect("viewport");
+        let at = viewport.left_top() + egui::vec2(24.0, 24.0);
+        h.frame_with(pointer_click(at, Modifiers::NONE));
+        assert!(!h.ctx.text_edit_focused(), "{page}: the viewport click clears text focus");
+        assert!(!h.app.file_tree.focused, "{page}: the viewport click clears Files ownership");
+        h.frame_with(vec![egui::Event::Paste("cad clipboard".into())]);
+        h.frames(30);
+        assert!(h.app.prefs_window.open, "{page}: Preferences stays nonmodal");
+        assert_eq!(h.app.session.doc.sketch(sketch).unwrap().curves.len(), before_curves + 4, "{page}: one CAD paste");
+        assert_eq!(h.app.session.undo.len(), before.2 + 1, "{page}: one CAD undo step");
+        let clip = h.app.file_tree.clip.as_ref().expect("Files clipboard");
+        assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source), "{page}");
+        assert!(clip.cut, "{page}: no Files copy or paste");
+        assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "{page}: no file job");
+        assert!(!into.join("source.txt").exists(), "{page}: no Files paste");
+        assert_eq!(fs::read(source).unwrap(), b"source");
+    }
+}
+
+#[test]
+fn nonmodal_shortcuts_page_allows_focused_files_copy_cut_and_paste() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.call("ui.prefs", json!({"open": "Keyboard Shortcuts"}));
+    h.frames(3);
+    assert!(h.app.prefs_window.open);
+    let before = cad_mark(&h);
+    let row = crate::scenario::rect_of("files:row:into").unwrap();
+    h.frame_with(pointer_click(row.center(), Modifiers::NONE));
+    assert!(h.app.file_tree.focused, "the Files row accepted the click");
+    assert!(!h.ctx.text_edit_focused());
+    h.frame_with(vec![egui::Event::Paste("ordinary".into())]);
+    h.frames(30);
+    assert_eq!(fs::read(into.join("source.txt")).unwrap(), b"source");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert_eq!(cad_mark(&h), before, "CAD must not also paste");
+    assert!(!into.join("source (copy).txt").exists(), "no replay");
+    let source_row = crate::scenario::rect_of("files:row:source.txt").unwrap();
+    h.frame_with(pointer_click(source_row.center(), Modifiers::NONE));
+    assert!(h.app.file_tree.focused);
+    h.frame_with(vec![egui::Event::Copy]);
+    let clip = h.app.file_tree.clip.as_ref().expect("Files copy");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+    assert!(!clip.cut, "Copy is not Cut");
+    h.frame_with(vec![egui::Event::Cut]);
+    assert!(h.app.file_tree.clip.as_ref().unwrap().cut, "Cut follows the focused row");
+    assert!(h.app.prefs_window.open, "Preferences stays nonmodal");
+    assert_eq!(cad_mark(&h), before, "Files copy and cut never touch CAD");
+}
+
+#[test]
+fn theme_paste_on_the_interface_page_precedes_competing_cad_and_files_clipboards() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: true });
+    h.app.file_tree.select_only(&into);
+    h.app.file_tree.focused = true;
+    h.call("ui.prefs", json!({"open": "Interface"}));
+    h.frames(3);
+    let before = cad_mark(&h);
+    let theme = r##"{"format":"solidcraft-theme/1","name":"Competing","base":"dark","colors":{"panel":"#102030"}}"##;
+    h.frame_with(vec![egui::Event::Paste(theme.into())]);
+    assert!(
+        h.app.preferences.custom_themes.iter().any(|t| t.id == "competing"),
+        "{:?}",
+        h.app.preferences.custom_themes.iter().map(|t| &t.id).collect::<Vec<_>>()
+    );
+    assert_eq!(h.app.preferences.theme, "competing");
+    assert_eq!(cad_mark(&h), before, "the theme owns the paste, not CAD");
+    let clip = h.app.file_tree.clip.as_ref().expect("Files clipboard");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+    assert!(clip.cut);
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+    assert!(!into.join("source.txt").exists(), "the theme is not a Files paste");
+    assert_eq!(fs::read(source).unwrap(), b"source");
+}
+
+#[test]
+fn shortcut_recorder_keeps_escape_while_the_custom_file_menu_is_open() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let mut h = clipboard_window(scratch.path());
+    h.app.native_file_menu = false;
+    h.call("ui.prefs", json!({"open": "Keyboard Shortcuts"}));
+    let (handle, _) = crate::scenario::handles("keymap:capture:").into_iter().next().expect("visible recording control");
+    h.step(&json!({"click": {"handle": handle}})).unwrap();
+    assert!(crate::keymap::capturing(&h.app));
+    let menu = egui::Id::new("sc_file_menu");
+    h.ctx.data_mut(|data| data.insert_temp(menu, true));
+    h.frame_with(vec![key_event(egui::Key::Escape, true, Modifiers::NONE), key_event(egui::Key::Escape, false, Modifiers::NONE)]);
+    assert!(!crate::keymap::capturing(&h.app), "the recorder first-refuses Escape, not the File menu");
+    assert!(h.ctx.data(|d| d.get_temp::<bool>(menu).unwrap_or(false)), "the File menu did not steal the key");
+}
+
 fn window_input(ctx: &egui::Context, focused: bool, events: Vec<egui::Event>) -> egui::RawInput {
     egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
