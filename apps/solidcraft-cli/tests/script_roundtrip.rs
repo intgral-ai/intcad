@@ -49,27 +49,21 @@ fn params(s: &Session) -> Vec<solidcraft_engine::doc::Param> {
     v
 }
 
-/// The stable part of a joint for replay comparison. The joint's own id is allocated again
-/// (`joint.create` calls `allocate_id`; `script.rs` says joint ids travel last and are
-/// referenced by name, so their position is free). The snap's persistent face/end names are
-/// re-derived. A stored x direction stays.
+/// The stable part of a joint for replay comparison: only the joint's own id is removed,
+/// because `joint.create` allocates it again (`script.rs` says joint ids travel last and are
+/// referenced by name, so their position is free). A stored face, end or x stays and is compared.
 fn joint_fields(joint: &solidcraft_engine::doc::joints::Joint) -> Value {
     let mut v = serde_json::to_value(joint).unwrap();
     v.as_object_mut().unwrap().remove("id");
-    for side in ["a", "b"] {
-        if let Some(snap) = v.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
-            snap.remove("face");
-            snap.remove("end");
-        }
-    }
     v
 }
 
 /// Compare joints as replay data: [`joint_fields`], except an x the source did not store.
-/// `Snap::Point`/`Frame` and `XRef::Dir` x are directions (arrays); `XRef::Face` is an object
-/// re-derived from its pick. When the source has no array x, the replay's chosen x is a valid
-/// realization of "any direction square to z" and is not compared. When the source has one,
-/// both are kept, so a stored direction difference fails.
+/// An absent or `null` x is `None` (serde `Option`); the replay's chosen x is then a valid
+/// realization of "any direction square to z" and only that is removed. A present x (array
+/// `XRef::Dir`/`Snap::Point`/`Frame`, or object `XRef::Face` with its face/pick), and a present
+/// face or end, are kept as-is: a different object, pick, face, end, or a missing replay field
+/// fails.
 fn joints_for_comparison(
     source: &[solidcraft_engine::doc::joints::Joint],
     replay: &[solidcraft_engine::doc::joints::Joint],
@@ -80,8 +74,8 @@ fn joints_for_comparison(
         let mut source = joint_fields(source);
         let mut replay = joint_fields(replay);
         for side in ["a", "b"] {
-            let stored_direction = source.get(side).and_then(|side| side.get("snap")).and_then(|snap| snap.get("x")).is_some_and(Value::is_array);
-            if !stored_direction {
+            let source_has_x = source.get(side).and_then(|side| side.get("snap")).and_then(|snap| snap.get("x")).is_some();
+            if !source_has_x {
                 for joint in [&mut source, &mut replay] {
                     if let Some(snap) = joint.get_mut(side).and_then(|side| side.get_mut("snap")).and_then(Value::as_object_mut) {
                         snap.remove("x");
@@ -96,7 +90,7 @@ fn joints_for_comparison(
 }
 
 #[test]
-fn joint_projection_keeps_directions_and_drops_re_derived_face_refs() {
+fn joint_comparison_keeps_stored_x_face_and_end_and_normalizes_only_an_absent_x() {
     let joint = |id: u64, snap: Value| -> solidcraft_engine::doc::joints::Joint {
         serde_json::from_value(json!({
             "id": id,
@@ -126,18 +120,58 @@ fn joint_projection_keeps_directions_and_drops_re_derived_face_refs() {
         joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0]})),
     );
     assert_ne!(left, right, "an XRef::Dir x is a stored direction");
-    // The source storing no x leaves the turn free; the replay's chosen direction is not a change.
+    // No source x, or an explicit null, is Option::None: only then the replay's derived x is free.
     let (left, right) = compare(
         joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
         joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 0.0, -1.0]})),
     );
-    assert_eq!(left, right, "an x the source did not store is free");
-    // A face found by name, and the snap's face/end names, are re-derived at creation.
+    assert_eq!(left, right, "an absent x the source did not store is free");
     let (left, right) = compare(
-        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face A", "end": "End A", "x": {"face": "Face A"}})),
-        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face B", "end": "End B", "x": {"face": "Face B"}})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": null})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": [0.0, 0.0, -1.0]})),
     );
-    assert_eq!(left, right, "persistent face/end names and an XRef::Face x are re-derived");
+    assert_eq!(left, right, "a null x is Option::None and the replay's derived x is free");
+    // A present XRef::Face x, face and end are stored references and are compared.
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "F", "end": "E", "x": {"face": "F", "pick": [1.0, 0.0, 0.0]}})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "F", "end": "E", "x": {"face": "F", "pick": [1.0, 0.0, 0.0]}})),
+    );
+    assert_eq!(left, right, "the same stored XRef::Face is equal");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "Face A"}})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "Face B"}})),
+    );
+    assert_ne!(left, right, "a different stored XRef::Face name is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "F", "pick": [1.0, 0.0, 0.0]}})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "F", "pick": [0.0, 1.0, 0.0]}})),
+    );
+    assert_ne!(left, right, "a different stored XRef::Face pick is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "x": {"face": "F"}})),
+        joint(9, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+    );
+    assert_ne!(left, right, "a stored XRef::Face missing from the replay is a change");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face A"})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face B"})),
+    );
+    assert_ne!(left, right, "a stored face name is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "face": "Face A"})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+    );
+    assert_ne!(left, right, "a stored face missing from the replay is a change");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "end": "End A"})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "end": "End B"})),
+    );
+    assert_ne!(left, right, "a stored end name is semantic");
+    let (left, right) = compare(
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0], "end": "End A"})),
+        joint(1, json!({"type": "circle_center", "pick": [0.0, 0.0, 0.0]})),
+    );
+    assert_ne!(left, right, "a stored end missing from the replay is a change");
 }
 
 #[test]
@@ -168,8 +202,9 @@ fn corpus_designs_replay_from_their_scripts() {
         // The assembly state: components and occurrences keep their ids (the
         // replay replays every allocation-bearing step at its original id
         // position), and the placements the joints solved to hold stay. The
-        // joints are compared below, leaving out only the face/end/x refs that
-        // joint.create re-derives from the pick at creation.
+        // joints are compared below; only the joint's own re-allocated id and
+        // an x the source did not store are normalized, while a stored
+        // face/end/x is compared.
         assert_eq!(t.doc.components, s.doc.components, "{name}: components");
         assert_eq!(t.doc.occurrences, s.doc.occurrences, "{name}: occurrences");
         assert_eq!(t.doc.parts, s.doc.parts, "{name}: standard parts");
