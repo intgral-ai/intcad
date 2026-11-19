@@ -160,7 +160,7 @@ thread_local! {
 static RUNNER_GATE: Mutex<Option<Arc<std::sync::Barrier>>> = Mutex::new(None);
 
 #[cfg(test)]
-fn runner_gate() {
+pub(super) fn runner_gate() {
     let gate = RUNNER_GATE.lock().ok().and_then(|mut slot| slot.take());
     if let Some(gate) = gate {
         gate.wait();
@@ -180,7 +180,8 @@ fn prewait_barrier() {
 #[cfg(test)]
 fn completion_barrier() {
     let pair = COMPLETION_BARRIERS.lock().ok().and_then(|slot| slot.clone());
-    if let Some((reached, release)) = pair {
+    if let Some(pair) = pair {
+        let (reached, release) = &*pair;
         reached.wait();
         release.wait();
     }
