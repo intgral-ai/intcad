@@ -75,9 +75,18 @@ jobs:
           grep -q '<id>ai.storyteller.solvecraft</id>' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in
           grep -qx 'X-Flatpak-RenamedFrom=ai.storyteller.solidcraft.desktop;ai.storyteller.solvecraft.desktop;' assets/platforms/linux/ai.intgral.intcad.desktop
           # Intcad publishes only its own app id; upstream ids are not rebased or imported.
-          ! grep -qF -e '--end-of-life-rebase=' packaging/flatpak-site.sh
-          ! grep -qF -e 'legacy_ids' packaging/flatpak-site.sh
-          ! grep -qF -e 'ai.storyteller' packaging/flatpak-site.sh
+          if grep -qF -e '--end-of-life-rebase=' packaging/flatpak-site.sh; then
+            echo "error: foreign end-of-life rebase in packaging/flatpak-site.sh" >&2
+            exit 1
+          fi
+          if grep -qF -e 'legacy_ids' packaging/flatpak-site.sh; then
+            echo "error: foreign legacy_ids in packaging/flatpak-site.sh" >&2
+            exit 1
+          fi
+          if grep -qF -e 'ai.storyteller' packaging/flatpak-site.sh; then
+            echo "error: foreign upstream app id in packaging/flatpak-site.sh" >&2
+            exit 1
+          fi
           grep -qF 'app_id=ai.intgral.intcad' packaging/flatpak-site.sh
           sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in >"$RUNNER_TEMP/ai.intgral.intcad.metainfo.xml"
           appstreamcli validate --no-net --explain "$RUNNER_TEMP/ai.intgral.intcad.metainfo.xml"
