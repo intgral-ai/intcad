@@ -134,6 +134,8 @@ class ForkExecution(unittest.TestCase):
             ["npm", "run", "verify:schema", "-w", package],
             ["npm", "run", "check:deps", "-w", package],
             ["npm", "run", "test:artifact-gate", "-w", package],
+            ["node", "packages/mastra-runtime/scripts/test-remove-enterprise.mjs"],
+            ["node", "packages/mastra-runtime/scripts/test-agent-package.mjs"],
         ])
         self.assertEqual(contract[2], expected)
         self.assertEqual(contract[3:], [

@@ -1,0 +1,9 @@
+{
+  "name": "intcad-built-in-agent",
+  "private": true,
+  "description": "What Intcad's built-in agent is installed from: Mastra Code's SDK and ACP's, at the versions the agent was written against. Not part of the npm workspace.",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "0.21.1",
+    "@mastra/code-sdk": "1.19.1"
+  }
+}

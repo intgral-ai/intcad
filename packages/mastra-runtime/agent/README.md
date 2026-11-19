@@ -19,7 +19,8 @@ The tests are `../test/connections.test.ts`. They run these files against stand-
 in anywhere, opens a browser or reads a key.
 
 This folder is not part of the runtime artifact that `scripts/runtime-artifact.mjs` builds and
-checks; putting the agent into the installed package is a later change.
+checks. A test package can carry the agent in a folder of its own, `mastra-agent`, built by
+`scripts/agent-package.mjs`: see `docs/mastra-packaging.md`.
 
 ## Running it
 
@@ -30,9 +31,10 @@ It needs Node 22.19 or later and Mastra Code's SDK. It was written against:
 | `@mastra/code-sdk` | 1.19.1 |
 | `@agentclientprotocol/sdk` | 0.21.1 |
 
-The SDK is not installed by this repository. `SOLIDCRAFT_MASTRA_SDK` names the `node_modules`
-folder that holds the two packages; the app is told where the agent is with
-`SOLIDCRAFT_MASTRA_AGENT` (the path of an executable that starts `main.mjs`).
+The two packages are pinned, with a lock file, in `../agent-package/`; nothing installs them
+into this checkout. `SOLIDCRAFT_MASTRA_SDK` names the `node_modules` folder that holds them; the
+app is told where the agent is with `SOLIDCRAFT_MASTRA_AGENT` (the path of an executable that
+starts `main.mjs`), or finds it in the package it runs from.
 
 ```sh
 mkdir sdk && cd sdk && npm init -y
