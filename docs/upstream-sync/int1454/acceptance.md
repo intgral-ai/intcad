@@ -52,6 +52,25 @@ brand-era UI kit, look, theme or asset was imported (CD-6).
 to an area, and exits non-zero on an orphan (4,939 commits, 15,357 paths, 0 unmatched at Phase 0).
 The disposition table is `ledger.md`; the owner approved CD-1…CD-7 (§7 there).
 
+Re-run on this branch (read-only, from the branch itself):
+
+```
+$ python3 docs/upstream-sync/int1454/tools/coverage.py
+  doc-engine     753
+  assistant       80
+  ui             700
+  build          298
+  apps            88
+  docs           494
+  test-policy     24
+  retired       2700
+  (empty)         29
+distinct paths: 15357 unmatched: 0
+
+all commits assigned, every path matched
+```
+
+
 ## 4. Gates and evidence (to be refreshed at the final SHA)
 
 | Gate | Evidence |
