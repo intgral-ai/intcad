@@ -13,6 +13,9 @@
   #log { margin: 0; padding: 10px 18px; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
   #swatch { width: 90px; height: 34px; border-radius: 6px; background: #ffffff; border: 1px solid #ffffff55; }
   .row { display: flex; gap: 10px; align-items: center; }
+  textarea { padding: 7px 9px; border-radius: 6px; border: 1px solid #ffffff55; font: inherit; color: #111; }
+  label { font: inherit; }
+  #prose { max-width: 320px; margin: 0; }
 </style>
 </head>
 <body>
@@ -22,11 +25,16 @@
 </header>
 <div id="grid">
   <div class="row">
+    <label for="composer">composer</label>
     <input id="composer" placeholder="type here (ASCII or IME)" autocomplete="off">
     <div id="swatch" title="swatch"></div>
     <select id="pick">
       <option>alpha</option><option>beta</option><option>gamma</option><option>delta</option>
     </select>
+  </div>
+  <div class="row">
+    <textarea id="notes" rows="2" placeholder="notes"></textarea>
+    <p id="prose">Real prose in the standalone probe, measured as a semantic element.</p>
   </div>
 </div>
 <div id="__cef_scope_root">
@@ -50,7 +58,7 @@
   composer.addEventListener('input', (e) => log('input ' + JSON.stringify(e.target.value)));
   composer.addEventListener('compositionstart', () => log('compositionstart'));
   composer.addEventListener('compositionupdate', (e) => log('compositionupdate ' + JSON.stringify(e.data)));
-  composer.addEventListener('compositionend', () => log('compositionend ' + JSON.stringify(e.data)));
+  composer.addEventListener('compositionend', (e) => log('compositionend ' + JSON.stringify(e.data)));
   addEventListener('keydown', (e) => log('key ' + e.key + (e.ctrlKey ? '+ctrl' : '') + (e.metaKey ? '+meta' : '')));
   addEventListener('mousedown', (e) => log('mousedown ' + e.clientX + ',' + e.clientY));
   addEventListener('wheel', (e) => {
@@ -70,35 +78,74 @@
     log('drop ' + JSON.stringify(names));
   });
   // The same fixed test IDs the app's SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE hook
-  // installs. This page is a standalone probe, not the app's shipped page.
-  document.getElementById('__cef_scope_open').addEventListener('click', () => {
-    log('scope window_open denied=' + (window.open('about:blank', '_blank', 'noopener') === null));
-  });
-  document.getElementById('__cef_scope_target').addEventListener('click', (e) => {
-    e.preventDefault();
-    log('scope target_blank requested');
-  });
-  document.getElementById('__cef_scope_select').addEventListener('change', (e) => log('scope select ' + e.target.value));
-  document.getElementById('__cef_scope_fullscreen').addEventListener('click', () => {
-    if (document.fullscreenElement) { document.exitFullscreen(); }
-    else { document.documentElement.requestFullscreen(); }
-  });
-  document.addEventListener('fullscreenchange', () => log('scope fullscreen active=' + Boolean(document.fullscreenElement)));
-  document.getElementById('__cef_scope_dialog').addEventListener('click', () => {
-    log('scope dialog_current cancelled=' + (confirm('cef-scope-dialog') === false));
-  });
-  document.getElementById('__cef_scope_devtools').addEventListener('click', () => {
-    log('scope devtools_entry denied=' + (window.open('devtools://devtools/bundled/inspector.html') === null));
-  });
+  // installs, with the same bounded `SCOPE {json}` messages. This page is a
+  // standalone probe, not the app's shipped page.
+  const scope = (value) => log('SCOPE ' + JSON.stringify(value));
   const scopeRect = (id) => {
     const box = document.getElementById(id).getBoundingClientRect();
     return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
   };
-  log('scope_rects ' + JSON.stringify({
-    dpr: devicePixelRatio, inner: [innerWidth, innerHeight],
-    root: scopeRect('__cef_scope_root'), open: scopeRect('__cef_scope_open'),
-    select: scopeRect('__cef_scope_select'), ime: scopeRect('__cef_scope_ime')
-  }));
+  const colour = (element, part) => element ? getComputedStyle(element)[part] : null;
+  const scopeReport = () => {
+    const html = getComputedStyle(document.documentElement);
+    const body = getComputedStyle(document.body);
+    const label = document.querySelector('label');
+    const prose = document.querySelector('p');
+    const textarea = document.querySelector('textarea');
+    scope({
+      action: 'rects',
+      theme: document.documentElement.dataset.intcadTheme || null,
+      dpr: devicePixelRatio, inner: [innerWidth, innerHeight],
+      root: scopeRect('__cef_scope_root'), open: scopeRect('__cef_scope_open'),
+      target: scopeRect('__cef_scope_target'),
+      select: scopeRect('__cef_scope_select'), ime: scopeRect('__cef_scope_ime'),
+      fonts: {
+        root: parseFloat(html.fontSize),
+        prose: prose ? parseFloat(getComputedStyle(prose).fontSize) : null,
+        textarea: textarea ? parseFloat(getComputedStyle(textarea).fontSize) : null,
+        label: label ? parseFloat(getComputedStyle(label).fontSize) : null
+      },
+      colors: {
+        root_background: html.backgroundColor, root_text: html.color,
+        html_background: html.backgroundColor, body_background: body.backgroundColor,
+        body_text: body.color,
+        tokens: {
+          background: html.getPropertyValue('--background').trim(),
+          background2: html.getPropertyValue('--background-2').trim(),
+          border: html.getPropertyValue('--border').trim(),
+          accent: html.getPropertyValue('--intcad-accent').trim(),
+          selected: html.getPropertyValue('--intcad-selected').trim(),
+          foreground: html.getPropertyValue('--foreground').trim()
+        },
+        roles: {
+          rail: colour(document.querySelector('[data-intcad-role="rail"]'), 'backgroundColor'),
+          state: colour(document.querySelector('[data-intcad-role="state"]'), 'color'),
+          swatch: colour(document.getElementById('swatch'), 'backgroundColor')
+        }
+      }
+    });
+  };
+  document.getElementById('__cef_scope_open').addEventListener('click', () => {
+    scope({ action: 'window_open', denied: window.open('about:blank', '_blank', 'noopener') === null });
+  });
+  document.getElementById('__cef_scope_target').addEventListener('click', () => {
+    // A real target=_blank attempt: the app's CEF host reports the popup denial.
+    scope({ action: 'target_blank', requested: true });
+  });
+  document.getElementById('__cef_scope_select').addEventListener('change', (e) => scope({ action: 'select', value: e.target.value }));
+  document.getElementById('__cef_scope_fullscreen').addEventListener('click', () => {
+    if (document.fullscreenElement) { document.exitFullscreen(); }
+    else { document.documentElement.requestFullscreen(); }
+  });
+  document.addEventListener('fullscreenchange', () => scope({ action: 'fullscreen', active: Boolean(document.fullscreenElement) }));
+  document.getElementById('__cef_scope_dialog').addEventListener('click', () => {
+    scope({ action: 'dialog_current', cancelled: confirm('cef-scope-dialog') === false });
+  });
+  document.getElementById('__cef_scope_devtools').addEventListener('click', () => {
+    scope({ action: 'devtools_entry', denied: window.open('devtools://devtools/bundled/inspector.html') === null });
+  });
+  scopeReport();
+  addEventListener('resize', scopeReport);
   log('loaded ' + innerWidth + 'x' + innerHeight + ' dpr ' + devicePixelRatio);
 </script>
 </body>

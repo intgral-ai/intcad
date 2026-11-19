@@ -213,6 +213,9 @@ def main():
         want = (expected or "").lstrip("#")
         delta = max((abs(int(want[i:i + 2], 16) - px[o + i // 2]) for i in range(0, 6, 2)), default=255) if len(want) == 6 else 255
         checks.append({"name": "switch_no_flash", "status": "PASS" if delta <= 2 else "FAIL", "detail": f"surface delta {delta} immediately after switch"})
+    else:
+        # A missing web rect used to remove this required check silently.
+        checks.append({"name": "switch_no_flash", "status": "FAIL", "detail": "no agent_chat:web rect; the immediate post-switch repaint cannot be verified"})
 
     # Reopen: hide the panel, show it again; the theme and page must survive.
     control.call("ui.agent_chat", {"open": False})

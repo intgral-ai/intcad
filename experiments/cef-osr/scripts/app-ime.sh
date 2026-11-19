@@ -159,6 +159,6 @@ else
 fi
 # The candidate window belongs to fcitx5, not the app; this script cannot prove it.
 echo "ime_candidate_window: BLOCKED (owned by the input method; not observable from the app process)" | tee -a "$out/ime.txt"
-grep -E "CEF_RUNTIME|CEF_BROWSER|CEF_FRAME" "$out/app.log" | tail -8 | tee -a "$out/ime.txt"
+grep -E "CEF_RUNTIME|CEF_BROWSER|CEF_FRAME|CEF_LIMIT" "$out/app.log" | tail -8 | tee -a "$out/ime.txt"
 fcitx5-remote -s "$before" >/dev/null 2>&1 || true
 echo "evidence: $out"

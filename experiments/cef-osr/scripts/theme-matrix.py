@@ -105,6 +105,122 @@ def hexed(rgb):
     return "#%02x%02x%02x" % tuple(rgb)
 
 
+def css_rgb(value):
+    """Resolve the CSS colours the page reports (hex or rgb()/rgba())."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if re.fullmatch(r"#[0-9a-f]{6}(?:[0-9a-f]{2})?", text):
+        return tuple(int(text[index:index + 2], 16) for index in (1, 3, 5))
+    match = re.fullmatch(r"rgba?\(([^)]*)\)", text)
+    if not match:
+        return None
+    parts = [part.strip() for part in match.group(1).split(",")]
+    if len(parts) < 3:
+        return None
+    try:
+        return tuple(int(round(float(part))) for part in parts[:3])
+    except ValueError:
+        return None
+
+
+def css_alpha(value):
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if text == "transparent":
+        return 0.0
+    match = re.fullmatch(r"rgba?\(([^)]*)\)", text)
+    if not match:
+        return None
+    parts = [part.strip() for part in match.group(1).split(",")]
+    if len(parts) == 4:
+        try:
+            return float(parts[3])
+        except ValueError:
+            return None
+    return 1.0
+
+
+def norm_colour(value):
+    return value.strip().lower() if isinstance(value, str) else None
+
+
+def palette_rgbs(colors):
+    resolved = set()
+    for value in colors.values():
+        rgb = css_rgb(value) if isinstance(value, str) else None
+        if rgb is not None:
+            resolved.add(rgb)
+    return resolved
+
+
+def page_token_check(scope, colors):
+    tokens = (scope.get("colors") or {}).get("tokens") or {}
+    mapping = {
+        "background": "window",
+        "background2": "surface",
+        "border": "borderStrong",
+        "accent": "accent",
+        "selected": "selected",
+        "foreground": "text",
+    }
+    problems = []
+    for token, key in mapping.items():
+        page = norm_colour(tokens.get(token))
+        app = norm_colour(colors.get(key))
+        if page is None:
+            problems.append(f"page --{token} is missing")
+        elif app is None:
+            problems.append(f"app palette has no {key}")
+        elif page != app:
+            problems.append(f"--{token} page {page} != app {key} {app}")
+    return ("FAIL" if problems else "PASS", "; ".join(problems) or "page CSS variables carry the app's theme tokens")
+
+
+def page_transparency_check(scope):
+    colors = scope.get("colors") or {}
+    problems = []
+    for name in ("html_background", "body_background"):
+        alpha = css_alpha(colors.get(name))
+        if alpha is None:
+            problems.append(f"{name} {colors.get(name)!r} is not a resolvable colour")
+        elif alpha > 0.01:
+            problems.append(f"{name} is opaque ({colors.get(name)})")
+    return ("FAIL" if problems else "PASS", "; ".join(problems) or "html/body stay transparent over the native backing")
+
+
+def page_roles_check(scope, colors):
+    roles = (scope.get("colors") or {}).get("roles") or {}
+    missing = [name for name in ("rail", "state", "swatch") if not roles.get(name)]
+    if missing:
+        return ("BLOCKED", "page exposes no measurable " + ", ".join(missing) + " role element(s)")
+    allowed = palette_rgbs(colors)
+    problems = []
+    for name in ("rail", "state", "swatch"):
+        rgb = css_rgb(roles[name])
+        if rgb is None:
+            problems.append(f"{name} value {roles[name]!r} is not a colour")
+        elif rgb not in allowed:
+            problems.append(f"{name} {roles[name]} is not a themed palette colour")
+    return ("FAIL" if problems else "PASS", "; ".join(problems) or "rail/state/swatch paint themed palette colours")
+
+
+def page_fonts_check(scope):
+    fonts = scope.get("fonts") or {}
+    missing = [name for name in ("prose", "textarea", "label") if not isinstance(fonts.get(name), (int, float))]
+    if missing:
+        return ("BLOCKED", "no real " + ", ".join(missing) + " element measured")
+    root = fonts.get("root")
+    problems = []
+    if not isinstance(root, (int, float)) or abs(float(root) - 12.0) > 0.1:
+        problems.append(f"root font {root} != 12")
+    values = [fonts["prose"], fonts["textarea"], fonts["label"]]
+    if any(abs(float(value) - 12.5) > 0.1 for value in values):
+        problems.append(f"prose/textarea/label fonts {values} != 12.5")
+    return ("FAIL" if problems else "PASS", "; ".join(problems) or "root 12, real prose/textarea/label 12.5")
+
+
 def parse_scope_log(path):
     """Latest fixed-hook `SCOPE {json}` line, not a transcript or a URL dump."""
     latest = None
@@ -124,6 +240,18 @@ def parse_scope_log(path):
     except OSError:
         return None
     return latest
+
+
+def scope_for_theme(path, theme, timeout=2.0):
+    """Wait, bounded, for the page to report its computed styles for `theme`."""
+    end = time.monotonic() + timeout
+    while True:
+        latest = parse_scope_log(path)
+        if latest is not None and latest.get("theme") == theme:
+            return latest
+        if time.monotonic() >= end:
+            return None
+        time.sleep(0.2)
 
 
 def theme_report_status(checks):
@@ -231,22 +359,6 @@ def main():
         if match:
             ppp = float(seen)
         all_checks.append({"name": f"ui_scale_{target:g}", "status": "PASS" if match else "FAIL", "detail": f"requested ui_scale {request:.4f}, measured pixelsPerPoint {seen}"})
-        scope = parse_scope_log(log_path)
-        if scope is None:
-            all_checks.append({"name": f"role_fonts_{target:g}", "status": "BLOCKED", "detail": "fixed scope probe did not report computed values"})
-        else:
-            fonts = scope.get("fonts") or {}
-            root_font, prose, textarea, label = fonts.get("root"), fonts.get("prose"), fonts.get("textarea"), fonts.get("label")
-            missing = [name for name, value in (("prose", prose), ("textarea", textarea), ("label", label)) if not isinstance(value, (int, float))]
-            if missing:
-                all_checks.append({"name": f"role_fonts_{target:g}", "status": "BLOCKED", "detail": f"computed values unavailable for: {', '.join(missing)}"})
-            else:
-                problems = []
-                if not isinstance(root_font, (int, float)) or abs(float(root_font) - 12.0) > 0.1:
-                    problems.append(f"root font {root_font} != 12")
-                if any(abs(float(value) - 12.5) > 0.1 for value in (prose, textarea, label)):
-                    problems.append(f"prose/textarea/label fonts {[prose, textarea, label]} != 12.5")
-                all_checks.append({"name": f"role_fonts_{target:g}", "status": "FAIL" if problems else "PASS", "detail": "; ".join(problems) or "root 12, prose/textarea/label 12.5"})
 
         for theme in wanted:
             answer = control.call("ui.prefs", {"theme": theme})
@@ -254,6 +366,7 @@ def main():
             time.sleep(1.4)
             state = control.call("ui.agent_chat").get("result") or {}
             palette = state.get("theme") or {}
+            theme_scope = scope_for_theme(log_path, theme)
             shot = out / f"{theme}-{target_text.replace('.', '_')}.png"
             control.call("ui.screenshot", {"path": str(shot)})
             time.sleep(0.15)
@@ -275,6 +388,28 @@ def main():
                 "status": "PASS" if ok and palette.get("id") == theme and token_ok and delta <= 2 else "FAIL",
                 "detail": f"applied={ok} reported={palette.get('id')} tokens={token_ok} surface delta={delta}",
             })
+            # Page-side computed evidence, not just the app's own palette report:
+            # the tokens the page actually resolved, its real transparency, and
+            # real rail/state/swatch/prose roles. A role the page does not expose
+            # is BLOCKED, never silently omitted.
+            if theme_scope is None:
+                all_checks.append({
+                    "name": f"page_roles_{target:g}_{theme}",
+                    "status": "BLOCKED",
+                    "detail": "the page did not report computed styles for this theme",
+                })
+            else:
+                for label, outcome in (
+                    ("page_tokens", page_token_check(theme_scope, tokens)),
+                    ("page_transparency", page_transparency_check(theme_scope)),
+                    ("page_roles", page_roles_check(theme_scope, tokens)),
+                    ("role_fonts", page_fonts_check(theme_scope)),
+                ):
+                    all_checks.append({
+                        "name": f"{label}_{target:g}_{theme}",
+                        "status": outcome[0],
+                        "detail": outcome[1],
+                    })
             results.append({
                 "theme": theme,
                 "ui_scale": target,

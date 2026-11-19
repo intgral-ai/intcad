@@ -103,21 +103,26 @@ pub fn interop_setup() -> Option<eframe::egui_wgpu::WgpuSetup> {
         // machine's GPU interop is missing. The Assistant must say so and CAD must keep working.
         if std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP").is_some() {
             note("CEF: interop disabled by SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP");
+            emit_accelerated_limit(false, "interop disabled by SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP");
             return None;
         }
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(descriptor);
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
             apply_limit_buckets: false,
         }))
-        .ok()?;
+        .ok() else {
+            emit_accelerated_limit(false, "no Vulkan adapter for DMA-BUF interop");
+            return None;
+        };
         let features = adapter.features();
         if !features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
             note("CEF: this Vulkan device cannot import DMA-BUF (no VULKAN_EXTERNAL_MEMORY_DMA_BUF)");
+            emit_accelerated_limit(false, "no VULKAN_EXTERNAL_MEMORY_DMA_BUF");
             return None;
         }
         let device_descriptor = wgpu::DeviceDescriptor {
@@ -125,7 +130,10 @@ pub fn interop_setup() -> Option<eframe::egui_wgpu::WgpuSetup> {
             required_features: features & wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF,
             ..Default::default()
         };
-        let (device, queue) = welding::build_dmabuf_capable_device(&adapter, &device_descriptor).ok()?;
+        let Some((device, queue)) = welding::build_dmabuf_capable_device(&adapter, &device_descriptor).ok() else {
+            emit_accelerated_limit(false, "DMA-BUF capable device setup failed");
+            return None;
+        };
         Some(eframe::egui_wgpu::WgpuSetup::Existing(eframe::egui_wgpu::WgpuSetupExisting { instance, adapter, device, queue }))
     }
 }
@@ -316,6 +324,8 @@ pub struct CefAssistant {
     /// Last identified windowless browser, for popup-denial receipts.
     browser_id: i32,
     browser_windowless: bool,
+    /// One explicit accelerated-import receipt per Assistant lifetime; absence is never success.
+    accelerated_recorded: bool,
     /// One admitted receipt per view geometry/requested scale keeps logs bounded.
     last_view_receipt: Option<([i32; 2], u32)>,
     last_frame_reason: Option<String>,
@@ -433,6 +443,7 @@ impl CefAssistant {
         #[cfg(target_os = "linux")]
         if !host.device.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
             note("CEF: the app's device has no VULKAN_EXTERNAL_MEMORY_DMA_BUF; the page cannot be shown");
+            emit_accelerated_limit(false, "app device has no VULKAN_EXTERNAL_MEMORY_DMA_BUF");
             return None;
         }
         let url = format!("http://{PAGE_HOST}:{port}/index.html");
@@ -500,6 +511,7 @@ impl CefAssistant {
             scope_injected: false,
             browser_id: 0,
             browser_windowless: false,
+            accelerated_recorded: false,
             last_view_receipt: None,
             last_frame_reason: None,
             ime_on: false,
@@ -717,6 +729,10 @@ impl CefAssistant {
                                     self.record_view_admitted(metadata, native_size, imported_size, imported_generation);
                                 }
                                 self.publish(render_state(frame), texture);
+                                if !self.accelerated_recorded {
+                                    self.accelerated_recorded = true;
+                                    emit_accelerated_limit(true, "accelerated texture import admitted");
+                                }
                                 self.failed = false;
                             }
                             Ok(_) => {}
@@ -1762,6 +1778,14 @@ fn note(text: &str) {
     eprintln!("solidcraft: assistant (CEF): {text}");
 }
 
+/// One bounded accelerated-import receipt. `false` comes from the real
+/// no-DMA-BUF/refusal path; `true` only after an accelerated texture import was
+/// admitted. Absence of either is never treated as success by the validator.
+fn emit_accelerated_limit(accelerated: bool, reason: &str) {
+    let reason: String = reason.chars().take(120).collect();
+    note(&format!("CEF_LIMIT {}", serde_json::json!({"accelerated": accelerated, "reason": reason})));
+}
+
 /// One bounded frame receipt. `requested_scale` and `dip` are app placement
 /// values; neither is an independently observed native getter.
 impl CefAssistant {
@@ -1947,21 +1971,28 @@ const SCOPE_PROBE_JS: &str = r#"
   input.id = '__cef_scope_ime'; input.autocomplete = 'off'; input.placeholder = 'ime';
   input.style.cssText = 'font:12.5px system-ui;width:60px';
   root.appendChild(input);
-  const prose = document.createElement('span');
-  prose.id = '__cef_scope_prose'; prose.textContent = 'scope';
-  prose.style.cssText = 'font:12.5px system-ui';
-  root.appendChild(prose);
   document.body.appendChild(root);
   const rect = (element) => {
     const box = element.getBoundingClientRect();
     return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
   };
+  const computed = (element) => (element ? getComputedStyle(element) : null);
+  const colour = (element, part) => {
+    const style = computed(element);
+    return style ? style[part] : null;
+  };
   const report = () => {
+    // Real semantic elements only. The probe does not add its own prose/label
+    // element with a fixed font, because that would only measure itself.
+    const html = computed(document.documentElement);
+    const body = computed(document.body);
     const textarea = document.querySelector('textarea');
-    const label = document.querySelector('label');
-    const style = (element) => element ? getComputedStyle(element) : null;
+    const label = document.querySelector('[class*="text-label"], label');
+    const prose = document.querySelector('[class*="text-body"], p');
+    const style = (element) => computed(element);
     send({
       action: 'rects',
+      theme: document.documentElement.dataset.intcadTheme || null,
       dpr: devicePixelRatio,
       inner: [innerWidth, innerHeight],
       root: rect(root),
@@ -1971,18 +2002,40 @@ const SCOPE_PROBE_JS: &str = r#"
       ime: rect(input),
       fonts: {
         root: parseFloat(style(document.documentElement).fontSize),
-        prose: parseFloat(style(prose).fontSize),
+        prose: prose ? parseFloat(style(prose).fontSize) : null,
         textarea: textarea ? parseFloat(style(textarea).fontSize) : null,
         label: label ? parseFloat(style(label).fontSize) : null
       },
       colors: {
-        root_background: style(document.documentElement).backgroundColor,
-        root_text: style(document.documentElement).color
+        root_background: html.backgroundColor,
+        root_text: html.color,
+        html_background: html.backgroundColor,
+        body_background: body.backgroundColor,
+        body_text: body.color,
+        tokens: {
+          background: html.getPropertyValue('--background').trim(),
+          background2: html.getPropertyValue('--background-2').trim(),
+          border: html.getPropertyValue('--border').trim(),
+          accent: html.getPropertyValue('--intcad-accent').trim(),
+          selected: html.getPropertyValue('--intcad-selected').trim(),
+          foreground: html.getPropertyValue('--foreground').trim()
+        },
+        roles: {
+          rail: colour(document.querySelector('[data-intcad-role="rail"], aside, [class*="rail"]'), 'backgroundColor'),
+          state: colour(document.querySelector('[data-intcad-role="state"], [aria-live], [class*="state"]'), 'color'),
+          swatch: colour(document.querySelector('[data-intcad-role="swatch"], #swatch, [class*="swatch"]'), 'backgroundColor')
+        }
       }
     });
   };
   report();
   addEventListener('resize', report);
+  // A theme switch changes the page's computed styles without resizing it.
+  let lastTheme = document.documentElement.dataset.intcadTheme || null;
+  setInterval(() => {
+    const current = document.documentElement.dataset.intcadTheme || null;
+    if (current !== lastTheme) { lastTheme = current; report(); }
+  }, 250);
   return 'installed';
 })()
 "#;

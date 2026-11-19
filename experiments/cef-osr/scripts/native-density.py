@@ -38,6 +38,11 @@ TAG_RUNTIME = "CEF_RUNTIME"
 TAG_BROWSER = "CEF_BROWSER"
 TAG_LIMIT = "CEF_LIMIT"
 KNOWN_TAGS = (TAG_RUNTIME, TAG_BROWSER, TAG_FRAME, TAG_LIMIT)
+KNOWN_TAG_SET = frozenset(KNOWN_TAGS)
+# Any `CEF_...` token followed by whitespace is a receipt tag. A known tag is
+# parsed; an unknown one is a failure, so a stray `CEF_STATUS PARTIAL` cannot
+# ride along beside valid receipts.
+CEF_TAG_RE = re.compile(r"\b(CEF_[A-Z][A-Z0-9_]*)(?=\s)")
 MAX_RECEIPT_BYTES = 4096
 MAX_LINE_BYTES = 16384
 MAX_DETAIL = 240
@@ -85,17 +90,25 @@ def _normalised_text_sha256(path):
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
-def read_receipts(path, limit=4096):
-    """Parse bounded receipt lines; never trust a line that is too long."""
+def read_receipts(path):
+    """Parse bounded receipt lines; reject any `CEF_` tag outside the contract.
+
+    Every line is scanned, but only lines that carry a `CEF_` tag are parsed or
+    size-checked. A limit on the total number of log lines would let a verbose
+    log drop real receipts, so lines without a tag are cheap to skip.
+    """
     records, problems = [], []
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
         for number, line in enumerate(handle, 1):
-            if number > limit:
-                problems.append("receipt line limit exceeded")
-                break
+            if "CEF_" not in line:
+                continue
             if len(line.encode("utf-8", "replace")) > MAX_LINE_BYTES:
                 problems.append(f"line {number} exceeds {MAX_LINE_BYTES} bytes")
                 continue
+            for tag in dict.fromkeys(CEF_TAG_RE.findall(line)):
+                if tag not in KNOWN_TAG_SET:
+                    problems.append(f"line {number} has unknown receipt tag {tag}")
+                    records.append({"tag": tag, "data": None, "problem": "unknown-tag"})
             for tag in KNOWN_TAGS:
                 marker = tag + " "
                 at = line.find(marker)
@@ -210,9 +223,9 @@ def _frame_matches_source(frame):
 
 def _frame_geometry_problem(frame, max_edge=32768):
     visible, content, coded = frame["visible"], frame["content"], frame["coded"]
-    for rect in (visible, content):
-        if rect[0] + rect[2] > coded[0] or rect[1] + rect[3] > coded[1]:
-            return "rectangle outside coded size"
+    full = [0, 0, coded[0], coded[1]]
+    if visible != full or content != full:
+        return "visible/content is not the full coded surface"
     if max(max(rect[0] + rect[2], rect[1] + rect[3]) for rect in (visible, content)) > max_edge:
         return "geometry exceeds bounded edge"
     return None
@@ -259,6 +272,17 @@ def _runtime_problem(runtime):
         return "invalid API version"
     if not _bounded_string(runtime.get("cef_commit"), 64):
         return "invalid cef commit"
+    return None
+
+
+def _limit_problem(limit):
+    if not isinstance(limit, dict):
+        return "limit receipt is not an object"
+    if not isinstance(limit.get("accelerated"), bool):
+        return "limit accelerated is not a boolean"
+    reason = limit.get("reason")
+    if not isinstance(reason, str) or not reason or len(reason) > 160:
+        return "limit reason is not a bounded non-empty string"
     return None
 
 
@@ -363,7 +387,10 @@ def validate_receipts(records, expected_scales=DEFAULT_SCALES):
             dip, physical = frame["dip"], frame["physical"]
             actual_scale = float(frame["requested_scale"])
             wanted = [math.ceil(float(dip[0]) * actual_scale), math.ceil(float(dip[1]) * actual_scale)]
-            if physical != wanted:
+            # `dip` is reconstructed from physical/scale, so rounding can put the
+            # expected value one physical pixel away; ±1 is the precision of the
+            # receipt, not a density allowance.
+            if any(abs(int(got) - int(want)) > 1 for got, want in zip(physical, wanted)):
                 bad.append(f"density {dip} DIP at {actual_scale:g} gave {physical}, expected {wanted}")
             if physical != frame["coded"]:
                 bad.append("native physical differs from coded size")
@@ -383,6 +410,11 @@ def validate_receipts(records, expected_scales=DEFAULT_SCALES):
         if frame.get("decision") == "admitted":
             if frame["lifetime"] not in admitted_views:
                 popup_problems.append("popup admitted without a view in the same page lifetime")
+            geometry = _frame_geometry_problem(frame)
+            if geometry:
+                popup_problems.append(f"popup {geometry}")
+            elif not _frame_matches_source(frame):
+                popup_problems.append("popup source/coded/import mismatch")
             if frame["physical"] != frame["coded"]:
                 popup_problems.append("popup native size differs from its coded surface")
         elif not isinstance(frame.get("reason"), str):
@@ -390,15 +422,22 @@ def validate_receipts(records, expected_scales=DEFAULT_SCALES):
     checks.append(_check("popup_surface", "FAIL" if popup_problems else "PASS", "; ".join(popup_problems[:4]) or "popup receipts are separate surfaces"))
 
     limits = [record.get("data") for record in records if isinstance(record, dict) and record.get("tag") == TAG_LIMIT and isinstance(record.get("data"), dict)]
+    limit_problems = [problem for problem in (_limit_problem(item) for item in limits) if problem]
     accelerated = [item for item in limits if item.get("accelerated") is False]
-    if accelerated:
+    positive = [item for item in limits if item.get("accelerated") is True]
+    if limit_problems:
+        checks.append(_check("accelerated_import", "FAIL", "; ".join(limit_problems[:4])))
+    elif accelerated:
         reasons = ", ".join(sorted({str(item.get("reason", "unknown"))[:80] for item in accelerated}))
         checks.append(_check("accelerated_import", "BLOCKED", f"accelerated import unavailable: {reasons}"))
         limitations.append("A graceful refusal on llvmpipe/no-interop is not accelerated evidence.")
-    elif limits:
-        checks.append(_check("accelerated_import", "PASS", "accelerated receipts report success"))
+    elif positive:
+        checks.append(_check("accelerated_import", "PASS", "explicit accelerated import receipt"))
     else:
-        checks.append(_check("accelerated_import", "PASS", "no accelerated limitation receipt"))
+        # Absence used to count as PASS. It is not evidence: a run without an
+        # accelerated receipt leaves the accelerated step unobserved.
+        checks.append(_check("accelerated_import", "NOT_RUN", "no CEF_LIMIT accelerated receipt"))
+        limitations.append("No explicit accelerated-import receipt: accelerated OSR remains unproven for this run.")
 
     sequence = []
     for frame in view_frames:
@@ -594,7 +633,7 @@ def theme_ids_from_source():
 # ── self-tests ──────────────────────────────────────────────────────────────
 
 
-def _fixture_records(scales=DEFAULT_SCALES, lifetimes=None, postlude=True):
+def _fixture_records(scales=DEFAULT_SCALES, lifetimes=None, postlude=True, limits=True):
     if lifetimes is None:
         lifetimes = [6 + index for index in range(len(scales))]
     records = [
@@ -621,6 +660,8 @@ def _fixture_records(scales=DEFAULT_SCALES, lifetimes=None, postlude=True):
             "imported_size": physical, "imported_generation": generation,
             "decision": "admitted", "reason": None,
         }})
+    if limits:
+        records.append({"tag": TAG_LIMIT, "data": {"accelerated": True, "reason": "accelerated texture import admitted"}})
     if postlude:
         records.append({"tag": TAG_BROWSER, "data": {"browser_id": 7, "windowless": True, "action": "popup_denied"}})
     return records
@@ -765,6 +806,111 @@ def _test_llvmpipe_or_no_interop_is_blocked_not_pass():
         raise AssertionError("no-interop must not become PASS")
 
 
+def _test_missing_accelerated_receipt_is_not_pass():
+    records = _fixture_records(limits=False)
+    report = validate_receipts(records, DEFAULT_SCALES)
+    if report["status"] == "PASS":
+        raise AssertionError("an absent accelerated receipt must not PASS")
+    if not any(check["name"] == "accelerated_import" and check["status"] != "PASS" for check in report["checks"]):
+        raise AssertionError("accelerated_import must not PASS without a positive receipt")
+
+
+def _test_density_physical_tolerance():
+    scale = 1.5
+    physical = [1003, 1347]
+    records = _fixture_records((scale,))
+    frame = records[2]["data"]
+    frame.update({
+        "requested_scale": scale,
+        "dip": [668.667, 898.0],
+        "physical": physical,
+        "coded": physical,
+        "visible": [0, 0, physical[0], physical[1]],
+        "content": [0, 0, physical[0], physical[1]],
+        "source": physical,
+        "imported_size": physical,
+    })
+    _assert_status(validate_receipts(records, (scale,)), "PASS")
+
+
+def _test_partial_visible_fails():
+    records = _fixture_records()
+    frame = records[2]["data"]
+    frame["visible"] = [0, 0, frame["coded"][0], frame["coded"][1] // 2]
+    _assert_status(validate_receipts(records, DEFAULT_SCALES), "FAIL")
+
+
+def _test_popup_import_mismatch_fails():
+    records = _fixture_records()
+    popup = dict(records[2]["data"])
+    popup.update({"element": "popup", "generation": 900, "imported_generation": 900, "capture_counter": 1300})
+    popup["imported_size"] = [popup["coded"][0] + 2, popup["coded"][1]]
+    records.insert(3, {"tag": TAG_FRAME, "data": popup})
+    _assert_status(validate_receipts(records, DEFAULT_SCALES), "FAIL")
+
+
+def _test_empty_log_with_valid_manifest_fails():
+    with tempfile.TemporaryDirectory(prefix="native-density-empty-") as tmp:
+        base = Path(tmp)
+        log = base / "app.log"
+        log.write_bytes(b"")
+        manifest = {
+            "themes": theme_ids_from_source(),
+            "artifacts": [{"path": "app.log", "sha256": _sha256_file(log), "size": 0}],
+        }
+        manifest_path = base / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        report_path = base / "report.json"
+        code = main(["--check-log", str(log), "--manifest", str(manifest_path), "--out", str(report_path)])
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if code != 1 or report.get("status") != "FAIL":
+            raise AssertionError(f"empty log with a valid manifest must FAIL: exit={code} status={report.get('status')}")
+        if not any(check["name"] == "receipts_present" and check["status"] == "FAIL" for check in report["checks"]):
+            raise AssertionError("an empty log must report receipts_present FAIL")
+
+
+def _test_unknown_tag_through_cli_fails():
+    with tempfile.TemporaryDirectory(prefix="native-density-tag-") as tmp:
+        base = Path(tmp)
+        log = base / "app.log"
+        lines = [
+            f"solidcraft: assistant (CEF): {record['tag']} {json.dumps(record['data'], sort_keys=True)}"
+            for record in _fixture_records()
+        ]
+        lines.append('solidcraft: assistant (CEF): CEF_STATUS {"status": "PARTIAL"}')
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        manifest = {
+            "themes": theme_ids_from_source(),
+            "artifacts": [{"path": "app.log", "sha256": _sha256_file(log), "size": log.stat().st_size}],
+        }
+        manifest_path = base / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        report_path = base / "report.json"
+        code = main(["--check-log", str(log), "--manifest", str(manifest_path), "--out", str(report_path)])
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if code != 1 or report.get("status") != "FAIL":
+            raise AssertionError(f"an unknown CEF_ tag must FAIL: exit={code} status={report.get('status')}")
+        if not any(check["name"] == "receipt_lines" and "CEF_STATUS" in check["detail"] for check in report["checks"]):
+            raise AssertionError("the CLI parser must report the unknown CEF_ tag")
+
+
+def _test_receipts_after_many_plain_lines():
+    with tempfile.TemporaryDirectory(prefix="native-density-lines-") as tmp:
+        path = Path(tmp) / "app.log"
+        records = _fixture_records()
+        body = "".join(f"plain log line {index}\n" for index in range(5000))
+        body += "".join(
+            f"solidcraft: assistant (CEF): {record['tag']} {json.dumps(record['data'], sort_keys=True)}\n"
+            for record in records
+        )
+        path.write_text(body, encoding="utf-8")
+        parsed, problems = read_receipts(path)
+        if problems:
+            raise AssertionError(f"plain lines produced receipt problems: {problems}")
+        if len(parsed) != len(records):
+            raise AssertionError(f"receipts after 5000 plain lines were dropped: {len(parsed)} != {len(records)}")
+
+
 def _test_capture_bundle_does_not_trust_supplied_paths():
     with tempfile.TemporaryDirectory(prefix="native-density-bundle-") as tmp:
         root = Path(tmp)
@@ -843,6 +989,13 @@ def _run_self_tests():
         _test_mismatched_resources_fail,
         _test_aba_same_geometry_reports_limitation_not_pass,
         _test_llvmpipe_or_no_interop_is_blocked_not_pass,
+        _test_missing_accelerated_receipt_is_not_pass,
+        _test_density_physical_tolerance,
+        _test_partial_visible_fails,
+        _test_popup_import_mismatch_fails,
+        _test_empty_log_with_valid_manifest_fails,
+        _test_unknown_tag_through_cli_fails,
+        _test_receipts_after_many_plain_lines,
         _test_capture_bundle_does_not_trust_supplied_paths,
         _test_pid_starttime_with_parens_in_comm,
         _test_offline_cli_round_trip,
@@ -912,7 +1065,9 @@ def _offline(check_log, manifest_path, out):
     ]
     log_path = Path(check_log)
     manifest_file = Path(manifest_path)
+    records, log_present = [], False
     if log_path.is_file():
+        log_present = True
         records, problems = read_receipts(log_path)
         if problems:
             checks.append(_check("receipt_lines", "FAIL", "; ".join(problems[:5])))
@@ -923,7 +1078,6 @@ def _offline(check_log, manifest_path, out):
         except OSError as error:
             checks.append(_check("log_identity", "FAIL", f"cannot hash log: {error}"))
     else:
-        records, problems = [], ["log is missing"]
         checks.append(_check("receipt_lines", "BLOCKED", "log is missing"))
     manifest = None
     if manifest_file.is_file():
@@ -935,12 +1089,6 @@ def _offline(check_log, manifest_path, out):
     else:
         checks.append(_check("manifest", "BLOCKED", "manifest is missing"))
 
-    if manifest is None or not records:
-        report = _report(checks, artifacts=artifacts, limitations=limitations)
-        written = _write_report(report, out)
-        print(f"native-density offline: status={report['status']} checks={len(report['checks'])} report={written}")
-        return _exit_code(report)
-
     scales = DEFAULT_SCALES
     if isinstance(manifest, dict):
         declared = manifest.get("expected_scales")
@@ -950,8 +1098,11 @@ def _offline(check_log, manifest_path, out):
                 checks.append(_check("expected_scales", "FAIL", "manifest expected_scales is invalid"))
             else:
                 scales = parsed
-    receipt_report = None
-    if records:
+
+    # An existing log is always validated, even when it yields no receipts:
+    # an empty log is missing evidence, never a vacuous pass. A present manifest
+    # is always hash/theme/resource checked, even when the log is absent.
+    if log_present:
         receipt_report = validate_receipts(records, scales)
         checks.extend(receipt_report["checks"])
         limitations.extend(receipt_report["limitations"])

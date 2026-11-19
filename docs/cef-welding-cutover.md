@@ -124,7 +124,7 @@ Framework” 15 次。仍需人工法律审查（非工程阻断）。
 
 | 平台 | 负责人 | 步骤 | 通过标准 |
 |---|---|---|---|
-| Linux 原生 Xorg | Linux 维护者 | 在带 AMD/Intel 的 Xorg 会话构建本分支，`XDG_SESSION_TYPE=x11 DISPLAY=:N`、`SOLIDCRAFT_WAYLAND=0`，跑 `scripts/app-perf.py` 与 `scripts/app-input.py` | `webView.page=true`；拖拽 p95 与 Wayland 同量级；剪贴板/IME/popup 与应用内一致 |
+| Linux 原生 Xorg | Linux 维护者 | 在带 AMD/Intel 的 Xorg 会话构建本分支，`XDG_SESSION_TYPE=x11 DISPLAY=:N`、`SOLIDCRAFT_WAYLAND=0`，跑 `scripts/app-perf.py` 与 `scripts/app-input.py`；`app-input.py --scope --log <app.log>` 要求应用以 `SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE=1` 启动（它会解析真实的 `SCOPE`/`CEF_BROWSER` 收据），不加 `--scope` 时探针为 NOT_RUN | `webView.page=true`；拖拽 p95 与 Wayland 同量级；剪贴板/IME/popup 与应用内一致 |
 | Windows 11 | Windows 维护者 | MSVC + cmake 构建，CEF 154 DLL/`bootstrap.exe` 打进 MSI，务必 `CefSandboxMode::Sandboxed`；跑同一组脚本（`app-perf.py` 的拖拽换成 UI 自动化） | D3D12 共享纹理导入、页面就绪、输入、生命周期、沙箱、安装包体积 |
 | macOS（Apple Silicon + Intel） | macOS 维护者 | framework + helper app 打包、`try_run_subprocess`、公证；同一组脚本 | IOSurface/Metal 导入、输入法（NSTextInputClient）、打包与公证 |
 | OS 输入法（Linux） | Linux 维护者 | ~~未验证~~ 已在本机 fcitx5（X11/XIM）完成：提交 `你哈哦`、Esc 取消不改字段；Wayland text-input 路径交由维护者在 niri 会话复核 | 中文上屏、取消；候选窗由 IME 自绘 |
