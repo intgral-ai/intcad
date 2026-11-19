@@ -41,6 +41,12 @@ use admission::{FrameAdmission, FrameReject, InputTicket, Placement, ThemeTicket
 pub use config::HostBackend;
 use config::Switch;
 use welding::frame_geometry::{CaptureMetadata, FrameRect, FrameWatermarks};
+use welding::text_input::{ime_window_rect, utf16_selection};
+
+/// Largest single preedit/commit string owned by the input queue.
+const IME_MAX_TEXT_BYTES: usize = 400_000;
+/// Largest total preedit/commit text the input queue owns.
+const IME_MAX_QUEUE_BYTES: usize = 800_000;
 
 /// The actual window-system connection, not the desktop session's environment.
 pub fn host_backend(cc: &eframe::CreationContext<'_>) -> HostBackend {
@@ -261,7 +267,12 @@ fn create_producer(runtime: &CefRuntime, surface: CefSurfaceConfig, host: &HostW
 /// Bounded input queue: CEF drops input until the browser has painted its first frame.
 struct InputQueue {
     critical: VecDeque<Queued>,
-    motion: Option<(i32, i32)>,
+    /// The latest motion with all its owner flags, coalesced in place.
+    motion: Option<MouseEvent>,
+    /// How many queued critical events came before that motion.
+    motion_after: usize,
+    /// Owned UTF-8 bytes of queued IME/paste text.
+    bytes: usize,
     capacity: usize,
     ready: bool,
     ticket: Option<InputTicket>,
@@ -285,6 +296,8 @@ impl InputQueue {
         Self {
             critical: VecDeque::new(),
             motion: None,
+            motion_after: 0,
+            bytes: 0,
             capacity,
             ready: false,
             ticket: None,
@@ -297,11 +310,25 @@ impl InputQueue {
     }
 
     fn push(&mut self, event: Queued) {
-        if let Queued::Mouse(MouseEvent { action: MouseAction::Moved, x, y, .. }) = event {
-            self.motion = Some((x, y));
+        if let Queued::Mouse(mouse @ MouseEvent { action: MouseAction::Moved, .. }) = event {
+            // Keep the whole event: modifiers and held buttons belong to a page drag.
+            self.motion = Some(mouse);
+            self.motion_after = self.critical.len();
             if !self.ready {
                 self.held = self.held.saturating_add(1);
             }
+            return;
+        }
+        let text_bytes = match &event {
+            Queued::ImeSet(text, _) | Queued::ImeCommit(text) => Some(text.len()),
+            _ => None,
+        };
+        if let Some(bytes) = text_bytes
+            && (bytes > IME_MAX_TEXT_BYTES || self.bytes.saturating_add(bytes) > IME_MAX_QUEUE_BYTES)
+        {
+            // Never truncate text: refuse the event and surface the overflow.
+            self.refused = self.refused.saturating_add(1);
+            self.overflowed = true;
             return;
         }
         if self.critical.len() >= self.capacity {
@@ -341,6 +368,9 @@ impl InputQueue {
             },
             _ => {}
         }
+        if let Some(bytes) = text_bytes {
+            self.bytes += bytes;
+        }
         if !self.ready {
             self.held = self.held.saturating_add(1);
         }
@@ -350,6 +380,8 @@ impl InputQueue {
     fn clear(&mut self) {
         self.critical.clear();
         self.motion = None;
+        self.motion_after = 0;
+        self.bytes = 0;
         self.buttons.clear();
         self.keys.clear();
         self.overflowed = false;
@@ -396,6 +428,10 @@ pub struct CefAssistant {
     popup_generation: u64,
     input_quarantined: bool,
     input_failed: bool,
+    /// The page-owned pointer button held across motion/release (may leave the page).
+    pointer_capture: Option<MouseButton>,
+    /// An IME candidate rectangle is currently published to egui.
+    ime_output_active: bool,
     identity_exhausted: bool,
     last_reject: Option<FrameReject>,
     pictures: Pictures,
@@ -637,6 +673,8 @@ impl CefAssistant {
             popup_generation: 0,
             input_quarantined: false,
             input_failed: false,
+            pointer_capture: None,
+            ime_output_active: false,
             identity_exhausted: false,
             last_reject: None,
             pictures,
@@ -1066,6 +1104,7 @@ impl CefAssistant {
             }
         }
         self.input(solve, ctx, rect, ppp);
+        self.publish_ime(ctx, rect, ppp);
         // The page paints on change; the host only has to ask soon while it is working.
         let working = self.last_frame.elapsed() < Duration::from_millis(400);
         ctx.request_repaint_after(if working { Duration::from_millis(16) } else { Duration::from_millis(200) });
@@ -1272,6 +1311,8 @@ impl CefAssistant {
 
     fn cancel_input(&mut self, ctx: &Context) {
         self.queue.invalidate();
+        self.pointer_capture = None;
+        self.clear_ime_output(ctx);
         // Even a down+up entirely inside this egui frame predates the reset.
         // Discard that frame, then wait for held physical input to become neutral.
         self.input_quarantined = true;
@@ -1613,6 +1654,64 @@ impl CefAssistant {
         }
     }
 
+    fn pointer_modifiers(&self, ctx: &Context) -> EventModifiers {
+        let modifiers = ctx.input(|input| input.modifiers);
+        let down = |button| ctx.input(|input| input.pointer.button_down(button));
+        EventModifiers {
+            shift: modifiers.shift,
+            ctrl: modifiers.ctrl,
+            alt: modifiers.alt,
+            meta: modifiers.mac_cmd,
+            left_mouse_button: down(egui::PointerButton::Primary),
+            middle_mouse_button: down(egui::PointerButton::Middle),
+            right_mouse_button: down(egui::PointerButton::Secondary),
+        }
+    }
+
+    /// The popup hit area is exactly the rectangle the page is drawn into.
+    fn popup_hit(&self, page: egui::Rect, pos: egui::Pos2, ppp: f32) -> bool {
+        if !self.popup_current || !ppp.is_finite() || ppp <= 0.0 {
+            return false;
+        }
+        let Some((_, at, size)) = self.popup else { return false };
+        let rect = egui::Rect::from_min_size(
+            page.min + egui::vec2(at[0] as f32 / ppp, at[1] as f32 / ppp),
+            egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
+        );
+        rect.contains(pos)
+    }
+
+    fn clear_ime_output(&mut self, ctx: &Context) {
+        if std::mem::take(&mut self.ime_output_active) {
+            ctx.output_mut(|output| output.ime = None);
+        }
+    }
+
+    /// Publish the current composition's window rectangle; a missing poll result
+    /// keeps the last one until commit/cancel/focus loss clears it.
+    fn publish_ime(&mut self, ctx: &Context, page: egui::Rect, ppp: f32) {
+        if !self.focused || !self.shown || !self.can_input() {
+            self.clear_ime_output(ctx);
+            return;
+        }
+        let Some(composition) = self.producer.poll_ime_composition() else { return };
+        let bounds = composition.bounds;
+        let Some([x, y, width, height]) = ime_window_rect(bounds.x, bounds.y, bounds.width, bounds.height, ppp, [page.min.x, page.min.y]) else {
+            self.clear_ime_output(ctx);
+            return;
+        };
+        let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
+        ctx.output_mut(|output| {
+            output.ime = Some(egui::output::IMEOutput {
+                purpose: egui::IMEPurpose::Normal,
+                rect,
+                cursor_rect: rect,
+                should_interrupt_composition: false,
+            });
+        });
+        self.ime_output_active = true;
+    }
+
     fn input(&mut self, solve: &mut SolveApp, ctx: &Context, rect: egui::Rect, ppp: f32) {
         if self.admission.is_some() && !self.can_input() {
             self.input_quarantined |= ctx.input(|input| input.pointer.any_down() || input.modifiers.any() || !input.keys_down.is_empty());
@@ -1630,18 +1729,31 @@ impl CefAssistant {
         let events = ctx.input(|input| input.events.clone());
         for event in events {
             match event {
-                egui::Event::PointerMoved(pos) if rect.contains(pos) => {
-                    let local = (pos - rect.min) * ppp;
-                    self.queue.push(Queued::Mouse(MouseEvent {
-                        x: local.x.round() as i32,
-                        y: local.y.round() as i32,
-                        button: MouseButton::Left,
-                        action: MouseAction::Moved,
-                        modifiers: EventModifiers::default(),
-                    }));
+                egui::Event::PointerMoved(pos) => {
+                    // A captured drag keeps reporting outside the page; a current
+                    // popup list is part of the page for hit-testing.
+                    if rect.contains(pos) || self.pointer_capture.is_some() || self.popup_hit(rect, pos, ppp) {
+                        let local = (pos - rect.min) * ppp;
+                        self.queue.push(Queued::Mouse(MouseEvent {
+                            x: local.x.round() as i32,
+                            y: local.y.round() as i32,
+                            button: MouseButton::Left,
+                            action: MouseAction::Moved,
+                            modifiers: self.pointer_modifiers(ctx),
+                        }));
+                    }
                 }
                 egui::Event::PointerButton { pos, button, pressed, modifiers } => {
-                    if pressed && !rect.contains(pos) {
+                    let cef_button = match button {
+                        egui::PointerButton::Primary => MouseButton::Left,
+                        egui::PointerButton::Secondary => MouseButton::Right,
+                        egui::PointerButton::Middle => MouseButton::Middle,
+                        _ => continue,
+                    };
+                    let in_page = rect.contains(pos);
+                    let in_popup = self.popup_hit(rect, pos, ppp);
+                    let captured = self.pointer_capture == Some(cef_button);
+                    if pressed && !in_page && !in_popup {
                         // The CAD side takes the keyboard back.
                         self.cancel_input(ctx);
                         // Blurring does not invalidate the admitted picture.
@@ -1649,12 +1761,6 @@ impl CefAssistant {
                         self.queue.ticket = self.admission.as_ref().and_then(FrameAdmission::input_ticket);
                         return;
                     }
-                    let cef_button = match button {
-                        egui::PointerButton::Primary => MouseButton::Left,
-                        egui::PointerButton::Secondary => MouseButton::Right,
-                        egui::PointerButton::Middle => MouseButton::Middle,
-                        _ => continue,
-                    };
                     if pressed {
                         if !self.can_input() {
                             continue;
@@ -1667,15 +1773,27 @@ impl CefAssistant {
                             self.cancel_input(ctx);
                             return;
                         }
+                        self.pointer_capture = Some(cef_button);
+                    } else if !captured {
+                        // Only a release of a press this page received is sent; the
+                        // queue still filters one whose press was invalidated.
                     }
                     let local = (pos - rect.min) * ppp;
+                    let mut held = self.pointer_modifiers(ctx);
+                    held.shift = modifiers.shift;
+                    held.ctrl = modifiers.ctrl;
+                    held.alt = modifiers.alt;
+                    held.meta = modifiers.mac_cmd;
                     self.queue.push(Queued::Mouse(MouseEvent {
                         x: local.x.round() as i32,
                         y: local.y.round() as i32,
                         button: cef_button,
                         action: if pressed { MouseAction::Pressed } else { MouseAction::Released },
-                        modifiers: EventModifiers { ctrl: modifiers.ctrl, shift: modifiers.shift, ..Default::default() },
+                        modifiers: held,
                     }));
+                    if !pressed && captured {
+                        self.pointer_capture = None;
+                    }
                 }
                 egui::Event::MouseWheel { unit, delta, .. } if rect.contains(ctx.pointer_latest_pos().unwrap_or(egui::Pos2::ZERO)) => {
                     let scale = match unit {
@@ -1751,13 +1869,22 @@ impl CefAssistant {
                     }
                     if text.is_empty() {
                         self.queue.push(Queued::ImeCancel);
+                        self.clear_ime_output(ctx);
                     } else {
                         let range = active_range_chars.unwrap_or(0..text.chars().count());
-                        self.queue.push(Queued::ImeSet(text, (range.start as u32, range.end as u32)));
+                        match utf16_selection(&text, range) {
+                            Some(selection) => self.queue.push(Queued::ImeSet(text, selection)),
+                            None => {
+                                // An impossible range cancels instead of guessing units.
+                                self.queue.push(Queued::ImeCancel);
+                                self.clear_ime_output(ctx);
+                            }
+                        }
                     }
                 }
                 egui::Event::Ime(egui::ImeEvent::Commit(text)) if self.focused => {
                     self.queue.push(Queued::ImeCommit(text));
+                    self.clear_ime_output(ctx);
                 }
                 _ => {}
             }
@@ -1817,35 +1944,57 @@ impl CefAssistant {
         }
         if self.admission.is_some() && !self.can_input() {
             self.queue.invalidate();
+            self.pointer_capture = None;
             return;
         }
-        if let Some((x, y)) = self.queue.motion.take() {
-            if let Err(error) = self.producer.send_mouse_input(MouseEvent {
-                x,
-                y,
-                button: MouseButton::Left,
-                action: MouseAction::Moved,
-                modifiers: EventModifiers::default(),
-            }) {
-                note(&format!("CEF: motion refused: {error}"));
-                self.input_failed |= self.admission.is_some();
-                self.queue.invalidate();
+        let motion = self.queue.motion.take();
+        let before = self.queue.motion_after.min(self.queue.critical.len());
+        self.queue.motion_after = 0;
+        for _ in 0..before {
+            let Some(event) = self.queue.critical.pop_front() else { break };
+            if !self.send_queued(event) {
                 return;
             }
         }
+        if let Some(motion) = motion
+            && let Err(error) = self.producer.send_mouse_input(motion)
+        {
+            note(&format!("CEF: motion refused: {error}"));
+            self.input_failed |= self.admission.is_some();
+            self.queue.invalidate();
+            self.pointer_capture = None;
+            return;
+        }
         while let Some(event) = self.queue.critical.pop_front() {
-            let result = match event {
-                Queued::Mouse(event) => self.producer.send_mouse_input(event),
-                Queued::Key(event) => self.producer.send_keyboard_input(event),
-                Queued::ImeSet(text, cursor) => self.producer.ime_set_composition(&text, cursor),
-                Queued::ImeCommit(text) => self.producer.ime_commit_text(&text),
-                Queued::ImeCancel => self.producer.ime_cancel_composition(),
-            };
-            if let Err(error) = result {
+            if !self.send_queued(event) {
+                return;
+            }
+        }
+    }
+
+    /// Send one queued event; false after the queue was invalidated.
+    fn send_queued(&mut self, event: Queued) -> bool {
+        let result = match event {
+            Queued::Mouse(event) => self.producer.send_mouse_input(event),
+            Queued::Key(event) => self.producer.send_keyboard_input(event),
+            Queued::ImeSet(text, cursor) => {
+                self.queue.bytes = self.queue.bytes.saturating_sub(text.len());
+                self.producer.ime_set_composition(&text, cursor)
+            }
+            Queued::ImeCommit(text) => {
+                self.queue.bytes = self.queue.bytes.saturating_sub(text.len());
+                self.producer.ime_commit_text(&text)
+            }
+            Queued::ImeCancel => self.producer.ime_cancel_composition(),
+        };
+        match result {
+            Ok(()) => true,
+            Err(error) => {
                 note(&format!("CEF: input refused: {error}"));
                 self.input_failed |= self.admission.is_some();
                 self.queue.invalidate();
-                return;
+                self.pointer_capture = None;
+                false
             }
         }
     }
@@ -2552,5 +2701,83 @@ mod tests {
         assert_eq!(queue.held, u64::MAX);
         assert_eq!(queue.refused, u64::MAX);
         assert!(queue.overflowed);
+    }
+}
+
+/// W4 input/IME queue invariants. These do not execute a native producer.
+#[cfg(test)]
+mod w4_input_tests {
+    use super::*;
+
+    fn moved() -> MouseEvent {
+        MouseEvent {
+            x: 4,
+            y: 5,
+            button: MouseButton::Left,
+            action: MouseAction::Moved,
+            modifiers: EventModifiers {
+                ctrl: true,
+                shift: true,
+                alt: true,
+                meta: true,
+                left_mouse_button: true,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn motion_never_crosses_press_release_or_ime() {
+        let mut queue = InputQueue::new(256);
+        queue.ready = true;
+        queue.push(Queued::Key(KeyEvent {
+            kind: KeyEventKind::RawKeyDown,
+            windows_key_code: 0x41,
+            native_key_code: 0,
+            character: None,
+            modifiers: EventModifiers::default(),
+        }));
+        queue.push(Queued::Mouse(moved()));
+        queue.push(Queued::Key(KeyEvent {
+            kind: KeyEventKind::KeyUp,
+            windows_key_code: 0x41,
+            native_key_code: 0,
+            character: None,
+            modifiers: EventModifiers::default(),
+        }));
+        // The motion is sent after the one event that preceded it, with every
+        // modifier and held-button flag intact.
+        assert_eq!(queue.motion_after, 1);
+        assert_eq!(queue.critical.len(), 2);
+        let motion = queue.motion.expect("motion retained");
+        assert!(motion.modifiers.ctrl && motion.modifiers.shift && motion.modifiers.alt && motion.modifiers.meta);
+        assert!(motion.modifiers.left_mouse_button);
+        assert_eq!((motion.x, motion.y), (4, 5));
+    }
+
+    #[test]
+    fn ime_and_paste_queue_bound_owned_bytes() {
+        let mut queue = InputQueue::new(256);
+        queue.ready = true;
+        let largest = "a".repeat(IME_MAX_TEXT_BYTES);
+        queue.push(Queued::ImeCommit(largest.clone()));
+        assert_eq!(queue.bytes, IME_MAX_TEXT_BYTES);
+        assert_eq!(queue.critical.len(), 1);
+        // One byte more is refused, and the event is not truncated.
+        queue.push(Queued::ImeCommit("b".repeat(IME_MAX_TEXT_BYTES + 1)));
+        assert_eq!(queue.critical.len(), 1);
+        assert!(queue.overflowed && queue.refused >= 1);
+        // The total budget, not only the per-event one.
+        queue.push(Queued::ImeSet("c".repeat(IME_MAX_TEXT_BYTES), (0, 1)));
+        assert_eq!(queue.critical.len(), 2, "exactly {} bytes fit", IME_MAX_QUEUE_BYTES);
+        queue.push(Queued::ImeCommit("d".into()));
+        assert_eq!(queue.critical.len(), 2, "one byte over the total budget is refused");
+        queue.clear();
+        assert_eq!(queue.bytes, 0);
+        // The event-count bound is unchanged.
+        for _ in 0..300 {
+            queue.push(Queued::ImeCancel);
+        }
+        assert_eq!(queue.critical.len(), 256);
     }
 }

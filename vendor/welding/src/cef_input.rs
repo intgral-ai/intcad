@@ -79,6 +79,8 @@ fn cef_button(b: MouseButton) -> cef::MouseButtonType {
     }
 }
 
+/// Send a key event. A character's UTF-16 units are all delivered: a non-BMP
+/// character sends its surrogate pair as two CHAR events, never a truncated cast.
 #[rustfmt::skip]
 pub fn send_key(host: &cef::BrowserHost, ev: &KeyEvent) {
     let type_ = match ev.kind {
@@ -87,17 +89,29 @@ pub fn send_key(host: &cef::BrowserHost, ev: &KeyEvent) {
         KeyEventKind::KeyUp      => cef::KeyEventType::KEYUP,
         KeyEventKind::Char       => cef::KeyEventType::CHAR,
     };
-    let ch = ev.character.map(|c| c as u16).unwrap_or(0);
+    let (units, len) = ev.character.map(crate::text_input::utf16_units).unwrap_or(([0, 0], 0));
     let cef_ev = cef::KeyEvent {
         type_,
         modifiers: modifiers(ev.modifiers),
         windows_key_code: ev.windows_key_code,
         native_key_code: ev.native_key_code,
-        character: ch,
-        unmodified_character: ch,
+        character: units[0],
+        unmodified_character: units[0],
         ..cef::KeyEvent::default()
     };
     host.send_key_event(Some(&cef_ev));
+    for unit in &units[1..len] {
+        let extra = cef::KeyEvent {
+            type_: cef::KeyEventType::CHAR,
+            modifiers: modifiers(ev.modifiers),
+            windows_key_code: ev.windows_key_code,
+            native_key_code: ev.native_key_code,
+            character: *unit,
+            unmodified_character: *unit,
+            ..cef::KeyEvent::default()
+        };
+        host.send_key_event(Some(&extra));
+    }
 }
 
 /// Give input focus to the browser. Direction is unused by CEF's `set_focus`;

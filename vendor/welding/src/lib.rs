@@ -59,6 +59,7 @@ pub mod runtime;
 // SolidCraft: owned pre-init runtime identity.
 pub mod runtime_identity;
 pub mod surface;
+pub mod text_input;
 
 #[cfg(target_os = "macos")]
 mod wgpu_compat;
