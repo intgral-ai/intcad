@@ -38,7 +38,7 @@ mod viewport;
 use admission::{FrameAdmission, FrameReject, InputTicket, Placement, ThemeTicket};
 pub use config::HostBackend;
 use config::Switch;
-use welding::frame_geometry::{FrameRect, FrameWatermarks};
+use welding::frame_geometry::{CaptureMetadata, FrameRect, FrameWatermarks};
 
 /// The actual window-system connection, not the desktop session's environment.
 pub fn host_backend(cc: &eframe::CreationContext<'_>) -> HostBackend {
@@ -311,6 +311,14 @@ pub struct CefAssistant {
     last_stats: Instant,
     /// Test-only: a native `<select>` was added to the real page to exercise the popup path.
     test_select: bool,
+    /// Test-only: the fixed scope probe was installed once for this page lifetime.
+    scope_injected: bool,
+    /// Last identified windowless browser, for popup-denial receipts.
+    browser_id: i32,
+    browser_windowless: bool,
+    /// One admitted receipt per view geometry/requested scale keeps logs bounded.
+    last_view_receipt: Option<([i32; 2], u32)>,
+    last_frame_reason: Option<String>,
     /// The window's input method is on because the page has the keyboard.
     ime_on: bool,
     started: Instant,
@@ -395,13 +403,8 @@ impl CefAssistant {
             }
             // A failed initialization keeps the claim: CEF may have partially
             // initialized global state. Never retry or shut down another owner.
-            if let Some(id) = &policy.identity {
-                note(&format!(
-                    "CEF: backend=LinuxWayland osr_only=true disabled=Translate,WaylandFractionalScaleV1 cef={:?} chromium={:?} api={} platform_hash={} commit={}",
-                    id.cef, id.chromium, id.api_version, id.platform_api_hash, id.cef_commit
-                ));
-            }
         }
+        emit_runtime_receipt(&policy);
         let mut runtime_config = CefRuntimeConfig::new(&cef_path, sandbox());
         runtime_config.cache_path = Some(crate::settings_dir().ok().flatten().unwrap_or_else(std::env::temp_dir).join("cef-assistant"));
         // The validated environment is not the only CEF ingress: ignore the
@@ -494,6 +497,11 @@ impl CefAssistant {
             frames: 0,
             last_stats: Instant::now(),
             test_select: false,
+            scope_injected: false,
+            browser_id: 0,
+            browser_windowless: false,
+            last_view_receipt: None,
+            last_frame_reason: None,
             ime_on: false,
             started: Instant::now(),
             test_reloaded: false,
@@ -660,6 +668,7 @@ impl CefAssistant {
             && self.native_ready
         {
             let metadata = native.capture_metadata();
+            let native_size = [native.size().width, native.size().height];
             let geometry = admission::check_transport_view(self.admission.as_ref(), metadata.as_ref());
             let checked = self.admission.as_ref().map_or(Ok(()), |_| {
                 geometry?;
@@ -674,6 +683,7 @@ impl CefAssistant {
             });
             if let Err(error) = checked {
                 if self.last_reject != Some(error) {
+                    self.record_frame_refusal("view", metadata.as_ref(), Some(native_size), None, None, &format!("{error:?}"));
                     note(&format!("CEF: native view refused: {error:?}"));
                 }
                 self.last_reject = Some(error);
@@ -687,6 +697,8 @@ impl CefAssistant {
                             self.failed = true;
                             return;
                         }
+                        let imported_size = [texture.texture.width(), texture.texture.height()];
+                        let imported_generation = texture.generation;
                         let admitted = self.admission.as_mut().map_or(Ok(None), |admission| {
                             let metadata = metadata.as_ref().ok_or(FrameReject::MissingMetadata)?;
                             if texture.capture_metadata != Some(*metadata)
@@ -696,19 +708,33 @@ impl CefAssistant {
                             {
                                 return Err(FrameReject::ImportMismatch);
                             }
-                            admission.admit_view(metadata, [texture.texture.width(), texture.texture.height()], texture.generation).map(Some)
+                            admission.admit_view(metadata, imported_size, imported_generation).map(Some)
                         });
                         match admitted {
                             Ok(ticket) if !self.input_failed => {
                                 self.queue.ticket = ticket;
+                                if let Some(metadata) = metadata.as_ref() {
+                                    self.record_view_admitted(metadata, native_size, imported_size, imported_generation);
+                                }
                                 self.publish(render_state(frame), texture);
                                 self.failed = false;
                             }
                             Ok(_) => {}
-                            Err(error) => note(&format!("CEF: imported view refused: {error:?}")),
+                            Err(error) => {
+                                self.record_frame_refusal(
+                                    "view",
+                                    metadata.as_ref(),
+                                    Some(native_size),
+                                    Some(imported_size),
+                                    Some(imported_generation),
+                                    &format!("{error:?}"),
+                                );
+                                note(&format!("CEF: imported view refused: {error:?}"));
+                            }
                         }
                     }
                     Err(error) => {
+                        self.record_frame_refusal("view", metadata.as_ref(), Some(native_size), None, None, &format!("{error}"));
                         note(&format!("CEF: the page's frame could not be imported: {error}"));
                         self.failed = true;
                     }
@@ -794,6 +820,14 @@ impl CefAssistant {
             note("CEF: test reload");
             self.new_page(ctx);
             let _ = self.producer.reload();
+        }
+        // Test only: a fixed, in-source scope probe, once per page lifetime.
+        if !self.scope_injected && self.page_ready && self.shown && std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE").ok().as_deref() == Some("1")
+        {
+            self.scope_injected = true;
+            if let Err(error) = self.inject_scope_probe() {
+                note(&format!("CEF: scope probe injection failed: {error}"));
+            }
         }
         self.input(solve, ctx, rect, ppp);
         // The page paints on change; the host only has to ask soon while it is working.
@@ -978,6 +1012,9 @@ impl CefAssistant {
 
     fn new_page(&mut self, ctx: &Context) {
         self.page_ready = false;
+        self.scope_injected = false;
+        self.last_view_receipt = None;
+        self.last_frame_reason = None;
         self.told.clear();
         self.native_ready = false;
         self.viewport.reset(Instant::now());
@@ -1081,8 +1118,8 @@ impl CefAssistant {
         match self.producer.acquire_popup(&self.host) {
             Ok(Some(popup)) => {
                 let size = [popup.texture.size.width, popup.texture.size.height];
-                if let Some(admission) = &self.admission {
-                    let checked = popup.texture.capture_metadata.as_ref().ok_or(FrameReject::MissingMetadata).and_then(|metadata| {
+                let checked = if let Some(admission) = &self.admission {
+                    popup.texture.capture_metadata.as_ref().ok_or(FrameReject::MissingMetadata).and_then(|metadata| {
                         let width = i32::try_from(popup.rect.width).map_err(|_| FrameReject::WrongSize)?;
                         let height = i32::try_from(popup.rect.height).map_err(|_| FrameReject::WrongSize)?;
                         if metadata.generation <= self.popup_generation {
@@ -1095,14 +1132,36 @@ impl CefAssistant {
                             return Err(FrameReject::ImportMismatch);
                         }
                         admission.check_popup(metadata, FrameRect { x: popup.rect.x, y: popup.rect.y, width, height }, size, popup.texture.generation)
-                    });
-                    if let Err(error) = checked {
-                        note(&format!("CEF: imported popup refused: {error:?}"));
-                        self.popup_current = false;
-                        return self.popup;
-                    }
-                    self.popup_generation = popup.texture.generation;
+                    })
+                } else {
+                    Ok(())
+                };
+                let popup_physical = popup.texture.capture_metadata.as_ref().map(|metadata| {
+                    [u32::try_from(metadata.geometry.coded_size[0]).unwrap_or(0), u32::try_from(metadata.geometry.coded_size[1]).unwrap_or(0)]
+                });
+                if let Err(error) = checked {
+                    self.record_frame_refusal(
+                        "popup",
+                        popup.texture.capture_metadata.as_ref(),
+                        popup_physical,
+                        Some(size),
+                        Some(popup.texture.generation),
+                        &format!("{error:?}"),
+                    );
+                    note(&format!("CEF: imported popup refused: {error:?}"));
+                    self.popup_current = false;
+                    return self.popup;
                 }
+                self.popup_generation = popup.texture.generation;
+                self.frame_receipt(
+                    "popup",
+                    popup.texture.capture_metadata.as_ref(),
+                    popup_physical,
+                    Some(size),
+                    Some(popup.texture.generation),
+                    "admitted",
+                    "",
+                );
                 self.popup_current = true;
                 note(&format!("popup surface {}x{} at {},{}", size[0], size[1], popup.rect.x, popup.rect.y));
                 let plain = match popup.texture.format {
@@ -1196,7 +1255,9 @@ impl CefAssistant {
         while let Some(event) = self.producer.poll_web_event() {
             match &event {
                 CefSurfaceEvent::Navigation(welding::NavigationEvent::BrowserCreated { browser_id, windowless }) => {
-                    note(&format!("CEF: browser={browser_id} windowless={windowless} action={}", if *windowless { "accept" } else { "refuse" }));
+                    self.browser_id = *browser_id;
+                    self.browser_windowless = *windowless;
+                    note(&format!("CEF_BROWSER {}", serde_json::json!({"browser_id": browser_id, "windowless": windowless, "action": "created"})));
                     if !windowless {
                         self.osr_refused = true;
                         self.cancel_input(ctx);
@@ -1207,7 +1268,10 @@ impl CefAssistant {
                     self.new_page(ctx);
                     self.failed = true;
                 }
-                CefSurfaceEvent::Navigation(welding::NavigationEvent::NewWindowRequested { .. }) => note("CEF: browser-popup action=cancel"),
+                CefSurfaceEvent::Navigation(welding::NavigationEvent::NewWindowRequested { .. }) => note(&format!(
+                    "CEF_BROWSER {}",
+                    serde_json::json!({"browser_id": self.browser_id, "windowless": self.browser_windowless, "action": "popup_denied"})
+                )),
                 _ => {}
             }
             if let CefSurfaceEvent::ScriptCompleted { id, result } = &event {
@@ -1697,6 +1761,231 @@ fn index_with_bridge(html: &[u8]) -> Vec<u8> {
 fn note(text: &str) {
     eprintln!("solidcraft: assistant (CEF): {text}");
 }
+
+/// One bounded frame receipt. `requested_scale` and `dip` are app placement
+/// values; neither is an independently observed native getter.
+impl CefAssistant {
+    fn frame_receipt(
+        &self,
+        element: &str,
+        metadata: Option<&CaptureMetadata>,
+        physical: Option<[u32; 2]>,
+        imported_size: Option<[u32; 2]>,
+        imported_generation: Option<u64>,
+        decision: &str,
+        reason: &str,
+    ) {
+        let scale = self.placement.map(|placement| placement.scale);
+        let dip = match (physical, scale) {
+            (Some([width, height]), Some(scale)) if scale.is_finite() && scale > 0.0 => {
+                let round = |value: u32| ((f64::from(value) / f64::from(scale)) * 1000.0).round() / 1000.0;
+                serde_json::json!([round(width), round(height)])
+            }
+            _ => serde_json::Value::Null,
+        };
+        let rect = |rect: FrameRect| serde_json::json!([rect.x, rect.y, rect.width, rect.height]);
+        let (coded, visible, content, source, generation, capture_counter) = match metadata {
+            Some(metadata) => (
+                serde_json::json!(metadata.geometry.coded_size),
+                rect(metadata.geometry.visible_rect),
+                rect(metadata.geometry.content_rect),
+                serde_json::json!(metadata.geometry.source_size),
+                serde_json::json!(metadata.generation),
+                serde_json::json!(metadata.capture_counter),
+            ),
+            None => (
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            ),
+        };
+        let revision = self
+            .queue
+            .ticket
+            .map(|ticket| ticket.placement_revision)
+            .or_else(|| self.admission.as_ref().map(admission::FrameAdmission::revision))
+            .unwrap_or(0);
+        let reason: String = reason.chars().take(120).collect();
+        note(&format!(
+            "CEF_FRAME {}",
+            serde_json::json!({
+                "lifetime": self.lifetime,
+                "placement_revision": revision,
+                "element": element,
+                "generation": generation,
+                "capture_counter": capture_counter,
+                "requested_scale": scale,
+                "dip": dip,
+                "physical": physical,
+                "coded": coded,
+                "visible": visible,
+                "content": content,
+                "source": source,
+                "imported_size": imported_size,
+                "imported_generation": imported_generation,
+                "decision": decision,
+                "reason": reason,
+            })
+        ));
+    }
+
+    fn record_view_admitted(&mut self, metadata: &CaptureMetadata, physical: [u32; 2], imported_size: [u32; 2], imported_generation: u64) {
+        let signature = (metadata.geometry.coded_size, self.placement.map(|placement| placement.scale.to_bits()).unwrap_or(0));
+        self.last_frame_reason = None;
+        if self.last_view_receipt != Some(signature) {
+            self.last_view_receipt = Some(signature);
+            self.frame_receipt("view", Some(metadata), Some(physical), Some(imported_size), Some(imported_generation), "admitted", "");
+        }
+    }
+
+    fn record_frame_refusal(
+        &mut self,
+        element: &str,
+        metadata: Option<&CaptureMetadata>,
+        physical: Option<[u32; 2]>,
+        imported_size: Option<[u32; 2]>,
+        imported_generation: Option<u64>,
+        reason: &str,
+    ) {
+        let bounded: String = reason.chars().take(120).collect();
+        if self.last_frame_reason.as_deref() == Some(bounded.as_str()) {
+            return;
+        }
+        self.last_frame_reason = Some(bounded.clone());
+        self.frame_receipt(element, metadata, physical, imported_size, imported_generation, "refused", &bounded);
+    }
+
+    /// Fixed, in-source scope probe for tests. Enabled only by
+    /// `SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE=1`; no URL/file/script parameter.
+    pub fn inject_scope_probe(&mut self) -> Result<(), welding::WeldError> {
+        if std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE").ok().as_deref() != Some("1") {
+            return Ok(());
+        }
+        self.producer.execute_script(SCOPE_PROBE_JS, "").map(|_| ())
+    }
+}
+
+fn backend_label(backend: &config::HostBackend) -> &'static str {
+    match backend {
+        config::HostBackend::LinuxWayland => "LinuxWayland",
+        config::HostBackend::LinuxX11 => "LinuxX11",
+        config::HostBackend::Windows => "Windows",
+        config::HostBackend::Macos => "Macos",
+        config::HostBackend::Unknown => "Unknown",
+    }
+}
+
+fn emit_runtime_receipt(policy: &config::EffectivePolicy) {
+    let mut disabled = Vec::new();
+    for switch in policy.switches.iter().filter(|switch| switch.name == "disable-features") {
+        if let Some(value) = switch.value.as_deref() {
+            for feature in value.split(',').filter(|feature| !feature.is_empty()) {
+                if !disabled.iter().any(|seen: &String| seen == feature) {
+                    disabled.push(feature.to_owned());
+                }
+            }
+        }
+    }
+    let identity = policy.identity.as_ref();
+    note(&format!(
+        "CEF_RUNTIME {}",
+        serde_json::json!({
+            "backend": backend_label(&policy.backend),
+            "osr_only": policy.osr_only,
+            "disabled_features": disabled,
+            "cef": identity.map(|identity| identity.cef),
+            "chromium": identity.map(|identity| identity.chromium),
+            "api_version": identity.map(|identity| identity.api_version),
+            "cef_commit": identity.map(|identity| identity.cef_commit.as_str()),
+            "platform_api_hash": identity.map(|identity| identity.platform_api_hash.as_str()),
+        })
+    ));
+}
+
+/// The page's IPC shim is served at `/ipc.js`; this probe only posts bounded
+/// log messages to the existing `/ipc` endpoint.
+const SCOPE_PROBE_JS: &str = r#"
+(() => {
+  if (window.__intcadScopeProbeInstalled) return 'already';
+  window.__intcadScopeProbeInstalled = true;
+  const send = (value) => {
+    try {
+      fetch('/ipc', { method: 'POST', body: JSON.stringify({ type: 'log', text: 'SCOPE ' + JSON.stringify(value) }) });
+    } catch (_) {}
+  };
+  const root = document.createElement('div');
+  root.id = '__cef_scope_root';
+  root.style.cssText = 'position:fixed;right:8px;top:8px;z-index:2147483647;display:flex;gap:4px;align-items:center;padding:3px';
+  const button = (id, label, action) => {
+    const element = document.createElement('button');
+    element.id = id; element.type = 'button'; element.textContent = label;
+    element.style.cssText = 'font:12.5px system-ui;min-width:24px';
+    element.addEventListener('click', () => { try { action(); } catch (error) { send({ id, error: String(error).slice(0, 80) }); } });
+    root.appendChild(element);
+    return element;
+  };
+  button('__cef_scope_open', 'open', () => send({ action: 'window_open', denied: window.open('about:blank', '_blank', 'noopener') === null }));
+  const target = document.createElement('a');
+  target.id = '__cef_scope_target'; target.href = 'about:blank'; target.target = '_blank'; target.textContent = 'blank';
+  target.style.cssText = 'font:12.5px system-ui'; root.appendChild(target);
+  const select = document.createElement('select');
+  select.id = '__cef_scope_select';
+  for (const value of ['alpha', 'beta']) { const option = document.createElement('option'); option.textContent = value; select.appendChild(option); }
+  select.addEventListener('change', () => send({ action: 'select', value: select.value }));
+  root.appendChild(select);
+  button('__cef_scope_fullscreen', 'full', () => {
+    if (document.fullscreenElement) { document.exitFullscreen(); }
+    else { document.documentElement.requestFullscreen(); }
+  });
+  document.addEventListener('fullscreenchange', () => send({ action: 'fullscreen', active: Boolean(document.fullscreenElement) }));
+  button('__cef_scope_dialog', 'dialog', () => send({ action: 'dialog_current', cancelled: confirm('cef-scope-dialog') === false }));
+  button('__cef_scope_devtools', 'devtools', () => send({ action: 'devtools_entry', denied: window.open('devtools://devtools/bundled/inspector.html') === null }));
+  const input = document.createElement('input');
+  input.id = '__cef_scope_ime'; input.autocomplete = 'off'; input.placeholder = 'ime';
+  input.style.cssText = 'font:12.5px system-ui;width:60px';
+  root.appendChild(input);
+  const prose = document.createElement('span');
+  prose.id = '__cef_scope_prose'; prose.textContent = 'scope';
+  prose.style.cssText = 'font:12.5px system-ui';
+  root.appendChild(prose);
+  document.body.appendChild(root);
+  const rect = (element) => {
+    const box = element.getBoundingClientRect();
+    return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+  };
+  const report = () => {
+    const textarea = document.querySelector('textarea');
+    const label = document.querySelector('label');
+    const style = (element) => element ? getComputedStyle(element) : null;
+    send({
+      action: 'rects',
+      dpr: devicePixelRatio,
+      inner: [innerWidth, innerHeight],
+      root: rect(root),
+      open: rect(document.getElementById('__cef_scope_open')),
+      target: rect(target),
+      select: rect(select),
+      ime: rect(input),
+      fonts: {
+        root: parseFloat(style(document.documentElement).fontSize),
+        prose: parseFloat(style(prose).fontSize),
+        textarea: textarea ? parseFloat(style(textarea).fontSize) : null,
+        label: label ? parseFloat(style(label).fontSize) : null
+      },
+      colors: {
+        root_background: style(document.documentElement).backgroundColor,
+        root_text: style(document.documentElement).color
+      }
+    });
+  };
+  report();
+  addEventListener('resize', report);
+  return 'installed';
+})()
+"#;
 
 #[cfg(test)]
 mod tests {

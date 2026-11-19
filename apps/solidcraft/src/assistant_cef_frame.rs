@@ -226,6 +226,10 @@ impl FrameAdmission {
         self.input_ticket() == Some(ticket)
     }
 
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub(super) fn retry_due(&mut self, now: Instant) -> bool {
         if self.admitted || self.expected.is_none() || self.error.is_some() || self.retries >= 4 || self.timed_out(now) {
             return false;

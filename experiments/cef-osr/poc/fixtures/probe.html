@@ -29,6 +29,16 @@
     </select>
   </div>
 </div>
+<div id="__cef_scope_root">
+  <button id="__cef_scope_open" type="button">open</button>
+  <a id="__cef_scope_target" href="about:blank" target="_blank">blank</a>
+  <select id="__cef_scope_select"><option>alpha</option><option>beta</option></select>
+  <button id="__cef_scope_fullscreen" type="button">full</button>
+  <button id="__cef_scope_dialog" type="button">dialog</button>
+  <button id="__cef_scope_devtools" type="button">devtools</button>
+  <input id="__cef_scope_ime" placeholder="ime" autocomplete="off">
+  <span id="__cef_scope_prose">scope</span>
+</div>
 <pre id="log"></pre>
 <script>
   const log = (line) => {
@@ -40,7 +50,7 @@
   composer.addEventListener('input', (e) => log('input ' + JSON.stringify(e.target.value)));
   composer.addEventListener('compositionstart', () => log('compositionstart'));
   composer.addEventListener('compositionupdate', (e) => log('compositionupdate ' + JSON.stringify(e.data)));
-  composer.addEventListener('compositionend', (e) => log('compositionend ' + JSON.stringify(e.data)));
+  composer.addEventListener('compositionend', () => log('compositionend ' + JSON.stringify(e.data)));
   addEventListener('keydown', (e) => log('key ' + e.key + (e.ctrlKey ? '+ctrl' : '') + (e.metaKey ? '+meta' : '')));
   addEventListener('mousedown', (e) => log('mousedown ' + e.clientX + ',' + e.clientY));
   addEventListener('wheel', (e) => {
@@ -59,6 +69,36 @@
     const names = Array.from(e.dataTransfer.files || []).map((f) => f.name);
     log('drop ' + JSON.stringify(names));
   });
+  // The same fixed test IDs the app's SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE hook
+  // installs. This page is a standalone probe, not the app's shipped page.
+  document.getElementById('__cef_scope_open').addEventListener('click', () => {
+    log('scope window_open denied=' + (window.open('about:blank', '_blank', 'noopener') === null));
+  });
+  document.getElementById('__cef_scope_target').addEventListener('click', (e) => {
+    e.preventDefault();
+    log('scope target_blank requested');
+  });
+  document.getElementById('__cef_scope_select').addEventListener('change', (e) => log('scope select ' + e.target.value));
+  document.getElementById('__cef_scope_fullscreen').addEventListener('click', () => {
+    if (document.fullscreenElement) { document.exitFullscreen(); }
+    else { document.documentElement.requestFullscreen(); }
+  });
+  document.addEventListener('fullscreenchange', () => log('scope fullscreen active=' + Boolean(document.fullscreenElement)));
+  document.getElementById('__cef_scope_dialog').addEventListener('click', () => {
+    log('scope dialog_current cancelled=' + (confirm('cef-scope-dialog') === false));
+  });
+  document.getElementById('__cef_scope_devtools').addEventListener('click', () => {
+    log('scope devtools_entry denied=' + (window.open('devtools://devtools/bundled/inspector.html') === null));
+  });
+  const scopeRect = (id) => {
+    const box = document.getElementById(id).getBoundingClientRect();
+    return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
+  };
+  log('scope_rects ' + JSON.stringify({
+    dpr: devicePixelRatio, inner: [innerWidth, innerHeight],
+    root: scopeRect('__cef_scope_root'), open: scopeRect('__cef_scope_open'),
+    select: scopeRect('__cef_scope_select'), ime: scopeRect('__cef_scope_ime')
+  }));
   log('loaded ' + innerWidth + 'x' + innerHeight + ' dpr ' + devicePixelRatio);
 </script>
 </body>
