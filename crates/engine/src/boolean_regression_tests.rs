@@ -2197,3 +2197,116 @@ fn a_loft_of_arches_offset_to_97_and_193_points_runs_foot_to_foot_and_cuts_its_l
         assert!((left.volume + legs - m.volume).abs() < 1e-6 * m.volume, "{case}: {} + {legs} vs {}", left.volume, m.volume);
     }
 }
+
+/// INT-1454: the exact action-matrix face. The vendored v0.44.1 union fails in the document's
+/// operand order and passes in the reverse order; the temporary kernel fallback must keep the
+/// document's `[target, tool]` history, names and material, not merely the volume.
+const FRONT_TRIANGLE_FACE: [f64; 3] = [499.91353034098677, -3.886305195470338, 518.9631745038374];
+const FRONT_TRIANGLE_DESIGN: &str = include_str!("../../../examples/regressions/front_triangle_hull_triangle.json");
+
+fn front_triangle() -> Session {
+    replay(FRONT_TRIANGLE_DESIGN)
+}
+
+/// The tool the join builds, as a body of its own, at the same face and distance.
+fn front_triangle_tool(distance: f64) -> Session {
+    let mut s = front_triangle();
+    s.execute("solid.extrude", &json!({"face": FRONT_TRIANGLE_FACE, "distance": distance})).unwrap();
+    s
+}
+
+fn assert_front_triangle_names_exact(body: &solidcraft_doc::ModelBody) {
+    let names = solidcraft_doc::naming::face_names(body);
+    for (i, name) in names.iter().enumerate() {
+        assert!(solidcraft_doc::naming::face_name_exact(body, i), "face {i} {name:?} is not exact");
+    }
+}
+
+#[test]
+fn front_triangle_face_join_keeps_exact_history_and_names() {
+    let target = front_triangle();
+    let target_body = target.model.state().body("FrontTriangle").unwrap().body.clone();
+    let target_names = solidcraft_doc::naming::face_names(target.model.state().body("FrontTriangle").unwrap());
+    let contact = solidcore_record::Vec3::from(FRONT_TRIANGLE_FACE);
+    let (target_index, target_point) = target_body
+        .faces(1e-4)
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.plane_normal.is_some())
+        .max_by(|(_, a), (_, b)| a.centroid.dist(contact).total_cmp(&b.centroid.dist(contact)))
+        .map(|(i, f)| (i, f.centroid))
+        .expect("a planar target face away from the contact");
+    let target_name = target_names.get(target_index).cloned().expect("the target face's name");
+    let tool = front_triangle_tool(5.0);
+    let tool_body = tool.model.state().body("Body1").unwrap().body.clone();
+    let tool_point = tool_body
+        .faces(1e-4)
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.plane_normal.is_some())
+        .max_by(|a, b| a.centroid.dist(contact).total_cmp(&b.centroid.dist(contact)))
+        .map(|f| f.centroid)
+        .expect("the tool's far cap");
+    let expected = volume(&target, "FrontTriangle") + volume(&tool, "Body1");
+
+    let mut s = front_triangle();
+    let reply = s.execute("solid.extrude", &json!({"face": FRONT_TRIANGLE_FACE, "distance": 5.0, "operation": "join"})).unwrap();
+    assert_eq!(s.model.state().bodies.len(), 1, "the join makes one body");
+    let (got, validity, shells, face_count, edge_count, history) = {
+        let body = s.model.state().body("FrontTriangle").unwrap();
+        let history = body.body.history().expect("the join kept its history").clone();
+        (volume(&s, "FrontTriangle"), body.body.validity().to_vec(), body.body.shell_count(), body.body.face_count(), body.body.edge_count(), history)
+    };
+    assert!(validity.is_empty(), "{validity:?}");
+    assert_eq!(shells, 1);
+    assert!((got - expected).abs() < expected * 1e-5, "join {got} mm³, expected the operands' sum {expected}");
+    assert_eq!(history.operands, 2);
+    history
+        .check_counts(
+            (face_count, edge_count),
+            &[(target_body.face_count(), target_body.edge_count()), (tool_body.face_count(), tool_body.edge_count())],
+        )
+        .unwrap();
+    assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap());
+    let (target_after, tool_after) = {
+        let state = s.model.state();
+        (solidcraft_doc::naming::face_names_at(state, &[target_point]), solidcraft_doc::naming::face_names_at(state, &[tool_point]))
+    };
+    assert_eq!(target_after[0], target_name, "the target face away from the contact kept its name");
+    let feature = reply.get("feature").and_then(Value::as_u64).or_else(|| s.doc.features.last().map(|f| f.id)).expect("the join's feature");
+    assert!(
+        tool_after[0].starts_with(&format!("F{feature}:")),
+        "the tool cap at {tool_point:?} is named {:?}, not by feature {feature}",
+        tool_after[0]
+    );
+}
+
+#[test]
+fn front_triangle_press_pull_keeps_exact_history_and_names() {
+    let target = front_triangle();
+    let target_body = target.model.state().body("FrontTriangle").unwrap().body.clone();
+    let tool = front_triangle_tool(5.0);
+    let tool_body = tool.model.state().body("Body1").unwrap().body.clone();
+    let expected = volume(&target, "FrontTriangle") + volume(&tool, "Body1");
+
+    let mut s = front_triangle();
+    s.execute("solid.press_pull", &json!({"face": FRONT_TRIANGLE_FACE, "distance": 5.0})).unwrap();
+    assert_eq!(s.model.state().bodies.len(), 1, "press pull makes one body");
+    let (got, validity, shells, face_count, edge_count, history) = {
+        let body = s.model.state().body("FrontTriangle").unwrap();
+        let history = body.body.history().expect("the press pull kept its history").clone();
+        (volume(&s, "FrontTriangle"), body.body.validity().to_vec(), body.body.shell_count(), body.body.face_count(), body.body.edge_count(), history)
+    };
+    assert!(validity.is_empty(), "{validity:?}");
+    assert_eq!(shells, 1);
+    assert!((got - expected).abs() < expected * 1e-5, "press pull {got} mm³, expected the operands' sum {expected}");
+    assert_eq!(history.operands, 2);
+    history
+        .check_counts(
+            (face_count, edge_count),
+            &[(target_body.face_count(), target_body.edge_count()), (tool_body.face_count(), tool_body.edge_count())],
+        )
+        .unwrap();
+    assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap());
+}
