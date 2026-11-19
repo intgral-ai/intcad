@@ -1168,6 +1168,26 @@ pub trait CefSurfaceProducer {
     fn browser_id(&self) -> i32;
 
     fn close(&mut self) -> Result<(), WeldError>;
+
+    /// Whether the platform's native browser close has completed.
+    ///
+    /// [`BrowserCloseProgress::Complete`] means the matching `on_before_close`
+    /// callback returned, late creation/deferred owners were accounted for and
+    /// native browser references were released. A close *request* is never
+    /// completion. Defaults to unsupported so unrelated producers cannot be
+    /// mistaken for a finished close; Assistant platforms override it in W3.
+    fn close_progress(&mut self) -> Result<BrowserCloseProgress, WeldError> {
+        Err(WeldError::PlatformUnsupported("browser close completion"))
+    }
+}
+
+/// Native browser close completion, owned by the platform producer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrowserCloseProgress {
+    /// The browser or a pending/deferred creation is still owned.
+    Pending,
+    /// Matching completion observed and native browser references released.
+    Complete,
 }
 
 // ── Input event types ────────────────────────────────────────────────────────
