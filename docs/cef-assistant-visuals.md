@@ -4,6 +4,12 @@ Branch `probe/cef-welding-osr`. Scope: the Assistant's page as an egui texture �
 colour, transparency, typography and every built-in theme. The CAD renderer, the chat/MCP
 contract and the CEF single-implementation cutover are unchanged.
 
+**Current status: WIP, not visual acceptance.** The manual-review follow-up's first GPU run
+logged a native 463×1122 viewport at scale 1.25, but imported rasters changed from 463×1122 to
+370×898. A high-resolution CDP screenshot is therefore insufficient proof of accelerated OSR
+resolution. The viewport-protocol approach below remains under investigation; do not treat it
+as a verified fix. Font-role and backing-colour unit tests pass independently.
+
 ## 1. Root causes
 
 ### 1.1 The page was too dark (sRGB decoded twice)
