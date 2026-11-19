@@ -172,6 +172,21 @@ mod cef_backed {
         }
     }
 
+    /// A successfully initialized runtime that has not attached a browser yet.
+    ///
+    /// One opaque, non-Clone owner carried from the pre-document gate to the
+    /// later Assistant attachment; initialization is never repeated.
+    pub struct PreparedCefRuntime {
+        runtime: CefRuntime,
+    }
+
+    impl PreparedCefRuntime {
+        /// Consume the prepared owner for the ordinary runtime/browser lifecycle.
+        pub fn into_runtime(self) -> CefRuntime {
+            self.runtime
+        }
+    }
+
     /// CEF global runtime under `cef-runtime`.
     ///
     /// Process-global CEF state has exactly one live owner. Dropping it does
@@ -350,6 +365,64 @@ mod cef_backed {
                     1
                 },
             }
+        }
+
+        /// Initialise CEF for the pre-document Assistant gate through the pinned
+        /// `cef::sys::cef_initialize` boundary.
+        ///
+        /// On native false the complete init-call frame (raw argv backing, owned
+        /// settings strings, App reference and raw sys structs) is retained without
+        /// running CEF destructors. On success the frame drops normally while the
+        /// runtime is live.
+        ///
+        /// CONFORMANCE GATE, NOT PROVEN: the immediate sys callee/loader return and
+        /// each platform's teardown are not shown to make zero post-false CEF calls.
+        /// This seam therefore does not by itself authorize startup cancellation.
+        pub fn initialize_prepared(config: CefRuntimeConfig) -> Result<PreparedCefRuntime, WeldError> {
+            Self::initialize_prepared_inner(config).map(|prepared| PreparedCefRuntime { runtime: prepared })
+        }
+
+        fn initialize_prepared_inner(config: CefRuntimeConfig) -> Result<CefRuntime, WeldError> {
+            use cef::ImplApp as _;
+            use cef::rc::Rc as _;
+
+            validate_direct_entrypoint(config.sandbox)?;
+            maybe_load_library(&config.cef_path)?;
+            pin_cef_api_version();
+            let args = Args::new();
+            let mut app = crate::app::WeldApp::build(std::sync::Arc::new(config.command_line_switches.clone()));
+            let settings = build_settings(&config);
+            // Converted exactly as the generated wrapper does; the borrowed raw
+            // settings refer to the owned `settings` strings retained below.
+            let main_args: cef::sys::cef_main_args_t = args.as_main_args().clone().into();
+            let raw_settings: cef::sys::cef_settings_t = settings.clone().into();
+            let raw_app = {
+                // Same add-ref the generated wrapper performs; balanced on success by
+                // dropping the frame, retained on native false.
+                unsafe { app.add_ref() };
+                app.get_raw()
+            };
+            let frame = RetainedInitInputs { args, settings, app, main_args, raw_settings, raw_app };
+            let code = unsafe {
+                cef::sys::cef_initialize(
+                    &frame.main_args,
+                    &frame.raw_settings,
+                    frame.raw_app,
+                    sandbox_info_for(config.sandbox).cast(),
+                )
+            };
+            if code == 0 {
+                // Failure-only retention: no CEF destructor may run after native false.
+                std::mem::forget(frame);
+                return Err(WeldError::InitFailed { code });
+            }
+            drop(frame);
+            Ok(CefRuntime {
+                config,
+                leases: Arc::new(LeaseState::default()),
+                init_thread: std::thread::current().id(),
+                shut_down: false,
+            })
         }
 
         /// Initialise CEF. Call after [`Self::execute_process_from`] confirms
@@ -531,6 +604,18 @@ mod cef_backed {
         }
     }
 
+    /// Everything the direct sys call borrowed or owned. Retained whole on false.
+    /// Fields are not read individually: their Drop/retention is the contract.
+    #[allow(dead_code)]
+    struct RetainedInitInputs {
+        args: Args,
+        settings: cef::Settings,
+        app: cef::App,
+        main_args: cef::sys::cef_main_args_t,
+        raw_settings: cef::sys::cef_settings_t,
+        raw_app: *mut cef::sys::cef_app_t,
+    }
+
     fn sandbox_info_for(sandbox: CefSandboxMode) -> *mut u8 {
         match sandbox {
             CefSandboxMode::UnsandboxedTrustedContent | CefSandboxMode::Sandboxed => {
@@ -682,7 +767,7 @@ mod cef_backed {
 }
 
 #[cfg(feature = "cef-runtime")]
-pub use cef_backed::{CefRuntime, RuntimeLease};
+pub use cef_backed::{CefRuntime, PreparedCefRuntime, RuntimeLease};
 #[cfg(all(feature = "cef-runtime", target_os = "windows"))]
 pub use cef_backed::CefWindowsSandboxContext;
 
@@ -706,6 +791,14 @@ mod stub {
     /// No live native owner exists without `cef-runtime`; the claim is inert.
     pub struct RuntimeLease;
 
+    pub struct PreparedCefRuntime;
+
+    impl PreparedCefRuntime {
+        pub fn into_runtime(self) -> CefRuntime {
+            CefRuntime { config: CefRuntimeConfig::new(".", CefSandboxMode::UnsandboxedTrustedContent) }
+        }
+    }
+
     impl CefRuntime {
         pub fn lease(&self) -> RuntimeLease {
             RuntimeLease
@@ -713,6 +806,10 @@ mod stub {
 
         pub fn shutdown(self) -> Result<(), (Self, WeldError)> {
             Err((self, WeldError::FeatureRequired("cef-runtime")))
+        }
+
+        pub fn initialize_prepared(_config: CefRuntimeConfig) -> Result<PreparedCefRuntime, WeldError> {
+            Err(WeldError::FeatureRequired("cef-runtime"))
         }
 
         // SolidCraft: identity querying is unavailable without native CEF.
@@ -744,4 +841,4 @@ mod stub {
 }
 
 #[cfg(not(feature = "cef-runtime"))]
-pub use stub::{CefRuntime, RuntimeLease};
+pub use stub::{CefRuntime, PreparedCefRuntime, RuntimeLease};
