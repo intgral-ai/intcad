@@ -9,8 +9,9 @@ snapshot, run 44472128741 attempt 2 at the old head had `Build full-baseline arc
 (48m22), `Native Linux selected regression gate` failure with exit 143 during `cargo nextest list`
 (no test receipt), Action matrix shards 1 and 15 success, other shards/properties/determinism in
 flight, and no aggregate. This package is a draft, not a completion claim: it records what is
-verified, what is local, what is historic, and what remains open. Sources: `gh pr view 185`,
-`/tmp/opencode/int1454-ci-current/SNAPSHOT-2026-11-19T0849Z.md`,
+verified, what is local, what is historic, and what remains open. Owner authorization for the
+follow-on validation-lock/Union design is recorded in §3b; it is design approval only. Sources:
+`gh pr view 185`, `/tmp/opencode/int1454-ci-current/SNAPSHOT-2026-11-19T0849Z.md`,
 `/tmp/opencode/int1454-engine-allowances/FIX-REPORT.md`, `git rev-parse` in the integration
 worktree, 2026-11-19.
 
@@ -130,6 +131,57 @@ approved deferral; CD-6 is a separate owner decision.
 | CD-5: plugin runtime Blocked, not "Not Applicable" | runtime and plugin **command** surface removed: no `plugin.*`, `file.import`, `model.mesh`; no `craft-plugin`/`wasmtime`/`cranelift` in manifests or lock. A metadata-only `crates/ui-egui/src/plugins.rs` page remains. | `Cargo.lock`, engine command registry, §7 |
 | CD-6: no brand-era UI kit/look/theme/assets | No brand-era `ui-kit`/`look`/`theme` crates or brand assets were found. The `ui-egui` diff is not a provenance proof; the ledger's licence-uncertain chrome files remain for owner/legal review. The only moved assets claimed are the Liberation Sans font (OFL) and the STEP/FreeCAD fixtures (attribution rows). | `git diff v0.44.1 -- crates/ui-egui` (scope only), ledger §4 and §7, §2b |
 | CD-7: vendored solidcore closure, no rev pins | `solidcore/` byte-identical to `v0.44.1:solidcore`; `crates/step` deleted; `deny.toml` `[sources]` has no git sources | `git diff v0.44.1 -- solidcore` is empty and both trees hash to `8b5c01445619305dcfc5072db3fe76b8cfea67be`; `deny.toml` denies unknown git sources |
+
+## 3b. Owner authorization (2026-11-19) — design only
+
+**Scope.** The owner approved the two designs below on 2026-11-19. This is **design approval
+only**: it is **not** code complete, not reviewed, not CI green and not merge approval.
+
+### (a) Validation lock and bounded UI cancellation
+
+Approved: a stable cross-process lock for validating terminal transactions, plus bounded
+background UI cancellation. The design must preserve command schemas, permission checks and
+terminal precedence. Tests must cover concurrent processes, bounded cancellation, and unchanged
+schema, permission and precedence behaviour.
+
+### (b) Temporary isolated Union swapped-operand retry
+
+Approved: a temporary, isolated Union adapter that retries the original path first and falls back
+only for a specific confirmed internal error. The vendored solidcore tree is **not** changed.
+Strict geometry, naming and history behaviour must be proven, or the work stops.
+
+### Removal lifecycle
+
+On the next upstream upgrade, test the upstream original path with the fallback disabled:
+
+- fully fixed: delete the adaptation and keep the product regression tests;
+- not fully fixed: revalidate it; do not blindly carry it forward;
+- changed error, algorithm or naming: suspend the adapter.
+
+### Provenance and task ownership
+
+- **Provenance:** owner conversation, 2026-11-19. Existing design reports/controller transcript
+  have uncertain provenance and are not treated as reviewed evidence; record them under this
+  owner-conversation provenance only.
+- **Sol:** implementation in an independent worktree, plus validation.
+- **GOAT:** implementation of the Union fallback.
+- **Heavy local builds:** paused under the disk budget; this authorization does not start one.
+- **Kernel source:** remains CD-7 frozen at vendored solidcore tree
+  `8b5c01445619305dcfc5072db3fe76b8cfea67be`; this authorization does not change it.
+
+### Actionable gates (same head, final tests)
+
+1. Name one head SHA. Run every gate and final test at that same SHA; do not combine results from
+   different heads.
+2. Lock gate: concurrent-process test, stable acquisition, bounded cancellation, and unchanged
+   schemas, permissions and terminal precedence.
+3. Union gate: original path first; fallback only on the specific confirmed internal error;
+   geometry, naming and history proofs; fallback-disabled run; no solidcore change. Stop if the
+   strict proofs fail.
+4. Lifecycle gate: simulate the next upgrade with the fallback disabled and record the delete,
+   revalidate or suspend disposition.
+5. Record command, head, result and evidence for each gate. No CI-green or merge claim until a
+   pinned CI run and review exist.
 
 ## 4. Gate evidence: local fixed checks, historic logs, commands (not final-SHA evidence)
 
@@ -255,7 +307,8 @@ compatibility decision.
 No sign-off yet. Outstanding:
 
 1. Land #185 by the chosen method; record the landing commit and final develop SHA.
-2. Green CI at that SHA. At audit, CI `44472128741` was still in progress with two checks pending.
+2. Green CI at that SHA. At the 08:49Z snapshot the native gate had no test receipt and the
+   aggregate did not exist; no final green run.
 3. Complete independent task review and push of local `61835bfaf` (parent `099e4360c`), then obtain
    a pinned-CI result for the seven-line deletion. The remaining four engine allowances still need
    the current gate; do not treat the local 7/7 as a full engine pass.
@@ -268,6 +321,8 @@ No sign-off yet. Outstanding:
    to `099e4360c`, and no whole-head approval exists.
 8. Obtain owner disposition for every Blocked row and review the UI lists in §7.
 9. Refresh this package with the final SHA, commands, reports and hashes.
+10. Complete the owner-authorized validation-lock/Union work and run the §3b same-head gates;
+    design approval is not code, review, CI or merge approval.
 
 This remains a draft; none of the above is a completion claim.
 
@@ -283,6 +338,9 @@ This remains a draft; none of the above is a completion claim.
 - Engine allowances: `/tmp/opencode/int1454-engine-allowances/FIX-REPORT.md`, `SUMMARY.md`,
   `results-all.tsv`, `grader-after-commit.log` and `post-commit.txt` (local `61835bfaf`; local
   compiler 1.98.1 from `target/ci/.rustc_info.json`; no pinned-CI pass).
+- Owner authorization: owner conversation, 2026-11-19; design-only. Existing design
+  reports/controller transcript have uncertain provenance and are recorded under that
+  conversation, not as reviewed evidence.
 - `python3 docs/upstream-sync/int1454/tools/coverage.py` from the acceptance worktree.
 - Historic local logs: `/tmp/opencode/final-kernel-tests.log`, `/tmp/opencode/final4.log`,
   `/tmp/opencode/final-io-tests.log` and `/tmp/opencode/engine-test6.log` (2026-11-18; not
