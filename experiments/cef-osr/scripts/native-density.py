@@ -541,6 +541,54 @@ def validate_manifest(manifest, base_dir):
             continue
         problems = [problem for problem in (_manifest_artifact_problem(entry, base) for entry in entries) if problem]
         checks.append(_check(label, "FAIL" if problems else "PASS", "; ".join(problems[:5]) or f"{len(entries)} whole file(s) unchanged"))
+
+    # Inventory roles: an empty or anonymous list is never a passing artifact
+    # bundle; the app and the supplied CEF root are mandatory, exactly once.
+    if not isinstance(artifacts, list) or not artifacts:
+        checks.append(_check("artifact_roles", "FAIL", "empty artifact inventory"))
+    else:
+        roles = [entry.get("role") for entry in artifacts if isinstance(entry, dict)]
+        problems = []
+        for role in ("app", "supplied-libcef"):
+            count = roles.count(role)
+            if count == 0:
+                problems.append(f"missing mandatory role {role}")
+            elif count > 1:
+                problems.append(f"duplicate mandatory role {role}")
+        checks.append(_check("artifact_roles", "FAIL" if problems else "PASS", "; ".join(problems[:4]) or "app and supplied-libcef present exactly once"))
+
+    # Resource origin: every resource must stay inside the declared CEF root (or
+    # the manifest's own directory) and the inventory cannot be empty.
+    if not isinstance(resources, list) or not resources:
+        checks.append(_check("resource_inventory", "FAIL", "missing mandatory CEF resources"))
+    else:
+        root = Path(manifest.get("cef_root", base)).resolve()
+        if not root.is_absolute():
+            root = (base / root).resolve()
+        escapes = []
+        for entry in resources:
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                escapes.append("resource entry has no path")
+                continue
+            path = Path(entry["path"])
+            resolved = path.resolve() if path.is_absolute() else (base / path).resolve()
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                escapes.append(f"resource escapes its origin: {entry['path']}")
+            if entry.get("origin") not in (None, "cef-root"):
+                escapes.append(f"unknown resource origin for {entry['path']}")
+        checks.append(_check("resource_origin", "FAIL" if escapes else "PASS", "; ".join(escapes[:4]) or "resources stay under their declared CEF root"))
+
+    # A self-consistent manifest is not authenticated origin. Without an explicit
+    # authenticated receipt the origin remains BLOCKED, never PASS.
+    origin = manifest.get("origin")
+    if not isinstance(origin, dict) or origin.get("authenticated") is not True:
+        checks.append(_check("authenticated_origin", "BLOCKED", "no authenticated artifact origin receipt"))
+    elif not _bounded_string(origin.get("source"), 160) or not isinstance(origin.get("sha256"), str) or len(origin["sha256"]) != 64:
+        checks.append(_check("authenticated_origin", "FAIL", "authenticated origin receipt is malformed"))
+    else:
+        checks.append(_check("authenticated_origin", "PASS", f"origin {origin['source']} recorded"))
     return _report(checks)
 
 
@@ -603,6 +651,15 @@ def capture_bundle(app, cef_root, pid):
         try:
             artifacts.append({"path": str(app.resolve()), "sha256": _sha256_file(app), "size": app.stat().st_size, "role": "app"})
             checks.append(_check("app_identity", "PASS", "app whole-file hash recorded"))
+            try:
+                running = Path(f"/proc/{pid}/exe").resolve(strict=True)
+            except OSError as error:
+                checks.append(_check("app_pid_identity", "FAIL", f"cannot read the running executable: {error}"))
+            else:
+                if running != app.resolve():
+                    checks.append(_check("app_pid_identity", "FAIL", f"supplied app {app} is not the running executable {running}"))
+                else:
+                    checks.append(_check("app_pid_identity", "PASS", f"supplied app is /proc/{pid}/exe"))
         except OSError as error:
             checks.append(_check("app_identity", "FAIL", f"cannot hash app: {error}"))
     else:
@@ -775,20 +832,41 @@ def _test_incomplete_theme_set_fails():
         _assert_status(validate_manifest(manifest, base), "FAIL")
 
 
+def _complete_manifest(base, artifacts):
+    app = base / "app.bin"
+    app.write_bytes(b"app binary")
+    resources_dir = base / "cef"
+    resources_dir.mkdir(exist_ok=True)
+    resource = resources_dir / "libcef.so"
+    resource.write_bytes(b"cef resource")
+    artifacts.append({"path": "app.bin", "sha256": _sha256_file(app), "size": app.stat().st_size, "role": "app"})
+    artifacts.append({"path": "cef/libcef.so", "sha256": _sha256_file(resource), "size": resource.stat().st_size, "role": "supplied-libcef"})
+    return {
+        "themes": theme_ids_from_source(),
+        "artifacts": artifacts,
+        "resources": [{
+            "path": "cef/libcef.so",
+            "sha256": _sha256_file(resource),
+            "size": resource.stat().st_size,
+            "role": "cef-resource",
+            "origin": "cef-root",
+        }],
+        "origin": {"authenticated": True, "source": "stock-cef-fixture", "sha256": "0" * 64},
+    }
+
+
 def _test_altered_whole_file_hash_with_same_text_hash_fails():
     with tempfile.TemporaryDirectory(prefix="native-density-hash-") as tmp:
         base = Path(tmp)
         artifact = base / "bundle.bin"
         artifact.write_text("alpha\n", encoding="utf-8")
-        manifest = {
-            "themes": theme_ids_from_source(),
-            "artifacts": [{
-                "path": "bundle.bin",
-                "sha256": _sha256_file(artifact),
-                "size": artifact.stat().st_size,
-                "text_sha256": _normalised_text_sha256(artifact),
-            }],
-        }
+        manifest = _complete_manifest(base, [{
+            "path": "bundle.bin",
+            "sha256": _sha256_file(artifact),
+            "size": artifact.stat().st_size,
+            "text_sha256": _normalised_text_sha256(artifact),
+            "role": "bundle",
+        }])
         if validate_manifest(manifest, base)["status"] != "PASS":
             raise AssertionError("unchanged manifest should pass")
         artifact.write_text("alpha ", encoding="utf-8")
@@ -809,6 +887,70 @@ def _test_mismatched_resources_fail():
         resource.write_bytes(b"other")
         _assert_status(validate_manifest(manifest, base), "FAIL")
 
+
+
+def _test_empty_inventory_and_missing_roles_never_pass():
+    with tempfile.TemporaryDirectory(prefix="native-density-inventory-") as tmp:
+        base = Path(tmp)
+        manifest = _complete_manifest(base, [])
+        manifest["artifacts"] = []
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+        manifest = _complete_manifest(base, [])
+        manifest["artifacts"] = [entry for entry in manifest["artifacts"] if entry.get("role") != "app"]
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+        manifest = _complete_manifest(base, [])
+        manifest["artifacts"].append(dict(manifest["artifacts"][0]))
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+
+
+def _test_resource_escape_or_origin_mismatch_fails():
+    with tempfile.TemporaryDirectory(prefix="native-density-escape-") as tmp:
+        base = Path(tmp)
+        outside = base.parent / f"{base.name}-outside-libcef.so"
+        outside.write_bytes(b"outside")
+        manifest = _complete_manifest(base, [])
+        manifest["resources"][0]["path"] = str(outside)
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+        manifest = _complete_manifest(base, [])
+        manifest["resources"][0]["origin"] = "host"
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+        outside.unlink(missing_ok=True)
+
+
+def _test_missing_authenticated_origin_is_blocked():
+    with tempfile.TemporaryDirectory(prefix="native-density-origin-") as tmp:
+        base = Path(tmp)
+        manifest = _complete_manifest(base, [])
+        manifest.pop("origin")
+        report = validate_manifest(manifest, base)
+        _assert_status(report, "BLOCKED")
+        if not any(check["name"] == "authenticated_origin" and check["status"] == "BLOCKED" for check in report["checks"]):
+            raise AssertionError("missing origin must BLOCK")
+
+
+def _test_supplied_app_must_match_pid_executable():
+    with tempfile.TemporaryDirectory(prefix="native-density-pid-") as tmp:
+        base = Path(tmp)
+        cef_root = base / "cef"
+        cef_root.mkdir()
+        (cef_root / "libcef.so").write_bytes(b"not really cef")
+        other = base / "other-app"
+        other.write_bytes(b"not the running executable")
+        report = capture_bundle(other, cef_root, os.getpid())
+        if not any(check["name"] == "app_pid_identity" and check["status"] == "FAIL" for check in report["checks"]):
+            raise AssertionError("a supplied app that is not /proc/pid/exe must FAIL")
+        real = Path("/proc/self/exe").resolve()
+        report = capture_bundle(real, cef_root, os.getpid())
+        if not any(check["name"] == "app_pid_identity" and check["status"] == "PASS" for check in report["checks"]):
+            raise AssertionError("the real running executable must match")
+
+
+def _test_missing_pid_fails_instead_of_passing():
+    if _proc_stat(2**22) is not None:
+        return
+    report = capture_bundle(Path("/bin/true"), Path("/nonexistent-cef"), 2**22)
+    if not any(check["name"] == "process_starttime" and check["status"] == "FAIL" for check in report["checks"]):
+        raise AssertionError("a missing process must FAIL identity")
 
 def _test_aba_same_geometry_reports_limitation_not_pass():
     records = _fixture_records((1.25, 1.25, 1.25), lifetimes=[10, 11, 10])
@@ -1070,11 +1212,8 @@ def _test_offline_cli_round_trip():
             f"solidcraft: assistant (CEF): {record['tag']} {json.dumps(record['data'], sort_keys=True)}\n"
             for record in records
         ), encoding="utf-8")
-        manifest = {
-            "expected_scales": list(DEFAULT_SCALES),
-            "themes": theme_ids_from_source(),
-            "artifacts": [{"path": "app.log", "sha256": _sha256_file(log), "size": log.stat().st_size}],
-        }
+        manifest = _complete_manifest(base, [{"path": "app.log", "sha256": _sha256_file(log), "size": log.stat().st_size, "role": "app-log"}])
+        manifest["expected_scales"] = list(DEFAULT_SCALES)
         manifest_path = base / "manifest.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         report_path = base / "report.json"
@@ -1125,6 +1264,11 @@ def _run_self_tests():
         _test_missing_accelerated_receipt_is_not_pass,
         _test_positive_accelerated_receipt_is_gated_on_native_frame_kind,
         _test_density_physical_tolerance,
+        _test_empty_inventory_and_missing_roles_never_pass,
+        _test_resource_escape_or_origin_mismatch_fails,
+        _test_missing_authenticated_origin_is_blocked,
+        _test_supplied_app_must_match_pid_executable,
+        _test_missing_pid_fails_instead_of_passing,
         _test_requested_dip_cannot_be_reconstructed_from_capture,
         _test_missing_effective_native_scale_blocks_exact_density,
         _test_same_lifetime_placement_aba_is_detected,

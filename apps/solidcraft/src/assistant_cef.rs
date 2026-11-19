@@ -2355,7 +2355,7 @@ const SCOPE_PROBE_JS: &str = r#"
   // own ceiling, and an over-budget message becomes a bounded `scope_oversize` receipt
   // instead of being cut into unparseable JSON.
   const SCOPE_MAX_TEXT = 480;
-  const SCOPE_BUDGET = { rects: 380, fonts: 160, tokens: 340, roles: 300, swatches: 460 };
+  const SCOPE_BUDGET = { rects: 380, rects_extra: 260, fonts: 160, tokens: 340, roles: 300, swatches: 460 };
   const send = (value, limit) => {
     const text = 'SCOPE ' + JSON.stringify(value);
     const cap = limit || SCOPE_MAX_TEXT;
@@ -2443,6 +2443,11 @@ const SCOPE_PROBE_JS: &str = r#"
     send({ action: 'rects', theme, dpr: devicePixelRatio, inner: [innerWidth, innerHeight],
       root: rect(root), open: rect(document.getElementById('__cef_scope_open')),
       target: rect(target), select: rect(select), ime: rect(input) }, SCOPE_BUDGET.rects);
+    // Separate bounded action: the extra consumer targets do not inflate the main rect budget.
+    send({ action: 'rects_extra',
+      dialog: rect(document.getElementById('__cef_scope_dialog')),
+      devtools: rect(document.getElementById('__cef_scope_devtools')),
+      fullscreen: rect(document.getElementById('__cef_scope_fullscreen')) }, SCOPE_BUDGET.rects_extra);
     send({ action: 'fonts', theme,
       root: parseFloat(computed(document.documentElement).fontSize),
       prose: prose ? parseFloat(computed(prose).fontSize) : null,

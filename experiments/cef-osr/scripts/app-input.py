@@ -23,9 +23,41 @@ from pathlib import Path
 class Control:
     def __init__(self, port, token):
         sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        self._init(sock, token)
+
+    @classmethod
+    def from_socket(cls, sock, token):
+        control = cls.__new__(cls)
+        control._init(sock, token)
+        return control
+
+    def _init(self, sock, token):
         sock.settimeout(60)
+        self.sock = sock
         self.file = sock.makefile("rw", encoding="utf-8", newline="\n")
         self.token, self.n = token, 0
+
+    def close(self):
+        """Release the stream and socket this control owns; safe to repeat."""
+        file, self.file = getattr(self, "file", None), None
+        sock, self.sock = getattr(self, "sock", None), None
+        if file is not None:
+            try:
+                file.close()
+            except OSError:
+                pass
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exception):
+        self.close()
+        return False
 
     def call(self, method, params=None):
         self.n += 1
@@ -38,6 +70,80 @@ class Control:
         if not reply:
             raise SystemExit("the control channel closed")
         return json.loads(reply)
+
+
+# Rectangles the app's fixed hook must expose for this script's consumer.
+CONSUMER_RECTS = ("open", "target", "dialog", "devtools", "fullscreen", "select")
+
+
+def scope_schema_problem(value):
+    """Why the merged rects/rects_extra receipts cannot feed this consumer."""
+    if not isinstance(value, dict) or value.get("action") != "rects":
+        return "not a rects receipt"
+    missing = [name for name in CONSUMER_RECTS if not isinstance(value.get(name), dict)]
+    return "missing consumer rectangle(s): " + ", ".join(missing) if missing else None
+
+
+def consumer_rects(text, action=None):
+    """The main rects receipt merged with the separately bounded extra targets."""
+    base = latest_scope(text, "rects")
+    if not isinstance(base, dict):
+        return base
+    extra = latest_scope(text, "rects_extra")
+    if isinstance(extra, dict):
+        base = dict(base)
+        for name in ("dialog", "devtools", "fullscreen"):
+            if isinstance(extra.get(name), dict):
+                base[name] = extra[name]
+    return base
+
+
+def _aggregate_status(statuses):
+    rank = {"PASS": 0, "NOT_RUN": 1, "BLOCKED": 2, "FAIL": 3}
+    if not statuses:
+        return "NOT_RUN"
+    worst = max(rank.get(status, 4) for status in statuses)
+    return {0: "PASS", 1: "NOT_RUN", 2: "BLOCKED", 3: "FAIL"}.get(worst, "FAIL")
+
+
+def result_report(results):
+    """Turn live checks into bounded statuses. A present wrong value outranks a
+    missing observation; missing checks never become PASS."""
+    tests = {}
+
+    def entry(name, status, detail):
+        tests[name] = {"status": status, "detail": str(detail)[:160]}
+
+    if "typed_copied_out" not in results:
+        entry("typed_clipboard_round_trip", "NOT_RUN", "typed clipboard round-trip was not observed")
+    else:
+        typed = results["typed_copied_out"]
+        entry("typed_clipboard_round_trip", "PASS" if typed == "clip-abc" else "FAIL", repr(typed)[:80])
+    if "copied_out" not in results:
+        entry("copied_out_unicode", "NOT_RUN", "Unicode clipboard round-trip was not observed")
+    else:
+        copied = results["copied_out"]
+        entry("copied_out_unicode", "PASS" if copied == "你好，世界" else "FAIL", repr(copied)[:80])
+    if "popup_logged" not in results:
+        entry("popup_surface_logged", "NOT_RUN", "popup surface was not observed")
+    else:
+        popup = results["popup_logged"]
+        entry("popup_surface_logged", "PASS" if popup is True else "FAIL", repr(popup)[:80])
+    scope = results.get("scope_probe") or {}
+    entry("scope_probe", scope.get("status", "NOT_RUN"), scope.get("detail", "scope probe not run"))
+    origin = results.get("origin_change") or {}
+    entry("origin_change", origin.get("status", "NOT_RUN"), origin.get("detail", "window move not exercised"))
+    process = results.get("process_scope") or {}
+    entry("process_scope", process.get("status", "NOT_RUN"), process.get("detail", "no pid supplied"))
+    for name, value in tests.items():
+        if value["status"] not in ("PASS", "FAIL", "BLOCKED", "NOT_RUN"):
+            value["status"] = "FAIL"
+    status = _aggregate_status([value["status"] for value in tests.values()])
+    return {"status": status, "checks": tests}
+
+
+def result_exit(report):
+    return 0 if report.get("status") == "PASS" else (1 if report.get("status") == "FAIL" else 2)
 
 
 def xdo(*args):
@@ -122,6 +228,8 @@ def process_tree(root_pid):
 
 
 def main():
+    if "--self-test" in sys.argv:
+        return _run_self_tests()
     port = int(sys.argv[1])
     log_path = Path(sys.argv[sys.argv.index("--log") + 1]) if "--log" in sys.argv else None
     scope_requested = "--scope" in sys.argv
@@ -229,7 +337,7 @@ def main():
         scope_results["status"] = "BLOCKED"
         scope_results["detail"] = "--scope needs --log to read the app's SCOPE/CEF_BROWSER receipts"
     else:
-        rects_scope = latest_scope(log_text(log_path), "rects")
+        rects_scope = consumer_rects(log_text(log_path))
         if not isinstance(rects_scope, dict):
             oversize = "rects" in oversize_actions(log_text(log_path))
             scope_results["status"] = "FAIL" if oversize else "BLOCKED"
@@ -238,6 +346,9 @@ def main():
                 if oversize
                 else "fixed scope probe did not report bounded DOM rects"
             )
+        elif (consumer_problem := scope_schema_problem(rects_scope)) is not None:
+            scope_results["status"] = "FAIL"
+            scope_results["detail"] = consumer_problem
         else:
             def click_scope(name):
                 box = rects_scope.get(name)
@@ -356,15 +467,93 @@ def main():
         }
     else:
         results["process_scope"] = {"status": "NOT_RUN", "detail": "no --pid supplied; CEF process scoping not asserted"}
+    report = result_report(results)
+    results["report"] = report
     print(json.dumps(results, ensure_ascii=False))
-    failed = [name for name, value in (results.get("scope_probe") or {}).get("results", {}).items() if not value]
-    if (results.get("scope_probe") or {}).get("status") in ("FAIL", "BLOCKED"):
-        failed.append("scope_probe")
-    if (results.get("origin_change") or {}).get("status") == "FAIL":
-        failed.append("origin_change")
-    if (results.get("process_scope") or {}).get("status") == "FAIL":
-        failed.append("process_scope")
-    return 1 if failed else 0
+    return result_exit(report)
+
+
+def _run_self_tests():
+    tests = []
+
+    def check(function):
+        tests.append(function)
+
+    def passing():
+        results = {
+            "typed_copied_out": "clip-abc",
+            "copied_out": "你好，世界",
+            "popup_logged": True,
+            "scope_probe": {"status": "PASS", "detail": "ok"},
+            "origin_change": {"status": "PASS", "detail": "moved"},
+            "process_scope": {"status": "PASS", "detail": "one renderer"},
+        }
+        report = result_report(results)
+        if report["status"] != "PASS" or result_exit(report) != 0:
+            raise AssertionError(f"complete results must PASS: {report}")
+
+    def missing_is_not_pass():
+        report = result_report({})
+        if report["status"] != "NOT_RUN" or result_exit(report) != 2:
+            raise AssertionError(f"missing checks must be NOT_RUN/2: {report}")
+
+    def wrong_outranks_missing():
+        report = result_report({
+            "typed_copied_out": "",
+            "scope_probe": {"status": "NOT_RUN", "detail": "not run"},
+            "origin_change": {"status": "NOT_RUN", "detail": "not run"},
+            "process_scope": {"status": "NOT_RUN", "detail": "not run"},
+        })
+        if report["status"] != "FAIL" or result_exit(report) != 1:
+            raise AssertionError(f"a present wrong value must FAIL over NOT_RUN: {report}")
+
+    def socket_closes_on_exception():
+        left, right = socket.socketpair()
+        control = Control.from_socket(left, "token")
+        try:
+            with control:
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        if control.file is not None or control.sock is not None or left.fileno() != -1:
+            raise AssertionError("the control socket/file were not released on exception")
+        control.close()
+        right.close()
+
+    def hook_matches_consumer():
+        source = (Path(__file__).resolve().parents[3] / "apps/solidcraft/src/assistant_cef.rs").read_text(encoding="utf-8")
+        start = source.find("SCOPE_PROBE_JS")
+        probe = source[start:start + 20000]
+        for needle in ("action: 'rects'", "action: 'rects_extra'", "__cef_scope_dialog", "__cef_scope_devtools", "__cef_scope_fullscreen"):
+            if needle not in probe:
+                raise AssertionError(f"the fixed hook no longer emits {needle}")
+        if "rects_extra" not in probe:
+            raise AssertionError("the extra consumer targets are not separately bounded")
+        merged = consumer_rects("SCOPE {\"action\":\"rects\",\"open\":{},\"target\":{},\"select\":{}} \n"
+                               "SCOPE {\"action\":\"rects_extra\",\"dialog\":{},\"devtools\":{},\"fullscreen\":{}}")
+        problem = scope_schema_problem(merged)
+        if problem is not None:
+            raise AssertionError(f"the merged consumer rectangles are incomplete: {problem}")
+
+    def no_global_process_actions():
+        source = Path(__file__).read_text(encoding="utf-8").split("def _run_self_tests():")[0]
+        for needle in ("os.kill", "killpg", "pkill", "killall", ".terminate()"):
+            if needle in source:
+                raise AssertionError(f"the script must not use {needle}")
+
+    for test in (passing, missing_is_not_pass, wrong_outranks_missing, socket_closes_on_exception, hook_matches_consumer, no_global_process_actions):
+        check(test)
+    failures = 0
+    for test in tests:
+        try:
+            test()
+        except Exception as error:
+            failures += 1
+            print(f"FAIL {test.__name__}: {type(error).__name__}: {error}")
+        else:
+            print(f"PASS {test.__name__}")
+    print(f"self-test: {len(tests) - failures}/{len(tests)} passed, {failures} failed")
+    return 0 if failures == 0 else 1
 
 
 if __name__ == "__main__":

@@ -83,7 +83,7 @@
   // is fixture-only, while the fixed analytic patches below are test
   // instrumentation shared with the app hook.
   const SCOPE_MAX_TEXT = 480;
-  const SCOPE_BUDGET = { rects: 380, fonts: 160, tokens: 340, roles: 300, swatches: 460 };
+  const SCOPE_BUDGET = { rects: 380, rects_extra: 260, fonts: 160, tokens: 340, roles: 300, swatches: 460 };
   const scope = (value, limit) => {
     const text = 'SCOPE ' + JSON.stringify(value);
     const cap = limit || SCOPE_MAX_TEXT;
@@ -128,6 +128,12 @@
       target: scopeRect('__cef_scope_target'),
       select: scopeRect('__cef_scope_select'), ime: scopeRect('__cef_scope_ime')
     }, SCOPE_BUDGET.rects);
+    scope({
+      action: 'rects_extra', theme,
+      dialog: scopeRect('__cef_scope_dialog'),
+      devtools: scopeRect('__cef_scope_devtools'),
+      fullscreen: scopeRect('__cef_scope_fullscreen')
+    }, SCOPE_BUDGET.rects_extra);
     scope({
       action: 'fonts', theme,
       root: parseFloat(html.fontSize),

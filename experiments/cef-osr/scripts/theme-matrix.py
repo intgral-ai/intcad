@@ -284,7 +284,7 @@ def page_fonts_check(messages):
     return ("PASS", "root 12, real prose/textarea/label 12.5")
 
 
-SCOPE_ACTIONS = ("rects", "fonts", "tokens", "roles", "swatches")
+SCOPE_ACTIONS = ("rects", "rects_extra", "fonts", "tokens", "roles", "swatches")
 
 
 def parse_scope_lines(path):
