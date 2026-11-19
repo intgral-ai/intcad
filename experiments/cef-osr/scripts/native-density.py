@@ -967,6 +967,17 @@ def _test_supplied_app_must_match_pid_executable():
             raise AssertionError("the real running executable must match")
 
 
+def _test_task_identity_is_explicit():
+    if task_identity_problem("", "/tmp", "linux") is None:
+        raise AssertionError("an empty task name must be refused")
+    if task_identity_problem("t", "/definitely/missing-source", "linux") is None:
+        raise AssertionError("a missing source path must be refused")
+    if task_identity_problem("t", tempfile.gettempdir(), "solaris") is None:
+        raise AssertionError("an unknown platform must be refused")
+    if task_identity_problem("t", tempfile.gettempdir(), "linux") is not None:
+        raise AssertionError("an owned task/source/platform must be accepted")
+
+
 def _test_pid_reuse_wrong_generation_and_helper_mismatch_fail():
     before = {"pid": 4242, "ppid": 7, "starttime": 100}
     if identity_problem(before, before) is not None:
@@ -1312,6 +1323,7 @@ def _run_self_tests():
         _test_supplied_app_must_match_pid_executable,
         _test_missing_pid_fails_instead_of_passing,
         _test_pid_reuse_wrong_generation_and_helper_mismatch_fail,
+        _test_task_identity_is_explicit,
         _test_requested_dip_cannot_be_reconstructed_from_capture,
         _test_missing_effective_native_scale_blocks_exact_density,
         _test_same_lifetime_placement_aba_is_detected,
@@ -1452,7 +1464,20 @@ def _offline(check_log, manifest_path, out):
     return _exit_code(report)
 
 
-def _live(app, cef_root, out, task):
+PLATFORMS = ("linux", "windows", "macos")
+
+
+def task_identity_problem(task, source, platform):
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", str(task)):
+        return "task name must be 1-40 safe characters"
+    if not isinstance(source, str) or not source or not Path(source).is_dir():
+        return "source path is not an existing directory"
+    if platform not in PLATFORMS:
+        return f"platform must be one of {PLATFORMS}"
+    return None
+
+
+def _live(app, cef_root, out, task, source, platform):
     import subprocess
 
     checks, artifacts, limitations = [], [], [
@@ -1601,7 +1626,7 @@ def _live(app, cef_root, out, task):
     else:
         checks.append(_check("ui_scale_matrix", "FAIL" if scale_problems else "PASS", f"{len(scale_records) - len(scale_problems)}/{len(scale_records)} requested UI scales measured"))
     report = _report(checks, artifacts=artifacts, limitations=limitations)
-    report["task"] = str(task)
+    report["task"] = {"task": str(task), "source": source, "platform": platform}
     report["ui_scale_requests"] = scale_records
     written = _write_report(report, out)
     print(f"native-density live: status={report['status']} checks={len(report['checks'])} report={written}")
@@ -1618,6 +1643,8 @@ def main(argv=None):
     parser.add_argument("--cef-root")
     parser.add_argument("--out")
     parser.add_argument("--task")
+    parser.add_argument("--source")
+    parser.add_argument("--platform")
     args = parser.parse_args(argv)
     if args.self_test:
         return _run_self_tests()
@@ -1626,9 +1653,12 @@ def main(argv=None):
             parser.error("--check-log requires --manifest and --out")
         return _offline(args.check_log, args.manifest, args.out)
     if args.app:
-        if not args.cef_root or not args.out or not args.task:
-            parser.error("--app requires --cef-root, --out and --task")
-        return _live(args.app, args.cef_root, args.out, args.task)
+        if not args.cef_root or not args.out or not args.task or not args.source or not args.platform:
+            parser.error("--app requires --cef-root, --out, --task, --source and --platform")
+        identity = task_identity_problem(args.task, args.source, args.platform)
+        if identity is not None:
+            parser.error(identity)
+        return _live(args.app, args.cef_root, args.out, args.task, args.source, args.platform)
     parser.error("no mode selected")
     return 2
 

@@ -466,6 +466,20 @@ def page_swatches_check(messages, png, web, ppp):
 
 
 
+PLATFORMS = ("linux", "windows", "macos")
+
+
+def task_identity_problem(task, source, platform):
+    """Explicit task identity for an owned run; no discovered defaults."""
+    if not isinstance(task, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", task):
+        return "task name must be 1-40 safe characters"
+    if not isinstance(source, str) or not source or not Path(source).is_dir():
+        return "source path is not an existing directory"
+    if platform not in PLATFORMS:
+        return f"platform must be one of {PLATFORMS}"
+    return None
+
+
 def theme_report_status(checks):
     rank = {"PASS": 0, "NOT_RUN": 1, "BLOCKED": 2, "FAIL": 3}
     worst = max((rank.get(c["status"], 4) for c in checks), default=3)
@@ -940,6 +954,16 @@ def _self_test():
         finally:
             globals()["probe_source"] = original
 
+    def task_identity_is_explicit():
+        if task_identity_problem("", "/tmp", "linux") is None:
+            raise AssertionError("an empty task name must be refused")
+        if task_identity_problem("t", "/definitely/missing-source", "linux") is None:
+            raise AssertionError("a missing source path must be refused")
+        if task_identity_problem("t", "/tmp", "solaris") is None:
+            raise AssertionError("an unknown platform must be refused")
+        if task_identity_problem("t", tempfile.gettempdir(), "linux") is not None:
+            raise AssertionError("an owned task/source/platform must be accepted")
+
     def offscreen_pixel_checks_do_not_clamp_to_an_edge():
         png = (64, 64, 3, bytes((17, 34, 51)) * (64 * 64))
         web = {"x": 1, "y": 0, "width": 50, "height": 60}
@@ -1048,6 +1072,7 @@ def _self_test():
         ("swatch_pixels_validate_synthetic_composited_buffers", swatch_pixels_validate_synthetic_composited_buffers),
         ("incomplete_or_substituted_swatches_never_pass", incomplete_or_substituted_swatches_never_pass),
         ("swatch_validator_requires_real_hook_parity", swatch_validator_requires_real_hook_parity),
+        ("task_identity_is_explicit", task_identity_is_explicit),
         ("offscreen_pixel_checks_do_not_clamp_to_an_edge", offscreen_pixel_checks_do_not_clamp_to_an_edge),
         ("split_scope_messages_parse_per_action_and_theme", split_scope_messages_parse_per_action_and_theme),
         ("budgets_stay_under_the_ipc_cap", budgets_stay_under_the_ipc_cap),
@@ -1061,6 +1086,20 @@ def _self_test():
 
 
 def main():
+    def option(flag):
+        if flag not in sys.argv:
+            return None
+        at = sys.argv.index(flag)
+        return sys.argv[at + 1] if at + 1 < len(sys.argv) and not sys.argv[at + 1].startswith("--") else ""
+
+    task, source, platform = option("--task"), option("--source"), option("--platform")
+    if not task or not source or not platform:
+        print("theme-matrix: --task, --source and --platform are required; no discovered defaults", file=sys.stderr)
+        return 2
+    identity = task_identity_problem(task, source, platform)
+    if identity is not None:
+        print(f"theme-matrix: {identity}", file=sys.stderr)
+        return 2
     exe = sys.argv[1]
     out = Path(sys.argv[sys.argv.index("--out") + 1]) if "--out" in sys.argv else Path(tempfile.mkdtemp(prefix="theme-matrix-"))
     scales = sys.argv[sys.argv.index("--ui-scales") + 1].split(",") if "--ui-scales" in sys.argv else ["1", "1.25", "1.5", "2"]
@@ -1264,6 +1303,7 @@ def main():
         "limitations": limitations,
         "themes": results,
     }
+    report["task"] = {"task": task, "source": source, "platform": platform}
     report_path = out / "matrix.json"
     report_path.write_text(json.dumps(report, indent=1))
     bad = [r["theme"] for r in results if not r["match"]]
