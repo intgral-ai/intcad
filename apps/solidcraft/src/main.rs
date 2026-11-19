@@ -335,8 +335,13 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // The Assistant's web view is a child of the window: it goes while the window is there.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        if let Some(cef) = self.assistant_cef.as_mut() {
+        if let Some(mut cef) = self.assistant_cef.take() {
             cef.close();
+            // Checked shutdown only after the platform's matching close completion;
+            // an unresolved owner is retained, never dropped into a native shutdown.
+            if let Err(error) = cef.shutdown() {
+                log::warn!("CEF close was not cleanly completed: {error}");
+            }
         }
         // The agent chat's agent and everything it started end with the app.
         solidcraft_ui_egui::agent_chat::shutdown(&mut self.solve);

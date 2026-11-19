@@ -144,17 +144,48 @@ pub enum CefLogSeverity {
 #[cfg(feature = "cef-runtime")]
 mod cef_backed {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use cef::args::Args;
     use cef::*;
 
     // Minimal no-op App impl: CEF requires an App on all initialize paths; this
     // satisfies that without requiring callers to depend on the cef crate.
     #[derive(Clone)]
-    /// CEF global runtime under `cef-runtime`. The `cef` crate (via `cef-dll-sys`)
-    /// owns the process-global CEF state; this struct is a thin RAII drop-guard
-    /// that calls `cef::shutdown` when dropped.
+    /// Live users of one runtime. A producer or the app holds a
+    /// [`RuntimeLease`]; checked shutdown requires all of them released.
+    #[derive(Debug, Default)]
+    struct LeaseState {
+        live: AtomicUsize,
+    }
+
+    /// One live user of this runtime, released before checked shutdown.
+    ///
+    /// Not a CEF handle by itself: dropping it only ends the Rust-side claim,
+    /// so the owner thread must first release its browser/producer.
+    #[derive(Debug)]
+    pub struct RuntimeLease {
+        state: Arc<LeaseState>,
+    }
+
+    impl Drop for RuntimeLease {
+        fn drop(&mut self) {
+            self.state.live.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    /// CEF global runtime under `cef-runtime`.
+    ///
+    /// Process-global CEF state has exactly one live owner. Dropping it does
+    /// **not** call into CEF: an abnormal drop retains containment (no native
+    /// shutdown with unresolved browser creation/references) instead of
+    /// pretending teardown succeeded.
     pub struct CefRuntime {
         pub(super) config: CefRuntimeConfig,
+        leases: Arc<LeaseState>,
+        init_thread: std::thread::ThreadId,
+        shut_down: bool,
     }
 
     /// Borrowed sandbox context supplied by CEF's Windows bootstrap executable.
@@ -243,7 +274,12 @@ mod cef_backed {
             if code == 0 {
                 return Err(WeldError::InitFailed { code });
             }
-            Ok(CefRuntime { config })
+            Ok(CefRuntime {
+                config,
+                leases: Arc::new(LeaseState::default()),
+                init_thread: std::thread::current().id(),
+                shut_down: false,
+            })
         }
     }
 
@@ -339,7 +375,45 @@ mod cef_backed {
             if code == 0 {
                 return Err(WeldError::InitFailed { code });
             }
-            Ok(CefRuntime { config })
+            Ok(CefRuntime {
+                config,
+                leases: Arc::new(LeaseState::default()),
+                init_thread: std::thread::current().id(),
+                shut_down: false,
+            })
+        }
+
+        /// Claim one live user of this runtime. Release it before [`Self::shutdown`].
+        pub fn lease(&self) -> RuntimeLease {
+            self.leases.live.fetch_add(1, Ordering::AcqRel);
+            RuntimeLease { state: Arc::clone(&self.leases) }
+        }
+
+        /// Shut CEF down once, on its initialization thread, with no live owners.
+        ///
+        /// On refusal the runtime is returned to the caller, which must retain
+        /// it: dropping it must not become an implicit native shutdown.
+        pub fn shutdown(mut self) -> Result<(), (Self, WeldError)> {
+            if self.init_thread != std::thread::current().id() {
+                return Err((
+                    self,
+                    WeldError::BrowserOp(
+                        "CEF shutdown must run on its initialization thread".into(),
+                    ),
+                ));
+            }
+            let live = self.leases.live.load(Ordering::Acquire);
+            if live != 0 {
+                return Err((
+                    self,
+                    WeldError::BrowserOp(format!(
+                        "CEF shutdown refused: {live} live runtime owner(s)"
+                    )),
+                ));
+            }
+            self.shut_down = true;
+            cef::shutdown();
+            Ok(())
         }
 
         /// Block on CEF's message loop. Use when CEF owns the main thread.
@@ -362,7 +436,11 @@ mod cef_backed {
 
     impl Drop for CefRuntime {
         fn drop(&mut self) {
-            cef::shutdown();
+            if !self.shut_down {
+                // No native call here: unresolved ownership must stay contained,
+                // not be released into CEF from an arbitrary drop site.
+                log::warn!("CEF runtime dropped without checked shutdown; native state is retained");
+            }
         }
     }
 
@@ -607,7 +685,7 @@ mod cef_backed {
 }
 
 #[cfg(feature = "cef-runtime")]
-pub use cef_backed::CefRuntime;
+pub use cef_backed::{CefRuntime, RuntimeLease};
 #[cfg(all(feature = "cef-runtime", target_os = "windows"))]
 pub use cef_backed::CefWindowsSandboxContext;
 
@@ -628,7 +706,18 @@ mod stub {
         pub(super) config: CefRuntimeConfig,
     }
 
+    /// No live native owner exists without `cef-runtime`; the claim is inert.
+    pub struct RuntimeLease;
+
     impl CefRuntime {
+        pub fn lease(&self) -> RuntimeLease {
+            RuntimeLease
+        }
+
+        pub fn shutdown(self) -> Result<(), (Self, WeldError)> {
+            Err((self, WeldError::FeatureRequired("cef-runtime")))
+        }
+
         // SolidCraft: identity querying is unavailable without native CEF.
         #[cfg(target_os = "linux")]
         pub fn inspect_identity(
@@ -658,4 +747,4 @@ mod stub {
 }
 
 #[cfg(not(feature = "cef-runtime"))]
-pub use stub::CefRuntime;
+pub use stub::{CefRuntime, RuntimeLease};

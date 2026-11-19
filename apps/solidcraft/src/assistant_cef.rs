@@ -22,7 +22,7 @@ use welding::wgpu;
 use welding::windows_cef::{WindowsCefConfig, WindowsCefProducer};
 use welding::{
     CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent, CefSurfaceProducer, EventModifiers, FocusDirection,
-    HostWgpuContext, ImportedTexture, KeyEvent, KeyEventKind, MouseAction, MouseButton, MouseEvent, WebRequestId,
+    HostWgpuContext, ImportedTexture, KeyEvent, KeyEventKind, MouseAction, MouseButton, MouseEvent, RuntimeLease, WebRequestId,
 };
 
 use solidcraft_ui_egui::SolveApp;
@@ -85,6 +85,27 @@ fn retain_failed_start(runtime: CefRuntime, mut server: Option<PageServer>, host
             if slot.is_none() { *slot = Some(owners); }
             // A second bundle also remains non-dropping; never replace/release
             // an older owner if an impossible re-entrant failure is observed.
+        }
+    });
+}
+
+thread_local! {
+    // A quarantined bundle never runs a native destructor at TLS teardown. The
+    // runtime itself also refuses to shut CEF down without observed completion.
+    static QUARANTINED: std::cell::RefCell<Option<std::mem::ManuallyDrop<QuarantinedOwners>>> = const { std::cell::RefCell::new(None) };
+}
+struct QuarantinedOwners {
+    _runtime: CefRuntime,
+    _producer: Option<Producer>,
+}
+fn quarantine(runtime: CefRuntime, producer: Option<Producer>) {
+    let owners = std::mem::ManuallyDrop::new(QuarantinedOwners { _runtime: runtime, _producer: producer });
+    QUARANTINED.with(|slot| match slot.try_borrow_mut() {
+        Ok(mut slot) if slot.is_none() => *slot = Some(owners),
+        _ => {
+            // A second bundle cannot replace the first: retain it without a
+            // native destructor rather than releasing owners into CEF.
+            log::warn!("CEF quarantine already holds a bundle; retaining this one without native teardown");
         }
     });
 }
@@ -343,6 +364,8 @@ impl InputQueue {
 
 pub struct CefAssistant {
     runtime: CefRuntime,
+    /// The app's live claim on the runtime; released only before checked shutdown.
+    lease: RuntimeLease,
     /// Pure transition/ownership policy; native completion stays platform-owned.
     lifecycle: Lifecycle,
     producer: Producer,
@@ -520,6 +543,7 @@ impl CefAssistant {
                 return None;
             }
         };
+        let lease = runtime.lease();
 
         let host = HostWgpuContext::new(render_state.device.clone(), render_state.queue.clone());
         #[cfg(target_os = "linux")]
@@ -585,6 +609,7 @@ impl CefAssistant {
         let max_edge = host.device.limits().max_texture_dimension_2d;
         Some(Self {
             runtime,
+            lease,
             lifecycle,
             producer,
             host,
@@ -1166,6 +1191,36 @@ impl CefAssistant {
     pub fn close(&mut self) {
         let progress = self.begin_close();
         log::debug!("CEF close progress: {progress:?}");
+    }
+
+    /// Consume the app's owners and shut CEF down only after the platform
+    /// observed matching close completion. Anything else is retained, never
+    /// dropped into an implicit native shutdown.
+    pub fn shutdown(self) -> Result<(), welding::WeldError> {
+        let Self { runtime, lease, lifecycle, producer, mut server, host, .. } = self;
+        if lifecycle.phase() != Phase::Closed {
+            // Unresolved ownership is retained whole: no CEF refcount release and
+            // no native shutdown. Only the Rust-side lease and the GPU/server
+            // helpers (not CEF owners) are released.
+            server.request_stop();
+            drop(host);
+            drop(lease);
+            quarantine(runtime, Some(producer));
+            return Err(welding::WeldError::BrowserOp(
+                "CEF close completion was not observed".into(),
+            ));
+        }
+        // Browser/producer, frame/request-context and server owners go before the
+        // single native shutdown.
+        drop(producer);
+        server.request_stop();
+        drop(server);
+        drop(host);
+        drop(lease);
+        runtime.shutdown().map_err(|(runtime, error)| {
+            quarantine(runtime, None);
+            error
+        })
     }
 
     pub fn focused(&self) -> bool {
