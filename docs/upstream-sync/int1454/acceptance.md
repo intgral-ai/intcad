@@ -1,13 +1,18 @@
 # INT-1454 acceptance package (draft — incomplete until sign-off)
 
-Status: PR #185 is **open** at head `099e4360c3c1a9e70582731801289d4b4a5a4570`
-(`feat/int1454-ui`); GitHub reports `mergeStateStatus: BLOCKED`. At the 2026-11-19 audit,
-CI run 44472128741 was in progress (attempt 2; `Build full-baseline archive` and
-`Native Linux selected regression gate` pending), Kernel rig run 44472128721 had completed
-success, and Fillet rig run 44472128632 had passed. No final green run or landing commit exists
-yet. This package is a draft, not a completion claim: it records what is verified, what is
-historic, and what remains open. Sources: `gh pr view 185`, `gh pr checks 185` and
-`gh run view` on 2026-11-19; `git rev-parse 099e4360c`.
+Status: PR #185 is **open** at remote head `099e4360c3c1a9e70582731801289d4b4a5a4570`
+(`feat/int1454-ui`); GitHub reports `mergeStateStatus: BLOCKED`. The local integration worktree
+has one unpushed commit on top of that head: `61835bfafb151c7d6803aeab195e824b6d8458d3`
+(parent `099e4360c`), the seven-line engine known-failing deletion from `7ceea11d5` (22 -> 15).
+It has not been reviewed, pushed or run through pinned CI here. At the 2026-11-19T08:49Z CI
+snapshot, run 44472128741 attempt 2 at the old head had `Build full-baseline archive` success
+(48m22), `Native Linux selected regression gate` failure with exit 143 during `cargo nextest list`
+(no test receipt), Action matrix shards 1 and 15 success, other shards/properties/determinism in
+flight, and no aggregate. This package is a draft, not a completion claim: it records what is
+verified, what is local, what is historic, and what remains open. Sources: `gh pr view 185`,
+`/tmp/opencode/int1454-ci-current/SNAPSHOT-2026-11-19T0849Z.md`,
+`/tmp/opencode/int1454-engine-allowances/FIX-REPORT.md`, `git rev-parse` in the integration
+worktree, 2026-11-19.
 
 ## 1. Fixed references
 
@@ -17,7 +22,8 @@ historic, and what remains open. Sources: `gh pr view 185`, `gh pr checks 185` a
 | Vendored kernel | solidcore `524be9e16707f726586a7ab8696d87fd633e2096`, tree `8b5c01445619305dcfc5072db3fe76b8cfea67be` | `git rev-parse HEAD:solidcore` and `git rev-parse v0.44.1:solidcore` |
 | Pre-sync develop baseline | `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f` (historical baseline, **not** the revert target) | `git show -s 0fd92bea2` |
 | Fork point | `06749ac464e16357d0375b78e6b3cac214066493` | `git merge-base v0.44.1 origin/develop` |
-| Sync head under review | `099e4360c3c1a9e70582731801289d4b4a5a4570` (short `099e4360c`, PR #185) | `git rev-parse 099e4360c`; `gh pr view 185` |
+| Remote PR head under review | `099e4360c3c1a9e70582731801289d4b4a5a4570` (short `099e4360c`, PR #185) | `git rev-parse 099e4360c`; `gh pr view 185` |
+| Local integration head | `61835bfafb151c7d6803aeab195e824b6d8458d3` (parent `099e4360c`; `feat/int1454-ui`, ahead 1, **not pushed**) | `git -C worktrees/int1454-ui rev-parse HEAD HEAD^`; `/tmp/opencode/int1454-engine-allowances/FIX-REPORT.md` |
 | Landing method and commit | **TBD** (merge commit or squash; the revert target follows the chosen method) | to be recorded after landing |
 | Final develop SHA | **TBD after landing** | to be recorded after landing |
 
@@ -48,11 +54,12 @@ include base commits; they are not counts of commits added by the PR.
 | --- | --- | --- |
 | Kernel (K0–K15) | `06749ac4..d12c2fa5f` on `feat/int1454-kernel-snapshot` | vendored solidcore, kernel/smlib/geom/dynamics, STEP tree, rig and action-matrix re-records |
 | Doc/format/IO | `ad0262a49..06e7aa667` | format/colour/display-units/viewport/sketch/render added, doc+io ported, attribution, format-58 note. The earlier `30fe35c92` endpoint is not reachable from the head and is not used. |
-| Engine | `2ca1b7fd8..3e7a7aa46` | engine port, DFM/project/validation re-applied, plugin surface removed. The engine branch tip `7ceea11d5` (seven known-failing removals) is **not** in the head; see §4 and §7. |
+| Engine | `2ca1b7fd8..3e7a7aa46` | engine port, DFM/project/validation re-applied, plugin surface removed. The engine branch tip `7ceea11d5` (seven known-failing removals) is not in the remote head; the local integration head `61835bfaf` applies exactly that seven-line deletion; see §1, §4 and §7. |
 | MCP | `6e1bcf53a..701d274ca` | server split, guarded envelopes, `version`, `--compact`, CLI stdio fix |
 | GPU/viewport | `9bc73566d` | viewport-gpu/egui added, `crates/gpu` compute-only |
 | UI | `8c1fc4f6c..f82b56372` | egui adaptation, labels/help/dialogs, viewport API, new-file preference, wasm fix. Later review fixes `19396bb4e`, `7aa8e008e`, the develop merge `5b02edb95` and `099e4360c` are outside this row. |
 | Integration | `1a18423ed`, `b06d531e5` | develop merge and the two rule fixes (defaults line, advisories) |
+| Local follow-up | `61835bfaf` (parent `099e4360c`, not pushed) | seven-line `tests/KNOWN_FAILING_TESTS` deletion from `7ceea11d5`; 22 -> 15 |
 
 No exact head count is claimed until the landing commit is fixed and the index is regenerated.
 
@@ -124,25 +131,26 @@ approved deferral; CD-6 is a separate owner decision.
 | CD-6: no brand-era UI kit/look/theme/assets | No brand-era `ui-kit`/`look`/`theme` crates or brand assets were found. The `ui-egui` diff is not a provenance proof; the ledger's licence-uncertain chrome files remain for owner/legal review. The only moved assets claimed are the Liberation Sans font (OFL) and the STEP/FreeCAD fixtures (attribution rows). | `git diff v0.44.1 -- crates/ui-egui` (scope only), ledger §4 and §7, §2b |
 | CD-7: vendored solidcore closure, no rev pins | `solidcore/` byte-identical to `v0.44.1:solidcore`; `crates/step` deleted; `deny.toml` `[sources]` has no git sources | `git diff v0.44.1 -- solidcore` is empty and both trees hash to `8b5c01445619305dcfc5072db3fe76b8cfea67be`; `deny.toml` denies unknown git sources |
 
-## 4. Historic gate evidence and commands (not final-SHA evidence)
+## 4. Gate evidence: local fixed checks, historic logs, commands (not final-SHA evidence)
 
-Most counts below come from local logs recorded on 2026-11-18, before the layer tips and the
-reviewed head. They are **historic and unverified for `099e4360c`**; this table is not a final-SHA
-gate record. Rows that cite `gh` are head-bound CI evidence; the rest are not. Each row gives the
-command to rerun.
+Rows marked `local 61835bfaf` are new deterministic checks at the unpushed local head; they are not
+pinned-CI evidence. The other counts are historic local logs recorded on 2026-11-18, before the
+layer tips and the reviewed head, and are **historic and unverified for `099e4360c`**. Rows citing
+`gh` or the CI snapshot are CI evidence at the old head only. This table is not a final-SHA gate
+record; each row gives the command to rerun.
 
-| Gate | Historic evidence (source and revision) |
+| Gate | Evidence (source and revision) |
 | --- | --- |
-| Build | No head-bound log recorded in this package; the current PR run's `Build full-baseline archive` was still pending at the audit. Rerun: `cargo check --workspace --all-targets --profile ci`. |
+| Build | No local head-bound `cargo check` log recorded in this package. At the 08:49Z CI snapshot, `Build full-baseline archive` at `099e4360c` was success in 48m22. Rerun: `cargo check --workspace --all-targets --profile ci`. |
 | Lints | `Native Linux Clippy` check passed at `099e4360c` (gh, 2026-11-19); local `clippy` logs are older. Rerun: `cargo clippy --workspace --all-targets --profile ci -- -D warnings`. |
 | Kernel | 932 passed / 6 failed, log 2026-11-18 02:22 (`/tmp/opencode/final-kernel-tests.log`), before kernel tip `d12c2fa5f` (11:58). Head list has 6 kernel entries. Historic/unverified at head. Rerun: `cargo test --profile ci -p solidcraft-kernel`. |
 | Doc/format/IO | Historic logs are not a `--profile ci` triple: a debug run at 2026-11-18 01:59 has 873 passed (doc), 10 passed (format), and 722 passed + 1 failed (io, `gerber::tests::hostile_input_never_panics`); a separate `--profile ci` io run has 213 passed + 2 failed (`design::tests::the_cache_key_covers_every_crate_the_model_is_computed_from`, `tests::obj_export_is_welded_and_keeps_names`). None of these failures is on `KNOWN_FAILING_TESTS`. Unverified at head. Rerun: `cargo test --profile ci -p solidcraft-doc -p solidcraft-format -p solidcraft-io`. |
-| Engine | 5309 passed / 4 failed, log 2026-11-18 05:18 (`/tmp/opencode/engine-test6.log`), before engine tip `7ceea11d5` (05:51). Seven other listed engine tests passed in that run; `7ceea11d5` removes their lines but is not in the head. Historic/unverified at head. Rerun: `cargo test --profile ci -p solidcraft-engine`. |
+| Engine | Historic: 5309 passed / 4 failed, log 2026-11-18 05:18 (`/tmp/opencode/engine-test6.log`), before engine tip `7ceea11d5` (05:51); the remaining four engine allowances are still historic pending the current gate, not an automatic full pass. New `local 61835bfaf` (parent `099e4360c`, not pushed): the seven-line deletion from `7ceea11d5` gives 22 -> 15 entries. Each of the seven tests ran separately under `cargo test --profile ci` and `cargo-nextest 0.9.146`: 7/7 PASS (`/tmp/opencode/int1454-engine-allowances/results-all.tsv`). The known-failing grader exits 0 after deletion: `7 ran, 7 pass, 0 known failing, 15 listed did not run here; no regression` (`grader-after-commit.log`). Local compiler 1.98.1 (repo pin/CI 1.99.1); no pinned CI pass yet. Rerun: `cargo test --profile ci -p solidcraft-engine`; `cargo xtask known-failing --junit ...`. |
 | MCP | No local log/report found for `163 / 14 / 33`; the three-number form is ambiguous, so no pass/fail inference is made. Rerun: `cargo test --profile ci -p solidcraft-mcp`. |
 | UI | No local log/report found for `4997 passed / 2 environment-only failures`; the failures are unnamed and unlisted. Unverified; do not treat as environment-only without names and evidence. Rerun: `cargo test --profile ci -p solidcraft-ui-egui`. |
 | Kernel rig | Historic local rig record (not re-run in this audit): 17 of 19 areas green at `136223609` (import, inspect, history, frames, booleans, crashes, plastic, construction, continuity, fillets, sheet-metal, solids, surfaces, shell, tessellation, sweeps, threads). The two that differed were re-recorded at `e95afde4d` with the branch's own release CLI (`target/release/intcad-cli`, 864,557,376 bytes, software/vulkan): `--area assemblies` -> `96 pass, 0 known failing, no regression`; `--ladder --record` then `--ladder --gate` -> `170/170 pass, every case as the golden records it`; `--coverage` -> `229 commands have a case`. The ladder change is count-only for threads (v0.44.1 keeps one exact helical face: `06-threads/002-external-m10x1-fine` 6/12/8 where the golden had 126/372/248, volume unchanged at 2081.901104145 mm3 against the analytic 2081.901104148) plus two corner-fillet refusals whose reason moved to a tangent seam; one assembly case now succeeds because v0.44.1's engine carries a moved-in body's history (#12142). CI `Kernel rig` run `44454875225` at `e95afde4d` and current run `44472128721` at `099e4360c` completed **success** (gh, 2026-11-19). |
 | Rules | CI `Format and repository checks` passed at `099e4360c` (gh, 2026-11-19); local `xtask` rule logs are older. Rerun: `cargo xtask layers`, `mesh-decisions`, `lists`, `assets`, `ui-containers`, `fmt`. |
-| CI | At audit: CI `44472128741` attempt 2 in progress at `099e4360c`; `Build full-baseline archive` and `Native Linux selected regression gate` pending; attempt 1 failed and was rerun. Kernel rig `44472128721` success; Fillet rig `44472128632` pass. No final green run. Source: `gh pr checks 185`, 2026-11-19. |
+| CI | Snapshot 2026-11-19T08:49Z for run `44472128741` attempt 2 at old head `099e4360c` (test-merge `ceeb57bd…`): `Build full-baseline archive` success 48m22; `Native Linux selected regression gate` failure with exit 143 (runner shutdown during `cargo nextest list`, no test receipt); Action matrix 1/16 and 15/16 success; other shards, properties and determinism in flight; aggregate not created. This is a snapshot, not a current-status or pass claim; no test result was produced by the failing gate. Source: `/tmp/opencode/int1454-ci-current/SNAPSHOT-2026-11-19T0849Z.md`. |
 
 ## 5. Persistence (CD-1)
 
@@ -175,16 +183,20 @@ upstream commits and do not cover the implementation as a whole.
 | Final branch review | post-approval deltas only | **changes requested** at `e95afde4d`, then re-reviewed twice | (1) staged/wasm opens ignored `open_newer_files`; (2) the preference applied only on the next frame, and Cancel/Defaults restored it without syncing the session; (3) runtime GPU render requests dropped directional/punctual lights; (4) `EXEMPT` put non-geometry commands in the geometry backlog. Fixed in `19396bb4e` and `7aa8e008e`; F1/F3/F4 and F2 were then confirmed pass by the same reviewer. The worktree then advanced through `5b02edb95` (develop merge) to `099e4360c`; the F2 source fix was approved, but there is no whole-head final approval. The develop merge and lockfile reconciliation were not covered by the final review. |
 
 The reviewer also corrected an overstated claim in an earlier draft of the pull request: `KNOWN_FAILING_TESTS`
-has **33 entries on `develop` and 22 here** (11 removed because their test now passes, 2 reworded to name the
-vendored kernel instead of the old pin, 0 added), not the "42 to 15" an earlier draft said. The 33/22 counts
-are verified. Seven engine entries in the 22 are stale relative to the 5309/4 run; `7ceea11d5` removes them
-but is not in the head. Reproduction/integration is BLOCKED (§4 and §7).
+has **33 entries on `develop` and 22 at remote head `099e4360c`** (11 removed because their test now passes,
+2 reworded to name the vendored kernel instead of the old pin, 0 added), not the "42 to 15" an earlier draft
+said. The 33/22 counts are verified. At local head `61835bfaf` (parent `099e4360c`, not pushed), the engine
+branch's `7ceea11d5` deletion is applied exactly: 22 -> 15. The seven tests pass 7/7 under local
+`cargo test --profile ci` and `cargo-nextest 0.9.146`; the grader exits 0 with
+`7 ran, 7 pass, 0 known failing, 15 listed did not run here; no regression`. Local compiler 1.98.1; no
+pinned CI pass yet. Await independent task review, push and pinned CI. The remaining four engine allowances
+stay historic pending the current gate; this is not a full engine pass.
 
 ## 6. Platform acceptance
 
 | Platform | Status |
 | --- | --- |
-| Linux native CI | CI `44472128741` attempt 2 was in progress at `099e4360c` (2026-11-19): `Build full-baseline archive` and `Native Linux selected regression gate` pending; attempt 1 failed and was rerun. `Native Linux Clippy` passed. No final green run. Source: `gh pr checks 185`. |
+| Linux native CI | Snapshot 2026-11-19T08:49Z for run `44472128741` attempt 2 at old head `099e4360c`: `Build full-baseline archive` success 48m22; `Native Linux selected regression gate` failure with exit 143 (runner shutdown during `cargo nextest list`, no test receipt); Action matrix 1/16 and 15/16 success; other shards/properties/determinism in flight; aggregate not created. `Native Linux Clippy` passed. This is not a current-status or final-green claim. Source: `SNAPSHOT-2026-11-19T0849Z.md`. |
 | Linux GUI E2E | **PASS 8/8 at old SHA `42f4d670a`** (task `int1454`): sample open, orbit drag, face select, Assistant open/resize/control. Report `~/.local/state/intcad-e2e/runs/intcad-e2e-int1454-ui-c28767d6c085-int1454/20261118T212022Z-681395/REPORT.md` and artifact sha256 `e6da03a57c438530d1640a0a171b0f1f220768aa95e3a1d5a54cef246b5a83cc` verified. The SHA predates `19396bb4e`/`7aa8e008e` and is not `099e4360c` or a final SHA; repeat at the final SHA. |
 | Windows smoke | **Smoke only at `f82b56372`** (task `int1454w`): MSI `b1d55038d01c9452f4b534bfe93e8d365c0f08c2875518395aaccaf84890be4a`, app sha256 `ca1c34de2167f4b2ec028afe6403430d43a7a83a09ae4f7c6992dbcf036ba6c1`; `about.json`/`first-inspect.json` show installed, Sample Plate loaded, control channel listening. No `REPORT.md`/`report.json`; this is not a completed VM GUI E2E. CI run `44402787343` at that SHA failed overall (Windows startup/FXC jobs passed), so it is not all-native-CI PASS. Recapture a full `accept` at the final SHA. |
 | macOS native automation | not run |
@@ -207,9 +219,12 @@ Source: source inspection at `099e4360c`; PR #179 merge `96a247ccb`.
 - CD-6: no brand-era `ui-kit`/`look`/`theme` crates or brand assets were found, but provenance
   clearance is not complete. The licence-uncertain chrome files identified in ledger §4 remain for
   owner/legal review.
-- Seven stale engine `KNOWN_FAILING_TESTS` allowances: **BLOCKED pending reproduction**.
-  `7ceea11d5` removes seven lines that the 5309/4 run shows passing, but it is not in the head;
-  reconcile the list/commit and re-run the gate.
+- Engine allowance deletion: local at `61835bfaf` (parent `099e4360c`, ahead 1, not pushed),
+  exactly the seven-line deletion from `7ceea11d5`, 22 -> 15. Seven/7 local `cargo test --profile ci`
+  and `cargo-nextest 0.9.146` PASS; grader exit 0 (`7 ran, 7 pass, 0 known failing, 15 listed did
+  not run here`); local compiler 1.98.1 (repo pin/CI 1.99.1). Await independent task review, push
+  and pinned CI. The remaining four engine allowances stay historic pending the current gate, not
+  an automatic full pass.
 - Ledger §4's recorded "UI not exposed" list: snap points, silhouettes, timeline groups/folders,
   assembly-constraint dialogs, frame end caps, render-job panes, import report. Statuses:
   U12/U13/U15 adopted-but-not-exposed; U14 airfoil Blocked; U9/U10/U11 CD-6 Blocked; U17
@@ -241,8 +256,9 @@ No sign-off yet. Outstanding:
 
 1. Land #185 by the chosen method; record the landing commit and final develop SHA.
 2. Green CI at that SHA. At audit, CI `44472128741` was still in progress with two checks pending.
-3. Reconcile the seven stale engine known-failing allowances (`7ceea11d5` not integrated) and
-   reproduce the gate.
+3. Complete independent task review and push of local `61835bfaf` (parent `099e4360c`), then obtain
+   a pinned-CI result for the seven-line deletion. The remaining four engine allowances still need
+   the current gate; do not treat the local 7/7 as a full engine pass.
 4. Re-run the per-crate gates at the final SHA; replace historic counts and resolve the unlisted
    IO/UI/MCP failures.
 5. Run Linux GUI E2E and a full Windows `accept` at the final SHA; recapture CD-1 raw save/reopen
@@ -258,9 +274,15 @@ This remains a draft; none of the above is a completion claim.
 ## 10. Verification sources used here
 
 - `git rev-parse`, `git merge-base --is-ancestor`, `git log --first-parent` and `git diff` in the
-  acceptance and integration worktrees, 2026-11-19.
+  acceptance and integration worktrees, 2026-11-19. Local integration head:
+  `61835bfaf` (parent `099e4360c`), `git -C worktrees/int1454-ui rev-parse HEAD HEAD^`.
 - `gh pr view 185`, `gh pr checks 185`, `gh run view 44472128741`, `gh run view 44472128721`,
   `gh run view 44454875225` and `gh run list --commit f82b56372` (2026-11-19).
+- CI snapshot: `/tmp/opencode/int1454-ci-current/SNAPSHOT-2026-11-19T0849Z.md` (attempt 2 at
+  `099e4360c`; snapshot only, not current status).
+- Engine allowances: `/tmp/opencode/int1454-engine-allowances/FIX-REPORT.md`, `SUMMARY.md`,
+  `results-all.tsv`, `grader-after-commit.log` and `post-commit.txt` (local `61835bfaf`; local
+  compiler 1.98.1 from `target/ci/.rustc_info.json`; no pinned-CI pass).
 - `python3 docs/upstream-sync/int1454/tools/coverage.py` from the acceptance worktree.
 - Historic local logs: `/tmp/opencode/final-kernel-tests.log`, `/tmp/opencode/final4.log`,
   `/tmp/opencode/final-io-tests.log` and `/tmp/opencode/engine-test6.log` (2026-11-18; not
