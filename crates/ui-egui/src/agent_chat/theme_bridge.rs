@@ -17,13 +17,7 @@ fn hex(color: egui::Color32) -> String {
 }
 
 fn alpha_hex(color: egui::Color32) -> String {
-    format!(
-        "#{:02x}{:02x}{:02x}{:02x}",
-        color.r(),
-        color.g(),
-        color.b(),
-        color.a()
-    )
+    format!("#{:02x}{:02x}{:02x}{:02x}", color.r(), color.g(), color.b(), color.a())
 }
 
 /// The body text colour the page is given: the theme's own, unless it would fall below the
@@ -39,11 +33,7 @@ fn readable(text: egui::Color32, panel: egui::Color32, dark: bool, minimum: f32)
         }
         let t = step as f32 / 20.0;
         let mix = |a: u8, b: u8| (f32::from(a) * (1.0 - t) + f32::from(b) * t).round() as u8;
-        colour = egui::Color32::from_rgb(
-            mix(text.r(), target.r()),
-            mix(text.g(), target.g()),
-            mix(text.b(), target.b()),
-        );
+        colour = egui::Color32::from_rgb(mix(text.r(), target.r()), mix(text.g(), target.g()), mix(text.b(), target.b()));
     }
     (colour, colour != text)
 }
@@ -95,6 +85,9 @@ pub fn json(app: &crate::SolveApp) -> Value {
         "metrics": {
             // Points, like every other size the app draws with.
             "fontBody": tokens.font_body,
+            // Native Assistant prose and form labels use font_label, not the compact font_body.
+            "fontProse": tokens.font_label,
+            "fontLabel": tokens.font_label,
             "fontSmall": tokens.font_small,
             "fontCaption": tokens.font_caption,
             "fontHeading": tokens.font_heading,
@@ -159,22 +152,14 @@ mod tests {
             // own text/panel pair is just under WCAG AA (solarized-light is 4.39:1).
             let (text, _) = readable_text(tokens.text, tokens.panel, theme.base.is_dark());
             let ratio = contrast(text, tokens.panel);
-            assert!(
-                ratio >= 4.4,
-                "{}: body text contrast {ratio:.2}:1 against the panel",
-                theme.id
-            );
+            assert!(ratio >= 4.4, "{}: body text contrast {ratio:.2}:1 against the panel", theme.id);
             // Secondary text (the page's muted/disabled colour) stays legible, and a selected
             // row's text stays readable on the selection colour.
             let (dim_text, _) = readable(tokens.text_dim, tokens.panel, theme.base.is_dark(), 3.0);
             let dim = contrast(dim_text, tokens.panel);
             assert!(dim >= 2.8, "{}: secondary text contrast {dim:.2}:1", theme.id);
             let selected = contrast(tokens.selected_ink, tokens.selected_bg);
-            assert!(
-                selected >= 3.0,
-                "{}: selected text contrast {selected:.2}:1 on the selection",
-                theme.id
-            );
+            assert!(selected >= 3.0, "{}: selected text contrast {selected:.2}:1 on the selection", theme.id);
         }
     }
 

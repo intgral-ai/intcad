@@ -17,22 +17,23 @@ use egui::Context;
 use welding::linux_cef::{LinuxCefConfig, LinuxCefProducer};
 #[cfg(target_os = "macos")]
 use welding::macos_cef::{MacosCefConfig, MacosCefProducer};
+use welding::wgpu;
 #[cfg(windows)]
 use welding::windows_cef::{WindowsCefConfig, WindowsCefProducer};
-use welding::wgpu;
 use welding::{
-    CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent,
-    CefSurfaceProducer, EventModifiers, FocusDirection, HostWgpuContext, ImportedTexture, KeyEvent,
-    KeyEventKind, MouseAction, MouseButton, MouseEvent, WebRequestId,
+    CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent, CefSurfaceProducer, EventModifiers, FocusDirection,
+    HostWgpuContext, ImportedTexture, KeyEvent, KeyEventKind, MouseAction, MouseButton, MouseEvent, WebRequestId,
 };
 
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
 
+#[path = "assistant_cef_viewport.rs"]
+mod viewport;
+
 /// The page's origin while CEF runs: a loopback server this module owns, because CEF has no
 /// custom-scheme handler here and the page's ES modules need a real origin.
 const PAGE_HOST: &str = "127.0.0.1";
-
 
 /// CEF re-executes this binary for its renderer, GPU and utility processes. Must run before
 /// any thread is started (winit, wgpu, the app's pools).
@@ -75,41 +76,34 @@ pub fn interop_setup() -> Option<eframe::egui_wgpu::WgpuSetup> {
     }
     #[cfg(target_os = "linux")]
     {
-    // Test only: pretend the device cannot import DMA-BUF, to check what the app does when a
-    // machine's GPU interop is missing. The Assistant must say so and CAD must keep working.
-    if std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP").is_some() {
-        note("CEF: interop disabled by SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP");
-        return None;
-    }
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    descriptor.backends = wgpu::Backends::VULKAN;
-    let instance = wgpu::Instance::new(descriptor);
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-        apply_limit_buckets: false,
-    }))
-    .ok()?;
-    let features = adapter.features();
-    if !features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
-        note("CEF: this Vulkan device cannot import DMA-BUF (no VULKAN_EXTERNAL_MEMORY_DMA_BUF)");
-        return None;
-    }
-    let device_descriptor = wgpu::DeviceDescriptor {
-        label: Some("intcad-cef-interop"),
-        required_features: features & wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF,
-        ..Default::default()
-    };
-    let (device, queue) = welding::build_dmabuf_capable_device(&adapter, &device_descriptor).ok()?;
-    Some(eframe::egui_wgpu::WgpuSetup::Existing(
-        eframe::egui_wgpu::WgpuSetupExisting {
-            instance,
-            adapter,
-            device,
-            queue,
-        },
-    ))
+        // Test only: pretend the device cannot import DMA-BUF, to check what the app does when a
+        // machine's GPU interop is missing. The Assistant must say so and CAD must keep working.
+        if std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP").is_some() {
+            note("CEF: interop disabled by SOLIDCRAFT_ASSISTANT_CEF_NO_INTEROP");
+            return None;
+        }
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::VULKAN;
+        let instance = wgpu::Instance::new(descriptor);
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .ok()?;
+        let features = adapter.features();
+        if !features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
+            note("CEF: this Vulkan device cannot import DMA-BUF (no VULKAN_EXTERNAL_MEMORY_DMA_BUF)");
+            return None;
+        }
+        let device_descriptor = wgpu::DeviceDescriptor {
+            label: Some("intcad-cef-interop"),
+            required_features: features & wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF,
+            ..Default::default()
+        };
+        let (device, queue) = welding::build_dmabuf_capable_device(&adapter, &device_descriptor).ok()?;
+        Some(eframe::egui_wgpu::WgpuSetup::Existing(eframe::egui_wgpu::WgpuSetupExisting { instance, adapter, device, queue }))
     }
 }
 
@@ -124,11 +118,7 @@ type Producer = MacosCefProducer;
 
 /// Create the browser on this platform. Windows needs the host device at creation to make its
 /// D3D11 copy of CEF's shared texture; Linux and macOS take it at import time.
-fn create_producer(
-    runtime: &CefRuntime,
-    surface: CefSurfaceConfig,
-    host: &HostWgpuContext,
-) -> Result<Producer, welding::WeldError> {
+fn create_producer(runtime: &CefRuntime, surface: CefSurfaceConfig, host: &HostWgpuContext) -> Result<Producer, welding::WeldError> {
     #[cfg(target_os = "linux")]
     let _ = host;
     #[cfg(target_os = "linux")]
@@ -166,24 +156,11 @@ enum Queued {
 
 impl InputQueue {
     fn new(capacity: usize) -> Self {
-        Self {
-            critical: VecDeque::new(),
-            motion: None,
-            capacity,
-            ready: false,
-            held: 0,
-            refused: 0,
-        }
+        Self { critical: VecDeque::new(), motion: None, capacity, ready: false, held: 0, refused: 0 }
     }
 
     fn push(&mut self, event: Queued) {
-        if let Queued::Mouse(MouseEvent {
-            action: MouseAction::Moved,
-            x,
-            y,
-            ..
-        }) = event
-        {
+        if let Queued::Mouse(MouseEvent { action: MouseAction::Moved, x, y, .. }) = event {
             self.motion = Some((x, y));
             if !self.ready {
                 self.held += 1;
@@ -223,7 +200,7 @@ pub struct CefAssistant {
     told_theme: String,
     focused: bool,
     shown: bool,
-    placed: Option<[u32; 2]>,
+    viewport: viewport::ViewportState,
     pictures: Pictures,
     inbox: Receiver<String>,
     port: u16,
@@ -264,20 +241,13 @@ impl CefAssistant {
         let cef_path = std::env::var("CEF_PATH").ok()?;
         let mut config = CefRuntimeConfig::new(&cef_path, sandbox());
         config.cache_path = Some(crate::settings_dir().ok().flatten().unwrap_or_else(std::env::temp_dir).join("cef-assistant"));
-        config.command_line_switches = vec![
-            ("no-first-run".into(), None),
-            ("no-default-browser-check".into(), None),
-            ("disable-features".into(), Some("Translate".into())),
-        ];
+        config.command_line_switches =
+            vec![("no-first-run".into(), None), ("no-default-browser-check".into(), None), ("disable-features".into(), Some("Translate".into()))];
         if let Some(list) = std::env::var("SOLIDCRAFT_ASSISTANT_CEF_SWITCHES").ok() {
-            config.command_line_switches.extend(
-                list.split(',')
-                    .filter(|part| !part.is_empty())
-                    .map(|part| match part.split_once('=') {
-                        Some((key, value)) => (key.to_owned(), Some(value.to_owned())),
-                        None => (part.to_owned(), None),
-                    }),
-            );
+            config.command_line_switches.extend(list.split(',').filter(|part| !part.is_empty()).map(|part| match part.split_once('=') {
+                Some((key, value)) => (key.to_owned(), Some(value.to_owned())),
+                None => (part.to_owned(), None),
+            }));
         }
         let runtime = match CefRuntime::initialize(config) {
             Ok(runtime) => runtime,
@@ -298,11 +268,7 @@ impl CefAssistant {
         };
         let host = HostWgpuContext::new(render_state.device.clone(), render_state.queue.clone());
         #[cfg(target_os = "linux")]
-        if !host
-            .device
-            .features()
-            .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF)
-        {
+        if !host.device.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
             note("CEF: the app's device has no VULKAN_EXTERNAL_MEMORY_DMA_BUF; the page cannot be shown");
             return None;
         }
@@ -316,6 +282,9 @@ impl CefAssistant {
             // transparent there, or every transparent pixel becomes its default white and the
             // panel's corners show as white squares.
             background_color: None,
+            // Internal CEF protocol messages configure the raster scale; no remote debugging
+            // listener or DevTools window is opened.
+            devtools_protocol: true,
             ..Default::default()
         };
         let producer = match create_producer(&runtime, surface, &host) {
@@ -338,7 +307,7 @@ impl CefAssistant {
             told_theme: String::new(),
             focused: false,
             shown: false,
-            placed: None,
+            viewport: viewport::ViewportState::new(Instant::now()),
             pictures,
             inbox,
             port,
@@ -379,6 +348,7 @@ impl CefAssistant {
                 let _ = self.producer.execute_script(THEME_BRIDGE_JS, "");
                 self.told.clear();
                 self.told_theme.clear();
+                self.viewport.reset(Instant::now());
             }
             Some("focus") => self.focused = value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false),
             Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
@@ -403,26 +373,48 @@ impl CefAssistant {
             }
             return;
         };
+        // Align texel centres with the window framebuffer, not a fractional panel origin.
+        let ppp = ctx.pixels_per_point();
+        let rect = egui::Rect::from_min_max(
+            egui::pos2((rect.min.x * ppp).round() / ppp, (rect.min.y * ppp).round() / ppp),
+            egui::pos2((rect.max.x * ppp).round() / ppp, (rect.max.y * ppp).round() / ppp),
+        );
         if !self.shown {
             self.shown = true;
             let _ = self.producer.set_visible(true);
         }
-        let ppp = ctx.pixels_per_point();
-        let physical = [
-            (rect.width() * ppp).round().max(1.0) as u32,
-            (rect.height() * ppp).round().max(1.0) as u32,
-        ];
-        if self.placed != Some(physical) {
-            self.placed = Some(physical);
-            let _ = self.producer.resize(dpi::PhysicalSize::new(physical[0], physical[1]));
-            let _ = self.producer.set_scale_factor(ppp);
+        let physical = [(rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32];
+        let target = (physical, ppp);
+        if self.viewport.needs_update(target, Instant::now()) {
+            let id = self.viewport.begin(target, Instant::now());
+            // welding's native screen-info notification updates DIP layout, but CEF Linux
+            // can keep its initial DPR=1. That produced a 370px raster stretched to 463px.
+            // Configure Chromium's actual viewport and raster scale together. This changes
+            // device pixels, not CSS zoom, page scale or the native input conversion.
+            let message = serde_json::json!({
+                "id": id,
+                "method": "Emulation.setDeviceMetricsOverride",
+                "params": {
+                    "width": (physical[0] as f32 / ppp).round().max(1.0) as u32,
+                    "height": (physical[1] as f32 / ppp).round().max(1.0) as u32,
+                    "deviceScaleFactor": ppp,
+                    "mobile": false,
+                }
+            });
+            let result = self
+                .producer
+                .resize(dpi::PhysicalSize::new(physical[0], physical[1]))
+                .and_then(|()| self.producer.set_scale_factor(ppp))
+                .and_then(|()| self.producer.send_devtools_message(&message.to_string()));
+            if let Err(error) = result {
+                self.viewport.failed(Instant::now());
+                note(&format!("CEF: viewport configuration failed: {error}"));
+            }
+            note(&format!("CEF: viewport physical={}x{} scale={ppp}", physical[0], physical[1]));
         }
         self.ticks += 1;
         if self.last_stats.elapsed() >= Duration::from_secs(2) {
-            note(&format!(
-                "stats over 2 s: ticks={} state_pushes={} cef_frames={}",
-                self.ticks, self.pushes, self.frames
-            ));
+            note(&format!("stats over 2 s: ticks={} state_pushes={} cef_frames={}", self.ticks, self.pushes, self.frames));
             self.ticks = 0;
             self.pushes = 0;
             self.frames = 0;
@@ -459,11 +451,7 @@ impl CefAssistant {
                         value["metrics"]["fontBody"].as_f64().unwrap_or(0.0)
                     ));
                 }
-                if self
-                    .producer
-                    .execute_script(&format!("window.__intcadTheme&&window.__intcadTheme({theme})"), "")
-                    .is_ok()
-                {
+                if self.producer.execute_script(&format!("window.__intcadTheme&&window.__intcadTheme({theme})"), "").is_ok() {
                     self.told_theme = theme;
                     // Test hook: report what the page actually lays out, to compare with the
                     // control height and font size the app draws its own widgets with.
@@ -486,10 +474,7 @@ impl CefAssistant {
             if let Ok(mut held) = self.pictures.lock() {
                 *held = web::pictures(solve).into_iter().collect();
             }
-            if self.producer.execute_script(
-                &format!("window.__assistantHost&&window.__assistantHost.state({state})"),
-                "",
-            ).is_ok() {
+            if self.producer.execute_script(&format!("window.__assistantHost&&window.__assistantHost.state({state})"), "").is_ok() {
                 self.told = state;
                 self.pushes += 1;
             }
@@ -506,21 +491,12 @@ impl CefAssistant {
         }
         self.popup = self.take_popup(frame);
 
-        if let Some((id, _size)) = self.texture {
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Foreground,
-                egui::Id::new("assistant-cef-page"),
-            ));
-            // The panel's rectangle, not the last texture's size: a frame painted before a
-            // resize arrives a frame later, and drawing it at its own size left the panel's
-            // edge black on a fractional-scale Wayland window.
-            let draw = rect;
-            painter.image(
-                id,
-                draw,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
+        if let Some((id, size)) = self.texture {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("assistant-cef-page")));
+            // One imported texel per framebuffer pixel. A stale resize frame is clipped,
+            // never stretched; the native themed frame backs any newly exposed area.
+            let draw = egui::Rect::from_min_size(rect.min, egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp));
+            painter.with_clip_rect(rect).image(id, draw, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
             if let Some((popup, at, size)) = self.popup {
                 // CEF reports the popup's own rectangle in physical pixels, relative to the
                 // view: a native <select> list belongs under its control, not at a fixed spot.
@@ -528,21 +504,13 @@ impl CefAssistant {
                     draw.min + egui::vec2(at[0] as f32 / ppp, at[1] as f32 / ppp),
                     egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
                 );
-                painter.image(
-                    popup,
-                    popup_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                painter.image(popup, popup_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
             }
         }
 
         // Test only: four known colours, to measure what the texture path does to the page's
         // own values. The page is untouched otherwise.
-        if !self.test_select
-            && self.texture.is_some()
-            && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_PROBE_SWATCH").is_some()
-        {
+        if !self.test_select && self.texture.is_some() && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_PROBE_SWATCH").is_some() {
             self.test_select = true; // one shot, the same flag
             let _ = self.producer.execute_script(
                 "(() => { const d = document.createElement('div'); \
@@ -555,10 +523,7 @@ impl CefAssistant {
         }
         // Test only (SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT): a native select in the real page,
         // so the popup surface path is exercised in the app rather than only in the probe.
-        if !self.test_select
-            && self.texture.is_some()
-            && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT").is_some()
-        {
+        if !self.test_select && self.texture.is_some() && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_TEST_SELECT").is_some() {
             self.test_select = true;
             let _ = self.producer.execute_script(
                 "(() => { const s = document.createElement('select'); s.id = '__cef_test_select'; \
@@ -575,9 +540,7 @@ impl CefAssistant {
         // Test only: a real browser reload, to prove the theme survives one.
         if !self.test_reloaded
             && self.texture.is_some()
-            && let Some(after) = std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_RELOAD_AFTER")
-                .ok()
-                .and_then(|value| value.parse::<f32>().ok())
+            && let Some(after) = std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_RELOAD_AFTER").ok().and_then(|value| value.parse::<f32>().ok())
             && self.started.elapsed().as_secs_f32() >= after
         {
             self.test_reloaded = true;
@@ -587,11 +550,7 @@ impl CefAssistant {
         self.input(solve, ctx, rect, ppp);
         // The page paints on change; the host only has to ask soon while it is working.
         let working = self.last_frame.elapsed() < Duration::from_millis(400);
-        ctx.request_repaint_after(if working {
-            Duration::from_millis(16)
-        } else {
-            Duration::from_millis(200)
-        });
+        ctx.request_repaint_after(if working { Duration::from_millis(16) } else { Duration::from_millis(200) });
     }
 
     pub fn close(&mut self) {
@@ -603,19 +562,13 @@ impl CefAssistant {
     }
 
     pub fn edit_text(&mut self, redo: bool) {
-        let _ = self.producer.execute_script(
-            if redo { "document.execCommand('redo')" } else { "document.execCommand('undo')" },
-            "",
-        );
+        let _ = self.producer.execute_script(if redo { "document.execCommand('redo')" } else { "document.execCommand('undo')" }, "");
     }
 
-    fn publish(
-        &mut self,
-        render_state: Option<&eframe::egui_wgpu::RenderState>,
-        frame: ImportedTexture,
-    ) {
+    fn publish(&mut self, render_state: Option<&eframe::egui_wgpu::RenderState>, frame: ImportedTexture) {
         let Some(render_state) = render_state else { return };
         let size = [frame.size.width, frame.size.height];
+        let previous_size = self.texture.map(|(_, size)| size);
         let plain = match frame.format {
             wgpu::TextureFormat::Bgra8UnormSrgb => Some(wgpu::TextureFormat::Bgra8Unorm),
             wgpu::TextureFormat::Rgba8UnormSrgb => Some(wgpu::TextureFormat::Rgba8Unorm),
@@ -624,36 +577,21 @@ impl CefAssistant {
         let mut renderer = render_state.renderer.write();
         match plain {
             Some(plain) => {
-                let stale = self
-                    .page
-                    .as_ref()
-                    .is_none_or(|page| page.size != size);
+                let stale = self.page.as_ref().is_none_or(|page| page.size != size);
                 if stale {
                     let formats = [plain];
                     let texture = self.host.device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("assistant-page"),
-                        size: wgpu::Extent3d {
-                            width: size[0],
-                            height: size[1],
-                            depth_or_array_layers: 1,
-                        },
+                        size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
                         mip_level_count: 1,
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: frame.format,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING
-                            | wgpu::TextureUsages::COPY_DST,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                         view_formats: &formats,
                     });
-                    let view = texture.create_view(&wgpu::TextureViewDescriptor {
-                        format: Some(plain),
-                        ..Default::default()
-                    });
-                    let id = renderer.register_native_texture(
-                        &self.host.device,
-                        &view,
-                        wgpu::FilterMode::Linear,
-                    );
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(plain), ..Default::default() });
+                    let id = renderer.register_native_texture(&self.host.device, &view, wgpu::FilterMode::Linear);
                     if let Some(old) = self.page.take() {
                         renderer.free_texture(&old.id);
                     }
@@ -665,9 +603,7 @@ impl CefAssistant {
                     self.page = Some(PageTarget { id, texture, size });
                 }
                 if let Some(page) = &self.page {
-                    let mut encoder = self.host.device.create_command_encoder(
-                        &wgpu::CommandEncoderDescriptor { label: Some("assistant-page-copy") },
-                    );
+                    let mut encoder = self.host.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("assistant-page-copy") });
                     encoder.copy_texture_to_texture(
                         wgpu::TexelCopyTextureInfo {
                             texture: &frame.texture,
@@ -681,11 +617,7 @@ impl CefAssistant {
                             origin: wgpu::Origin3d::ZERO,
                             aspect: wgpu::TextureAspect::All,
                         },
-                        wgpu::Extent3d {
-                            width: size[0],
-                            height: size[1],
-                            depth_or_array_layers: 1,
-                        },
+                        wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
                     );
                     self.host.queue.submit([encoder.finish()]);
                     self.texture = Some((page.id, size));
@@ -696,15 +628,14 @@ impl CefAssistant {
                 if let Some((id, _)) = self.texture.take() {
                     renderer.free_texture(&id);
                 }
-                let id = renderer.register_native_texture(
-                    &self.host.device,
-                    &frame.view,
-                    wgpu::FilterMode::Linear,
-                );
+                let id = renderer.register_native_texture(&self.host.device, &frame.view, wgpu::FilterMode::Linear);
                 self.texture = Some((id, size));
             }
         }
         drop(renderer);
+        if previous_size != Some(size) {
+            note(&format!("CEF: raster {}x{}", size[0], size[1]));
+        }
         self.frames += 1;
         if !self.queue.ready {
             self.queue.ready = true;
@@ -712,10 +643,7 @@ impl CefAssistant {
             // Mastra components read, and injects the font and the transparent roots.
             let _ = self.producer.execute_script(THEME_BRIDGE_JS, "");
             self.told_theme.clear();
-            note(&format!(
-                "CEF: first frame; replaying {} held input event(s)",
-                self.queue.held
-            ));
+            note(&format!("CEF: first frame; replaying {} held input event(s)", self.queue.held));
         }
         self.last_frame = Instant::now();
     }
@@ -725,10 +653,7 @@ impl CefAssistant {
         match self.producer.acquire_popup(&self.host) {
             Ok(Some(popup)) => {
                 let size = [popup.texture.size.width, popup.texture.size.height];
-                note(&format!(
-                    "popup surface {}x{} at {},{}",
-                    size[0], size[1], popup.rect.x, popup.rect.y
-                ));
+                note(&format!("popup surface {}x{} at {},{}", size[0], size[1], popup.rect.x, popup.rect.y));
                 let plain = match popup.texture.format {
                     wgpu::TextureFormat::Bgra8UnormSrgb => Some(wgpu::TextureFormat::Bgra8Unorm),
                     wgpu::TextureFormat::Rgba8UnormSrgb => Some(wgpu::TextureFormat::Rgba8Unorm),
@@ -738,36 +663,21 @@ impl CefAssistant {
                 match plain {
                     Some(plain) => {
                         // The same gamma contract as the page: egui reads gamma values.
-                        let stale = self
-                            .popup_page
-                            .as_ref()
-                            .is_none_or(|page| page.size != size);
+                        let stale = self.popup_page.as_ref().is_none_or(|page| page.size != size);
                         if stale {
                             let formats = [plain];
                             let texture = self.host.device.create_texture(&wgpu::TextureDescriptor {
                                 label: Some("assistant-popup"),
-                                size: wgpu::Extent3d {
-                                    width: size[0],
-                                    height: size[1],
-                                    depth_or_array_layers: 1,
-                                },
+                                size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
                                 mip_level_count: 1,
                                 sample_count: 1,
                                 dimension: wgpu::TextureDimension::D2,
                                 format: popup.texture.format,
-                                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                    | wgpu::TextureUsages::COPY_DST,
+                                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                                 view_formats: &formats,
                             });
-                            let view = texture.create_view(&wgpu::TextureViewDescriptor {
-                                format: Some(plain),
-                                ..Default::default()
-                            });
-                            let id = renderer.register_native_texture(
-                                &self.host.device,
-                                &view,
-                                wgpu::FilterMode::Linear,
-                            );
+                            let view = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(plain), ..Default::default() });
+                            let id = renderer.register_native_texture(&self.host.device, &view, wgpu::FilterMode::Linear);
                             if let Some(old) = self.popup_page.take() {
                                 renderer.free_texture(&old.id);
                             }
@@ -779,9 +689,8 @@ impl CefAssistant {
                             self.popup_page = Some(PageTarget { id, texture, size });
                         }
                         if let Some(page) = &self.popup_page {
-                            let mut encoder = self.host.device.create_command_encoder(
-                                &wgpu::CommandEncoderDescriptor { label: Some("assistant-popup-copy") },
-                            );
+                            let mut encoder =
+                                self.host.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("assistant-popup-copy") });
                             encoder.copy_texture_to_texture(
                                 wgpu::TexelCopyTextureInfo {
                                     texture: &popup.texture.texture,
@@ -795,11 +704,7 @@ impl CefAssistant {
                                     origin: wgpu::Origin3d::ZERO,
                                     aspect: wgpu::TextureAspect::All,
                                 },
-                                wgpu::Extent3d {
-                                    width: size[0],
-                                    height: size[1],
-                                    depth_or_array_layers: 1,
-                                },
+                                wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
                             );
                             self.host.queue.submit([encoder.finish()]);
                             self.popup = Some((page.id, [popup.rect.x, popup.rect.y], size));
@@ -810,11 +715,7 @@ impl CefAssistant {
                             renderer.free_texture(&id);
                         }
                         self.popup = Some((
-                            renderer.register_native_texture(
-                                &self.host.device,
-                                &popup.texture.view,
-                                wgpu::FilterMode::Linear,
-                            ),
+                            renderer.register_native_texture(&self.host.device, &popup.texture.view, wgpu::FilterMode::Linear),
                             [popup.rect.x, popup.rect.y],
                             size,
                         ));
@@ -836,6 +737,19 @@ impl CefAssistant {
 
     fn pump(&mut self) {
         self.runtime.do_message_loop_work();
+        // Keep the bounded protocol queue drained, including viewport failure receipts.
+        while let Some(message) = self.producer.poll_devtools_message() {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message)
+                && let Some(id) = value.get("id").and_then(serde_json::Value::as_u64).and_then(|id| u32::try_from(id).ok())
+            {
+                let success = value.get("error").is_none() && value.get("result").is_some();
+                if self.viewport.complete(id, success, Instant::now())
+                    && let Some(error) = value.get("error")
+                {
+                    note(&format!("CEF: viewport protocol error: {error}"));
+                }
+            }
+        }
         while let Some(event) = self.producer.poll_web_event() {
             if let CefSurfaceEvent::Navigation(navigation) = &event {
                 let text = format!("{navigation:?}");
@@ -913,10 +827,7 @@ impl CefAssistant {
                         x: local.x.round() as i32,
                         y: local.y.round() as i32,
                         button: MouseButton::Left,
-                        action: MouseAction::WheelScrolled {
-                            delta_x: (delta.x * scale) as i32,
-                            delta_y: (delta.y * scale) as i32,
-                        },
+                        action: MouseAction::WheelScrolled { delta_x: (delta.x * scale) as i32, delta_y: (delta.y * scale) as i32 },
                         modifiers: EventModifiers::default(),
                     }));
                 }
@@ -984,10 +895,7 @@ impl CefAssistant {
                     }
                 }
                 egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
-                    note(&format!(
-                        "IME commit {}",
-                        text.chars().take(40).collect::<String>()
-                    ));
+                    note(&format!("IME commit {}", text.chars().take(40).collect::<String>()));
                     self.queue.push(Queued::ImeCommit(text));
                 }
                 _ => {}
@@ -1073,15 +981,42 @@ fn virtual_key(key: egui::Key) -> Option<i32> {
         K::ArrowRight => 0x27,
         K::ArrowDown => 0x28,
         K::Delete => 0x2E,
-        K::A => 0x41, K::B => 0x42, K::C => 0x43, K::D => 0x44, K::E => 0x45,
-        K::F => 0x46, K::G => 0x47, K::H => 0x48, K::I => 0x49, K::J => 0x4A,
-        K::K => 0x4B, K::L => 0x4C, K::M => 0x4D, K::N => 0x4E, K::O => 0x4F,
-        K::P => 0x50, K::Q => 0x51, K::R => 0x52, K::S => 0x53, K::T => 0x54,
-        K::U => 0x55, K::V => 0x56, K::W => 0x57, K::X => 0x58, K::Y => 0x59,
+        K::A => 0x41,
+        K::B => 0x42,
+        K::C => 0x43,
+        K::D => 0x44,
+        K::E => 0x45,
+        K::F => 0x46,
+        K::G => 0x47,
+        K::H => 0x48,
+        K::I => 0x49,
+        K::J => 0x4A,
+        K::K => 0x4B,
+        K::L => 0x4C,
+        K::M => 0x4D,
+        K::N => 0x4E,
+        K::O => 0x4F,
+        K::P => 0x50,
+        K::Q => 0x51,
+        K::R => 0x52,
+        K::S => 0x53,
+        K::T => 0x54,
+        K::U => 0x55,
+        K::V => 0x56,
+        K::W => 0x57,
+        K::X => 0x58,
+        K::Y => 0x59,
         K::Z => 0x5A,
-        K::Num0 => 0x30, K::Num1 => 0x31, K::Num2 => 0x32, K::Num3 => 0x33,
-        K::Num4 => 0x34, K::Num5 => 0x35, K::Num6 => 0x36, K::Num7 => 0x37,
-        K::Num8 => 0x38, K::Num9 => 0x39,
+        K::Num0 => 0x30,
+        K::Num1 => 0x31,
+        K::Num2 => 0x32,
+        K::Num3 => 0x33,
+        K::Num4 => 0x34,
+        K::Num5 => 0x35,
+        K::Num6 => 0x36,
+        K::Num7 => 0x37,
+        K::Num8 => 0x38,
+        K::Num9 => 0x39,
         _ => return None,
     })
 }
@@ -1211,6 +1146,15 @@ window.__intcadTheme = (t) => {
   set('--radius-sm', m.radiusSm + 'px'); set('--radius-md', m.radiusMd + 'px');
   set('--radius-lg', m.radiusLg + 'px'); set('--radius-xl', m.radiusXl + 'px'); set('--radius', m.radiusMd + 'px');
   set('--font-body', "'Intcad Sans','IBM Plex Sans','Mona Sans',system-ui,sans-serif");
+  // Font roles are point sizes, not fractions of the spacing rem. The old 12px root
+  // combined with Mastra's .875rem body / .8125rem labels yielded 10.5 / 9.75px text.
+  const fonts = {
+    body: m.fontProse, 'body-sm': m.fontBody, label: m.fontLabel, menu: m.fontLabel,
+    'card-title': m.fontLabel, 'card-title-tight': m.fontLabel, 'card-title-strong': m.fontLabel,
+    caption: m.fontCaption, column: m.fontCaption, eyebrow: m.fontCaption, meta: m.fontSmall,
+    subheading: m.fontHeading, heading: m.fontHeading, title: m.fontTitle
+  };
+  Object.entries(fonts).forEach(([role, size]) => set('--text-' + role, size + 'px'));
   root.style.fontSize = m.fontBody + 'px';
   root.style.colorScheme = t.dark ? 'dark' : 'light';
   root.dataset.intcadTheme = t.id;

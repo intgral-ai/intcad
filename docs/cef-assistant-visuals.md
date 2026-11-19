@@ -40,9 +40,37 @@ files all arrive without a branch on the theme's name.
 
 ### 1.4 Everything was 25 % too large
 
-The page sets `html { font-size: 125% }` (a WRY-era decision for a browser-sized palette). The
-host now sets the root font size to the window's body size (`Tokens::font_body`, currently 12 pt),
-and the page's rem-based components scale with it. No CSS `zoom` and no per-control patches.
+The page sets `html { font-size: 125% }` (a WRY-era decision for a browser-sized palette).
+The first fix changed the root to `Tokens::font_body` (12 points). Manual review exposed an
+overcorrection: Mastra's body is `0.875rem` and labels are `0.8125rem`, yielding actual text of
+10.5 and 9.75 CSS pixels. A root-size measurement did not establish readable text sizes.
+
+The bridge now maps the existing semantic `--text-*` variables to explicit native point sizes.
+Prose and labels follow `font_label` (12.5), the same role used by native Assistant prose and
+form labels in `ui_kit`. Caption, menu and heading roles retain separate token mappings. The root
+stays 12 for layout spacing; there is no CSS `zoom`, transform scaling or per-control patch.
+
+### 1.5 Low-resolution text and the black resize rail (manual-review follow-up)
+
+At native `pixelsPerPoint=1.25`, the running page reported `devicePixelRatio=1`, a 370×898 CSS
+viewport and a 370×898 raw CEF screenshot. The host stretched that raster across the physical
+panel. Matching flat background colours at several DPI settings did not detect this defect.
+
+The producer already calls `notify_screen_info_changed`, `was_resized` and `invalidate` when its
+scale changes, but the observed Chromium DPR remained 1. Explicitly configuring the Chromium
+viewport through its existing internal protocol changed the raw raster to 463×1123 at DPR 1.25
+without changing the CSS viewport. The host now configures that viewport together with the native
+producer's scale, including scale-only changes. It uses no remote listener in production.
+Acknowledgements are correlated; failures and lost receipts retry with bounded backoff.
+
+The host draws imported texels at native physical size from a pixel-aligned origin, clipping
+stale resize frames rather than stretching them. Input uses that same origin. Native popup
+surfaces are not clipped to the page's rectangle.
+
+The black strip was independently traced to the native resize rail: the page reports its startup
+surface before receiving theme tokens, and `web_canvas` retained that old colour. Pixel samples
+were `(13,13,13)` in the rail versus `(39,43,52)` in the themed page. Native frame/backing now use
+the same `Tokens::panel` source as the theme bridge. The existing page-readiness IPC is unchanged.
 
 ## 2. The bridge
 
@@ -51,7 +79,7 @@ and the page's rem-based components scale with it. No CSS `zoom` and no per-cont
 - colours: `window/surface/panel/raised/field/control/popup`, `text/textDim/onAccent`,
   `border/borderStrong/hover/selected/selectedText`, `accent/accentSoft`,
   `error/warning/success`;
-- metrics: `fontBody/fontSmall/fontCaption/fontHeading/fontTitle`, `controlHeight`,
+- metrics: `fontBody/fontProse/fontLabel/fontSmall/fontCaption/fontHeading/fontTitle`, `controlHeight`,
   `radiusSm/Md/Lg/Xl`, `space2/4/8/12`.
 
 `apps/solidcraft/src/assistant_cef.rs` injects `window.__intcadTheme(t)` once and calls it
@@ -77,7 +105,7 @@ Screenshots: `/tmp/themes/<id>.png` for all 25 ids (`1-bit`, `1-bit-dark`, `akar
 `nord`, `nosferatu`, `okibi`, `one-dark`, `onyx`, `platinum-9`, `solarized-light`,
 `solidcraft-95`, `tokyo-night`).
 
-Typography and density, measured in the page (`getBoundingClientRect`) against `Tokens`:
+Historical typography/density measurements (`getBoundingClientRect`):
 
 ```
 font: 12px (= Tokens::font_body)
@@ -85,10 +113,10 @@ buttons: 28, 28, 28, 28, 27, 28  (Tokens::control_height = 28)
 composer textarea: 30px high, 435 wide   inputs: 30
 ```
 
-Before the density rule the same measurement gave buttons of 21 px: scaling only the root font
-size shrank the components below the native control height. The bridge now also applies
-`min-height: control_height` and `radius-md` to the page's buttons and inputs, and the numbers
-above are the measured result. Nothing is `zoom`ed or scaled by transform.
+Before the density rule the same measurement gave buttons of 21 px. The bridge applies a
+`control_height` minimum to text-only buttons and inputs; icon buttons keep their shape.
+The root-font measurement above did not measure actual prose/label sizes; section 1.4 records
+the manual-review correction. It must not be read as a completed typography acceptance.
 
 Text contrast: the bridge computes WCAG contrast of the theme's body text on the panel and, only
 when it falls under 4.5:1, nudges the text towards the theme's own light/dark end until it passes.

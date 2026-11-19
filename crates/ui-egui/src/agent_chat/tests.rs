@@ -16060,6 +16060,26 @@ fn the_floating_panel_keeps_its_drag_strip_and_the_page_is_told_the_selection() 
     assert_eq!(told(&mut h)["radius"].as_f64(), Some(0.0));
 }
 
+/// A page's startup palette predates the native theme bridge. It must not colour the resize rail.
+#[test]
+fn the_web_panel_rail_uses_the_native_theme_not_the_pages_startup_surface() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.agent_chat.web_canvas = Some(egui::Color32::BLACK);
+    let expected = crate::theme::Tokens::get().panel;
+    assert_eq!(web::frame(&h.app, egui::Frame::NONE).fill, expected);
+    assert_eq!(web::backing(&h.app, &h.ctx), expected);
+}
+
+/// Web rem typography is not the native point scale. Send explicit semantic sizes instead.
+#[test]
+fn the_web_theme_exposes_readable_native_prose_and_label_sizes() {
+    let mut h = crate::scenario::Harness::new();
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("state JSON");
+    let t = crate::theme::Tokens::get();
+    assert_eq!(state["theme"]["metrics"]["fontProse"], json!(t.font_label));
+    assert_eq!(state["theme"]["metrics"]["fontLabel"], json!(t.font_label));
+}
+
 /// Through a window made smaller, then larger, then its old size again, the place given to the
 /// host's view moves and resizes with the Assistant's panel: it stays inside the panel and left
 /// of the right rail, and the panel stays inside the window. The Linux host places its native
