@@ -122,8 +122,13 @@ an address without a key as not connected; a service that needs no key ignores i
 
 ## What it does not do by itself
 
-The entry sets Mastra's own switch `MASTRA_TELEMETRY_DISABLED` before anything of Mastra's is
-loaded, so no usage is reported.
+The entry sets two of Mastra's own switches before anything of Mastra's is loaded:
+`MASTRA_TELEMETRY_DISABLED`, so no usage is reported, and `MASTRA_OFFLINE`, so Mastra's
+five-minute refresh of the providers' lists, which writes into its cache and into the SDK's own
+folder, does not run. What still goes out unasked: when a session opens, Mastra Code reads two
+public catalogs into memory (`https://models.dev/api.json` and
+`https://api.netlify.com/api/v1/ai-gateway/providers`), which is where the models a session offers
+come from. No switch for that was found, and none is set.
 
 ## What it keeps, and where
 

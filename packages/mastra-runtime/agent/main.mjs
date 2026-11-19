@@ -39,6 +39,12 @@ if (process.env.MASTRA_APP_DATA_DIR) {
 // Code's analytics). Intcad's agent reports nothing: it is set here, before anything of Mastra's is
 // loaded, so it holds however the agent was started.
 process.env.MASTRA_TELEMETRY_DISABLED = '1';
+// Mastra refreshes the providers' lists every five minutes and writes them into its cache and
+// into its own package folder. An installed package's folder is not to be written, so that
+// refresh is off (Mastra's own switch for it). The models a session offers do not come from
+// there: Mastra Code reads the public catalogs (models.dev, Netlify) into memory when a session
+// opens, and this switch leaves that as it is.
+process.env.MASTRA_OFFLINE = '1';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const sdkRoot = resolve(process.env.SOLIDCRAFT_MASTRA_SDK || join(here, '..', 'node_modules'));
