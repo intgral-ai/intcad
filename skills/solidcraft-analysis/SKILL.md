@@ -5,7 +5,7 @@ description: "Use when a user asks how an Intcad part behaves under load (stress
 
 # Stress estimates
 
-`inspect.stress_estimate` meshes one body (gmsh) and solves it (CalculiX) on the user's computer: linear static, small deflection, one load case. It is an estimate, never a verdict: report it as the reply's `how_to_report` says. Worked setups: `skill_reference {"skill":"solidcraft-analysis"}`.
+`inspect.stress_estimate` meshes one body (gmsh) and solves it (CalculiX) on the user's computer: linear static, small deflection, one load case. It is an estimate, never a verdict. Worked setups: `skill_reference {"skill":"solidcraft-analysis"}`.
 
 ## Workflow
 1. **Faces:** `execute model.faces {}` gives each face's name, index, centroid and normal. Faces the user selected come with their message. Name or index a face; a point `[x,y,z]` must lie within 1 mm of it. One half of a hole takes the whole hole.
@@ -18,7 +18,7 @@ description: "Use when a user asks how an Intcad part behaves under load (stress
 4. **Run** without `dry_run`. The user allows it in the chat; it takes seconds to minutes, and Stop ends it.
 
 ## Reporting
-- Follow `how_to_report`. Warnings and the `equilibrium` line come before any number.
+- Follow `how_to_report`. Warnings and the `equilibrium` line (each support's force and moment in `supports`) come before any number.
 - If `peak_at_support` is set, lead with `peak_away` and its fraction of yield; the support's value depends on the mesh.
 - Give each number's mesh check (settled or still changing, with its %), and the material and its source.
 - Deflection: `runs[].max_deflection_mm`. To show it: `inspect.stress_estimate.show {"show":"deflection"}`.

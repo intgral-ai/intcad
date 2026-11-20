@@ -326,8 +326,11 @@ fn fake_run(elements: Elements, stress: f64, disp: f64) -> fea::Run {
         cells: Vec::new(),
         isolated: true,
         equilibrium: None,
+        reactions: Vec::new(),
         peaks: fea::Peaks { at: None, away: Some((stress, [0.0; 3])), distance: 3.0 },
         threads: 1,
+        mesher_version: None,
+        solver_version: None,
     }
 }
 
@@ -383,7 +386,7 @@ fn the_words_say_estimate_and_how_far_from_yield_never_pass_or_fail() {
 /// a warning that says the result is suspect and why. Nothing runs.
 #[test]
 fn the_reaction_is_quoted_against_the_loads_and_a_gap_over_one_percent_is_a_warning() {
-    let e = |up: f64| fea::Equilibrium { reaction: [0.0, 0.0, up], applied: [0.0, 0.0, -10.0], scale: 10.0 };
+    let e = |up: f64| fea::Equilibrium { reaction: [0.0, 0.0, up], applied: [0.0, 0.0, -10.0], scale: 10.0, moment: None };
     assert_eq!(equilibrium_line(&e(10.0)), "Supports carry 10.0 N; loads applied 10.0 N");
     for balanced in [10.0, 9.95, 9.9] {
         assert_eq!(equilibrium_warning(&e(balanced)), None, "{balanced} N");
@@ -392,6 +395,53 @@ fn the_reaction_is_quoted_against_the_loads_and_a_gap_over_one_percent_is_a_warn
     for needed in ["9.00 N", "10.0 N", "10.0% apart", "more than 1.00%", "suspect", "do not balance"] {
         assert!(w.contains(needed), "`{needed}` missing: {w}");
     }
+}
+
+/// A5: the moments in the equilibrium line and its warning, and one support's line.
+/// Input: 10 N against 10 N with moments about the part's middle that cancel, then 20 % apart; a
+/// clamp carrying 10 N up (with 1e-11 N of round-off across) and 1000 N·mm about −Y, its nodes'
+/// middle at (0, 10, 0.75) mm. Action: `equilibrium_line`, `equilibrium_warning`, `support_json`.
+/// Pass: "…; their moments balance too" and no warning; then "…; their moments are 20.0% apart"
+/// and a warning naming both moments, 20 %, "suspect"; the support's line gives its force, moment,
+/// their components (round-off and −0 read as 0) and where; its numbers rounded.
+#[test]
+fn moments_join_the_equilibrium_line_and_each_support_says_what_it_carries() {
+    let m = |miss: f64| fea::MomentBalance {
+        about: [50.0, 10.0, 0.75],
+        reaction: [0.0, -500.0 * (1.0 - miss), 0.0],
+        applied: [0.0, 500.0, 0.0],
+        scale: 1000.0,
+    };
+    let e = |miss: f64| fea::Equilibrium { reaction: [0.0, 0.0, 10.0], applied: [0.0, 0.0, -10.0], scale: 10.0, moment: Some(m(miss)) };
+    assert_eq!(equilibrium_line(&e(0.0)), "Supports carry 10.0 N; loads applied 10.0 N; their moments balance too");
+    assert_eq!(equilibrium_warning(&e(0.0)), None);
+    assert_eq!(equilibrium_line(&e(0.4)), "Supports carry 10.0 N; loads applied 10.0 N; their moments are 20.0% apart");
+    let w = equilibrium_warning(&e(0.4)).unwrap_or_default();
+    for needed in ["moment", "300 N·mm", "500 N·mm", "20.0% of the moments apart", "more than 1.00%", "suspect"] {
+        assert!(w.contains(needed), "`{needed}` missing: {w}");
+    }
+    let r = fea::Reaction {
+        label: "face 2 (flat, 20 × 1.5 mm)".into(),
+        force: [1e-11, 0.0, 10.0],
+        moment: [0.0, -1000.0, -0.0],
+        about: [0.0, 10.0, 0.75],
+    };
+    let j = serde_json::to_value(support_json(&r, 100.0)).unwrap_or_default();
+    assert_eq!(j["line"], "face 2 (flat, 20 × 1.5 mm) carries 10.0 N (0, 0, 10) and a moment of 1000 N·mm (0, -1000, 0) about (0, 10, 0.75) mm");
+    assert_eq!(j["force_n"], json!([0.0, 0.0, 10.0]));
+    assert_eq!(j["moment_nmm"], json!([0.0, -1000.0, 0.0]));
+    assert_eq!((j["force_size_n"].as_f64(), j["moment_size_nmm"].as_f64()), (Some(10.0), Some(1000.0)));
+    assert_eq!(j["about_mm"], json!([0.0, 10.0, 0.75]));
+}
+
+/// A number in a sentence keeps about three figures when it rounds up into the next decade: a
+/// solid clamp's 9.99999 N read "10.00 N" beside the loads' "10.0 N".
+#[test]
+fn numbers_in_sentences_keep_three_figures_across_a_decade() {
+    for (x, words) in [(9.99999, "10.0"), (99.96, "100"), (0.99996, "1.00"), (-9.99999, "-10.0"), (9.994, "9.99"), (123.4, "123"), (0.5, "0.500")] {
+        assert_eq!(sig(x), words, "{x}");
+    }
+    assert_eq!(sig(f64::NAN), "?");
 }
 
 /// U3: the mesh check's statuses and what they mean.
@@ -490,6 +540,7 @@ impl CloneRun for fea::Run {
         let mut r = fake_run(self.elements, self.max_stress, self.max_disp);
         r.peaks = self.peaks.clone();
         r.equilibrium = self.equilibrium;
+        r.reactions = self.reactions.clone();
         r
     }
 }
@@ -606,7 +657,7 @@ fn the_new_words_never_pass_or_fail_the_part_or_give_a_factor_of_safety() {
     for stress in [20.0, 190.0, 900.0] {
         let first = peaked_run(stress, Some("root"), Some(stress / 2.0), 8.0);
         let mut finer = peaked_run(stress * 1.2, Some("root"), Some(stress / 1.9), 9.0);
-        finer.equilibrium = Some(fea::Equilibrium { reaction: [0.0, 0.0, 9.0], applied: [0.0, 0.0, -10.0], scale: 10.0 });
+        finer.equilibrium = Some(fea::Equilibrium { reaction: [0.0, 0.0, 9.0], applied: [0.0, 0.0, -10.0], scale: 10.0, moment: None });
         for check in [
             Check::Ran { first_h: 2.0, finer_h: 1.33, items: settling(&first, &finer) },
             Check::Skipped { nodes: 9.0e5, bytes: 1.4e10, limit: Limit::Nodes(2.0e5) },
@@ -2044,4 +2095,146 @@ fn c1_a_probe_on_a_sheet_reads_the_face_it_is_on() {
     assert!((top / beam - 1.0).abs() <= 0.05, "{r}");
     assert!((bottom / -beam - 1.0).abs() <= 0.05, "{r}");
     assert!((top / -bottom - 1.0).abs() <= 0.02, "{top} vs {bottom}");
+}
+
+/// The angle bracket's base underside and the top end of its upright: the faces `angle` builds,
+/// found by where they are (the underside faces down at z = 0; the upright's top end is the face
+/// highest up).
+fn angle_ends(s: &mut Session) -> (u64, u64) {
+    angle(s);
+    let body = s.model.state().bodies.first().map(|b| b.name.clone()).unwrap_or_default();
+    let faces = run(s, "model.faces", json!({"body": body}));
+    let all: Vec<Value> = faces["faces"].as_array().cloned().unwrap_or_default();
+    let z = |f: &Value| number(&f["centroid"][2]);
+    let base = all
+        .iter()
+        .find(|f| z(f).abs() < 1e-6 && number(&f["plane_normal"][2]) < -0.99)
+        .and_then(|f| f["index"].as_u64())
+        .unwrap_or_else(|| panic!("no underside: {faces}"));
+    let top = all.iter().max_by(|a, b| z(a).total_cmp(&z(b))).and_then(|f| f["index"].as_u64()).unwrap_or_else(|| panic!("no top: {faces}"));
+    (base, top)
+}
+
+/// A5 (V-A5), real: a clamp's moment is the force times its lever arm.
+/// Input: R1's strip (100 x 20 x 1.5 mm, 5052-H32) clamped at x = 0, 10 N down on its end at
+/// x = 100; as solids and as shells (where the clamp's moment is a couple across the expanded
+/// shell's thickness), mesh check off. Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// By hand: the clamp carries 10 N up and F × e = 10 × 100 = 1000 N·mm about −Y, about its own
+/// middle at x = 0.
+/// Pass, for each: the one support's force within 0.5 % of 10 N up, its moment within 0.5 % of
+/// 1000 N·mm and along −Y (its other components under 0.5 % of it); the moments balance within
+/// 0.1 %; the reply names both programs' versions.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn a5_a_clamps_moment_is_the_force_times_its_lever_arm() {
+    for elements in ["solid", "shell"] {
+        let mut s = Session::default();
+        let (_, root, tip) = strip(&mut s, 100.0);
+        let r = run(
+            &mut s,
+            CMD,
+            json!({"loads": [{"face": tip, "force": [0, 0, -10]}], "supports": [{"face": root}], "material": aluminium(), "elements": elements,
+                   "mesh_check": false}),
+        );
+        let eq = &r["equilibrium"];
+        let support = &eq["supports"][0];
+        eprintln!(
+            "A5 {elements}: {} | {}; moments {}% apart; programs {}",
+            support["line"], eq["line"], eq["moment_mismatch_percent"], r["programs"]
+        );
+        assert_eq!(eq["supports"].as_array().map(Vec::len), Some(1), "{eq}");
+        let (f, m) = (&support["force_n"], &support["moment_nmm"]);
+        assert!((number(&f[2]) / 10.0 - 1.0).abs() <= 0.005 && number(&f[0]).abs() < 0.05 && number(&f[1]).abs() < 0.05, "{elements}: {support}");
+        assert!((number(&m[1]) / -1000.0 - 1.0).abs() <= 0.005, "{elements}: {support}");
+        assert!(number(&m[0]).abs() <= 5.0 && number(&m[2]).abs() <= 5.0, "{elements}: {support}");
+        assert!(number(&support["about_mm"][0]).abs() < 1e-6, "the clamp's middle is at x = 0: {support}");
+        assert!(number(&eq["moment_mismatch_percent"]) <= 0.1, "{eq}");
+        assert!(r["programs"]["mesher"].as_str().is_some_and(|v| v.starts_with("gmsh ")), "{}", r["programs"]);
+        assert!(r["programs"]["solver"].as_str().is_some_and(|v| v.starts_with("CalculiX ")), "{}", r["programs"]);
+    }
+}
+
+/// A4/A5 (V-A4), real: the L bracket's supports balance at every mesh.
+/// Input: the angle bracket (a 60 x 40 base, a 40 mm upright, 1.5 mm 5052-H32) as shells, its
+/// base's underside held (an area: translations only), 20 N along +Y on the upright's top end; at
+/// meshes 2.75, 1.83, 1.0 and 0.6 mm, mesh check off. Real: the app's modelling, gmsh, CalculiX.
+/// Faked: nothing.
+/// Pass, at every mesh: the support's force within 0.1 % of 20 N along −Y; forces and moments
+/// balance within 0.1 %; no warning says the result is suspect.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn a4_the_l_brackets_support_balances_at_every_mesh() {
+    for mesh in [2.75, 1.83, 1.0, 0.6] {
+        let mut s = Session::default();
+        let (base, top) = angle_ends(&mut s);
+        let r = run(
+            &mut s,
+            CMD,
+            json!({"loads": [{"face": top, "force": [0, 20, 0]}], "supports": [{"face": base}], "material": aluminium(), "elements": "shell",
+                   "mesh_size": mesh, "mesh_check": false}),
+        );
+        let eq = &r["equilibrium"];
+        let support = &eq["supports"][0];
+        eprintln!(
+            "A4 at {mesh} mm ({} nodes): {} | forces {}%, moments {}% apart",
+            r["runs"][0]["nodes"], support["line"], eq["mismatch_percent"], eq["moment_mismatch_percent"]
+        );
+        assert!((number(&support["force_n"][1]) / -20.0 - 1.0).abs() <= 0.001, "{mesh}: {support}");
+        assert!(number(&eq["mismatch_percent"]) <= 0.1 && number(&eq["moment_mismatch_percent"]) <= 0.1, "{mesh}: {eq}");
+        assert!(!r["warnings"].to_string().contains("suspect"), "{mesh}: {}", r["warnings"]);
+    }
+}
+
+/// A7 (V-A7), real: the same request gives the same mesh, numbers and words.
+/// Input: R2's plate with a hole (solids, 1.5 mm), the angle bracket as shells and as solids (its
+/// default meshes), each set up afresh and run twice; mesh check off. Real: the app's modelling,
+/// gmsh, CalculiX. Faked: nothing.
+/// Observable: the whole reply but the seconds each solve took.
+/// Pass: the two replies of each are identical: node and element counts, every number, every
+/// line and warning.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn a7_the_same_request_gives_the_same_numbers_and_words() {
+    let without_times = |mut r: Value| {
+        for x in r["runs"].as_array_mut().into_iter().flatten() {
+            if let Some(o) = x.as_object_mut() {
+                o.remove("seconds");
+            }
+        }
+        r
+    };
+    let plate = |s: &mut Session| {
+        let (held, pulled) = plate_with_hole(s);
+        json!({"loads": [{"face": pulled, "force": [800, 0, 0]}], "supports": [{"face": held}], "material": aluminium(), "elements": "solid",
+               "mesh_size": 1.5, "mesh_check": false})
+    };
+    let bracket = |elements: &'static str| {
+        move |s: &mut Session| {
+            let (base, top) = angle_ends(s);
+            json!({"loads": [{"face": top, "force": [0, 20, 0]}], "supports": [{"face": base}], "material": aluminium(), "elements": elements,
+                   "mesh_check": false})
+        }
+    };
+    let cases: [(&str, Box<dyn Fn(&mut Session) -> Value>); 3] = [
+        ("plate with a hole", Box::new(plate)),
+        ("bracket as shells", Box::new(bracket("shell"))),
+        ("bracket as solids", Box::new(bracket("solid"))),
+    ];
+    for (name, setup) in cases {
+        let once = || {
+            let mut s = Session::default();
+            let p = setup(&mut s);
+            without_times(run(&mut s, CMD, p))
+        };
+        let (a, b) = (once(), once());
+        eprintln!(
+            "A7 {name}: {} nodes, {} MPa, {} mm; {}; identical: {}",
+            a["runs"][0]["nodes"],
+            a["runs"][0]["max_von_mises_mpa"],
+            a["runs"][0]["max_deflection_mm"],
+            a["equilibrium"]["line"],
+            a == b
+        );
+        assert_eq!(a, b, "{name}");
+    }
 }
