@@ -528,7 +528,16 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         // The version links to its release notes; measured here so Report a bug leaves it room.
         let version =
             ui.painter().layout_no_wrap(format!("v{}", crate::update::current_version()), FontId::proportional(t.font_small), t.app_bar_text);
-        let (report, report_label) = report_rect(r, captions, tabs_start, label_width, version.size().x, app.header);
+        // The account chip is part of the shared right cluster: reserve its width, or hide it
+        // before it can cover Report a bug, the version link or a narrow tab strip.
+        let chip_width = crate::account::status_chip_width(ui, app);
+        let chip_reserve = chip_width.map_or(0.0, |width| width + 10.0);
+        let chip_fits = chip_width.is_some()
+            && r.width() >= 900.0
+            && r.right() - (captions + chip_reserve) - 28.0 - CLUSTER_BUTTONS - 8.0 - tabs_start >= TABS_KEPT
+            && (app.header.version != VersionPlace::Header || version_room(r, captions + chip_reserve, tabs_start, version.size().x).is_some());
+        let inset = captions + if chip_fits { chip_reserve } else { 0.0 };
+        let (report, report_label) = report_rect(r, inset, tabs_start, label_width, version.size().x, app.header);
         // Settings' left edge; command search, when the bar holds it, sits just before it and
         // moves the assistant button and the end of the document tabs left by its width.
         let gear_left = report.left() - 68.0;
@@ -613,9 +622,9 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         if gresp.backing_on_hover_text(prefs_tip).clicked() {
             crate::prefs::open_at(app, 0);
         }
-        if app.header.version == VersionPlace::Header && version_room(r, captions, tabs_start, version.size().x).is_some() {
+        if app.header.version == VersionPlace::Header && version_room(r, inset, tabs_start, version.size().x).is_some() {
             let galley = version;
-            let vrect = Align2::RIGHT_CENTER.anchor_size(pos2(r.right() - 12.0 - captions, r.center().y), galley.size());
+            let vrect = Align2::RIGHT_CENTER.anchor_size(pos2(r.right() - 12.0 - inset, r.center().y), galley.size());
             let vresp = ui.interact(
                 vrect.expand2(vec2(2.0, 4.0)).intersect(Rect::everything_right_of(report.right())),
                 ui.id().with("sc_version_link"),
@@ -628,9 +637,21 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             ui.painter().galley(vrect.min, galley, t.app_bar_text);
             crate::scenario::publish_handle("titlebar:version", vrect.center());
+            crate::scenario::publish_rect("titlebar:version", vrect);
             if vresp.clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
             }
+        }
+        let chip_slot = if chip_fits {
+            chip_width.map(|width| {
+                let right = r.right() - captions - 4.0;
+                Rect::from_min_size(pos2(right - width, r.center().y - 9.0), vec2(width, 18.0))
+            })
+        } else {
+            None
+        };
+        if let Some(slot) = chip_slot {
+            crate::account::status_chip(app, ui, slot);
         }
         if app.custom_titlebar {
             crate::titlebar::caption_buttons(app, ui, r);
@@ -4407,6 +4428,28 @@ mod header_report_tests {
             let report = crate::scenario::handle_at("titlebar:report").expect("the report button is drawn");
             // Its click area starts where the report button ends, so a click on that button reaches the report.
             assert!(version.x > report.x, "width {width}");
+        }
+    }
+
+    #[test]
+    fn the_account_status_chip_never_covers_report_or_version() {
+        for width in [700.0, 900.0, 1200.0, 1600.0] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.home.open = false;
+            h.app.custom_titlebar = true;
+            h.app.account = crate::account::State::with_port(crate::account::tests::signed_in_unknown_port());
+            h.call("ui.resize", json!({"width":width,"height":720}));
+            h.frames(3);
+            let Some(chip) = crate::scenario::rect_of("titlebar:account_status") else {
+                assert!(width < 900.0, "the chip should appear at {width}");
+                continue;
+            };
+            let report = crate::scenario::rect_of("titlebar:report").expect("the report button is drawn");
+            assert!(!chip.intersects(report), "width {width}: {chip:?} overlaps {report:?}");
+            if let Some(version) = crate::scenario::rect_of("titlebar:version") {
+                assert!(chip.left() >= version.right() + 1.0, "width {width}: {chip:?} overlaps {version:?}");
+            }
+            assert!(chip.right() <= width - crate::titlebar::WIDTH - 2.0, "width {width}: {chip:?} runs under the window buttons");
         }
     }
 

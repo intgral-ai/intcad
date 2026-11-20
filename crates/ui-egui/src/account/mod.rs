@@ -9,15 +9,27 @@
 mod panel;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use solidcraft_engine::entitlement::{Refusal, RefusalCode};
 
+pub(crate) use panel::status_chip_width;
 pub use panel::{show_summary, status_chip};
 
 /// A point in time for a device-code login, in seconds since the Unix epoch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamp(pub u64);
+
+/// An explicit account action. Rendering only enqueues it; [`State::process_actions`] calls the
+/// port outside a frame. Task 11's runtime must keep networking asynchronous and call the processing
+/// step from its own loop, never from a paint pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    RefreshStatus,
+    SignIn,
+    SignOut,
+    SwitchAccount,
+}
 
 /// Guidance for deleting an account by hand: where to ask and the steps to follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +172,8 @@ pub struct State {
     view: AccountView,
     /// Cached at [`State::with_port`], so no frame asks the host for static guidance text.
     guide: Option<DeleteAccountGuide>,
+    /// Explicit actions awaiting [`State::process_actions`] outside a frame.
+    pending: Vec<Action>,
     notice: Option<Refusal>,
 }
 
@@ -170,20 +184,54 @@ impl Default for AccountView {
     }
 }
 
+/// Adopt a successful explicit action's fresh view and guidance, or keep its refusal.
+fn apply(
+    port: &dyn AccountPort,
+    result: Result<(), Refusal>,
+    view: &mut AccountView,
+    guide: &mut Option<DeleteAccountGuide>,
+    notice: &mut Option<Refusal>,
+) {
+    match result {
+        Ok(()) => {
+            *view = port.view();
+            *guide = Some(port.delete_account_guide());
+            *notice = None;
+        }
+        Err(refusal) => *notice = Some(refusal),
+    }
+}
+
 impl State {
     /// Install the host's port; this is the composition root's only entry point.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_port(port: Box<dyn AccountPort>) -> Self {
         let view = port.view();
         let guide = port.delete_account_guide();
-        Self { port: Some(port), view, guide: Some(guide), notice: None }
+        Self { port: Some(port), view, guide: Some(guide), pending: Vec::new(), notice: None }
+    }
+
+    /// The browser stays anonymous and offline even if a desktop composition root is reused.
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_port(port: Box<dyn AccountPort>) -> Self {
+        drop(port);
+        Self::default()
     }
 
     /// Replace the host's port, e.g. after a host restart.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn set_port(&mut self, port: Box<dyn AccountPort>) {
         self.view = port.view();
         self.guide = Some(port.delete_account_guide());
         self.port = Some(port);
+        self.pending.clear();
         self.notice = None;
+    }
+
+    /// No web build may install an account port, even through a shared host entry point.
+    #[cfg(target_arch = "wasm32")]
+    pub fn set_port(&mut self, port: Box<dyn AccountPort>) {
+        drop(port);
     }
 
     pub fn is_installed(&self) -> bool {
@@ -199,52 +247,48 @@ impl State {
         self.notice.as_ref()
     }
 
-    /// Ask the host for a fresh status. Hosts call this from their own scheduler, not from a
-    /// frame; an explicit sign-in or sign-out already refreshes the cached view.
-    pub fn refresh_status(&mut self) {
-        let Some(port) = self.port.as_mut() else { return };
-        match port.refresh_status() {
-            Ok(view) => {
-                self.view = view;
-                self.notice = None;
-            }
-            Err(refusal) => self.notice = Some(refusal),
+    /// Enqueue an explicit action. Rendering calls this and nothing else; repeated clicks on a
+    /// pending action are ignored so one gesture starts one request.
+    pub fn request(&mut self, action: Action) {
+        if self.port.is_none() || self.pending.contains(&action) {
+            return;
         }
+        self.pending.push(action);
     }
 
-    /// Explicit sign-in; the port must not block the window thread.
-    pub fn sign_in(&mut self) {
-        let Some(port) = self.port.as_mut() else { return };
-        match port.sign_in() {
-            Ok(()) => {
-                self.view = port.view();
-                self.notice = None;
-            }
-            Err(refusal) => self.notice = Some(refusal),
-        }
+    /// The action shown as progress; the render path reads this cached value.
+    pub fn pending_action(&self) -> Option<Action> {
+        self.pending.first().copied()
     }
 
-    /// Explicit sign-out; the session and every old-account result stop with it.
-    pub fn sign_out(&mut self) {
+    /// Run every queued action on the port, outside a frame. Task 11 must make the network work
+    /// asynchronous: this call may block the host loop, never the window thread's paint pass.
+    pub fn process_actions(&mut self) {
+        let actions = std::mem::take(&mut self.pending);
         let Some(port) = self.port.as_mut() else { return };
-        match port.sign_out() {
-            Ok(()) => {
-                self.view = port.view();
-                self.notice = None;
+        for action in actions {
+            match action {
+                Action::RefreshStatus => match port.refresh_status() {
+                    Ok(view) => {
+                        self.view = view;
+                        self.guide = Some(port.delete_account_guide());
+                        self.notice = None;
+                    }
+                    Err(refusal) => self.notice = Some(refusal),
+                },
+                Action::SignIn => {
+                    let result = port.sign_in();
+                    apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                }
+                Action::SignOut => {
+                    let result = port.sign_out();
+                    apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                }
+                Action::SwitchAccount => {
+                    let result = port.switch_account();
+                    apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                }
             }
-            Err(refusal) => self.notice = Some(refusal),
-        }
-    }
-
-    /// Explicit account switch; the host stops the old account's work.
-    pub fn switch_account(&mut self) {
-        let Some(port) = self.port.as_mut() else { return };
-        match port.switch_account() {
-            Ok(()) => {
-                self.view = port.view();
-                self.notice = None;
-            }
-            Err(refusal) => self.notice = Some(refusal),
         }
     }
 

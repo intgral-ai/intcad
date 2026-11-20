@@ -25,7 +25,16 @@
     "account.title": "Intcad account",
     "account.unavailable": "Intcad accounts and credits are not available in this build.",
     "account.zero_credits": "No credits are available for billed tools.",
-    "account.zero_credits_chat": "No credits are available for billed tools. Plain chat still works while your session is valid."
+    "account.zero_credits_chat": "No credits are available for billed tools. Plain chat still works while your session is valid.",
+    "account.chip_credits": "{credits} credits",
+    "account.chip_zero": "No credits",
+    "account.chip_settling": "Credits settling",
+    "account.chip_unknown": "Credits unknown",
+    "account.signing_in": "Signing in…",
+    "account.signing_out": "Signing out…",
+    "account.switching": "Switching account…",
+    "account.action_pending": "Waiting for the account service…",
+    "account.delete_step_confirm": "Confirm the deletion and keep the confirmation."
   },
   "de": {
     "account.available": "Verfügbares Guthaben: {credits}",
@@ -53,7 +62,16 @@
     "account.title": "Intcad-Konto",
     "account.unavailable": "Intcad-Konten und Guthaben sind in diesem Build nicht verfügbar.",
     "account.zero_credits": "Für kostenpflichtige Werkzeuge ist kein Guthaben verfügbar.",
-    "account.zero_credits_chat": "Für kostenpflichtige Werkzeuge ist kein Guthaben verfügbar. Einfacher Chat funktioniert weiterhin, solange deine Sitzung gültig ist."
+    "account.zero_credits_chat": "Für kostenpflichtige Werkzeuge ist kein Guthaben verfügbar. Einfacher Chat funktioniert weiterhin, solange deine Sitzung gültig ist.",
+    "account.chip_credits": "{credits} Guthaben",
+    "account.chip_zero": "Kein Guthaben",
+    "account.chip_settling": "Guthaben in Abrechnung",
+    "account.chip_unknown": "Guthaben unbekannt",
+    "account.signing_in": "Anmeldung läuft…",
+    "account.signing_out": "Abmeldung läuft…",
+    "account.switching": "Kontowechsel läuft…",
+    "account.action_pending": "Warte auf den Kontodienst…",
+    "account.delete_step_confirm": "Bestätige die Löschung und bewahre die Bestätigung auf."
   },
   "ja": {
     "account.available": "利用可能なクレジット: {credits}",
@@ -81,7 +99,16 @@
     "account.title": "Intcad アカウント",
     "account.unavailable": "このビルドでは Intcad アカウントとクレジットを利用できません。",
     "account.zero_credits": "課金対象のツールに利用できるクレジットがありません。",
-    "account.zero_credits_chat": "課金対象のツールに利用できるクレジットがありません。セッションが有効な間は通常のチャットを引き続き利用できます。"
+    "account.zero_credits_chat": "課金対象のツールに利用できるクレジットがありません。セッションが有効な間は通常のチャットを引き続き利用できます。",
+    "account.chip_credits": "{credits} クレジット",
+    "account.chip_zero": "クレジットなし",
+    "account.chip_settling": "クレジット決済中",
+    "account.chip_unknown": "クレジット不明",
+    "account.signing_in": "サインインしています…",
+    "account.signing_out": "サインアウトしています…",
+    "account.switching": "アカウントを切り替えています…",
+    "account.action_pending": "アカウントサービスを待機しています…",
+    "account.delete_step_confirm": "削除を確定し、確認内容を保管してください。"
   },
   "zh": {
     "account.available": "可用额度：{credits}",
@@ -109,7 +136,16 @@
     "account.title": "Intcad 账户",
     "account.unavailable": "此版本中无法使用 Intcad 账户和额度。",
     "account.zero_credits": "计费工具没有可用额度。",
-    "account.zero_credits_chat": "计费工具没有可用额度。会话有效期间，普通聊天仍可使用。"
+    "account.zero_credits_chat": "计费工具没有可用额度。会话有效期间，普通聊天仍可使用。",
+    "account.chip_credits": "{credits} 额度",
+    "account.chip_zero": "无可用额度",
+    "account.chip_settling": "额度结算中",
+    "account.chip_unknown": "额度未知",
+    "account.signing_in": "正在登录…",
+    "account.signing_out": "正在退出登录…",
+    "account.switching": "正在切换账户…",
+    "account.action_pending": "正在等待账户服务…",
+    "account.delete_step_confirm": "确认删除并保存确认信息。"
   },
   "ko": {
     "account.available": "사용 가능한 크레딧: {credits}",
@@ -137,7 +173,16 @@
     "account.title": "Intcad 계정",
     "account.unavailable": "이 빌드에서는 Intcad 계정과 크레딧을 사용할 수 없습니다.",
     "account.zero_credits": "유료 도구에 사용할 수 있는 크레딧이 없습니다.",
-    "account.zero_credits_chat": "유료 도구에 사용할 수 있는 크레딧이 없습니다. 세션이 유효한 동안에는 일반 채팅을 계속 사용할 수 있습니다."
+    "account.zero_credits_chat": "유료 도구에 사용할 수 있는 크레딧이 없습니다. 세션이 유효한 동안에는 일반 채팅을 계속 사용할 수 있습니다.",
+    "account.chip_credits": "{credits} 크레딧",
+    "account.chip_zero": "크레딧 없음",
+    "account.chip_settling": "크레딧 정산 중",
+    "account.chip_unknown": "크레딧 알 수 없음",
+    "account.signing_in": "로그인 중…",
+    "account.signing_out": "로그아웃 중…",
+    "account.switching": "계정 전환 중…",
+    "account.action_pending": "계정 서비스를 기다리는 중…",
+    "account.delete_step_confirm": "삭제를 확인하고 확인 내용을 보관하십시오."
   },
   "ar": {
     "account.available": "الائتمانات المتاحة: {credits}",
@@ -165,7 +210,16 @@
     "account.title": "حساب Intcad",
     "account.unavailable": "حسابات Intcad والائتمانات غير متاحة في هذا الإصدار.",
     "account.zero_credits": "لا توجد ائتمانات متاحة للأدوات المدفوعة.",
-    "account.zero_credits_chat": "لا توجد ائتمانات متاحة للأدوات المدفوعة. تظل المحادثة العادية تعمل ما دامت جلستك صالحة."
+    "account.zero_credits_chat": "لا توجد ائتمانات متاحة للأدوات المدفوعة. تظل المحادثة العادية تعمل ما دامت جلستك صالحة.",
+    "account.chip_credits": "{credits} ائتمانات",
+    "account.chip_zero": "لا توجد ائتمانات",
+    "account.chip_settling": "الائتمانات قيد التسوية",
+    "account.chip_unknown": "الائتمانات غير معروفة",
+    "account.signing_in": "جارٍ تسجيل الدخول…",
+    "account.signing_out": "جارٍ تسجيل الخروج…",
+    "account.switching": "جارٍ تبديل الحساب…",
+    "account.action_pending": "بانتظار خدمة الحساب…",
+    "account.delete_step_confirm": "أكّد الحذف واحتفظ بالتأكيد."
   },
   "he": {
     "account.available": "קרדיטים זמינים: {credits}",
@@ -193,7 +247,16 @@
     "account.title": "חשבון Intcad",
     "account.unavailable": "חשבונות Intcad וקרדיטים אינם זמינים בגרסה הזו.",
     "account.zero_credits": "אין קרדיטים זמינים לכלים בתשלום.",
-    "account.zero_credits_chat": "אין קרדיטים זמינים לכלים בתשלום. צ׳אט רגיל עדיין עובד כל עוד ההפעלה שלך תקפה."
+    "account.zero_credits_chat": "אין קרדיטים זמינים לכלים בתשלום. צ׳אט רגיל עדיין עובד כל עוד ההפעלה שלך תקפה.",
+    "account.chip_credits": "{credits} קרדיטים",
+    "account.chip_zero": "אין קרדיטים",
+    "account.chip_settling": "קרדיטים בהסדרה",
+    "account.chip_unknown": "קרדיטים לא ידועים",
+    "account.signing_in": "מתחבר…",
+    "account.signing_out": "מתנתק…",
+    "account.switching": "מחליף חשבון…",
+    "account.action_pending": "ממתין לשירות החשבון…",
+    "account.delete_step_confirm": "אשר את המחיקה ושמור את האישור."
   },
   "vi": {
     "account.available": "Tín dụng khả dụng: {credits}",
@@ -221,6 +284,15 @@
     "account.title": "Tài khoản Intcad",
     "account.unavailable": "Tài khoản và tín dụng Intcad không khả dụng trong bản dựng này.",
     "account.zero_credits": "Không có tín dụng khả dụng cho các công cụ tính phí.",
-    "account.zero_credits_chat": "Không có tín dụng khả dụng cho các công cụ tính phí. Trò chuyện thông thường vẫn hoạt động khi phiên của bạn còn hiệu lực."
+    "account.zero_credits_chat": "Không có tín dụng khả dụng cho các công cụ tính phí. Trò chuyện thông thường vẫn hoạt động khi phiên của bạn còn hiệu lực.",
+    "account.chip_credits": "{credits} tín dụng",
+    "account.chip_zero": "Không có tín dụng",
+    "account.chip_settling": "Tín dụng đang tất toán",
+    "account.chip_unknown": "Không rõ tín dụng",
+    "account.signing_in": "Đang đăng nhập…",
+    "account.signing_out": "Đang đăng xuất…",
+    "account.switching": "Đang chuyển tài khoản…",
+    "account.action_pending": "Đang chờ dịch vụ tài khoản…",
+    "account.delete_step_confirm": "Xác nhận việc xóa và giữ lại xác nhận."
   }
 }
