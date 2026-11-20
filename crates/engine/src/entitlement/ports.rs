@@ -8,7 +8,7 @@ use super::types::GrantId;
 #[cfg(test)]
 use super::types::RetryMapping;
 use super::types::{
-    AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, FreshIntent, Grant, OperationId,
+    Admission, AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, FreshIntent, Grant, OperationId,
     OperationRecord, OperationStatus, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
     TransportCorrelation,
 };
@@ -16,13 +16,18 @@ use super::types::{
 pub trait AccountService {
     fn status(&self) -> Result<Availability, Refusal>;
     fn authorize(&mut self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<Grant, Refusal>;
+    /// Start one logical operation. A business refusal is `Ok(Admission::Refused)`; `Err` is
+    /// reserved for an exchange that could not be completed (transport, malformed response).
+    ///
+    /// `Admission::AlreadyExists` is authoritative status only. It never carries execution
+    /// authority, so it is never represented as a [`Grant`].
     fn begin(
         &mut self,
         scope: &AuthenticatedHostScope,
         operation: &OperationId,
         capability: Capability,
         entry: EntryCategory,
-    ) -> Result<Grant, Refusal>;
+    ) -> Result<Admission, Refusal>;
     fn finalize(&mut self, scope: &AuthenticatedHostScope, operation: &OperationId, result: BillingResult) -> Result<OperationStatus, Refusal>;
     fn operation(&self, scope: &AuthenticatedHostScope, operation: &OperationId) -> Result<OperationStatus, Refusal>;
 }
@@ -108,11 +113,11 @@ impl AccountService for FakeAccountService {
     fn begin(
         &mut self,
         _scope: &AuthenticatedHostScope,
-        _operation: &OperationId,
+        operation: &OperationId,
         capability: Capability,
         _entry: EntryCategory,
-    ) -> Result<Grant, Refusal> {
-        self.pop_grant(capability)
+    ) -> Result<Admission, Refusal> {
+        self.pop_grant(capability).map(|grant| Admission::NewlyAdmitted { operation: operation.clone(), grant })
     }
 
     fn finalize(&mut self, _scope: &AuthenticatedHostScope, _operation: &OperationId, result: BillingResult) -> Result<OperationStatus, Refusal> {

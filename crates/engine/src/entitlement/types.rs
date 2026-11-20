@@ -183,6 +183,23 @@ pub enum WireEntryCategory {
     Unknown,
 }
 
+impl WireEntryCategory {
+    /// The exact rev3 wire value. Task 3 owns this serialization.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Mastra => "mastra",
+            Self::ExternalAcpMcp => "external_acp_mcp",
+            Self::HeadlessMcp => "headless_mcp",
+            Self::GuiBridgeMcp => "gui_bridge_mcp",
+            Self::DirectControl => "direct_control",
+            Self::CliDfm => "cli_dfm",
+            Self::ReviewPanel => "review_panel",
+            Self::ExternalUiAutomation => "external_ui_automation",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// A malformed operation id. The host must mint a valid one; callers never get to pick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationIdError {
@@ -364,6 +381,16 @@ impl Grant {
 
     pub fn capability(&self) -> Capability {
         self.capability
+    }
+
+    /// The opaque server-issued id. It is not authority on its own.
+    pub fn id(&self) -> &GrantId {
+        &self.id
+    }
+
+    /// The conservative local expiry, anchored at the request send time.
+    pub fn expires_at(&self) -> MonotonicInstant {
+        self.expires_at
     }
 }
 
