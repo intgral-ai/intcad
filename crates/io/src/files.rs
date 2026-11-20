@@ -247,6 +247,109 @@ impl ItemResult {
     }
 }
 
+/// A snapshot of one plain file entry, taken when a destructive answer is offered. It binds the
+/// entry's object identity to the detectable edits (size and timestamps) read in the same
+/// no-follow metadata call. It is a snapshot, not an atomicity claim: the entry can change after
+/// it is read, and a conditional publication must re-check it before publishing.
+///
+/// The fields stay private so only this module decides what makes a usable witness. On Unix this
+/// is a device and inode plus the edit evidence; on a platform whose stable safe API cannot prove
+/// the entry's own volume capability there is no witness at all.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryWitness {
+    #[cfg(unix)]
+    object: ObjectIdentity,
+    #[cfg(unix)]
+    edit: DetectableEdit,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ObjectIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetectableEdit {
+    len: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+}
+
+/// Read one named plain entry without following a link and return a witness for destructive
+/// consent. `None` means the path is not a plain file now, or this platform has no safe way to
+/// prove the identity and capability a witness requires.
+///
+/// Unix reads one no-follow metadata call, so a link, directory, device, socket or FIFO is
+/// refused rather than followed or treated as a file.
+///
+/// Windows replacement stays unsupported in this build. A witness there would require proving,
+/// from the opened entry itself, that its volume is local NTFS. The safe surface of `winapi-util`
+/// 0.1.11 wraps `GetFileInformationByHandle` and `GetFileType` only; the volume's file-system
+/// name requires `GetVolumeInformationByHandleW`, which exists only as raw `unsafe` bindings in
+/// `windows-sys`/`windows`. A drive letter, a nonzero 64-bit file index, or a successful metadata
+/// query is not that proof, and ReFS, network volumes, reparse points and every unverified or
+/// unknown capability stay unsupported. No approved safe adapter exists in this scope, so no
+/// Windows witness is manufactured and no first-party `unsafe` is added.
+pub fn entry_witness(path: &Path) -> Option<EntryWitness> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(path).ok()?;
+        if !metadata.file_type().is_file() {
+            return None;
+        }
+        Some(EntryWitness {
+            object: ObjectIdentity { device: metadata.dev(), inode: metadata.ino() },
+            edit: DetectableEdit { len: metadata.len(), modified: metadata.modified().ok(), created: metadata.created().ok() },
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Do two witnesses name the same object? This ignores detectable edits, so it can recognize a
+/// hard link or another spelling of one entry without treating an in-place edit as a new object.
+/// A platform with no witness never reports same.
+pub fn same_object(a: &EntryWitness, b: &EntryWitness) -> bool {
+    #[cfg(unix)]
+    {
+        a.object == b.object
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Do two witnesses name the same object *and* the same detectable edits? Only this stronger
+/// relation may keep destructive consent: an in-place edit keeps the object but revokes the
+/// snapshot the person saw. A platform with no witness never reports same.
+pub fn same_entry(a: &EntryWitness, b: &EntryWitness) -> bool {
+    #[cfg(unix)]
+    {
+        a == b
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Does `path` still hold exactly the entry the witness names, including its detectable edits?
+/// Unknown, missing, replaced, edited and unsupported entries never count as the same.
+pub fn witness_matches(expected: &EntryWitness, path: &Path) -> bool {
+    entry_witness(path).is_some_and(|current| same_entry(expected, &current))
+}
+
 /// Copy `source` into the folder `destination`, following `conflict`.
 pub fn copy_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemResult {
     let Some(name) = source.file_name() else {

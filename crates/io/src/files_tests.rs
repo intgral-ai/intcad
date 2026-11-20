@@ -1267,3 +1267,69 @@ fn skip_renames_preserve_a_concurrent_destination() {
 fn keep_both_renames_preserve_a_concurrent_destination() {
     assert_rename_preserves_a_concurrent_destination(Conflict::KeepBoth);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_witness_names_the_same_plain_entry_when_it_is_unchanged() {
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "design");
+    let first = entry_witness(&file).expect("a plain file has a witness");
+    let second = entry_witness(&file).expect("the same plain file has a witness");
+    assert!(same_object(&first, &second));
+    assert!(same_entry(&first, &second));
+    assert!(witness_matches(&first, &file));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_recreated_entry_is_a_different_object_even_with_equal_bytes() {
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "same bytes");
+    let before = entry_witness(&file).expect("the first file has a witness");
+    fs::remove_file(&file).unwrap();
+    scratch.file("bracket.sc", "same bytes");
+    let after = entry_witness(&file).expect("the recreated file has a witness");
+    assert!(!same_object(&before, &after), "equal bytes do not make the recreated file the same object");
+    assert!(!same_entry(&before, &after));
+    assert!(!witness_matches(&before, &file));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_in_place_edit_keeps_the_object_but_not_the_consented_entry() {
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "design");
+    let before = entry_witness(&file).expect("a plain file has a witness");
+    fs::write(&file, "design plus an edit").unwrap();
+    let after = entry_witness(&file).expect("the edited file has a witness");
+    assert!(same_object(&before, &after), "the edit did not replace the object");
+    assert!(!same_entry(&before, &after), "an edit is not the snapshot the person saw");
+    assert!(!witness_matches(&before, &file));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_directory_or_missing_path_has_no_witness() {
+    let scratch = Scratch::new();
+    let target = scratch.file("bracket.sc", "design");
+    let link = scratch.path().join("alias.sc");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(entry_witness(&link).is_none(), "the link itself is not a plain file");
+    assert!(entry_witness(&target).is_some());
+    assert!(!witness_matches(&entry_witness(&target).unwrap(), &link));
+    let directory = scratch.dir("parts");
+    assert!(entry_witness(&directory).is_none());
+    assert!(entry_witness(&scratch.path().join("absent.sc")).is_none());
+}
+
+// No approved safe adapter can prove, from the opened entry itself, that its volume is local
+// NTFS. A real NTFS file has a nonzero volume serial and 64-bit file index, but neither of
+// those, a drive letter, or a successful metadata query is that proof. This test is written
+// for the native Windows run and is NOT_RUN on Linux.
+#[cfg(windows)]
+#[test]
+fn windows_local_ntfs_has_no_replace_witness_without_a_vetted_volume_capability() {
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "design");
+    assert!(entry_witness(&file).is_none(), "nonzero Windows identifiers alone must not grant destructive consent");
+}
