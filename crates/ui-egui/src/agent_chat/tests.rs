@@ -12769,6 +12769,53 @@ fn no_tool_turn_warning_does_not_follow_a_tool_call() {
 }
 
 #[test]
+fn a_retired_turns_validation_card_update_does_not_count_as_the_current_turns_tool() {
+    let (mut app, _script, _ctx) = app_with_script();
+    app.agent_chat.tools_port = Some(12345);
+    let card = |id: &str, owner: (&str, &str, &str), status: &str| Event::Tool {
+        id: id.into(),
+        title: Some("validation".into()),
+        kind: Some("validation".into()),
+        status: Some(ToolStatus::Failed),
+        input: None,
+        output: Some(
+            json!({
+                "stage": "validate",
+                "owner": {"sessionId": owner.0, "turnId": owner.1, "workflowRunId": owner.2},
+                "cancellation": status,
+            })
+            .to_string(),
+        ),
+    };
+    start_turn(&mut app, "first".into(), false, None, Vec::new());
+    app.agent_chat.on_event(Event::TurnOwner { session_id: "s-owner".into(), turn_id: "t-owner".into(), workflow_run_id: "w-owner".into() });
+    app.agent_chat.on_event(card("validation:run-owned", ("s-owner", "t-owner", "w-owner"), "queued; not yet persisted"));
+    app.agent_chat.on_event(Event::TurnEnded { reason: String::new() });
+    end_turn(&mut app);
+
+    start_turn(&mut app, "second".into(), false, None, Vec::new());
+    app.agent_chat.on_event(Event::TurnOwner { session_id: "s-next".into(), turn_id: "t-next".into(), workflow_run_id: "w-next".into() });
+    let before = app.agent_chat.items.len();
+    app.agent_chat.on_event(card("validation:run-owned", ("s-owner", "t-owner", "w-owner"), "persisted"));
+    assert_eq!(app.agent_chat.items.len(), before, "the retired turn's card is updated in place");
+    assert!(
+        app.agent_chat
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Tool { id, output: Some(output), .. } if id == "validation:run-owned" && output.contains("persisted")),),
+        "the retired turn's card keeps its durable status"
+    );
+    app.agent_chat.on_event(Event::TurnEnded { reason: String::new() });
+    end_turn(&mut app);
+    let expected = tr("ui.agent_chat_no_tool_call");
+    assert!(
+        app.agent_chat.items.iter().any(|item| matches!(item, Item::Notice { text, error: false } if text == expected)),
+        "the historical card update must not suppress the active turn's no-tool warning"
+    );
+    assert_eq!(status(&app)["turnWarning"], expected);
+}
+
+#[test]
 fn no_tool_turn_warning_leaves_answers_and_incomplete_turns_quiet() {
     for (prompt, reply, reason, tools) in [
         ("What is a fillet?", "A fillet rounds an edge.", "", true),

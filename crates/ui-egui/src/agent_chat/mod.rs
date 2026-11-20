@@ -915,17 +915,23 @@ impl AgentChat {
             }
             Event::Tool { id, title, kind, status, input, output } => {
                 // A validation card names the turn that owns it. A late result for a retired
-                // turn updates that turn's existing card, never the current turn's history.
-                if kind.as_deref() == Some("validation")
-                    && !self.items.iter().any(|item| matches!(item, Item::Tool { id: known, .. } if *known == id))
-                {
-                    let owner = validation_event_owner(output.as_deref())?;
-                    let current = self.turn.as_ref().and_then(|turn| turn.owner.as_ref())?;
-                    if current != &owner {
+                // turn updates that turn's existing card, never the current turn's history and
+                // never the current turn's tool bookkeeping.
+                let validation = kind.as_deref() == Some("validation");
+                let validation_owner = validation.then(|| validation_event_owner(output.as_deref())).flatten();
+                if validation && !self.items.iter().any(|item| matches!(item, Item::Tool { id: known, .. } if *known == id)) {
+                    let Some(owner) = validation_owner.as_ref() else { return None };
+                    let Some(current) = self.turn.as_ref().and_then(|turn| turn.owner.as_ref()) else { return None };
+                    if current != owner {
                         return None;
                     }
                 }
-                if let Some(turn) = self.turn.as_mut() {
+                let belongs_to_current = !validation
+                    || validation_owner
+                        .as_ref()
+                        .zip(self.turn.as_ref().and_then(|turn| turn.owner.as_ref()))
+                        .is_some_and(|(owner, current)| owner == current);
+                if belongs_to_current && let Some(turn) = self.turn.as_mut() {
                     turn.tool_called = true;
                 }
                 // Arguments too large to show or read are left with the agent.
