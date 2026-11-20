@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod contract;
 mod http;
 mod ledger;
 
@@ -15,6 +16,7 @@ mod http_tests;
 #[cfg(test)]
 mod ledger_tests;
 
+pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
 pub use http::{
     BootstrapPlatform, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, Secret, Transport, TransportFailure,
     WireConnection, WireCredentials, WireRequest, WireResponse,
