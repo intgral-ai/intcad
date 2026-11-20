@@ -813,6 +813,9 @@ pub struct SolveApp {
     /// The host's monotonic clock, re-read at the actual commit point (never a request's creation
     /// time). `None` keeps controlled commits closed.
     pub(crate) commit_clock: Option<Box<dyn solidcraft_engine::entitlement::MonotonicClock + Send>>,
+    /// Settlements that need host recovery under their original operation id. They are never
+    /// rerun as engineering operations.
+    pub(crate) pending_settlements: Vec<crate::control::SettlementNotice>,
     /// The New Project window, when open.
     pub new_project: Option<new_project::NewProject>,
     /// The Project Settings window, when open.
@@ -1007,6 +1010,7 @@ impl SolveApp {
             commit_scope: None,
             commit_account: None,
             commit_clock: None,
+            pending_settlements: Vec::new(),
             new_project: None,
             project_settings: None,
             dfm_chat: dfm_chat::State::default(),
@@ -1059,6 +1063,12 @@ impl SolveApp {
         self.commit_scope = None;
         self.commit_account = None;
         self.commit_clock = None;
+    }
+
+    /// Drain settlement work that needs host recovery under its original operation id. The host
+    /// retries only settlement; it never reruns the engineering operation.
+    pub fn take_pending_settlements(&mut self) -> Vec<crate::control::SettlementNotice> {
+        std::mem::take(&mut self.pending_settlements)
     }
 
     /// The browser has no commit authority: keep ordinary free CAD and refuse controlled commits.

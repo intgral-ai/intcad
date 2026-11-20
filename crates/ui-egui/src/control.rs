@@ -93,6 +93,10 @@ pub struct ControlRequest {
     /// the scope the host can prove at the commit point, so an account or session switch drops
     /// the old operation's result. `None` for free entries.
     pub(crate) admission_scope: Option<AuthenticatedHostScope>,
+    /// Set by the host at the actual dispatch boundary, never from wire fields. A false value
+    /// proves that no step of this logical operation has started, so a pre-dispatch refusal may
+    /// release its held admission exactly once.
+    pub(crate) work_started: std::sync::Arc<AtomicBool>,
     /// The host-minted context for a forwarded bridge call. It binds the operation to the same
     /// account, installation, session, capability and entry; wire fields cannot supply it.
     pub(crate) trusted: Option<TrustedContext>,
@@ -265,6 +269,7 @@ impl ControlRequest {
             operation,
             admission: None,
             admission_scope: None,
+            work_started: std::sync::Arc::new(AtomicBool::new(false)),
             trusted: None,
             deadline: None,
             now: None,
@@ -317,6 +322,7 @@ impl ControlRequest {
             operation,
             admission: None,
             admission_scope: Some(trusted.scope().clone()),
+            work_started: std::sync::Arc::new(AtomicBool::new(false)),
             trusted: Some(trusted),
             deadline,
             now,
@@ -345,6 +351,7 @@ impl ControlRequest {
             operation: None,
             admission: None,
             admission_scope: None,
+            work_started: std::sync::Arc::new(AtomicBool::new(false)),
             trusted: None,
             deadline: None,
             now: None,
@@ -398,6 +405,7 @@ impl ControlRequest {
             operation: None,
             admission: None,
             admission_scope: None,
+            work_started: std::sync::Arc::new(AtomicBool::new(false)),
             trusted: None,
             deadline: None,
             now: None,
@@ -439,6 +447,7 @@ pub(crate) struct Reissue {
     operation: Option<OperationId>,
     admission: Option<Admission>,
     admission_scope: Option<AuthenticatedHostScope>,
+    work_started: std::sync::Arc<AtomicBool>,
     trusted: Option<TrustedContext>,
     deadline: Option<ConservativeDeadline>,
     now: Option<MonotonicInstant>,
@@ -452,6 +461,7 @@ impl Reissue {
             operation: req.operation.clone(),
             admission: req.admission.clone(),
             admission_scope: req.admission_scope.clone(),
+            work_started: req.work_started.clone(),
             trusted: req.trusted.clone(),
             deadline: req.deadline.clone(),
             now: req.now,
@@ -465,7 +475,7 @@ impl Reissue {
 ///
 /// The origin is not chosen here; it comes only from [`Reissue::from_request`].
 pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
-    let Reissue { entry, operation, admission, admission_scope, trusted, deadline, now, helper } = parts;
+    let Reissue { entry, operation, admission, admission_scope, work_started, trusted, deadline, now, helper } = parts;
     let (tx, rx) = std::sync::mpsc::channel();
     let request = ControlRequest {
         method: method.into(),
@@ -478,6 +488,7 @@ pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) 
         operation,
         admission,
         admission_scope,
+        work_started,
         trusted,
         deadline,
         now,
@@ -593,8 +604,8 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
     {
         return Err(Refusal::new(RefusalCode::UnsafeToStart, "the forwarded authorization window has passed"));
     }
-    if let Some(admission) = &req.admission {
-        if let Some(refusal) = admission_binding_refusal(req, admission) {
+    if let Some(admission) = req.admission.clone() {
+        if let Some(refusal) = admission_binding_refusal(req, &admission) {
             return Err(refusal);
         }
         if req.admission_scope.is_none()
@@ -602,12 +613,19 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
         {
             req.admission_scope = Some(trusted.scope().clone());
         }
-        if let Some(refusal) = authority_refusal(app, req, admission) {
+        if let Some(refusal) = authority_refusal(app, req, &admission) {
+            // A false host-marked start is positive proof that no step of this operation ran.
+            // Release the one held admission and consume it so it cannot be reused.
+            if !req.work_started.load(Ordering::Relaxed) {
+                release_admission(app, &admission, refusal.code);
+                req.admission = None;
+                req.admission_scope = None;
+            }
             return Err(refusal);
         }
         return match admission {
-            Admission::Refused(refusal) => Err(refusal.clone()),
-            admission => Ok(admission.clone()),
+            Admission::Refused(refusal) => Err(refusal),
+            admission => Ok(admission),
         };
     }
     if let Some(refusal) = authority_snapshot_refusal(app, req) {
@@ -875,7 +893,7 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
     };
     if let Some(operation) = req.operation.as_ref() {
         match account.operation(scope, operation) {
-            Ok(status) if matches!(status, OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired) => {
+            Ok(OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired) => {
                 return Some(Refusal::new(RefusalCode::OperationFinalized, "this operation is already settled"));
             }
             Ok(_) => {}
@@ -1024,22 +1042,123 @@ fn result_evidence(method: &str, out: &Outcome) -> ResultEvidence {
     }
 }
 
+/// A settlement that could not be completed in the request, kept under the original operation id
+/// for host recovery. It is never a second engineering operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettlementNoticeKind {
+    /// The billing transport failed. Retry only this settlement under the original id.
+    TransportFailed { action: SettlementAction, code: RefusalCode },
+    /// The result was produced after commit authority was lost. Keep the effect, do not retry or
+    /// charge silently; the host resumes the original operation's disposition.
+    Deferred { evidence: ResultEvidence },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettlementNotice {
+    pub operation: OperationId,
+    pub kind: SettlementNoticeKind,
+}
+
 /// Settle one admitted operation under its original id. An unknown result is finalized as
 /// `UNKNOWN`; it never authorizes a second engineering operation. With no durable effect proof
 /// the release path is never taken. A result whose commit was dropped keeps its hold: the host no
-/// longer has authority to write or charge it, and it is never rerun.
-fn settle_result(app: &mut SolveApp, admission: &Admission, decision: CommitDecision, method: &str, out: &Outcome) {
-    let Admission::NewlyAdmitted { operation, .. } = admission else { return };
-    let Some(billing) = app.billing.as_mut() else { return };
-    match settlement_for(result_evidence(method, out)) {
-        SettlementAction::Release(reason) => {
-            let _ = billing.release(operation, reason);
-        }
-        SettlementAction::Commit(_) if !decision.allowed() => {}
-        SettlementAction::Commit(result) => {
-            let _ = billing.commit(operation, result);
+/// longer has authority to write or charge it, and it is never rerun. Settlement transport
+/// failures are returned as explicit recovery notices instead of silently succeeding.
+fn settle_result(app: &mut SolveApp, admission: &Admission, decision: CommitDecision, method: &str, out: &Outcome) -> Option<SettlementNotice> {
+    let Admission::NewlyAdmitted { operation, .. } = admission else { return None };
+    let evidence = result_evidence(method, out);
+    let action = settlement_for(evidence);
+    // A terminal durable row is already settled. Rechecking it here prevents both a second
+    // charge and a late release from overwriting the server's terminal state.
+    if let (Some(scope), Some(account)) = (app.commit_scope.as_ref(), app.commit_account.as_deref()) {
+        match account.operation(scope, operation) {
+            Ok(OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired) => return None,
+            Ok(_) => {}
+            Err(_) => {
+                let notice = SettlementNotice {
+                    operation: operation.clone(),
+                    kind: SettlementNoticeKind::TransportFailed { action, code: RefusalCode::AuthUnavailable },
+                };
+                app.pending_settlements.push(notice.clone());
+                return Some(notice);
+            }
         }
     }
+    if !decision.allowed()
+        && let SettlementAction::Commit(_) = action
+    {
+        // A late retained/apply effect whose commit authority was lost. Record the original
+        // operation's disposition; never retry it as an engineering operation and never charge
+        // it silently.
+        let notice = SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::Deferred { evidence } };
+        app.pending_settlements.push(notice.clone());
+        return Some(notice);
+    }
+    let Some(billing) = app.billing.as_mut() else {
+        let notice = SettlementNotice {
+            operation: operation.clone(),
+            kind: SettlementNoticeKind::TransportFailed { action, code: RefusalCode::AuthUnavailable },
+        };
+        app.pending_settlements.push(notice.clone());
+        return Some(notice);
+    };
+    let failure = |code| SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::TransportFailed { action, code } };
+    match action {
+        SettlementAction::Release(reason) => match billing.release(operation, reason) {
+            Ok(()) => None,
+            Err(refusal) => {
+                let notice = failure(refusal.code);
+                app.pending_settlements.push(notice.clone());
+                Some(notice)
+            }
+        },
+        SettlementAction::Commit(result) => match billing.commit(operation, result) {
+            Ok(_) => None,
+            Err(refusal) => {
+                let notice = failure(refusal.code);
+                app.pending_settlements.push(notice.clone());
+                Some(notice)
+            }
+        },
+    }
+}
+
+fn settlement_notice_json(notice: &SettlementNotice) -> Value {
+    let (state, reason) = match notice.kind {
+        SettlementNoticeKind::TransportFailed { action, code } => (
+            "pending_recovery",
+            json!({
+                "action": match action {
+                    SettlementAction::Release(_) => "release",
+                    SettlementAction::Commit(_) => "commit",
+                },
+                "code": format!("{code:?}"),
+            }),
+        ),
+        SettlementNoticeKind::Deferred { evidence } => (
+            "deferred",
+            json!({
+                "evidence": match evidence {
+                    ResultEvidence::NoEffect => "no_effect",
+                    ResultEvidence::Effect => "effect",
+                    ResultEvidence::Unknown => "unknown",
+                },
+            }),
+        ),
+    };
+    json!({
+        "state": state,
+        "operation": notice.operation.as_str(),
+        "retry": "original-operation-only",
+        "reason": reason,
+    })
+}
+
+fn with_settlement_notice(mut value: Value, notice: Option<&SettlementNotice>) -> Value {
+    if let Some(notice) = notice {
+        value["settlement"] = settlement_notice_json(notice);
+    }
+    value
 }
 
 pub(crate) fn chat_turn_cancelled(turn: Option<&std::sync::atomic::AtomicBool>) -> bool {
@@ -1536,14 +1655,25 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
         }
         return admission_refusal(&refusal);
     }
+    // The host marks the actual dispatch boundary. Pre-dispatch refusals before this point can
+    // release an unstarted admission; nothing reads this flag from request parameters.
+    req.work_started.store(true, Ordering::Relaxed);
     let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req));
     // The actual commit point: re-read the advancing clock, the current account/session and the
     // durable state before writing the result back.
     let decision = commit_decision(app, req, &admission, &out);
-    settle_result(app, &admission, decision, &req.method, &out);
+    let notice = settle_result(app, &admission, decision, &req.method, &out);
     if !decision.allowed() {
         let CommitDecision::Drop { code } = decision else { return out };
-        return admission_refusal(&Refusal::new(code, "refused before writing the result: the operation's authorization is no longer valid"));
+        let reply = with_settlement_notice(
+            admission_refusal_json(&Refusal::new(code, "refused before writing the result: the operation's authorization is no longer valid")),
+            notice.as_ref(),
+        );
+        return Outcome::Done(reply);
+    }
+    let mut out = out;
+    if let (Some(notice), Outcome::Done(value)) = (notice.as_ref(), &mut out) {
+        value["settlement"] = settlement_notice_json(notice);
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Outcome::Done(reply) = &out {
@@ -3369,6 +3499,114 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_durable_operation_is_not_settled_again() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        authority.set_status(OperationStatus::Charged);
+        let operation = OperationId::parse("op_settle_terminal_0001").unwrap();
+        let grant = solidcraft_engine::entitlement::Grant::from_server(
+            solidcraft_engine::entitlement::GrantId::new("grant_settle_terminal"),
+            Capability::Control,
+            MonotonicInstant::from_millis(60_000),
+        );
+        let admission = Admission::NewlyAdmitted { operation, grant };
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        settle_result(&mut app, &admission, CommitDecision::Allow, "engine.execute", &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a charged operation is never charged again");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal operation is never released again");
+        assert!(app.pending_settlements.is_empty(), "there is nothing to recover");
+    }
+
+    #[test]
+    fn a_settlement_transport_failure_is_preserved_and_surfaced() {
+        let (mut app, _authority, commits) = app_with_failing_commit();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("admitted");
+        let out = handle(&mut app, &egui::Context::default(), &req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["ok"], true, "the engineering result still succeeded");
+        assert_eq!(reply["settlement"]["state"], "pending_recovery", "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "the failed commit was attempted once");
+        assert_eq!(app.pending_settlements.len(), 1, "the failure is kept for recovery");
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::TransportFailed { .. }));
+        assert_eq!(app.take_pending_settlements().len(), 1, "the host can drain the recovery work");
+    }
+
+    #[test]
+    fn a_release_transport_failure_is_preserved_for_recovery() {
+        let (mut app, _authority, releases) = app_with_failing_release();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let admission = admit_once(&mut app, &mut req).expect("admitted");
+        let out = Outcome::Done(json!({"ok": false, "error": "not run: local validation refused"}));
+        settle_result(&mut app, &admission, CommitDecision::Allow, &req.method, &out);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the release was attempted once");
+        assert_eq!(app.pending_settlements.len(), 1);
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::TransportFailed { action: SettlementAction::Release(_), .. }));
+    }
+
+    #[test]
+    fn a_late_effect_after_lost_authority_is_deferred_not_charged_or_rerun() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let admission = admit_once(&mut app, &mut req).expect("admitted");
+        authority.revoke();
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        let decision = commit_decision(&app, &req, &admission, &out);
+        assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AccountDisabled });
+        settle_result(&mut app, &admission, decision, &req.method, &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a late effect is not charged under lost authority");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a retained effect is not released");
+        assert_eq!(bodies(&app), 0, "settlement never reruns the engineering operation");
+        assert_eq!(app.pending_settlements.len(), 1, "the original operation gets an explicit disposition");
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::Deferred { evidence: ResultEvidence::Effect }));
+    }
+
+    #[test]
+    fn a_stored_unstarted_admission_is_released_once_when_refused_before_dispatch() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("the operation is admitted");
+        authority.revoke();
+        let refusal = admit_once(&mut app, &mut req).expect_err("a revocation stops a not-yet-started operation");
+        assert_eq!(refusal.code, RefusalCode::AccountDisabled);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "one held admission is released");
+        assert!(req.admission.is_none(), "the released admission is consumed and cannot be reused");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(bodies(&app), 0, "nothing ran");
+    }
+
+    #[test]
+    fn a_started_admission_is_not_released_by_a_wire_unstarted_claim() {
+        let (mut app, authority, _commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"unstarted":true,"command":"solid.box","params":{}}));
+        admit_once(&mut app, &mut req).expect("the operation is admitted");
+        req.work_started.store(true, Ordering::Relaxed);
+        authority.revoke();
+        let refusal = admit_once(&mut app, &mut req).expect_err("a revocation stops the next step");
+        assert_eq!(refusal.code, RefusalCode::AccountDisabled);
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a started operation keeps its hold");
+        assert!(req.admission.is_some(), "the admission is not consumed after work started");
+    }
+
+    #[test]
+    fn run_control_releases_an_unstarted_stored_admission_before_dispatch() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        let (mut req, rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("the operation is admitted");
+        authority.revoke();
+        app.run_control(&egui::Context::default(), req);
+        let reply = rx.try_recv().expect("the refusal is sent through the real dispatch path");
+        assert_eq!(reply["errorDetails"]["code"], "AccountDisabled", "{reply}");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the stored hold is released exactly once");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
     fn an_unknown_result_is_finalized_once_and_not_rerun() {
         let (mut app, _authority, commits, releases) = app_with_commit_authority();
         let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
@@ -3386,6 +3624,8 @@ mod tests {
     struct SettlingBilling {
         commits: std::sync::Arc<AtomicUsize>,
         releases: std::sync::Arc<AtomicUsize>,
+        fail_commit: std::sync::Arc<AtomicBool>,
+        fail_release: std::sync::Arc<AtomicBool>,
     }
 
     impl BillingPort for SettlingBilling {
@@ -3408,11 +3648,17 @@ mod tests {
             result: solidcraft_engine::entitlement::BillingResult,
         ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
             self.commits.fetch_add(1, Ordering::Relaxed);
+            if self.fail_commit.load(Ordering::Relaxed) {
+                return Err(Refusal::new(RefusalCode::AuthUnavailable, "the settlement transport failed"));
+            }
             Ok(result)
         }
 
         fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
             self.releases.fetch_add(1, Ordering::Relaxed);
+            if self.fail_release.load(Ordering::Relaxed) {
+                return Err(Refusal::new(RefusalCode::AuthUnavailable, "the release transport failed"));
+            }
             Ok(())
         }
     }
@@ -3423,11 +3669,52 @@ mod tests {
         let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         app.install_billing(
-            Box::new(SettlingBilling { commits: std::sync::Arc::clone(&commits), releases: std::sync::Arc::clone(&releases) }),
+            Box::new(SettlingBilling {
+                commits: std::sync::Arc::clone(&commits),
+                releases: std::sync::Arc::clone(&releases),
+                fail_commit: std::sync::Arc::new(AtomicBool::new(false)),
+                fail_release: std::sync::Arc::new(AtomicBool::new(false)),
+            }),
             verified_budget(),
         );
         authority.install(&mut app);
         (app, authority, commits, releases)
+    }
+
+    fn app_with_failing_commit() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>) {
+        let commits = std::sync::Arc::new(AtomicUsize::new(0));
+        let releases = std::sync::Arc::new(AtomicUsize::new(0));
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_billing(
+            Box::new(SettlingBilling {
+                commits: std::sync::Arc::clone(&commits),
+                releases: std::sync::Arc::clone(&releases),
+                fail_commit: std::sync::Arc::new(AtomicBool::new(true)),
+                fail_release: std::sync::Arc::new(AtomicBool::new(false)),
+            }),
+            verified_budget(),
+        );
+        authority.install(&mut app);
+        (app, authority, commits)
+    }
+
+    fn app_with_failing_release() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>) {
+        let commits = std::sync::Arc::new(AtomicUsize::new(0));
+        let releases = std::sync::Arc::new(AtomicUsize::new(0));
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_billing(
+            Box::new(SettlingBilling {
+                commits: std::sync::Arc::clone(&commits),
+                releases: std::sync::Arc::clone(&releases),
+                fail_commit: std::sync::Arc::new(AtomicBool::new(false)),
+                fail_release: std::sync::Arc::new(AtomicBool::new(true)),
+            }),
+            verified_budget(),
+        );
+        authority.install(&mut app);
+        (app, authority, releases)
     }
 
     fn bodies(app: &SolveApp) -> usize {
