@@ -8,8 +8,8 @@ use super::types::GrantId;
 #[cfg(test)]
 use super::types::RetryMapping;
 use super::types::{
-    AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, Grant, OperationId, OperationRecord,
-    OperationStatus, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
+    AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, FreshIntent, Grant, OperationId,
+    OperationRecord, OperationStatus, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
     TransportCorrelation,
 };
 
@@ -45,9 +45,14 @@ pub trait OperationStore {
         capability: Capability,
         entry: EntryCategory,
     ) -> Result<OperationRecord, SaveOutcome>;
+    /// Create a brand-new operation only from an explicit host [`FreshIntent`].
+    ///
+    /// An unprovable or unknown retry must never create a new operation implicitly; the host mints
+    /// the id and passes it here after deciding that this is a fresh logical operation.
+    fn persist_fresh_intent(&mut self, intent: &FreshIntent, capability: Capability, entry: EntryCategory) -> Result<OperationRecord, SaveOutcome>;
     /// Reverse lookup from the authenticated host scope plus the transport correlation. The caller
     /// does not supply an operation id; external ids alone can never recover or elevate a row.
-    fn lookup_original_retry(&mut self, key: &RetryScopeKey) -> RetryDecision;
+    fn lookup_original_retry(&self, key: &RetryScopeKey) -> RetryDecision;
     fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError>;
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError>;
 }
@@ -225,7 +230,38 @@ impl OperationStore for InMemoryOperationStore {
         Ok(record)
     }
 
-    fn lookup_original_retry(&mut self, key: &RetryScopeKey) -> RetryDecision {
+    fn persist_fresh_intent(&mut self, intent: &FreshIntent, capability: Capability, entry: EntryCategory) -> Result<OperationRecord, SaveOutcome> {
+        if !intent.is_provable() || entry.is_free() {
+            return Err(SaveOutcome::Conflict);
+        }
+        let key = RetryScopeKey { host_scope: intent.scope().clone(), transport_correlation: intent.transport_correlation().clone() };
+        if let Some(mapping) = self.mappings.get(&key) {
+            if mapping.operation != *intent.host_minted_operation() || mapping.capability != capability || mapping.entry != entry {
+                return Err(SaveOutcome::Conflict);
+            }
+            return self.records.get(&mapping.operation).cloned().ok_or(SaveOutcome::Conflict);
+        }
+        if let Some(existing) = self.records.get(intent.host_minted_operation()) {
+            let same = existing.account == *intent.scope().account() && existing.capability == capability && existing.entry == entry;
+            return if same { Ok(existing.clone()) } else { Err(SaveOutcome::Conflict) };
+        }
+        let record = OperationRecord::held(intent.host_minted_operation().clone(), intent.scope().account().clone(), capability, entry, 0);
+        self.records.insert(record.operation.clone(), record.clone());
+        self.mappings.insert(
+            key,
+            RetryMapping {
+                scope: RetryScopeKey { host_scope: intent.scope().clone(), transport_correlation: intent.transport_correlation().clone() },
+                operation: record.operation.clone(),
+                capability,
+                entry,
+                created_at_ms: 0,
+            },
+        );
+        self.admissions = self.admissions.saturating_add(1);
+        Ok(record)
+    }
+
+    fn lookup_original_retry(&self, key: &RetryScopeKey) -> RetryDecision {
         let Some(mapping) = self.mappings.get(key) else {
             return RetryDecision::Unprovable;
         };

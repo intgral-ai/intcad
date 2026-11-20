@@ -25,7 +25,6 @@ use solidcraft_engine::entitlement::{
 
 const MAPPINGS_DIR: &str = "mappings";
 const RECORDS_DIR: &str = "records";
-const REVIEWS_DIR: &str = "reviews";
 
 /// The ledger could not read or publish a file. Callers must fail closed.
 #[derive(Debug)]
@@ -66,7 +65,9 @@ struct PersistedMapping {
     version: u8,
     account: String,
     installation: String,
-    session_binding: String,
+    /// The host session binding is a non-secret scope label; store only its digest so a host that
+    /// uses a sensitive binding value never leaves it at rest.
+    session_binding_digest: String,
     correlation: String,
     operation: String,
     capability: String,
@@ -97,7 +98,13 @@ pub struct FileOperationStore {
 }
 
 impl FileOperationStore {
-    /// Open (and create if needed) a ledger directory. The directory is private to the host user.
+    /// Open (and create if needed) a ledger directory.
+    ///
+    /// The caller must pass a directory the host has already made private to the current user.
+    /// On Unix this method tightens the root and its folders to `0700` and files to `0600`. On
+    /// Windows it applies no ACL: the caller must use a private root such as the per-user app-data
+    /// directory, and Windows ACL/durability behaviour remains unverified until Task 13. This crate
+    /// never changes system-wide permissions and never uses unsafe code.
     pub fn open(root: impl Into<PathBuf>) -> std::io::Result<Self> {
         let store = Self { root: root.into() };
         store.ensure_layout()?;
@@ -109,7 +116,7 @@ impl FileOperationStore {
     }
 
     fn ensure_layout(&self) -> std::io::Result<()> {
-        for directory in [&self.root, &self.root.join(RECORDS_DIR), &self.root.join(MAPPINGS_DIR), &self.root.join(REVIEWS_DIR)] {
+        for directory in [&self.root, &self.root.join(RECORDS_DIR), &self.root.join(MAPPINGS_DIR)] {
             fs::create_dir_all(directory)?;
             #[cfg(unix)]
             {
@@ -128,10 +135,6 @@ impl FileOperationStore {
         self.root.join(MAPPINGS_DIR)
     }
 
-    fn reviews_dir(&self) -> PathBuf {
-        self.root.join(REVIEWS_DIR)
-    }
-
     fn record_path(&self, operation: &OperationId) -> PathBuf {
         self.records_dir().join(format!("{}.json", operation.as_str()))
     }
@@ -142,10 +145,6 @@ impl FileOperationStore {
 
     fn terminal_path(&self, operation: &OperationId) -> PathBuf {
         self.records_dir().join(format!("{}.terminal.json", operation.as_str()))
-    }
-
-    fn review_path(&self, run_id: &RunId) -> PathBuf {
-        self.reviews_dir().join(format!("{}.json", digest(&[run_id.as_str()])))
     }
 
     fn operation_review_path(&self, operation: &OperationId) -> PathBuf {
@@ -177,7 +176,7 @@ impl FileOperationStore {
             }
             match read_json::<PersistedMapping>(&path) {
                 Ok(Some(mapping)) if mapping.record.operation == operation.as_str() => return Ok(Some(mapping.record)),
-                Ok(_) | Err(LedgerError::Corrupt) => continue,
+                Ok(_) => continue,
                 Err(error) => return Err(error),
             }
         }
@@ -196,7 +195,11 @@ impl FileOperationStore {
             }
         }
         if let Some(terminal) = read_json::<TerminalMarker>(&self.terminal_path(operation))? {
-            record.status = status_from_name(&terminal.status).ok_or(LedgerError::Corrupt)?;
+            let status = status_from_name(&terminal.status).ok_or(LedgerError::Corrupt)?;
+            if !status.is_terminal() {
+                return Err(LedgerError::Corrupt);
+            }
+            record.status = status;
         }
         if let Some(review) = read_json::<PersistedReview>(&self.operation_review_path(operation))? {
             if review.operation_id != operation.as_str() {
@@ -211,10 +214,75 @@ impl FileOperationStore {
         read_json::<PersistedMapping>(&self.mapping_path(key))
     }
 
+    /// Whether a correlation already appears in any stored mapping. A seen correlation with no
+    /// matching scope is an unprovable retry, so it must not silently mint a fresh operation.
+    fn correlation_seen(&self, correlation: &TransportCorrelation) -> Result<bool, LedgerError> {
+        let entries = match fs::read_dir(self.mappings_dir()) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(LedgerError::Io(error)),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            if !is_json_file(&path) {
+                continue;
+            }
+            if let Some(mapping) = read_json::<PersistedMapping>(&path)?
+                && mapping.correlation == correlation.as_str()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Publish the canonical mapping plus embedded record. Create-only, so concurrent writers
+    /// publish exactly one row and the loser reads that row instead of overwriting it.
+    fn publish_intent(
+        &self,
+        record: &OperationRecord,
+        scope: &AuthenticatedHostScope,
+        correlation: &TransportCorrelation,
+        capability: Capability,
+        entry: EntryCategory,
+    ) -> Result<OperationRecord, SaveOutcome> {
+        let key = RetryScopeKey { host_scope: scope.clone(), transport_correlation: correlation.clone() };
+        if let Ok(Some(mapping)) = self.mapping_for(&key) {
+            return self.mapping_decision(&mapping, &key, capability, entry);
+        }
+        let canonical = match self.load_and_apply_markers(&record.operation) {
+            Ok(Some(existing)) if existing.common_identity_matches(record) && !existing.status.is_terminal() => existing,
+            Ok(Some(_)) | Err(_) => return Err(SaveOutcome::Conflict),
+            Ok(None) => record.clone(),
+        };
+        let persisted = to_persisted(&canonical).map_err(|_| SaveOutcome::Conflict)?;
+        let mapping = PersistedMapping {
+            version: 1,
+            account: scope.account().as_str().to_owned(),
+            installation: scope.installation().as_str().to_owned(),
+            session_binding_digest: digest(&[scope.session_binding().as_str()]),
+            correlation: correlation.as_str().to_owned(),
+            operation: canonical.operation.as_str().to_owned(),
+            capability: capability.wire().to_owned(),
+            entry: entry_name(entry).to_owned(),
+            created_at_ms: now_ms(),
+            record: persisted,
+        };
+        let bytes = serde_json::to_vec(&mapping).map_err(|_| SaveOutcome::Conflict)?;
+        match publish_create_only(&self.mapping_path(&key), &bytes) {
+            Ok(true) => Ok(canonical),
+            Ok(false) => match self.mapping_for(&key) {
+                Ok(Some(mapping)) => self.mapping_decision(&mapping, &key, capability, entry),
+                Ok(None) | Err(_) => Err(SaveOutcome::Conflict),
+            },
+            Err(_) => Err(SaveOutcome::Conflict),
+        }
+    }
+
     fn mapping_scope_matches(mapping: &PersistedMapping, key: &RetryScopeKey) -> bool {
         mapping.account == key.host_scope.account().as_str()
             && mapping.installation == key.host_scope.installation().as_str()
-            && mapping.session_binding == key.host_scope.session_binding().as_str()
+            && mapping.session_binding_digest == digest(&[key.host_scope.session_binding().as_str()])
             && mapping.correlation == key.transport_correlation.as_str()
     }
 
@@ -333,33 +401,24 @@ impl OperationStore for FileOperationStore {
         if let Ok(Some(mapping)) = self.mapping_for(&key) {
             return self.mapping_decision(&mapping, &key, capability, entry);
         }
+        match self.correlation_seen(correlation) {
+            Ok(false) => {}
+            Ok(true) | Err(_) => return Err(SaveOutcome::Conflict),
+        }
         let operation = mint_operation().map_err(|_| SaveOutcome::Conflict)?;
         let record = OperationRecord::held(operation, scope.account().clone(), capability, entry, now_ms());
-        let persisted = to_persisted(&record).map_err(|_| SaveOutcome::Conflict)?;
-        let mapping = PersistedMapping {
-            version: 1,
-            account: scope.account().as_str().to_owned(),
-            installation: scope.installation().as_str().to_owned(),
-            session_binding: scope.session_binding().as_str().to_owned(),
-            correlation: correlation.as_str().to_owned(),
-            operation: record.operation.as_str().to_owned(),
-            capability: capability.wire().to_owned(),
-            entry: entry_name(entry).to_owned(),
-            created_at_ms: now_ms(),
-            record: persisted,
-        };
-        let bytes = serde_json::to_vec(&mapping).map_err(|_| SaveOutcome::Conflict)?;
-        match publish_create_only(&self.mapping_path(&key), &bytes) {
-            Ok(true) => Ok(record),
-            Ok(false) => match self.mapping_for(&key) {
-                Ok(Some(mapping)) => self.mapping_decision(&mapping, &key, capability, entry),
-                Ok(None) | Err(_) => Err(SaveOutcome::Conflict),
-            },
-            Err(_) => Err(SaveOutcome::Conflict),
-        }
+        self.publish_intent(&record, scope, correlation, capability, entry)
     }
 
-    fn lookup_original_retry(&mut self, key: &RetryScopeKey) -> RetryDecision {
+    fn persist_fresh_intent(&mut self, intent: &FreshIntent, capability: Capability, entry: EntryCategory) -> Result<OperationRecord, SaveOutcome> {
+        if !intent.is_provable() || entry.is_free() {
+            return Err(SaveOutcome::Conflict);
+        }
+        let record = OperationRecord::held(intent.host_minted_operation().clone(), intent.scope().account().clone(), capability, entry, now_ms());
+        self.publish_intent(&record, intent.scope(), intent.transport_correlation(), capability, entry)
+    }
+
+    fn lookup_original_retry(&self, key: &RetryScopeKey) -> RetryDecision {
         if !key.host_scope.is_provable() {
             return RetryDecision::Unprovable;
         }
@@ -372,35 +431,44 @@ impl OperationStore for FileOperationStore {
             Ok(None) => return Err(OperationStoreError::UnknownOperation),
             Err(_) => return Err(OperationStoreError::Unavailable),
         }
+        match review_operation_by_run(self, &review.run_id).map_err(|_| OperationStoreError::Unavailable)? {
+            Some(existing) if existing != review.operation_id => return Err(OperationStoreError::InvalidState),
+            _ => {}
+        }
+        // One canonical, operation-keyed association. run -> operation is derived by scanning this
+        // file set, so a crash between two independent indices cannot leave a half-linked identity.
         let persisted = PersistedReview { run_id: review.run_id.as_str().to_owned(), operation_id: review.operation_id.as_str().to_owned() };
         let bytes = serde_json::to_vec(&persisted).map_err(|_| OperationStoreError::Unavailable)?;
-        let existing =
-            read_json::<PersistedReview>(&self.operation_review_path(&review.operation_id)).map_err(|_| OperationStoreError::Unavailable)?;
-        if let Some(existing) = existing {
-            if existing.run_id != review.run_id.as_str() {
-                return Err(OperationStoreError::InvalidState);
+        let path = self.operation_review_path(&review.operation_id);
+        match read_json::<PersistedReview>(&path).map_err(|_| OperationStoreError::Unavailable)? {
+            Some(existing) => {
+                if existing.run_id == review.run_id.as_str() && existing.operation_id == review.operation_id.as_str() {
+                    Ok(())
+                } else {
+                    Err(OperationStoreError::InvalidState)
+                }
             }
-        } else {
-            publish_create_only(&self.operation_review_path(&review.operation_id), &bytes).map_err(|_| OperationStoreError::Unavailable)?;
-        }
-        match publish_create_only(&self.review_path(&review.run_id), &bytes) {
-            Ok(true) => Ok(()),
-            Ok(false) => match read_json::<PersistedReview>(&self.review_path(&review.run_id)) {
-                Ok(Some(existing)) if existing.run_id == review.run_id.as_str() && existing.operation_id == review.operation_id.as_str() => Ok(()),
-                _ => Err(OperationStoreError::InvalidState),
+            None => match publish_create_only(&path, &bytes) {
+                Ok(true) => Ok(()),
+                Ok(false) => match read_json::<PersistedReview>(&path) {
+                    Ok(Some(existing)) if existing.run_id == review.run_id.as_str() && existing.operation_id == review.operation_id.as_str() => {
+                        Ok(())
+                    }
+                    _ => Err(OperationStoreError::InvalidState),
+                },
+                Err(_) => Err(OperationStoreError::Unavailable),
             },
-            Err(_) => Err(OperationStoreError::Unavailable),
         }
     }
 
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
-        let Some(review) = read_json::<PersistedReview>(&self.review_path(run_id)).map_err(|_| OperationStoreError::Unavailable)? else {
+        let Some(operation) = review_operation_by_run(self, run_id).map_err(|_| OperationStoreError::Unavailable)? else {
             return Ok(None);
         };
-        if review.run_id != run_id.as_str() {
-            return Ok(None);
+        match self.load_and_apply_markers(&operation).map_err(|_| OperationStoreError::Unavailable)? {
+            Some(_) => Ok(Some(operation)),
+            None => Err(OperationStoreError::Unavailable),
         }
-        Ok(OperationId::parse(&review.operation_id).ok())
     }
 }
 
@@ -436,22 +504,18 @@ impl InMemoryOperationStore {
 
     /// Reconnect keeps the same scope; the mapping is unchanged.
     pub fn reconnect(&mut self, _scope: &AuthenticatedHostScope) {}
-
-    /// Record that the host explicitly minted a fresh intent. Unprovable retries never call this.
-    pub fn record_fresh_intent(&mut self, _intent: &FreshIntent) {
-        self.fresh_intents = self.fresh_intents.saturating_add(1);
-    }
 }
 
 impl OperationStore for InMemoryOperationStore {
     fn save_new(&mut self, record: &OperationRecord) -> Result<SaveOutcome, OperationStoreError> {
-        if record.status != OperationStatus::Held || record.grant_id.is_some() {
+        if record.status != OperationStatus::Held || record.grant_id.is_some() || record.entry.is_free() {
             return Err(OperationStoreError::InvalidState);
         }
         if let Some(existing) = self.records.get(&record.operation) {
             return Ok(if existing.common_identity_matches(record) { SaveOutcome::Existing } else { SaveOutcome::Conflict });
         }
         self.records.insert(record.operation.clone(), record.clone());
+        self.admissions = self.admissions.saturating_add(1);
         Ok(SaveOutcome::Saved)
     }
 
@@ -505,6 +569,9 @@ impl OperationStore for InMemoryOperationStore {
             }
             return Ok(record.clone());
         }
+        if self.mappings.keys().any(|existing| existing.transport_correlation == *correlation) {
+            return Err(SaveOutcome::Conflict);
+        }
         let operation = self.mint().map_err(|_| SaveOutcome::Conflict)?;
         let record = OperationRecord::held(operation.clone(), scope.account().clone(), capability, entry, 0);
         self.records.insert(operation.clone(), record.clone());
@@ -518,13 +585,56 @@ impl OperationStore for InMemoryOperationStore {
                 created_at_ms: 0,
             },
         );
-        self.commits = self.commits.saturating_add(1);
+        self.admissions = self.admissions.saturating_add(1);
         self.events.push("mapping_persisted");
         self.events.push("wire_attempt");
         Ok(record)
     }
 
-    fn lookup_original_retry(&mut self, key: &RetryScopeKey) -> RetryDecision {
+    fn persist_fresh_intent(&mut self, intent: &FreshIntent, capability: Capability, entry: EntryCategory) -> Result<OperationRecord, SaveOutcome> {
+        if !intent.is_provable() || entry.is_free() {
+            return Err(SaveOutcome::Conflict);
+        }
+        let key = RetryScopeKey { host_scope: intent.scope().clone(), transport_correlation: intent.transport_correlation().clone() };
+        if let Some(mapping) = self.mappings.get(&key) {
+            if mapping.operation != *intent.host_minted_operation() || mapping.capability != capability || mapping.entry != entry {
+                return Err(SaveOutcome::Conflict);
+            }
+            return self.records.get(&mapping.operation).cloned().ok_or(SaveOutcome::Conflict);
+        }
+        if let Some(existing) = self.records.get(intent.host_minted_operation()) {
+            return if existing.common_identity_matches(&OperationRecord::held(
+                intent.host_minted_operation().clone(),
+                intent.scope().account().clone(),
+                capability,
+                entry,
+                0,
+            )) {
+                Ok(existing.clone())
+            } else {
+                Err(SaveOutcome::Conflict)
+            };
+        }
+        let record = OperationRecord::held(intent.host_minted_operation().clone(), intent.scope().account().clone(), capability, entry, 0);
+        self.records.insert(record.operation.clone(), record.clone());
+        self.mappings.insert(
+            key,
+            RetryMapping {
+                scope: RetryScopeKey { host_scope: intent.scope().clone(), transport_correlation: intent.transport_correlation().clone() },
+                operation: record.operation.clone(),
+                capability,
+                entry,
+                created_at_ms: 0,
+            },
+        );
+        self.admissions = self.admissions.saturating_add(1);
+        self.fresh_intents = self.fresh_intents.saturating_add(1);
+        self.events.push("mapping_persisted");
+        self.events.push("wire_attempt");
+        Ok(record)
+    }
+
+    fn lookup_original_retry(&self, key: &RetryScopeKey) -> RetryDecision {
         if !key.host_scope.is_provable() {
             return RetryDecision::Unprovable;
         }
@@ -540,14 +650,22 @@ impl OperationStore for InMemoryOperationStore {
         if record.status.is_terminal() {
             return RetryDecision::Unknown;
         }
-        self.admissions = self.admissions.saturating_add(1);
         RetryDecision::Original(record.clone())
     }
 
     fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError> {
         let record = self.records.get_mut(&review.operation_id).ok_or(OperationStoreError::UnknownOperation)?;
+        if let Some(existing) = self.reviews.get(&review.run_id)
+            && existing != &review.operation_id
+        {
+            return Err(OperationStoreError::InvalidState);
+        }
+        match &record.review_run_id {
+            Some(existing) if existing != &review.run_id => return Err(OperationStoreError::InvalidState),
+            Some(_) => {}
+            None => record.review_run_id = Some(review.run_id.clone()),
+        }
         self.reviews.insert(review.run_id.clone(), review.operation_id.clone());
-        record.review_run_id = Some(review.run_id.clone());
         Ok(())
     }
 
@@ -572,6 +690,35 @@ impl FileOperationStore {
             _ => Ok(SaveOutcome::Conflict),
         }
     }
+}
+
+/// Derive run -> operation from the single canonical op -> run marker set.
+fn review_operation_by_run(store: &FileOperationStore, run_id: &RunId) -> Result<Option<OperationId>, LedgerError> {
+    let entries = fs::read_dir(store.records_dir())?;
+    let mut found: Option<OperationId> = None;
+    for entry in entries {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(operation_name) = name.strip_suffix(".review.json") else {
+            continue;
+        };
+        let Some(review) = read_json::<PersistedReview>(&path)? else {
+            continue;
+        };
+        if review.operation_id != operation_name {
+            return Err(LedgerError::Corrupt);
+        }
+        if review.run_id == run_id.as_str() {
+            let operation = OperationId::parse(&review.operation_id).map_err(|_| LedgerError::Corrupt)?;
+            if found.as_ref().is_some_and(|existing| existing != &operation) {
+                return Err(LedgerError::Corrupt);
+            }
+            found = Some(operation);
+        }
+    }
+    Ok(found)
 }
 
 fn persisted_identity_matches(persisted: &PersistedRecord, record: &OperationRecord) -> bool {

@@ -91,7 +91,7 @@ fn retry_by_scope_and_correlation_without_operation_id_recovers_original() {
     let retry = store.lookup_original_retry(&key(scope.clone(), correlation.clone()));
     assert!(matches!(retry, RetryDecision::Original(record) if record.operation == original_id));
     assert_eq!(store.admissions, 1);
-    assert_eq!(store.commits, 1);
+    assert_eq!(store.commits, 0, "a retry lookup is not admission and no charge happened");
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn same_scope_lost_response_and_reconnect_preserves_mapping() {
     let retry = store.lookup_original_retry(&key(scope, correlation));
     assert!(matches!(retry, RetryDecision::Original(record) if record.operation == original.operation));
     assert_eq!(store.admissions, 1);
-    assert_eq!(store.commits, 1);
+    assert_eq!(store.commits, 0, "a retry lookup is not admission and no charge happened");
 }
 
 #[test]
@@ -131,14 +131,15 @@ fn unprovable_cross_session_retry_fails_closed() {
     let mut store = InMemoryOperationStore::default();
     store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
     assert!(matches!(store.lookup_original_retry(&key(other, correlation)), RetryDecision::Unprovable));
-    assert_eq!(store.admissions, 0);
+    assert_eq!(store.admissions, 1, "the original intent admitted once; the unprovable retry added nothing");
+    assert_eq!(store.commits, 0);
 }
 
 #[test]
 fn unproven_retry_is_not_treated_as_fresh() {
     let scope = scope();
     let correlation = correlation("req_unknown_0001");
-    let mut store = InMemoryOperationStore::default();
+    let store = InMemoryOperationStore::default();
     assert!(matches!(store.lookup_original_retry(&key(scope, correlation)), RetryDecision::Unprovable));
     assert_eq!(store.fresh_intents, 0);
     assert_eq!(store.admissions, 0);
@@ -169,7 +170,7 @@ fn retry_after_restart_by_scope_and_correlation_recovers_original() {
     let scope = scope();
     let correlation = correlation("req_example_0001");
     let record = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
-    let mut reopened = store.reopen();
+    let reopened = store.reopen();
     assert!(matches!(
         reopened.lookup_original_retry(&key(scope, correlation)),
         RetryDecision::Original(found) if found.operation == record.operation
@@ -195,14 +196,14 @@ fn crash_between_admit_and_dispatch_leaves_no_started_record() {
     let correlation = correlation("req_example_0001");
     let staged = store.root().join("mappings").join(".staged.json.1.1.tmp");
     std::fs::write(&staged, br#"{"version":1,"account":"acct_example_0001"}"#).unwrap();
-    let mut reopened = store.reopen();
+    let reopened = store.reopen();
     assert!(matches!(reopened.lookup_original_retry(&key(scope, correlation)), RetryDecision::Unprovable));
     assert!(reopened.load(&operation("op_example_0099")).unwrap().is_none());
 }
 
 #[test]
 fn external_correlation_id_cannot_elevate() {
-    let mut store = TempStore::new("external-id");
+    let store = TempStore::new("external-id");
     let scope = scope();
     let correlation = correlation("req_request_id_do_not_trust");
     assert!(matches!(store.lookup_original_retry(&key(scope, correlation)), RetryDecision::Unprovable));
@@ -302,7 +303,7 @@ fn concurrent_intents_publish_one_mapping_without_overwrite() {
         .unwrap()
         .filter(|entry| entry.as_ref().is_ok_and(|entry| entry.path().extension().is_some_and(|extension| extension == "json")));
     assert_eq!(mappings.count(), 1, "one immutable mapping file, never two overwriting rows");
-    let mut reopened = store.reopen();
+    let reopened = store.reopen();
     assert!(matches!(
         reopened.lookup_original_retry(&key(scope(), correlation("req_same_0001"))),
         RetryDecision::Original(record) if record.operation == first.operation
@@ -387,4 +388,165 @@ fn ledger_files_are_private_to_the_host_user() {
     assert_eq!(mode(&store.root().join("records")), 0o700);
     let record_file = store.root().join("records").join("op_example_0001.json");
     assert_eq!(mode(&record_file), 0o600);
+}
+
+// Fix-round-1 red tests: these must fail against the two-index/counter behaviour.
+
+#[test]
+fn review_link_is_derived_from_one_canonical_association() {
+    let mut store = TempStore::new("review-single-source");
+    let record = held_record("op_example_0001");
+    store.save_new(&record).unwrap();
+    let canonical = store.root().join("records").join("op_example_0001.review.json");
+    std::fs::write(&canonical, br#"{"run_id":"run_example_0001","operation_id":"op_example_0001"}"#).unwrap();
+    let reopened = store.reopen();
+    assert_eq!(reopened.review_operation(&RunId::new("run_example_0001")).unwrap(), Some(operation("op_example_0001")));
+}
+
+#[test]
+fn corrupt_mapped_review_identity_is_an_error_not_absent() {
+    let mut store = TempStore::new("review-corrupt");
+    let record = held_record("op_example_0001");
+    store.save_new(&record).unwrap();
+    let canonical = store.root().join("records").join("op_example_0001.review.json");
+    std::fs::write(&canonical, br#"{"run_id":"run_example_0001","operation_id":"op_example_9999"}"#).unwrap();
+    let reopened = store.reopen();
+    assert_eq!(reopened.review_operation(&RunId::new("run_example_0001")), Err(OperationStoreError::Unavailable));
+}
+
+#[test]
+fn nonterminal_terminal_marker_fails_closed() {
+    let mut store = TempStore::new("terminal-filter");
+    let record = held_record("op_example_0001");
+    store.save_new(&record).unwrap();
+    let marker = store.root().join("records").join("op_example_0001.terminal.json");
+    std::fs::write(&marker, br#"{"status":"held"}"#).unwrap();
+    assert_eq!(store.load(&record.operation), Err(OperationStoreError::Unavailable));
+}
+
+#[test]
+fn corrupt_mapping_is_error_not_absent() {
+    let mut store = TempStore::new("mapping-corrupt");
+    let scope = scope();
+    let correlation = correlation("req_example_0001");
+    let record = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let mapping = std::fs::read_dir(store.root().join("mappings"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .unwrap();
+    std::fs::write(&mapping, b"{not json").unwrap();
+    let reopened = store.reopen();
+    assert_eq!(reopened.load(&record.operation), Err(OperationStoreError::Unavailable));
+}
+
+#[test]
+fn unprovable_retry_cannot_implicitly_start_a_fresh_operation_file_store() {
+    let mut store = TempStore::new("implicit-fresh-file");
+    let correlation = correlation("req_example_0001");
+    store.persist_intent(&scope(), &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let other = AuthenticatedHostScope::new(
+        AccountId::new("acct_example_0001"),
+        InstallationId::new("inst_example_0001"),
+        HostSessionBinding::new("other_session_binding"),
+    );
+    assert_eq!(store.persist_intent(&other, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp), Err(SaveOutcome::Conflict));
+}
+
+#[test]
+fn unprovable_retry_cannot_implicitly_start_a_fresh_operation_in_memory() {
+    let mut store = InMemoryOperationStore::default();
+    let correlation = correlation("req_example_0001");
+    store.persist_intent(&scope(), &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let other = AuthenticatedHostScope::new(
+        AccountId::new("acct_example_0001"),
+        InstallationId::new("inst_example_0001"),
+        HostSessionBinding::new("other_session_binding"),
+    );
+    assert_eq!(store.persist_intent(&other, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp), Err(SaveOutcome::Conflict));
+}
+
+#[test]
+fn duplicate_delivery_cannot_count_as_second_commit() {
+    let mut store = InMemoryOperationStore::default();
+    let record = store.persist_intent(&scope(), &correlation("req_example_0001"), Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    assert_eq!(store.admissions, 1);
+    assert_eq!(store.commits, 0);
+    store.mark_terminal(&record.operation, OperationStatus::Charged).unwrap();
+    assert_eq!(store.commits, 1);
+    assert_eq!(store.mark_terminal(&record.operation, OperationStatus::Charged), Err(OperationStoreError::TerminalState));
+    assert_eq!(store.commits, 1);
+    assert!(matches!(store.lookup_original_retry(&key(scope(), correlation("req_example_0001"))), RetryDecision::Unknown));
+    assert_eq!(store.admissions, 1);
+}
+
+#[test]
+fn retry_recovers_review_identity_through_the_retry_authority() {
+    let mut store = TempStore::new("review-retry");
+    let scope = scope();
+    let correlation = correlation("req_example_0001");
+    let record = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    store.record_review(&ReviewOperation::new(RunId::new("run_example_0001"), record.operation.clone())).unwrap();
+    let reopened = store.reopen();
+    assert!(matches!(
+        reopened.lookup_original_retry(&key(scope, correlation)),
+        RetryDecision::Original(found) if found.review_run_id == Some(RunId::new("run_example_0001"))
+    ));
+}
+
+#[test]
+fn explicit_fresh_intent_starts_a_new_operation() {
+    let mut store = TempStore::new("explicit-fresh");
+    let correlation = correlation("req_example_0001");
+    store.persist_intent(&scope(), &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let other = AuthenticatedHostScope::new(
+        AccountId::new("acct_example_0001"),
+        InstallationId::new("inst_example_0001"),
+        HostSessionBinding::new("other_session_binding"),
+    );
+    let fresh_operation = operation("op_fresh_00000001");
+    let fresh = FreshIntent::new(fresh_operation.clone(), other, correlation);
+    let record = store.persist_fresh_intent(&fresh, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    assert_eq!(record.operation, fresh_operation);
+    assert!(record.grant_id.is_none());
+}
+
+#[test]
+fn session_binding_is_not_stored_in_plaintext() {
+    let mut store = TempStore::new("binding-digest");
+    let binding = "binding_value_123";
+    let scope =
+        AuthenticatedHostScope::new(AccountId::new("acct_example_0001"), InstallationId::new("inst_example_0001"), HostSessionBinding::new(binding));
+    store.persist_intent(&scope, &correlation("req_example_0001"), Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    for path in files_under(store.root()) {
+        let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).to_string();
+        assert!(!text.contains(binding), "{} must store only a session-binding digest", path.display());
+    }
+}
+
+#[test]
+fn one_run_cannot_link_two_operations() {
+    let mut store = TempStore::new("review-one-run");
+    let first = held_record("op_example_0001");
+    let second = held_record("op_example_0002");
+    store.save_new(&first).unwrap();
+    store.save_new(&second).unwrap();
+    let run = RunId::new("run_example_0001");
+    store.record_review(&ReviewOperation::new(run.clone(), first.operation.clone())).unwrap();
+    assert_eq!(store.record_review(&ReviewOperation::new(run.clone(), second.operation.clone())), Err(OperationStoreError::InvalidState));
+    assert_eq!(store.reopen().review_operation(&run).unwrap(), Some(first.operation));
+}
+
+#[test]
+fn one_operation_cannot_link_two_runs() {
+    let mut store = TempStore::new("review-one-op");
+    let record = held_record("op_example_0001");
+    store.save_new(&record).unwrap();
+    store.record_review(&ReviewOperation::new(RunId::new("run_example_0001"), record.operation.clone())).unwrap();
+    assert_eq!(
+        store.record_review(&ReviewOperation::new(RunId::new("run_example_0002"), record.operation.clone())),
+        Err(OperationStoreError::InvalidState)
+    );
+    assert_eq!(store.reopen().review_operation(&RunId::new("run_example_0001")).unwrap(), Some(record.operation));
 }
