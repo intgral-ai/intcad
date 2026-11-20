@@ -21,6 +21,8 @@
  * keeps every ACP message and every request to the model service, one folder per case.
  * `--only "no-close control"` instead runs a text-only held stream without cancelling it.
  * This control must fail because the server does not see the response close.
+ * `--only "early-rejection control"` runs both cancellation cases with a nonexistent
+ * session for the prompt, so an ACP error arrives before the awaited event.
  *
  * Nothing of the person running it is used. The agent gets a new, empty data folder
  * (`MASTRA_APP_DATA_DIR`), which is also where Mastra keeps plan sign-ins, and the agent's entry
@@ -262,21 +264,31 @@ export function start({ command, args, env, cwd, permission, keep = () => {} }) 
       write({ jsonrpc: "2.0", id, method, params });
     });
   /** The first message from the agent, already there or still to come, that `wanted` accepts. */
-  const waitFor = (wanted, ms = 30000, from = 0) =>
+  const waitFor = (wanted, ms = 30000, from = 0, signal) =>
     new Promise((done, failed) => {
       const found = notes.slice(from).find(wanted);
       if (found) return done(found);
-      const watcher = (message) => {
-        if (!wanted(message)) return;
+      signal?.throwIfAborted();
+      const clear = () => {
         clearTimeout(timer);
         watchers.delete(watcher);
+        signal?.removeEventListener("abort", abort);
+      };
+      const abort = () => {
+        clear();
+        failed(signal.reason);
+      };
+      const watcher = (message) => {
+        if (!wanted(message)) return;
+        clear();
         done(message);
       };
       const timer = setTimeout(() => {
-        watchers.delete(watcher);
+        clear();
         failed(new Error(`the agent did not send what was waited for in ${ms} ms`));
       }, ms);
       watchers.add(watcher);
+      signal?.addEventListener("abort", abort);
     });
   const stop = () =>
     new Promise((done) => {
@@ -351,6 +363,7 @@ async function main(args) {
   let entry = flag("--entry");
   const sdk = flag("--sdk");
   const only = flag("--only");
+  const earlyRejection = only === "early-rejection control";
   const raw = flag("--raw");
   if (args.length === 1 && !node && !entry) {
     const folder = resolve(args[0]);
@@ -402,14 +415,27 @@ async function main(args) {
       // Nothing is sent unless the stand-in is the only thing the agent could talk to.
       const alone = snapshot.keys.every((key) => !key.saved) && snapshot.plans.every((plan) => plan.state === "out") && inUse.startsWith("mastracode/stand-in/");
       if (!alone) throw new Error(`not alone with the stand-in (keys saved: ${snapshot.keys.filter((key) => key.saved).length}, plans signed in: ${snapshot.plans.filter((plan) => plan.state !== "out").length}, model in use: ${inUse || "none"}); nothing was sent`);
-      const send = (text) => agent.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text }] });
+      const send = (text) => agent.call("session/prompt", { sessionId: earlyRejection ? `${session.sessionId}-missing` : session.sessionId, prompt: [{ type: "text", text }] });
+      const sendUntil = async (text, wanted, from) => {
+        const turn = send(text);
+        const waitingForEvent = new AbortController();
+        try {
+          const event = await Promise.race([
+            agent.waitFor(wanted, 60000, from, waitingForEvent.signal),
+            turn.then(() => { throw new Error("the prompt ended before the expected ACP event"); }),
+          ]);
+          return { turn, event };
+        } finally {
+          waitingForEvent.abort();
+        }
+      };
       const prompt = async (text) => {
         const [from, before] = [agent.notes.length, service.seen.requests];
         const reply = await send(text);
         return { stop: reply.stopReason, askedStandIn: service.seen.requests > before, ...turnOf(agent.notes, from) };
       };
       const before = listing(project);
-      out.ok = await fn({ out, prompt, send, agent, service, sessionId: session.sessionId, project, unchanged: () => listing(project) === before, marker: (file) => findFile(join(work, slug), file) });
+      out.ok = await fn({ out, prompt, sendUntil, agent, service, sessionId: session.sessionId, project, unchanged: () => listing(project) === before, marker: (file) => findFile(join(work, slug), file) });
     } catch (error) {
       out.ok = false;
       out.failed = String(error.message).slice(0, 300);
@@ -477,10 +503,10 @@ async function main(args) {
     return allowed.stop === "end_turn" && allowed.asked === 1 && written !== null && readFileSync(written, "utf8").includes(MARK);
   });
 
-  await run("a turn cancelled while a permission request is open", { permission: () => undefined }, async (context) => {
+  const control = (name) => earlyRejection ? `${name} (${only})` : name;
+  await run(control("a turn cancelled while a permission request is open"), { permission: () => undefined }, async (context) => {
     const from = context.agent.notes.length;
-    const turn = context.send(`run the command: echo ${MARK} > cancelled-command.txt`);
-    const request = await context.agent.waitFor(isPermission, 60000, from);
+    const { turn, event: request } = await context.sendUntil(`run the command: echo ${MARK} > cancelled-command.txt`, isPermission, from);
     context.agent.notify("session/cancel", { sessionId: context.sessionId });
     // ACP: after a cancel the app answers every open permission request as cancelled.
     context.agent.answer(request.id, { outcome: { outcome: "cancelled" } });
@@ -490,10 +516,13 @@ async function main(args) {
   });
 
   const noClose = only === "no-close control";
-  await run(noClose ? only : "a turn cancelled while the answer streams", {}, async (context) => {
+  await run(noClose ? only : control("a turn cancelled while the answer streams"), {}, async (context) => {
     const from = context.agent.notes.length;
-    const turn = context.send(noClose ? "hold the answer open" : `answer slowly, then run the command: echo ${MARK} > cancelled-stream.txt`);
-    await context.agent.waitFor((message) => message.params?.update?.sessionUpdate === "agent_message_chunk", 60000, from);
+    const { turn } = await context.sendUntil(
+      noClose ? "hold the answer open" : `answer slowly, then run the command: echo ${MARK} > cancelled-stream.txt`,
+      (message) => message.params?.update?.sessionUpdate === "agent_message_chunk",
+      from,
+    );
     if (noClose) {
       context.out.streamStarted = true;
       await Promise.race([
