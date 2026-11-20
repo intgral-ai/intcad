@@ -28,7 +28,7 @@ use welding::{
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
 use crate::assistant_cef_http::{BrowserOwnerId, DocumentAuthority, DocumentId, NavigationIdentity, PageAssets, PageServer, Pictures, ServerProgress};
-use crate::assistant_cef_lifecycle::{CloseProgress, Lifecycle, Phase};
+use crate::assistant_cef_lifecycle::{advance_owned_close, CloseProgress, Lifecycle, Phase};
 
 #[path = "assistant_cef_frame.rs"]
 mod admission;
@@ -1283,18 +1283,14 @@ impl CefAssistant {
 
     /// Advance close state from the platform's owned completion only. A late
     /// callback after quarantine may finish cleanup, but it cannot resume quit.
+    /// The same nonblocking barrier also owns the page server's HTTP workers:
+    /// the browser owner is released only after every worker has stopped.
     pub fn poll_close(&mut self) -> CloseProgress {
-        if matches!(self.lifecycle.phase(), Phase::Closing | Phase::Quarantined) {
-            match self.producer.close_progress() {
-                Ok(welding::surface::BrowserCloseProgress::Complete) => {
-                    let _ = self.lifecycle.observe_closed(self.browser_id);
-                }
-                Ok(welding::surface::BrowserCloseProgress::Pending) | Err(_) => {}
-            }
-        }
-        // Shutdown is not marked here: the native runtime is still live until
-        // CefAssistant::shutdown performs its one checked call.
-        self.lifecycle.poll(Instant::now())
+        let now = Instant::now();
+        let workers_stopped = self.server.poll_stop() == ServerProgress::Stopped;
+        let platform_complete = matches!(self.lifecycle.phase(), Phase::Closing | Phase::Quarantined)
+            && matches!(self.producer.close_progress(), Ok(welding::surface::BrowserCloseProgress::Complete));
+        advance_owned_close(&mut self.lifecycle, self.browser_id, platform_complete, workers_stopped, now)
     }
 
     pub fn close(&mut self) {
@@ -1320,6 +1316,9 @@ impl CefAssistant {
                 "CEF close completion was not observed".into(),
             ));
         }
+        // Phase::Closed is only reached through advance_owned_close: it means the
+        // matching platform completion was observed *and* every owned HTTP worker
+        // had stopped, so the server can be consumed without an unowned worker.
         // Browser/producer, frame/request-context and server owners go before the
         // single native shutdown.
         drop(producer);

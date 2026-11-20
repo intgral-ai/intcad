@@ -187,9 +187,29 @@ impl Lifecycle {
     }
 }
 
+/// Production close barrier for one owned Assistant: the matching platform
+/// completion may release the browser owner only after every owned HTTP worker
+/// has stopped. Callers poll both sides without blocking, then apply the one
+/// existing close deadline in `Lifecycle::poll`.
+pub(crate) fn advance_owned_close(
+    lifecycle: &mut Lifecycle,
+    browser_id: i32,
+    platform_complete: bool,
+    workers_stopped: bool,
+    now: Instant,
+) -> CloseProgress {
+    if platform_complete && workers_stopped {
+        let _ = lifecycle.observe_closed(browser_id);
+    }
+    lifecycle.poll(now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assistant_cef_http::{DocumentAuthority, PageAssets, PageServer, Pictures, ServerProgress};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     fn running() -> Lifecycle {
         let mut lifecycle = Lifecycle::new();
@@ -306,6 +326,50 @@ mod tests {
         assert_eq!(lifecycle.poll(Instant::now()), CloseProgress::Complete);
         lifecycle.mark_shutdown().unwrap();
         assert_eq!(lifecycle.phase(), Phase::Shutdown);
+    }
+
+    #[test]
+    fn owned_close_requires_real_http_workers_to_stop_before_completion() {
+        let now = Instant::now();
+        let mut lifecycle = running();
+        lifecycle.begin_close(now);
+        let authority = Arc::new(DocumentAuthority::new());
+        let pictures: Pictures = Arc::new(Mutex::new(HashMap::new()));
+        let mut server = PageServer::start(PageAssets { resolve: crate::assistant_page::page_file, font: b"font" }, pictures, authority).unwrap();
+        // The platform reported its matching completion, but the four owned HTTP
+        // workers still run: the close barrier must stay pending.
+        assert_ne!(server.poll_stop(), ServerProgress::Stopped);
+        assert_eq!(
+            advance_owned_close(&mut lifecycle, 7, true, server.poll_stop() == ServerProgress::Stopped, now + Duration::from_millis(10)),
+            CloseProgress::Pending
+        );
+        assert_eq!(lifecycle.phase(), Phase::Closing);
+        // Drive the real owned stop without joining from the decision path.
+        server.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while server.poll_stop() == ServerProgress::Stopping {
+            assert!(Instant::now() < deadline, "owned workers did not stop");
+            std::thread::yield_now();
+        }
+        let stopped = server.poll_stop() == ServerProgress::Stopped;
+        assert!(stopped, "owned workers must reach Stopped");
+        assert_eq!(advance_owned_close(&mut lifecycle, 7, true, stopped, now + Duration::from_millis(100)), CloseProgress::Complete);
+        assert_eq!(lifecycle.phase(), Phase::Closed);
+    }
+
+    #[test]
+    fn stopping_workers_keep_close_pending_until_existing_deadline_quarantines() {
+        let now = Instant::now();
+        let mut lifecycle = running();
+        lifecycle.begin_close(now);
+        // The same finite close budget covers worker reaping; a still-running
+        // worker cannot be reported as a completed close.
+        assert_eq!(advance_owned_close(&mut lifecycle, 7, true, false, now + CLOSE_TIMEOUT - Duration::from_millis(1)), CloseProgress::Pending);
+        assert_eq!(advance_owned_close(&mut lifecycle, 7, true, false, now + CLOSE_TIMEOUT), CloseProgress::Quarantined);
+        // A later real worker stop releases the retained owner without resuming quit.
+        assert_eq!(advance_owned_close(&mut lifecycle, 7, true, true, now + CLOSE_TIMEOUT), CloseProgress::Complete);
+        assert_eq!(lifecycle.phase(), Phase::Closed);
+        assert!(!lifecycle.permits_retry());
     }
 
     #[test]
