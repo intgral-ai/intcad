@@ -1739,6 +1739,47 @@ fn files_row_click_then_delete_then_pointer_away_does_not_delete_cad_or_ask() {
     assert!(h.app.file_tree.editing.is_none());
 }
 
+/// A completed Files click, then a mouse button outside Files (held, released before Delete, or
+/// released after moving back), then Delete: an outside press is not a completed click and must
+/// not override the Files click or authorize CAD deletion. The uncertain key is retired for both.
+#[test]
+fn files_click_then_outside_press_around_delete_retires_both() {
+    for (label, release_before, release_after) in
+        [("held", false, false), ("released before Delete", true, false), ("released after moving back", false, true)]
+    {
+        let scratch = Scratch::new();
+        scratch.file("notes.txt", "n");
+        let (mut h, body) = cad_body_and_files(&scratch);
+        let row = crate::scenario::rect_of("files:row:notes.txt").unwrap();
+        let outside = egui::pos2(5.0, 5.0);
+        let mut events = pointer_click(row.center(), Modifiers::NONE);
+        events.push(egui::Event::PointerButton { pos: outside, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        if release_before {
+            events.push(egui::Event::PointerButton {
+                pos: outside,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        events.push(key_event(egui::Key::Delete, true, Modifiers::NONE));
+        events.push(key_event(egui::Key::Delete, false, Modifiers::NONE));
+        events.push(egui::Event::PointerMoved(row.center()));
+        if release_after {
+            events.push(egui::Event::PointerButton {
+                pos: row.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.frame_with(events);
+        h.frames(2);
+        assert!(h.app.session.model.state().body(&body).is_some(), "{label}: the outside button must not authorize CAD deletion");
+        assert!(h.app.file_tree.modal.is_none(), "{label}: the uncertain key is retired for Files too");
+    }
+}
+
 /// Delete followed by a Files row click must not be retargeted to the file the later click
 /// selects. The key is retired for both owners.
 #[test]

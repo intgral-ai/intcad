@@ -3394,48 +3394,65 @@ pub(crate) fn cancel_unfinished(app: &mut SolveApp) -> bool {
 
 /// Which owner may act on Delete/Backspace in this input batch.
 ///
-/// The shortcut pass runs before layout and sees the previous frame's focus. A batch can click a
-/// Files row and press Delete in either order, and the pointer can move away after the click, so
-/// the final pointer position cannot decide. Scan the ordered button events instead. A Files
-/// button after the key means the later Files handler must not retarget it; a Files button before
-/// the key keeps the key for Files; a click away from an already focused tree loses it rather
-/// than guessing CAD. Returns (retire both owners, leave the key for Files).
+/// The shortcut pass runs before layout and sees the previous frame's focus. Only a release inside
+/// Files is evidence of a completed Files click; a button press alone is not a focus change. A
+/// Files release before the key keeps the key for Files unless any outside button follows it: a
+/// held press makes the target uncertain and must never authorize CAD deletion. Files buttons
+/// after the key retire it so the later Files handler cannot retarget. Without Files involvement,
+/// settled CAD keeps its Delete. Returns (retire both owners, leave the key for Files).
 fn destructive_ownership(panel: Option<egui::Rect>, files_keys: bool, ctx: &egui::Context) -> (bool, bool) {
     use egui::{Event, Key};
     let Some(panel) = panel else { return (false, false) };
-    let (files, outside, keys) = ctx.input(|i| {
-        let mut files = Vec::new();
-        let mut outside = Vec::new();
+    let (files_buttons, files_releases, outside_buttons, keys) = ctx.input(|i| {
+        let mut files_buttons = Vec::new();
+        let mut files_releases = Vec::new();
+        let mut outside_buttons = Vec::new();
         let mut keys = Vec::new();
         for (index, event) in i.events.iter().enumerate() {
             match event {
-                Event::PointerButton { pos, .. } => {
+                Event::PointerButton { pos, pressed, .. } => {
                     if panel.contains(*pos) {
-                        files.push(index);
+                        files_buttons.push(index);
+                        if !pressed {
+                            files_releases.push(index);
+                        }
                     } else {
-                        outside.push(index);
+                        outside_buttons.push(index);
                     }
                 }
                 Event::Key { key: Key::Delete | Key::Backspace, pressed: true, .. } => keys.push(index),
                 _ => {}
             }
         }
-        (files, outside, keys)
+        (files_buttons, files_releases, outside_buttons, keys)
     });
+    let pointer_any = !files_buttons.is_empty() || !outside_buttons.is_empty();
     let mut retire = false;
     let mut to_files = false;
     for key in keys {
-        let before = files.iter().chain(outside.iter()).filter(|index| **index < key).max().copied();
-        let before_is_files = before.map_or(files_keys, |index| files.contains(&index));
-        if files.iter().any(|index| *index > key) {
-            // A click into Files after the key must not make the later Files handler retarget it.
+        let last_release = files_releases.iter().filter(|index| **index < key).max().copied();
+        if files_buttons.iter().any(|index| *index > key) {
+            // A later Files button can retarget the key in the later Files handler.
             retire = true;
-        } else if before_is_files {
-            to_files = true;
-        } else if files_keys {
-            // Files had the keys, but the latest click before the key was elsewhere: ambiguous.
+        } else if let Some(release) = last_release {
+            // An outside button after the Files release makes ownership uncertain; it must not
+            // authorize CAD deletion (it may be a held press, not a completed click).
+            if outside_buttons.iter().any(|index| *index > release && *index < key) {
+                retire = true;
+            } else {
+                to_files = true;
+            }
+        } else if !pointer_any {
+            // Settled Files without pointer input keeps its accepted behavior; settled CAD is
+            // left to CAD.
+            if files_keys {
+                to_files = true;
+            }
+        } else if files_keys || files_buttons.iter().any(|index| *index < key) {
+            // Files may be taking or losing focus, but no Files release completed: uncertain.
             retire = true;
         }
+        // No Files involvement: CAD keeps its settled Delete.
     }
     (retire, to_files)
 }
