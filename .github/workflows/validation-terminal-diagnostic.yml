@@ -1,0 +1,128 @@
+name: Validation terminal diagnostic (task branch)
+
+# Temporary, source-bound TDD evidence for the inherited validation race.
+# This is not a required/full gate and must not replace ci.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "red or green"
+        required: true
+        default: green
+        type: choice
+        options: [red, green]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-terminal-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_TARGET_DIR: target
+  CARGO_INCREMENTAL: "0"
+  VALTX_STAGE: ${{ inputs.stage || 'green' }}
+
+jobs:
+  terminal-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: validation-terminal-diagnostic
+          cache-on-failure: true
+      - name: Capture source identity and run actual regressions
+        shell: bash
+        run: |
+          source_dirty="$(git status --porcelain)"
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source.txt
+          printf '%s\n' "$source_dirty" > evidence/dirty.txt
+          git rev-parse HEAD:crates/engine/src/validation/tests.rs > evidence/engine-test-blob.txt
+          git rev-parse HEAD:crates/ui-egui/src/agent_chat/tests.rs > evidence/ui-test-blob.txt
+          rustc --version --verbose > evidence/rustc.txt
+          cargo --version > evidence/cargo.txt
+          df -B1 . > evidence/disk-before.txt
+          python3 - <<'PY'
+          import json, os, pathlib, signal, subprocess, sys
+          out = pathlib.Path("evidence")
+          if os.environ["VALTX_STAGE"] == "red":
+              selections = [
+                  ("solidcraft-engine", "--lib", "validation::tests::cleanup_preserves_a_schema_invalid_tombstone_and_its_records"),
+                  ("solidcraft-engine", "--lib", "validation::tests::cleanup_preserves_an_expiry_invalid_tombstone_and_its_key"),
+                  ("solidcraft-engine", "--lib", "validation::tests::cleanup_preserves_a_run_binding_invalid_tombstone"),
+                  ("solidcraft-engine", "--lib", "validation::tests::cleanup_preserves_a_nonterminal_tombstone"),
+                  ("solidcraft-engine", "--lib", "validation::tests::cleanup_preserves_a_key_invalid_tombstone_and_its_key"),
+                  ("solidcraft-engine", "--lib", "validation::tests::cleanup_collects_a_valid_expired_tombstone_and_key_when_no_residue_exists"),
+              ]
+          else:
+              selections = [
+                  ("solidcraft-engine", "--lib", "validation::tests::"),
+              ]
+          records = []
+          for number, (package, target, selection) in enumerate(selections):
+              command = ["cargo", "test", "--profile", "ci", "--locked", "-p", package]
+              command += target.split()
+              command += [selection, "--"]
+              if os.environ["VALTX_STAGE"] == "red":
+                  command += ["--exact"]
+              command += ["--nocapture"]
+              prefix = out / f"command-{number}"
+              timed_out = False
+              with prefix.with_suffix(".stdout").open("wb") as stdout, prefix.with_suffix(".stderr").open("wb") as stderr:
+                  process = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
+                  try:
+                      exit_code = process.wait(timeout=1800)
+                  except subprocess.TimeoutExpired:
+                      timed_out = True
+                      os.killpg(process.pid, signal.SIGKILL)
+                      process.wait()
+                      exit_code = 124
+              text = prefix.with_suffix(".stdout").read_text(errors="replace")
+              selected = "running 1 test\n" in text if os.environ["VALTX_STAGE"] == "red" else "running 0 tests\n" not in text and "running " in text
+              records.append({"argv": command, "exitCode": exit_code, "selectionVerified": selected, "timedOut": timed_out, "features": "package defaults; no extra features"})
+              (out / "commands.json").write_text(json.dumps(records, indent=2) + "\n")
+              print(f"{selection}: exit={exit_code}, selectionVerified={selected}, timedOut={timed_out}", flush=True)
+              if timed_out:
+                  break
+          sys.exit(1 if any(r["exitCode"] != 0 or not r["selectionVerified"] for r in records) else 0)
+          PY
+      - name: Changed native crates Clippy
+        if: always() && env.VALTX_STAGE == 'green'
+        run: |
+          set +e
+          timeout --kill-after=10s 25m cargo clippy --profile ci --locked -p solidcraft-engine -p solidcraft-ui-egui --all-targets -- -D warnings > evidence/clippy.stdout 2> evidence/clippy.stderr
+          result=$?
+          echo "$result" > evidence/clippy.exit
+          exit "$result"
+      - name: Formatting
+        if: always() && env.VALTX_STAGE == 'green'
+        run: |
+          set +e
+          cargo fmt --all -- --check > evidence/fmt.stdout 2> evidence/fmt.stderr
+          result=$?
+          echo "$result" > evidence/fmt.exit
+          exit "$result"
+      - name: Final resource sample
+        if: always()
+        run: |
+          mkdir -p evidence
+          df -B1 . > evidence/disk-after.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: validation-terminal-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error

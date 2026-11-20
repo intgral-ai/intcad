@@ -206,16 +206,23 @@ fn write_state(fixture: &TerminalKeyFixture, state: ValidationState, updated_at_
     fixture.port.store.write_json_replace(&fixture.port.store.state_path(&fixture.run_id), &record).unwrap();
 }
 
-fn write_tombstone(fixture: &TerminalKeyFixture, state: ValidationState) {
+fn tombstone_record(fixture: &TerminalKeyFixture, state: ValidationState) -> store::TombstoneRecord {
     let expires_at_ms = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap().expires_at_ms();
-    let record = store::TombstoneRecord {
+    store::TombstoneRecord {
         schema_version: RECORD_SCHEMA.into(),
         run_id: fixture.run_id.clone(),
         submission_key: fixture.key.clone(),
         state,
         expires_at_ms,
-    };
-    fixture.port.store.write_json_replace(&fixture.port.store.tombstone_path(&fixture.run_id), &record).unwrap();
+    }
+}
+
+fn write_tombstone_record(fixture: &TerminalKeyFixture, record: &store::TombstoneRecord) {
+    fixture.port.store.write_json_replace(&fixture.port.store.tombstone_path(&fixture.run_id), record).unwrap();
+}
+
+fn write_tombstone(fixture: &TerminalKeyFixture, state: ValidationState) {
+    write_tombstone_record(fixture, &tombstone_record(fixture, state));
 }
 
 fn key_expiry(fixture: &TerminalKeyFixture) -> u64 {
@@ -1448,6 +1455,99 @@ fn authoritative_tombstone_does_not_consume_live_capacity_or_beat_unrelated_work
     assert_eq!(std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap(), retired_state, "the retired state is not written");
     assert!(!fixture.port.store.report_path(&fixture.run_id).is_file());
     assert!(!fixture.port.store.worker_path(&fixture.run_id).is_file());
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+fn retire_to_tombstone_only(name: &str) -> TerminalKeyFixture {
+    let fixture = terminal_run_with_key(name);
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.admission_path(&fixture.run_id).is_file());
+    fixture
+}
+
+#[test]
+fn cleanup_preserves_a_schema_invalid_tombstone_and_its_records() {
+    let fixture = terminal_run_with_key("authority-schema-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.schema_version = "0.9".into();
+    write_tombstone_record(&fixture, &record);
+    let tombstone = std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap();
+    let state = std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap();
+    let admission = std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    fixture.port.cleanup(1_760_000_000_000);
+    assert_eq!(
+        std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap(),
+        tombstone,
+        "invalid retirement evidence is kept unchanged"
+    );
+    assert_eq!(std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap(), state);
+    assert_eq!(std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap(), admission);
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_preserves_an_expiry_invalid_tombstone_and_its_key() {
+    let fixture = retire_to_tombstone_only("authority-expiry-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.expires_at_ms = key_expiry(&fixture) + 1;
+    write_tombstone_record(&fixture, &record);
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    let key = std::fs::read(fixture.port.store.key_path(&parsed.file_name())).unwrap();
+    fixture.clock.advance(key_expiry(&fixture) + 2 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 2);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "invalid expiry is not retirement evidence");
+    assert_eq!(std::fs::read(fixture.port.store.key_path(&parsed.file_name())).unwrap(), key, "the binding key is preserved with the invalid record");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_preserves_a_run_binding_invalid_tombstone() {
+    let fixture = retire_to_tombstone_only("authority-run-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.run_id = "run-other-binding".into();
+    write_tombstone_record(&fixture, &record);
+    fixture.clock.advance(key_expiry(&fixture) + 2 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 2);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "a record naming another run is not retirement evidence");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_preserves_a_nonterminal_tombstone() {
+    let fixture = retire_to_tombstone_only("authority-state-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.state = ValidationState::Queued;
+    write_tombstone_record(&fixture, &record);
+    fixture.clock.advance(key_expiry(&fixture) + 2 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 2);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "a nonterminal tombstone is not retirement evidence");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_preserves_a_key_invalid_tombstone_and_its_key() {
+    let fixture = retire_to_tombstone_only("authority-key-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.submission_key = "not-a-key".into();
+    write_tombstone_record(&fixture, &record);
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    fixture.clock.advance(key_expiry(&fixture) + 2 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 2);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "a key-invalid tombstone is not retirement evidence");
+    assert!(fixture.port.store.key_path(&parsed.file_name()).is_file(), "the binding key is preserved with the invalid record");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_collects_a_valid_expired_tombstone_and_key_when_no_residue_exists() {
+    let fixture = retire_to_tombstone_only("authority-valid-gc");
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    fixture.clock.advance(key_expiry(&fixture) + 8 * 24 * 60 * 60 * 1000 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 8 * 24 * 60 * 60 * 1000);
+    assert!(!fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "valid expired evidence is collected");
+    assert!(!fixture.port.store.key_path(&parsed.file_name()).is_file());
     let _ = std::fs::remove_dir_all(fixture.root);
 }
 
