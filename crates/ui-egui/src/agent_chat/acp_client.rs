@@ -76,10 +76,10 @@ impl AcpBackend {
     /// the keys ([`ChatBackend::connections`]) and opens the session ([`ChatBackend::new_session`]).
     /// `data`: the folder of the app's own where the agent keeps its sign-ins and its other
     /// data (`MASTRA_APP_DATA_DIR`), so it shares none with a Mastra Code the user installed.
+    /// It is not optional: without it the entry leaves the agent in the user's own home.
     /// Mastra's usage reporting is switched off for it ([`TELEMETRY_OFF_ENV`]).
-    pub fn start_builtin(argv: &[String], ctx: StartContext, data: Option<&std::path::Path>) -> Result<AcpBackend, String> {
-        let mut env: Vec<(&str, &std::ffi::OsStr)> = data.iter().map(|folder| (DATA_DIR_ENV, folder.as_os_str())).collect();
-        env.push((TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1")));
+    pub fn start_builtin(argv: &[String], ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
+        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
         let mut backend = AcpBackend::start_with_env(argv, ctx, &env)?;
         backend.built_in = true;
         Ok(backend)
@@ -571,7 +571,8 @@ mod tests {
     /// answered when `ready`.
     fn builtin_backend(ready: bool) -> Result<AcpBackend, String> {
         let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
-        let mut backend = AcpBackend::start_builtin(&["sh".into(), "-c".into(), "while IFS= read -r line; do :; done".into()], ctx, None)?;
+        let mut backend =
+            AcpBackend::start_builtin(&["sh".into(), "-c".into(), "while IFS= read -r line; do :; done".into()], ctx, &std::env::temp_dir())?;
         if ready {
             backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut Vec::new());
         }
@@ -806,7 +807,7 @@ mod tests {
                 std::thread::yield_now();
             }
         };
-        let mut backend = AcpBackend::start_builtin(&argv, ctx(), Some(&data)).unwrap();
+        let mut backend = AcpBackend::start_builtin(&argv, ctx(), &data).unwrap();
         assert_eq!(read(&seen).trim_end(), format!("{}|1", data.to_string_lossy()));
         backend.shutdown(true);
         // Any other agent gets no such variable from the app: only what this process has itself.

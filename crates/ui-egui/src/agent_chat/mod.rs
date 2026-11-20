@@ -1443,9 +1443,13 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         (agents::Execution::Direct, agents::Kind::Acp) if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
         (agents::Execution::Direct, agents::Kind::Acp) if builtin => {
             // Made when the agent first starts, not when the app does: a run that never opens
-            // the Assistant leaves no folder behind.
-            let data = app.builtin_agent.as_ref().and_then(|found| found.data.clone()).filter(|folder| std::fs::create_dir_all(folder).is_ok());
-            acp_client::AcpBackend::start_builtin(&entry.argv, start, data.as_deref()).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+            // the Assistant leaves no folder behind. Without the folder the agent is not started:
+            // it would keep its sign-ins in, and read the agent files of, the user's own home.
+            let data = app.builtin_agent.as_ref().and_then(|found| found.data.clone());
+            match data.filter(|folder| std::fs::create_dir_all(folder).is_ok()) {
+                Some(folder) => acp_client::AcpBackend::start_builtin(&entry.argv, start, &folder).map(|b| Box::new(b) as Box<dyn ChatBackend>),
+                None => Err(tr("ui.agent_chat_no_data_folder").to_string()),
+            }
         }
         (agents::Execution::Direct, agents::Kind::Acp) => {
             acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)

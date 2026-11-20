@@ -508,7 +508,8 @@ they need is kept in three places:
   installed yourself. It is `mastra` in the app's settings folder: the folder
   `SOLIDCRAFT_SETTINGS_DIR` names when a run was given one, otherwise the app's per-user data
   folder (`~/Library/Application Support/Intcad`, `$XDG_DATA_HOME/intcad`, `%LOCALAPPDATA%\Intcad`).
-  It is made when the agent first starts.
+  It is made when the agent first starts. When it cannot be made, the agent is not started and the
+  Assistant says why: the agent is never run in your own home folder instead.
 - **API keys** are in the system keychain and nowhere else, one entry for each: `mastra/key/` and
   the provider (`anthropic`, `openai`, `google`, `openrouter`, `deepseek`), and
   `mastra/custom/` and the name for a custom address that has a key. The app hands every key to

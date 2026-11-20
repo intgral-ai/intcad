@@ -16744,6 +16744,32 @@ fn connect_starts_the_built_in_agent_with_its_folder_and_its_keys_and_no_session
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The built-in agent is never started without a folder of its own for its data: with none it
+/// would keep its sign-ins in the user's own home and read their agent files there. A folder that
+/// cannot be made, or an app that knows no settings folder at all, fails the start and says why;
+/// the agent's program is not run, and the agent list does not come back.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn the_built_in_agent_is_not_started_without_its_data_folder() {
+    let dir = std::env::temp_dir().join(format!("intcad-builtin-no-folder-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let program = fake_agent_program(&dir, "mastra-agent", &conn_told(|_| {}));
+    // A file where the settings folder should be: nothing can be made inside it, on any system.
+    std::fs::write(dir.join("settings"), b"not a folder").unwrap();
+    for data in [Some(dir.join("settings").join("mastra")), None] {
+        let (mut app, _keys, ctx) = app_with_builtin();
+        app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), data: data.clone() });
+        app.preferences.chat_execution = agents::Execution::Mastra;
+        connect(&mut app, &ctx);
+        assert_eq!(app.agent_chat.state(), State::Failed, "{data:?}");
+        let why = tr("ui.agent_chat_no_data_folder");
+        assert!(app.agent_chat.items.iter().any(|item| matches!(item, Item::Notice { error: true, text } if text.contains(&*why))), "{data:?}");
+        assert!(!dir.join("mastra-agent.env").exists(), "the agent's program was started: {data:?}");
+        assert!(agents::is_builtin(&app) && agents::current(&app).is_some_and(|entry| entry.id == "mastra"), "{data:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// B1, from opening the Assistant: with the built-in agent, showing the panel starts the agent
 /// without any action, and the page gets the plan rows from the agent's first snapshot. Closed,
 /// or folded to its strip, the panel starts nothing. After a disconnect the agent stays off
