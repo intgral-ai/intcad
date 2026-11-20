@@ -23,10 +23,13 @@ mod http_tests;
 mod ledger_tests;
 
 pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
-pub use credentials::{ACCOUNT_KEYRING_SERVICE, CredentialSession, KeyringStore, MemorySession, NoPersistentStore};
+pub use credentials::{
+    ACCOUNT_KEYRING_SERVICE, BlockedProductExchange, CredentialSession, KeyringStore, MemorySession, NoPersistentStore, ProductExchangeError,
+    ProductLogin, ProductSession, ProductSessionExchange, ProviderLogin, ProviderSession,
+};
 pub use device_code::{
-    CompletedDeviceLogin, DeviceCodeError, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport,
-    UreqDeviceCodeTransport, WORKOS_DEVICE_AUTHORIZATION_URL, WORKOS_DEVICE_GRANT_TYPE, WORKOS_TOKEN_URL, WorkOsPublicClient,
+    DeviceCodeError, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, UreqDeviceCodeTransport,
+    WORKOS_DEVICE_AUTHORIZATION_URL, WORKOS_DEVICE_GRANT_TYPE, WORKOS_TOKEN_URL, WorkOsPublicClient,
 };
 pub use http::{
     BootstrapPlatform, CredentialHandoff, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, Secret, Transport,

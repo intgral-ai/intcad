@@ -3,6 +3,10 @@
 //! This follows the published WorkOS CLI Auth endpoints (RFC 8628). It never opens a browser and
 //! is only started by an explicit caller command; ordinary program paths return `AUTH_REQUIRED`.
 //! The device code and issued tokens are redacted from `Debug`, `Display`, and error messages.
+//!
+//! [`DeviceCodeFlow::complete`] stores only the provider login. It never activates an Intcad
+//! product session: the caller must separately obtain a typed product session from a documented
+//! [`crate::credentials::ProductSessionExchange`]. Refresh tokens are not persisted.
 
 use std::fmt;
 use std::sync::Arc;
@@ -11,7 +15,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, Refusal, RefusalCode};
 
-use crate::credentials::{CredentialSession, MAX_ACCOUNT_BYTES, auth_unavailable, has_control, safe_token, unavailable};
+use crate::credentials::{CredentialSession, MAX_ACCOUNT_BYTES, ProviderLogin, auth_unavailable, has_control, safe_token, unavailable};
 use crate::http::Secret;
 
 /// WorkOS CLI Auth device authorization endpoint (`POST`).
@@ -105,12 +109,6 @@ pub enum DeviceCodeMode {
     Programmatic,
 }
 
-/// The account id whose session was persisted.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CompletedDeviceLogin {
-    pub account_id: String,
-}
-
 /// The HTTP seam for WorkOS CLI Auth. Tests script this; configuration never supplies a URL.
 pub trait DeviceCodeTransport {
     fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError>;
@@ -182,7 +180,6 @@ struct PendingDeviceCode {
 struct DeviceCodeAuthorization {
     account_id: String,
     access_token: Secret,
-    refresh_token: Option<Secret>,
 }
 
 /// Explicit device-code lifecycle over one shared credential session.
@@ -264,7 +261,6 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
         if (200..300).contains(&status) {
             let value: Value = serde_json::from_slice(&body).map_err(|_| auth_unavailable("the sign-in service returned an invalid response"))?;
             let access_token = required_secret(&value, "access_token")?;
-            let refresh_token = optional_secret(&value, "refresh_token")?;
             let account_id = value
                 .pointer("/user/id")
                 .and_then(Value::as_str)
@@ -272,7 +268,7 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
                 .ok_or_else(|| auth_unavailable("the sign-in service returned an invalid account"))?
                 .to_owned();
             self.pending = None;
-            self.authorized = Some(DeviceCodeAuthorization { account_id, access_token, refresh_token });
+            self.authorized = Some(DeviceCodeAuthorization { account_id, access_token });
             return Ok(DeviceCodePoll::Authorized);
         }
         if status != 400 {
@@ -317,35 +313,24 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
         }
     }
 
-    /// Persist the authorized session into the shared credential store. The caller must have
-    /// polled until [`DeviceCodePoll::Authorized`].
-    pub fn complete(&mut self) -> Result<CompletedDeviceLogin, Refusal> {
+    /// Persist the authorized provider login into the shared credential store. This does not
+    /// activate an Intcad product session: a trusted [`crate::credentials::ProductSessionExchange`]
+    /// must run explicitly afterwards. The caller must have polled until
+    /// [`DeviceCodePoll::Authorized`].
+    pub fn complete(&mut self) -> Result<ProviderLogin, Refusal> {
         let authorization = self.authorized.take().ok_or_else(|| auth_required("poll until the sign-in is authorized first"))?;
-        self.session
-            .complete_device_login(
-                &authorization.account_id,
-                authorization.access_token.expose_secret(),
-                authorization.refresh_token.as_ref().map(Secret::expose_secret),
-            )
-            .map_err(|error| match error.code {
+        self.session.complete_provider_login(&authorization.account_id, authorization.access_token.expose_secret()).map_err(|error| {
+            match error.code {
                 CredentialErrorCode::NoPersistentCredential => auth_required("no secure credential store is available"),
                 _ => auth_unavailable("the credential store could not be written"),
-            })?;
-        Ok(CompletedDeviceLogin { account_id: authorization.account_id })
+            }
+        })
     }
 }
 
 fn required_secret(value: &Value, field: &str) -> Result<Secret, Refusal> {
     let text = value.get(field).and_then(Value::as_str).filter(|text| !text.is_empty() && !has_control(text));
     text.map(Secret::new).ok_or_else(|| auth_unavailable("the sign-in service returned an invalid credential"))
-}
-
-fn optional_secret(value: &Value, field: &str) -> Result<Option<Secret>, Refusal> {
-    match value.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) if !text.is_empty() && !has_control(text) => Ok(Some(Secret::new(text.clone()))),
-        _ => Err(auth_unavailable("the sign-in service returned an invalid credential")),
-    }
 }
 
 fn required_text(value: &Value, field: &str, max: usize) -> Result<String, Refusal> {

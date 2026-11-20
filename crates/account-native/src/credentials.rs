@@ -9,6 +9,12 @@
 //! session; there is no second, no-op handoff. Credentials are redacted from `Debug`, `Display`,
 //! and every error message this module produces. The explicit device-code login lives in
 //! [`crate::device_code`].
+//!
+//! Provider and product credentials are deliberately separate. A completed WorkOS provider login
+//! is stored under `provider/…` and is never returned as the `Authorization: Bearer` product
+//! session. Only a typed [`ProductSession`] returned by a trusted [`ProductSessionExchange`] can
+//! activate `auth/product_session`; the default [`BlockedProductExchange`] keeps the live exchange
+//! path absent until a documented protocol is reviewed.
 
 use sha2::{Digest, Sha256};
 use solidcraft_engine::entitlement::{
@@ -17,6 +23,7 @@ use solidcraft_engine::entitlement::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::http::{CredentialHandoff, Secret, WireCredentials};
 
@@ -33,9 +40,15 @@ const MAX_IDENTIFIER_BYTES: usize = 80;
 const INDEX_KEY: &str = "credentials/index";
 const ACCOUNT_KEY: &str = "account/id";
 pub(crate) const PRODUCT_SESSION_KEY: &str = "auth/product_session";
-const REFRESH_TOKEN_KEY: &str = "auth/refresh_token";
 const INSTALLATION_ID_KEY: &str = "install/id";
 const INSTALLATION_CREDENTIAL_KEY: &str = "install/credential";
+// Provider-side identity and token. These are never returned as an Intcad product bearer; they
+// are input only to the explicit product-session exchange.
+const PROVIDER_ACCOUNT_KEY: &str = "provider/account";
+const PROVIDER_ACCESS_TOKEN_KEY: &str = "provider/access_token";
+// Legacy key from the first Task 4 delivery. It is deleted during cleanup but never written again:
+// the documented WorkOS flow has no reviewed refresh use yet.
+const REFRESH_TOKEN_KEY: &str = "auth/refresh_token";
 const KEYRING_PROBE_KEY: &str = "intcad/keyring-probe";
 
 pub(crate) fn unavailable() -> CredentialError {
@@ -203,6 +216,110 @@ impl CredentialStore for KeyringStore {
     }
 }
 
+/// A completed provider login. It proves only the WorkOS provider session; it is not an Intcad
+/// product login and cannot be used as a product bearer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderLogin {
+    pub provider_account_id: String,
+}
+
+/// The typed provider credentials offered to the explicit product-session exchange. The access
+/// token is available to the trusted exchange implementation only; it is never returned by
+/// [`WireCredentials`].
+#[derive(Clone)]
+pub struct ProviderSession {
+    account_id: String,
+    access_token: Secret,
+}
+
+impl ProviderSession {
+    pub fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    pub fn access_token(&self) -> &Secret {
+        &self.access_token
+    }
+}
+
+impl fmt::Debug for ProviderSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("ProviderSession").field("account_id", &self.account_id).field("access_token", &"<redacted>").finish()
+    }
+}
+
+/// A typed Intcad product session produced only by a trusted [`ProductSessionExchange`].
+#[derive(Clone)]
+pub struct ProductSession {
+    account_id: String,
+    product_session: Secret,
+    expires_at_unix_seconds: Option<u64>,
+}
+
+impl ProductSession {
+    /// The only public construction path. Call this only from a host-owned exchange that follows
+    /// a documented, reviewed protocol; the value must never come from a provider token directly.
+    pub fn from_trusted_exchange(account_id: impl Into<String>, product_session: Secret, expires_at_unix_seconds: Option<u64>) -> Self {
+        Self { account_id: account_id.into(), product_session, expires_at_unix_seconds }
+    }
+
+    pub fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    pub fn product_session(&self) -> &Secret {
+        &self.product_session
+    }
+
+    pub fn expires_at_unix_seconds(&self) -> Option<u64> {
+        self.expires_at_unix_seconds
+    }
+}
+
+impl fmt::Debug for ProductSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProductSession")
+            .field("account_id", &self.account_id)
+            .field("product_session", &"<redacted>")
+            .field("expires_at_unix_seconds", &self.expires_at_unix_seconds)
+            .finish()
+    }
+}
+
+/// Why a documented product-session exchange did not produce a product session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProductExchangeError {
+    /// No reviewed exchange is configured yet; the live endpoint is intentionally absent.
+    NotConfigured,
+    /// The exchange refused the provider session.
+    Rejected,
+    /// The exchange could not complete (transport or malformed result).
+    Unavailable,
+}
+
+/// The narrow, typed product-session exchange seam. A real implementation must use a documented,
+/// reviewed exchange; this crate ships only [`BlockedProductExchange`] and scripted test doubles.
+pub trait ProductSessionExchange {
+    fn exchange(&self, provider: &ProviderSession) -> Result<ProductSession, ProductExchangeError>;
+}
+
+/// The default blocked path: no provider token ever becomes a product bearer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BlockedProductExchange;
+
+impl ProductSessionExchange for BlockedProductExchange {
+    fn exchange(&self, _provider: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
+        Err(ProductExchangeError::NotConfigured)
+    }
+}
+
+/// An activated Intcad product account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProductLogin {
+    pub account_id: String,
+}
+
 /// The single credential owner shared by [`WireCredentials`] and [`CredentialHandoff`].
 ///
 /// `account/…`, `auth/…`, `install/…`, and `scope/…` keys are deliberately separate. Per-operation
@@ -217,15 +334,27 @@ pub struct CredentialSession {
 struct SessionState {
     store: Box<dyn CredentialStore + Send>,
     index: BTreeSet<String>,
+    /// The Intcad product account. `None` until a trusted product exchange has activated a session.
     account: Option<String>,
     installation: Option<String>,
+    /// The WorkOS provider account. It never authorizes an Intcad call by itself.
+    provider_account: Option<String>,
     /// Set after a failed delete or a failed durable write; every read and write then fails closed.
     locked: bool,
 }
 
 impl CredentialSession {
     pub fn new(store: Box<dyn CredentialStore + Send>) -> Self {
-        Self { inner: Arc::new(Mutex::new(SessionState { store, index: BTreeSet::new(), account: None, installation: None, locked: false })) }
+        Self {
+            inner: Arc::new(Mutex::new(SessionState {
+                store,
+                index: BTreeSet::new(),
+                account: None,
+                installation: None,
+                provider_account: None,
+                locked: false,
+            })),
+        }
     }
 
     pub fn with_keyring() -> Self {
@@ -304,24 +433,66 @@ impl CredentialSession {
         clear_authority(&mut state)
     }
 
-    /// Persist a completed device login. Old authority is deleted first; a failed write clears
-    /// whatever this call wrote and fails closed.
-    pub fn complete_device_login(&self, account: &str, access_token: &str, refresh_token: Option<&str>) -> Result<(), CredentialError> {
-        if !safe_token(account, MAX_ACCOUNT_BYTES)
-            || access_token.is_empty()
-            || has_control(access_token)
-            || refresh_token.is_some_and(|token| token.is_empty() || has_control(token))
-        {
+    /// The WorkOS provider account, if a provider login completed. This is not an Intcad account.
+    pub fn provider_account(&self) -> Option<String> {
+        self.inner.lock().ok().filter(|state| !state.locked).and_then(|state| state.provider_account.clone())
+    }
+
+    /// Whether a trusted product exchange has activated an Intcad product session.
+    pub fn product_session_active(&self) -> bool {
+        WireCredentials::product_session(self).is_some()
+    }
+
+    /// Persist a completed WorkOS provider login. Old authority (product and provider) is deleted
+    /// first; this never activates an Intcad product session and never persists a refresh token.
+    pub fn complete_provider_login(&self, provider_account: &str, access_token: &str) -> Result<ProviderLogin, CredentialError> {
+        if !safe_token(provider_account, MAX_ACCOUNT_BYTES) || access_token.is_empty() || has_control(access_token) {
             return Err(unavailable());
         }
         let mut state = self.lock()?;
         clear_authority(&mut state)?;
-        state.account = Some(account.to_owned());
-        let result = write_login(&mut state, account, access_token, refresh_token);
+        let result = write_provider_login(&mut state, provider_account, access_token);
         if result.is_err() {
             let _ = clear_authority(&mut state);
         }
-        result
+        result?;
+        Ok(ProviderLogin { provider_account_id: provider_account.to_owned() })
+    }
+
+    /// Activate an Intcad product session only from a typed, trusted exchange result. The provider
+    /// token is input to the exchange, never the product bearer. Without a documented exchange the
+    /// default [`BlockedProductExchange`] leaves product login inactive.
+    pub fn activate_product_session(&self, exchange: &dyn ProductSessionExchange) -> Result<ProductLogin, CredentialError> {
+        let provider = {
+            let state = self.inner.lock().map_err(|_| unavailable())?;
+            read_provider_session(&state).ok_or_else(provider_required)?
+        };
+        let product = exchange.exchange(&provider).map_err(product_exchange_error)?;
+        let account = product.account_id().to_owned();
+        if !safe_token(&account, MAX_ACCOUNT_BYTES) || product.product_session().is_empty() || has_control(product.product_session().expose_secret())
+        {
+            return Err(unavailable());
+        }
+        if let Some(expires_at) = product.expires_at_unix_seconds() {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+            if expires_at <= now {
+                return Err(unavailable());
+            }
+        }
+
+        let mut state = self.lock()?;
+        let current = read_provider_session(&state).ok_or_else(provider_required)?;
+        if current.account_id != provider.account_id || current.access_token != provider.access_token {
+            // A provider re-login or logout raced the exchange; fail closed and write nothing.
+            return Err(unavailable());
+        }
+        clear_product_authority(&mut state)?;
+        let result = write_product_login(&mut state, &account, product.product_session().expose_secret());
+        if result.is_err() {
+            let _ = clear_product_authority(&mut state);
+        }
+        result?;
+        Ok(ProductLogin { account_id: account })
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, SessionState>, CredentialError> {
@@ -331,14 +502,15 @@ impl CredentialSession {
 
 impl fmt::Debug for CredentialSession {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (account, installation, locked) = match self.inner.lock() {
-            Ok(state) => (state.account.clone(), state.installation.clone(), state.locked),
-            Err(_) => (None, None, true),
+        let (account, installation, provider_account, locked) = match self.inner.lock() {
+            Ok(state) => (state.account.clone(), state.installation.clone(), state.provider_account.clone(), state.locked),
+            Err(_) => (None, None, None, true),
         };
         formatter
             .debug_struct("CredentialSession")
             .field("account", &account)
             .field("installation", &installation)
+            .field("provider_account", &provider_account)
             .field("locked", &locked)
             .field("credentials", &"<redacted>")
             .finish()
@@ -351,15 +523,51 @@ impl fmt::Display for CredentialSession {
     }
 }
 
-fn write_login(state: &mut SessionState, account: &str, access_token: &str, refresh_token: Option<&str>) -> Result<(), CredentialError> {
+fn write_provider_login(state: &mut SessionState, account: &str, access_token: &str) -> Result<(), CredentialError> {
+    if let Err(error) = state.store.set(PROVIDER_ACCOUNT_KEY, account) {
+        return Err(store_failure(state, error));
+    }
+    if let Err(error) = state.store.set(PROVIDER_ACCESS_TOKEN_KEY, access_token) {
+        return Err(store_failure(state, error));
+    }
+    state.provider_account = Some(account.to_owned());
+    Ok(())
+}
+
+fn write_product_login(state: &mut SessionState, account: &str, product_session: &str) -> Result<(), CredentialError> {
     if let Err(error) = state.store.set(ACCOUNT_KEY, account) {
         return Err(store_failure(state, error));
     }
-    set_secret(state, PRODUCT_SESSION_KEY, access_token)?;
-    if let Some(refresh_token) = refresh_token {
-        set_secret(state, REFRESH_TOKEN_KEY, refresh_token)?;
+    if let Err(error) = state.store.set(PRODUCT_SESSION_KEY, product_session) {
+        return Err(store_failure(state, error));
     }
+    state.account = Some(account.to_owned());
     Ok(())
+}
+
+fn read_provider_session(state: &SessionState) -> Option<ProviderSession> {
+    if state.locked {
+        return None;
+    }
+    let account = state.store.get(PROVIDER_ACCOUNT_KEY).ok().flatten()?;
+    let access_token = state.store.get(PROVIDER_ACCESS_TOKEN_KEY).ok().flatten()?;
+    if !safe_token(&account, MAX_ACCOUNT_BYTES) || access_token.is_empty() || has_control(&access_token) {
+        return None;
+    }
+    Some(ProviderSession { account_id: account, access_token: Secret::new(access_token) })
+}
+
+fn provider_required() -> CredentialError {
+    CredentialError { code: CredentialErrorCode::Unavailable, message: "a provider sign-in is required".into() }
+}
+
+fn product_exchange_error(error: ProductExchangeError) -> CredentialError {
+    let message = match error {
+        ProductExchangeError::NotConfigured => "no documented product-session exchange is configured",
+        ProductExchangeError::Rejected => "the product-session exchange was rejected",
+        ProductExchangeError::Unavailable => "the product-session exchange is unavailable",
+    };
+    CredentialError { code: CredentialErrorCode::Unavailable, message: message.into() }
 }
 
 /// Delete every credential and scope label, in authority order. The account/session credential is
@@ -373,7 +581,17 @@ fn clear_authority(state: &mut SessionState) -> Result<(), CredentialError> {
     result
 }
 
-fn clear_authority_inner(state: &mut SessionState) -> Result<(), CredentialError> {
+/// Delete only the Intcad product authority; the provider login is kept for the exchange.
+fn clear_product_authority(state: &mut SessionState) -> Result<(), CredentialError> {
+    state.locked = true;
+    let result = clear_product_authority_inner(state);
+    if result.is_ok() {
+        state.locked = false;
+    }
+    result
+}
+
+fn clear_product_authority_inner(state: &mut SessionState) -> Result<(), CredentialError> {
     for key in [PRODUCT_SESSION_KEY, REFRESH_TOKEN_KEY, INSTALLATION_CREDENTIAL_KEY] {
         state.store.delete(key).map_err(|_| unavailable())?;
     }
@@ -387,6 +605,15 @@ fn clear_authority_inner(state: &mut SessionState) -> Result<(), CredentialError
     state.index.clear();
     state.account = None;
     state.installation = None;
+    Ok(())
+}
+
+fn clear_authority_inner(state: &mut SessionState) -> Result<(), CredentialError> {
+    clear_product_authority_inner(state)?;
+    for key in [PROVIDER_ACCESS_TOKEN_KEY, PROVIDER_ACCOUNT_KEY] {
+        state.store.delete(key).map_err(|_| unavailable())?;
+    }
+    state.provider_account = None;
     Ok(())
 }
 

@@ -7,10 +7,13 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, RefusalCode};
 
-use crate::credentials::{ACCOUNT_KEYRING_SERVICE, CredentialSession, MemorySession};
+use crate::credentials::{
+    ACCOUNT_KEYRING_SERVICE, CredentialSession, MemorySession, ProductExchangeError, ProductSession, ProductSessionExchange, ProviderLogin,
+    ProviderSession,
+};
 use crate::device_code::{
-    CompletedDeviceLogin, DeviceCodeError, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodeTransport, WORKOS_DEVICE_AUTHORIZATION_URL,
-    WORKOS_TOKEN_URL, WorkOsPublicClient,
+    DeviceCodeError, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodeTransport, WORKOS_DEVICE_AUTHORIZATION_URL, WORKOS_TOKEN_URL,
+    WorkOsPublicClient,
 };
 use crate::http::WireCredentials;
 
@@ -88,6 +91,14 @@ fn session_with_memory() -> (CredentialSession, MemorySession) {
     let memory = MemorySession::default();
     (CredentialSession::new(Box::new(memory.clone())), memory)
 }
+
+struct TestExchange;
+
+impl ProductSessionExchange for TestExchange {
+    fn exchange(&self, _provider: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
+        Ok(ProductSession::from_trusted_exchange("acct_product_0001", crate::http::Secret::new("product_SECRET"), None))
+    }
+}
 #[test]
 fn account_keyring_service_is_independent_and_workos_urls_are_https() {
     assert_ne!(ACCOUNT_KEYRING_SERVICE, "SolidCraft agent chat");
@@ -131,10 +142,15 @@ fn device_code_polls_the_documented_workos_flow_and_completes_into_memory() {
     assert_eq!(flow.poll().unwrap(), DeviceCodePoll::SlowDown { interval: Duration::from_secs(10) });
     assert_eq!(flow.poll().unwrap(), DeviceCodePoll::Authorized);
 
-    let completed: CompletedDeviceLogin = flow.complete().unwrap();
-    assert_eq!(completed.account_id, "user_01E4ZCR3C56J083X43JQXF3JK5");
-    let product = WireCredentials::product_session(&session).unwrap();
-    assert_eq!(product.expose_secret(), "access_token_SECRET_000000000000000000000000");
+    let provider: ProviderLogin = flow.complete().unwrap();
+    assert_eq!(provider.provider_account_id, "user_01E4ZCR3C56J083X43JQXF3JK5");
+    assert_eq!(session.provider_account().as_deref(), Some("user_01E4ZCR3C56J083X43JQXF3JK5"));
+    assert!(!session.product_session_active());
+    assert!(WireCredentials::product_session(&session).is_none());
+
+    let product = session.activate_product_session(&TestExchange).unwrap();
+    assert_eq!(product.account_id, "acct_product_0001");
+    assert_eq!(WireCredentials::product_session(&session).unwrap().expose_secret(), "product_SECRET");
     assert!(!format!("{session:?}").contains("access_token_SECRET"));
     assert!(!format!("{session}").contains("refresh_token_SECRET"));
 

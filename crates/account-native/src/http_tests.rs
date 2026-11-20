@@ -10,9 +10,10 @@ use solidcraft_engine::entitlement::{
     MonotonicClock, MonotonicInstant, OperationId, OperationStatus, RefusalCode,
 };
 
+use crate::credentials::{CredentialSession, MemorySession};
 use crate::http::{
     BootstrapPlatform, FixedCredentials, HttpAccountService, HttpConfigError, MAX_RESPONSE_BYTES, Secret, TransportFailure, WireConnection,
-    WireResponse,
+    WireCredentials, WireResponse,
 };
 use crate::http::{HandoffLog, RecordingHandoff, ScriptedTransport};
 
@@ -394,6 +395,24 @@ fn authorize_and_lookup_map_frozen_statuses() {
 
     let mut denied = scripted(vec![ok(403, error_body("CAPABILITY_DENIED"))]);
     assert_eq!(denied.authorize(&scope(), Capability::Chat).unwrap_err().code, RefusalCode::CapabilityDenied);
+}
+
+#[test]
+fn provider_login_alone_does_not_supply_a_product_bearer() {
+    let session = CredentialSession::new(Box::new(MemorySession::default()));
+    session.complete_provider_login("user_provider_0001", "provider_access_SECRET").unwrap();
+    assert!(WireCredentials::product_session(&session).is_none());
+    assert!(!session.product_session_active());
+    let transport = ScriptedTransport::new(Vec::new());
+    let service = HttpAccountService::with_transport(
+        transport,
+        WireConnection::new(BASE, "1.0.0").unwrap(),
+        Box::new(session.clone()),
+        Box::new(session.clone()),
+        Box::new(TestClock::at(T0)),
+    );
+    assert_eq!(service.status().unwrap_err().code, RefusalCode::AuthRequired);
+    assert!(service.transport().take_requests().is_empty());
 }
 
 #[test]
