@@ -1668,10 +1668,14 @@ pub(crate) fn save_copies(app: &mut SolveApp, paths: &[PathBuf]) -> Result<usize
                 None => break,
             }
         }
-        copies.push((path, files::unique_path(&folder, name)));
+        copies.push((path, folder, name.to_owned()));
     }
-    for (from, to) in &copies {
+    for (from, folder, name) in &copies {
         let Some(session) = crate::documents::session_at_mut(app, from) else { continue };
+        // The name is looked up now, after the copies before it were written: two tabs with the
+        // same file name under one deleted subtree otherwise chose one free name before the
+        // first save, so the second save replaced the first.
+        let to = files::unique_path(folder, name);
         session
             .execute("file.save_as", &serde_json::json!({"path": to.to_string_lossy(), "cache": false}))
             .map_err(|e| format!("{}: {e}", to.display()))?;

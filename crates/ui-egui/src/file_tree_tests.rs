@@ -1436,6 +1436,50 @@ fn deleting_a_dirty_design_names_it_in_the_question_and_a_copy_saves_the_work_fi
     assert!(!app.session.is_dirty(), "the copy holds the work");
 }
 
+/// Two dirty tabs with the same file name under one deleted subtree each get their own copy
+/// outside it. An existing file in the folder is left untouched; both tabs follow their copy
+/// and the copies re-open with each tab's own edit.
+#[test]
+fn save_copies_keeps_two_dirty_same_named_tabs_apart_and_keeps_an_existing_file() {
+    let scratch = Scratch::new();
+    let subtree = scratch.dir("parts");
+    let left_dir = subtree.join("left");
+    let right_dir = subtree.join("right");
+    fs::create_dir_all(&left_dir).unwrap();
+    fs::create_dir_all(&right_dir).unwrap();
+    let left = left_dir.join("bracket.sc");
+    let right = right_dir.join("bracket.sc");
+    let mut one = Session::default();
+    one.execute("file.save_as", &serde_json::json!({"path": left.to_string_lossy(), "cache": false})).unwrap();
+    one.execute("solid.box", &serde_json::json!({"length": 3, "width": 3, "height": 3})).unwrap();
+    let mut two = Session::default();
+    two.execute("file.save_as", &serde_json::json!({"path": right.to_string_lossy(), "cache": false})).unwrap();
+    two.execute("solid.box", &serde_json::json!({"length": 7, "width": 7, "height": 7})).unwrap();
+    let edits = [serde_json::to_value(&one.doc.features).unwrap(), serde_json::to_value(&two.doc.features).unwrap()];
+    let sentinel = scratch.file("bracket.sc", "sentinel");
+    let mut app = crate::SolveApp::new(one, Default::default());
+    crate::documents::open_tab(&mut app, two).unwrap();
+    let saved = crate::file_tree::save_copies(&mut app, std::slice::from_ref(&subtree)).unwrap();
+    assert_eq!(saved, 2);
+    let open = documents::open_sessions(&app);
+    let paths: Vec<_> = open.iter().map(|session| session.path.clone().expect("each tab now owns a file")).collect();
+    assert_eq!(paths.len(), 2);
+    assert_ne!(paths[0], paths[1], "two same-named tabs must not share one copy");
+    for path in &paths {
+        let path = std::path::Path::new(path);
+        assert!(path.is_file(), "the copy was written: {}", path.display());
+        assert!(!path.starts_with(&subtree), "the copy is outside the deleted subtree: {}", path.display());
+    }
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "sentinel", "an existing file is not replaced");
+    assert!(open.iter().all(|session| !session.is_dirty()), "the copies hold the work");
+    for (expected, path) in edits.iter().zip(&paths) {
+        let (doc, _) = solidcraft_engine::io::read_design_file(path, None::<fn(solidcraft_engine::io::DesignPreview)>).unwrap();
+        let reopened = serde_json::to_value(&doc.features).unwrap();
+        assert_eq!(&reopened, expected, "the copy at {} holds this tab's own edit", std::path::Path::new(path).display());
+    }
+    assert_ne!(edits[0], edits[1], "the two tabs' edits differ");
+}
+
 #[test]
 fn an_operation_that_cannot_trash_asks_before_deleting_for_good() {
     let mut tree = FileTree::new();
