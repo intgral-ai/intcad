@@ -138,8 +138,15 @@ cef::wrap_render_handler! {
             ) else {
                 return;
             };
-            // CEF reports these in DIP, like popup geometry.
-            let bounds = self.handler.metrics.lock().unwrap().rect_to_physical(bounds);
+            // CEF reports these in DIP, like popup geometry. A poisoned
+            // metrics lock publishes no candidate geometry: this runs inside
+            // native CEF, where a panic cannot unwind through the callback.
+            let Some(bounds) =
+                crate::view::rect_to_physical_locked(&self.handler.metrics, bounds)
+            else {
+                log::error!("CEF IME composition: metrics lock poisoned");
+                return;
+            };
             let (start, end) = selected_range
                 .map(|r| (r.from, r.to))
                 .unwrap_or((0, 0));

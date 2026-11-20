@@ -25,6 +25,8 @@
 //! Hosts talk to welding in **physical** pixels throughout, because that is
 //! what a window system hands them; the DIP conversion happens here.
 
+use std::sync::Mutex;
+
 use dpi::PhysicalSize;
 
 use crate::requested_metrics::{RequestedViewMetrics, sane_scale};
@@ -87,6 +89,15 @@ impl ViewMetrics {
     }
 }
 
+/// Lock the published metrics and convert CEF DIP bounds to physical pixels.
+///
+/// `on_ime_composition_range_changed` runs inside native CEF. A poisoned lock
+/// means a thread panicked while holding the metrics, so `None` lets the
+/// callback publish no candidate geometry instead of panicking across FFI.
+pub(crate) fn rect_to_physical_locked(metrics: &Mutex<ViewMetrics>, rect: PopupRect) -> Option<PopupRect> {
+    metrics.lock().ok().map(|metrics| metrics.rect_to_physical(rect))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +137,31 @@ mod tests {
     fn fractional_scale_rounds_without_collapsing() {
         let m = ViewMetrics::new(PhysicalSize::new(1920, 1080), 1.5);
         assert_eq!(m.logical(), (1280, 720));
+    }
+
+    fn dip(x: i32, y: i32, width: u32, height: u32) -> PopupRect {
+        PopupRect { x, y, width, height }
+    }
+
+    /// `on_ime_composition_range_changed` runs inside native CEF. If another
+    /// thread poisoned the metrics mutex, the callback must publish no
+    /// candidate geometry instead of panicking across the FFI boundary.
+    #[test]
+    fn poisoned_metrics_publish_no_candidate_bounds() {
+        let metrics = Mutex::new(ViewMetrics::new(PhysicalSize::new(2560, 1600), 2.0));
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = metrics.lock().expect("initial metrics lock");
+            panic!("poison the metrics for the test");
+        });
+        assert!(metrics.is_poisoned());
+        assert_eq!(rect_to_physical_locked(&metrics, dip(40, 80, 200, 95)), None);
+    }
+
+    /// A healthy lock keeps exactly the one DIP -> physical conversion.
+    #[test]
+    fn healthy_metrics_convert_ime_bounds_once() {
+        let metrics = Mutex::new(ViewMetrics::new(PhysicalSize::new(2560, 1600), 2.0));
+        assert_eq!(rect_to_physical_locked(&metrics, dip(40, 80, 200, 95)), Some(dip(80, 160, 400, 190)));
     }
 
     #[test]
