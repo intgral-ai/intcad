@@ -920,8 +920,8 @@ impl AgentChat {
                 let validation = kind.as_deref() == Some("validation");
                 let validation_owner = validation.then(|| validation_event_owner(output.as_deref())).flatten();
                 if validation && !self.items.iter().any(|item| matches!(item, Item::Tool { id: known, .. } if *known == id)) {
-                    let Some(owner) = validation_owner.as_ref() else { return None };
-                    let Some(current) = self.turn.as_ref().and_then(|turn| turn.owner.as_ref()) else { return None };
+                    let owner = validation_owner.as_ref()?;
+                    let current = self.turn.as_ref().and_then(|turn| turn.owner.as_ref())?;
                     if current != owner {
                         return None;
                     }
