@@ -637,3 +637,91 @@ open scope conflict remain the historical record in the v1–v3 handoffs and
 `target/int1454-u5-review/`. This entry answers the owner disposition only for this extraction; it
 is not a waiver for other rows. No final-SHA, merge, release or sign-off approval is claimed, and no
 other disposition is changed.
+
+### 11.15 D5 technical source evidence checkpoint (2026-11-20T17:21Z)
+
+Scope: documentation-only append. It records an independent **technical source** review of the D5
+slice, the source/test-merge binding, and a controller-parsed subset of the c5 native JUnit. It is
+not a new test run, whole CI, desktop GUI or final-SHA acceptance, and it changes no disposition.
+
+**Independent review provenance.** OpenDesign Eco session `ses_e0618d3edffe5szAKHDvR107oJ` recorded
+**Spec PASS and Quality PASS** for the D5 technical source at source
+`c5f2f42fe6f06ed5c2c4ec1df04f7e9c6aae50ad` and vendored tree
+`8b5c01445619305dcfc5072db3fe76b8cfea67be`. This is controller-recorded provenance; no reviewer
+report file is in the repository. It is technical source review, not implementation acceptance of
+the whole branch.
+
+**Source/test-merge binding (reverified from retained receipts, not rerun).**
+
+- Source head `c5f2f42fe6f06ed5c2c4ec1df04f7e9c6aae50ad`; test-merge
+  `2a20b4b3974d11b68388db8f72facbd44aadedc6`, parents `9714e5b300030f23bc775fa180b1ba7c80047f80`
+  (develop) and `c5f2f42…` (PR). `git show -s` in the main checkout.
+- Both revisions have tree `6f289a06dc8635a3e9306e900b5a9682312069fd`; the merge adds no tree
+  change beyond the source.
+- Both revisions have `solidcore` tree `8b5c01445619305dcfc5072db3fe76b8cfea67be`; `git diff
+  --quiet v0.44.1 <rev> -- solidcore` is empty for each. `crates/step` is absent at `c5f2f42`.
+- The D5 paths `crates/io`, `crates/step` and `solidcore/crates/solidcore-step` are byte-identical
+  between `c5f2f42` and the test-merge (`git diff --quiet`), so a native run at the test-merge
+  carries the same D5 source as the source head.
+- The retained plan `selection-plan-c5f2f42/plan.json` records
+  `sourceRevision: 2a20b4b…`; the receipt `evidence-rust-c5f2f42/rust/selection.json` build
+  metadata records `SOLIDCRAFT_SOURCE_COMMIT: 2a20b4b3…`; `commands.json` records `nextest list`
+  exit 0 and `nextest run` exit **100**; `junit.xml` is the matching report: **16,839 tests,
+  24 failures, 0 skipped, 0 errors**.
+  This binds the source and test-merge; it does not make the run green.
+
+**Selected results.** The controller's direct parse of
+`/tmp/opencode/int1454-ci-current/evidence-rust-c5f2f42/rust/junit.xml` reported **13 selected
+test cases passed**, including:
+
+- `solidcraft-kernel::step_export_bytes::step_export_keeps_its_bytes_and_reads_back`
+- `solidcraft-engine::tests::sample_plate_step_round_trip`
+- `solidcraft-kernel::step_out::tests::assembly_names_colours_round_trip`
+- `solidcraft-ui-egui::scenarios::s09_step_roundtrip_hole`
+
+This entry reopened the same JUnit and confirmed all four named cases are present with no
+`<failure>` and no `<skipped>` element. The file-level count is 16,839 cases and 24 failures. The
+four names are examples, not a new selection; the retained receipts do not store the 13-name list,
+so the count of 13 remains the controller's parse and is not regenerated here. This selected set is
+separate from the 13 allowed known-failing entries, which failed. The run has 24 failures: 13
+allowed known failures and 11 off-list regressions; the 2 `FIXED` doc-eval entries passed and
+remain listed (§11.2). Whole CI is not green and PR #185 remains BLOCKED. No test was rerun.
+
+**cadmpeg qualification.** At `c5f2f42`, `cadmpeg-core`, `cadmpeg-ir` and `cadmpeg-registry` are
+linked (Apache-2.0; `Cargo.toml`, `ATTRIBUTION.md`). Only the `fcstd`, `rhino` and `step` features
+are built, and the `step` feature is the **writer** used by `crates/io/src/native_cad.rs` to restate
+FreeCAD/Rhino files into STEP text. No callable cadmpeg STEP **decoder** was observed through the
+app/engine; `crates/kernel/src/step_in/p21.rs` re-exports `solidcore_step::p21`. This qualifies the
+observed call path; it is **not** a link exclusion and does not claim cadmpeg is absent. The
+`solidcraft-io` tests `formats::tests::a_host_without_cadmpeg_leaves_its_rows_out` and
+`tests::step_import_names_follow_the_choice` pass in the same JUnit; they add no STEP decoder.
+
+**§11.13 boundary.** The two exact vendor tests recorded in §11.13
+(`step::p21::tests::run_terminators_are_searched_once` and
+`step::p21::tests::hostile_text_is_an_error`) are not duplicated or rerun here. They are `NOT_RUN`
+in this c5 JUnit; §11.13's separate captures remain their only result. This entry adds no second
+decoder and no SEC-2 result.
+
+**Low advisories and final-SHA checks.**
+
+- The retained CI plan `selection-plan-c5f2f42/plan.json` is bound to test-merge `2a20b4b` and
+  still decides `packages: not_applicable` (`no_relevant_change`); treat it as a historical plan
+  artifact, not a package or release gate.
+- The cadmpeg/FreeCAD rows in `ATTRIBUTION.md` are historical licence inventory, not a refreshed
+  rights clearance; this entry adds no attribution evidence.
+- Layering rules are candidate-dependent: the test-merge's tree changes `xtask/src/layers.rs`
+  (+26/−4) and `xtask/src/mesh_decisions.rs` (105 changed lines) relative to its develop parent,
+  including removal of the old `step` layer and its `step → kernel` ordering. This D5 review does
+  not prove `cargo xtask layers`, `mesh-decisions`, `lists` or the other rule checks at the final
+  SHA. Run them at the final SHA and record their results.
+- No final-SHA CI, Linux/Windows GUI E2E or macOS acceptance is claimed.
+
+**Disposition.** This is technical source review evidence only. It does **not** reclassify D5: the
+ledger's D5 row (io Adopted; STEP move Blocked until K1) is unchanged, and no owner approval or
+waiver is implied. It approves no merge, no `main` change and no release; PR #185 remains
+OPEN/BLOCKED. No source, ledger, CI, build, test, worktree or Linear change was made for this
+entry.
+
+Evidence and commands: `git show -s`, `git rev-parse`, `git ls-tree`, `git diff --quiet`, the
+retained JUnit/selection/commands files above, and a Python `xml.etree` count of the JUnit. No
+`gh` query, CI dispatch/rerun, local build, test run or source edit was performed.
