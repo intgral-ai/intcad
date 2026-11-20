@@ -23,7 +23,9 @@ pub use backend::{Auto, Backend, Headless, Remote};
 pub use document_guard::{GuardedCallError, GuardedReply};
 pub use document_guard::{decode_guarded_reply, validate_request as validate_guarded_request};
 pub use server::{PROTOCOL_VERSION, SUPPORTED_VERSIONS, Server};
-pub use tools::{call_tool, tool_definitions};
+#[cfg(test)]
+pub(crate) use tools::call_tool;
+pub use tools::tool_definitions;
 
 use std::path::PathBuf;
 

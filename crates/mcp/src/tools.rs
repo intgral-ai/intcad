@@ -578,7 +578,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// reaching this function; only free helpers and the crate's sealed tests call it directly.
 /// Failures are tool results with `isError: true` (the model sees the message); nothing here
 /// panics on hostile arguments.
-pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Value {
+pub(crate) fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Value {
     let expected = match tool_guard(name, args) {
         Ok(expected) => expected,
         Err(error) => return guarded_error(error),
