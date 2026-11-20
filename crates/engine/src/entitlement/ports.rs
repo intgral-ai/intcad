@@ -151,7 +151,7 @@ impl InMemoryOperationStore {
 #[cfg(test)]
 impl OperationStore for InMemoryOperationStore {
     fn save_new(&mut self, record: &OperationRecord) -> Result<SaveOutcome, OperationStoreError> {
-        if record.status != OperationStatus::Held || record.grant_id.is_some() {
+        if record.status != OperationStatus::Held || record.grant_id.is_some() || record.entry.is_free() {
             return Err(OperationStoreError::InvalidState);
         }
         if let Some(existing) = self.records.get(&record.operation) {
@@ -198,7 +198,7 @@ impl OperationStore for InMemoryOperationStore {
         capability: Capability,
         entry: EntryCategory,
     ) -> Result<OperationRecord, SaveOutcome> {
-        if !scope.is_provable() {
+        if !scope.is_provable() || entry.is_free() {
             return Err(SaveOutcome::Conflict);
         }
         let key = RetryScopeKey { host_scope: scope.clone(), transport_correlation: correlation.clone() };
@@ -226,7 +226,6 @@ impl OperationStore for InMemoryOperationStore {
             },
         );
         self.admissions = self.admissions.saturating_add(1);
-        self.commits = self.commits.saturating_add(1);
         Ok(record)
     }
 

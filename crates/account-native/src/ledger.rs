@@ -7,6 +7,9 @@
 //!
 //! The caller injects the ledger root; this crate never reads `$HOME`. The ledger stores no
 //! token, password or session secret.
+//!
+//! A corrupt mapping or review marker makes the affected ledger fail closed; there is no automatic
+//! repair, quarantine or tombstone. Recovery is an explicit operator action outside this crate.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -24,6 +27,7 @@ use solidcraft_engine::entitlement::{
 };
 
 const MAPPINGS_DIR: &str = "mappings";
+const MAPPING_VERSION: u8 = 1;
 const RECORDS_DIR: &str = "records";
 
 /// The ledger could not read or publish a file. Callers must fail closed.
@@ -65,8 +69,8 @@ struct PersistedMapping {
     version: u8,
     account: String,
     installation: String,
-    /// The host session binding is a non-secret scope label; store only its digest so a host that
-    /// uses a sensitive binding value never leaves it at rest.
+    /// The host session binding is a non-secret scope label; store only a non-cryptographic
+    /// fingerprint so a host that uses a sensitive binding value never leaves it at rest.
     session_binding_digest: String,
     correlation: String,
     operation: String,
@@ -174,7 +178,7 @@ impl FileOperationStore {
             if !is_json_file(&path) {
                 continue;
             }
-            match read_json::<PersistedMapping>(&path) {
+            match read_mapping(&path) {
                 Ok(Some(mapping)) if mapping.record.operation == operation.as_str() => return Ok(Some(mapping.record)),
                 Ok(_) => continue,
                 Err(error) => return Err(error),
@@ -211,12 +215,12 @@ impl FileOperationStore {
     }
 
     fn mapping_for(&self, key: &RetryScopeKey) -> Result<Option<PersistedMapping>, LedgerError> {
-        read_json::<PersistedMapping>(&self.mapping_path(key))
+        read_mapping(&self.mapping_path(key))
     }
 
     /// Whether a correlation already appears in any stored mapping. A seen correlation with no
     /// matching scope is an unprovable retry, so it must not silently mint a fresh operation.
-    fn correlation_seen(&self, correlation: &TransportCorrelation) -> Result<bool, LedgerError> {
+    fn correlation_seen(&self, scope: &AuthenticatedHostScope, correlation: &TransportCorrelation) -> Result<bool, LedgerError> {
         let entries = match fs::read_dir(self.mappings_dir()) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -227,7 +231,9 @@ impl FileOperationStore {
             if !is_json_file(&path) {
                 continue;
             }
-            if let Some(mapping) = read_json::<PersistedMapping>(&path)?
+            if let Some(mapping) = read_mapping(&path)?
+                && mapping.account == scope.account().as_str()
+                && mapping.installation == scope.installation().as_str()
                 && mapping.correlation == correlation.as_str()
             {
                 return Ok(true);
@@ -245,10 +251,11 @@ impl FileOperationStore {
         correlation: &TransportCorrelation,
         capability: Capability,
         entry: EntryCategory,
+        expected_operation: Option<&OperationId>,
     ) -> Result<OperationRecord, SaveOutcome> {
         let key = RetryScopeKey { host_scope: scope.clone(), transport_correlation: correlation.clone() };
         if let Ok(Some(mapping)) = self.mapping_for(&key) {
-            return self.mapping_decision(&mapping, &key, capability, entry);
+            return self.mapping_decision_expecting(&mapping, &key, capability, entry, expected_operation);
         }
         let canonical = match self.load_and_apply_markers(&record.operation) {
             Ok(Some(existing)) if existing.common_identity_matches(record) && !existing.status.is_terminal() => existing,
@@ -257,7 +264,7 @@ impl FileOperationStore {
         };
         let persisted = to_persisted(&canonical).map_err(|_| SaveOutcome::Conflict)?;
         let mapping = PersistedMapping {
-            version: 1,
+            version: MAPPING_VERSION,
             account: scope.account().as_str().to_owned(),
             installation: scope.installation().as_str().to_owned(),
             session_binding_digest: digest(&[scope.session_binding().as_str()]),
@@ -272,11 +279,41 @@ impl FileOperationStore {
         match publish_create_only(&self.mapping_path(&key), &bytes) {
             Ok(true) => Ok(canonical),
             Ok(false) => match self.mapping_for(&key) {
-                Ok(Some(mapping)) => self.mapping_decision(&mapping, &key, capability, entry),
+                Ok(Some(mapping)) => self.mapping_decision_expecting(&mapping, &key, capability, entry, expected_operation),
                 Ok(None) | Err(_) => Err(SaveOutcome::Conflict),
             },
             Err(_) => Err(SaveOutcome::Conflict),
         }
+    }
+
+    /// The path after an initial exact-key miss. Kept separate so the stale-lookup race is
+    /// reproducible without scheduling luck: `persist_intent` re-checks the exact mapping after a
+    /// scan hit before failing closed.
+    fn persist_intent_after_miss(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        correlation: &TransportCorrelation,
+        capability: Capability,
+        entry: EntryCategory,
+    ) -> Result<OperationRecord, SaveOutcome> {
+        let key = RetryScopeKey { host_scope: scope.clone(), transport_correlation: correlation.clone() };
+        match self.correlation_seen(scope, correlation) {
+            Ok(true) => {
+                if let Ok(Some(mapping)) = self.mapping_for(&key) {
+                    return self.mapping_decision(&mapping, &key, capability, entry);
+                }
+                return Err(SaveOutcome::Conflict);
+            }
+            Ok(false) => {}
+            Err(_) => return Err(SaveOutcome::Conflict),
+        }
+        match self.retry_decision(&key) {
+            RetryDecision::Unknown | RetryDecision::Conflict => return Err(SaveOutcome::Conflict),
+            RetryDecision::Unprovable | RetryDecision::Original(_) => {}
+        }
+        let operation = mint_operation().map_err(|_| SaveOutcome::Conflict)?;
+        let record = OperationRecord::held(operation, scope.account().clone(), capability, entry, now_ms());
+        self.publish_intent(&record, scope, correlation, capability, entry, None)
     }
 
     fn mapping_scope_matches(mapping: &PersistedMapping, key: &RetryScopeKey) -> bool {
@@ -293,6 +330,22 @@ impl FileOperationStore {
         capability: Capability,
         entry: EntryCategory,
     ) -> Result<OperationRecord, SaveOutcome> {
+        self.mapping_decision_expecting(mapping, key, capability, entry, None)
+    }
+
+    fn mapping_decision_expecting(
+        &self,
+        mapping: &PersistedMapping,
+        key: &RetryScopeKey,
+        capability: Capability,
+        entry: EntryCategory,
+        expected_operation: Option<&OperationId>,
+    ) -> Result<OperationRecord, SaveOutcome> {
+        if let Some(expected) = expected_operation
+            && mapping.operation != expected.as_str()
+        {
+            return Err(SaveOutcome::Conflict);
+        }
         if !Self::mapping_scope_matches(mapping, key)
             || mapping.capability != capability.wire()
             || mapping.entry != entry_name(entry)
@@ -401,13 +454,7 @@ impl OperationStore for FileOperationStore {
         if let Ok(Some(mapping)) = self.mapping_for(&key) {
             return self.mapping_decision(&mapping, &key, capability, entry);
         }
-        match self.correlation_seen(correlation) {
-            Ok(false) => {}
-            Ok(true) | Err(_) => return Err(SaveOutcome::Conflict),
-        }
-        let operation = mint_operation().map_err(|_| SaveOutcome::Conflict)?;
-        let record = OperationRecord::held(operation, scope.account().clone(), capability, entry, now_ms());
-        self.publish_intent(&record, scope, correlation, capability, entry)
+        self.persist_intent_after_miss(scope, correlation, capability, entry)
     }
 
     fn persist_fresh_intent(&mut self, intent: &FreshIntent, capability: Capability, entry: EntryCategory) -> Result<OperationRecord, SaveOutcome> {
@@ -415,7 +462,7 @@ impl OperationStore for FileOperationStore {
             return Err(SaveOutcome::Conflict);
         }
         let record = OperationRecord::held(intent.host_minted_operation().clone(), intent.scope().account().clone(), capability, entry, now_ms());
-        self.publish_intent(&record, intent.scope(), intent.transport_correlation(), capability, entry)
+        self.publish_intent(&record, intent.scope(), intent.transport_correlation(), capability, entry, Some(intent.host_minted_operation()))
     }
 
     fn lookup_original_retry(&self, key: &RetryScopeKey) -> RetryDecision {
@@ -437,6 +484,8 @@ impl OperationStore for FileOperationStore {
         }
         // One canonical, operation-keyed association. run -> operation is derived by scanning this
         // file set, so a crash between two independent indices cannot leave a half-linked identity.
+        // Concurrent writers for the same run but different operations can both publish; the
+        // run -> operation lookup detects that ambiguity and fails closed (detection-only pairing).
         let persisted = PersistedReview { run_id: review.run_id.as_str().to_owned(), operation_id: review.operation_id.as_str().to_owned() };
         let bytes = serde_json::to_vec(&persisted).map_err(|_| OperationStoreError::Unavailable)?;
         let path = self.operation_review_path(&review.operation_id);
@@ -569,7 +618,11 @@ impl OperationStore for InMemoryOperationStore {
             }
             return Ok(record.clone());
         }
-        if self.mappings.keys().any(|existing| existing.transport_correlation == *correlation) {
+        if self.mappings.keys().any(|existing| {
+            existing.host_scope.account() == scope.account()
+                && existing.host_scope.installation() == scope.installation()
+                && existing.transport_correlation == *correlation
+        }) {
             return Err(SaveOutcome::Conflict);
         }
         let operation = self.mint().map_err(|_| SaveOutcome::Conflict)?;
@@ -721,6 +774,21 @@ fn review_operation_by_run(store: &FileOperationStore, run_id: &RunId) -> Result
     Ok(found)
 }
 
+#[cfg(test)]
+impl FileOperationStore {
+    /// Test-only entry that simulates a stale initial lookup: it runs the same after-miss path even
+    /// though the exact mapping is already published.
+    pub(crate) fn persist_intent_with_stale_lookup_for_test(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        correlation: &TransportCorrelation,
+        capability: Capability,
+        entry: EntryCategory,
+    ) -> Result<OperationRecord, SaveOutcome> {
+        self.persist_intent_after_miss(scope, correlation, capability, entry)
+    }
+}
+
 fn persisted_identity_matches(persisted: &PersistedRecord, record: &OperationRecord) -> bool {
     persisted.operation == record.operation.as_str()
         && persisted.account == record.account.as_str()
@@ -823,6 +891,14 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, L
     serde_json::from_slice(&bytes).map(Some).map_err(|_| LedgerError::Corrupt)
 }
 
+fn read_mapping(path: &Path) -> Result<Option<PersistedMapping>, LedgerError> {
+    match read_json::<PersistedMapping>(path)? {
+        Some(mapping) if mapping.version == MAPPING_VERSION => Ok(Some(mapping)),
+        Some(_) => Err(LedgerError::Corrupt),
+        None => Ok(None),
+    }
+}
+
 fn is_json_file(path: &Path) -> bool {
     path.is_file() && path.extension().is_some_and(|extension| extension == "json")
 }
@@ -898,8 +974,10 @@ fn mint_operation() -> Result<OperationId, LedgerError> {
     OperationId::mint_from_entropy(&entropy).map_err(|_| LedgerError::Corrupt)
 }
 
-/// A stable 128-bit filename digest. A collision is detected by comparing the stored identity and
-/// fails closed (`Conflict`/`Unknown`); it never selects another account's operation.
+/// A stable non-cryptographic 128-bit fingerprint (two FNV-1a-style lanes). It is used only for
+/// collision-bounded file names and scope lookup. A collision is detected by comparing the stored
+/// identity and fails closed (`Conflict`/`Unknown`); it never selects another account's operation.
+/// It is not a security hash.
 fn digest(parts: &[&str]) -> String {
     let mut first = 0xcbf2_9ce4_8422_2325u64;
     let mut second = 0x9e37_79b9_7f4a_7c15u64;

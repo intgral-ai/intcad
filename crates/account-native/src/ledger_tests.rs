@@ -550,3 +550,129 @@ fn one_operation_cannot_link_two_runs() {
     );
     assert_eq!(store.reopen().review_operation(&RunId::new("run_example_0001")).unwrap(), Some(record.operation));
 }
+
+// Fix-round-2 red regressions.
+
+#[test]
+fn fresh_intent_mismatch_with_existing_mapping_conflicts() {
+    let mut store = TempStore::new("fresh-mismatch");
+    let scope = scope();
+    let correlation = correlation("req_example_0001");
+    let original = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let supplied = operation("op_fresh_00000002");
+    let fresh = FreshIntent::new(supplied, scope.clone(), correlation.clone());
+    assert_eq!(store.persist_fresh_intent(&fresh, Capability::Mcp, EntryCategory::HeadlessMcp), Err(SaveOutcome::Conflict));
+    assert!(matches!(
+        store.lookup_original_retry(&key(scope, correlation)),
+        RetryDecision::Original(found) if found.operation == original.operation
+    ));
+}
+
+#[test]
+fn concurrent_fresh_intents_with_different_ids_publish_one_and_conflict_the_other() {
+    use std::sync::{Arc, Barrier};
+
+    let store = TempStore::new("fresh-concurrent");
+    let root = store.root().to_path_buf();
+    let barrier = Arc::new(Barrier::new(2));
+    let workers: Vec<_> = ["op_fresh_00000011", "op_fresh_00000012"]
+        .into_iter()
+        .map(|raw| {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut store = FileOperationStore::open(root).unwrap();
+                barrier.wait();
+                let fresh = FreshIntent::new(operation(raw), scope(), correlation("req_same_fresh_0001"));
+                store.persist_fresh_intent(&fresh, Capability::Mcp, EntryCategory::HeadlessMcp)
+            })
+        })
+        .collect();
+    let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| **result == Err(SaveOutcome::Conflict)).count(), 1);
+    let mappings = std::fs::read_dir(store.root().join("mappings"))
+        .unwrap()
+        .filter(|entry| entry.as_ref().is_ok_and(|entry| entry.path().extension().is_some_and(|extension| extension == "json")));
+    assert_eq!(mappings.count(), 1);
+    assert!(matches!(store.lookup_original_retry(&key(scope(), correlation("req_same_fresh_0001"))), RetryDecision::Original(_)));
+}
+
+#[test]
+fn correlation_is_not_globally_reserved_across_accounts() {
+    let mut store = TempStore::new("correlation-scope");
+    let correlation = correlation("req_shared_string_0001");
+    store.persist_intent(&scope(), &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let other = AuthenticatedHostScope::new(
+        AccountId::new("acct_example_0002"),
+        InstallationId::new("inst_example_0002"),
+        HostSessionBinding::new("other_session_binding"),
+    );
+    let other_record = store.persist_intent(&other, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    assert!(other_record.grant_id.is_none());
+}
+
+#[test]
+fn stale_lookup_rechecks_exact_mapping_before_conflict() {
+    let mut store = TempStore::new("stale-lookup");
+    let scope = scope();
+    let correlation = correlation("req_example_0001");
+    let original = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let reread = store.persist_intent_with_stale_lookup_for_test(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    assert_eq!(reread.operation, original.operation, "the concurrent winner is reused, never re-minted or conflicted");
+}
+
+#[test]
+fn persisted_mapping_version_is_validated() {
+    let mut store = TempStore::new("mapping-version");
+    let scope = scope();
+    let correlation = correlation("req_example_0001");
+    let record = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let mapping_path = std::fs::read_dir(store.root().join("mappings"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .unwrap();
+    let contents = std::fs::read_to_string(&mapping_path).unwrap();
+    let bumped = contents.replacen("\"version\":1", "\"version\":2", 1);
+    assert_ne!(contents, bumped, "the stored mapping carries a version");
+    std::fs::write(&mapping_path, bumped).unwrap();
+    let reopened = store.reopen();
+    assert_eq!(reopened.load(&record.operation), Err(OperationStoreError::Unavailable));
+    assert!(matches!(reopened.lookup_original_retry(&key(scope, correlation)), RetryDecision::Unknown));
+}
+
+#[test]
+fn unknown_retry_cannot_enter_as_a_fresh_intent() {
+    let mut store = TempStore::new("unknown-entry");
+    let scope = scope();
+    let correlation = correlation("req_example_0001");
+    let record = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let mapping_path = std::fs::read_dir(store.root().join("mappings"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .unwrap();
+    std::fs::write(&mapping_path, b"{broken").unwrap();
+    let mut reopened = store.reopen();
+    assert!(matches!(reopened.lookup_original_retry(&key(scope.clone(), correlation.clone())), RetryDecision::Unknown));
+    assert_eq!(reopened.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp), Err(SaveOutcome::Conflict));
+    assert_eq!(reopened.load(&record.operation), Err(OperationStoreError::Unavailable));
+}
+
+#[test]
+fn ambiguous_concurrent_review_pairing_fails_closed_at_lookup() {
+    let mut store = TempStore::new("review-ambiguous");
+    let first = held_record("op_example_0001");
+    let second = held_record("op_example_0002");
+    store.save_new(&first).unwrap();
+    store.save_new(&second).unwrap();
+    let run = RunId::new("run_example_0001");
+    for operation in [&first.operation, &second.operation] {
+        let path = store.root().join("records").join(format!("{}.review.json", operation.as_str()));
+        std::fs::write(path, format!(r#"{{"run_id":"{}","operation_id":"{}"}}"#, run.as_str(), operation.as_str())).unwrap();
+    }
+    assert_eq!(store.reopen().review_operation(&run), Err(OperationStoreError::Unavailable));
+}

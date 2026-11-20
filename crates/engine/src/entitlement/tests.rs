@@ -278,3 +278,17 @@ fn in_memory_store_persists_once_and_has_no_grant() {
     assert!(matches!(store.lookup_original_retry(&key), RetryDecision::Original(found) if found.operation == operation));
     assert_eq!(store.admissions, 1);
 }
+
+#[test]
+fn in_memory_store_commits_only_on_the_first_charged_terminal() {
+    let scope = AuthenticatedHostScope::test_fixture("acct_example_0001", "inst_example_0001");
+    let correlation = TransportCorrelation::new("req_example_0001");
+    let mut store = InMemoryOperationStore::default();
+    let record = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).expect("intent");
+    assert_eq!(store.admissions, 1);
+    assert_eq!(store.commits, 0);
+    store.mark_terminal(&record.operation, OperationStatus::Charged).expect("charge");
+    assert_eq!(store.commits, 1);
+    assert_eq!(store.mark_terminal(&record.operation, OperationStatus::Charged), Err(OperationStoreError::TerminalState));
+    assert_eq!(store.commits, 1);
+}
