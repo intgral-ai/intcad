@@ -16900,3 +16900,18 @@ fn theme_state_is_available_without_desktop_web() {
     assert!(state.is_object());
     assert!(state.get("colors").and_then(|v| v.as_object()).is_some_and(|colors| !colors.is_empty()));
 }
+
+/// The page's host state reaches `discover` and `task_runtime`, both desktop-only
+/// modules, so `web` itself must keep that gate. `theme_bridge` is pure data and
+/// must not gain it: the browser build still needs the page's theme state.
+#[test]
+fn web_is_desktop_only_and_theme_bridge_stays_pure() {
+    let modules = include_str!("mod.rs").replace("\r\n", "\n");
+    let gate = "#[cfg(not(target_arch = \"wasm32\"))]";
+    assert!(modules.contains(&format!("{gate}\npub mod web;")), "`web` reads `discover`/`task_runtime`, so it must carry the native-only gate");
+    assert!(!modules.contains(&format!("{gate}\npub mod theme_bridge;")), "`theme_bridge` is pure and must stay available without the desktop host");
+    assert!(modules.contains("\npub mod theme_bridge;"), "`theme_bridge` must still be declared");
+    for native in ["pub mod discover;", "pub(crate) mod task_runtime;"] {
+        assert!(modules.contains(&format!("{gate}\n{native}")), "`web`'s dependency `{native}` stays desktop-only");
+    }
+}

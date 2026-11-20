@@ -56,6 +56,7 @@ pub mod summary;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod task_runtime;
 pub mod theme_bridge;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod web;
 
 use std::sync::Arc;

@@ -1154,6 +1154,7 @@ impl Drop for DriverClient {
 fn main() -> eframe::Result {
     // CEF re-executes this binary for its renderer, GPU and utility processes: nothing else
     // may run before that dispatch (no wgpu, no thread pools).
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     if let Some(code) = assistant_cef::subprocess_entry() {
         std::process::exit(code);
     }

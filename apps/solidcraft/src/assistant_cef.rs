@@ -3000,4 +3000,18 @@ mod w5_registration_tests {
         unique.dedup();
         assert_eq!(unique.len(), order.len(), "no id is released twice");
     }
+
+    /// CEF re-executes the binary for its subprocesses only where this module
+    /// exists: the dispatch must carry the same desktop gate as the module and
+    /// its interop configuration.
+    #[test]
+    fn subprocess_dispatch_carries_the_desktop_gate() {
+        let source = include_str!("main.rs").replace("\r\n", "\n");
+        let gate = r#"#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]"#;
+        assert!(source.contains(&format!("{gate}\nmod assistant_cef;")), "the module and the dispatch must share one predicate");
+        assert!(
+            source.contains(&format!("{gate}\n    if let Some(code) = assistant_cef::subprocess_entry() {{")),
+            "the CEF re-exec dispatch must stay behind the module's desktop gate"
+        );
+    }
 }
