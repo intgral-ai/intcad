@@ -161,6 +161,31 @@ fn native_reference(port: &ValidationPort) -> ProfileRef {
     port.native_basic_reference().unwrap()
 }
 
+/// A live admitted run with its candidate, but no pin yet.
+///
+/// Production writes the key, profile, admission and state before it pins a candidate
+/// (`submit_for`). A run pin with no admission or state is the crash window that
+/// `a_pin_only_orphan_is_garbage_collected_after_retention` says cleanup must sweep.
+/// Pinning a bare run id here would therefore test a lifecycle production never creates:
+/// cleanup would retire the orphan pin and then correctly remove its candidate.
+fn admitted_unpinned_run(name: &str, now: u64) -> (PathBuf, PathBuf, Arc<ValidationPort>, String) {
+    let root = scratch(name);
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-pin-cleanup", analytic_design());
+    let clock = Arc::new(ManualClock::new(now));
+    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
+    let port = Arc::new(port_with(&store, &candidates, runner_with(Vec::new()), limits, clock));
+    let reference = native_reference(&port);
+    let submitted = port.submit(&candidate, &reference, &generate_submission_key(now)).unwrap();
+    port.unpin_run(&submitted.run_id, "cand-pin-cleanup").unwrap();
+    assert!(port.store.admission_path(&submitted.run_id).is_file(), "the fixture starts from an admitted run");
+    assert!(port.store.state_path(&submitted.run_id).is_file(), "the admitted run has a visible state");
+    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_ok(), "the admitted run's candidate is present");
+    assert!(!candidate::is_pinned(&candidates, "cand-pin-cleanup"), "the race starts from a live, unpinned run");
+    (root, candidates, port, submitted.run_id)
+}
+
 #[test]
 fn native_basic_is_stable_and_carries_the_two_required_checks() {
     let profile = native_basic_profile();
@@ -1713,17 +1738,36 @@ fn a_pin_only_orphan_is_garbage_collected_after_retention() {
 }
 
 #[test]
-fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
-    let root = scratch("pin-cleanup-race");
-    let candidates = root.join("candidates");
-    let store = root.join("validation");
-    let _candidate = write_candidate(&candidates, "cand-pin-cleanup", analytic_design());
+fn pin_before_cleanup_keeps_a_real_runs_candidate_and_pin() {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let clock = Arc::new(ManualClock::new(now));
-    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
-    let port = Arc::new(port_with(&store, &candidates, runner_with(Vec::new()), limits, clock.clone()));
+    let (root, candidates, port, run_id) = admitted_unpinned_run("pin-before-cleanup", now);
+    port.pin_run(&run_id, "cand-pin-cleanup").unwrap();
+    assert!(candidate::is_pinned(&candidates, "cand-pin-cleanup"));
+    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_ok());
+    port.cleanup(now);
+    assert!(candidate::is_pinned(&candidates, "cand-pin-cleanup"), "cleanup must keep a live run's pin");
+    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_ok(), "cleanup must keep a pinned candidate");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cleanup_before_pin_leaves_no_pin_on_the_removed_candidate() {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let (root, candidates, port, run_id) = admitted_unpinned_run("cleanup-before-pin", now);
+    port.cleanup(now);
+    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_err(), "cleanup removed the unpinned candidate");
+    let error = port.pin_run(&run_id, "cand-pin-cleanup").unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidCandidate, "a removed candidate cannot be pinned");
+    assert!(!candidate::is_pinned(&candidates, "cand-pin-cleanup"));
+    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let (root, candidates, port, run_id) = admitted_unpinned_run("pin-cleanup-race", now);
     let barrier = Arc::new(Barrier::new(2));
-    let run_id = generate_run_id(now);
     let pin = {
         let port = Arc::clone(&port);
         let barrier = Arc::clone(&barrier);
