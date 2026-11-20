@@ -442,8 +442,17 @@ impl Store {
     pub fn purge_older_than(&self, now_ms: u64, retention_ms: u64, _transaction: &TransactionGuard) -> Vec<(String, Option<String>)> {
         let mut removed: Vec<(String, Option<String>)> = Vec::new();
         for run_id in self.all_run_ids() {
-            let state = self.read_optional_json::<StateRecord>(&self.state_path(&run_id), 64 << 10).ok().flatten();
-            let admission = self.read_optional_json::<AdmissionRecord>(&self.admission_path(&run_id), 1 << 20).ok().flatten();
+            // A present record that cannot be read is not an absent record. Keep the run until a
+            // later cleanup can prove its age and terminal outcome; deleting fail-open would let
+            // a still-valid key recreate Queued.
+            let state = match self.read_optional_json::<StateRecord>(&self.state_path(&run_id), 64 << 10) {
+                Ok(state) => state,
+                Err(_) => continue,
+            };
+            let admission = match self.read_optional_json::<AdmissionRecord>(&self.admission_path(&run_id), 1 << 20) {
+                Ok(admission) => admission,
+                Err(_) => continue,
+            };
             let (terminal_old, candidate_id) = match (state.as_ref(), admission.as_ref()) {
                 (Some(state), _) if state.state.is_terminal() => {
                     (now_ms.saturating_sub(state.updated_at_ms) >= retention_ms, admission.as_ref().map(|a| a.candidate.candidate_id.clone()))
@@ -457,13 +466,19 @@ impl Store {
             if !terminal_old {
                 continue;
             }
-            if let (Some(state), Some(admission)) = (state.as_ref(), admission.as_ref())
-                && state.state.is_terminal()
-                && !self.remember_tombstone(&run_id, state.state, &admission.submission_key)
-            {
-                // Keep the terminal records when the tombstone cannot be written; the next
-                // cleanup retries. Deleting them would let a still-valid key recreate Queued.
-                continue;
+            if let Some(state) = state.as_ref().filter(|state| state.state.is_terminal()) {
+                // A missing admission is reachable from legacy partial retention or a previous
+                // interrupted sweep. The key record can still remain. Write the tombstone from
+                // the key before deleting anything; when that cannot be proved, keep the records.
+                let tombstone = match admission.as_ref() {
+                    Some(admission) => self.remember_tombstone(&run_id, state.state, &admission.submission_key),
+                    None => self.remember_tombstone_from_key(&run_id, state.state),
+                };
+                if !tombstone {
+                    // Keep the terminal records when the tombstone cannot be written; the next
+                    // cleanup retries. Deleting them would let a still-valid key recreate Queued.
+                    continue;
+                }
             }
             for path in [
                 self.admission_path(&run_id),
@@ -498,6 +513,37 @@ impl Store {
         removed
     }
 
+    /// Every submission key record that names this run. A read or parse failure is returned
+    /// rather than treated as absence: the caller must not delete a terminal run while a key
+    /// that could replay it is still present but unreadable.
+    fn submission_for_run(&self, run_id: &str) -> Result<Option<SubmissionRecord>, ValidationError> {
+        let Ok(entries) = fs::read_dir(self.keys_dir()) else { return Ok(None) };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let bytes = self.read_bounded(&path, 64 << 10).map_err(|error| ValidationError::internal(format!("validation key record: {error}")))?;
+            let submission: SubmissionRecord =
+                serde_json::from_slice(&bytes).map_err(|_| ValidationError::internal("validation key record is not valid JSON"))?;
+            if submission.run_id == run_id {
+                return Ok(Some(submission));
+            }
+        }
+        Ok(None)
+    }
+
+    fn write_tombstone(&self, run_id: &str, state: ValidationState, submission_key: &str, expires_at_ms: u64) -> bool {
+        let tombstone = TombstoneRecord {
+            schema_version: RECORD_SCHEMA.into(),
+            run_id: run_id.into(),
+            submission_key: submission_key.into(),
+            state,
+            expires_at_ms,
+        };
+        self.write_json_replace(&self.tombstone_path(run_id), &tombstone).is_ok()
+    }
+
     /// Keep the terminal outcome for a still-valid key. Returns `false` when the key exists but
     /// the tombstone could not be written, so the caller keeps the terminal records instead.
     fn remember_tombstone(&self, run_id: &str, state: ValidationState, submission_key: &str) -> bool {
@@ -508,14 +554,19 @@ impl Store {
             // A present key we cannot read must not be discarded with the run records.
             Err(_) => return false,
         };
-        let tombstone = TombstoneRecord {
-            schema_version: RECORD_SCHEMA.into(),
-            run_id: run_id.into(),
-            submission_key: submission_key.into(),
-            state,
-            expires_at_ms: submission.expires_at_ms,
+        self.write_tombstone(run_id, state, submission_key, submission.expires_at_ms)
+    }
+
+    /// The admission is already gone. Find its key record by run id and preserve the terminal
+    /// outcome from it. No key record means a later replay has no key to find; an unreadable
+    /// key record fails closed and keeps the state for a later cleanup.
+    fn remember_tombstone_from_key(&self, run_id: &str, state: ValidationState) -> bool {
+        let submission = match self.submission_for_run(run_id) {
+            Ok(Some(submission)) => submission,
+            Ok(None) => return true,
+            Err(_) => return false,
         };
-        self.write_json_replace(&self.tombstone_path(run_id), &tombstone).is_ok()
+        self.write_tombstone(run_id, state, &submission.submission_key, submission.expires_at_ms)
     }
 
     pub fn read_tombstone(&self, run_id: &str) -> Result<Option<TombstoneRecord>, ValidationError> {

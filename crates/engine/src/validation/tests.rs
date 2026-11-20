@@ -161,6 +161,42 @@ fn native_reference(port: &ValidationPort) -> ProfileRef {
     port.native_basic_reference().unwrap()
 }
 
+struct TerminalKeyFixture {
+    root: PathBuf,
+    port: Arc<ValidationPort>,
+    candidate: crate::schema::snapshot::CandidateRef,
+    reference: ProfileRef,
+    key: String,
+    run_id: String,
+    terminal: ValidationState,
+}
+
+fn terminal_run_with_key(name: &str) -> TerminalKeyFixture {
+    const NOW: u64 = 1_760_000_000_000;
+    let root = scratch(name);
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-terminal-key", analytic_design());
+    let clock = Arc::new(ManualClock::new(NOW));
+    let profile = native_basic_profile();
+    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
+    let port = Arc::new(port_with(&store, &candidates, runner_with(pass_checks(&profile)), limits, clock));
+    let reference = native_reference(&port);
+    let key = generate_submission_key(NOW);
+    let submitted = port.submit(&candidate, &reference, &key).unwrap();
+    port.pump().unwrap();
+    let terminal = port.status(&submitted.run_id).unwrap().state;
+    assert!(terminal.is_terminal(), "the fixture starts from a durable terminal run");
+    TerminalKeyFixture { root, port, candidate, reference, key, run_id: submitted.run_id, terminal }
+}
+
+struct AdmittedUnpinnedRun {
+    root: PathBuf,
+    candidates: PathBuf,
+    port: Arc<ValidationPort>,
+    run_id: String,
+}
+
 /// A live admitted run with its candidate, but no pin yet.
 ///
 /// Production writes the key, profile, admission and state before it pins a candidate
@@ -168,7 +204,7 @@ fn native_reference(port: &ValidationPort) -> ProfileRef {
 /// `a_pin_only_orphan_is_garbage_collected_after_retention` says cleanup must sweep.
 /// Pinning a bare run id here would therefore test a lifecycle production never creates:
 /// cleanup would retire the orphan pin and then correctly remove its candidate.
-fn admitted_unpinned_run(name: &str, now: u64) -> (PathBuf, PathBuf, Arc<ValidationPort>, String) {
+fn admitted_unpinned_run(name: &str, now: u64) -> AdmittedUnpinnedRun {
     let root = scratch(name);
     let candidates = root.join("candidates");
     let store = root.join("validation");
@@ -183,7 +219,7 @@ fn admitted_unpinned_run(name: &str, now: u64) -> (PathBuf, PathBuf, Arc<Validat
     assert!(port.store.state_path(&submitted.run_id).is_file(), "the admitted run has a visible state");
     assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_ok(), "the admitted run's candidate is present");
     assert!(!candidate::is_pinned(&candidates, "cand-pin-cleanup"), "the race starts from a live, unpinned run");
-    (root, candidates, port, submitted.run_id)
+    AdmittedUnpinnedRun { root, candidates, port, run_id: submitted.run_id }
 }
 
 #[test]
@@ -1156,6 +1192,68 @@ fn a_retired_terminal_key_replays_its_outcome_without_resurrecting_a_queued_run(
 }
 
 #[test]
+fn a_terminal_state_without_admission_keeps_its_key_from_recreating_queued() {
+    let fixture = terminal_run_with_key("terminal-state-only");
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    assert!(fixture.port.store.key_path(&parsed.file_name()).is_file());
+    std::fs::remove_file(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup must keep the terminal outcome for the live key");
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key).unwrap();
+    assert_eq!(replay.state, fixture.terminal, "a same-key replay must not recreate Queued");
+    assert!(!fixture.port.store.admission_path(&fixture.run_id).is_file(), "the replay must not recreate the admission");
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file(), "the replay must not recreate live state");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn an_unreadable_admission_keeps_the_terminal_state_fail_closed() {
+    let fixture = terminal_run_with_key("terminal-admission-read-failure");
+    std::fs::write(fixture.port.store.admission_path(&fixture.run_id), b"{").unwrap();
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file(), "an unreadable admission must not delete the terminal state");
+
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key);
+    assert!(replay.is_err(), "an unreadable admission must not recreate Queued");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn an_unreadable_key_keeps_the_terminal_state_fail_closed() {
+    let fixture = terminal_run_with_key("terminal-key-read-failure");
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    std::fs::remove_file(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    std::fs::write(fixture.port.store.key_path(&parsed.file_name()), b"{").unwrap();
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file(), "an unreadable key must not delete the terminal state");
+
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key);
+    assert!(replay.is_err(), "an unreadable key must not recreate Queued");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn a_terminal_state_without_admission_or_key_is_retired() {
+    let fixture = terminal_run_with_key("terminal-no-key");
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    std::fs::remove_file(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    std::fs::remove_file(fixture.port.store.key_path(&parsed.file_name())).unwrap();
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file(), "without a replay key the terminal state can be retired");
+    assert!(!fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "no key means no tombstone is needed");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
 fn a_changed_input_byte_after_a_pass_rejects_the_report() {
     let root = scratch("changed-after");
     let candidates = root.join("candidates");
@@ -1740,45 +1838,45 @@ fn a_pin_only_orphan_is_garbage_collected_after_retention() {
 #[test]
 fn pin_before_cleanup_keeps_a_real_runs_candidate_and_pin() {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let (root, candidates, port, run_id) = admitted_unpinned_run("pin-before-cleanup", now);
-    port.pin_run(&run_id, "cand-pin-cleanup").unwrap();
-    assert!(candidate::is_pinned(&candidates, "cand-pin-cleanup"));
-    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_ok());
-    port.cleanup(now);
-    assert!(candidate::is_pinned(&candidates, "cand-pin-cleanup"), "cleanup must keep a live run's pin");
-    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_ok(), "cleanup must keep a pinned candidate");
-    let _ = std::fs::remove_dir_all(root);
+    let fixture = admitted_unpinned_run("pin-before-cleanup", now);
+    fixture.port.pin_run(&fixture.run_id, "cand-pin-cleanup").unwrap();
+    assert!(candidate::is_pinned(&fixture.candidates, "cand-pin-cleanup"));
+    assert!(candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_ok());
+    fixture.port.cleanup(now);
+    assert!(candidate::is_pinned(&fixture.candidates, "cand-pin-cleanup"), "cleanup must keep a live run's pin");
+    assert!(candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_ok(), "cleanup must keep a pinned candidate");
+    let _ = std::fs::remove_dir_all(fixture.root);
 }
 
 #[test]
 fn cleanup_before_pin_leaves_no_pin_on_the_removed_candidate() {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let (root, candidates, port, run_id) = admitted_unpinned_run("cleanup-before-pin", now);
-    port.cleanup(now);
-    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_err(), "cleanup removed the unpinned candidate");
-    let error = port.pin_run(&run_id, "cand-pin-cleanup").unwrap_err();
+    let fixture = admitted_unpinned_run("cleanup-before-pin", now);
+    fixture.port.cleanup(now);
+    assert!(candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_err(), "cleanup removed the unpinned candidate");
+    let error = fixture.port.pin_run(&fixture.run_id, "cand-pin-cleanup").unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidCandidate, "a removed candidate cannot be pinned");
-    assert!(!candidate::is_pinned(&candidates, "cand-pin-cleanup"));
-    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_err());
-    let _ = std::fs::remove_dir_all(root);
+    assert!(!candidate::is_pinned(&fixture.candidates, "cand-pin-cleanup"));
+    assert!(candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_err());
+    let _ = std::fs::remove_dir_all(fixture.root);
 }
 
 #[test]
 fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let (root, candidates, port, run_id) = admitted_unpinned_run("pin-cleanup-race", now);
+    let fixture = admitted_unpinned_run("pin-cleanup-race", now);
     let barrier = Arc::new(Barrier::new(2));
     let pin = {
-        let port = Arc::clone(&port);
+        let port = Arc::clone(&fixture.port);
         let barrier = Arc::clone(&barrier);
-        let run_id = run_id.clone();
+        let run_id = fixture.run_id.clone();
         thread::spawn(move || {
             barrier.wait();
             port.pin_run(&run_id, "cand-pin-cleanup")
         })
     };
     let cleanup = {
-        let port = Arc::clone(&port);
+        let port = Arc::clone(&fixture.port);
         let barrier = Arc::clone(&barrier);
         thread::spawn(move || {
             barrier.wait();
@@ -1787,10 +1885,10 @@ fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
     };
     let pinned = pin.join().unwrap();
     let _ = cleanup.join().unwrap();
-    let lookup_ok = candidate::lookup(&candidates, "cand-pin-cleanup").is_ok();
+    let lookup_ok = candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_ok();
     assert_eq!(pinned.is_ok(), lookup_ok, "a pin exists exactly when the candidate still exists");
-    assert_eq!(candidate::is_pinned(&candidates, "cand-pin-cleanup"), lookup_ok);
-    let _ = std::fs::remove_dir_all(root);
+    assert_eq!(candidate::is_pinned(&fixture.candidates, "cand-pin-cleanup"), lookup_ok);
+    let _ = std::fs::remove_dir_all(fixture.root);
 }
 
 #[test]
