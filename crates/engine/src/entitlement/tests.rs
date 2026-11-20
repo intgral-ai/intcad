@@ -269,10 +269,12 @@ fn in_memory_store_persists_once_and_has_no_grant() {
     let scope = AuthenticatedHostScope::test_fixture("acct_example_0001", "inst_example_0001");
     let correlation = TransportCorrelation::new("req_example_0001");
     let mut store = InMemoryOperationStore::default();
-    let operation = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).expect("first intent");
-    assert_eq!(store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).expect("existing intent"), operation);
+    let record = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).expect("first intent");
+    let operation = record.operation.clone();
+    assert!(record.grant_id.is_none());
+    assert_eq!(store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).expect("existing intent"), record);
     assert_eq!(store.persist_intent(&scope, &correlation, Capability::Control, EntryCategory::DirectControl), Err(SaveOutcome::Conflict));
     let key = RetryScopeKey { host_scope: scope, transport_correlation: correlation };
-    assert_eq!(store.lookup_original_retry(&key), Some(operation));
+    assert!(matches!(store.lookup_original_retry(&key), RetryDecision::Original(found) if found.operation == operation));
     assert_eq!(store.admissions, 1);
 }

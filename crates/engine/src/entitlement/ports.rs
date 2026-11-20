@@ -5,9 +5,12 @@ use std::collections::{BTreeMap, VecDeque};
 
 #[cfg(test)]
 use super::types::GrantId;
+#[cfg(test)]
+use super::types::RetryMapping;
 use super::types::{
-    AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, Grant, OperationId, OperationStatus,
-    OperationStoreError, Refusal, RefusalCode, RetryScopeKey, SaveOutcome, TransportCorrelation,
+    AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, Grant, OperationId, OperationRecord,
+    OperationStatus, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
+    TransportCorrelation,
 };
 
 pub trait AccountService {
@@ -24,19 +27,29 @@ pub trait AccountService {
     fn operation(&self, scope: &AuthenticatedHostScope, operation: &OperationId) -> Result<OperationStatus, Refusal>;
 }
 
+/// The durable operation journal. It records identity and settlement state; it never grants
+/// execution authority.
 pub trait OperationStore {
-    fn load_status(&self, operation: &OperationId) -> Option<OperationStatus>;
-    fn save_new(&mut self, operation: &OperationId, capability: Capability, entry: EntryCategory) -> SaveOutcome;
-    fn mark_started(&mut self, operation: &OperationId) -> Result<(), OperationStoreError>;
+    /// Create one row. A row is immutable: the same operation with a different account,
+    /// capability or entry is a conflict, never an overwrite or merge.
+    fn save_new(&mut self, record: &OperationRecord) -> Result<SaveOutcome, OperationStoreError>;
+    /// The persisted row, or `None`. Never synthesised from an in-memory hint.
+    fn load(&self, operation: &OperationId) -> Result<Option<OperationRecord>, OperationStoreError>;
+    fn mark_started(&mut self, operation: &OperationId, started_at_ms: u64) -> Result<(), OperationStoreError>;
     fn mark_terminal(&mut self, operation: &OperationId, status: OperationStatus) -> Result<(), OperationStoreError>;
+    /// Persist the retry mapping and the original row before the caller's first wire attempt.
     fn persist_intent(
         &mut self,
         scope: &AuthenticatedHostScope,
         correlation: &TransportCorrelation,
         capability: Capability,
         entry: EntryCategory,
-    ) -> Result<OperationId, SaveOutcome>;
-    fn lookup_original_retry(&self, key: &RetryScopeKey) -> Option<OperationId>;
+    ) -> Result<OperationRecord, SaveOutcome>;
+    /// Reverse lookup from the authenticated host scope plus the transport correlation. The caller
+    /// does not supply an operation id; external ids alone can never recover or elevate a row.
+    fn lookup_original_retry(&mut self, key: &RetryScopeKey) -> RetryDecision;
+    fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError>;
+    fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError>;
 }
 
 pub trait CredentialStore {
@@ -114,34 +127,47 @@ impl AccountService for FakeAccountService {
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub struct InMemoryOperationStore {
-    records: BTreeMap<OperationId, (Capability, EntryCategory, OperationStatus)>,
-    mappings: BTreeMap<RetryScopeKey, OperationId>,
+    records: BTreeMap<OperationId, OperationRecord>,
+    mappings: BTreeMap<RetryScopeKey, RetryMapping>,
+    reviews: BTreeMap<RunId, OperationId>,
     next: u64,
     pub admissions: usize,
     pub commits: usize,
 }
 
 #[cfg(test)]
+impl InMemoryOperationStore {
+    fn mint(&mut self) -> OperationId {
+        self.next = self.next.saturating_add(1);
+        OperationId::from_counter(self.next)
+    }
+}
+
+#[cfg(test)]
 impl OperationStore for InMemoryOperationStore {
-    fn load_status(&self, operation: &OperationId) -> Option<OperationStatus> {
-        self.records.get(operation).map(|record| record.2)
-    }
-
-    fn save_new(&mut self, operation: &OperationId, capability: Capability, entry: EntryCategory) -> SaveOutcome {
-        if let Some(existing) = self.records.get(operation) {
-            return if existing.0 == capability && existing.1 == entry { SaveOutcome::Existing } else { SaveOutcome::Conflict };
+    fn save_new(&mut self, record: &OperationRecord) -> Result<SaveOutcome, OperationStoreError> {
+        if record.status != OperationStatus::Held || record.grant_id.is_some() {
+            return Err(OperationStoreError::InvalidState);
         }
-        self.records.insert(operation.clone(), (capability, entry, OperationStatus::Held));
-        self.admissions += 1;
-        SaveOutcome::Saved
+        if let Some(existing) = self.records.get(&record.operation) {
+            return Ok(if existing.common_identity_matches(record) { SaveOutcome::Existing } else { SaveOutcome::Conflict });
+        }
+        self.records.insert(record.operation.clone(), record.clone());
+        self.admissions = self.admissions.saturating_add(1);
+        Ok(SaveOutcome::Saved)
     }
 
-    fn mark_started(&mut self, operation: &OperationId) -> Result<(), OperationStoreError> {
+    fn load(&self, operation: &OperationId) -> Result<Option<OperationRecord>, OperationStoreError> {
+        Ok(self.records.get(operation).cloned())
+    }
+
+    fn mark_started(&mut self, operation: &OperationId, started_at_ms: u64) -> Result<(), OperationStoreError> {
         let record = self.records.get_mut(operation).ok_or(OperationStoreError::UnknownOperation)?;
-        if record.2.is_terminal() {
+        if record.status.is_terminal() {
             return Err(OperationStoreError::TerminalState);
         }
-        record.2 = OperationStatus::Pending;
+        record.status = OperationStatus::Pending;
+        record.started_at_ms = started_at_ms;
         Ok(())
     }
 
@@ -150,12 +176,12 @@ impl OperationStore for InMemoryOperationStore {
             return Err(OperationStoreError::InvalidState);
         }
         let record = self.records.get_mut(operation).ok_or(OperationStoreError::UnknownOperation)?;
-        if record.2.is_terminal() {
+        if record.status.is_terminal() {
             return Err(OperationStoreError::TerminalState);
         }
-        record.2 = status;
+        record.status = status;
         if status == OperationStatus::Charged {
-            self.commits += 1;
+            self.commits = self.commits.saturating_add(1);
         }
         Ok(())
     }
@@ -166,22 +192,64 @@ impl OperationStore for InMemoryOperationStore {
         correlation: &TransportCorrelation,
         capability: Capability,
         entry: EntryCategory,
-    ) -> Result<OperationId, SaveOutcome> {
-        let key = RetryScopeKey { host_scope: scope.clone(), transport_correlation: correlation.clone() };
-        if let Some(operation) = self.mappings.get(&key) {
-            let existing = self.records.get(operation).ok_or(SaveOutcome::Conflict)?;
-            return if existing.0 == capability && existing.1 == entry { Ok(operation.clone()) } else { Err(SaveOutcome::Conflict) };
+    ) -> Result<OperationRecord, SaveOutcome> {
+        if !scope.is_provable() {
+            return Err(SaveOutcome::Conflict);
         }
-        self.next = self.next.saturating_add(1);
-        let operation = OperationId::from_counter(self.next);
-        self.records.insert(operation.clone(), (capability, entry, OperationStatus::Held));
-        self.mappings.insert(key, operation.clone());
-        self.admissions += 1;
-        Ok(operation)
+        let key = RetryScopeKey { host_scope: scope.clone(), transport_correlation: correlation.clone() };
+        if let Some(mapping) = self.mappings.get(&key) {
+            if mapping.capability != capability || mapping.entry != entry {
+                return Err(SaveOutcome::Conflict);
+            }
+            let record = self.records.get(&mapping.operation).ok_or(SaveOutcome::Conflict)?;
+            if record.status.is_terminal() {
+                return Err(SaveOutcome::Conflict);
+            }
+            return Ok(record.clone());
+        }
+        let operation = self.mint();
+        let record = OperationRecord::held(operation.clone(), scope.account().clone(), capability, entry, 0);
+        self.records.insert(operation.clone(), record.clone());
+        self.mappings.insert(
+            key,
+            RetryMapping {
+                scope: RetryScopeKey { host_scope: scope.clone(), transport_correlation: correlation.clone() },
+                operation,
+                capability,
+                entry,
+                created_at_ms: 0,
+            },
+        );
+        self.admissions = self.admissions.saturating_add(1);
+        self.commits = self.commits.saturating_add(1);
+        Ok(record)
     }
 
-    fn lookup_original_retry(&self, key: &RetryScopeKey) -> Option<OperationId> {
-        self.mappings.get(key).cloned()
+    fn lookup_original_retry(&mut self, key: &RetryScopeKey) -> RetryDecision {
+        let Some(mapping) = self.mappings.get(key) else {
+            return RetryDecision::Unprovable;
+        };
+        let Some(record) = self.records.get(&mapping.operation) else {
+            return RetryDecision::Unknown;
+        };
+        if record.capability != mapping.capability || record.entry != mapping.entry {
+            return RetryDecision::Conflict;
+        }
+        if record.status.is_terminal() {
+            return RetryDecision::Unknown;
+        }
+        RetryDecision::Original(record.clone())
+    }
+
+    fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError> {
+        let record = self.records.get_mut(&review.operation_id).ok_or(OperationStoreError::UnknownOperation)?;
+        self.reviews.insert(review.run_id.clone(), review.operation_id.clone());
+        record.review_run_id = Some(review.run_id.clone());
+        Ok(())
+    }
+
+    fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
+        Ok(self.reviews.get(run_id).cloned())
     }
 }
 

@@ -33,6 +33,11 @@ impl Capability {
             Self::DesignIntent => "design_intent",
         }
     }
+
+    /// The capability named by a persisted wire value, for ledger reload only.
+    pub fn from_wire(raw: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|capability| capability.wire() == raw)
+    }
 }
 
 /// Wire error codes. Task 3 owns their serialization; the business meaning is fixed here.
@@ -250,6 +255,7 @@ string_id!(InstallationId);
 string_id!(HostSessionBinding);
 string_id!(GrantId);
 string_id!(TransportCorrelation);
+string_id!(RunId);
 
 /// The host's stable authenticated identity. Constructed only by the host authentication path.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -274,6 +280,22 @@ impl AuthenticatedHostScope {
 
     pub fn account(&self) -> &AccountId {
         &self.account
+    }
+
+    pub fn installation(&self) -> &InstallationId {
+        &self.installation
+    }
+
+    pub fn session_binding(&self) -> &HostSessionBinding {
+        &self.session_binding
+    }
+
+    /// Whether the host can prove a stable account, installation and session binding.
+    ///
+    /// An empty part means the transport could not establish a stable authenticated session; callers
+    /// must fail closed instead of starting a controlled operation.
+    pub fn is_provable(&self) -> bool {
+        !self.account.as_str().is_empty() && !self.installation.as_str().is_empty() && !self.session_binding.as_str().is_empty()
     }
 }
 
@@ -382,6 +404,8 @@ pub enum OperationStoreError {
     UnknownOperation,
     TerminalState,
     InvalidState,
+    /// The host could not read or write its durable ledger. Callers must fail closed.
+    Unavailable,
 }
 
 /// Why a credential adapter cannot return, store or delete a secret.
@@ -398,7 +422,125 @@ pub struct CredentialError {
     pub message: String,
 }
 
+/// One durable host-owned ledger row.
+///
+/// Fields are readable snapshots, not execution authority. A row never carries a credential; a
+/// server-issued [`GrantId`] is recorded only after the server admitted the operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationRecord {
+    pub operation: OperationId,
+    pub account: AccountId,
+    pub capability: Capability,
+    pub entry: EntryCategory,
+    pub status: OperationStatus,
+    pub started_at_ms: u64,
+    pub deadline_ms: Option<u64>,
+    pub grant_id: Option<GrantId>,
+    pub review_run_id: Option<RunId>,
+}
+
+impl OperationRecord {
+    /// A not-yet-started row. Only the host's mint path supplies the operation id and account.
+    pub fn held(operation: OperationId, account: AccountId, capability: Capability, entry: EntryCategory, started_at_ms: u64) -> Self {
+        Self {
+            operation,
+            account,
+            capability,
+            entry,
+            status: OperationStatus::Held,
+            started_at_ms,
+            deadline_ms: None,
+            grant_id: None,
+            review_run_id: None,
+        }
+    }
+
+    /// Whether two rows name the same logical operation identity. Other fields are settlement
+    /// state, not identity, so a retry cannot overwrite them.
+    pub fn common_identity_matches(&self, other: &Self) -> bool {
+        self.account == other.account && self.capability == other.capability && self.entry == other.entry
+    }
+}
+
+/// A persisted run-to-operation identity. Task 7/10 reuse this one type; they must not define a
+/// second mapping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewOperation {
+    pub run_id: RunId,
+    pub operation_id: OperationId,
+}
+
+impl ReviewOperation {
+    pub fn new(run_id: RunId, operation_id: OperationId) -> Self {
+        Self { run_id, operation_id }
+    }
+}
+
+/// The persisted reverse mapping for one retried transport request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetryMapping {
+    pub scope: RetryScopeKey,
+    pub operation: OperationId,
+    pub capability: Capability,
+    pub entry: EntryCategory,
+    pub created_at_ms: u64,
+}
+
+/// The answer to a retry lookup. Only [`RetryDecision::Original`] names the original operation;
+/// no variant grants execution, renewal or submission authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RetryDecision {
+    /// The same authenticated scope and correlation map to a non-terminal original row.
+    Original(OperationRecord),
+    /// The mapping exists but names a different capability, entry or identity. Fail closed.
+    Conflict,
+    /// The host cannot prove that the retry belongs to the same authenticated session. Fail closed.
+    Unprovable,
+    /// The mapping is present but its row is missing, unreadable or already terminal. Fail closed.
+    Unknown,
+}
+
+/// A brand-new logical operation the host explicitly decided to mint.
+///
+/// It is never inferred from an unprovable retry and it has no `Deserialize` implementation:
+/// external request ids, tool-call ids, ACP message ids and run ids are data, not authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FreshIntent {
+    host_minted_operation: OperationId,
+    scope: AuthenticatedHostScope,
+    transport_correlation: TransportCorrelation,
+}
+
+impl FreshIntent {
+    /// The host composition root calls this only after it decided to start a new operation.
+    pub fn new(host_minted_operation: OperationId, scope: AuthenticatedHostScope, transport_correlation: TransportCorrelation) -> Self {
+        Self { host_minted_operation, scope, transport_correlation }
+    }
+
+    pub fn host_minted_operation(&self) -> &OperationId {
+        &self.host_minted_operation
+    }
+
+    pub fn scope(&self) -> &AuthenticatedHostScope {
+        &self.scope
+    }
+
+    pub fn transport_correlation(&self) -> &TransportCorrelation {
+        &self.transport_correlation
+    }
+
+    pub fn is_provable(&self) -> bool {
+        self.scope.is_provable()
+    }
+}
+
 /// The reverse-lookup key for a retried transport request. Correlation is never authority.
+///
+/// It is not deserializable: external JSON can never construct one.
+///
+/// ```compile_fail
+/// let _key: solidcraft_engine::entitlement::RetryScopeKey = serde_json::from_str("{}").unwrap();
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RetryScopeKey {
     pub host_scope: AuthenticatedHostScope,
