@@ -305,7 +305,26 @@ impl eframe::App for App {
                 }
                 None => {
                     if self.solve.host_close_state() == HostCloseState::Required {
-                        self.solve.set_host_close_state(HostCloseState::Ready);
+                        // No Assistant is not automatically non-adoption: a retained
+                        // failed start that entered native browser creation must keep
+                        // the host fail-closed, including after its HTTP server stops.
+                        match crate::assistant_cef::failed_start_host_close() {
+                            crate::assistant_cef_lifecycle::FailedStartHostClose::Pending => {
+                                // The same bounded delayed tick the failed-start reaper
+                                // uses; an immediate repaint would spin while workers stop.
+                                ctx.request_repaint_after(crate::assistant_cef_http::FAILED_START_RETRY);
+                            }
+                            crate::assistant_cef_lifecycle::FailedStartHostClose::Ready => {
+                                self.solve.set_host_close_state(HostCloseState::Ready);
+                            }
+                            crate::assistant_cef_lifecycle::FailedStartHostClose::Quarantined => {
+                                self.solve.set_host_close_state(HostCloseState::Quarantined);
+                                solidcraft_ui_egui::documents::cancel_quit(&mut self.solve);
+                                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                                let text = self.solve.tr("ui.assistant_close_incomplete").to_string();
+                                self.solve.set_status(text, true);
+                            }
+                        }
                     }
                 }
             }

@@ -33,6 +33,32 @@ pub(crate) enum CloseProgress {
     Quarantined,
 }
 
+/// What a retained failed start proves about native browser creation.
+///
+/// This is a decision input, not native ownership. It deliberately does not
+/// claim that a vendor constructor's locals were retained after an error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailedStartOwnership {
+    /// The app never requested a browser creation: the previous pre-request
+    /// host result. It does not claim that the runtime/host was released.
+    NoBrowserCreation,
+    /// The app requested a native browser creation and no matching owner was
+    /// observed. The host must stay fail-closed even when the HTTP server stops.
+    BrowserCreationUnresolved,
+}
+
+/// The host close decision when no `CefAssistant` exists. `Pending` keeps the
+/// host barrier Required while the owned HTTP server is still stopping;
+/// `Ready` is the previous pre-request result only after that stop completes;
+/// `Quarantined` is the spec's unresolved-ownership state. Neither a request
+/// nor an HTTP stop can turn `Quarantined` into `Ready`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailedStartHostClose {
+    Pending,
+    Ready,
+    Quarantined,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LifecycleError {
     MismatchedBrowser,
@@ -114,6 +140,25 @@ impl Lifecycle {
         }
         self.pending_creation -= 1;
         Ok(())
+    }
+
+    /// A browser creation request failed after the app entered it. The pending
+    /// owner stays counted: failure is not completion and cannot become Retry,
+    /// a second creation or a clean shutdown.
+    pub(crate) fn observe_creation_failed(&mut self) -> Result<(), LifecycleError> {
+        if self.pending_creation == 0 || !matches!(self.phase, Phase::Initializing | Phase::Running) {
+            return Err(LifecycleError::InvalidTransition);
+        }
+        self.phase = Phase::Quarantined;
+        Ok(())
+    }
+
+    /// Classify a retained failed start for the no-Assistant host decision.
+    /// A pending request is unresolved even if the platform constructor already
+    /// returned an error: the app cannot prove the vendor never entered native
+    /// creation, and an HTTP stop is not that proof either.
+    pub(crate) fn failed_start_ownership(&self) -> FailedStartOwnership {
+        if self.pending_creation == 0 { FailedStartOwnership::NoBrowserCreation } else { FailedStartOwnership::BrowserCreationUnresolved }
     }
 
     /// The DRAFT native `cef_initialize == false` branch: terminal for this
@@ -202,6 +247,24 @@ pub(crate) fn advance_owned_close(
         let _ = lifecycle.observe_closed(browser_id);
     }
     lifecycle.poll(now)
+}
+
+/// The host close decision for a process with no live `CefAssistant`.
+///
+/// This is production policy, not a test mock: `main.rs` calls it through
+/// `assistant_cef::failed_start_host_close`. Only a retained failed start that
+/// never requested native browser creation keeps the previous Ready result.
+pub(crate) fn host_close_without_assistant(ownership: FailedStartOwnership, workers_stopped: bool) -> FailedStartHostClose {
+    if !workers_stopped {
+        // The owned HTTP server is not a native close receipt when it is still
+        // stopping; keep the host barrier Required instead of letting a request
+        // authorize a quit.
+        return FailedStartHostClose::Pending;
+    }
+    match ownership {
+        FailedStartOwnership::NoBrowserCreation => FailedStartHostClose::Ready,
+        FailedStartOwnership::BrowserCreationUnresolved => FailedStartHostClose::Quarantined,
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +365,63 @@ mod tests {
         assert_eq!(lifecycle.poll(now), CloseProgress::Pending);
         lifecycle.observe_closed(9).unwrap();
         assert_eq!(lifecycle.phase(), Phase::Closed);
+    }
+
+    #[test]
+    fn creation_failure_is_quarantine_and_never_becomes_retry_or_shutdown() {
+        let mut lifecycle = Lifecycle::new();
+        lifecycle.begin_initialization().unwrap();
+        lifecycle.browser_requested().unwrap();
+        lifecycle.observe_creation_failed().unwrap();
+        assert_eq!(lifecycle.phase(), Phase::Quarantined);
+        assert_eq!(lifecycle.failed_start_ownership(), FailedStartOwnership::BrowserCreationUnresolved);
+        assert!(!lifecycle.permits_retry());
+        // Failure is not completion: no normal shutdown and no invented browser close.
+        assert_eq!(lifecycle.mark_shutdown(), Err(LifecycleError::InvalidTransition));
+        assert!(matches!(lifecycle.observe_closed(7), Err(LifecycleError::MismatchedBrowser | LifecycleError::InvalidTransition)));
+        // The pending owner stays counted; a second creation is never allowed.
+        assert_eq!(lifecycle.browser_requested(), Err(LifecycleError::InvalidTransition));
+    }
+
+    #[test]
+    fn unresolved_creation_host_close_stays_quarantined_across_real_http_stop() {
+        let mut lifecycle = Lifecycle::new();
+        lifecycle.begin_initialization().unwrap();
+        lifecycle.browser_requested().unwrap();
+        lifecycle.observe_creation_failed().unwrap();
+        // Before the owned HTTP stop, the barrier is Pending: a quit request does
+        // not authorize itself, and the host cannot use the unresolved creation.
+        assert_eq!(host_close_without_assistant(lifecycle.failed_start_ownership(), false), FailedStartHostClose::Pending);
+        // A real owned HTTP pool through the production failed-start reaper:
+        // its stop is an owned Rust teardown, not the matching native completion
+        // the close barrier requires.
+        let authority = Arc::new(DocumentAuthority::new());
+        let pictures: Pictures = Arc::new(Mutex::new(HashMap::new()));
+        let mut server = crate::assistant_cef_http::FailedStartServer::retain(
+            PageServer::start(PageAssets { resolve: crate::assistant_page::page_file, font: b"font" }, pictures, authority).unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while server.advance() != ServerProgress::Stopped {
+            assert!(Instant::now() < deadline, "owned HTTP workers did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(server.advance(), ServerProgress::Stopped);
+        // Stopping the page server neither proves browser creation completed nor
+        // clears the retained pending creation: the host decision stays closed.
+        assert_eq!(host_close_without_assistant(lifecycle.failed_start_ownership(), true), FailedStartHostClose::Quarantined);
+        assert_eq!(lifecycle.phase(), Phase::Quarantined);
+    }
+
+    #[test]
+    fn pre_request_failed_start_keeps_the_previous_host_decision_after_http_stop() {
+        let mut lifecycle = Lifecycle::new();
+        lifecycle.begin_initialization().unwrap();
+        // No browser_requested: this is the proven pre-request path. It makes no
+        // native-retention claim, and it still waits for the owned HTTP stop
+        // before the previous Ready result.
+        assert_eq!(lifecycle.failed_start_ownership(), FailedStartOwnership::NoBrowserCreation);
+        assert_eq!(host_close_without_assistant(lifecycle.failed_start_ownership(), false), FailedStartHostClose::Pending);
+        assert_eq!(host_close_without_assistant(lifecycle.failed_start_ownership(), true), FailedStartHostClose::Ready);
     }
 
     #[test]

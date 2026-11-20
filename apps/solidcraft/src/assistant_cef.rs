@@ -82,14 +82,22 @@ thread_local! {
 struct FailedOwners {
     _runtime: CefRuntime,
     server: Option<FailedStartServer>,
+    /// Last observed owned-HTTP progress. The host decision reads this; it is
+    /// not native completion.
+    server_progress: ServerProgress,
     _host: Option<HostWgpuContext>,
+    /// Pure startup policy retained with the failure. It records whether native
+    /// browser creation was entered and has no observed owner; it is not a
+    /// native owner and makes no claim about vendor constructor locals.
+    lifecycle: Lifecycle,
 }
-fn retain_failed_start(runtime: CefRuntime, server: Option<PageServer>, host: Option<HostWgpuContext>) {
+fn retain_failed_start(runtime: CefRuntime, server: Option<PageServer>, host: Option<HostWgpuContext>, lifecycle: Lifecycle) {
     FAILED_START.store(true, Ordering::Release);
     // Own the stopping server; ordinary logic turns poll it until its workers
     // have stopped, then release only this Rust server.
     let server = server.map(FailedStartServer::retain);
-    let owners = std::mem::ManuallyDrop::new(FailedOwners { _runtime: runtime, server, _host: host });
+    let server_progress = if server.is_some() { ServerProgress::Stopping } else { ServerProgress::Stopped };
+    let owners = std::mem::ManuallyDrop::new(FailedOwners { _runtime: runtime, server, server_progress, _host: host, lifecycle });
     FAILED_OWNERS.with(|slot| {
         if let Ok(mut slot) = slot.try_borrow_mut() {
             if slot.is_none() {
@@ -99,6 +107,31 @@ fn retain_failed_start(runtime: CefRuntime, server: Option<PageServer>, host: Op
             // an older owner if an impossible re-entrant failure is observed.
         }
     });
+}
+
+/// The host close decision when there is no `CefAssistant` to ask.
+///
+/// A failed start is not the same as "no browser was ever requested": if the
+/// app entered native creation, the retained policy keeps the host fail-closed
+/// even after the owned HTTP server has stopped. A missing/unreadable retained
+/// bundle is treated as unresolved, never as non-adoption. Readiness here says
+/// nothing about physical vendor-constructor retention.
+pub(crate) fn failed_start_host_close() -> crate::assistant_cef_lifecycle::FailedStartHostClose {
+    use crate::assistant_cef_lifecycle::{FailedStartHostClose, host_close_without_assistant};
+    if !FAILED_START.load(Ordering::Acquire) {
+        return FailedStartHostClose::Ready;
+    }
+    FAILED_OWNERS
+        .try_with(|slot| {
+            let Ok(slot) = slot.try_borrow() else {
+                return FailedStartHostClose::Quarantined;
+            };
+            let Some(owners) = slot.as_deref() else {
+                return FailedStartHostClose::Quarantined;
+            };
+            host_close_without_assistant(owners.lifecycle.failed_start_ownership(), owners.server_progress == ServerProgress::Stopped)
+        })
+        .unwrap_or(FailedStartHostClose::Quarantined)
 }
 
 /// Poll a retained failed-start server once per ordinary application logic turn.
@@ -115,8 +148,9 @@ pub fn advance_failed_start(ctx: &egui::Context) {
             return Some(crate::assistant_cef_http::FAILED_START_RETRY);
         };
         let owners = slot.as_deref_mut()?;
-        let server = owners.server.as_mut()?;
-        crate::assistant_cef_http::failed_start_repaint_after(server.advance())
+        let progress = owners.server.as_mut()?.advance();
+        owners.server_progress = progress;
+        crate::assistant_cef_http::failed_start_repaint_after(progress)
     });
     if let Ok(Some(after)) = after {
         ctx.request_repaint_after(after);
@@ -846,7 +880,7 @@ impl CefAssistant {
         if !host.device.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
             note("CEF: the app's device has no VULKAN_EXTERNAL_MEMORY_DMA_BUF; the page cannot be shown");
             emit_accelerated_limit(false, "app device has no VULKAN_EXTERNAL_MEMORY_DMA_BUF");
-            retain_failed_start(runtime, None, Some(host));
+            retain_failed_start(runtime, None, Some(host), lifecycle);
             return None;
         }
         let pictures: Pictures = Arc::new(Mutex::new(HashMap::new()));
@@ -854,7 +888,7 @@ impl CefAssistant {
         let browser_owner = match authority.reserve_browser_owner() {
             Ok(owner) => owner,
             Err(_) => {
-                retain_failed_start(runtime, None, Some(host));
+                retain_failed_start(runtime, None, Some(host), lifecycle);
                 return None;
             }
         };
@@ -869,12 +903,12 @@ impl CefAssistant {
             Ok(server) => server,
             Err(_) => {
                 note("CEF: private page server unavailable");
-                retain_failed_start(runtime, None, Some(host));
+                retain_failed_start(runtime, None, Some(host), lifecycle);
                 return None;
             }
         };
         if server.take_failure().is_some() || server.poll_stop() != ServerProgress::Running {
-            retain_failed_start(runtime, Some(server), Some(host));
+            retain_failed_start(runtime, Some(server), Some(host), lifecycle);
             return None;
         }
         let renewal = Arc::new(AtomicBool::new(false));
@@ -894,14 +928,19 @@ impl CefAssistant {
         // observed from BrowserCreated, not from a fabricated return value.
         if lifecycle.browser_requested().is_err() {
             note("CEF: lifecycle refused browser creation");
-            retain_failed_start(runtime, Some(server), Some(host));
+            retain_failed_start(runtime, Some(server), Some(host), lifecycle);
             return None;
         }
         let producer = match create_producer(&runtime, surface, &host) {
             Ok(producer) => producer,
             Err(_) => {
                 note("CEF: the private page could not be created");
-                retain_failed_start(runtime, Some(server), Some(host));
+                // The app entered native creation but got no producer. No matching
+                // owner was observed, so this is quarantine, not non-adoption.
+                if let Err(error) = lifecycle.observe_creation_failed() {
+                    note(&format!("CEF: lifecycle refused creation failure: {error}"));
+                }
+                retain_failed_start(runtime, Some(server), Some(host), lifecycle);
                 return None;
             }
         };
