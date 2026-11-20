@@ -677,15 +677,24 @@ impl ValidationPort {
     /// Run every queued job to a terminal state with the configured runner (the CLI's scheduler).
     pub fn pump(&self) -> Result<()> {
         while let Some(job) = self.start_next()? {
-            let control = RunControl {
-                clock: Arc::clone(&self.clock),
-                deadline_ms: job.started_at_ms.saturating_add(duration_ms(self.limits.execution)),
-                stop_at_ms: None,
-                cancel_path: self.store.cancel_path(&job.run_id),
-            };
-            let outcome = self.runner.run(&job, &control);
-            self.complete(&job.run_id, outcome)?;
+            self.run_claimed_with_stop(&job, None)?;
         }
+        Ok(())
+    }
+
+    /// Run one already claimed job with an optional measured controlled safe stop. This is the
+    /// host seam for Task 10/11: the effective stop is the earlier of `stop_at_ms` and the
+    /// configured execution deadline, and an unsafe caller-supplied value is clamped rather than
+    /// extending the run.
+    pub fn run_claimed_with_stop(&self, job: &RunJob, stop_at_ms: Option<u64>) -> Result<()> {
+        let control = RunControl {
+            clock: Arc::clone(&self.clock),
+            deadline_ms: job.started_at_ms.saturating_add(duration_ms(self.limits.execution)),
+            stop_at_ms,
+            cancel_path: self.store.cancel_path(&job.run_id),
+        };
+        let outcome = self.runner.run(job, &control);
+        self.complete(&job.run_id, outcome)?;
         Ok(())
     }
 

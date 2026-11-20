@@ -194,25 +194,57 @@ impl<'a> CommitGate<'a> {
     }
 }
 
+/// The typed response an adapter observed from a finalize or lookup. A bare HTTP status is not
+/// enough: the adapter must distinguish the frozen contract's generic post-deadline no-state
+/// `401` from an unrelated or unauthenticated `401`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalizeLookupResponse {
+    /// The contract's generic `401`/no-operation-state body for the same operation.
+    ContractNoState401,
+    /// An `401` from a missing or expired credential; identity itself is unproven.
+    Unauthenticated401,
+    /// Any other 401, foreign operation or unrelated failure.
+    Unrelated,
+}
+
+/// Everything the host can prove about a finalize/lookup result.
+#[derive(Clone, Copy, Debug)]
+pub struct LookupEvidence<'a> {
+    /// The operation the host installed locally and is asking about.
+    pub installed: &'a OperationId,
+    /// The operation the response names, when it names one.
+    pub responded: Option<&'a OperationId>,
+    /// The host's known settlement cutoff for this operation, when one was measured.
+    pub cutoff: Option<AuthorizationBound<'a>>,
+    /// The host's clock reading for the request.
+    pub at: MonotonicInstant,
+    pub response: FinalizeLookupResponse,
+}
+
 /// What a finalize or lookup reports after a known local deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LookupDisposition {
-    /// The host knew the operation's local deadline and the request is at or after it. The
-    /// contract maps this to no charge and a generic no-state answer.
+    /// The response is the contract's generic no-state body for the same installed operation,
+    /// the host knows its cutoff and the request is at or after it. This maps to no charge.
     ExpiredNoState,
-    /// No local deadline, a foreign operation, a credential problem or an early request. A `401`
-    /// alone is never proof of no charge.
+    /// No matching operation, no cutoff, an early request, an unauthenticated or unrelated
+    /// error. A bare `401` alone is never proof of no charge.
     Unknown,
 }
 
 /// The only mapping from a finalize/lookup failure to "no charge".
 ///
-/// A known local bound that the request is at or after is sufficient. Anything else — including
-/// every bare `401` — stays [`LookupDisposition::Unknown`] so the caller cannot invent a release.
-pub fn finalize_lookup_disposition(bound: Option<AuthorizationBound<'_>>, at: MonotonicInstant) -> LookupDisposition {
-    match bound {
-        Some(bound) if bound.expired_at(at) => LookupDisposition::ExpiredNoState,
-        _ => LookupDisposition::Unknown,
+/// It requires all three proofs together: a verified matching installed operation, a known
+/// settlement cutoff the request is at or after, and the frozen contract's generic no-state
+/// response. Any mismatch, missing cutoff, unauthenticated or unrelated error stays
+/// [`LookupDisposition::Unknown`] and must never open a release.
+pub fn finalize_lookup_disposition(evidence: LookupEvidence<'_>) -> LookupDisposition {
+    let matching = evidence.responded.is_some_and(|responded| responded == evidence.installed);
+    let expired = evidence.cutoff.is_some_and(|cutoff| cutoff.expired_at(evidence.at));
+    if matching && expired && evidence.response == FinalizeLookupResponse::ContractNoState401 {
+        LookupDisposition::ExpiredNoState
+    } else {
+        LookupDisposition::Unknown
     }
 }
 
@@ -449,31 +481,88 @@ mod tests {
     }
 
     #[test]
-    fn known_deadline_expiry_maps_to_no_charge() {
+    fn matching_operation_known_cutoff_and_contract_no_state_map_to_no_charge() {
         let deadline = deadline(10_000);
-        let at = MonotonicInstant::from_millis(10_000);
-        assert_eq!(finalize_lookup_disposition(Some(AuthorizationBound::Deadline(&deadline)), at), LookupDisposition::ExpiredNoState);
+        let operation = operation();
+        for at in [MonotonicInstant::from_millis(10_000), MonotonicInstant::from_millis(11_000)] {
+            let evidence = LookupEvidence {
+                installed: &operation,
+                responded: Some(&operation),
+                cutoff: Some(AuthorizationBound::Deadline(&deadline)),
+                at,
+                response: FinalizeLookupResponse::ContractNoState401,
+            };
+            assert_eq!(finalize_lookup_disposition(evidence), LookupDisposition::ExpiredNoState);
+        }
         let grant_expiry = AuthorizationBound::ExpiresAt(MonotonicInstant::from_millis(5_000));
-        assert_eq!(finalize_lookup_disposition(Some(grant_expiry), at), LookupDisposition::ExpiredNoState);
+        let evidence = LookupEvidence {
+            installed: &operation,
+            responded: Some(&operation),
+            cutoff: Some(grant_expiry),
+            at: MonotonicInstant::from_millis(5_000),
+            response: FinalizeLookupResponse::ContractNoState401,
+        };
+        assert_eq!(finalize_lookup_disposition(evidence), LookupDisposition::ExpiredNoState);
     }
 
     #[test]
-    fn an_early_request_at_a_known_deadline_is_not_expired() {
+    fn a_foreign_or_unnamed_operation_is_not_no_charge() {
         let deadline = deadline(10_000);
-        let at = MonotonicInstant::from_millis(9_999);
-        assert_eq!(finalize_lookup_disposition(Some(AuthorizationBound::Deadline(&deadline)), at), LookupDisposition::Unknown);
+        let operation = operation();
+        let other = OperationId::parse("op_gate_foreign_0002").unwrap();
+        for responded in [None, Some(&other)] {
+            let evidence = LookupEvidence {
+                installed: &operation,
+                responded,
+                cutoff: Some(AuthorizationBound::Deadline(&deadline)),
+                at: MonotonicInstant::from_millis(10_000),
+                response: FinalizeLookupResponse::ContractNoState401,
+            };
+            assert_eq!(finalize_lookup_disposition(evidence), LookupDisposition::Unknown);
+        }
     }
 
     #[test]
-    fn unrelated_401_is_not_automatically_no_charge() {
-        // A 401 with no local bound, a foreign operation, or a credential error is unknown.
-        assert_eq!(finalize_lookup_disposition(None, MonotonicInstant::from_millis(60_000)), LookupDisposition::Unknown);
+    fn missing_or_early_cutoff_is_not_no_charge() {
+        let deadline = deadline(10_000);
+        let operation = operation();
+        for (cutoff, at) in
+            [(None, MonotonicInstant::from_millis(60_000)), (Some(AuthorizationBound::Deadline(&deadline)), MonotonicInstant::from_millis(9_999))]
+        {
+            let evidence = LookupEvidence {
+                installed: &operation,
+                responded: Some(&operation),
+                cutoff,
+                at,
+                response: FinalizeLookupResponse::ContractNoState401,
+            };
+            assert_eq!(finalize_lookup_disposition(evidence), LookupDisposition::Unknown);
+        }
         // A backwards clock is an anomaly, not proof that the known deadline passed.
+        let evidence = LookupEvidence {
+            installed: &operation,
+            responded: Some(&operation),
+            cutoff: Some(AuthorizationBound::Deadline(&deadline)),
+            at: MonotonicInstant::from_millis(4_000),
+            response: FinalizeLookupResponse::ContractNoState401,
+        };
+        assert_eq!(finalize_lookup_disposition(evidence), LookupDisposition::Unknown);
+    }
+
+    #[test]
+    fn unrelated_or_unauthenticated_401_is_not_automatically_no_charge() {
         let deadline = deadline(10_000);
-        assert_eq!(
-            finalize_lookup_disposition(Some(AuthorizationBound::Deadline(&deadline)), MonotonicInstant::from_millis(4_000)),
-            LookupDisposition::Unknown
-        );
+        let operation = operation();
+        for response in [FinalizeLookupResponse::Unauthenticated401, FinalizeLookupResponse::Unrelated] {
+            let evidence = LookupEvidence {
+                installed: &operation,
+                responded: Some(&operation),
+                cutoff: Some(AuthorizationBound::Deadline(&deadline)),
+                at: MonotonicInstant::from_millis(10_000),
+                response,
+            };
+            assert_eq!(finalize_lookup_disposition(evidence), LookupDisposition::Unknown);
+        }
     }
 
     #[test]

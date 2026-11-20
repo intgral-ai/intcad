@@ -1,7 +1,7 @@
 //! Validation port tests: state machine, profiles, idempotency, reports and the local runner.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -147,6 +147,51 @@ impl Runner for FixedRunner {
     fn run(&self, _job: &RunJob, _control: &RunControl) -> RunnerOutcome {
         self.outcome.clone()
     }
+}
+
+struct StopRecordingRunner {
+    identity: RunnerIdentity,
+    outcome: RunnerOutcome,
+    seen_stop: Arc<Mutex<Option<u64>>>,
+}
+
+impl Runner for StopRecordingRunner {
+    fn identity(&self) -> RunnerIdentity {
+        self.identity.clone()
+    }
+
+    fn run(&self, _job: &RunJob, control: &RunControl) -> RunnerOutcome {
+        if let Ok(mut seen) = self.seen_stop.lock() {
+            *seen = Some(control.stop_at_ms());
+        }
+        self.outcome.clone()
+    }
+}
+
+#[test]
+fn a_claimed_job_exposes_the_host_safe_stop_seam() {
+    let root = scratch("host-stop-seam");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-host-stop", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let seen_stop = Arc::new(Mutex::new(None));
+    let runner: Arc<dyn Runner> = Arc::new(StopRecordingRunner {
+        identity: LocalRunner::identity(),
+        outcome: RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) },
+        seen_stop: Arc::clone(&seen_stop),
+    });
+    let port = port_with(&store, &candidates, runner, Limits::default(), clock.clone());
+    port.register_profile(profile).unwrap();
+    let submitted = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    let job = port.start_next().unwrap().expect("a worker claims the queued job");
+    let stop = clock.now_ms().saturating_add(500);
+    port.run_claimed_with_stop(&job, Some(stop)).unwrap();
+    assert_eq!(seen_stop.lock().unwrap().as_ref().copied(), Some(stop), "the host stop reaches the runner as the effective stop");
+    assert_eq!(port.status(&submitted.run_id).unwrap().state, ValidationState::Passed);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 fn runner_with(checks: Vec<CheckOutcome>) -> Arc<dyn Runner> {
@@ -1745,4 +1790,13 @@ fn an_upper_bound_beyond_the_execution_deadline_does_not_fit() {
     let control = RunControl { clock, deadline_ms: 10_000, stop_at_ms: None, cancel_path: PathBuf::from("never") };
     assert!(control.fits_before_deadline(Duration::from_secs(9)), "9 s from t=1 s fits the 10 s deadline");
     assert!(!control.fits_before_deadline(Duration::from_secs(10)), "10 s from t=1 s would pass the deadline");
+}
+
+#[test]
+fn an_upper_bound_uses_the_earlier_controlled_stop() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let control = RunControl { clock, deadline_ms: 10_000, stop_at_ms: Some(5_000), cancel_path: PathBuf::from("never") };
+    assert!(control.fits_before_deadline(Duration::from_secs(4)), "4 s from t=1 s ends at the controlled stop");
+    assert!(!control.fits_before_deadline(Duration::from_secs(5)), "5 s from t=1 s would pass the controlled stop");
+    assert!(!control.fits_before_deadline(Duration::from_secs(9)), "fits the execution deadline but not the earlier stop");
 }

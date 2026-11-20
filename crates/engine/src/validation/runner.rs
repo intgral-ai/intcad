@@ -92,12 +92,13 @@ impl RunControl {
         self.clock.now_ms() >= self.stop_at_ms()
     }
 
-    /// Whether a measured upper bound fits before the execution deadline. A controlled host calls
-    /// this before starting the job; an unverified bound is never sent here as a zero duration.
+    /// Whether a measured upper bound fits before the effective safe stop (the earlier of the
+    /// controlled stop and the execution deadline). A controlled host calls this before starting
+    /// the job; an unverified bound is never sent here as a zero duration.
     pub fn fits_before_deadline(&self, upper_bound: Duration) -> bool {
         let now = self.clock.now_ms();
         let bound = u64::try_from(upper_bound.as_millis()).unwrap_or(u64::MAX);
-        now.saturating_add(bound) <= self.deadline_ms
+        now.saturating_add(bound) <= self.stop_at_ms()
     }
 }
 

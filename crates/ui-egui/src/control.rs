@@ -606,6 +606,9 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
     if let Some(refusal) = controlled_multi_step_refusal(req) {
         return Err(refusal);
     }
+    if let Some(refusal) = controlled_capture_refusal(req) {
+        return Err(refusal);
+    }
     // A host-minted context with an already expired window must not be dispatched, even if a
     // request was held for a while. The actual durable commit deadline remains Task 9's gate;
     // this is the admission-side check the host can prove now.
@@ -833,6 +836,22 @@ fn authorization_bound<'a>(req: &'a ControlRequest, admission: &'a Admission) ->
     }
 }
 
+fn controlled_capture_refusal(req: &ControlRequest) -> Option<Refusal> {
+    if free_entry(req.entry) || req.helper.is_some() {
+        return None;
+    }
+    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+        return None;
+    }
+    if matches!(req.method.as_str(), "ui.screenshot" | "ui.render") {
+        return Some(Refusal::new(
+            RefusalCode::UnsafeToStart,
+            "controlled screenshot delivery has no durable commit path yet; use a free human render or an unsupported-path refusal",
+        ));
+    }
+    None
+}
+
 /// Controlled batch/script execution has no enforced mid-run stop yet. Until the runner can
 /// prove it stops at `SafeStopPlan::next_safe_stop`, refuse these paths before any step applies.
 /// Free human CAD keeps its batch and script paths unchanged.
@@ -1052,7 +1071,7 @@ fn result_evidence(out: &Outcome, host_no_effect: bool) -> ResultEvidence {
         return ResultEvidence::NoEffect;
     }
     match out {
-        Outcome::Screenshot { .. } => ResultEvidence::Effect,
+        Outcome::Screenshot { .. } => ResultEvidence::Unknown,
         Outcome::Done(value) => {
             if value.get("ok") == Some(&Value::Bool(true)) {
                 ResultEvidence::Effect
@@ -1652,6 +1671,10 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
         return admission_refusal(&refusal);
     }
     if let Some(refusal) = controlled_multi_step_refusal(req) {
+        release_unstarted_with(app, req, refusal.code);
+        return admission_refusal(&refusal);
+    }
+    if let Some(refusal) = controlled_capture_refusal(req) {
         release_unstarted_with(app, req, refusal.code);
         return admission_refusal(&refusal);
     }
@@ -3491,6 +3514,33 @@ mod tests {
         assert_eq!(reply["ok"], true, "{reply}");
         assert_eq!(bodies(&app), 2, "free GUI CAD keeps its script path");
         assert_eq!(admits.load(Ordering::Relaxed), 0, "free CAD never bills");
+    }
+
+    #[test]
+    fn a_controlled_screenshot_is_refused_before_delivery() {
+        let (mut app, _authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_mastra("ui.screenshot", json!({"path":"/tmp/opencode/int1497-never-shot.png"}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a controlled capture is refused synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a capture with no delivery proof is not a success");
+        assert!(app.pending_settlements.is_empty(), "a pre-dispatch refusal is not recovery work");
+    }
+
+    #[test]
+    fn a_free_gui_screenshot_keeps_its_capture_path() {
+        let (mut app, admits, _releases) = app_with_billing();
+        let (mut req, _rx) = ControlRequest::trusted_gui("ui.screenshot", json!({"path":"/tmp/opencode/int1497-free-shot.png"}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        assert!(matches!(out, Outcome::Screenshot { .. }), "free GUI capture is not refused by the entitlement gate");
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "free GUI is never billed");
+    }
+
+    #[test]
+    fn a_screenshot_outcome_is_unknown_not_success_before_delivery() {
+        let out = Outcome::Screenshot { path: None };
+        assert_eq!(result_evidence(&out, false), ResultEvidence::Unknown);
+        assert_eq!(settlement_for(ResultEvidence::Unknown), SettlementAction::Commit(solidcraft_engine::entitlement::BillingResult::Unknown));
     }
 
     #[test]

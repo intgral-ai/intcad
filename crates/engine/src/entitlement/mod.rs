@@ -18,8 +18,8 @@ pub use budget::BudgetTable;
 pub use clock::FakeMonotonicClock;
 pub use clock::{ConservativeDeadline, DeadlineError, MonotonicClock, MonotonicInstant, RenewalAttempt};
 pub use gate::{
-    AuthorizationBound, CommitDecision, CommitGate, LookupDisposition, ResultEvidence, SafeStopPlan, SettlementAction, finalize_lookup_disposition,
-    plan_safe_stop, settlement_for,
+    AuthorizationBound, CommitDecision, CommitGate, FinalizeLookupResponse, LookupDisposition, LookupEvidence, ResultEvidence, SafeStopPlan,
+    SettlementAction, finalize_lookup_disposition, plan_safe_stop, settlement_for,
 };
 pub use ports::{AccountService, BillingPort, CredentialStore, OperationStore};
 #[cfg(test)]
