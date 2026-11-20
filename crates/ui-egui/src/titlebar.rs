@@ -96,6 +96,7 @@ pub fn drag_area(ui: &Ui, rect: Rect) {
 /// rect), full bar height, flush with the window's edge so a maximized window's corner hits
 /// Close.
 pub fn caption_buttons(app: &mut SolveApp, ui: &mut Ui, bar: Rect) {
+    crate::account::status_chip(app, ui, bar);
     let t = Tokens::get();
     let max = maximized(ui.ctx());
     let mut clicked = None;

@@ -10,6 +10,7 @@
 use crate::ui_kit::{Container, Surface};
 
 pub mod access;
+pub mod account;
 pub mod agent_chat;
 pub mod agent_cursor;
 pub mod ai_connect;
@@ -798,6 +799,8 @@ pub struct SolveApp {
     pub flat_view: dialogs_sheet::FlatView,
     /// The start page.
     pub home: home::HomeState,
+    /// Intcad product account and available-credit UI; no port is installed by default.
+    pub account: account::State,
     /// The New Project window, when open.
     pub new_project: Option<new_project::NewProject>,
     /// The Project Settings window, when open.
@@ -986,6 +989,7 @@ impl SolveApp {
             embedded: false,
             embed_editor: false,
             home: home::HomeState::default(),
+            account: account::State::default(),
             new_project: None,
             project_settings: None,
             dfm_chat: dfm_chat::State::default(),
