@@ -2222,16 +2222,9 @@ fn unverified_names(body: &solidcraft_doc::ModelBody) -> Vec<(usize, String)> {
 
 /// The approved strict invariant: every result face name is exact. If this refuses, the
 /// fallback must not be accepted; the panic lists the pre-join state for the report.
-fn assert_front_triangle_names_exact(
-    body: &solidcraft_doc::ModelBody,
-    target_unverified: &[(usize, String)],
-    tool_unverified: &[(usize, String)],
-) {
+fn assert_front_triangle_names_exact(body: &solidcraft_doc::ModelBody, target_unverified: &[(usize, String)], tool_unverified: &[(usize, String)]) {
     let unverified = unverified_names(body);
-    assert!(
-        unverified.is_empty(),
-        "unverified {unverified:?}; target before {target_unverified:?}; tool before {tool_unverified:?}"
-    );
+    assert!(unverified.is_empty(), "unverified {unverified:?}; target before {target_unverified:?}; tool before {tool_unverified:?}");
 }
 
 #[test]
