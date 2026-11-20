@@ -480,9 +480,10 @@ impl Store {
                     continue;
                 }
                 if self.tombstone_path(&run_id).is_file() {
-                    // Never delete around a conflicting or unreadable retirement record. The
-                    // existing record remains authority even when the key path was unavailable.
-                    match self.read_tombstone(&run_id) {
+                    // Never delete around a conflicting, malformed or unreadable retirement
+                    // record. The existing record remains authority even when the key path was
+                    // unavailable.
+                    match self.read_valid_tombstone(&run_id) {
                         Ok(Some(existing)) if existing.state == state.state => {}
                         _ => continue,
                     }
@@ -558,11 +559,30 @@ impl Store {
         Ok(None)
     }
 
+    fn validate_tombstone(&self, run_id: &str, record: &TombstoneRecord) -> Result<(), ValidationError> {
+        if record.schema_version != RECORD_SCHEMA || record.run_id != run_id || !record.state.is_terminal() {
+            return Err(ValidationError::internal("the validation tombstone is not readable and internally consistent"));
+        }
+        let timestamp = record.submission_key.split_once(':').and_then(|(milliseconds, _)| milliseconds.parse::<u64>().ok());
+        let key = timestamp.and_then(|timestamp| super::keys::SubmissionKey::parse(&record.submission_key, timestamp).ok());
+        if key.as_ref().is_none_or(|key| key.expires_at_ms() != record.expires_at_ms) {
+            return Err(ValidationError::internal("the validation tombstone is not readable and internally consistent"));
+        }
+        Ok(())
+    }
+
+    /// The one defensive retirement policy shared by the port, cleanup and all tombstone writes.
+    pub(super) fn read_valid_tombstone(&self, run_id: &str) -> Result<Option<TombstoneRecord>, ValidationError> {
+        let Some(record) = self.read_tombstone(run_id)? else { return Ok(None) };
+        self.validate_tombstone(run_id, &record)?;
+        Ok(Some(record))
+    }
+
     fn write_tombstone(&self, run_id: &str, state: ValidationState, submission_key: &str, expires_at_ms: u64) -> bool {
         let path = self.tombstone_path(run_id);
         match self.read_optional_json::<TombstoneRecord>(&path, 64 << 10) {
             Ok(Some(existing)) => {
-                return existing.run_id == run_id
+                return self.validate_tombstone(run_id, &existing).is_ok()
                     && existing.submission_key == submission_key
                     && existing.state == state
                     && existing.expires_at_ms == expires_at_ms;
@@ -578,7 +598,7 @@ impl Store {
             state,
             expires_at_ms,
         };
-        self.write_json_replace(&path, &tombstone).is_ok()
+        self.validate_tombstone(run_id, &tombstone).is_ok() && self.write_json_replace(&path, &tombstone).is_ok()
     }
 
     /// Keep the terminal outcome for a still-valid key. Returns `false` when the key exists but
@@ -619,8 +639,9 @@ impl Store {
         let Ok(entries) = fs::read_dir(self.retired_dir()) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(bytes) = self.read_bounded(&path, 64 << 10) else { continue };
-            let Ok(record) = serde_json::from_slice::<TombstoneRecord>(&bytes) else { continue };
+            let Some(run_id) = path.file_stem().and_then(|stem| stem.to_str()) else { continue };
+            let Ok(record) = self.read_valid_tombstone(run_id) else { continue };
+            let Some(record) = record else { continue };
             if record.expires_at_ms <= now_ms && !self.admission_path(&record.run_id).is_file() && !self.state_path(&record.run_id).is_file() {
                 let _ = fs::remove_file(path);
             }
@@ -635,6 +656,15 @@ impl Store {
             let Ok(record) = serde_json::from_slice::<SubmissionRecord>(&bytes) else { continue };
             if record.expires_at_ms.saturating_add(retention_ms) > now_ms {
                 continue;
+            }
+            let tombstone_exists = self.tombstone_path(&record.run_id).is_file();
+            if tombstone_exists {
+                match self.read_valid_tombstone(&record.run_id) {
+                    Ok(Some(_)) => {}
+                    // Invalid or unreadable retirement evidence is not permission to collect
+                    // its key or records. Keep both for a retry or review.
+                    _ => continue,
+                }
             }
             let run_terminal_old = self
                 .read_optional_json::<StateRecord>(&self.state_path(&record.run_id), 64 << 10)

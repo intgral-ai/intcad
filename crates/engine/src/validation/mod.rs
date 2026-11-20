@@ -1162,17 +1162,7 @@ impl ValidationPort {
         if !keys::valid_run_id(run_id) {
             return Err(ValidationError::not_found("no such validation run"));
         }
-        let Some(record) = self.store.read_tombstone(run_id)? else { return Ok(None) };
-        let timestamp = record.submission_key.split_once(':').and_then(|(milliseconds, _)| milliseconds.parse::<u64>().ok());
-        let key = timestamp.and_then(|timestamp| SubmissionKey::parse(&record.submission_key, timestamp).ok());
-        if record.schema_version != RECORD_SCHEMA
-            || record.run_id != run_id
-            || !record.state.is_terminal()
-            || key.as_ref().is_none_or(|key| key.expires_at_ms() != record.expires_at_ms)
-        {
-            return Err(ValidationError::internal("the validation tombstone is not readable and internally consistent"));
-        }
-        Ok(Some(record))
+        self.store.read_valid_tombstone(run_id)
     }
 
     fn retired_result(
