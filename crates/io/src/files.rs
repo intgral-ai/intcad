@@ -267,7 +267,7 @@ pub fn copy_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemR
     let replacing = conflict == Conflict::Replace && is_plain_file(source) && is_plain_file(&target);
     match staged_copy(source, &target, replacing) {
         Ok(()) => ItemResult::done(source, &target),
-        Err(e) => ItemResult::failed(source, &target, e),
+        Err(failure) => ItemResult::failed(source, &target, failure.message),
     }
 }
 
@@ -337,46 +337,86 @@ fn finish_staging(staging: &Path, result: Result<(), String>) -> Result<(), Stri
     }
 }
 
+/// A staged copy can stop after its complete entry reached the public target: `finish_staging`
+/// may fail to remove the staging tree after publication. `published` records that outcome so
+/// a caller does not withdraw a record or delete a source for an entry that is already public.
+/// `message` keeps the existing failure wording.
+struct StagedFailure {
+    published: bool,
+    message: String,
+}
+
 /// No public destination exists until every entry has been copied. Replacement is a single
 /// native rename of a complete entry, so a failed publication leaves the old file intact.
-fn staged_copy(source: &Path, target: &Path, replacing: bool) -> Result<(), String> {
-    let Some(parent) = target.parent() else { return Err("the destination has no folder".into()) };
-    let staging = owned_sibling(parent, "stage")?;
+fn staged_copy(source: &Path, target: &Path, replacing: bool) -> Result<(), StagedFailure> {
+    let Some(parent) = target.parent() else {
+        return Err(StagedFailure { published: false, message: "the destination has no folder".into() });
+    };
+    let staging = owned_sibling(parent, "stage").map_err(|message| StagedFailure { published: false, message })?;
     let payload = staging.join("entry");
+    let mut published = false;
     let result = copy_entry(source, &payload).and_then(|()| {
         #[cfg(test)]
         tests::checkpoint("publish", &payload, target).map_err(|e| describe("publish", target, &e))?;
-        let published = if replacing { fs::rename(&payload, target) } else { rename_no_replace(&payload, target) };
-        published.map_err(|e| describe("publish", target, &e))
+        if replacing {
+            let outcome = fs::rename(&payload, target);
+            published = outcome.is_ok();
+            outcome.map_err(|e| describe("publish", target, &e))
+        } else {
+            let (outcome, made) = publish_no_replace(&payload, target);
+            published = made;
+            outcome.map_err(|e| describe("publish", target, &e))
+        }
     });
-    finish_staging(&staging, result)
+    match finish_staging(&staging, result) {
+        Ok(()) => Ok(()),
+        Err(message) => Err(StagedFailure { published, message }),
+    }
 }
 
-/// Atomic no-clobber publication, not an exists-check followed by a clobbering rename.
-fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+/// Atomic no-clobber publication. The flag says whether the complete target exists after the
+/// result: a supported rename primitive publishes only on success, while the hard-link fallback
+/// can publish and then fail to unlink its staging source.
+fn publish_no_replace(source: &Path, target: &Path) -> (io::Result<()>, bool) {
     #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
     {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
-        renameat_with(CWD, source, CWD, target, RenameFlags::NOREPLACE).map_err(Into::into)
+        let outcome = renameat_with(CWD, source, CWD, target, RenameFlags::NOREPLACE).map_err(Into::into);
+        let published = outcome.is_ok();
+        (outcome, published)
     }
     #[cfg(windows)]
     {
         // This safe wrapper does not change source attributes or require hard links.
         // Resolve only the parents for verbatim/long paths; never follow the source link.
-        atomicwrites::move_atomic(&windows_entry_path(source)?, &windows_entry_path(target)?)
+        let outcome = windows_entry_path(source)
+            .and_then(|source| windows_entry_path(target).map(|target| (source, target)))
+            .and_then(|(source, target)| atomicwrites::move_atomic(&source, &target));
+        let published = outcome.is_ok();
+        (outcome, published)
     }
     #[cfg(not(any(windows, target_vendor = "apple", target_os = "linux", target_os = "android")))]
     {
         // An exclusive hard link publishes file/link entries without overwriting. If unlink
         // fails, both complete entries remain; never remove the public destination on error.
-        fs::hard_link(source, target)?;
-        fs::remove_file(source).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("the complete destination is at {}, but {} could not be removed: {e}", target.display(), source.display()),
-            )
-        })
+        match fs::hard_link(source, target) {
+            Err(e) => (Err(e), false),
+            Ok(()) => match fs::remove_file(source) {
+                Ok(()) => (Ok(()), true),
+                Err(e) => (
+                    Err(io::Error::new(
+                        e.kind(),
+                        format!("the complete destination is at {}, but {} could not be removed: {e}", target.display(), source.display()),
+                    )),
+                    true,
+                ),
+            },
+        }
     }
+}
+
+fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    publish_no_replace(source, target).0
 }
 
 #[cfg(windows)]
@@ -611,7 +651,7 @@ fn move_entry_with(source: &Path, target: &Path, replacing: bool) -> Result<(), 
     match attempt() {
         Ok(()) => Ok(()),
         Err(e) if is_cross_device(&e) => {
-            staged_copy(source, target, replacing)?;
+            staged_copy(source, target, replacing).map_err(|failure| failure.message)?;
             let remove = || -> Result<(), String> {
                 #[cfg(test)]
                 tests::checkpoint("remove source", source, target).map_err(|e| describe("remove source", source, &e))?;
@@ -834,15 +874,32 @@ fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), Str
         }
         drop(record);
 
-        let publication = || -> io::Result<()> {
+        let checked: io::Result<()> = {
             #[cfg(test)]
-            tests::checkpoint("trash move", original, &target)?;
-            #[cfg(test)]
-            tests::checkpoint("trash publish", original, &target)?;
-            rename_no_replace(original, &target)
+            {
+                tests::checkpoint("trash move", original, &target).and_then(|()| tests::checkpoint("trash publish", original, &target))
+            }
+            #[cfg(not(test))]
+            {
+                Ok(())
+            }
         };
-        match publication() {
+        let (publication, published) = match checked {
+            Ok(()) => publish_no_replace(original, &target),
+            Err(e) => (Err(e), false),
+        };
+        match publication {
             Ok(()) => return Ok(()),
+            Err(e) if published => {
+                // The hard-link fallback published a complete payload before its source
+                // unlink failed. Keep the source and record, and name the payload too.
+                return Err(format!(
+                    "the complete payload is at {} with its record at {}, and the source remains at {}: {e}",
+                    target.display(),
+                    info_file.display(),
+                    original.display()
+                ));
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 // The payload name was taken after the record; withdraw our record and leave
                 // the other writer's entry, and try the next pair name.
@@ -850,10 +907,24 @@ fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), Str
                 continue;
             }
             Err(e) if is_cross_device(&e) => {
-                if let Err(copy) = staged_copy(original, &target, false) {
-                    // The staging copy removes its own tree; this attempt's record goes too.
-                    let _ = fs::remove_file(&info_file);
-                    return Err(copy);
+                match staged_copy(original, &target, false) {
+                    Ok(()) => {}
+                    Err(failure) if failure.published => {
+                        // The complete copy is public but staging cleanup failed; keep the
+                        // source and record, and report the payload, record and staging tree.
+                        return Err(format!(
+                            "the complete payload is at {} with its record at {}, and the source remains at {}: {}",
+                            target.display(),
+                            info_file.display(),
+                            original.display(),
+                            failure.message
+                        ));
+                    }
+                    Err(failure) => {
+                        // The payload was not published; this attempt's record goes too.
+                        let _ = fs::remove_file(&info_file);
+                        return Err(failure.message);
+                    }
                 }
                 let remove = || -> Result<(), String> {
                     #[cfg(test)]

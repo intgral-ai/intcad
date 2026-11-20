@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1085,6 +1086,69 @@ fn linux_trash_partial_source_removal_reports_the_retained_pair() {
     assert!(error.contains("source could not be removed"), "{error}");
     assert!(source.join("b").exists(), "the source is not deleted after a failed removal");
     assert!(!source.join("a").exists(), "the injected partial removal is what the fault did");
+}
+
+// A successful staged publication followed by a cleanup failure is not an unpublished attempt.
+// The complete payload and its record stay, the source stays, and the error names the payload,
+// record and retained staging tree. Withdrawing the record here used to leave a complete unpaired
+// payload.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_cleanup_failure_after_cross_device_publish_keeps_the_pair_and_source() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.file("part.sc", "complete source");
+    let result = with_fault(
+        |event, _, _| match event {
+            "trash move" => Err(exdev()),
+            "cleanup" => Err(io::Error::other("injected cleanup refused")),
+            _ => Ok(()),
+        },
+        || move_into_trash(&files, &info, &source),
+    );
+    let error = result.unwrap_err();
+    assert_trash_pair(&files, &info, "part.sc", b"complete source", &source);
+    assert_eq!(fs::read(&source).unwrap(), b"complete source", "the source is not removed after a cleanup failure");
+    let staging: Vec<_> = fs::read_dir(&files)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".intcad-stage-")))
+        .collect();
+    assert_eq!(staging.len(), 1, "{staging:?}");
+    for path in [files.join("part.sc"), info.join("part.sc.trashinfo"), staging[0].clone()] {
+        assert!(error.contains(&path.display().to_string()), "the error names {}: {error}", path.display());
+    }
+}
+
+// A competing writer can take the staged payload name after our record was created. That
+// publication did not happen, so our record is withdrawn; the other writer's payload and the
+// source are untouched. Publication is decided from the primitive's outcome, never from whether
+// the target now exists.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_staged_publish_collision_withdraws_only_the_unpublished_record() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.file("part.sc", "source");
+    let result = with_fault(
+        |event, _, target| {
+            if event == "trash move" {
+                return Err(exdev());
+            }
+            if event == "publish" {
+                fs::write(target, "other writer")?;
+            }
+            Ok(())
+        },
+        || move_into_trash(&files, &info, &source),
+    );
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(fs::read(files.join("part.sc")).unwrap(), b"other writer");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert!(fs::symlink_metadata(info.join("part.sc.trashinfo")).is_err(), "only the unpublished record is withdrawn");
+    assert_eq!(fs::read_dir(&info).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(&files).unwrap().count(), 1, "staging is cleaned and the unrelated payload stays");
 }
 
 #[cfg(windows)]
