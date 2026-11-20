@@ -363,6 +363,10 @@ pub(crate) struct FileTree {
     open_jobs: Vec<std::sync::mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     /// Moves the panel made that open designs must follow, drained after each action.
     retargets: Vec<(PathBuf, PathBuf)>,
+    /// Tests: hold the next operation before it runs, so its answer can be kept out while the
+    /// panel is closed.
+    #[cfg(test)]
+    op_gate: Arc<Mutex<Option<OpGate>>>,
     /// What each folder browsed in this session had open and selected, so switching back finds
     /// the tree as it was left.
     roots: BTreeMap<PathBuf, RootMemory>,
@@ -394,6 +398,10 @@ struct OpJob {
     cancel: Arc<AtomicBool>,
 }
 
+/// Tests: the worker reports that it has the next job, then waits for the explicit release.
+#[cfg(test)]
+type OpGate = (Sender<std::thread::ThreadId>, Receiver<()>);
+
 impl FileTree {
     pub(crate) fn new() -> Self {
         let (scan_jobs, jobs) = channel::<PathBuf>();
@@ -408,8 +416,18 @@ impl FileTree {
         });
         let (op_jobs, jobs) = channel::<OpJob>();
         let (answers, op_results) = channel::<OpAnswer>();
+        #[cfg(test)]
+        let op_gate = Arc::new(Mutex::new(None::<OpGate>));
+        #[cfg(test)]
+        let worker_gate = Arc::clone(&op_gate);
         let _worker = std::thread::Builder::new().name("intcad-files-ops".into()).spawn(move || {
             while let Ok(job) = jobs.recv() {
+                #[cfg(test)]
+                if let Some((started, release)) = worker_gate.lock().ok().and_then(|mut gate| gate.take()) {
+                    let _ = started.send(std::thread::current().id());
+                    // A broken test fails on its assertions, but never leaves the worker stuck.
+                    let _ = release.recv_timeout(std::time::Duration::from_secs(60));
+                }
                 let mut results = Vec::with_capacity(job.items.len());
                 let mut no_trash = Vec::new();
                 let mut cancelled = false;
@@ -519,8 +537,21 @@ impl FileTree {
             root_ms: None,
             open_jobs: Vec::new(),
             retargets: Vec::new(),
+            #[cfg(test)]
+            op_gate,
             roots: BTreeMap::new(),
         }
+    }
+
+    /// Tests: hold the next operation on the worker and answer once it is released.
+    #[cfg(test)]
+    pub(crate) fn hold_next_operation(&mut self) -> (Receiver<std::thread::ThreadId>, Sender<()>) {
+        let (started, started_rx) = channel();
+        let (release, release_rx) = channel();
+        if let Ok(mut gate) = self.op_gate.lock() {
+            *gate = Some((started, release_rx));
+        }
+        (started_rx, release)
     }
 
     /// The root folder, if one is chosen.
@@ -1072,25 +1103,31 @@ impl FileTree {
     }
 
     /// Move the paths the panel keeps from `from` to `to`, including everything below a folder.
+    /// Paths outside the moved subtree stay exactly as they were: a move remaps its own paths and
+    /// leaves the rest of the tree's cache, expansion and selection untouched.
     fn follow_move(&mut self, from: &Path, to: &Path) {
-        let moved = |path: &Path| -> Option<PathBuf> {
+        let moved = |path: &Path| -> PathBuf {
             if path == from {
-                return Some(to.to_path_buf());
+                return to.to_path_buf();
             }
-            path.strip_prefix(from).ok().map(|rest| to.join(rest))
+            match path.strip_prefix(from) {
+                Ok(rest) => to.join(rest),
+                Err(_) => path.to_path_buf(),
+            }
         };
-        self.selection = self.selection.iter().filter_map(|p| moved(p)).collect();
-        self.expanded = self.expanded.iter().filter_map(|p| moved(p)).collect();
+        self.selection = std::mem::take(&mut self.selection).into_iter().map(|path| moved(&path)).collect();
+        self.expanded = std::mem::take(&mut self.expanded).into_iter().map(|path| moved(&path)).collect();
         if let Some(path) = self.focus.take() {
-            self.focus = moved(&path);
+            self.focus = Some(moved(&path));
         }
         if let Some(path) = self.anchor.take() {
-            self.anchor = moved(&path);
+            self.anchor = Some(moved(&path));
         }
         if let Some(path) = self.scroll_to.take() {
-            self.scroll_to = moved(&path);
+            self.scroll_to = Some(moved(&path));
         }
-        self.dirs = std::mem::take(&mut self.dirs).into_iter().filter_map(|(path, dir)| moved(&path).map(|p| (p, dir))).collect();
+        let dirs = std::mem::take(&mut self.dirs);
+        self.dirs = dirs.into_iter().map(|(path, dir)| (moved(&path), dir)).collect();
     }
 
     /// Ask before deleting the selection. `open` is every open design's file and whether it has
@@ -1542,6 +1579,44 @@ pub(crate) fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde
     }))
 }
 
+/// Take finished Files work once per frame, before any layout: a move or copy that finishes
+/// while Files is closed still reaches the open tabs, their save paths and unsaved edits. The
+/// panel's own draw only reads what is left to show, so a layout repass cannot apply a result
+/// twice or run a filesystem scan.
+pub(crate) fn drain_documents(app: &mut SolveApp, ctx: &egui::Context) {
+    let answers = app.file_tree.take_answers();
+    if !answers.is_empty() {
+        let open: Vec<(String, bool, bool, bool)> = crate::documents::open_sessions(app)
+            .into_iter()
+            .filter_map(|session| session.path.clone().map(|path| (path, session.is_dirty(), false, false)))
+            .collect();
+        app.file_tree.set_open_docs(&open);
+        for answer in answers {
+            let effect = app.file_tree.apply_answer(answer);
+            for (from, to) in effect.retargets {
+                crate::documents::retarget_paths(app, &from, &to);
+            }
+            if !effect.closed.is_empty() {
+                crate::documents::close_paths(app, &effect.closed);
+            }
+            if let Some(path) = effect.open {
+                open_path(app, &path);
+            }
+            for path in effect.reload {
+                reload_now(app, &path);
+            }
+        }
+    }
+    for (from, to) in app.file_tree.take_retargets() {
+        crate::documents::retarget_paths(app, &from, &to);
+    }
+    if app.file_tree.busy {
+        // An answer may still be on its way while the panel is closed; keep frames coming until
+        // it is folded in, but do not keep idle frames busy for UI-only scans.
+        ctx.request_repaint_after(std::time::Duration::from_millis(80));
+    }
+}
+
 /// The panel's frame: read the workers, follow the folder and the documents, and keep drawing
 /// while something is still coming.
 pub(crate) fn tick(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
@@ -1569,24 +1644,6 @@ pub(crate) fn tick(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
         .collect();
     app.file_tree.set_open_docs(&open);
     app.file_tree.poll_documents(&open, now);
-    for answer in app.file_tree.take_answers() {
-        let effect = app.file_tree.apply_answer(answer);
-        for (from, to) in effect.retargets {
-            crate::documents::retarget_paths(app, &from, &to);
-        }
-        if !effect.closed.is_empty() {
-            crate::documents::close_paths(app, &effect.closed);
-        }
-        if let Some(path) = effect.open {
-            open_path(app, &path);
-        }
-        for path in effect.reload {
-            reload_now(app, &path);
-        }
-    }
-    for (from, to) in app.file_tree.take_retargets() {
-        crate::documents::retarget_paths(app, &from, &to);
-    }
     if app.file_tree.wants_frames() {
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
     } else if app.file_tree.root.is_some() {

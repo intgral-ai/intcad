@@ -2994,6 +2994,7 @@ impl SolveApp {
         let _language = crate::i18n::scope(&self.preferences.language);
         self.frame_clock.record(ctx.input(|i| f64::from(i.unstable_dt)));
         panel_runtime::tick_app(self);
+        crate::file_tree::drain_documents(self, ctx);
         // Sleep/wake often skips frames without a device-lost signal; refresh egui GPU textures
         // when the frame clock jumps so the chrome is not stuck blank (#8749).
         let frame_time = ctx.input(|i| i.time);

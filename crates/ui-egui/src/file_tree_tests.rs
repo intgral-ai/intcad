@@ -1638,6 +1638,166 @@ fn moving_a_folder_moves_every_open_design_inside_it() {
     assert!(open.iter().all(|session| session.is_dirty()), "both keep their edits");
 }
 
+/// A move that finishes while Files is closed still reaches the open tab, its save path and its
+/// unsaved edits before the panel is reopened. The worker is held, so the answer cannot be
+/// mistaken for one the panel happened to draw.
+#[test]
+fn a_move_finished_while_files_is_closed_updates_the_open_tab_before_the_panel_reopens() {
+    let scratch = Scratch::new();
+    let root = scratch.path().to_path_buf();
+    let old = scratch.file("bracket.sc", "old");
+    let into = scratch.dir("into");
+
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.app.preferences.right_rail = true;
+    h.app.preferences.right_rail_open = "files".into();
+    h.app.run("file.save_as", serde_json::json!({"path": old.to_string_lossy(), "cache": false})).unwrap();
+    h.app.run("solid.box", serde_json::json!({"length": 4, "width": 4, "height": 4})).unwrap();
+    let features = h.app.session.doc.features.len();
+    assert!(h.app.session.is_dirty());
+    h.app.file_tree = listing(&root);
+    h.frames(3);
+
+    let (started, release) = h.app.file_tree.hold_next_operation();
+    h.app.file_tree.select_only(&old);
+    h.app.file_tree.place(vec![old.clone()], &into, true, None);
+    let worker = started.recv_timeout(std::time::Duration::from_secs(60)).expect("operation worker started");
+    assert_ne!(worker, std::thread::current().id(), "the move runs off the window thread");
+    assert!(h.app.file_tree.busy);
+
+    // Close Files before the answer can be taken: no panel draw remains to fold it in.
+    h.app.preferences.right_rail = false;
+    h.app.preferences.right_rail_open = String::new();
+    h.frame();
+    assert!(!h.app.preferences.right_rail, "Files is closed");
+    assert!(h.app.file_tree.busy, "the worker is still held");
+    assert_eq!(h.app.session.path.as_deref(), Some(old.to_string_lossy().as_ref()), "the held answer changes nothing yet");
+
+    release.send(()).unwrap();
+    for _ in 0..2000 {
+        h.frame();
+        if !h.app.file_tree.busy {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(!h.app.file_tree.busy, "the completion was taken on a normal frame");
+    assert!(!h.app.preferences.right_rail, "still closed when the tab follows");
+    let moved = into.join("bracket.sc");
+    assert_eq!(h.app.session.path.as_deref(), Some(moved.to_string_lossy().as_ref()));
+    assert_eq!(h.app.session.doc.features.len(), features, "the unsaved edits stay");
+    assert!(h.app.session.is_dirty(), "the design is still unsaved");
+    h.app.session.execute("file.save", &serde_json::json!({})).unwrap();
+    assert!(moved.is_file(), "Save targets the moved path");
+    assert!(!old.exists(), "the old name is not written again");
+
+    // Reopening Files finds the answer already applied, not applied a second time.
+    h.app.preferences.right_rail = true;
+    h.app.preferences.right_rail_open = "files".into();
+    h.frames(3);
+    assert!(h.app.file_tree.take_answers().is_empty(), "one completion was taken once");
+    assert_eq!(h.app.session.path.as_deref(), Some(moved.to_string_lossy().as_ref()));
+    assert!(!h.app.file_tree.busy);
+}
+
+/// A nested move remaps only its own subtree: the root listing, unrelated open folders, cached
+/// listings and selection stay, while affected paths follow and their parents are read again.
+#[test]
+fn a_nested_move_keeps_unrelated_tree_state_and_remaps_affected_paths() {
+    let scratch = Scratch::new();
+    let root = scratch.path().to_path_buf();
+    let parts = scratch.dir("parts");
+    let opened = parts.join("bracket.sc");
+    fs::write(&opened, "old").unwrap();
+    let other = scratch.dir("other");
+    let unrelated = other.join("notes.txt");
+    fs::write(&unrelated, "notes").unwrap();
+    let sub = scratch.dir("sub");
+    let notes = scratch.file("notes.txt", "notes");
+
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.app.preferences.right_rail = true;
+    h.app.preferences.right_rail_open = "files".into();
+    h.app.run("file.save_as", serde_json::json!({"path": opened.to_string_lossy(), "cache": false})).unwrap();
+    h.app.run("solid.box", serde_json::json!({"length": 3, "width": 3, "height": 3})).unwrap();
+    assert!(h.app.session.is_dirty());
+
+    let mut tree = listing(&root);
+    tree.dirs.insert(parts.clone(), Dir { entries: files::read_dir(&parts).unwrap(), state: Listing::Ready });
+    tree.dirs.insert(other.clone(), Dir { entries: files::read_dir(&other).unwrap(), state: Listing::Ready });
+    tree.expanded.insert(parts.clone());
+    tree.expanded.insert(other.clone());
+    tree.selection.insert(notes.clone());
+    tree.selection.insert(opened.clone());
+    tree.focus = Some(notes.clone());
+    tree.anchor = Some(opened.clone());
+    tree.scroll_to = Some(opened.clone());
+    h.app.file_tree = tree;
+    h.frames(2);
+
+    let (started, release) = h.app.file_tree.hold_next_operation();
+    h.app.file_tree.place(vec![parts.clone()], &sub, true, None);
+    let worker = started.recv_timeout(std::time::Duration::from_secs(60)).expect("operation worker started");
+    assert_ne!(worker, std::thread::current().id());
+    // Close Files too: the tree state and the refresh requests must be right before any panel
+    // draw gets a chance to read the scans.
+    h.app.preferences.right_rail = false;
+    h.app.preferences.right_rail_open = String::new();
+    h.frame();
+    release.send(()).unwrap();
+    for _ in 0..2000 {
+        h.frame();
+        if !h.app.file_tree.busy {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(!h.app.file_tree.busy, "the move completed");
+
+    let moved_folder = sub.join("parts");
+    let moved_file = moved_folder.join("bracket.sc");
+    let tree = &h.app.file_tree;
+    assert_eq!(tree.root.as_deref(), Some(root.as_path()), "the browsed root itself is unchanged");
+    assert!(tree.expanded.contains(&other), "an unrelated open folder stays open");
+    assert!(tree.expanded.contains(&moved_folder), "the moved folder keeps its open state under its new path");
+    assert!(!tree.expanded.contains(&parts), "the old path is gone");
+    assert!(tree.selection.contains(&notes), "an unrelated selection stays");
+    assert!(tree.selection.contains(&moved_file), "the affected selection follows the move");
+    assert!(!tree.selection.contains(&opened));
+    assert_eq!(tree.focus.as_deref(), Some(notes.as_path()), "unrelated focus stays");
+    assert_eq!(tree.anchor.as_deref(), Some(moved_file.as_path()));
+    assert_eq!(tree.scroll_to.as_deref(), Some(moved_file.as_path()));
+    assert!(tree.dirs.contains_key(&other), "an unrelated folder cache stays");
+    assert!(tree.dirs.contains_key(&moved_folder), "the moved folder's cache follows it");
+    assert!(!tree.dirs.contains_key(&parts));
+    let root_dir = tree.dirs.get(&root).expect("the root listing is kept");
+    assert!(root_dir.entries.iter().any(|entry| entry.name == "notes.txt"), "its rows survive until the refresh arrives");
+    assert!(tree.scanning.contains(&root), "the source parent is read again");
+    assert!(tree.scanning.contains(&sub), "the destination parent is read again");
+    let session_path = h.app.session.path.clone();
+    assert_eq!(session_path.as_deref(), Some(moved_file.to_string_lossy().as_ref()));
+    assert!(h.app.session.is_dirty());
+
+    // The refresh answers reach the open panel as usual, and only the affected folders change.
+    h.app.preferences.right_rail = true;
+    h.app.preferences.right_rail_open = "files".into();
+    for _ in 0..2000 {
+        h.frame();
+        if h.app.file_tree.scanning.is_empty() {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let tree = &h.app.file_tree;
+    let root_names: Vec<&str> = tree.dirs.get(&root).unwrap().entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert!(root_names.contains(&"notes.txt") && root_names.contains(&"sub") && !root_names.contains(&"parts"), "{root_names:?}");
+    let sub_names: Vec<&str> = tree.dirs.get(&sub).unwrap().entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert!(sub_names.contains(&"parts"), "the destination parent shows the moved folder: {sub_names:?}");
+    assert_eq!(tree.dirs.get(&other).unwrap().entries.len(), 1, "the unrelated folder's cache was not refreshed or dropped");
+}
+
 /// A batch reports each item: the good copy is made and the missing source is a failure, so a
 /// partial success is never shown as one success.
 #[test]
