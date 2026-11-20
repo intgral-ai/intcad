@@ -1098,10 +1098,20 @@ fn save_prompt_frames_dont_save_and_clicking_it_discards_for_close_and_quit() {
         }
         h.step(&serde_json::json!({"click": {"handle": "dialog:Don't Save"}})).unwrap();
         h.frames(2);
-        assert!(h.app.docs.closing.is_none());
-        assert!(!h.app.session.is_dirty(), "the changes were discarded");
+        assert!(h.app.docs.closing.is_none(), "the answer closes the prompt");
         assert_eq!(h.app.quit_requested, quit, "continue the requested close or quit");
-        if !quit {
+        if quit {
+            // A quit waits for the desktop host's close barrier: the approved discard is staged
+            // here and only the Ready transition plus finish_quit applies it once.
+            assert!(h.app.session.is_dirty(), "the discard stays staged while the host closes");
+            assert_eq!(h.app.docs.quitting, Some(Vec::new()), "staged consent keeps the mutation guard");
+            assert_eq!(h.app.host_close_state(), crate::documents::HostCloseState::Required, "the host must close first");
+            h.app.set_host_close_state(crate::documents::HostCloseState::Ready);
+            crate::documents::finish_quit(&mut h.app).expect("the unchanged staged quit commits");
+            assert!(!h.app.session.is_dirty(), "the commit discards the changes once");
+            assert!(crate::documents::quit_committed(&h.app), "the terminal quit latch is set");
+        } else {
+            assert!(!h.app.session.is_dirty(), "the changes were discarded");
             assert!(h.app.session.doc.features.is_empty(), "closing the last tab leaves a blank design");
         }
     }
