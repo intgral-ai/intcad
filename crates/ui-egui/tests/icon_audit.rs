@@ -123,7 +123,7 @@ fn assistant(h: &mut Harness, requested: &mut BTreeMap<String, bool>) {
             input: None,
             output: Some("Use a smaller radius".into()),
         },
-        Item::Approval { id: 1, title: "Export plate.step".into(), tool: "export".into(), answer: None },
+        Item::Approval { id: 1, title: "Export plate.step".into(), tool: "export".into(), answer: None, counted: None },
     ];
     h.frames(3);
     collect(h, "Assistant composer, tool and approval", requested);

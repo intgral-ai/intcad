@@ -1895,11 +1895,15 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                 });
             }
-            Item::Approval { id, title, tool, answer: given } => {
+            Item::Approval { id, title, tool, answer: given, counted } => {
                 ui_kit::assistant_approval(ui, tr("ui.agent_chat_approval"), |ui| {
                     ui_kit::assistant_tool_detail(ui, |ui| {
                         super::markdown_view::selectable(ui, egui::Label::new(RichText::new(title).monospace().size(t.font_caption)).wrap());
                     });
+                    // An allowed stress estimate, once meshed: what it will still take.
+                    if let Some(counted) = counted {
+                        ui.add(egui::Label::new(RichText::new(counted).size(t.font_caption).color(t.text)).wrap());
+                    }
                     match given {
                         Some(true) => {
                             ui.label(RichText::new(tr("ui.agent_chat_allowed")).color(t.text_dim));

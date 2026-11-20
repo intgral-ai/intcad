@@ -313,7 +313,9 @@ pub fn state(app: &mut SolveApp) -> String {
                 "answered": answer.as_ref().map(|option| trf("ui.agent_chat_answered", &[("option", option)])),
                 "options": options.iter().map(|option| json!({"id": option.id, "name": option.name, "kind": option.kind})).collect::<Vec<_>>(),
             }),
-            Item::Approval { id, title, answer, .. } => json!({"kind": "approval", "id": id, "title": title, "answer": answer}),
+            Item::Approval { id, title, answer, counted, .. } => {
+                json!({"kind": "approval", "id": id, "title": title, "answer": answer, "counted": counted})
+            }
             Item::Changes { steps, doc, undone } => {
                 json!({
                     "kind": "changes", "index": index, "label": trf("ui.agent_chat_changes", &[("n", &steps.to_string())]),

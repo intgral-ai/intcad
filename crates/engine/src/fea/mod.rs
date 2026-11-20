@@ -593,8 +593,47 @@ pub struct Progress {
     pub since: f64,
 }
 
+/// What a running estimate will still take, once a run has meshed and counted its nodes (A13):
+/// for the approval card the user allowed it from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Forecast {
+    pub document_id: String,
+    /// Moves on with every forecast published: a card takes only those after it was allowed.
+    pub seq: u64,
+    /// The run that counted its nodes (from 1) of `runs`.
+    pub run: usize,
+    pub runs: usize,
+    pub elements: Elements,
+    /// The nodes it counted (the mid-surface's for shells).
+    pub nodes: usize,
+    /// The solver's predicted peak memory for it, bytes.
+    pub bytes: f64,
+    /// Its solve and every later run, predicted, seconds.
+    pub seconds_left: f64,
+}
+
 static PROGRESS: Mutex<Option<Progress>> = Mutex::new(None);
+static FORECAST: Mutex<Option<Forecast>> = Mutex::new(None);
+static FORECAST_SEQ: AtomicU64 = AtomicU64::new(0);
 static CANCEL: AtomicU64 = AtomicU64::new(0);
+
+/// The last forecast published (kept after the estimate ends, so a card can read it once).
+pub fn forecast() -> Option<Forecast> {
+    FORECAST.lock().ok().and_then(|g| g.clone())
+}
+
+/// The sequence number the next forecast will be after: a card allowed now takes forecasts above it.
+pub fn forecast_seq() -> u64 {
+    FORECAST_SEQ.load(Ordering::Relaxed)
+}
+
+/// Publish a forecast; its `seq` is set here.
+pub fn set_forecast(mut f: Forecast) {
+    f.seq = FORECAST_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Ok(mut g) = FORECAST.lock() {
+        *g = Some(f);
+    }
+}
 
 /// The estimate running now, if any.
 pub fn progress() -> Option<Progress> {

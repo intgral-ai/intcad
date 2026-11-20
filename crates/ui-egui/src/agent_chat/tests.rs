@@ -16815,3 +16815,91 @@ fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none(
     assert!(review::accept(&mut app, id).is_err(), "the design moved since the preview");
     assert_eq!(app.agent_chat.dfm.fired, before, "a stale accept runs nothing");
 }
+
+/// A13 (V-A13): a stress estimate asks once, and its card says what the run will take: before the
+/// user allows it, from the part's size (a dry run on a copy of the design, no program started);
+/// once a run has meshed the part, the nodes it counted, the solver's memory and the time left.
+/// Input: a 40 x 20 x 4 mm box held at x = 0 and pulled at x = 40; the agent asks for the estimate.
+/// Then three forecasts: one published before Allow, one for another design, then this run's.
+/// Action: the gate, Allow, the chat's frame step. Nothing is solved: the allowed request stays in
+/// the queue.
+/// Pass: one card, its text the gate's line, then the prediction, then the setup; no counted line
+/// for the first two forecasts; this run's, word for word, after it; the chat's status carries it;
+/// the message's end lets the card go.
+#[test]
+fn a_stress_estimates_card_says_what_the_run_will_take_before_and_after_meshing() {
+    use solidcraft_engine::fea;
+    let (mut app, tx) = app_in_a_turn();
+    app.run("solid.box", json!({"length": 40, "width": 20, "height": 4})).unwrap();
+    let body = app.session.model.state().bodies.first().map(|b| b.name.clone()).unwrap_or_default();
+    let faces = app.session.execute("model.faces", &json!({"body": body})).expect("faces");
+    let end = |x: f64| {
+        faces["faces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|f| {
+                (f["centroid"][0].as_f64().unwrap_or(f64::NAN) - x).abs() < 1e-6 && f["plane_normal"][0].as_f64().is_some_and(|n| n.abs() > 0.99)
+            })
+            .and_then(|f| f["index"].as_u64())
+            .unwrap_or_else(|| panic!("no end face at x = {x}: {faces}"))
+    };
+    let (held, pulled) = (end(0.0), end(40.0));
+    let params = json!({"loads": [{"face": pulled, "force": [100, 0, 0]}], "supports": [{"face": held}], "material": "6061-T6"});
+    let _reply = ask(&tx, "engine.execute", json!({"command": "inspect.stress_estimate", "params": params}));
+    pump_tools(&mut app);
+    let cards: Vec<(u64, String)> = app
+        .agent_chat
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Approval { id, title, counted: None, .. } => Some((*id, title.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cards.len(), 1, "{:?}", app.agent_chat.items.len());
+    let (id, title) = &cards[0];
+    let lines: Vec<&str> = title.lines().collect();
+    assert!(lines[0].starts_with("inspect.stress_estimate: mesh and solve the part with gmsh and CalculiX"), "{title}");
+    assert!(
+        lines[1].starts_with("Before meshing, from the part's size: about ")
+            && lines[1].contains(" nodes, about ")
+            && lines[1].contains(" of memory, about ")
+            && (lines[1].contains(" in all (2 runs)") || lines[1].contains(" in all (one run)")),
+        "{title}"
+    );
+    assert!(lines.len() > 2 && lines[2..].iter().any(|l| l.contains("6061-T6")), "the setup follows: {title}");
+
+    let doc = app.session.document_id.clone();
+    let forecast = |document_id: &str, nodes: usize| fea::Forecast {
+        document_id: document_id.into(),
+        seq: 0,
+        run: 1,
+        runs: 2,
+        elements: fea::Elements::Solid,
+        nodes,
+        bytes: 0.5e9,
+        seconds_left: 30.0,
+    };
+    let counted = |app: &SolveApp| {
+        app.agent_chat.items.iter().find_map(|i| match i {
+            Item::Approval { id: x, counted, .. } if x == id => Some(counted.clone()),
+            _ => None,
+        })
+    };
+    fea::set_forecast(forecast(&doc, 1));
+    approve(&mut app, *id, true);
+    follow_stress_forecast(&mut app.agent_chat);
+    assert_eq!(counted(&app), Some(None), "a forecast from before Allow is not this run's");
+    fea::set_forecast(forecast("another design", 2));
+    follow_stress_forecast(&mut app.agent_chat);
+    assert_eq!(counted(&app), Some(None), "another design's forecast");
+    fea::set_forecast(forecast(&doc, 12_345));
+    follow_stress_forecast(&mut app.agent_chat);
+    let line = "Meshed, run 1 of 2 (solid): 12\u{2009}345 nodes. The solver needs about 500 MB; about 30 s left.";
+    assert_eq!(counted(&app), Some(Some(line.to_string())));
+    assert!(status(&app).to_string().contains("12\u{2009}345 nodes"), "the chat's status carries it");
+    end_turn(&mut app);
+    assert!(app.agent_chat.stress_card.is_none());
+    assert_eq!(counted(&app), Some(Some(line.to_string())), "the card keeps its last line");
+}
