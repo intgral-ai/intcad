@@ -2618,6 +2618,9 @@ mod barrier_tests {
         let mut app = SolveApp::new(Session::default(), Default::default());
         request_quit(&mut app);
         assert!(app.quit_requested);
+        assert_eq!(app.host_close_state, HostCloseState::Required, "staging asks the host to close");
+        // The host completes the close when the Assistant has no unresolved owner.
+        app.set_host_close_state(HostCloseState::Ready);
         let _commit = finish_quit(&mut app).expect("a clean, unchanged quit commits");
         assert!(quit_committed(&app));
         assert!(!app.quit_requested && app.docs.quitting.is_none());
@@ -2632,6 +2635,9 @@ mod barrier_tests {
         request_quit(&mut app);
         answer_prompt(&mut app, Answer::DontSave);
         assert!(app.quit_requested && app.session.is_dirty(), "staged, not discarded yet");
+        assert_eq!(app.host_close_state, HostCloseState::Required, "staging asks the host to close");
+        // The host completes the close when the Assistant has no unresolved owner.
+        app.set_host_close_state(HostCloseState::Ready);
         // A direct session edit is still caught by the final per-session snapshot check.
         app.session.execute("solid.sphere", &json!({"diameter": 4})).unwrap();
         assert!(matches!(finish_quit(&mut app), Err(QuitIntentError::Changed)));
