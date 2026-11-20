@@ -792,17 +792,40 @@ fn keyboard_owned(app: &mut SolveApp, ctx: &egui::Context) -> bool {
         || app.file_load.busy()
 }
 
+/// Keys the focused tree moves its row selection with. A later one makes the batch's clipboard
+/// command refer to a row the person did not have selected when it was pressed.
+fn tree_retargets(event: &egui::Event) -> bool {
+    use egui::{Event, Key};
+    match event {
+        Event::Key { key: Key::ArrowDown | Key::ArrowUp | Key::ArrowLeft | Key::Home | Key::End, pressed: true, modifiers, .. } => {
+            !modifiers.command && !modifiers.ctrl && !modifiers.alt
+        }
+        Event::Key { key: Key::A, pressed: true, modifiers, .. } => modifiers.command && !modifiers.shift && !modifiers.alt,
+        _ => false,
+    }
+}
+
 /// Reserve clipboard mutation until the widgets and current dialogs have seen the input.
 /// Ordered inspection detects unsafe retargeting only; it never reconstructs a selection.
 pub(crate) fn begin_input(app: &mut SolveApp, ctx: &egui::Context) {
     let frame = ctx.cumulative_frame_nr();
     if app.clipboard_input.frame != Some(frame) {
         let entry_keyboard_owned = keyboard_owned(app, ctx);
+        // The focused tree consumes a later arrow before `finish_input` applies the command,
+        // so the command would otherwise land on the row the arrow moved to. Only the tree's
+        // own keys are retargets: with CAD focused, an arrow is view navigation, not selection.
+        let tree_keys = app.file_tree.focused
+            && app.shell.right_rail_panel.is_some()
+            && crate::right_rail::shown(app)
+            && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files)
+            && ctx.content_rect().width() >= crate::right_rail::MIN_VIEW + crate::right_rail::MIN_PANEL;
         let ambiguous = ctx.input(|i| {
             let mut command_seen = false;
             i.events.iter().any(|event| {
                 command_seen |= clipboard_command(event).is_some();
-                command_seen && matches!(event, egui::Event::PointerButton { .. } | egui::Event::WindowFocused(false))
+                command_seen
+                    && (matches!(event, egui::Event::PointerButton { .. } | egui::Event::WindowFocused(false))
+                        || (tree_keys && tree_retargets(event)))
             })
         });
         app.clipboard_input = InputBatch { frame: Some(frame), entry_keyboard_owned, ambiguous, ..Default::default() };

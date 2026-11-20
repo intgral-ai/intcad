@@ -691,6 +691,104 @@ fn a_clipboard_command_before_a_later_click_is_not_retargeted() {
     assert_eq!(cad_mark(&h), before, "ambiguous application actions are suppressed, not rerouted");
 }
 
+/// A native Cut and an Arrow Down in one batch: the tree consumes the Down after the command
+/// and moves its row focus, so the Cut must be retired rather than applied to the later row.
+/// The arrow still moves the row; only the ambiguous clipboard command is lost.
+#[test]
+fn same_batch_native_cut_then_down_does_not_cut_the_later_row() {
+    let scratch = Scratch::new();
+    let first = scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.select_only(&first);
+    h.app.file_tree.focused = true;
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        egui::Event::Cut,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later), "the arrow still moves the row");
+    assert!(h.app.file_tree.clip.is_none(), "the cut is retired, not applied to the row the arrow selected");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+}
+
+/// A native Paste and an Arrow Down in one batch: the Down moves the row focus to a later
+/// folder, so the Paste must not be sent to the later folder. It is retired, not guessed to
+/// the folder that was selected when the batch began.
+#[test]
+fn same_batch_native_paste_then_down_does_not_paste_into_the_later_folder() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.app.file_tree.select_only(&first);
+    h.app.file_tree.focused = true;
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        egui::Event::Paste("native".into()),
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the arrow still moves the row");
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "the paste is retired, not queued");
+    h.frames(30);
+    assert!(!later.join("source.txt").exists(), "the later folder is not the paste target");
+    assert!(!first.join("source.txt").exists(), "the earlier folder is not guessed either");
+    assert!(!h.app.file_tree.busy, "no file job ran");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+}
+
+/// The reverse order is unaffected: the arrow settles the row before the native Cut, so the
+/// command acts on the row the user can see when it is applied.
+#[test]
+fn same_batch_down_then_native_cut_cuts_the_row_it_moved_to() {
+    let scratch = Scratch::new();
+    let first = scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.select_only(&first);
+    h.app.file_tree.focused = true;
+    h.frame_with(vec![
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Cut,
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the arrow moves the row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the settled row is cut");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later));
+    assert!(clip.cut);
+}
+
+/// The reverse order for Paste: the arrow settles the destination folder before the native
+/// Paste, so the paste goes to the row the user can see when it is applied.
+#[test]
+fn same_batch_down_then_native_paste_pastes_into_the_folder_it_moved_to() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.app.file_tree.select_only(&first);
+    h.app.file_tree.focused = true;
+    h.frame_with(vec![
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Paste("native".into()),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the arrow settles the destination");
+    h.frames(30);
+    assert_eq!(fs::read(later.join("source.txt")).unwrap(), b"source", "the settled folder is the paste target");
+    assert!(!first.join("source.txt").exists(), "the folder before the arrow is not used");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+}
+
 #[test]
 fn native_paste_is_retired_across_layout_repasses_but_not_later_invocations() {
     let scratch = Scratch::new();
