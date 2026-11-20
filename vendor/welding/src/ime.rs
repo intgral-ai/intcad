@@ -33,14 +33,17 @@ impl LatestComposition {
 /// character; a host almost never wants them individually.
 pub(crate) const MAX_BOUNDS: usize = 200_000;
 
-pub(crate) fn bounds_union(rects: &[PopupRect]) -> Option<PopupRect> {
-    // CEF never sends this many for one composition; refuse the work, not allocate
-    // an unbounded result from hostile input.
+pub(crate) fn bounds_union_iter<I>(rects: I) -> Option<PopupRect>
+where
+    I: ExactSizeIterator<Item = PopupRect>,
+{
+    // Check the exact length before `filter` or the caller's lazy map pulls any
+    // element: hostile bounds are refused before allocation or work.
     if rects.len() > MAX_BOUNDS {
         return None;
     }
-    let mut it = rects.iter().filter(|r| r.width > 0 && r.height > 0);
-    let first = *it.next()?;
+    let mut it = rects.filter(|r| r.width > 0 && r.height > 0);
+    let first = it.next()?;
     let (mut x0, mut y0) = (i64::from(first.x), i64::from(first.y));
     let (mut x1, mut y1) = (x0 + i64::from(first.width), y0 + i64::from(first.height));
     for r in it {
@@ -78,7 +81,7 @@ mod tests {
 
     #[test]
     fn union_spans_every_character() {
-        let got = bounds_union(&[r(10, 20, 8, 16), r(18, 20, 8, 16), r(26, 20, 8, 16)]);
+        let got = bounds_union_iter([r(10, 20, 8, 16), r(18, 20, 8, 16), r(26, 20, 8, 16)].into_iter());
         assert_eq!(got, Some(r(10, 20, 24, 16)));
     }
 
@@ -86,12 +89,9 @@ mod tests {
     fn empty_rects_are_ignored_not_counted() {
         // CEF pads with zero-size rects; letting one in would drag the union
         // to the origin and put the candidate window in the corner.
-        assert_eq!(
-            bounds_union(&[r(0, 0, 0, 0), r(40, 60, 10, 12)]),
-            Some(r(40, 60, 10, 12))
-        );
-        assert_eq!(bounds_union(&[]), None);
-        assert_eq!(bounds_union(&[r(0, 0, 0, 0)]), None);
+        assert_eq!(bounds_union_iter([r(0, 0, 0, 0), r(40, 60, 10, 12)].into_iter()), Some(r(40, 60, 10, 12)));
+        assert_eq!(bounds_union_iter(std::iter::empty::<PopupRect>()), None);
+        assert_eq!(bounds_union_iter([r(0, 0, 0, 0)].into_iter()), None);
     }
 }
 
@@ -105,16 +105,67 @@ mod bounded_tests {
 
     #[test]
     fn extrema_never_overflow_the_union() {
-        assert_eq!(bounds_union(&[r(i32::MIN, i32::MIN, 0, 0)]), None);
-        assert_eq!(bounds_union(&[r(i32::MAX, 0, 1, 1)]), None);
-        assert_eq!(bounds_union(&[r(0, 0, u32::MAX, 1)]), None);
-        assert_eq!(bounds_union(&[r(i32::MIN, 0, 1, 1), r(i32::MAX, 0, 2, 1)]), None);
+        assert_eq!(bounds_union_iter([r(i32::MIN, i32::MIN, 0, 0)].into_iter()), None);
+        assert_eq!(bounds_union_iter([r(i32::MAX, 0, 1, 1)].into_iter()), None);
+        assert_eq!(bounds_union_iter([r(0, 0, u32::MAX, 1)].into_iter()), None);
+        assert_eq!(bounds_union_iter([r(i32::MIN, 0, 1, 1), r(i32::MAX, 0, 2, 1)].into_iter()), None);
     }
 
     #[test]
     fn excessive_character_count_is_refused_without_allocation() {
         let rects = vec![r(0, 0, 1, 1); MAX_BOUNDS + 1];
-        assert_eq!(bounds_union(&rects), None);
+        assert_eq!(bounds_union_iter(rects.into_iter()), None);
+    }
+
+    /// Reports an exact length like CEF's `&[cef::Rect]` iterator does, and
+    /// records every element actually pulled, so the cap can be proven to
+    /// refuse work before any bound is read or mapped.
+    struct CountedBounds {
+        len: usize,
+        read: usize,
+    }
+
+    impl Iterator for CountedBounds {
+        type Item = PopupRect;
+
+        fn next(&mut self) -> Option<PopupRect> {
+            if self.read == self.len {
+                return None;
+            }
+            self.read += 1;
+            Some(r(0, 0, 1, 1))
+        }
+    }
+
+    impl ExactSizeIterator for CountedBounds {
+        fn len(&self) -> usize {
+            self.len
+        }
+    }
+
+    #[test]
+    fn excessive_reported_bounds_are_refused_before_they_are_read() {
+        let mut excessive = CountedBounds { len: MAX_BOUNDS + 1, read: 0 };
+        assert_eq!(bounds_union_iter(excessive.by_ref()), None);
+        assert_eq!(excessive.read, 0, "the cap is checked before any bound is read");
+
+        let mut normal = CountedBounds { len: 3, read: 0 };
+        assert_eq!(bounds_union_iter(normal.by_ref()), Some(r(0, 0, 1, 1)));
+        assert_eq!(normal.read, 3);
+    }
+
+    #[test]
+    fn oversized_bounds_are_refused_before_any_bound_is_mapped() {
+        // The call sites hand `bounds_union_iter` a lazy `slice::iter().map()`.
+        // This proves the length check happens before that closure runs.
+        let rects = vec![r(0, 0, 1, 1); MAX_BOUNDS + 1];
+        let mapped = std::cell::Cell::new(0usize);
+        let got = bounds_union_iter(rects.iter().map(|rect| {
+            mapped.set(mapped.get() + 1);
+            *rect
+        }));
+        assert_eq!(got, None);
+        assert_eq!(mapped.get(), 0, "the cap is checked before the lazy map runs");
     }
 
     #[test]

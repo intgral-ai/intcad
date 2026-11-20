@@ -174,17 +174,19 @@ cef::wrap_render_handler! {
             selected_range: Option<&cef::Range>,
             character_bounds: Option<&[cef::Rect]>,
         ) {
-            let rects: Vec<crate::surface::PopupRect> = character_bounds
-                .unwrap_or(&[])
-                .iter()
-                .map(|r| crate::surface::PopupRect {
-                    x: r.x,
-                    y: r.y,
-                    width: r.width.max(0) as u32,
-                    height: r.height.max(0) as u32,
-                })
-                .collect();
-            let Some(bounds) = crate::ime::bounds_union(&rects) else { return };
+            let Some(bounds) = crate::ime::bounds_union_iter(
+                character_bounds
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|r| crate::surface::PopupRect {
+                        x: r.x,
+                        y: r.y,
+                        width: r.width.max(0) as u32,
+                        height: r.height.max(0) as u32,
+                    }),
+            ) else {
+                return;
+            };
             // CEF reports these in DIP, like popup geometry.
             let bounds = self.handler.metrics.lock().unwrap().rect_to_physical(bounds);
             let (start, end) = selected_range
