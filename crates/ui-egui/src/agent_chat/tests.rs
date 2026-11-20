@@ -14491,8 +14491,7 @@ mod mastra_backend_tests {
             matches!(&app.agent_chat.items[owned], Item::Tool { output: Some(output), .. } if output.contains("persisted")),
             "the owning turn's card is updated in place"
         );
-        let next_user = app.agent_chat.items.iter().rposition(|item| matches!(item, Item::User { .. })).unwrap();
-        assert!(owned < next_user, "the updated card stays in the owning turn, not the new one");
+        assert!(owned < before, "the updated card stays in the owning turn, not the new one");
     }
 
     /// Shutdown must take the same queue mutex that the worker holds while it checks the wait
