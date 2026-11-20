@@ -23,6 +23,15 @@ F3 and F4 are the mutex and monotonic-merge races described in their tests.
 Local baseline/builds NOT_RUN under the disk-growth gate. Use remote CI.
 Stop all validation participants before upgrade or rollback. Keep the stable
 transaction lock file and run records; mixed old/new concurrent writers are not supported.
+Legacy limitation: if a pre-tombstone store already removed both admission and
+state, cleanup has no record to inspect; a same-key replay cannot be distinguished
+from the documented crash-after-key recovery. No migration or revival semantics are
+added; the key remains until its normal expiry. Key-directory listing or entry read
+failures are fail-closed and never count as proof that no replay key exists.
+Wire `validation.status` and `validation.cancel` publish through the same monotone
+state merge as the control lane; a delayed snapshot cannot overwrite a settled
+terminal state. The real status publication path is parked by a test barrier while
+the real control lane persists, with no sleep used as ordering evidence.
 
 Upstream: SolidCraft **v0.44.1** = `e151d5ea6866fb055e011379153fb1cae0566f22`
 IntCAD baseline: `origin/develop` = `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f`
