@@ -57,3 +57,8 @@ See [docs/agent-development.md](docs/agent-development.md) for standard commands
 | A bug report, a crash, a wrong result | `skills/solidcraft-reporting/SKILL.md` |
 | Checking, porting, designs in git | `skills/solidcraft-checking/SKILL.md` |
 | Assemblies, joints, motion | `skills/solidcraft-mechanisms/SKILL.md` |
+
+## Agent skills
+- Issues: GitHub Issues in `intgral-ai/intcad`; see `docs/agents/issue-tracker.md`.
+- Triage labels: `docs/agents/triage-labels.md`.
+- Domain: read `docs/agents/domain.md` first.
