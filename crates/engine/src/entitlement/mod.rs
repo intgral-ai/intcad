@@ -13,8 +13,12 @@ mod types;
 mod tests;
 
 pub use budget::BudgetTable;
-pub use clock::{ConservativeDeadline, DeadlineError, FakeMonotonicClock, MonotonicClock, MonotonicInstant, RenewalAttempt};
-pub use ports::{AccountService, BillingPort, CountingBilling, CredentialStore, FakeAccountService, InMemoryOperationStore, OperationStore};
+#[cfg(test)]
+pub use clock::FakeMonotonicClock;
+pub use clock::{ConservativeDeadline, DeadlineError, MonotonicClock, MonotonicInstant, RenewalAttempt};
+pub use ports::{AccountService, BillingPort, CredentialStore, OperationStore};
+#[cfg(test)]
+pub use ports::{CountingBilling, FakeAccountService, InMemoryOperationStore};
 pub use types::*;
 
 use std::time::Duration;
@@ -38,10 +42,14 @@ pub fn admit_chat(availability: &Availability, _budget: &BudgetTable) -> Admissi
     Admission::Allowed
 }
 
-/// Local preflight for a billed operation. It never turns affordability into execution authority.
+/// Local preflight for a billed operation. It never authorizes execution and never returns
+/// [`Admission::NewlyAdmitted`].
 ///
-/// A positive local balance still needs a server-issued grant, so this function refuses with
-/// [`RefusalCode::AuthUnavailable`] until an account adapter has admitted the operation.
+/// Even a verified bound and positive available credits only prove that a server admission may be
+/// attempted. A server-issued grant remains the only execution authority. The real dispatcher and
+/// commit gate must re-check the actual remaining authorization from the caller's
+/// [`ConservativeDeadline`] (not `Duration::MAX`) against the verified safe-stop bound; this
+/// function cannot substitute for that check.
 pub fn admit_billing(
     capability: Capability,
     entry: EntryCategory,

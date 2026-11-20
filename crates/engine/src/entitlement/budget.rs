@@ -43,9 +43,17 @@ impl BudgetTable {
 
     /// The safe-stop bound for one call, or a refusal.
     ///
-    /// Free human entries ignore both the network and this table. A controlled path with no
-    /// verified bound, too little remaining time, or an unclassified entry returns
-    /// [`RefusalCode::UnsafeToStart`].
+    /// Free human entries (`HumanGuiFree`, `WebGuiFree`) return `Ok(remaining)` and consult neither
+    /// the network nor this table. For a controlled entry, a verified bound is required:
+    ///
+    /// - `Ok(bound)` only when the bound is `Verified` and `remaining >= bound`;
+    /// - `Err(UnsafeToStart)` for `Unknown`, an unverified path or a remaining time shorter than the
+    ///   measured bound;
+    /// - `Err(availability.reasons[0])`, `Err(AuthUnavailable)` or `Err(VersionUnsupported)` when the
+    ///   account snapshot itself blocks the call.
+    ///
+    /// The caller must pass the actual remaining authorization, not a placeholder. `admit_billing`
+    /// is only a local preflight and cannot authorize dispatch or commit.
     pub fn require(
         &self,
         capability: Capability,

@@ -1,9 +1,12 @@
 //! Ports the host implements, plus deterministic test doubles.
 
+#[cfg(test)]
 use std::collections::{BTreeMap, VecDeque};
 
+#[cfg(test)]
+use super::types::GrantId;
 use super::types::{
-    AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, Grant, GrantId, OperationId, OperationStatus,
+    AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, Grant, OperationId, OperationStatus,
     OperationStoreError, Refusal, RefusalCode, RetryScopeKey, SaveOutcome, TransportCorrelation,
 };
 
@@ -49,12 +52,14 @@ pub trait BillingPort {
     fn release(&mut self, operation: &OperationId, reason: RefusalCode) -> Result<(), Refusal>;
 }
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct FakeAccountService {
     availability: Availability,
     grants: VecDeque<Grant>,
 }
 
+#[cfg(test)]
 impl FakeAccountService {
     pub fn with_availability(availability: Availability) -> Self {
         Self { availability, grants: VecDeque::new() }
@@ -72,6 +77,7 @@ impl FakeAccountService {
     }
 }
 
+#[cfg(test)]
 impl AccountService for FakeAccountService {
     fn status(&self) -> Result<Availability, Refusal> {
         Ok(self.availability.clone())
@@ -105,6 +111,7 @@ impl AccountService for FakeAccountService {
 }
 
 /// In-memory identity and status ledger for tests. It never yields execution authority.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct InMemoryOperationStore {
     records: BTreeMap<OperationId, (Capability, EntryCategory, OperationStatus)>,
@@ -114,6 +121,7 @@ pub struct InMemoryOperationStore {
     pub commits: usize,
 }
 
+#[cfg(test)]
 impl OperationStore for InMemoryOperationStore {
     fn load_status(&self, operation: &OperationId) -> Option<OperationStatus> {
         self.records.get(operation).map(|record| record.2)
@@ -178,6 +186,7 @@ impl OperationStore for InMemoryOperationStore {
 }
 
 /// A counting billing port for tests. Grants are fake fixtures, never production authority.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct CountingBilling {
     pub admits: usize,
@@ -185,6 +194,7 @@ pub struct CountingBilling {
     pub releases: usize,
 }
 
+#[cfg(test)]
 impl BillingPort for CountingBilling {
     fn admit(&mut self, operation: &OperationId, capability: Capability, _entry: EntryCategory) -> Result<Grant, Refusal> {
         self.admits += 1;

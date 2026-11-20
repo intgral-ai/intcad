@@ -23,19 +23,58 @@ fn verified_chat_budget() -> BudgetTable {
 #[test]
 fn default_budget_refuses_every_controlled_path_with_unsafe_to_start() {
     let table = BudgetTable::unverified_default();
-    for capability in [Capability::Mcp, Capability::Dfm, Capability::Review, Capability::Control] {
-        for entry in [
-            EntryCategory::Mastra,
-            EntryCategory::ExternalAcpMcp,
-            EntryCategory::HeadlessMcp,
-            EntryCategory::GuiBridgeMcp,
-            EntryCategory::DirectControl,
-            EntryCategory::CliDfm,
-            EntryCategory::ReviewPanel,
-        ] {
-            assert_eq!(table.require(capability, entry, &online_available(), HOUR).unwrap_err().code, RefusalCode::UnsafeToStart);
+    for capability in Capability::ALL {
+        for entry in EntryCategory::CONTROLLED {
+            assert_eq!(
+                table.require(capability, entry, &online_available(), HOUR).unwrap_err().code,
+                RefusalCode::UnsafeToStart,
+                "capability {capability:?}, entry {entry:?}"
+            );
         }
     }
+}
+
+#[test]
+fn unknown_entry_is_refused_before_the_budget_lookup() {
+    let mut table = BudgetTable::unverified_default();
+    table.set_verified(Capability::Control, EntryCategory::Unknown, HOUR);
+    assert_eq!(table.require(Capability::Control, EntryCategory::Unknown, &online_available(), HOUR).unwrap_err().code, RefusalCode::UnsafeToStart);
+}
+
+#[test]
+fn availability_reason_is_preserved_by_the_budget() {
+    let mut availability = online_available();
+    availability.reasons = vec![RefusalCode::EmailUnverified];
+    assert_eq!(
+        verified_budget().require(Capability::Control, EntryCategory::DirectControl, &availability, HOUR).unwrap_err().code,
+        RefusalCode::EmailUnverified
+    );
+}
+
+#[test]
+fn offline_and_unsupported_version_refuse_controlled_paths() {
+    let mut offline = online_available();
+    offline.online = false;
+    assert_eq!(
+        verified_budget().require(Capability::Control, EntryCategory::DirectControl, &offline, HOUR).unwrap_err().code,
+        RefusalCode::AuthUnavailable
+    );
+    let mut unsupported = online_available();
+    unsupported.version_supported = false;
+    assert_eq!(
+        verified_budget().require(Capability::Control, EntryCategory::DirectControl, &unsupported, HOUR).unwrap_err().code,
+        RefusalCode::VersionUnsupported
+    );
+}
+
+#[test]
+fn remaining_shorter_than_verified_bound_is_unsafe_to_start() {
+    let short = HOUR - Duration::from_millis(1);
+    assert_eq!(
+        verified_budget().require(Capability::Control, EntryCategory::DirectControl, &online_available(), short).unwrap_err().code,
+        RefusalCode::UnsafeToStart
+    );
+    assert_eq!(verified_budget().require(Capability::Control, EntryCategory::DirectControl, &online_available(), HOUR), Ok(HOUR));
 }
 
 #[test]
@@ -49,8 +88,8 @@ fn free_human_entry_does_not_need_network_or_a_verified_bound() {
         held: 0,
         reasons: vec![RefusalCode::AuthUnavailable],
     };
-    assert!(table.require(Capability::Chat, EntryCategory::HumanGuiFree, &offline, HOUR).is_ok());
-    assert!(table.require(Capability::Control, EntryCategory::WebGuiFree, &offline, HOUR).is_ok());
+    assert_eq!(table.require(Capability::Chat, EntryCategory::HumanGuiFree, &offline, HOUR), Ok(HOUR));
+    assert_eq!(table.require(Capability::Control, EntryCategory::WebGuiFree, &offline, HOUR), Ok(HOUR));
 }
 
 #[test]
@@ -65,6 +104,41 @@ fn new_billing_operation_requires_positive_available() {
     let mut store = InMemoryOperationStore::default();
     let outcome = admit_billing(Capability::Control, EntryCategory::DirectControl, &availability, &verified_budget(), &mut store);
     assert_eq!(outcome.refusal_code(), Some(RefusalCode::CreditsHeld));
+}
+
+#[test]
+fn zero_balance_without_held_credits_is_exhausted() {
+    let availability = Availability { online: true, version_supported: true, model_available: true, balance: 0, held: 0, reasons: vec![] };
+    let mut store = InMemoryOperationStore::default();
+    let outcome = admit_billing(Capability::Control, EntryCategory::DirectControl, &availability, &verified_budget(), &mut store);
+    assert_eq!(outcome.refusal_code(), Some(RefusalCode::CreditsExhausted));
+}
+
+#[test]
+fn billing_preflight_refuses_unverified_budget_without_admission() {
+    let mut store = InMemoryOperationStore::default();
+    let outcome =
+        admit_billing(Capability::Control, EntryCategory::DirectControl, &online_available(), &BudgetTable::unverified_default(), &mut store);
+    assert_eq!(outcome.refusal_code(), Some(RefusalCode::UnsafeToStart));
+    assert_eq!(store.admissions, 0);
+}
+
+#[test]
+fn billing_preflight_preserves_account_refusals_without_admission() {
+    let mut offline = online_available();
+    offline.online = false;
+    let mut store = InMemoryOperationStore::default();
+    assert_eq!(
+        admit_billing(Capability::Control, EntryCategory::DirectControl, &offline, &verified_budget(), &mut store).refusal_code(),
+        Some(RefusalCode::AuthUnavailable)
+    );
+    let mut disabled = online_available();
+    disabled.reasons = vec![RefusalCode::AccountDisabled];
+    assert_eq!(
+        admit_billing(Capability::Control, EntryCategory::DirectControl, &disabled, &verified_budget(), &mut store).refusal_code(),
+        Some(RefusalCode::AccountDisabled)
+    );
+    assert_eq!(store.admissions, 0);
 }
 
 #[test]

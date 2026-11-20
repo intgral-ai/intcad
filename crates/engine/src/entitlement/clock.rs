@@ -1,5 +1,6 @@
 //! Conservative monotonic time and authorization deadlines.
 
+#[cfg(test)]
 use std::cell::Cell;
 use std::time::{Duration, SystemTime};
 
@@ -83,12 +84,14 @@ pub enum DeadlineError {
 }
 
 /// A controllable test clock. Suspend advances time; backward movement makes deadlines fail closed.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct FakeMonotonicClock {
     elapsed: Cell<Duration>,
     wall_offset: Cell<Duration>,
 }
 
+#[cfg(test)]
 impl FakeMonotonicClock {
     pub fn at_millis(millis: u64) -> Self {
         Self { elapsed: Cell::new(Duration::from_millis(millis)), wall_offset: Cell::new(Duration::ZERO) }
@@ -113,6 +116,7 @@ impl FakeMonotonicClock {
     }
 }
 
+#[cfg(test)]
 impl MonotonicClock for FakeMonotonicClock {
     fn now(&self) -> MonotonicInstant {
         MonotonicInstant(self.elapsed.get())

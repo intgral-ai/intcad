@@ -218,6 +218,7 @@ impl OperationId {
     }
 
     /// Deterministic ids for in-memory test doubles only.
+    #[cfg(test)]
     pub(crate) fn from_counter(counter: u64) -> Self {
         Self(format!("op_test_{counter:08}"))
     }
@@ -265,6 +266,7 @@ impl AuthenticatedHostScope {
     }
 
     /// Test-only fixture. Never use in a production authentication path.
+    #[cfg(test)]
     #[doc(hidden)]
     pub fn test_fixture(account: &str, installation: &str) -> Self {
         Self::new(AccountId::new(account), InstallationId::new(installation), HostSessionBinding::new("test_session_binding"))
@@ -332,6 +334,7 @@ impl Grant {
     }
 
     /// Test-only grant. Never treat this as production authority.
+    #[cfg(test)]
     #[doc(hidden)]
     pub fn test_fixture(id: GrantId, capability: Capability) -> Self {
         Self { id, capability, expires_at: MonotonicInstant::from_millis(60_000) }
@@ -430,6 +433,10 @@ pub struct TrustedContext {
 
 impl TrustedContext {
     /// Mint one logical operation from an authenticated host scope.
+    ///
+    /// `operation` must come from the host's authenticated mint/store path, and `scope` only from
+    /// host authentication. Never build either from external wire data: request ids, tool-call ids,
+    /// ACP message ids and caller-supplied account/session fields are data, not authority.
     pub fn mint(scope: &AuthenticatedHostScope, operation: &str, capability: Capability, entry: EntryCategory) -> Result<Self, OperationIdError> {
         Ok(Self { scope: scope.clone(), operation: OperationId::parse(operation)?, capability, entry })
     }
