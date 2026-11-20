@@ -1889,3 +1889,139 @@ fn a_closed_files_panel_gives_arrows_and_delete_back_to_the_model() {
     h.frames(2);
     assert!(h.app.session.model.state().body(&body).is_none(), "the model's Delete works again");
 }
+
+/// A stand-in for the Windows clipboard, which another program can own: its text refuses a
+/// new file list until the clipboard is emptied, or (with `append`) stays beside the list.
+#[cfg(not(target_arch = "wasm32"))]
+struct FakeSystemClipboard {
+    text: bool,
+    append: bool,
+    unreadable_paths: bool,
+    can_reclaim: bool,
+    files: bool,
+    sets: usize,
+    empties: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FakeSystemClipboard {
+    fn new(text: bool) -> Self {
+        Self { text, append: false, unreadable_paths: false, can_reclaim: true, files: false, sets: 0, empties: 0 }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SystemFileClipboard for FakeSystemClipboard {
+    fn set_files(&mut self, _paths: &[PathBuf]) -> Result<(), arboard::Error> {
+        self.sets += 1;
+        if self.unreadable_paths {
+            return Err(arboard::Error::ConversionFailure);
+        }
+        // Another program owns the clipboard; a second format is refused until it is emptied.
+        if self.text && !self.append {
+            return Err(arboard::Error::ClipboardOccupied);
+        }
+        self.files = true;
+        Ok(())
+    }
+
+    fn empty(&mut self) -> Result<(), arboard::Error> {
+        self.empties += 1;
+        self.text = false;
+        self.files = false;
+        Ok(())
+    }
+
+    fn text_present(&mut self) -> bool {
+        self.text
+    }
+
+    fn empty_can_help(&self, error: &arboard::Error) -> bool {
+        self.can_reclaim && !matches!(error, arboard::Error::ConversionFailure)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_files_copy_takes_the_system_clipboard_from_another_program() {
+    let scratch = Scratch::new();
+    let source = scratch.file("f.txt", "f");
+    let mut clipboard = FakeSystemClipboard::new(true);
+    assert!(write_file_list(&mut clipboard, std::slice::from_ref(&source)).is_ok());
+    assert_eq!((clipboard.sets, clipboard.empties), (2, 1), "the refused write is followed by one empty and one write");
+    assert!(!clipboard.text && clipboard.files, "only the file list is left");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_file_list_written_beside_another_program_text_empties_and_writes_again() {
+    let scratch = Scratch::new();
+    let source = scratch.file("f.txt", "f");
+    let mut clipboard = FakeSystemClipboard::new(true);
+    clipboard.append = true;
+    assert!(write_file_list(&mut clipboard, std::slice::from_ref(&source)).is_ok());
+    assert_eq!((clipboard.sets, clipboard.empties), (2, 1), "text that would survive costs one empty");
+    assert!(!clipboard.text, "the stale text is gone");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_file_list_that_replaces_an_empty_clipboard_does_not_empty_it_first() {
+    let scratch = Scratch::new();
+    let source = scratch.file("f.txt", "f");
+    let mut clipboard = FakeSystemClipboard::new(false);
+    assert!(write_file_list(&mut clipboard, std::slice::from_ref(&source)).is_ok());
+    assert_eq!((clipboard.sets, clipboard.empties), (1, 0), "a clean write keeps the clipboard untouched until it succeeds");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_unusable_path_set_does_not_cost_the_old_clipboard() {
+    let scratch = Scratch::new();
+    let source = scratch.file("f.txt", "f");
+    let mut clipboard = FakeSystemClipboard::new(true);
+    clipboard.unreadable_paths = true;
+    assert!(write_file_list(&mut clipboard, std::slice::from_ref(&source)).is_err());
+    assert_eq!((clipboard.sets, clipboard.empties), (1, 0), "emptying cannot make a file list out of no path");
+    assert!(clipboard.text, "the old clipboard is still there");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_platform_that_cannot_take_the_clipboard_back_keeps_it() {
+    let scratch = Scratch::new();
+    let source = scratch.file("f.txt", "f");
+    let mut clipboard = FakeSystemClipboard::new(true);
+    clipboard.can_reclaim = false;
+    assert!(write_file_list(&mut clipboard, std::slice::from_ref(&source)).is_err());
+    assert_eq!((clipboard.sets, clipboard.empties), (1, 0), "Linux and macOS replace the clipboard instead of emptying it");
+    assert!(clipboard.text, "the old clipboard is still there");
+}
+
+#[test]
+fn a_failed_system_file_write_is_shown_and_the_panel_copy_still_works() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let mut tree = listing(scratch.path());
+    tree.record_copy(vec![source.clone()], false, false);
+    let clip = tree.clip.as_ref().expect("the panel's own copy still works");
+    assert_eq!(clip.paths, [source]);
+    assert!(!clip.cut);
+    let (text, error) = tree.notice.clone().expect("a notice");
+    assert!(error, "a failed system write is an error notice, not a silent 'Copied' line");
+    assert!(text.contains("system file clipboard"), "{text}");
+}
+
+#[test]
+fn a_written_system_copy_is_reported_without_an_error() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let mut tree = listing(scratch.path());
+    tree.record_copy(vec![source.clone()], true, true);
+    let clip = tree.clip.as_ref().expect("the panel's clipboard");
+    assert_eq!(clip.paths, [source]);
+    assert!(clip.cut);
+    let (text, error) = tree.notice.clone().expect("a notice");
+    assert!(!error);
+    assert!(text.contains("Cut"), "{text}");
+}

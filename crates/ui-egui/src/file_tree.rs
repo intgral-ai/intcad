@@ -116,6 +116,94 @@ pub(crate) struct Clip {
     pub(crate) cut: bool,
 }
 
+/// The system clipboard as a Files copy uses it.
+///
+/// Windows lets another program keep the clipboard: a new format is refused while its data owns
+/// the clipboard, and formats already there stay beside a new one. So the writer may need to
+/// empty the clipboard before writing the file list; that step is kept for when the first write
+/// cannot leave a file list by itself, because emptying loses what was there.
+#[cfg(not(target_arch = "wasm32"))]
+trait SystemFileClipboard {
+    fn set_files(&mut self, paths: &[PathBuf]) -> Result<(), arboard::Error>;
+    fn empty(&mut self) -> Result<(), arboard::Error>;
+    /// Whether text still shares the clipboard with our file list.
+    fn text_present(&mut self) -> bool;
+    /// Whether emptying the clipboard can let this refused write through.
+    ///
+    /// Windows refuses a new format while another program's data owns the clipboard; the other
+    /// platforms replace the clipboard outright, so a refusal there is not about ownership.
+    fn empty_can_help(&self, error: &arboard::Error) -> bool;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SystemFileClipboard for arboard::Clipboard {
+    fn set_files(&mut self, paths: &[PathBuf]) -> Result<(), arboard::Error> {
+        self.set().file_list(paths)
+    }
+
+    fn empty(&mut self) -> Result<(), arboard::Error> {
+        self.clear()
+    }
+
+    fn text_present(&mut self) -> bool {
+        // Only Windows keeps the previous owner's formats next to a new file list.
+        #[cfg(target_os = "windows")]
+        {
+            self.get().text().is_ok()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
+    }
+
+    fn empty_can_help(&self, error: &arboard::Error) -> bool {
+        cfg!(target_os = "windows") && !matches!(error, arboard::Error::ConversionFailure)
+    }
+}
+
+/// Give the system clipboard a file list of its own and nothing else.
+///
+/// The first write leaves another program's clipboard alone when it can: emptying first would
+/// lose that clipboard if the write then failed.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_file_list<C: SystemFileClipboard>(clipboard: &mut C, paths: &[PathBuf]) -> Result<(), String> {
+    match clipboard.set_files(paths) {
+        Ok(()) if !clipboard.text_present() => return Ok(()),
+        Ok(()) => {}
+        // No path could be converted, or this platform cannot take the clipboard back: emptying
+        // would only lose the old clipboard without making a file list.
+        Err(error) if !clipboard.empty_can_help(&error) => return Err(error.to_string()),
+        Err(_) => {}
+    }
+    clipboard.empty().map_err(|error| error.to_string())?;
+    clipboard.set_files(paths).map_err(|error| error.to_string())?;
+    if clipboard.text_present() {
+        return Err("a previous owner's text stayed beside the file list".to_string());
+    }
+    Ok(())
+}
+
+/// Hand the selection to the system file clipboard. Answers whether it holds it.
+fn write_system_file_clipboard(paths: &[PathBuf]) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let written = arboard::Clipboard::new().map_err(|error| error.to_string()).and_then(|mut clipboard| write_file_list(&mut clipboard, paths));
+        match written {
+            Ok(()) => true,
+            Err(error) => {
+                log::warn!("files: the system clipboard did not take the selection: {error}");
+                false
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = paths;
+        true
+    }
+}
+
 /// The inline name editor: a rename of an existing entry, or a new entry about to be made.
 #[derive(Clone, Debug)]
 pub(crate) struct Edit {
@@ -701,23 +789,19 @@ impl FileTree {
         if paths.is_empty() {
             return;
         }
-        self.write_system_clipboard(&paths);
-        self.clip = Some(Clip { paths, cut });
-        self.notice = Some((tr(if cut { "ui.files_cut" } else { "ui.files_copied" }).to_string(), false));
+        let system_written = write_system_file_clipboard(&paths);
+        self.record_copy(paths, cut, system_written);
     }
 
-    fn write_system_clipboard(&mut self, paths: &[PathBuf]) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set().file_list(paths)).is_err() {
-                // The panel's own clipboard still works; the system one is the extra.
-                self.notice = Some((tr("ui.files_clipboard_unavailable").to_string(), true));
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = paths;
-        }
+    /// Keep the panel's own copy and say whether the system clipboard got it too.
+    fn record_copy(&mut self, paths: Vec<PathBuf>, cut: bool, system_written: bool) {
+        self.clip = Some(Clip { paths, cut });
+        // The panel's own clipboard still works; the person must know when the system one did not.
+        self.notice = Some(if system_written {
+            (tr(if cut { "ui.files_cut" } else { "ui.files_copied" }).to_string(), false)
+        } else {
+            (tr("ui.files_clipboard_unavailable").to_string(), true)
+        });
     }
 
     /// Read the system clipboard's files when the panel's own clipboard is empty.
