@@ -375,7 +375,24 @@ case "$cmd" in
     echo "app/ai.intgral.intcad/$arch/stable" >> "$refs"
     ;;
   build-update-repo)
-    for last in "$@"; do :; done
+    for last in "$@"; do repo=$last; done
+    refs="${MOCK_STATE:?}/refs-$(printf '%s' "$repo" | tr '/' '_')"
+    # Model Flatpak: generated AppStream branches are rebuilt from the app refs
+    # currently in the repository, never inherited from the mirrored repo.
+    grep -v -E '^appstream2?/' "$refs" > "$refs.tmp" || true
+    mv "$refs.tmp" "$refs"
+    app_refs="$(grep '^app/' "$refs" || true)"
+    : > "${MOCK_STATE:?}/appstream-sources.log"
+    while IFS= read -r app_ref; do
+      [ -n "$app_ref" ] || continue
+      printf '%s\n' "$app_ref" >> "$MOCK_STATE/appstream-sources.log"
+    done <<< "$app_refs"
+    archs="$(printf '%s\n' "$app_refs" | awk -F/ 'NF >= 3 { print $3 }' | sort -u)"
+    while IFS= read -r arch; do
+      [ -n "$arch" ] || continue
+      echo "appstream/$arch" >> "$refs"
+      echo "appstream2/$arch" >> "$refs"
+    done <<< "$archs"
     echo summary > "$last/summary"
     ;;
   build-commit-from) echo "unexpected build-commit-from" >&2; exit 1 ;;
@@ -406,7 +423,9 @@ esac
             for path in state.glob("refs-*"):
                 refs.extend(path.read_text().splitlines())
             debug = (state / "debug.log").read_text() if (state / "debug.log").exists() else ""
-            return result, refs, debug
+            sources_path = state / "appstream-sources.log"
+            sources = sources_path.read_text() if sources_path.exists() else ""
+            return result, refs, debug, sources
 
     def test_previous_repo_foreign_refs_are_pruned(self):
         seed = "\n".join([
@@ -422,11 +441,19 @@ esac
             "app/io.tangencylabs.solidcraft/x86_64/stable",
             "app/ai.intgral.intcad2/x86_64/stable",
         ])
-        result, refs, debug = self._run_publication(seed)
+        result, refs, debug, _ = self._run_publication(seed)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + debug)
         self.assertTrue(refs, "mock ostree saw no refs")
         for ref in refs:
-            self.assertTrue(ref.startswith("app/ai.intgral.intcad/"), ref)
+            self.assertTrue(
+                ref.startswith("app/ai.intgral.intcad/")
+                or ref.startswith("appstream/")
+                or ref.startswith("appstream2/"),
+                ref,
+            )
+        for arch in ("x86_64", "aarch64"):
+            self.assertIn(f"appstream/{arch}", refs)
+            self.assertIn(f"appstream2/{arch}", refs)
         for ref in (
             "app/ai.intgral.intcad/x86_64/stable",
             "app/ai.intgral.intcad/x86_64/master",
@@ -444,14 +471,14 @@ esac
             "app/ai.intgral.intcad/x86_64/beta",
             "app/ai.storyteller.solidcraft/x86_64/stable",
         ])
-        result, _, debug = self._run_publication(seed)
+        result, _, debug, _ = self._run_publication(seed)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("prefix of Intcad ref", result.stderr)
         self.assertNotIn("flatpak build-update-repo", debug)
 
     def test_hostile_leading_dash_ref_fails_closed(self):
         seed = "\n".join(["-evil", "app/ai.intgral.intcad/x86_64/beta"])
-        result, _, debug = self._run_publication(seed)
+        result, _, debug, _ = self._run_publication(seed)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue("unexpected ref" in result.stderr or "unsafe ref" in result.stderr, result.stderr)
         self.assertNotIn("flatpak build-update-repo", debug)
@@ -461,7 +488,7 @@ esac
             "app/ai.intgral.intcad/x86_64/beta",
             "app/ai.storyteller.solidcraft/x86_64/stable",
         ])
-        result, _, debug = self._run_publication(seed, fail="delete")
+        result, _, debug, _ = self._run_publication(seed, fail="delete")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("flatpak build-update-repo", debug)
 
@@ -470,8 +497,63 @@ esac
             "app/ai.intgral.intcad/x86_64/beta",
             "app/ai.storyteller.solidcraft/x86_64/stable",
         ])
-        result, _, debug = self._run_publication(seed, fail="refs")
+        result, _, debug, _ = self._run_publication(seed, fail="refs")
         self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("flatpak build-update-repo", debug)
+
+    def test_second_publication_regenerates_appstream_from_retained_refs(self):
+        initial = "\n".join([
+            "app/ai.intgral.intcad/x86_64/stable",
+            "app/ai.intgral.intcad/x86_64/master",
+            "app/ai.intgral.intcad/x86_64/beta",
+            "app/ai.intgral.intcad/aarch64/stable",
+            "app/ai.intgral.intcad/aarch64/master",
+            "app/ai.intgral.intcad/aarch64/beta",
+            "app/ai.storyteller.solidcraft/x86_64/stable",
+            "app/ai.intgral.intcad2/aarch64/stable",
+        ])
+        first, first_refs, first_debug, first_sources = self._run_publication(initial)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr + first_debug)
+        for arch in ("x86_64", "aarch64"):
+            self.assertIn(f"appstream/{arch}", first_refs)
+            self.assertIn(f"appstream2/{arch}", first_refs)
+        self.assertTrue(first_sources.strip(), "first publication did not generate AppStream")
+        self.assertTrue(all(ref.startswith("app/ai.intgral.intcad/")
+                            for ref in first_sources.splitlines()))
+
+        second_seed = "\n".join(first_refs + ["appstream/riscv64", "appstream2/riscv64"])
+        second, refs, debug, sources = self._run_publication(second_seed)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr + debug)
+        self.assertIn("flatpak build-import-bundle", debug)
+        for stale in ("appstream/riscv64", "appstream2/riscv64"):
+            self.assertIn(f"refs --delete {stale}", debug)
+            self.assertLess(debug.index(f"refs --delete {stale}"),
+                            debug.index("flatpak build-update-repo"))
+        self.assertLess(debug.index("flatpak build-import-bundle"),
+                        debug.index("flatpak build-update-repo"))
+        for arch in ("x86_64", "aarch64"):
+            for branch in ("stable", "master", "beta"):
+                self.assertIn(f"app/ai.intgral.intcad/{arch}/{branch}", refs)
+            self.assertIn(f"appstream/{arch}", refs)
+            self.assertIn(f"appstream2/{arch}", refs)
+        self.assertNotIn("appstream/riscv64", refs)
+        self.assertNotIn("appstream2/riscv64", refs)
+        self.assertFalse(any("storyteller" in ref or "tangencylabs" in ref or "intcad2" in ref
+                             for ref in refs))
+        self.assertEqual(set(sources.splitlines()), {
+            f"app/ai.intgral.intcad/{arch}/{branch}"
+            for arch in ("x86_64", "aarch64")
+            for branch in ("stable", "master", "beta")
+        })
+
+    def test_unexpected_metadata_ref_shape_fails_closed(self):
+        seed = "\n".join([
+            "app/ai.intgral.intcad/x86_64/stable",
+            "appstream/x86_64/extra",
+        ])
+        result, _, debug, _ = self._run_publication(seed)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unexpected ref", result.stderr)
         self.assertNotIn("flatpak build-update-repo", debug)
 
 if __name__ == "__main__":

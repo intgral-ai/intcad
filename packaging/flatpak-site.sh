@@ -44,18 +44,36 @@ if curl --fail --silent --location --output /dev/null "$previous_url/summary"; t
   refs="$(ostree --repo="$repo_dir" refs)"
   intcad_refs=()
   foreign_refs=()
+  metadata_refs=()
   while IFS= read -r ref; do
     [ -n "$ref" ] || continue
     case "$ref" in
-      app/*) ;;
-      *) echo "error: unexpected ref '$ref' in the Flatpak repository" >&2; exit 1 ;;
-    esac
-    case "$ref" in
-      *[!A-Za-z0-9._/+-]*) echo "error: unsafe ref '$ref' in the Flatpak repository" >&2; exit 1 ;;
-    esac
-    case "$ref" in
-      "app/$app_id/"*) intcad_refs+=("$ref") ;;
-      *) foreign_refs+=("$ref") ;;
+      app/*)
+        case "$ref" in
+          *[!A-Za-z0-9._/+-]*) echo "error: unsafe ref '$ref' in the Flatpak repository" >&2; exit 1 ;;
+        esac
+        case "$ref" in
+          "app/$app_id/"*) intcad_refs+=("$ref") ;;
+          *) foreign_refs+=("$ref") ;;
+        esac
+        ;;
+      appstream/*|appstream2/*)
+        # `flatpak build-update-repo` generates these branches from the app refs
+        # currently in the repository. Drop the mirrored copies; they are
+        # rebuilt after import, so a previous publication cannot leak into this one.
+        arch=${ref#*/}
+        case "$arch" in
+          ''|*/*|.|..|*..*|*[!A-Za-z0-9_+-]*)
+            echo "error: unexpected ref '$ref' in the Flatpak repository" >&2
+            exit 1
+            ;;
+        esac
+        metadata_refs+=("$ref")
+        ;;
+      *)
+        echo "error: unexpected ref '$ref' in the Flatpak repository" >&2
+        exit 1
+        ;;
     esac
   done <<< "$refs"
   for foreign in "${foreign_refs[@]}"; do
@@ -68,6 +86,9 @@ if curl --fail --silent --location --output /dev/null "$previous_url/summary"; t
       esac
     done
   done
+  for meta in "${metadata_refs[@]}"; do
+    ostree --repo="$repo_dir" refs --delete "$meta"
+  done
   deleted=()
   for foreign in "${foreign_refs[@]}"; do
     covered=0
@@ -79,6 +100,9 @@ if curl --fail --silent --location --output /dev/null "$previous_url/summary"; t
     deleted+=("$foreign")
   done
 fi
+# The summary is derived metadata; never publish the mirrored one. AppStream refs
+# were dropped above and are regenerated from the retained Intcad refs below.
+rm -f "$repo_dir/summary" "$repo_dir/summary.sig"
 published_id=$app_id
 for arch in x86_64 aarch64; do
   asset="intcad-$version-linux-$arch.flatpak"
