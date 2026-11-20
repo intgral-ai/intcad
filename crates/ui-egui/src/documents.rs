@@ -1716,11 +1716,10 @@ pub(crate) fn saved_for_close(app: &mut SolveApp) {
                 Some(snapshot) => {
                     if let Some(entry) =
                         app.docs.quit_intent.as_mut().and_then(|intent| intent.entries.iter_mut().find(|entry| entry.tab == target))
+                        && entry.decision == QuitDecision::Pending
                     {
-                        if entry.decision == QuitDecision::Pending {
-                            entry.snapshot = snapshot;
-                            entry.decision = QuitDecision::KeepSaved;
-                        }
+                        entry.snapshot = snapshot;
+                        entry.decision = QuitDecision::KeepSaved;
                     }
                 }
                 None => cancel_quit(app),
@@ -2235,8 +2234,7 @@ mod tests {
         assert!(a.quit_requested, "every design answered: quit is staged");
         assert_eq!(a.docs.quitting, Some(Vec::new()), "the workflow guard stays until commit");
         // Discard/reopen effects wait for one validated commit, not for the answer.
-        let commit = finish_quit(&mut a).unwrap();
-        drop(commit);
+        let _commit = finish_quit(&mut a).unwrap();
         assert!(!a.quit_requested && a.docs.quitting.is_none());
         assert!(!any_dirty(&a), "Don't Save discards: nothing is kept for recovery");
         // The next launch reopens the saved design; the never-saved one has no file (#5542).
