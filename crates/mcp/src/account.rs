@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{
     Admission, BillingPort, BillingResult, BudgetTable, Capability, ConservativeDeadline, EntryCategory, MonotonicInstant, OperationId,
-    OperationStore, OperationStoreError, Refusal, RefusalCode, ReviewOperation, RunId, UpperBound,
+    OperationStore, OperationStoreError, Refusal, RefusalCode, ReviewOperation, RunId, TrustedContext, UpperBound,
 };
 
 use crate::backend::Backend;
@@ -21,6 +21,9 @@ use crate::backend::Backend;
 /// no grant; only [`BillingPort::admit`] can return one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCallContext {
+    /// The authenticated host context this call was minted from. `None` is a test/direct-local
+    /// construction and never enough for a forwarded host bridge.
+    trusted: Option<TrustedContext>,
     operation: OperationId,
     capability: Capability,
     entry: EntryCategory,
@@ -34,7 +37,19 @@ pub struct ToolCallContext {
 impl ToolCallContext {
     /// Identity supplied by the host after it minted (or recovered) the logical operation.
     pub fn new(operation: OperationId, capability: Capability, entry: EntryCategory) -> Self {
-        Self { operation, capability, entry, remaining: None, deadline: None, now: None, admission: None, nested: false }
+        Self { trusted: None, operation, capability, entry, remaining: None, deadline: None, now: None, admission: None, nested: false }
+    }
+
+    /// The production host bridge constructor.
+    ///
+    /// The operation, capability, entry, account, installation and session binding all come from
+    /// one [`TrustedContext`] minted by the host. Wire data cannot build this type, so a forwarded
+    /// call cannot claim authority a request body did not have.
+    pub fn from_trusted(trusted: TrustedContext) -> Self {
+        let operation = trusted.operation().clone();
+        let capability = trusted.capability();
+        let entry = trusted.entry();
+        Self { trusted: Some(trusted), operation, capability, entry, remaining: None, deadline: None, now: None, admission: None, nested: false }
     }
 
     /// The remaining authorization measured by the host for this request.
@@ -63,6 +78,7 @@ impl ToolCallContext {
     #[cfg(test)]
     fn nested_context(&self, operation: OperationId) -> Self {
         Self {
+            trusted: self.trusted.clone(),
             operation,
             capability: self.capability,
             entry: self.entry,
@@ -96,6 +112,26 @@ impl ToolCallContext {
 
     pub fn entry(&self) -> EntryCategory {
         self.entry
+    }
+
+    /// The authenticated host context, when this call came from the host bridge rather than a
+    /// test/direct-local constructor.
+    pub fn trusted(&self) -> Option<&TrustedContext> {
+        self.trusted.as_ref()
+    }
+
+    /// Whether this call carries a provable account/installation/session binding minted by the
+    /// host. A forwarded bridge call requires it; request fields cannot supply it.
+    pub fn is_host_bound(&self) -> bool {
+        self.trusted.as_ref().is_some_and(TrustedContext::is_provable)
+    }
+
+    pub fn deadline(&self) -> Option<&ConservativeDeadline> {
+        self.deadline.as_ref()
+    }
+
+    pub fn now(&self) -> Option<MonotonicInstant> {
+        self.now
     }
 }
 
@@ -280,6 +316,78 @@ pub fn call_tool_with(
     reply
 }
 
+/// Forward one charged tool call to the host's own control authority without a local charge.
+///
+/// This is the GUI/Mastra bridge path: the backend forwards the same host-minted operation to the
+/// app's control seam, which owns admission and settlement. The MCP boundary still refuses a
+/// call that has no provable host context; it never accepts a source label, request id or
+/// caller-supplied account/session field. No admission or commit happens here, so the operation
+/// cannot be billed twice.
+pub fn call_tool_forwarded(backend: &mut dyn Backend, name: &str, args: &Value, context: &ToolCallContext) -> MeteredReply {
+    let operation = context.operation.clone();
+    if tool_is_free(name) || context.entry.is_free() {
+        let value = crate::tools::call_tool(backend, name, args);
+        return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
+    }
+    if !context.is_host_bound() || context.entry == EntryCategory::Unknown {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::CapabilityDenied, "this forwarded call has no authenticated host context"));
+    }
+    if context.remaining.is_some_and(|remaining| remaining.is_zero()) {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::UnsafeToStart, "the forwarded call has no remaining authorization"));
+    }
+    if let (Some(deadline), Some(now)) = (context.deadline.as_ref(), context.now)
+        && deadline.remaining(now).is_none()
+    {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::UnsafeToStart, "the forwarded call's authorization deadline has passed"));
+    }
+    let value = crate::tools::call_tool(backend, name, args);
+    let outcome = classify_reply(&value);
+    MeteredReply { value, operation, outcome, context: context.clone() }
+}
+
+/// Fields that only describe host provenance, never a tool's own parameters.
+const RESERVED_PROVENANCE_FIELDS: &[&str] = &[
+    "trusted",
+    "trustedContext",
+    "trusted_context",
+    "hostContext",
+    "host_context",
+    "entryCategory",
+    "entry_category",
+    "operationId",
+    "operation_id",
+    "sessionBinding",
+    "admission",
+];
+
+/// The first reserved provenance-shaped field in tool arguments, if any.
+///
+/// Wire arguments may not name an origin, operation, account or grant: those are host data. The
+/// server refuses such a call before dispatch instead of ignoring it silently.
+pub fn provenance_claim(args: &Value) -> Option<&'static str> {
+    fn walk(value: &Value, depth: usize) -> Option<&'static str> {
+        if depth > 8 {
+            return None;
+        }
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    if let Some(field) = RESERVED_PROVENANCE_FIELDS.iter().copied().find(|field| *field == key) {
+                        return Some(field);
+                    }
+                    if let Some(field) = walk(child, depth.saturating_add(1)) {
+                        return Some(field);
+                    }
+                }
+                None
+            }
+            Value::Array(items) => items.iter().take(1024).find_map(|item| walk(item, depth.saturating_add(1))),
+            _ => None,
+        }
+    }
+    walk(args, 0)
+}
+
 fn check_preflight(context: &ToolCallContext, budget: &BudgetTable) -> Result<(), Refusal> {
     if context.entry.is_free() {
         return Ok(());
@@ -452,6 +560,16 @@ fn refusal_wire(code: RefusalCode) -> &'static str {
         RefusalCode::OperationOwnedElsewhere => "OPERATION_OWNED_ELSEWHERE",
         RefusalCode::AuthUnavailable => "AUTH_UNAVAILABLE",
     }
+}
+
+/// A wire argument tried to name host provenance. Refuse it before dispatch: the operation,
+/// account and session can only come from the host's authenticated context.
+pub(crate) fn forged_context_result(field: &str) -> Value {
+    let field: String = field.chars().take(64).collect();
+    error_result(json!({
+        "error": "tool arguments may not supply host provenance",
+        "errorDetails": {"code": "OP_REFUSED", "reason": "CAPABILITY_DENIED", "field": field},
+    }))
 }
 
 /// A refusal raised before any tool dispatch (no context, unclassified entry, unverified budget).

@@ -56,6 +56,11 @@ pub trait Backend {
     fn tool_context(&self, _tool: &str) -> Option<crate::ToolCallContext> {
         None
     }
+    /// Told by a forwarded host bridge which logical operation this tool call belongs to.
+    ///
+    /// It is called once per `tools/call`, including with `None` for a free helper, so a backend
+    /// never reuses the previous call's operation. Only the forwarding authority installs this.
+    fn begin_tool_call(&mut self, _context: Option<&crate::ToolCallContext>) {}
 }
 
 /// Longest reply line accepted from the app.

@@ -68,6 +68,10 @@ enum Authority {
     Closed,
     /// The host installed both billing and the verified safe-stop budget.
     Metered(Accounting),
+    /// A GUI/Mastra bridge whose backend forwards the same host-minted operation to the app's
+    /// own control authority. Charged calls require a provable host context from the backend and
+    /// are admitted and settled only once, at that host seam.
+    Forwarded,
     /// The crate's own tests only. Production never compiles this variant.
     #[cfg(test)]
     LocalTest,
@@ -122,6 +126,15 @@ impl Server {
     #[cfg(test)]
     pub(crate) fn new_local_for_tests(backend: Box<dyn Backend>) -> Self {
         Self { backend, initialized: false, scope: None, authority: Authority::LocalTest }
+    }
+    /// A host bridge that forwards charged calls to the host's own control authority.
+    ///
+    /// Only a composition root that serves a host-owned lane (the Mastra bridge in the running
+    /// app) installs this. The backend must mint a `ToolCallContext` from an authenticated
+    /// `TrustedContext`; this server performs no local admission or settlement, so the operation
+    /// cannot be billed twice. Wire arguments still cannot supply the context.
+    pub fn with_forwarded_authority(backend: Box<dyn Backend>) -> Self {
+        Self { backend, initialized: false, scope: None, authority: Authority::Forwarded }
     }
     /// Confine the files tool calls may reach to `scope` (`None`: anywhere). `intcad-cli mcp`
     /// always sets one unless started with `--allow-any-path` (docs/mcp.md).
@@ -264,6 +277,11 @@ impl Server {
                     None | Some(Value::Null) => json!({}),
                     Some(a) => a.clone(),
                 };
+                // Provenance is host data. A wire argument that names an origin, operation,
+                // grant, account or session is refused before schema handling or any dispatch.
+                if let Some(field) = crate::account::provenance_claim(&args) {
+                    return Ok(crate::account::forged_context_result(field));
+                }
                 check_arguments(name, &args).map_err(|e| (INVALID_PARAMS, e))?;
                 // The open design's folder counts, and goes on counting for the rest of this run
                 // when a save-as or open moves the design elsewhere (#7181).
@@ -271,6 +289,12 @@ impl Server {
                 self.scope = self.scope.take().map(|s| s.with_design(open.as_deref()));
                 let scope = self.scope.clone();
                 let context = self.backend.tool_context(name);
+                // The bridge tells its backend about this logical call before dispatch. The
+                // backend forwards that same operation to the host control seam; a later or
+                // different call replaces it instead of inheriting it.
+                if matches!(self.authority, Authority::Forwarded) {
+                    self.backend.begin_tool_call(context.as_ref());
+                }
                 let authority = &mut self.authority;
                 let backend = self.backend.as_mut();
                 let mut result = vfs::scoped(scope, || match authority {
@@ -284,6 +308,16 @@ impl Server {
                         None => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
                             solidcraft_engine::entitlement::RefusalCode::AuthUnavailable,
                             "this charged tool has no host-minted logical operation context",
+                        )),
+                    },
+                    Authority::Forwarded => match context {
+                        Some(context) if crate::account::tool_is_free(name) || context.is_host_bound() => {
+                            crate::account::call_tool_forwarded(backend, name, &args, &context).into_value()
+                        }
+                        _ if crate::account::tool_is_free(name) => call_tool(backend, name, &args),
+                        _ => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
+                            solidcraft_engine::entitlement::RefusalCode::CapabilityDenied,
+                            "this forwarded tool call has no authenticated host context",
                         )),
                     },
                     Authority::Closed if crate::account::tool_is_free(name) => call_tool(backend, name, &args),

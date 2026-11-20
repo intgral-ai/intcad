@@ -613,4 +613,24 @@ impl TrustedContext {
     pub fn operation(&self) -> &OperationId {
         &self.operation
     }
+
+    /// The authenticated host identity this operation was minted for: account, installation and
+    /// session binding. It is never derived from the request body.
+    pub fn scope(&self) -> &AuthenticatedHostScope {
+        &self.scope
+    }
+
+    pub fn capability(&self) -> Capability {
+        self.capability
+    }
+
+    pub fn entry(&self) -> EntryCategory {
+        self.entry
+    }
+
+    /// Whether the host can prove the account/installation/session binding. A context minted from
+    /// an unprovable transport must fail closed at every admission boundary.
+    pub fn is_provable(&self) -> bool {
+        self.scope.is_provable()
+    }
 }
