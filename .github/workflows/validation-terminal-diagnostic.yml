@@ -84,6 +84,7 @@ jobs:
                   ("solidcraft-engine", "--lib", "validation::tests::"),
                   ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::mastra_validation_"),
                   ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::a_retired_turns_validation_card_never_appears_in_the_next_turns_history"),
+                  ("solidcraft-ui-egui", "--lib", "agent_chat::tests::a_retired_turns_validation_card_update_does_not_count_as_the_current_turns_tool"),
                   ("solidcraft-cli", "--test script_roundtrip", "cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit"),
               ]
           records = []
