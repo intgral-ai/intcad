@@ -2,16 +2,23 @@
 /**
  * Run the built-in agent out of a `mastra-agent` folder against stand-ins, with no account.
  *
- *   node agent-smoke.mjs <mastra-agent folder>
- *   node agent-smoke.mjs --node <node> --entry <main.mjs> [--sdk <node_modules>]
+ *   node agent-smoke.mjs <mastra-agent folder> [--only <text>] [--raw <folder>]
+ *   node agent-smoke.mjs --node <node> --entry <main.mjs> [--sdk <node_modules>] [--only <text>] [--raw <folder>]
  *
  * It starts the folder's own Node with the folder's entry, as the app does, and talks ACP with
  * it: `initialize`, a custom address handed over with `_intcad/connections/setup`, then
  *   - three turns in one session, answered by a stand-in model service;
  *   - a turn in which the model asks for a command, run after one permission request;
- *   - a turn in which the model asks for a tool of an MCP server handed over in `session/new`.
+ *   - a turn in which the model asks for a tool of an MCP server handed over in `session/new`;
+ *   - a command and a file write whose permission requests are refused;
+ *   - a turn cancelled while a permission request is open, and one cancelled while the answer
+ *     streams.
+ * A refused or cancelled turn must leave nothing behind: the command's marker file is nowhere, no
+ * file of the project folder changed, and the same session answers the next message. The allowed
+ * command and the allowed file write are what show that a marker would be there otherwise.
  * The model service is in this process, on a port the system picks; the MCP server is this file
- * started again with `--mcp-server`.
+ * started again with `--mcp-server`. `--only` runs the cases whose name has the text; `--raw`
+ * keeps every ACP message and every request to the model service, one folder per case.
  *
  * Nothing of the person running it is used. The agent gets a new, empty data folder
  * (`MASTRA_APP_DATA_DIR`), which is also where Mastra keeps plan sign-ins, and the agent's entry
@@ -24,22 +31,24 @@
  *
  * Prints one JSON line per case and exits 1 when any failed. It says the agent ran on the system
  * it was run on, and nothing about any other.
+ *
+ * The stand-ins and the ACP client are exported: compare-official-acp.mjs runs the same ones
+ * against Mastra Code's own `mastracode --acp`.
  */
 
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const self = fileURLToPath(import.meta.url);
-const MARK = "intcad-smoke";
+export const MARK = "intcad-smoke";
 
 // ---- The stand-in MCP server (this file, started by the agent) ----------------------------------
 
-if (process.argv[2] === "--mcp-server") {
-  const log = process.argv[3];
+function mcpServer(log) {
   const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
   let pending = "";
   process.stdin.on("data", (data) => {
@@ -63,32 +72,45 @@ if (process.argv[2] === "--mcp-server") {
       } else if (message.id != null) send({ jsonrpc: "2.0", id: message.id, result: {} });
     }
   });
-} else {
-  process.exit(await main(process.argv.slice(2)));
 }
 
 // ---- The stand-in model service -----------------------------------------------------------------
 
-/** An OpenAI-compatible service. The first path segment picks what it does: plain, command, mcp. */
-function modelService() {
-  const seen = { plain: 0, command: 0, mcp: 0 };
+const textOf = (message) => (typeof message?.content === "string" ? message.content : Array.isArray(message?.content) ? message.content.map((part) => part?.text ?? "").join("\n") : "");
+
+/**
+ * An OpenAI-compatible service. What it answers follows the last message of the request:
+ *   "run the command: <command>"                        asks for the command tool with that command;
+ *   "write the file: <path>"                            asks for the file-writing tool, the text being MARK;
+ *   "measure the part"                                  asks for the MCP server's `measure_part`;
+ *   "answer slowly, then run the command: <command>"    streams the start of an answer and stops there
+ *                                                       until `release()`, which goes on to that command;
+ *   a tool's result                                     says whether the result had MARK in it;
+ *   anything else                                       a plain sentence.
+ * `keep(file, value)` is told every request, for a run that keeps its raw output.
+ */
+export function modelService({ keep = () => {}, status = () => 200 } = {}) {
+  const seen = { requests: 0, closedEarly: 0 };
+  const held = new Set();
   const server = http.createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
     request.on("end", () => {
-      const kind = request.url.split("/")[1];
-      if (!(kind in seen)) {
-        response.writeHead(404).end();
-        return;
-      }
-      seen[kind] += 1;
+      seen.requests += 1;
       let wanted = {};
       try {
         wanted = JSON.parse(body || "{}");
       } catch {
         // an empty request is answered like any other
       }
-      const id = `chatcmpl-${kind}-${seen[kind]}`;
+      keep("model-requests.jsonl", { n: seen.requests, url: request.url, body: wanted });
+      const refused = status(request.url);
+      if (refused !== 200) {
+        response.writeHead(refused, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: `stand-in answer ${refused}`, type: "stand_in", code: String(refused) } }));
+        return;
+      }
+      const id = `chatcmpl-${seen.requests}`;
       const model = wanted.model ?? "hello-1";
       const chunk = (delta, finish = null) => `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
       const say = (text) => {
@@ -103,47 +125,98 @@ function modelService() {
         response.write(chunk({}, "stop"));
         response.end("data: [DONE]\n\n");
       };
-      const messages = wanted.messages ?? [];
-      const last = messages[messages.length - 1] ?? {};
-      const tools = (wanted.tools ?? []).map((tool) => tool.function ?? tool);
-      const wantedTool = kind === "command" ? tools.find((tool) => /execute_command|shell|bash|command/iu.test(tool.name ?? "")) : kind === "mcp" ? tools.find((tool) => /measure_part/u.test(tool.name ?? "")) : null;
-      if (wantedTool && last.role !== "tool" && wanted.stream) {
-        const args = kind === "command" ? { command: `echo ${MARK}` } : { unit: "mm" };
-        for (const name of wantedTool.parameters?.required ?? []) args[name] ??= "check";
-        response.writeHead(200, { "content-type": "text/event-stream" });
-        response.write(chunk({ role: "assistant", content: null, tool_calls: [{ index: 0, id: `call_${kind}_${seen[kind]}`, type: "function", function: { name: wantedTool.name, arguments: JSON.stringify(args) } }] }));
+      const call = (tool, args) => {
+        for (const name of tool.parameters?.required ?? []) args[name] ??= "check";
+        response.write(chunk({ role: "assistant", content: null, tool_calls: [{ index: 0, id: `call_${seen.requests}`, type: "function", function: { name: tool.name, arguments: JSON.stringify(args) } }] }));
         response.write(chunk({}, "tool_calls"));
         response.end("data: [DONE]\n\n");
-        return;
-      }
+      };
+      const messages = wanted.messages ?? [];
+      const last = messages[messages.length - 1] ?? {};
       if (last.role === "tool") {
-        const result = typeof last.content === "string" ? last.content : JSON.stringify(last.content);
-        say(result.includes(MARK) ? `The tool answered with ${MARK}.` : "The tool answered without the expected text.");
+        say(textOf(last).includes(MARK) || JSON.stringify(last.content ?? "").includes(MARK) ? `The tool answered with ${MARK}.` : "The tool answered without the expected text.");
         return;
       }
-      say(kind === "plain" ? `Hello from the stand-in model (request ${seen.plain}).` : "No such tool was offered.");
+      const tools = (wanted.tools ?? []).map((tool) => tool.function ?? tool);
+      const find = (pattern) => tools.find((tool) => pattern.test(tool.name ?? ""));
+      const asked = last.role === "user" && wanted.stream ? textOf(last) : "";
+      const slow = /answer slowly, then run the command: ([^\n]+)/u.exec(asked);
+      const command = slow ?? /run the command: ([^\n]+)/u.exec(asked);
+      const write = /write the file: ([^\n]+)/u.exec(asked);
+      // Mastra Code's own names for its tools, as it offers them (SDK 1.19.1).
+      const commandTool = find(/^execute_command$/u);
+      const writeTool = find(/^write_file$/u);
+      if (slow && commandTool) {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(chunk({ role: "assistant", content: "" }));
+        response.write(chunk({ content: "The start of a slow answer. " }));
+        const entry = { release: () => call(commandTool, { command: slow[1].trim() }) };
+        held.add(entry);
+        // The agent ends the request when the turn is cancelled; then there is nothing to go on with.
+        response.on("close", () => {
+          if (held.delete(entry)) seen.closedEarly += 1;
+        });
+        return;
+      }
+      const [tool, args] = command && commandTool ? [commandTool, { command: command[1].trim() }] : write && writeTool ? [writeTool, { path: write[1].trim(), content: MARK }] : /measure the part/u.test(asked) && find(/measure_part/u) ? [find(/measure_part/u), { unit: "mm" }] : [];
+      if (tool) {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        call(tool, args);
+        return;
+      }
+      say(command || write || /measure the part/u.test(asked) ? "No such tool was offered." : `Hello from the stand-in model (request ${seen.requests}).`);
     });
   });
-  return new Promise((ready) => server.listen(0, "127.0.0.1", () => ready({ port: server.address().port, seen, close: () => server.close() })));
+  const release = () => {
+    for (const entry of [...held]) {
+      held.delete(entry);
+      entry.release();
+    }
+  };
+  const close = () => {
+    server.close();
+    server.closeAllConnections();
+  };
+  return new Promise((ready) => server.listen(0, "127.0.0.1", () => ready({ port: server.address().port, seen, release, close })));
 }
 
-// ---- Talking ACP with the agent -----------------------------------------------------------------
+// ---- Talking ACP with an agent ------------------------------------------------------------------
 
-function start({ node, entry, sdk, data, cwd }) {
-  // Only what a program needs to run on this system, never the caller's whole environment.
+/** The environment a program needs to run on this system and nothing else of the caller's, with a data folder and a home in it. */
+export function ownEnvironment(data, more = {}) {
   const env = { PATH: process.env.PATH ?? "", MASTRA_APP_DATA_DIR: data, HOME: join(data, "home"), USERPROFILE: join(data, "home") };
   for (const name of ["SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP", "TMPDIR", "LANG", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"]) {
     if (process.env[name]) env[name] = process.env[name];
   }
-  if (sdk) env.SOLIDCRAFT_MASTRA_SDK = sdk;
-  const child = spawn(node, [entry], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  return { ...env, ...more };
+}
+
+/**
+ * Starts an ACP agent (`command` with `args`) and speaks for the app. `permission(request)` answers
+ * a permission request: its return value is the result, and `undefined` leaves the request open
+ * (in `agent.open`) for the case to answer with `agent.answer`. Without it every request is allowed
+ * once. `keep(file, value)` is told every message in both directions.
+ */
+export function start({ command, args, env, cwd, permission, keep = () => {} }) {
+  const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
   let pending = "";
   let stderr = "";
   let nextId = 0;
   const waiting = new Map();
   const notes = [];
+  const open = [];
+  const watchers = new Set();
+  const write = (message) => {
+    keep("acp.jsonl", { to: "agent", message });
+    child.stdin.write(`${JSON.stringify(message)}\n`);
+  };
+  const noted = (message) => {
+    notes.push(message);
+    for (const watcher of [...watchers]) watcher(message);
+  };
   child.stderr.on("data", (data) => (stderr += data));
   child.on("error", (error) => (stderr += `could not start: ${error.message}\n`));
+  child.stdin.on("error", () => {});
   child.stdout.on("data", (data) => {
     pending += data;
     for (let end; (end = pending.indexOf("\n")) >= 0; ) {
@@ -155,16 +228,20 @@ function start({ node, entry, sdk, data, cwd }) {
       } catch {
         continue;
       }
+      keep("acp.jsonl", { to: "app", message });
       if (message.id != null && (message.result !== undefined || message.error !== undefined) && waiting.has(message.id)) {
         waiting.get(message.id)(message);
         waiting.delete(message.id);
       } else if (message.method && message.id != null) {
-        // The agent asks the app something: a permission is allowed once, anything else gets an empty answer.
-        const option = message.params?.options?.find((item) => /allow/u.test(item.kind)) ?? message.params?.options?.[0];
-        const result = message.method === "session/request_permission" ? { outcome: { outcome: "selected", optionId: option?.optionId } } : {};
-        child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n`);
-        notes.push(message);
-      } else if (message.method) notes.push(message);
+        // The agent asks the app something. A permission follows the case's rule; anything else gets an empty answer.
+        if (message.method === "session/request_permission") {
+          const allow = message.params?.options?.find((item) => /allow/u.test(item.kind)) ?? message.params?.options?.[0];
+          const result = permission ? permission(message) : { outcome: { outcome: "selected", optionId: allow?.optionId } };
+          if (result === undefined) open.push(message);
+          else write({ jsonrpc: "2.0", id: message.id, result });
+        } else write({ jsonrpc: "2.0", id: message.id, result: {} });
+        noted(message);
+      } else if (message.method) noted(message);
     }
   });
   const call = (method, params = {}, ms = 120000) =>
@@ -173,10 +250,27 @@ function start({ node, entry, sdk, data, cwd }) {
       const timer = setTimeout(() => failed(new Error(`${method}: no answer in ${ms} ms`)), ms);
       waiting.set(id, (message) => {
         clearTimeout(timer);
-        if (message.error) failed(new Error(message.error.message));
+        if (message.error) failed(Object.assign(new Error(message.error.message), { code: message.error.code, data: message.error.data }));
         else done(message.result);
       });
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      write({ jsonrpc: "2.0", id, method, params });
+    });
+  /** The first message from the agent, already there or still to come, that `wanted` accepts. */
+  const waitFor = (wanted, ms = 30000, from = 0) =>
+    new Promise((done, failed) => {
+      const found = notes.slice(from).find(wanted);
+      if (found) return done(found);
+      const watcher = (message) => {
+        if (!wanted(message)) return;
+        clearTimeout(timer);
+        watchers.delete(watcher);
+        done(message);
+      };
+      const timer = setTimeout(() => {
+        watchers.delete(watcher);
+        failed(new Error(`the agent did not send what was waited for in ${ms} ms`));
+      }, ms);
+      watchers.add(watcher);
     });
   const stop = () =>
     new Promise((done) => {
@@ -185,11 +279,11 @@ function start({ node, entry, sdk, data, cwd }) {
       child.kill();
       setTimeout(() => child.kill("SIGKILL"), 4000).unref();
     });
-  return { call, notes, stop, stderr: () => stderr };
+  return { call, notify: (method, params) => write({ jsonrpc: "2.0", method, params }), answer: (id, result) => write({ jsonrpc: "2.0", id, result }), waitFor, notes, open, stop, stderr: () => stderr, pid: child.pid };
 }
 
 /** What a turn left in the notes: the answer's text, the tools called, the permissions asked. */
-function turnOf(notes, from) {
+export function turnOf(notes, from) {
   let answer = "";
   const tools = [];
   let asked = 0;
@@ -202,6 +296,45 @@ function turnOf(notes, from) {
   return { answer: answer.slice(0, 120), tools, asked };
 }
 
+/** Every entry under a folder with its size and the time it was last changed, as one text to compare. */
+export function listing(folder) {
+  const lines = [];
+  const walk = (dir, prefix) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        lines.push(`${prefix}${entry.name}/`);
+        walk(path, `${prefix}${entry.name}/`);
+      } else {
+        const stat = statSync(path);
+        lines.push(`${prefix}${entry.name} ${stat.size} ${stat.mtimeMs}`);
+      }
+    }
+  };
+  if (existsSync(folder)) walk(folder, "");
+  return lines.join("\n");
+}
+
+/** Where under `folder` a file of this name is, or null. */
+export function findFile(folder, name) {
+  if (!existsSync(folder)) return null;
+  for (const entry of readdirSync(folder, { withFileTypes: true })) {
+    const path = join(folder, entry.name);
+    if (entry.isDirectory()) {
+      const inside = findFile(path, name);
+      if (inside) return inside;
+    } else if (entry.name === name) return path;
+  }
+  return null;
+}
+
+const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+const refuse = (message) => {
+  const option = message.params?.options?.find((item) => /reject/u.test(item.kind));
+  return option ? { outcome: { outcome: "selected", optionId: option.optionId } } : { outcome: { outcome: "cancelled" } };
+};
+const isPermission = (message) => message.method === "session/request_permission";
+
 // ---- The cases ----------------------------------------------------------------------------------
 
 async function main(args) {
@@ -212,12 +345,14 @@ async function main(args) {
   let node = flag("--node");
   let entry = flag("--entry");
   const sdk = flag("--sdk");
+  const only = flag("--only");
+  const raw = flag("--raw");
   if (args.length === 1 && !node && !entry) {
     const folder = resolve(args[0]);
     node = join(folder, process.platform === "win32" ? "node.exe" : "node");
     entry = join(folder, "agent", "main.mjs");
   } else if (args.length !== 0 || !node || !entry) {
-    console.error("usage: agent-smoke.mjs <mastra-agent folder>\n       agent-smoke.mjs --node <node> --entry <main.mjs> [--sdk <node_modules>]");
+    console.error("usage: agent-smoke.mjs <mastra-agent folder> [--only <text>] [--raw <folder>]\n       agent-smoke.mjs --node <node> --entry <main.mjs> [--sdk <node_modules>] [--only <text>] [--raw <folder>]");
     return 2;
   }
   for (const file of [node, entry]) {
@@ -227,28 +362,45 @@ async function main(args) {
     }
   }
   const work = mkdtempSync(join(tmpdir(), "intcad-agent-smoke-"));
-  const service = await modelService();
   const failures = [];
-  const address = (kind) => ({ keys: {}, custom: [{ name: "Stand-in", url: `http://127.0.0.1:${service.port}/${kind}/v1`, apiKey: "stand-in", models: ["hello-1"] }] });
+  let ran = 0;
 
-  /** One agent process for one case. `fn` gets `prompt(text)`, which sends only to the stand-in. */
-  async function run(name, kind, mcpServers, fn) {
-    const agent = start({ node, entry, sdk, data: join(work, name), cwd: work });
+  /**
+   * One agent process, one model service and one project folder for one case. `fn` gets
+   * `prompt(text)`, which sends only to the stand-in, and what it needs to look at the folders.
+   */
+  async function run(name, { mcpServers = [], permission } = {}, fn) {
+    if (only && !name.includes(only)) return;
+    ran += 1;
+    const slug = name.replace(/[^a-z0-9]+/giu, "-");
+    const keep = raw
+      ? (file, value) => {
+          mkdirSync(join(raw, slug), { recursive: true });
+          appendFileSync(join(raw, slug, file), `${JSON.stringify(value)}\n`);
+        }
+      : undefined;
+    const [data, project] = [join(work, slug, "data"), join(work, slug, "project")];
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, "part.txt"), "a file of the project\n");
+    const service = await modelService({ keep });
+    const agent = start({ command: node, args: [entry], env: ownEnvironment(data, sdk ? { SOLIDCRAFT_MASTRA_SDK: sdk } : {}), cwd: project, permission, keep });
     const out = { case: name };
     try {
       await agent.call("initialize", { protocolVersion: 1, clientCapabilities: {} });
-      const snapshot = await agent.call("_intcad/connections/setup", address(kind));
-      const session = await agent.call("session/new", { cwd: work, mcpServers });
+      const snapshot = await agent.call("_intcad/connections/setup", { keys: {}, custom: [{ name: "Stand-in", url: `http://127.0.0.1:${service.port}/v1`, apiKey: "stand-in", models: ["hello-1"] }] });
+      const session = await agent.call("session/new", { cwd: project, mcpServers });
       const models = session.configOptions?.find((option) => option.id === "model")?.options?.map((option) => option.value) ?? [];
       // Nothing is sent unless the stand-in is the only thing the agent could talk to.
       const alone = snapshot.keys.every((key) => !key.saved) && snapshot.plans.every((plan) => plan.state === "out") && models.length > 0 && models.every((model) => model.startsWith("mastracode/stand-in/"));
       if (!alone) throw new Error(`not alone with the stand-in (keys saved: ${snapshot.keys.filter((key) => key.saved).length}, plans signed in: ${snapshot.plans.filter((plan) => plan.state !== "out").length}, models: ${models.length}); nothing was sent`);
+      const send = (text) => agent.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text }] });
       const prompt = async (text) => {
-        const [from, before] = [agent.notes.length, service.seen[kind]];
-        const reply = await agent.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text }] });
-        return { stop: reply.stopReason, askedStandIn: service.seen[kind] > before, ...turnOf(agent.notes, from) };
+        const [from, before] = [agent.notes.length, service.seen.requests];
+        const reply = await send(text);
+        return { stop: reply.stopReason, askedStandIn: service.seen.requests > before, ...turnOf(agent.notes, from) };
       };
-      out.ok = await fn(prompt, out);
+      const before = listing(project);
+      out.ok = await fn({ out, prompt, send, agent, service, sessionId: session.sessionId, project, unchanged: () => listing(project) === before, marker: (file) => findFile(join(work, slug), file) });
     } catch (error) {
       out.ok = false;
       out.failed = String(error.message).slice(0, 300);
@@ -261,8 +413,9 @@ async function main(args) {
         .slice(0, 800);
     }
     await agent.stop();
+    service.close();
     // A session without a vector store leaves no vector database in the agent's data folder.
-    const vectors = existsSync(join(work, name)) ? readdirSync(join(work, name)).filter((file) => file.includes("vectors")) : [];
+    const vectors = existsSync(data) ? readdirSync(data).filter((file) => file.includes("vectors")) : [];
     if (vectors.length > 0) {
       out.ok = false;
       out.vectorStore = vectors;
@@ -271,28 +424,90 @@ async function main(args) {
     console.log(JSON.stringify(out));
   }
 
-  await run("three turns", "plain", [], async (prompt, out) => {
-    out.turns = [];
-    for (const text of ["hi", "and again", "a third time"]) out.turns.push(await prompt(text));
-    return out.turns.every((turn) => turn.stop === "end_turn" && turn.askedStandIn && /stand-in model/u.test(turn.answer));
-  });
-  await run("a command after a permission request", "command", [], async (prompt, out) => {
-    Object.assign(out, await prompt("run the command"));
-    return out.stop === "end_turn" && out.askedStandIn && out.tools.length === 1 && out.asked === 1 && out.answer.includes(MARK);
-  });
-  const calls = join(work, "mcp-calls.log");
-  await run("a tool of an MCP server", "mcp", [{ name: "intcad-app", command: process.execPath, args: [self, "--mcp-server", calls], env: [] }], async (prompt, out) => {
-    Object.assign(out, await prompt("measure the part"));
-    out.serverSawCalls = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").length : 0;
-    return out.stop === "end_turn" && out.askedStandIn && out.serverSawCalls === 1 && out.answer.includes(MARK);
+  /** After a turn that was refused or cancelled: nothing is left behind, and the session answers the next message. */
+  const nothingLeft = async (context, file) => {
+    const { out } = context;
+    await pause(1500);
+    out.markerFile = context.marker(file);
+    out.projectUnchanged = context.unchanged();
+    out.next = await context.prompt("hi");
+    return out.markerFile === null && out.projectUnchanged && out.next.stop === "end_turn" && /stand-in model/u.test(out.next.answer);
+  };
+
+  await run("three turns", {}, async ({ out, prompt }) => {
+    const turns = (out.turns = []);
+    for (const text of ["hi", "and again", "a third time"]) turns.push(await prompt(text));
+    return turns.every((turn) => turn.stop === "end_turn" && turn.askedStandIn && /stand-in model/u.test(turn.answer));
   });
 
-  service.close();
+  await run("a command after a permission request", {}, async ({ out, prompt, marker }) => {
+    const turn = Object.assign(out, await prompt(`run the command: echo ${MARK} > allowed-command.txt`));
+    out.markerFile = marker("allowed-command.txt") !== null;
+    return turn.stop === "end_turn" && turn.askedStandIn && turn.tools.length === 1 && turn.asked === 1 && marker("allowed-command.txt") !== null;
+  });
+
+  const calls = join(work, "mcp-calls.log");
+  await run("a tool of an MCP server", { mcpServers: [{ name: "intcad-app", command: process.execPath, args: [self, "--mcp-server", calls], env: [] }] }, async ({ out, prompt }) => {
+    const turn = Object.assign(out, await prompt("measure the part"));
+    out.serverSawCalls = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").length : 0;
+    return turn.stop === "end_turn" && turn.askedStandIn && out.serverSawCalls === 1 && turn.answer.includes(MARK);
+  });
+
+  await run("a refused command does not run", { permission: refuse }, async (context) => {
+    const turn = (context.out.turn = await context.prompt(`run the command: echo ${MARK} > refused-command.txt`));
+    return turn.stop === "end_turn" && turn.asked === 1 && (await nothingLeft(context, "refused-command.txt"));
+  });
+
+  let refuseWrites = true;
+  await run("a refused file write writes nothing, an allowed one writes", { permission: (message) => (refuseWrites ? refuse(message) : { outcome: { outcome: "selected", optionId: message.params.options.find((item) => /allow/u.test(item.kind))?.optionId } }) }, async (context) => {
+    const refused = (context.out.refused = await context.prompt(`write the file: ${join(context.project, "refused-write.txt")}`));
+    if (!(refused.asked === 1 && (await nothingLeft(context, "refused-write.txt")))) return false;
+    refuseWrites = false;
+    const allowed = (context.out.allowed = await context.prompt(`write the file: ${join(context.project, "allowed-write.txt")}`));
+    const written = context.marker("allowed-write.txt");
+    context.out.allowedFileWritten = written !== null;
+    return allowed.stop === "end_turn" && allowed.asked === 1 && written !== null && readFileSync(written, "utf8").includes(MARK);
+  });
+
+  await run("a turn cancelled while a permission request is open", { permission: () => undefined }, async (context) => {
+    const from = context.agent.notes.length;
+    const turn = context.send(`run the command: echo ${MARK} > cancelled-command.txt`);
+    const request = await context.agent.waitFor(isPermission, 60000, from);
+    context.agent.notify("session/cancel", { sessionId: context.sessionId });
+    // ACP: after a cancel the app answers every open permission request as cancelled.
+    context.agent.answer(request.id, { outcome: { outcome: "cancelled" } });
+    const reply = await turn;
+    context.out.stop = reply.stopReason;
+    return reply.stopReason === "cancelled" && (await nothingLeft(context, "cancelled-command.txt"));
+  });
+
+  await run("a turn cancelled while the answer streams", {}, async (context) => {
+    const from = context.agent.notes.length;
+    const turn = context.send(`answer slowly, then run the command: echo ${MARK} > cancelled-stream.txt`);
+    await context.agent.waitFor((message) => message.params?.update?.sessionUpdate === "agent_message_chunk", 60000, from);
+    context.agent.notify("session/cancel", { sessionId: context.sessionId });
+    const reply = await turn;
+    // Had the agent kept the model's request open, the model would now ask for the command.
+    context.out.stop = reply.stopReason;
+    context.out.modelRequestEndedByAgent = context.service.seen.closedEarly;
+    context.service.release();
+    const left = await nothingLeft(context, "cancelled-stream.txt");
+    context.out.permissionsAsked = context.agent.notes.slice(from).filter(isPermission).length;
+    return reply.stopReason === "cancelled" && context.out.permissionsAsked === 0 && left;
+  });
+
   try {
     rmSync(work, { recursive: true, force: true, maxRetries: 5 });
   } catch {
     // A file the system still holds (a database on Windows) stays in the temporary folder; the run's result stands.
   }
-  console.log(JSON.stringify({ summary: failures.length === 0 ? "all passed" : `failed: ${failures.join(", ")}`, system: `${process.platform} ${process.arch}`, node }));
+  if (ran === 0) failures.push(`no case has "${only}" in its name`);
+  console.log(JSON.stringify({ summary: failures.length === 0 ? "all passed" : `failed: ${failures.join(", ")}`, cases: ran, system: `${process.platform} ${process.arch}`, node }));
   return failures.length === 0 ? 0 : 1;
+}
+
+// Only when this file is the program that was started: compare-official-acp.mjs imports it.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(self)) {
+  if (process.argv[2] === "--mcp-server") mcpServer(process.argv[3]);
+  else process.exit(await main(process.argv.slice(2)));
 }
