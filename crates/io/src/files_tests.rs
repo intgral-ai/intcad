@@ -295,17 +295,30 @@ fn a_completed_replace_removes_the_kept_copy_and_keeps_the_new_file() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+// A failed publication may leave a complete new destination behind. Clearing it so the old
+// entry can be renamed back would destroy the new bytes. Both copies must survive, and the
+// error must name the retained previous entry.
 #[test]
-fn a_replace_clears_a_partial_destination_before_restoring_the_old_one() {
+fn a_failed_replace_with_a_new_destination_keeps_both_copies_and_reports_the_backup() {
     let scratch = Scratch::new();
     let target = scratch.file("keep.txt", "old");
     let error = swap_in(&target, || {
-        fs::write(&target, "half-written").map_err(|e| e.to_string())?;
-        Err("copy stopped".into())
+        fs::write(&target, "new destination").map_err(|e| e.to_string())?;
+        Err("publication stopped".into())
     })
     .unwrap_err();
-    assert!(error.contains("copy stopped"), "{error}");
-    assert_eq!(fs::read(&target).unwrap(), b"old");
+    assert!(error.contains("publication stopped"), "{error}");
+    assert_eq!(fs::read(&target).unwrap(), b"new destination", "the new destination survives");
+    let retained: Vec<_> = fs::read_dir(scratch.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".intcad-replace-")))
+        .collect();
+    assert_eq!(retained.len(), 1, "{retained:?}");
+    let backup = retained[0].join("previous");
+    assert_eq!(fs::read(&backup).unwrap(), b"old", "the previous bytes survive");
+    assert!(error.contains(&backup.display().to_string()), "{error}");
 }
 
 // Existing replacement tests never exercised a failure while creating a new tree.
@@ -854,6 +867,39 @@ fn windows_native_publication_rejects_nul_without_touching_the_prefix_entry() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     assert_eq!(fs::read(source).unwrap(), b"source");
     assert_eq!(fs::read(target).unwrap(), b"destination");
+}
+
+// The recycle adapter's executable instructions are constant; an item path crosses the
+// process boundary as environment data and is never interpreted as PowerShell. Benign
+// names, including an apostrophe, and ordinary Windows path separators are enough to assert
+// the boundary: this test builds no attack payload and runs no process.
+#[test]
+fn windows_recycle_adapter_keeps_instructions_constant_and_transfers_the_path_as_data() {
+    use std::ffi::OsStr;
+    let paths = [Path::new(r"C:\Users\person\parts\plain design.sc"), Path::new(r"C:\Users\person\parts\person's design.sc")];
+    for path in paths {
+        for is_dir in [false, true] {
+            let command = windows_recycle_command(path, is_dir).unwrap();
+            assert_eq!(command.get_program(), OsStr::new("powershell"));
+            let args: Vec<_> = command.get_args().map(OsStr::to_owned).collect();
+            assert_eq!(args.len(), 4, "{args:?}");
+            assert_eq!(args[0], "-NoProfile");
+            assert_eq!(args[1], "-NonInteractive");
+            assert_eq!(args[2], "-Command");
+            assert_eq!(args[3], if is_dir { WINDOWS_RECYCLE_DIRECTORY } else { WINDOWS_RECYCLE_FILE }, "the instructions are the constant ones");
+            let script = args[3].to_string_lossy();
+            assert!(!script.contains(path.to_string_lossy().as_ref()), "the path must stay out of the script: {script}");
+            assert!(script.contains(WINDOWS_RECYCLE_PATH), "the script reads the path by its constant name: {script}");
+            assert!(script.contains("SendToRecycleBin"), "the Recycle Bin semantics stay: {script}");
+            let environment: Vec<_> = command.get_envs().map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned))).collect();
+            assert_eq!(environment.len(), 1, "{environment:?}");
+            assert_eq!(environment[0].0, OsStr::new(WINDOWS_RECYCLE_PATH));
+            assert_eq!(environment[0].1.as_deref(), Some(path.as_os_str()), "the exact path bytes are transferred");
+        }
+    }
+    // Windows process environments cannot carry NUL: fail explicitly rather than let the
+    // path cross that boundary or fall back to a permanent deletion.
+    assert!(windows_recycle_command(Path::new("nul\0path.sc"), false).is_err());
 }
 
 #[cfg(windows)]

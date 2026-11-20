@@ -274,9 +274,12 @@ fn swap_in(destination: &Path, replace: impl FnOnce() -> Result<(), String>) -> 
         Err(e) => Err(describe("replace", destination, &e)),
         Ok(()) => match replace() {
             Ok(()) => Ok(()),
-            Err(e) => match fs::rename(&backup, destination) {
+            // A failed replacement may already have created a new destination. Restore the
+            // previous entry only through the atomic no-clobber primitive: overwriting would
+            // destroy those new bytes. If the destination exists, both copies are kept and
+            // the error names the previous one.
+            Err(e) => match rename_no_replace(&backup, destination) {
                 Ok(()) => Err(e),
-                // Never clean the only remaining copy when restoration failed.
                 Err(restore) => {
                     return Err(format!("{e}; the previous entry is kept at {} because it could not be put back: {restore}", backup.display()));
                 }
@@ -657,6 +660,33 @@ fn trash_error_means_no_trash(domain: &str, code: isize) -> bool {
     code == NO_TRASH_HERE && domain == "NSCocoaErrorDomain"
 }
 
+/// The environment name Windows' recycle adapter uses to carry one item path. The
+/// PowerShell instructions never contain a path.
+#[cfg(any(windows, test))]
+const WINDOWS_RECYCLE_PATH: &str = "INTCAD_RECYCLE_PATH";
+
+/// Constant executable instructions for the recycle adapter. The item path is read from
+/// [`WINDOWS_RECYCLE_PATH`] as data; PowerShell never parses it as script text.
+#[cfg(any(windows, test))]
+const WINDOWS_RECYCLE_FILE: &str = "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($env:INTCAD_RECYCLE_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin')";
+
+#[cfg(any(windows, test))]
+const WINDOWS_RECYCLE_DIRECTORY: &str = "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($env:INTCAD_RECYCLE_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin')";
+
+#[cfg(any(windows, test))]
+fn windows_recycle_command(path: &Path, is_dir: bool) -> Result<std::process::Command, TrashProblem> {
+    // Windows' process environment cannot carry NUL. Refuse rather than let a path cross
+    // that boundary or fall back to permanent deletion.
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(TrashProblem::Refused("the path contains NUL".into()));
+    }
+    let script = if is_dir { WINDOWS_RECYCLE_DIRECTORY } else { WINDOWS_RECYCLE_FILE };
+    let mut command = std::process::Command::new("powershell");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    command.env(WINDOWS_RECYCLE_PATH, path.as_os_str());
+    Ok(command)
+}
+
 /// Put one entry in the system's trash.
 pub fn trash(path: &Path) -> Result<(), TrashProblem> {
     #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
@@ -671,19 +701,8 @@ pub fn trash(path: &Path) -> Result<(), TrashProblem> {
     }
     #[cfg(all(windows, not(target_arch = "wasm32")))]
     {
-        let script = format!(
-            "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
-            path.display().to_string().replace('\'', "''")
-        );
-        let script = if fs::symlink_metadata(path).map(|m| m.is_dir()).unwrap_or(false) {
-            format!(
-                "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
-                path.display().to_string().replace('\'', "''")
-            )
-        } else {
-            script
-        };
-        match std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output() {
+        let is_dir = fs::symlink_metadata(path).map(|m| m.is_dir()).unwrap_or(false);
+        match windows_recycle_command(path, is_dir)?.output() {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => Err(TrashProblem::Refused(describe_text(&String::from_utf8_lossy(&output.stderr)))),
             Err(e) => Err(TrashProblem::Refused(describe_text(&e.to_string()))),
