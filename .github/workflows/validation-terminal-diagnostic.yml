@@ -84,18 +84,16 @@ jobs:
                   ("solidcraft-engine", "--lib", "validation::tests::"),
                   ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::mastra_validation_"),
                   ("solidcraft-ui-egui", "--lib", "agent_chat::tests::mastra_backend_tests::a_retired_turns_validation_card_never_appears_in_the_next_turns_history"),
-                  ("solidcraft-cli", "--test", "cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit"),
+                  ("solidcraft-cli", "--test script_roundtrip", "cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit"),
               ]
           records = []
           for number, (package, target, selection) in enumerate(selections):
-              command = ["cargo", "test", "--profile", "ci", "--locked", "-p", package, target]
-              if target == "--test":
-                  command += [selection, "--", "--nocapture"]
-              else:
-                  command += [selection, "--"]
-                  if os.environ["VALTX_STAGE"] == "red":
-                      command += ["--exact"]
-                  command += ["--nocapture"]
+              command = ["cargo", "test", "--profile", "ci", "--locked", "-p", package]
+              command += target.split()
+              command += [selection, "--"]
+              if os.environ["VALTX_STAGE"] == "red":
+                  command += ["--exact"]
+              command += ["--nocapture"]
               prefix = out / f"command-{number}"
               timed_out = False
               with prefix.with_suffix(".stdout").open("wb") as stdout, prefix.with_suffix(".stderr").open("wb") as stderr:

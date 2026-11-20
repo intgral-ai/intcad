@@ -609,11 +609,7 @@ fn append_agent_text(items: &mut [Item], thought: bool, text: &str) -> bool {
 fn validation_event_owner(output: Option<&str>) -> Option<(String, String, String)> {
     let value: serde_json::Value = serde_json::from_str(output?).ok()?;
     let owner = value.get("owner")?;
-    Some((
-        owner.get("sessionId")?.as_str()?.to_owned(),
-        owner.get("turnId")?.as_str()?.to_owned(),
-        owner.get("workflowRunId")?.as_str()?.to_owned(),
-    ))
+    Some((owner.get("sessionId")?.as_str()?.to_owned(), owner.get("turnId")?.as_str()?.to_owned(), owner.get("workflowRunId")?.as_str()?.to_owned()))
 }
 
 impl AgentChat {

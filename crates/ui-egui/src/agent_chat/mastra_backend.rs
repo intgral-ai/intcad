@@ -786,7 +786,9 @@ impl ValidationBook {
                 }
                 existing.cancellation_dirty |= record.cancellation_dirty;
             }
-            if !existing.state.is_terminal() && !(record.state == ValidationState::Queued && existing.state != ValidationState::Queued) {
+            if !existing.state.is_terminal()
+                && !(record.state == validation_port::ValidationState::Queued && existing.state != validation_port::ValidationState::Queued)
+            {
                 existing.state = record.state;
             }
             return;
