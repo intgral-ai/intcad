@@ -6,6 +6,7 @@
 mod app_icons;
 mod assets;
 mod book;
+mod control_origins;
 mod external_corpus;
 mod features;
 mod i18n;
@@ -38,6 +39,7 @@ usage: cargo xtask <command>
 
 commands:
   ui-containers   enforce the universal container for all UI hosts
+  control-origins enforce that production control requests use a trusted host origin
   layers          enforce the crate dependency layering (plan/architecture.md §3)
   assets          check that every non-code asset file is attributed in ATTRIBUTION.md
   app-icons       regenerate shared app-icon exports for Linux, FreeBSD and Windows
@@ -138,7 +140,7 @@ commands:
                   check in headless Chrome that the web app works offline and updates to a new
                   build (a stand-in app, or the web build in DIR such as dist/web)
   ci              fmt --check, assets, icons, licences --check, runtime-artifact policy, lists, skills, layers, ui-containers,
-                  mesh-decisions, clippy -D warnings, then the tests
+                  control-origins, mesh-decisions, clippy -D warnings, then the tests
                   with the wasm check alongside, then web-offline-test when Chrome is installed
                   (stops at the first failing step)
 ";
@@ -149,6 +151,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("layers") => cmd_layers(),
         Some("ui-containers") => ui_containers::run(&root()),
+        Some("control-origins") => control_origins::run(&root()),
         Some("assets") => assets::run(&root()),
         Some("icons") => icons::run(&root()),
         Some("app-icons") => app_icons::run(&root()),
@@ -463,6 +466,7 @@ fn cmd_ci() -> Result<(), String> {
     skills::run(&root())?;
     cmd_layers()?;
     ui_containers::run(&root())?;
+    control_origins::run(&root())?;
     mesh_decisions::run(&root())?;
     let mut c = cargo();
     c.args(["clippy", "--workspace", "--all-targets", "--profile", "ci", "--", "-D", "warnings"]);
