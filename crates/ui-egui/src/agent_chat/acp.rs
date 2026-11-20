@@ -523,6 +523,8 @@ pub enum Incoming {
         status: Option<ToolStatus>,
         input: Option<Value>,
         output: Option<String>,
+        /// A picture the call handed back, as the encoded bytes of the file ([`tool_media`]).
+        picture: Option<Vec<u8>>,
     },
     /// The agent's plan: each entry with its status.
     Plan {
@@ -538,6 +540,16 @@ pub enum Incoming {
         kind: Option<String>,
         options: Vec<PermissionOption>,
     },
+    /// A request of ours was refused, and the error says why in the built-in agent's own terms
+    /// (`data.intcad`): a turn that failed for its connection. Only [`parse_builtin`] reads it.
+    Refused {
+        id: u64,
+        error: (i64, String),
+        problem: super::connections::TurnProblem,
+    },
+    /// The built-in agent's connections changed: its snapshot (`_intcad/connections/changed`).
+    /// Only [`parse_builtin`] reads it.
+    Connections(super::connections::Snapshot),
     /// The agent says whether it is logged in (an extension both adapters send).
     AuthStatus(String),
     /// The agent switched to another of its modes.
@@ -573,12 +585,39 @@ fn content_text(c: &Value) -> Option<String> {
     }
 }
 
-fn tool_output(u: &Value) -> Option<String> {
-    let parts: Vec<String> = u.get("content")?.as_array()?.iter().take(16).filter_map(content_text).collect();
-    if parts.is_empty() {
-        return None;
+/// The longest `rawInput` given as text that is read as JSON: a tool's arguments, not a document.
+const MAX_RAW_INPUT: usize = 256 * 1024;
+
+/// ACP's `rawInput`: the arguments the tool was called with. They are an object, which some agents
+/// (Mastra Code's) send as its JSON text.
+fn tool_input(u: &Value) -> Option<Value> {
+    match u.get("rawInput")? {
+        given if given.is_object() => Some(given.clone()),
+        Value::String(text) if text.len() <= MAX_RAW_INPUT => serde_json::from_str::<Value>(text).ok().filter(Value::is_object),
+        _ => None,
     }
-    let mut s = parts.join("\n");
+}
+
+/// What a tool call says it returned: its `content`, or where an agent sends none of that (Mastra
+/// Code's) its `rawOutput`, a text as it is and anything else as its JSON.
+fn tool_output(u: &Value) -> Option<String> {
+    let parts: Vec<String> =
+        u.get("content").and_then(Value::as_array).map(|items| items.iter().take(16).filter_map(content_text).collect()).unwrap_or_default();
+    let mut s = if parts.is_empty() {
+        match u.get("rawOutput")? {
+            Value::Null => return None,
+            Value::String(text) if text.is_empty() => return None,
+            Value::String(text) => text.clone(),
+            other => serde_json::to_string(other).ok()?,
+        }
+    } else {
+        parts.join("\n")
+    };
+    clip_output(&mut s);
+    Some(s)
+}
+
+fn clip_output(s: &mut String) {
     if s.len() > MAX_OUTPUT {
         let mut cut = MAX_OUTPUT;
         while !s.is_char_boundary(cut) {
@@ -587,11 +626,77 @@ fn tool_output(u: &Value) -> Option<String> {
         s.truncate(cut);
         s.push('…');
     }
-    Some(s)
+}
+
+/// The longest result read as a file handed back as media: Mastra's own cap for such a file
+/// (10 MiB) in base64, and the little that stands around it.
+const MAX_MEDIA_TEXT: usize = 14 * 1024 * 1024 + 4096;
+
+/// A file a tool handed back as media, where the agent sends it as Mastra Code does: `rawOutput`
+/// is the JSON text of `{"__workspaceMedia": true, "text": "<path> (<n> bytes, <type>)",
+/// "mediaType", "data": <base64>}`. Gives the line that says what it is, and the file's bytes
+/// when it is a picture. Read as any other result it is two thousand characters of base64.
+///
+/// A picture an MCP tool returns comes the same way, as the JSON text of the tool's result:
+/// `{"content": [{"type": "image", "data": <base64>, "mimeType"}, {"type": "text", "text"}]}`
+/// (the app's own `screenshot` and `compare_picture`). Its line names the picture as the other
+/// does, `image.png (<n> bytes, image/png)`, and what the tool said in text follows it.
+fn tool_media(u: &Value) -> Option<(String, Option<Vec<u8>>)> {
+    let text = u.get("rawOutput")?.as_str().filter(|text| text.len() <= MAX_MEDIA_TEXT && text.starts_with('{'))?;
+    if !text.contains("\"__workspaceMedia\"") {
+        return text.contains("\"image\"").then(|| mcp_picture(text)).flatten();
+    }
+    let media: Value = serde_json::from_str(text).ok()?;
+    if media.get("__workspaceMedia") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let mut line = media.get("text")?.as_str()?.to_string();
+    clip_output(&mut line);
+    let picture = media.get("mediaType").and_then(Value::as_str).is_some_and(|kind| kind.starts_with("image/"));
+    let bytes = if picture { media.get("data").and_then(Value::as_str).and_then(|data| super::backend::base64_decode(data).ok()) } else { None };
+    Some((line, bytes))
+}
+
+/// The first picture in an MCP tool's result given as JSON text, and the result's text. `None`
+/// when it holds no picture that decodes: it is then read as any other result. The block's type
+/// is its `mimeType` (MCP's name) or `mediaType`; where an agent sends neither, the bytes say.
+fn mcp_picture(text: &str) -> Option<(String, Option<Vec<u8>>)> {
+    let result: Value = serde_json::from_str(text).ok()?;
+    let blocks = result.get("content")?.as_array()?;
+    let kind = |block: &Value| block.get("type").and_then(Value::as_str).map(str::to_string);
+    let (bytes, mime) = blocks.iter().filter(|block| kind(block).as_deref() == Some("image")).find_map(|block| {
+        let bytes = super::backend::base64_decode(block.get("data")?.as_str()?).ok()?;
+        let named = block.get("mimeType").or_else(|| block.get("mediaType")).and_then(Value::as_str);
+        let mime = named.or(match bytes.as_slice() {
+            [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+            [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+            [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+            _ => None,
+        })?;
+        mime.starts_with("image/").then(|| (bytes, mime.to_string()))
+    })?;
+    let mut line = format!("image.{} ({} bytes, {mime})", mime.trim_start_matches("image/"), bytes.len());
+    for said in blocks.iter().filter(|block| kind(block).as_deref() == Some("text")).filter_map(|block| block.get("text")?.as_str()) {
+        line.push('\n');
+        line.push_str(said);
+    }
+    clip_output(&mut line);
+    Some((line, Some(bytes)))
 }
 
 /// Read one line from the agent.
 pub fn parse(line: &str) -> Option<Incoming> {
+    read(line, false)
+}
+
+/// Read one line from the built-in agent: as [`parse`], and its own additions to the protocol
+/// too (why a request failed, in [`Incoming::Refused`], and [`Incoming::Connections`]). No other
+/// agent is read this way, so nothing another agent sends is taken for either.
+pub fn parse_builtin(line: &str) -> Option<Incoming> {
+    read(line, true)
+}
+
+fn read(line: &str, builtin: bool) -> Option<Incoming> {
     let msg: Value = serde_json::from_str(line.trim()).ok()?;
     let method = msg.get("method").and_then(Value::as_str);
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -600,7 +705,12 @@ pub fn parse(line: &str) -> Option<Incoming> {
             let id = id.as_u64()?;
             let result = match msg.get("error") {
                 Some(e) => {
-                    Err((e.get("code").and_then(Value::as_i64).unwrap_or(0), e.get("message").and_then(Value::as_str).unwrap_or("error").to_string()))
+                    let error =
+                        (e.get("code").and_then(Value::as_i64).unwrap_or(0), e.get("message").and_then(Value::as_str).unwrap_or("error").to_string());
+                    if builtin && let Some(problem) = super::connections::TurnProblem::parse(e.get("data")) {
+                        return Some(Incoming::Refused { id, error, problem });
+                    }
+                    Err(error)
                 }
                 None => Ok(msg.get("result").cloned().unwrap_or(Value::Null)),
             };
@@ -636,6 +746,9 @@ pub fn parse(line: &str) -> Option<Incoming> {
         }
         (Some(m), Some(id)) => Some(Incoming::Unsupported { rpc: id.clone(), method: m.to_string() }),
         (Some("session/update"), None) => Some(update(params.get("update")?, params.get("sessionId").and_then(Value::as_str).unwrap_or(""))),
+        (Some(super::connections::CHANGED), None) if builtin => {
+            Some(super::connections::Snapshot::parse(&params).map_or(Incoming::Ignored, Incoming::Connections))
+        }
         (Some("_auth/status_update"), None) => {
             params.get("authStatus").and_then(|s| s.get("label")).and_then(Value::as_str).map(|l| Incoming::AuthStatus(l.to_string()))
         }
@@ -651,16 +764,19 @@ fn update(u: &Value, session: &str) -> Incoming {
             None => Incoming::Ignored,
         },
         Some("tool_call" | "tool_call_update") => match s("toolCallId") {
-            Some(id) => Incoming::Tool {
-                session: session.to_string(),
-                id,
-                title: s("title"),
-                kind: s("kind"),
-                status: u.get("status").and_then(Value::as_str).and_then(ToolStatus::parse),
-                // ACP's `rawInput`: the arguments the tool was called with.
-                input: u.get("rawInput").filter(|v| v.is_object()).cloned(),
-                output: tool_output(u),
-            },
+            Some(id) => {
+                let (line, picture) = tool_media(u).map_or((None, None), |(line, picture)| (Some(line), picture));
+                Incoming::Tool {
+                    session: session.to_string(),
+                    id,
+                    title: s("title"),
+                    kind: s("kind"),
+                    status: u.get("status").and_then(Value::as_str).and_then(ToolStatus::parse),
+                    input: tool_input(u),
+                    output: line.or_else(|| tool_output(u)),
+                    picture,
+                }
+            }
             None => Incoming::Ignored,
         },
         Some("current_mode_update") => match s("currentModeId").or_else(|| s("modeId")) {
@@ -970,7 +1086,8 @@ mod tests {
                 kind: None,
                 status: Some(ToolStatus::Completed),
                 input: None,
-                output: Some("ok".into())
+                output: Some("ok".into()),
+                picture: None,
             })
         );
         let perm = r#"{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t1","title":"batch"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
@@ -988,6 +1105,111 @@ mod tests {
         assert_eq!(parse(mode), Some(Incoming::ModeChanged("plan".into())));
         let new = json!({"sessionId": "s", "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}, {"id": "acceptEdits", "name": "Accept Edits"}]}});
         assert_eq!(modes(&new), Some(("default".into(), vec![("default".into(), "Default".into()), ("acceptEdits".into(), "Accept Edits".into())])));
+    }
+
+    /// Mastra Code's agent sends a tool's arguments as JSON text and its result as `rawOutput`,
+    /// with no `content`: the row's details were empty for every one of its tools.
+    #[test]
+    fn a_tool_call_whose_arguments_are_json_text_and_whose_result_is_raw_output_keeps_both() {
+        let started = json!({"sessionUpdate": "tool_call", "toolCallId": "t", "title": "execute_command", "status": "in_progress", "rawInput": "{\"command\":\"ls\"}"});
+        let Incoming::Tool { input, output, .. } = update(&started, "s") else { panic!() };
+        assert_eq!((input, output), (Some(json!({"command": "ls"})), None));
+        let ended = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "status": "completed", "rawOutput": "a.txt\nb.txt"});
+        let Incoming::Tool { input, output, .. } = update(&ended, "s") else { panic!() };
+        assert_eq!((input, output.as_deref()), (None, Some("a.txt\nb.txt")));
+        // A result that is not text is told as its JSON; what the tool shows as content comes first.
+        let object = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": {"ok": true}});
+        let Incoming::Tool { output, .. } = update(&object, "s") else { panic!() };
+        assert_eq!(output.as_deref(), Some(r#"{"ok":true}"#));
+        let both = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": "raw", "content": [{"type": "content", "content": {"type": "text", "text": "shown"}}]});
+        let Incoming::Tool { output, .. } = update(&both, "s") else { panic!() };
+        assert_eq!(output.as_deref(), Some("shown"));
+        // Arguments that are not an object, text that is not JSON, and an empty result are nothing.
+        for raw in [json!("not json"), json!("[1,2]"), json!(7), json!("x".repeat(MAX_RAW_INPUT + 1))] {
+            let Incoming::Tool { input, .. } = update(&json!({"sessionUpdate": "tool_call", "toolCallId": "t", "rawInput": raw}), "s") else {
+                panic!()
+            };
+            assert_eq!(input, None);
+        }
+        for raw in [json!(""), Value::Null] {
+            let Incoming::Tool { output, .. } = update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": raw}), "s")
+            else {
+                panic!()
+            };
+            assert_eq!(output, None);
+        }
+        let long = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": "é".repeat(3000)});
+        let Incoming::Tool { output: Some(cut), .. } = update(&long, "s") else { panic!() };
+        assert!(cut.len() <= MAX_OUTPUT + 3 && cut.ends_with('…'));
+    }
+
+    /// Mastra Code hands back a file it read as media: the JSON text of an object with the file's
+    /// bytes in base64. It is a line and a picture, never two thousand characters of base64.
+    /// The app's own screenshot comes back as an MCP result with the picture in it: it is a line
+    /// that names the picture, what the tool said, and the picture, never base64 as the result.
+    #[test]
+    fn a_picture_in_an_mcp_result_is_a_line_and_a_picture() {
+        let png = b"\x89PNG\r\n\x1a\nthe rest";
+        let base64 = super::super::backend::base64(png);
+        let returned = |result: Value| {
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": result.to_string()}), "s")
+            else {
+                panic!()
+            };
+            (output, picture)
+        };
+        let shot = json!({"content": [{"type": "image", "data": base64, "mimeType": "image/png"}, {"type": "text", "text": "{\"width\":8}"}]});
+        assert_eq!(returned(shot), (Some("image.png (16 bytes, image/png)\n{\"width\":8}".into()), Some(png.to_vec())));
+        // The picture alone, and a text block before it.
+        let alone = json!({"content": [{"type": "image", "data": base64, "mimeType": "image/jpeg"}]});
+        assert_eq!(returned(alone), (Some("image.jpeg (16 bytes, image/jpeg)".into()), Some(png.to_vec())));
+        let after = json!({"content": [{"type": "text", "text": "numbers"}, {"type": "image", "data": base64, "mimeType": "image/png"}]});
+        assert_eq!(returned(after), (Some("image.png (16 bytes, image/png)\nnumbers".into()), Some(png.to_vec())));
+        // The type under the other name, and under no name: the bytes say what the picture is.
+        let other_name = json!({"content": [{"type": "image", "data": base64, "mediaType": "image/webp"}]});
+        assert_eq!(returned(other_name), (Some("image.webp (16 bytes, image/webp)".into()), Some(png.to_vec())));
+        let unnamed = json!({"content": [{"type": "image", "data": base64}]});
+        assert_eq!(returned(unnamed), (Some("image.png (16 bytes, image/png)".into()), Some(png.to_vec())));
+        let unknown = json!({"content": [{"type": "image", "data": super::super::backend::base64(b"neither of them")}]});
+        assert_eq!(returned(unknown.clone()), (Some(unknown.to_string()), None));
+        // No picture that decodes, or only the word: read as any other result.
+        for other in [
+            json!({"content": [{"type": "image", "data": "not base64!", "mimeType": "image/png"}]}),
+            json!({"content": [{"type": "image", "data": base64, "mimeType": "application/pdf"}]}),
+            json!({"content": [{"type": "text", "text": "an \"image\" is named"}]}),
+            json!({"note": "\"image\""}),
+        ] {
+            assert_eq!(returned(other.clone()), (Some(other.to_string()), None));
+        }
+    }
+
+    #[test]
+    fn a_file_handed_back_as_media_is_a_line_and_a_picture() {
+        let png = b"\x89PNG\r\n\x1a\nthe rest";
+        let handed = |kind: &str, data: &str| {
+            let media = json!({"__workspaceMedia": true, "text": format!("shots/a.png (16 bytes, {kind})"), "mediaType": kind, "data": data});
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": media.to_string()}), "s")
+            else {
+                panic!()
+            };
+            (output, picture)
+        };
+        let base64 = super::super::backend::base64(png);
+        assert_eq!(handed("image/png", &base64), (Some("shots/a.png (16 bytes, image/png)".into()), Some(png.to_vec())));
+        // A PDF comes the same way: its line, and no picture. So does a picture whose bytes do not decode.
+        assert_eq!(handed("application/pdf", &base64), (Some("shots/a.png (16 bytes, application/pdf)".into()), None));
+        assert_eq!(handed("image/png", "not base64!"), (Some("shots/a.png (16 bytes, image/png)".into()), None));
+        // Anything that only looks like it is read as any other result.
+        for raw in [json!({"__workspaceMedia": false, "text": "x"}).to_string(), json!({"note": "\"__workspaceMedia\""}).to_string()] {
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": raw.clone()}), "s")
+            else {
+                panic!()
+            };
+            assert_eq!((output, picture), (Some(raw), None));
+        }
     }
 
     #[test]

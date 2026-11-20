@@ -1258,11 +1258,26 @@ impl AgentProcess {
         env_remove: &[&str],
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<AgentProcess, String> {
+        Self::spawn_with_env(argv, cwd, env_remove, &[], wake)
+    }
+
+    /// [`AgentProcess::spawn`], with variables of the app's own added to what the agent inherits
+    /// (`env_set`: each name and its value). Everything else it gets stays as `spawn` passes it.
+    pub fn spawn_with_env(
+        argv: &[String],
+        cwd: &std::path::Path,
+        env_remove: &[&str],
+        env_set: &[(&str, &std::ffi::OsStr)],
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<AgentProcess, String> {
         let Some((program, args)) = argv.split_first() else { return Err("no agent command".into()) };
         let mut cmd = super::discover::command_for(std::path::Path::new(program));
         cmd.args(args).current_dir(cwd);
         for key in env_remove {
             cmd.env_remove(key);
+        }
+        for (key, value) in env_set {
+            cmd.env(key, value);
         }
         let wake = Arc::new(wake);
         let limits = ProcessIoLimits {

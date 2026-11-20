@@ -67,6 +67,13 @@ app shows the notices under Help > About > Licences, and the packages carry them
 | Mona Sans, Commit Mono (from `packages/playground/src/assets/fonts`) | as in that commit | SIL OFL 1.1, the texts beside the fonts |
 | The npm packages those components import (React, Base UI, lucide, react-markdown and others) | the exact versions in `inventory.json` | MIT, ISC and Apache-2.0, each stated by the package and listed there |
 
+Mastra's files go into the script as they are in that commit, with one change made as the page is
+built: three fixed English texts of Mastra's model picker, which has no property for them (the
+search box's "Search models", the empty list's "No matching model." and the "All" filter), are
+replaced by the page's own messages, so they follow the app's language. `PICKER_TEXTS` in
+`vite.config.mjs` lists them. The build stops when one is not found exactly once, so a newer
+Mastra commit cannot silently bring the English back.
+
 ## Status: not cleared for distribution
 
 - The owner decided on 2026-11-10 to replace the Assistant's interface with Mastra's. The

@@ -5,13 +5,17 @@ import {
   ArrowUp,
   Camera,
   ChevronDown,
+  ChevronRight,
   ClipboardCheck,
   Ellipsis,
+  FileImage,
   FileText,
-  Image,
+  Hammer,
+  Map as MapIcon,
   MessageSquare,
   MousePointerClick,
   Pencil,
+  Plug,
   Plus,
   ShieldCheck,
   Square,
@@ -19,18 +23,23 @@ import {
   Target,
   Undo2,
   X,
+  Zap,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import type { AssistantState, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings } from './host';
+import type { AssistantState, Connect, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings, TurnProblem } from './host';
 import { pictureUrl, post } from './host';
+import { ModelPicker as MastraModelPicker } from '@/domains/llm/model-picker';
+import type { ModelPickerProvider } from '@/domains/llm/model-picker-types';
+import { ProviderLogoMonogram } from '@/domains/llm/provider-logo-monogram';
 import { Activity, ActivityContent, ActivityHeadline, ActivityTrigger } from '@/ds/components/ai/activity';
 import type { TaskListItem } from '@/ds/components/ai/task-list';
 import { TaskList, TaskListContainer } from '@/ds/components/ai/task-list';
-import { ToolCallGroup, ToolCallOutput, presentTool } from '@/ds/components/ai/tool-call';
+import { ToolCallBody, ToolCallGroup, ToolCallOutput, presentTool } from '@/ds/components/ai/tool-call';
 import { AttachmentCard } from '@/ds/components/AttachmentCard';
 import { Badge } from '@/ds/components/Badge';
 import { Button } from '@/ds/components/Button';
+import { ButtonsGroup } from '@/ds/components/ButtonsGroup';
 import { ChatShell } from '@/ds/components/ChatShell';
 import { Combobox } from '@/ds/components/Combobox';
 import type { ComboboxOption } from '@/ds/components/Combobox';
@@ -44,18 +53,30 @@ import {
   ComposerInput,
   ComposerRing,
   ComposerStatus,
+  ComposerToneLabel,
 } from '@/ds/components/Composer';
+import type { ComposerTone } from '@/ds/components/Composer';
 import { CopyButton } from '@/ds/components/CopyButton';
+import { Dialog, DialogAction, DialogBody, DialogCancel, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/ds/components/Dialog';
 import { DropdownMenu } from '@/ds/components/DropdownMenu';
 import { EmptyState } from '@/ds/components/EmptyState';
+import { Field, FieldLabel } from '@/ds/components/Field';
+import { Input } from '@/ds/components/Input';
 import { MarkdownRenderer } from '@/ds/components/MarkdownRenderer';
 import { Message } from '@/ds/components/Message';
 import { MessageScrollerItem } from '@/ds/components/MessageScroller';
 import { Notice } from '@/ds/components/Notice';
 import { PendingIndicator } from '@/ds/components/PendingIndicator';
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/ds/components/Select';
+import { Status } from '@/ds/components/StatusIndicators/status';
 import { Textarea } from '@/ds/components/Textarea';
+import { ThinkingLevelPicker } from '@/ds/components/ThinkingLevel';
+import type { ThinkingLevelOption } from '@/ds/components/ThinkingLevel';
 import { Txt } from '@/ds/components/Txt';
+import { SettingsContainer } from '@/ds/new/settings/settings-container';
+import { SettingsGroup, SettingsHeader, SettingsTitle } from '@/ds/new/settings/settings-header';
 import { cn } from '@/lib/utils';
+import { compareModelReleaseDates, formatModelName } from '@/utils/model';
 
 type Of<K extends Item['kind']> = Extract<Item, { kind: K }>;
 type Tool = Of<'tool'>;
@@ -163,26 +184,123 @@ function approvalBadge(approval: Approval, strings: Strings) {
   );
 }
 
-function ToolRow({ tool, approval, strings }: { tool: Tool; approval?: Approval; strings: Strings }) {
+/** A tool's arguments as the agent gave them, when what the app sent of them is still an object's JSON (a long one is cut). */
+function argsOf(input: string | null): Record<string, unknown> | undefined {
+  if (!input) return undefined;
+  try {
+    const value: unknown = JSON.parse(input);
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * One tool call. With the built-in agent (`own`) the row is Mastra's own: its presenter picks the
+ * argument worth a glance for the headline (the command, the path, the query), and its body draws
+ * the details, a command with what it printed, or the arguments and the result.
+ */
+/** One picture a tool call handed back, as Mastra's sent picture: the card with its preview, or with an icon if the picture cannot be drawn. */
+function HandedPicture({ picture, name, open }: { picture: PictureRef; name: string; open: () => void }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <AttachmentCard
+      name={name}
+      typeLabel={typeOf(picture.note)}
+      icon={<FileImage aria-hidden />}
+      onClick={failed ? undefined : open}
+      preview={
+        failed ? undefined : (
+          <img src={pictureUrl(picture.key)} alt={name} className="size-full object-cover" draggable={false} onError={() => setFailed(true)} />
+        )
+      }
+    />
+  );
+}
+
+/**
+ * A text file opened from a file card, as Mastra's text preview: its name and its text. Markdown is
+ * drawn as an answer's is, so a link in it opens in the browser and nothing loads from the network;
+ * any other text, HTML too, is shown as it is written.
+ */
+function FilePreviewDialog({ file }: { file: AssistantState['filePreview'] }) {
+  return (
+    <Dialog open={file !== null} onOpenChange={open => !open && post({ type: 'file_close' })}>
+      <DialogContent size="xl">
+        <DialogHeader>
+          <DialogTitle>{file?.name}</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          {file &&
+            (file.markdown ? (
+              <MarkdownRenderer streaming={false}>{file.text}</MarkdownRenderer>
+            ) : (
+              <div className="wrap-anywhere whitespace-pre-wrap">{file.text}</div>
+            ))}
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ToolRow({ tool, approval, strings, own }: { tool: Tool; approval?: Approval; strings: Strings; own: boolean }) {
   const { name, detail } = nameOf(tool.title);
   const waiting = approval?.answer === null;
-  const { icon: ToolIcon, label } = presentTool(name, {});
+  const args = own ? argsOf(tool.input) : undefined;
+  const shown = presentTool(name, args ?? {});
+  const { icon: ToolIcon, label } = shown;
+  const status = activityStatus(tool, waiting);
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <Activity status={activityStatus(tool, waiting)} aria-label={tool.title}>
+      <Activity status={status} aria-label={tool.title}>
         <ActivityTrigger>
           <ActivityHeadline
             icon={<ToolIcon aria-hidden />}
             label={tool.words ?? label}
-            detail={tool.words ? undefined : detail}
+            detail={tool.words ? undefined : (detail ?? shown.detail)}
+            description={tool.words ? undefined : shown.description}
             badges={approval ? approvalBadge(approval, strings) : undefined}
           />
         </ActivityTrigger>
         <ActivityContent>
-          {tool.input && <ToolCallOutput text={tool.input} />}
-          {tool.output && <ToolCallOutput text={tool.output} error={tool.status === 'failed'} />}
+          {own ? (
+            <ToolCallBody
+              toolName={name}
+              args={args}
+              argsText={args ? undefined : (tool.input ?? undefined)}
+              status={status}
+              command={shown.command}
+              result={tool.output ?? undefined}
+            />
+          ) : (
+            <>
+              {tool.input && <ToolCallOutput text={tool.input} />}
+              {tool.output && <ToolCallOutput text={tool.output} error={tool.status === 'failed'} />}
+            </>
+          )}
         </ActivityContent>
       </Activity>
+      {/* A picture the call handed back, under the row as Mastra's tool card has it, in Mastra's
+          attachment card. It opens in the app's viewer, as a sent picture does: the panel is narrow. */}
+      {tool.pictures.length > 0 && (
+        <div className="flex min-w-0 flex-wrap gap-2 pl-7">
+          {tool.pictures.map((picture, at) => (
+            <HandedPicture key={picture.key} picture={picture} name={picture.note || strings.viewAttached} open={() => post({ type: 'picture', index: tool.index, at })} />
+          ))}
+        </div>
+      )}
+      {/* A file the call read, as Mastra's attachment card: a text file is previewed here, a document
+          opens in the system's program for it. */}
+      {tool.file && (
+        <div className="flex min-w-0 flex-wrap gap-2 pl-7">
+          <AttachmentCard
+            name={tool.file.name}
+            typeLabel={typeOf(tool.file.name)}
+            icon={<FileText aria-hidden />}
+            onClick={() => post({ type: 'file', index: tool.index })}
+          />
+        </div>
+      )}
       {/* Outside the row's fold: a request that arrives after the row is drawn must still be seen. */}
       {waiting && approval && (
         <div className="pl-7">
@@ -193,8 +311,8 @@ function ToolRow({ tool, approval, strings }: { tool: Tool; approval?: Approval;
   );
 }
 
-function Tools({ part, strings }: { part: Extract<Part, { kind: 'tools' }>; strings: Strings }) {
-  const rows = part.tools.map(({ tool, approval }) => <ToolRow key={tool.id} tool={tool} approval={approval} strings={strings} />);
+function Tools({ part, strings, own }: { part: Extract<Part, { kind: 'tools' }>; strings: Strings; own: boolean }) {
+  const rows = part.tools.map(({ tool, approval }) => <ToolRow key={tool.id} tool={tool} approval={approval} strings={strings} own={own} />);
   // A finished run of several calls folds into one line; a call that waits for the user stays in view.
   const settled = part.tools.every(({ tool, approval }) => tool.status === 'completed' && approval?.answer !== null);
   if (part.tools.length < 3 || !settled) return <div className="flex min-w-0 flex-col gap-1">{rows}</div>;
@@ -452,7 +570,21 @@ function CheckCardView({ item, strings }: { item: Of<'check'>; strings: Strings 
   );
 }
 
-function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings: Strings }) {
+function Response({
+  turn,
+  busy,
+  strings,
+  own,
+  ways,
+}: {
+  turn: Turn;
+  busy: boolean;
+  strings: Strings;
+  /** The agent is the built-in one: its tool rows are drawn as Mastra draws them. */
+  own: boolean;
+  /** The built-in agent's connections, for the turn whose failure can still be acted on: the last one. */
+  ways?: { connect: Connect; onConnections: () => void };
+}) {
   const lastText = turn.parts.reduce((found, part, index) => (part.kind === 'text' && !part.thought ? index : found), -1);
   return (
     <div className="flex min-w-0 flex-col gap-4">
@@ -478,7 +610,7 @@ function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings:
               </div>
             );
           case 'tools':
-            return <Tools key={key} part={part} strings={strings} />;
+            return <Tools key={key} part={part} strings={strings} own={own} />;
           case 'permission':
             return <PermissionCard key={key} item={part.item} />;
           case 'approval':
@@ -519,6 +651,7 @@ function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings:
             return (
               <Notice key={key} variant={part.item.error ? 'destructive' : 'note'}>
                 <Notice.Message>{part.item.text}</Notice.Message>
+                {ways && part.item.problem && <ProblemWays problem={part.item.problem} busy={busy} strings={strings} {...ways} />}
               </Notice>
             );
           case 'check':
@@ -730,15 +863,182 @@ function Queue({ state }: { state: AssistantState }) {
   );
 }
 
+/** The models the agent lists and the one in use: its model option when it describes itself by options. */
+function modelChoice(state: AssistantState) {
+  const option = state.config?.find(entry => entry.category === 'model');
+  return {
+    option,
+    current: option ? option.currentValue : state.model,
+    ids: option ? option.options.map(choice => choice.value) : state.models.map(model => model.id),
+  };
+}
+
+type ModelOption = ReturnType<typeof modelChoice>['option'];
+
+/** Picking a model is setting the agent's model option, as develop's picker does it. */
+function pickModel(option: ModelOption, id: string) {
+  post(option ? { type: 'config', id: option.id, value: id } : { type: 'model', id });
+}
+
+/** One of the built-in agent's connections, whichever kind it is. */
+type Connection = Connect['plans'][number] | Connect['keys'][number] | Connect['custom'][number];
+
+/**
+ * The connections there is something to talk through, in the order one is taken before another
+ * with the same prefix: a plan that is signed in, a saved key no plan stands before, a custom
+ * address. A plan whose sign-in has expired comes last: its models are still named after it
+ * when nothing else gives them.
+ */
+function liveOf(connect: Connect): Connection[] {
+  return [
+    ...connect.plans.filter(plan => plan.state === 'in'),
+    ...connect.keys.filter(key => key.saved && !key.shadowed),
+    ...connect.custom,
+    ...connect.plans.filter(plan => plan.state === 'expired'),
+  ];
+}
+
+/**
+ * The connection a model goes through: the one whose prefix, then `/`, its id starts with, and
+ * the longest when several do. A prefix may itself hold a `/` (a custom address), so a model id
+ * is never cut at a slash to find its provider.
+ */
+function connectionOf(connect: Connect, model: string) {
+  let found: Connection | undefined;
+  for (const entry of liveOf(connect)) {
+    if (model.startsWith(`${entry.prefix}/`) && (!found || entry.prefix.length > found.prefix.length)) found = entry;
+  }
+  return found;
+}
+
+/**
+ * Where a model stands in the picker: under the connection it goes through, by the rest of its
+ * id. One that no connection gives stands under the first part of its id.
+ */
+function placeOf(connect: Connect, id: string) {
+  const via = connectionOf(connect, id);
+  const at = via ? via.prefix.length : id.indexOf('/');
+  return at > 0 ? { group: id.slice(0, at), model: id.slice(at + 1), via } : { group: '', model: id, via };
+}
+
+/**
+ * The mark beside a connection: the first letter of its name in a square. Not the provider's own
+ * logo: this repository carries no other product's icons.
+ */
+function Mark({ name, size }: { name: string; size: number }) {
+  return <ProviderLogoMonogram providerId={name} style={{ width: size, height: size }} />;
+}
+
+/** A connection's name for a narrow place: "ChatGPT Plus/Pro (Codex Subscription)" reads "ChatGPT Plus/Pro". */
+const shortName = (name: string) => name.replace(/\s*[(\uFF08][^()\uFF08\uFF09]*[)\uFF09]$/, '') || name;
+
+/** The words of this page for the effort levels an agent names; a level it names otherwise keeps the agent's own word. */
+const EFFORT_WORDS = { off: 'effortOff', low: 'effortLow', medium: 'effortMedium', high: 'effortHigh', xhigh: 'effortXhigh', max: 'effortMax' } as const;
+
+/** The agent's reasoning effort (its `thought_level` option), as Mastra's thinking-level parts take it. */
+function effortOf(state: AssistantState) {
+  const option = state.config?.find(entry => entry.category === 'thought_level');
+  if (!option) return null;
+  const { strings } = state;
+  const options: ThinkingLevelOption[] = option.options.map(choice => {
+    const known = EFFORT_WORDS[choice.value as keyof typeof EFFORT_WORDS];
+    return {
+      value: choice.value,
+      label: (known && strings[known]) || choice.name,
+      ...(choice.value === 'off' ? { emphasis: 'muted' as const } : choice.value === 'max' ? { emphasis: 'warning' as const } : {}),
+    };
+  });
+  return { options, value: option.currentValue, label: strings.effort || option.name, set: (value: string) => post({ type: 'config', id: option.id, value }) };
+}
+
+declare global {
+  // Read by Mastra's model picker in place of its fixed English (PICKER_TEXTS in vite.config.mjs).
+  var assistantPickerText: { search: string; none: string; all: string; refine: string; filter: string; title: string } | undefined;
+}
+
+/**
+ * The built-in agent's model and its reasoning effort, at the composer's lower right, as Mastra
+ * groups the two (its story "ThinkingLevel / Picker / Grouped With Model Picker"). The model is
+ * in Mastra's own model picker, and the list is the models of the connection in use, newest
+ * first: a user who switched to one provider is not shown another's models. Another provider is
+ * switched to on the Connections page, which the picker's last row opens. The effort is Mastra's
+ * thinking-level picker beside it.
+ */
+function ProviderPicker({ state, connect, onConnections }: { state: AssistantState; connect: Connect; onConnections: () => void }) {
+  const { strings } = state;
+  const { option, current, ids } = modelChoice(state);
+  if (ids.length === 0) return null;
+  const groups = new Map<string, ModelPickerProvider>();
+  const names = new Map<string, string>();
+  for (const id of ids) {
+    const { group, model, via } = placeOf(connect, id);
+    names.set(group, via?.name ?? group);
+    const provider = groups.get(group) ?? { id: group, name: via ? shortName(via.name) : group, models: [] };
+    provider.models.push({ id: model, releaseDate: connect.dates[id] });
+    groups.set(group, provider);
+  }
+  // The connections in their own order; what no connection gives comes last.
+  const order = liveOf(connect).map(entry => entry.prefix);
+  const rank = (group: string) => (order.includes(group) ? order.indexOf(group) : order.length);
+  const at = current ? placeOf(connect, current) : null;
+  const inUse = at ? groups.get(at.group) : undefined;
+  // Before the agent has a model there is no connection in use to keep to: every connection's models, a group each.
+  const providers = inUse ? [inUse] : [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
+  const effort = effortOf(state);
+  const mark = (group: string) => <Mark name={names.get(group) ?? group} size={14} />;
+  // Mastra's picker has no property for its own words: the build puts these in their place
+  // (PICKER_TEXTS in vite.config.mjs).
+  globalThis.assistantPickerText = {
+    search: strings.modelSearch,
+    none: strings.modelNoMatch,
+    all: strings.dfmAll,
+    refine: strings.modelRefine,
+    filter: strings.modelFilter,
+    title: strings.model,
+  };
+  const model = (
+    <MastraModelPicker
+      providers={providers}
+      value={at ? { provider: at.group, model: at.model } : undefined}
+      onValueChange={next => {
+        const id = `${next.provider}/${next.model}`;
+        if (id !== current) pickModel(option, id);
+      }}
+      renderProviderIcon={mark}
+      addProvider={{ label: strings.connTitle, render: <button type="button" onClick={onConnections} /> }}
+      busy={state.configPending}
+      side="top"
+      align="end"
+    >
+      <span className="sr-only">{strings.model}: </span>
+      {at && (
+        <span aria-hidden className="flex shrink-0">
+          {mark(at.group)}
+        </span>
+      )}
+      <span className="max-w-40 truncate">{at ? formatModelName(at.model) : strings.model}</span>
+    </MastraModelPicker>
+  );
+  if (!effort) return model;
+  return (
+    <ButtonsGroup size="sm" aria-label={strings.modelEffort} className="min-w-0">
+      {model}
+      <ThinkingLevelPicker options={effort.options} value={effort.value} label={effort.label} onChange={effort.set} />
+    </ButtonsGroup>
+  );
+}
+
 /**
  * The agent's model, searched by typing; an agent that takes a model it did not list is sent what
  * was typed. The list is the agent's own models, or its model option when it describes itself by
  * options. Mastra's trigger is as wide as its row by default; `w-auto` keeps it to its text, so it
  * takes no room from the controls beside it and is the one that is cut short in a narrow panel.
+ * The built-in agent's list is drawn by `ProviderPicker`.
  */
-function ModelPicker({ state }: { state: AssistantState }) {
+function ModelPicker({ state, onConnections }: { state: AssistantState; onConnections: () => void }) {
   const { strings } = state;
   const [typed, setTyped] = useState('');
+  if (state.connect) return <ProviderPicker state={state} connect={state.connect} onConnections={onConnections} />;
   const option = state.config?.find(entry => entry.category === 'model');
   const listed: ComboboxOption[] = option
     ? option.options.map(choice => ({
@@ -780,7 +1080,54 @@ function ModelPicker({ state }: { state: AssistantState }) {
   );
 }
 
-function AssistantComposer({ state }: { state: AssistantState }) {
+/**
+ * How Mastra's composer dresses a session mode: its icon, and the tone the mode gives the label and
+ * the composer's ring. A mode Mastra has no dress for is plain.
+ */
+const MODE_DRESS: Record<string, { Icon: typeof Hammer; tone: ComposerTone }> = {
+  build: { Icon: Hammer, tone: 'green' },
+  plan: { Icon: MapIcon, tone: 'purple' },
+  fast: { Icon: Zap, tone: 'orange' },
+};
+
+/** The built-in agent's session mode (its `mode` option), by the names the agent gives its modes. */
+function sessionMode(state: AssistantState) {
+  const option = state.connect ? state.config?.find(entry => entry.category === 'mode') : undefined;
+  if (!option) return null;
+  const dress = MODE_DRESS[option.currentValue];
+  return { option, tone: dress?.tone ?? ('default' as const), Icon: dress?.Icon };
+}
+
+/** The session mode in the composer, where and as Mastra's own composer has it: a select whose label wears the mode's tone. */
+function SessionMode({ state, session }: { state: AssistantState; session: NonNullable<ReturnType<typeof sessionMode>> }) {
+  const { option, tone, Icon } = session;
+  const current = option.options.find(choice => choice.value === option.currentValue);
+  return (
+    <Select
+      value={option.currentValue}
+      onValueChange={value => {
+        if (typeof value === 'string' && value !== option.currentValue) post({ type: 'config', id: option.id, value });
+      }}
+      disabled={state.configPending}
+    >
+      <SelectTrigger variant="ghost" size="sm" aria-label={option.name} className="w-auto">
+        <ComposerToneLabel tone={tone} className="inline-flex items-center gap-1.5">
+          {Icon && <Icon size={12} aria-hidden />}
+          {current?.name ?? option.currentValue}
+        </ComposerToneLabel>
+      </SelectTrigger>
+      <SelectContent>
+        {option.options.map(choice => (
+          <SelectItem key={choice.value} value={choice.value}>
+            {choice.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function AssistantComposer({ state, onConnections }: { state: AssistantState; onConnections: () => void }) {
   const { strings } = state;
   const [text, setText] = useState('');
   const [sent, setSent] = useState(0);
@@ -796,6 +1143,7 @@ function AssistantComposer({ state }: { state: AssistantState }) {
   ];
   const mode = modes.find(option => option.value === state.permissions)?.label ?? strings.modeEdits;
   const skill = state.skills.find(option => option.id === state.skill);
+  const session = sessionMode(state);
   const picked = state.picked.groups.length > 0 || state.picked.omitted !== null;
   const selected = state.selection.groups.length > 0 || state.selection.omitted !== null;
   const chips = state.attachments.length + state.loading.length > 0 || picked || selected || (state.attachView && state.images);
@@ -831,7 +1179,7 @@ function AssistantComposer({ state }: { state: AssistantState }) {
         submit();
       }}
     >
-      <ComposerRing busy={busy}>
+      <ComposerRing tone={session?.tone} busy={busy}>
         <ComposerBox sendingPulseKey={sent}>
           {chips && (
             <ComposerAttachments aria-label={strings.withNext} className="flex flex-wrap gap-2 px-3 pt-3">
@@ -906,6 +1254,14 @@ function AssistantComposer({ state }: { state: AssistantState }) {
             value={text}
             onChange={event => setText(event.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={event => {
+              // A picture on the clipboard is attached by the app, which reads the clipboard itself.
+              const data = event.clipboardData;
+              if (!data.types.includes('text/plain') && [...data.items].some(item => item.type.startsWith('image/'))) {
+                event.preventDefault();
+                post({ type: 'paste_picture' });
+              }
+            }}
           />
           <ComposerActions>
             <ComposerActionsStart className="gap-1">
@@ -913,14 +1269,11 @@ function AssistantComposer({ state }: { state: AssistantState }) {
                 <DropdownMenu.Trigger variant="ghost" size="icon-sm" aria-label={strings.add} tooltip={strings.add}>
                   <Plus />
                 </DropdownMenu.Trigger>
-                <DropdownMenu.Content side="top" align="start">
+                {/* Four short rows: this menu never scrolls, so its scroll bar is never shown. */}
+                <DropdownMenu.Content side="top" align="start" className="[&_[data-slot=scroll-area-scrollbar]]:hidden">
                   <DropdownMenu.Item onClick={() => post({ type: 'add_file' })}>
                     <FileText />
                     {strings.addFile}
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item onClick={() => post({ type: 'paste_picture' })}>
-                    <Image />
-                    {strings.pastePicture}
                   </DropdownMenu.Item>
                   <DropdownMenu.Separator />
                   <DropdownMenu.CheckboxItem
@@ -942,6 +1295,7 @@ function AssistantComposer({ state }: { state: AssistantState }) {
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu>
+              {session && <SessionMode state={state} session={session} />}
               <DropdownMenu>
                 <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={mode}>
                   {mode}
@@ -966,7 +1320,7 @@ function AssistantComposer({ state }: { state: AssistantState }) {
               )}
             </ComposerActionsStart>
             <ComposerActionsEnd>
-              <ModelPicker state={state} />
+              <ModelPicker state={state} onConnections={onConnections} />
               {busy && (
                 <Button type="button" size="icon-sm" className="shrink-0" aria-label={strings.stop} tooltip={strings.stop} onClick={() => post({ type: 'stop' })}>
                   <Square />
@@ -1014,98 +1368,112 @@ function notReadyOf(state: AssistantState) {
 const ROW_HINT = 'ml-auto inline-block pl-4 whitespace-nowrap text-muted-foreground first-letter:uppercase';
 
 /** The panel's own bar: the agent and what it runs with, its state, and the panel's controls. */
-function AssistantBar({ state, onSetup }: { state: AssistantState; onSetup: (id: string) => void }) {
+function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState; onSetup: (id: string) => void; onConnections: () => void }) {
   const { strings } = state;
   const agent = state.agents.find(entry => entry.id === state.agent);
   const name = agent?.name ?? (state.detecting ? strings.detecting : strings.noneFound);
   const badge = stateBadge(state);
-  // The agent's own settings; its model is picked beside the message box.
-  const settings = (state.config ?? []).filter(option => option.category !== 'model');
+  // The agent's own settings; its model is picked beside the message box, and so are the built-in agent's effort and mode.
+  const settings = (state.config ?? []).filter(option => option.category !== 'model' && !(state.connect && (option.category === 'thought_level' || option.category === 'mode')));
   const notReady = notReadyOf(state);
+  // The built-in agent is the only one there is: its connections stand where the agents are picked.
+  const connect = state.connect;
+  // What the agent itself offers to set, in the menu the agent is in: its modes and its options.
+  const ownSettings = (
+    <>
+      {state.modes.length > 0 && (
+        <DropdownMenu.RadioSub
+          label={state.modes.find(mode => mode.id === state.mode)?.name ?? state.mode}
+          options={state.modes.map(mode => ({ value: mode.id, label: mode.name }))}
+          value={state.mode}
+          onValueChange={id => post({ type: 'agent_mode', id })}
+          closeOnSelect
+        />
+      )}
+      {settings.map(option => (
+        <DropdownMenu.RadioSub
+          key={option.id}
+          label={option.name}
+          options={option.options.map(choice => ({ value: choice.value, label: choice.name }))}
+          value={option.currentValue}
+          onValueChange={value => post({ type: 'config', id: option.id, value })}
+          closeOnSelect
+        />
+      ))}
+    </>
+  );
   return (
     <ChatShell.Bar>
       <ChatShell.Column className="flex-row items-center justify-between gap-2 py-2">
         <div className="-m-0.5 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 gap-y-2 overflow-hidden p-0.5">
-          <DropdownMenu>
-            <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={strings.switchAgent} tooltip={strings.switchAgent} className="max-w-full min-w-12">
-              <span className="truncate">{name}</span>
-              <ChevronDown />
-            </DropdownMenu.Trigger>
-            {/* As tall as the panel has room for: the rows under the agents are not left to a scroll. */}
-            <DropdownMenu.Content align="start" className="max-h-[var(--available-height)]">
-              {/* The agents to pick, each with what is known of it without starting it. */}
-              {state.agents.length > 0 && (
-                <DropdownMenu.RadioGroup
-                  value={state.agent ?? ''}
-                  onValueChange={(id: unknown) => {
-                    if (typeof id === 'string' && state.agents.some(entry => entry.id === id)) post({ type: 'agent', id });
-                  }}
-                >
-                  {state.agents.map(entry => (
-                    <DropdownMenu.RadioItem key={entry.id} value={entry.id} closeOnClick>
-                      <span className="flex min-w-0 flex-1 items-center">
-                        <span className="truncate">{entry.name}</span>
-                        {entry.hint && <span className={ROW_HINT}>{entry.hint}</span>}
-                      </span>
-                      {/* The room the picked row's check mark takes, so the words line up. */}
-                      {entry.id !== state.agent && <span aria-hidden className="size-icon-sm shrink-0" />}
-                    </DropdownMenu.RadioItem>
-                  ))}
-                </DropdownMenu.RadioGroup>
-              )}
-              {/* Not agents to pick: a row says what is missing, and opens how to add it. */}
-              {notReady.length > 0 && (
-                <>
-                  {state.agents.length > 0 && <DropdownMenu.Separator />}
-                  <DropdownMenu.Label>{strings.notReady}</DropdownMenu.Label>
-                  {notReady.map(entry => (
-                    <DropdownMenu.Item key={entry.id} onClick={() => onSetup(entry.id)}>
-                      <span className="flex min-w-0 flex-1 items-center">
-                        <span className="truncate">{entry.name}</span>
-                        <span className={ROW_HINT}>{strings.notSetUp}</span>
-                      </span>
-                      <span aria-hidden className="size-icon-sm shrink-0" />
-                    </DropdownMenu.Item>
-                  ))}
-                </>
-              )}
-              {(state.modes.length > 0 || settings.length > 0) && <DropdownMenu.Separator />}
-              {state.modes.length > 0 && (
-                <DropdownMenu.RadioSub
-                  label={state.modes.find(mode => mode.id === state.mode)?.name ?? state.mode}
-                  options={state.modes.map(mode => ({ value: mode.id, label: mode.name }))}
-                  value={state.mode}
-                  onValueChange={id => post({ type: 'agent_mode', id })}
-                  closeOnSelect
-                />
-              )}
-              {settings.map(option => (
-                <DropdownMenu.RadioSub
-                  key={option.id}
-                  label={option.name}
-                  options={option.options.map(choice => ({ value: choice.value, label: choice.name }))}
-                  value={option.currentValue}
-                  onValueChange={value => post({ type: 'config', id: option.id, value })}
-                  closeOnSelect
-                />
-              ))}
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item onClick={() => post({ type: 'add_agent' })}>{strings.addAgent}</DropdownMenu.Item>
-              <DropdownMenu.Item onClick={() => post({ type: 'settings' })}>{strings.settings}</DropdownMenu.Item>
-              <DropdownMenu.Item onClick={() => post({ type: 'refresh' })}>{strings.refresh}</DropdownMenu.Item>
-              {/* Stopping the agent is the agent's own matter, said in full here: the square by Send stops only the running message. */}
-              {state.running && (
-                <>
-                  <DropdownMenu.Separator />
-                  <DropdownMenu.Item onClick={() => post({ type: 'disconnect' })}>{strings.disconnect}</DropdownMenu.Item>
-                </>
-              )}
-            </DropdownMenu.Content>
-          </DropdownMenu>
-          {/* It wraps out of sight when the name leaves it no room. */}
-          <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
-            {badge.label}
-          </Badge>
+          {connect ? (
+            <ConnectionButton state={state} connect={connect} onOpen={onConnections} />
+          ) : (
+            <DropdownMenu>
+              <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={strings.switchAgent} tooltip={strings.switchAgent} className="max-w-full min-w-12">
+                <span className="truncate">{name}</span>
+                <ChevronDown />
+              </DropdownMenu.Trigger>
+              {/* As tall as the panel has room for: the rows under the agents are not left to a scroll. */}
+              <DropdownMenu.Content align="start" className="max-h-[var(--available-height)]">
+                {/* The agents to pick, each with what is known of it without starting it. */}
+                {state.agents.length > 0 && (
+                  <DropdownMenu.RadioGroup
+                    value={state.agent ?? ''}
+                    onValueChange={(id: unknown) => {
+                      if (typeof id === 'string' && state.agents.some(entry => entry.id === id)) post({ type: 'agent', id });
+                    }}
+                  >
+                    {state.agents.map(entry => (
+                      <DropdownMenu.RadioItem key={entry.id} value={entry.id} closeOnClick>
+                        <span className="flex min-w-0 flex-1 items-center">
+                          <span className="truncate">{entry.name}</span>
+                          {entry.hint && <span className={ROW_HINT}>{entry.hint}</span>}
+                        </span>
+                        {/* The room the picked row's check mark takes, so the words line up. */}
+                        {entry.id !== state.agent && <span aria-hidden className="size-icon-sm shrink-0" />}
+                      </DropdownMenu.RadioItem>
+                    ))}
+                  </DropdownMenu.RadioGroup>
+                )}
+                {/* Not agents to pick: a row says what is missing, and opens how to add it. */}
+                {notReady.length > 0 && (
+                  <>
+                    {state.agents.length > 0 && <DropdownMenu.Separator />}
+                    <DropdownMenu.Label>{strings.notReady}</DropdownMenu.Label>
+                    {notReady.map(entry => (
+                      <DropdownMenu.Item key={entry.id} onClick={() => onSetup(entry.id)}>
+                        <span className="flex min-w-0 flex-1 items-center">
+                          <span className="truncate">{entry.name}</span>
+                          <span className={ROW_HINT}>{strings.notSetUp}</span>
+                        </span>
+                        <span aria-hidden className="size-icon-sm shrink-0" />
+                      </DropdownMenu.Item>
+                    ))}
+                  </>
+                )}
+                {(state.modes.length > 0 || settings.length > 0) && <DropdownMenu.Separator />}
+                {ownSettings}
+                <DropdownMenu.Separator />
+                <DropdownMenu.Item onClick={() => post({ type: 'add_agent' })}>{strings.addAgent}</DropdownMenu.Item>
+                <DropdownMenu.Item onClick={() => post({ type: 'settings' })}>{strings.settings}</DropdownMenu.Item>
+                <DropdownMenu.Item onClick={() => post({ type: 'refresh' })}>{strings.refresh}</DropdownMenu.Item>
+                {/* Stopping the agent is the agent's own matter, said in full here: the square by Send stops only the running message. */}
+                {state.running && (
+                  <>
+                    <DropdownMenu.Separator />
+                    <DropdownMenu.Item onClick={() => post({ type: 'disconnect' })}>{strings.disconnect}</DropdownMenu.Item>
+                  </>
+                )}
+              </DropdownMenu.Content>
+            </DropdownMenu>
+          )}
+          {/* It wraps out of sight when the name leaves it no room. With nothing connected the button beside it says so, and a state would only repeat it. */}
+          {!nothingConnected(state) && (
+            <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+              {badge.label}
+            </Badge>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           {state.agent && !state.running && (
@@ -1125,6 +1493,21 @@ function AssistantBar({ state, onSetup }: { state: AssistantState; onSetup: (id:
                 {state.left ? strings.dockRight : strings.dockLeft}
               </DropdownMenu.Item>
               <DropdownMenu.Item onClick={() => post({ type: 'minimize' })}>{strings.minimize}</DropdownMenu.Item>
+              {/* The built-in agent has no menu of its own in the bar: what that menu held for the agent is here. */}
+              {connect && (
+                <>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item onClick={onConnections}>{strings.connTitle}</DropdownMenu.Item>
+                  {ownSettings}
+                  <DropdownMenu.Item onClick={() => post({ type: 'settings' })}>{strings.settings}</DropdownMenu.Item>
+                  {state.running && (
+                    <>
+                      <DropdownMenu.Separator />
+                      <DropdownMenu.Item onClick={() => post({ type: 'disconnect' })}>{strings.disconnect}</DropdownMenu.Item>
+                    </>
+                  )}
+                </>
+              )}
             </DropdownMenu.Content>
           </DropdownMenu>
           <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.close} tooltip={strings.close} onClick={() => post({ type: 'close' })}>
@@ -1204,6 +1587,627 @@ function AdapterSetup({ agent, strings, onClose }: { agent: MissingAgent; string
   );
 }
 
+/* ---- The built-in agent's connections ----
+ * The button in the bar, the page that takes the conversation's place, and the page's parts.
+ * All of it is drawn only while the app sends `connect`, which it does for the built-in agent
+ * alone, and every action here is one the app refuses for any other agent.
+ */
+
+/**
+ * The way to the connections, always in the bar: it names the connection in use, or says that
+ * nothing is connected, and opens the page where one signs in, signs out and changes provider.
+ */
+function ConnectionButton({ state, connect, onOpen }: { state: AssistantState; connect: Connect; onOpen: () => void }) {
+  const { strings } = state;
+  // Before the agent has a model, the first connection there is stands for all of them. A model
+  // that no connection serves (its key was taken away, and the user has not picked another) names
+  // none: the button then says only that there are connections.
+  const current = modelChoice(state).current;
+  const used = connect.connected ? (current ? connectionOf(connect, current) : liveOf(connect)[0]) : undefined;
+  return (
+    <Button type="button" variant="ghost" size="sm" aria-label={strings.connButtonTip} tooltip={strings.connButtonTip} className="max-w-full min-w-12" onClick={onOpen}>
+      {used ? (
+        <span aria-hidden className="flex shrink-0">
+          <Mark name={used.name} size={14} />
+        </span>
+      ) : (
+        <Plug />
+      )}
+      {connect.connected && <span className="shrink-0 text-muted-foreground">{strings.connButton}</span>}
+      {/* An agent that is not running has not said what is connected: the button names the page, not a state. */}
+      <span className="truncate">{connect.connected ? used && shortName(used.name) : listed(connect) ? strings.connButtonNone : strings.connTitle}</span>
+      <ChevronRight />
+    </Button>
+  );
+}
+
+/** How a connection stands, for Mastra's status mark: one that is not there is a ring, not a dot. */
+function standing(label: string, tone: 'success' | 'neutral' | 'error' | 'progress') {
+  return { label, description: label, tone, glyph: tone === 'neutral' ? ('ring' as const) : ('filled' as const) };
+}
+
+/**
+ * One connection on the connections page: what it is, what can be done, and under it a sign-in
+ * under way. How it stands is said only when the button beside it does not say it already: a row
+ * with **Sign in** needs no "not signed in". `detail` is the one more thing worth a glance, the
+ * account or the address.
+ */
+function ConnRow({
+  entry,
+  detail,
+  note,
+  status,
+  actions,
+  children,
+}: {
+  entry: Connection;
+  detail?: string | null;
+  note?: string;
+  status?: ReturnType<typeof standing>;
+  actions: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 px-3 py-1.5">
+      {/* One line where the panel has room: the name, how it stands, what can be done. In a panel as
+          narrow as the app's the standing goes under the name and the buttons under both, so that no
+          name is cut short. */}
+      <div className="flex min-h-control-sm min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="flex min-w-0 flex-1 basis-44 flex-wrap items-center gap-x-2.5 gap-y-0.5">
+          <span className="flex min-w-0 items-center gap-2">
+            <span aria-hidden className="flex shrink-0">
+              <Mark name={entry.name} size={14} />
+            </span>
+            <span className="min-w-0 text-label break-words">{entry.name}</span>
+          </span>
+          {status && <Status presentation={status} className="shrink-0 text-caption" />}
+          {detail && (
+            <Txt variant="caption" tone="muted" className="min-w-0 break-all">
+              {detail}
+            </Txt>
+          )}
+        </span>
+        <span className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</span>
+      </div>
+      {note && (
+        <Txt variant="caption" tone="muted" className="ps-[1.375rem] break-words">
+          {note}
+        </Txt>
+      )}
+      {children}
+    </div>
+  );
+}
+
+/** What went wrong, where it went wrong: under the row or in the form, in the colour of an error. */
+function Wrong({ children }: { children: ReactNode }) {
+  return (
+    <Txt as="p" variant="caption" className="text-destructive-foreground" role="alert">
+      {children}
+    </Txt>
+  );
+}
+
+/**
+ * A key for one provider. What is typed stays in this box until Save hands it to the app, which
+ * keeps it in the system keychain; nothing shows it again. A save is answered by a later state:
+ * the key saved and no error, and the dialog is done; an error, and it stays to say so.
+ */
+function KeyDialog({
+  entry,
+  error,
+  stamp,
+  strings,
+  onClose,
+}: {
+  entry: Connect['keys'][number];
+  error: string | null;
+  stamp: unknown;
+  strings: Strings;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  // Whether a save waits for its answer, and whether the last one was refused. An error that
+  // was there before this save is not about this key, so only an answer is shown.
+  const [waiting, setWaiting] = useState(false);
+  const [refused, setRefused] = useState(false);
+  useEffect(() => {
+    if (!waiting) return;
+    if (error) {
+      setWaiting(false);
+      setRefused(true);
+    } else if (entry.saved) {
+      onClose();
+    }
+  }, [stamp]);
+  const title = entry.title;
+  function save() {
+    const key = draft.trim();
+    if (!key) return;
+    setWaiting(true);
+    setRefused(false);
+    post({ type: 'conn_key', provider: entry.id, key });
+  }
+  return (
+    <Dialog open onOpenChange={open => !open && onClose()}>
+      {/* Cancel closes it: Mastra's own cross has an English name. */}
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{strings.connKeyBody}</DialogDescription>
+        </DialogHeader>
+        <DialogBody>
+          <Input
+            autoFocus
+            type="password"
+            maxLength={4096}
+            aria-label={title}
+            placeholder={strings.connKeyPlaceholder}
+            value={draft}
+            onChange={event => setDraft(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') save();
+            }}
+          />
+          {refused && error && <Wrong>{error}</Wrong>}
+        </DialogBody>
+        <DialogFooter>
+          <DialogCancel>{strings.cancel}</DialogCancel>
+          <DialogAction disabled={!draft.trim()} onConfirm={save}>
+            {strings.connSave}
+          </DialogAction>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Whether an address is one the app keeps: http or https, a host, and neither a sign-in nor a query in it. */
+function plainAddress(text: string): 'ok' | 'not' | 'secret' {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return 'not';
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname || /\s/.test(text)) return 'not';
+  // A key belongs in the key box: in the address it would be kept and shown as part of it.
+  return url.username || url.password || url.search ? 'secret' : 'ok';
+}
+
+/**
+ * An address that speaks OpenAI's protocol, or a model on this computer. Its models are typed:
+ * none are found by asking the address. What is typed is checked here as the app checks it, and
+ * said under the boxes; the form stays, with what was typed, until the app has kept the address.
+ */
+function CustomForm({
+  connect,
+  stamp,
+  strings,
+  onDone,
+}: {
+  connect: Connect;
+  stamp: unknown;
+  strings: Strings;
+  onDone: () => void;
+}) {
+  const [draft, setDraft] = useState({ name: '', url: '', key: '', models: '' });
+  const [missing, setMissing] = useState<string | null>(null);
+  // The name sent, while the app's answer is awaited: the address listed, or its reason for not keeping it.
+  const [waiting, setWaiting] = useState<string | null>(null);
+  useEffect(() => {
+    if (!waiting) return;
+    if (connect.error) {
+      setWaiting(null);
+      setMissing(connect.error);
+    } else if (connect.custom.some(entry => entry.name === waiting)) {
+      onDone();
+    }
+  }, [stamp]);
+  function add() {
+    const name = draft.name.trim();
+    const url = draft.url.trim();
+    const address = plainAddress(url);
+    if (!name || address === 'not') return setMissing(strings.connCustomNeedBoth);
+    if (address === 'secret') return setMissing(strings.connCustomPlainUrl);
+    if (connect.custom.some(entry => entry.name === name)) return setMissing(strings.connCustomExists);
+    const models = draft.models
+      // A comma as it is typed in Chinese separates as well.
+      .split(/[,\uFF0C]/)
+      .map(model => model.trim())
+      .filter(Boolean);
+    if (models.length === 0) return setMissing(strings.connCustomNeedModel);
+    if (models.length > 16 || models.some(model => model.length > 120)) return setMissing(strings.connCustomTooMany);
+    const key = draft.key.trim();
+    setMissing(null);
+    setWaiting(name);
+    post(key ? { type: 'conn_custom', name, url, key, models } : { type: 'conn_custom', name, url, models });
+  }
+  return (
+    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border p-3">
+      {missing && <Wrong>{missing}</Wrong>}
+      <Field className="gap-1">
+        <FieldLabel>{strings.connCustomName}</FieldLabel>
+        <Input autoFocus size="sm" maxLength={40} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
+      </Field>
+      <Field className="gap-1">
+        <FieldLabel>{strings.connCustomUrl}</FieldLabel>
+        <Input size="sm" maxLength={400} value={draft.url} onChange={event => setDraft({ ...draft, url: event.target.value })} />
+      </Field>
+      <Field className="gap-1">
+        <FieldLabel>{strings.connCustomKey}</FieldLabel>
+        <Input
+          type="password"
+          size="sm"
+          maxLength={4096}
+          placeholder={strings.connKeyPlaceholder}
+          value={draft.key}
+          onChange={event => setDraft({ ...draft, key: event.target.value })}
+        />
+      </Field>
+      <Field className="gap-1">
+        <FieldLabel>{strings.connCustomModels}</FieldLabel>
+        <Input size="sm" value={draft.models} onChange={event => setDraft({ ...draft, models: event.target.value })} />
+      </Field>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="primary" disabled={waiting !== null} onClick={add}>
+          {strings.connAdd}
+        </Button>
+        <Button type="button" size="sm" onClick={onDone}>
+          {strings.cancel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A sign-in that ends with a code: the browser shows it once the user agrees, and it is pasted
+ * back here. The agent judges it; one it finds incomplete stays in the box to be mended.
+ */
+function PasteCode({ id, incomplete, strings }: { id: string; incomplete: boolean; strings: Strings }) {
+  const [draft, setDraft] = useState('');
+  const code = draft.trim();
+  const done = () => post({ type: 'conn_code', id, code });
+  return (
+    <div className="flex min-w-0 flex-col gap-2 pt-2">
+      <Txt variant="caption">{strings.connCodeHint}</Txt>
+      <Input
+        size="sm"
+        maxLength={4096}
+        aria-label={strings.connCodePlaceholder}
+        placeholder={strings.connCodePlaceholder}
+        value={draft}
+        onChange={event => setDraft(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter' && code) done();
+        }}
+      />
+      {incomplete && <Wrong>{strings.connCodeIncomplete}</Wrong>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="primary" disabled={!code} onClick={done}>
+          {strings.connCodeDone}
+        </Button>
+        <Button type="button" size="sm" onClick={() => post({ type: 'conn_cancel' })}>
+          {strings.cancel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Where a plan's sign-in stands, under its row: the page is being opened, the browser has it, a
+ * code is to be typed there, or a code is to be pasted here. A sign-in waits for the user as
+ * long as it takes, so each step that waits can be given up.
+ */
+function SignInProgress({ login, strings }: { login: NonNullable<Connect['login']>; strings: Strings }) {
+  const ways = (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button type="button" size="sm" onClick={() => post({ type: 'conn_reopen' })}>
+        {strings.connReopen}
+      </Button>
+      <Button type="button" size="sm" onClick={() => post({ type: 'conn_cancel' })}>
+        {strings.cancel}
+      </Button>
+    </div>
+  );
+  switch (login.phase) {
+    case 'starting':
+      // Getting the address can take a provider some seconds, or not come at all: this too can be given up.
+      return (
+        <div className="flex min-w-0 flex-col gap-2 pt-2">
+          <Txt variant="caption">{strings.connStarting}</Txt>
+          <div>
+            <Button type="button" size="sm" onClick={() => post({ type: 'conn_cancel' })}>
+              {strings.cancel}
+            </Button>
+          </div>
+        </div>
+      );
+    case 'browser':
+      return (
+        <div className="flex min-w-0 flex-col gap-2 pt-2">
+          <Txt variant="caption">{strings.connWaiting}</Txt>
+          {ways}
+        </div>
+      );
+    case 'device':
+      return (
+        <div className="flex min-w-0 flex-col gap-2 pt-2">
+          <Txt variant="caption">{strings.connDeviceHint}</Txt>
+          {login.userCode && (
+            <div className="flex min-w-0 items-start gap-2">
+              <ToolCallOutput text={login.userCode} />
+              <CopyButton content={login.userCode} />
+            </div>
+          )}
+          {ways}
+        </div>
+      );
+    case 'code':
+      return <PasteCode id={login.id} incomplete={login.error === 'incomplete'} strings={strings} />;
+  }
+}
+
+/** A sign-in that could not finish, under its row: why, and the two ways on. */
+function SignInProblem({ problem, busy, strings }: { problem: NonNullable<Connect['problem']>; busy: boolean; strings: Strings }) {
+  const why = { port: strings.connProblemPort, offline: strings.connProblemOffline, failed: strings.connProblemFailed }[problem.kind];
+  return (
+    <div className="flex min-w-0 flex-col gap-2 pt-2">
+      <Wrong>{why ?? strings.connProblemFailed}</Wrong>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="primary" disabled={busy} onClick={() => post({ type: 'conn_login', id: problem.id })}>
+          {strings.retry}
+        </Button>
+        <Button type="button" size="sm" onClick={() => post({ type: 'conn_cancel' })}>
+          {strings.cancel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The one place for connections: every way the built-in agent can reach a model, each with how
+ * it stands and what can be done. A new user lands here, and the button in the bar comes back to
+ * it at any time.
+ */
+function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; connect: Connect; onClose: () => void }) {
+  const { strings } = state;
+  const [keyFor, setKeyFor] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const { option, current, ids } = modelChoice(state);
+  const used = connectionOf(connect, current);
+  // Only one sign-in runs at a time.
+  const signing = connect.login !== null;
+  const keyEntry = connect.keys.find(key => key.id === keyFor);
+  /** A connection's newest model, in the order Mastra's picker lists them: by release date, then by id. */
+  const newest = (entry: Connection) =>
+    ids.filter(id => connectionOf(connect, id) === entry).sort((a, b) => compareModelReleaseDates(connect.dates[a], connect.dates[b]) || a.localeCompare(b))[0];
+  // Changing provider is picking a model of it. A connection the agent lists no model for has nothing to pick.
+  const usedOrUse = (entry: Connection) => {
+    if (entry === used) {
+      return (
+        <Badge variant="success" emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+          {strings.connInUse}
+        </Badge>
+      );
+    }
+    const model = newest(entry);
+    return (
+      model && (
+        <Button type="button" size="sm" disabled={state.configPending} onClick={() => pickModel(option, model)}>
+          {strings.connUse}
+        </Button>
+      )
+    );
+  };
+  const askKey = (id: string) => setKeyFor(id);
+  return (
+    <div className="flex min-w-0 flex-col gap-3 py-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <h2 className="min-w-0 truncate text-sm font-medium">{strings.connTitle}</h2>
+        {connect.connected && (
+          <Button type="button" size="sm" variant="primary" className="shrink-0" onClick={onClose}>
+            {strings.connBack}
+          </Button>
+        )}
+      </div>
+      {/* What is in use is marked on its row below. */}
+      {!connect.connected && (
+        <Txt variant="caption" tone="muted">
+          {strings.connNoneTitle}
+        </Txt>
+      )}
+
+      <SettingsGroup>
+      <SettingsHeader>
+        <SettingsTitle>{strings.connPlans}</SettingsTitle>
+      </SettingsHeader>
+      <SettingsContainer>
+      {connect.plans.map(plan => {
+        const here = connect.login?.id === plan.id ? connect.login : null;
+        const status =
+          plan.state === 'in'
+            ? standing(strings.connSignedIn, 'success')
+            : here
+              ? standing(strings.connSigningIn, 'progress')
+              : plan.state === 'expired'
+                ? standing(strings.connExpired, 'error')
+                : undefined;
+        const signOut = (
+          <Button type="button" size="sm" onClick={() => post({ type: 'conn_logout', id: plan.id })}>
+            {strings.connSignOut}
+          </Button>
+        );
+        // The row whose sign-in is under way has its own ways on under it; the others wait for it.
+        const signIn = (label: string) =>
+          !here && (
+            <Button type="button" size="sm" variant={plan.state === 'expired' ? 'primary' : 'default'} disabled={signing} onClick={() => post({ type: 'conn_login', id: plan.id })}>
+              {label}
+            </Button>
+          );
+        return (
+          <ConnRow
+            key={plan.id}
+            entry={plan}
+            detail={plan.state === 'out' ? undefined : plan.account}
+            status={status}
+            actions={
+              plan.state === 'in' ? (
+                <>
+                  {usedOrUse(plan)}
+                  {signOut}
+                </>
+              ) : plan.state === 'expired' ? (
+                <>
+                  {signIn(strings.connSignInAgain)}
+                  {signOut}
+                </>
+              ) : (
+                signIn(strings.connSignIn)
+              )
+            }
+          >
+            {here ? (
+              <SignInProgress login={here} strings={strings} />
+            ) : (
+              connect.problem?.id === plan.id && <SignInProblem problem={connect.problem} busy={signing} strings={strings} />
+            )}
+          </ConnRow>
+        );
+      })}
+      </SettingsContainer>
+      </SettingsGroup>
+
+      <SettingsGroup>
+      <SettingsHeader>
+        <SettingsTitle>{strings.connKeys}</SettingsTitle>
+      </SettingsHeader>
+      <SettingsContainer>
+      {connect.keys.map(key => (
+        <ConnRow
+          key={key.id}
+          entry={key}
+          note={key.saved && key.shadowed ? strings.connShadowed : undefined}
+          status={key.saved ? standing(strings.connKeySaved, 'success') : undefined}
+          actions={
+            key.saved ? (
+              <>
+                {!key.shadowed && usedOrUse(key)}
+                <Button type="button" size="sm" onClick={() => askKey(key.id)}>
+                  {strings.connKeyUpdate}
+                </Button>
+                <Button type="button" size="sm" onClick={() => post({ type: 'conn_key_remove', provider: key.id })}>
+                  {strings.connRemove}
+                </Button>
+              </>
+            ) : (
+              <Button type="button" size="sm" onClick={() => askKey(key.id)}>
+                {strings.connKeyAdd}
+              </Button>
+            )
+          }
+        />
+      ))}
+      </SettingsContainer>
+      </SettingsGroup>
+
+      <SettingsGroup>
+      <SettingsHeader>
+        <SettingsTitle>{strings.connCustom}</SettingsTitle>
+      </SettingsHeader>
+      <SettingsContainer>
+      {connect.custom.map(entry => (
+        <ConnRow
+          key={entry.id}
+          entry={entry}
+          detail={entry.url}
+          actions={
+            <>
+              {usedOrUse(entry)}
+              <Button type="button" size="sm" onClick={() => post({ type: 'conn_custom_remove', id: entry.id })}>
+                {strings.connRemove}
+              </Button>
+            </>
+          }
+        />
+      ))}
+      {adding ? (
+        <div className="min-w-0 px-3 py-2.5">
+          <CustomForm connect={connect} stamp={state} strings={strings} onDone={() => setAdding(false)} />
+        </div>
+      ) : (
+        <div className="px-3 py-1.5">
+          <Button type="button" size="sm" variant="ghost" className="-mx-2" onClick={() => setAdding(true)}>
+            <Plus />
+            {strings.connCustomAdd}
+          </Button>
+        </div>
+      )}
+      </SettingsContainer>
+      </SettingsGroup>
+      {keyEntry && <KeyDialog entry={keyEntry} error={connect.error} stamp={state} strings={strings} onClose={() => setKeyFor(null)} />}
+    </div>
+  );
+}
+
+/**
+ * The ways on from a turn that failed on its connection, under the app's sentence about it:
+ * sign in again, look at the connections, or send the message again.
+ */
+function ProblemWays({
+  problem,
+  connect,
+  busy,
+  strings,
+  onConnections,
+}: {
+  problem: TurnProblem;
+  connect: Connect;
+  busy: boolean;
+  strings: Strings;
+  onConnections: () => void;
+}) {
+  // A sign-in that was refused is a plan's (`auth`); a key that was refused (`key`) is mended on the page.
+  const plan = connect.plans.find(entry => entry.prefix === problem.prefix && entry.state !== 'out');
+  const way =
+    problem.kind === 'auth' ? (
+      <Button
+        type="button"
+        size="sm"
+        variant="primary"
+        onClick={() => {
+          if (plan && !connect.login) post({ type: 'conn_login', id: plan.id });
+          // The sign-in goes on where its steps are shown: a code to type or to paste is asked for there.
+          onConnections();
+        }}
+      >
+        {strings.connSignInAgain}
+      </Button>
+    ) : problem.kind === 'key' ? (
+      <>
+        <Button type="button" size="sm" variant="primary" onClick={onConnections}>
+          {strings.connTitle}
+        </Button>
+        {/* The message is kept: with the key mended it is sent from here. */}
+        <Button type="button" size="sm" disabled={busy} onClick={() => post({ type: 'conn_retry' })}>
+          {strings.retry}
+        </Button>
+      </>
+    ) : problem.kind === 'quota' || problem.kind === 'model' ? (
+      <Button type="button" size="sm" onClick={onConnections}>
+        {strings.connTitle}
+      </Button>
+    ) : problem.kind === 'network' || problem.kind === 'rate' ? (
+      <Button type="button" size="sm" disabled={busy} onClick={() => post({ type: 'conn_retry' })}>
+        {strings.retry}
+      </Button>
+    ) : null;
+  return way && <div className="flex flex-wrap items-center gap-2 pt-2">{way}</div>;
+}
+
 /** Nothing said yet: the Assistant's name, or how to get an agent when there is none. */
 function Welcome({ state }: { state: AssistantState }) {
   const { strings } = state;
@@ -1250,14 +2254,52 @@ function Welcome({ state }: { state: AssistantState }) {
 const ROOM = { '--chat-edge': '0rem', '--chat-gutter': '0.5rem', '--chat-fade': '1.25rem' } as CSSProperties;
 const COLUMN = 'px-1 md:px-1';
 
+/** Whether the built-in agent has told its connections: it lists its sign-ins and keys whenever it runs. */
+const listed = (connect: Connect) => connect.plans.length + connect.keys.length + connect.custom.length > 0;
+
+/** The built-in agent runs and has nothing to talk to: the Connections page is then the panel. */
+const nothingConnected = (state: AssistantState | null) => Boolean(state?.connect && listed(state.connect) && !state.connect.connected);
+
 export function App({ state }: { state: AssistantState | null }) {
   const turns = useMemo(() => turnsOf(state?.items ?? []), [state?.items]);
   // The agent whose missing adapter is being explained; the card goes once Refresh finds it.
   const [setup, setSetup] = useState<string | null>(null);
+  // The built-in agent's connections page takes the conversation's place while it is open. With
+  // the agent running and nothing connected it is the panel; once a connection is there it is not
+  // taken away behind the user's back: they go to the conversation with its button.
+  const [connOpen, setConnOpen] = useState(false);
+  const none = nothingConnected(state);
+  useEffect(() => {
+    if (none) setConnOpen(true);
+  }, [none]);
   if (!state) return null;
   const { strings } = state;
+  const connect = state.connect;
   const explained = notReadyOf(state).find(agent => agent.id === setup);
   const busy = state.state === 'busy';
+  // The page is made of what the agent says of its connections. One that is not running (not
+  // started yet, stopped, or failed to start) has said nothing, and the page would be empty: the
+  // conversation stays, with the app's words about the agent and the bar's button to start it.
+  const showConn = connect ? listed(connect) && (connOpen || none) : false;
+  const openConn = () => {
+    setConnOpen(true);
+    // Asked for while the agent is not running: it is started, and the page shows once it has answered.
+    if (connect && !listed(connect) && !state.running) post({ type: 'connect' });
+  };
+  // The built-in agent's sign-ins are on its connections page, not on the app's sign-in card.
+  const signIn = Boolean(state.auth) && !connect;
+  const confirmNew = state.confirmNew && (
+    <Notice variant="warning" title={strings.newChatConfirm}>
+      <div className="flex flex-wrap items-center gap-2 pt-2">
+        <Button type="button" size="sm" variant="primary" onClick={() => post({ type: 'confirm_new', yes: true })}>
+          {strings.newChat}
+        </Button>
+        <Button type="button" size="sm" onClick={() => post({ type: 'confirm_new', yes: false })}>
+          {strings.cancel}
+        </Button>
+      </div>
+    </Notice>
+  );
   const plan = turns.at(-1)?.plan;
   const tasks: TaskListItem[] = (plan ?? []).map((step, index) => ({
     id: String(index),
@@ -1267,9 +2309,18 @@ export function App({ state }: { state: AssistantState | null }) {
   }));
   return (
     <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
+      <FilePreviewDialog file={state.filePreview ?? null} />
       <ChatShell className="h-full" style={ROOM} scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}>
-        <AssistantBar state={state} onSetup={setSetup} />
-        <ChatShell.Stage>
+        <AssistantBar state={state} onSetup={setSetup} onConnections={openConn} />
+        {connect && showConn && (
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+            {/* The bar's New chat asks here too: the conversation it is asked in is out of sight. */}
+            {confirmNew}
+            <ConnectionsPage state={state} connect={connect} onClose={() => setConnOpen(false)} />
+          </div>
+        )}
+        {/* Out of sight, not gone: what is typed in the message box is still there on the way back. */}
+        <ChatShell.Stage className={showConn ? 'hidden' : undefined}>
           <ChatShell.Viewport>
             <ChatShell.Content>
               <ChatShell.Column className={`gap-8 py-6 ${COLUMN}`}>
@@ -1282,20 +2333,9 @@ export function App({ state }: { state: AssistantState | null }) {
                     ))}
                   </div>
                 )}
-                {state.confirmNew && (
-                  <Notice variant="warning" title={strings.newChatConfirm}>
-                    <div className="flex flex-wrap items-center gap-2 pt-2">
-                      <Button type="button" size="sm" variant="primary" onClick={() => post({ type: 'confirm_new', yes: true })}>
-                        {strings.newChat}
-                      </Button>
-                      <Button type="button" size="sm" onClick={() => post({ type: 'confirm_new', yes: false })}>
-                        {strings.cancel}
-                      </Button>
-                    </div>
-                  </Notice>
-                )}
-                {state.auth && <SignIn state={state} />}
-                {turns.length === 0 && state.pending.length === 0 && !state.auth && <Welcome state={state} />}
+                {confirmNew}
+                {signIn && <SignIn state={state} />}
+                {turns.length === 0 && state.pending.length === 0 && !signIn && <Welcome state={state} />}
                 {turns.map((turn, index) => {
                   const live = busy && index === turns.length - 1;
                   return (
@@ -1318,7 +2358,13 @@ export function App({ state }: { state: AssistantState | null }) {
                         </MessageScrollerItem>
                       )}
                       <MessageScrollerItem messageId={`${turn.id}-reply`} className="flex min-w-0 flex-col gap-3">
-                        <Response turn={turn} busy={live} strings={strings} />
+                        <Response
+                          turn={turn}
+                          busy={live}
+                          strings={strings}
+                          own={Boolean(connect)}
+                          ways={connect && index === turns.length - 1 ? { connect, onConnections: openConn } : undefined}
+                        />
                       </MessageScrollerItem>
                     </ChatShell.Turn>
                   );
@@ -1345,7 +2391,7 @@ export function App({ state }: { state: AssistantState | null }) {
                     </span>
                   )}
                 </ComposerStatus>
-                <AssistantComposer state={state} />
+                <AssistantComposer state={state} onConnections={openConn} />
               </ChatShell.Column>
             </ChatShell.Dock>
           </ChatShell.Viewport>

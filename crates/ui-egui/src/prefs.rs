@@ -1592,6 +1592,10 @@ preference_settings! {
     mastra_workflow_id: String = String::new(), PAGE_ASSISTANT;
     /// How to start the Mastra runtime: its command line (empty: not configured).
     mastra_runtime_command: String = String::new(), PAGE_ASSISTANT;
+    /// The custom addresses the built-in agent is handed (the Assistant's Connections page adds
+    /// and removes them). A key is never here: it lives in the system keychain. No page reset
+    /// discards them, as none discards the agents the user added.
+    mastra_custom: Vec<crate::agent_chat::connections::CustomAddress> = Vec::new();
 
     // ---- Sketch / selection modifier bindings (classic defaults; alternate mapping is opt-in) ----
     /// Modifier that suppresses sketch auto-snap while drawing or dragging a sketch point.

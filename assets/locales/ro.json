@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "Agentul a atins limita de {limit} modificări pentru un mesaj. Trimiteți alt mesaj pentru a-l lăsa să continue.",
   "ui.agent_chat_login_found": "autentificare găsită",
   "ui.agent_chat_minimize": "Minimizează într-o bandă",
-  "ui.agent_chat_mode_all": "Tot",
+  "ui.agent_chat_mode_all": "Automat",
   "ui.agent_chat_mode_ask": "Întreabă",
   "ui.agent_chat_mode_edits": "Modificări",
   "ui.agent_chat_model_custom": "Folosește modelul personalizat: {model}",
