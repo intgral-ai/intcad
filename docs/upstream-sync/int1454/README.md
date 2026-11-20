@@ -8,6 +8,7 @@ work is sliced, and what still needs a human decision.
 | --- | --- |
 | [baseline.md](baseline.md) | frozen SHAs, release windows, diff scale, CI/test baseline, machine limits |
 | [ledger.md](ledger.md) | upstream-sync ledger: units, commit ranges, function, IntCAD status, licence, dependencies, disposition |
+| [blocked-dispositions.md](blocked-dispositions.md) | itemized exclusions, pending decisions, and engineering gates; not sign-off |
 | [dag.md](dag.md) | real crate dependency graph, conflict matrix, ownership, change waves |
 | [licence-audit.md](licence-audit.md) | licence map, brand boundary at v0.44.1, adoption rules |
 | [test-matrix.md](test-matrix.md) | PR-level and final gates, platform matrix, E2E protocol |
