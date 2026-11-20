@@ -1241,6 +1241,23 @@ fn an_unreadable_key_keeps_the_terminal_state_fail_closed() {
 }
 
 #[test]
+fn a_key_directory_listing_failure_keeps_the_terminal_state_fail_closed() {
+    let fixture = terminal_run_with_key("terminal-key-listing-failure");
+    std::fs::remove_file(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    let keys = fixture.port.store.keys_dir();
+    std::fs::remove_dir_all(&keys).unwrap();
+    std::fs::write(&keys, b"not a directory").unwrap();
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file(), "a failed key listing is not proof that no replay key exists");
+
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key);
+    assert!(replay.is_err(), "a failed key listing must not recreate Queued");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
 fn a_terminal_state_without_admission_or_key_is_retired() {
     let fixture = terminal_run_with_key("terminal-no-key");
     let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();

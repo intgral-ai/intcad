@@ -513,12 +513,15 @@ impl Store {
         removed
     }
 
-    /// Every submission key record that names this run. A read or parse failure is returned
-    /// rather than treated as absence: the caller must not delete a terminal run while a key
-    /// that could replay it is still present but unreadable.
+    /// Every submission key record that names this run. `Ok(None)` is returned only after the
+    /// keys directory and every entry were read successfully and no entry names this run. A
+    /// listing failure, an entry iteration failure, or an unreadable/parse-failed key is an
+    /// error: the caller must not delete a terminal run while a key that could replay it may
+    /// still be present.
     fn submission_for_run(&self, run_id: &str) -> Result<Option<SubmissionRecord>, ValidationError> {
-        let Ok(entries) = fs::read_dir(self.keys_dir()) else { return Ok(None) };
-        for entry in entries.flatten() {
+        let entries = fs::read_dir(self.keys_dir()).map_err(|error| ValidationError::internal(format!("validation key directory: {error}")))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| ValidationError::internal(format!("validation key directory entry: {error}")))?;
             let path = entry.path();
             if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
                 continue;
@@ -560,6 +563,11 @@ impl Store {
     /// The admission is already gone. Find its key record by run id and preserve the terminal
     /// outcome from it. No key record means a later replay has no key to find; an unreadable
     /// key record fails closed and keeps the state for a later cleanup.
+    ///
+    /// A pre-tombstone store where both admission and state were already removed has no record
+    /// for cleanup to inspect. That legacy state is indistinguishable from the documented
+    /// crash-after-key recovery; no migration or revival semantics are added here, and the key
+    /// remains until its normal expiry.
     fn remember_tombstone_from_key(&self, run_id: &str, state: ValidationState) -> bool {
         let submission = match self.submission_for_run(run_id) {
             Ok(Some(submission)) => submission,
