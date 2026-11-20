@@ -13905,6 +13905,7 @@ mod mastra_backend_tests {
     ) -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<std::sync::mpsc::Sender<ControlRequest>>) {
         use super::mastra_worker_support::*;
         app.install_billing(Box::<BridgeTestBilling>::default(), bridge_test_budget());
+        crate::control::test_support::TestAuthority::new("test-account", "test-installation", "test-session").install(&mut app);
         let program = super::mastra_peer_program().unwrap();
         let script_path = program.directory.join("bridge-peer");
         std::fs::write(&script_path, script).unwrap();

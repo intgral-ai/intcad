@@ -52,6 +52,18 @@ impl ConservativeDeadline {
         Some(self.expires_at.as_duration().saturating_sub(now.as_duration()))
     }
 
+    /// The half-open deadline instant. For a server-known expiry this is the local upper bound.
+    pub fn expires_at(&self) -> MonotonicInstant {
+        self.expires_at
+    }
+
+    /// Whether a request at `at` is at or after the known deadline. Unlike [`Self::remaining`], a
+    /// clock that moved backwards before the anchor does not turn an early request into an
+    /// expired one; only the local known expiry decides.
+    pub fn expired_at(&self, at: MonotonicInstant) -> bool {
+        at >= self.expires_at
+    }
+
     /// A valid renewal re-anchors at send. A late, rejected or anomalous exchange keeps the old bound.
     pub fn renewed(&self, attempt: &RenewalAttempt, server_remaining: Duration) -> Result<ConservativeDeadline, DeadlineError> {
         if !attempt.still_valid {

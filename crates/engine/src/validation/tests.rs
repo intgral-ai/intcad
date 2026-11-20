@@ -1718,3 +1718,31 @@ fn skill_validation_refuses_a_weakened_profile_or_an_unsupported_required_check(
     assert_eq!(port.store.count_admissions(), 0, "a refused profile is never admitted");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn a_controlled_stop_bound_ends_the_run_before_its_execution_deadline() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let control = RunControl { clock: clock.clone(), deadline_ms: 10_000, stop_at_ms: Some(3_000), cancel_path: PathBuf::from("never") };
+    assert_eq!(control.stop_at_ms(), 3_000, "the earlier measured bound wins");
+    assert!(!control.timed_out());
+    clock.set(3_000);
+    assert!(control.timed_out(), "a started controlled check stops at its measured safe stop");
+}
+
+#[test]
+fn a_free_run_keeps_only_its_execution_deadline() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let control = RunControl { clock: clock.clone(), deadline_ms: 10_000, stop_at_ms: None, cancel_path: PathBuf::from("never") };
+    assert_eq!(control.stop_at_ms(), 10_000);
+    assert!(!control.timed_out());
+    clock.set(10_000);
+    assert!(control.timed_out());
+}
+
+#[test]
+fn an_upper_bound_beyond_the_execution_deadline_does_not_fit() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let control = RunControl { clock, deadline_ms: 10_000, stop_at_ms: None, cancel_path: PathBuf::from("never") };
+    assert!(control.fits_before_deadline(Duration::from_secs(9)), "9 s from t=1 s fits the 10 s deadline");
+    assert!(!control.fits_before_deadline(Duration::from_secs(10)), "10 s from t=1 s would pass the deadline");
+}

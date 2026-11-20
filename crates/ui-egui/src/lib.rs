@@ -805,6 +805,14 @@ pub struct SolveApp {
     pub(crate) billing: Option<Box<dyn solidcraft_engine::entitlement::BillingPort + Send>>,
     /// Safe-stop bounds per controlled capability and entry; unverified until measured.
     pub(crate) budget: solidcraft_engine::entitlement::BudgetTable,
+    /// The host-authenticated account/installation/session the commit gate can prove now.
+    /// Only the desktop composition root supplies it; `None` keeps controlled commits closed.
+    pub(crate) commit_scope: Option<solidcraft_engine::entitlement::AuthenticatedHostScope>,
+    /// The host's current account status for revocation checks at scheduling and commit.
+    pub(crate) commit_account: Option<Box<dyn solidcraft_engine::entitlement::AccountService + Send>>,
+    /// The host's monotonic clock, re-read at the actual commit point (never a request's creation
+    /// time). `None` keeps controlled commits closed.
+    pub(crate) commit_clock: Option<Box<dyn solidcraft_engine::entitlement::MonotonicClock + Send>>,
     /// The New Project window, when open.
     pub new_project: Option<new_project::NewProject>,
     /// The Project Settings window, when open.
@@ -996,6 +1004,9 @@ impl SolveApp {
             account: account::State::default(),
             billing: None,
             budget: solidcraft_engine::entitlement::BudgetTable::unverified_default(),
+            commit_scope: None,
+            commit_account: None,
+            commit_clock: None,
             new_project: None,
             project_settings: None,
             dfm_chat: dfm_chat::State::default(),
@@ -1025,6 +1036,40 @@ impl SolveApp {
     ) {
         self.billing = Some(billing);
         self.budget = budget;
+    }
+
+    /// Install the host's current authenticated identity, account status and monotonic clock for
+    /// the commit gate. It must match the authority that minted the operations; the desktop
+    /// composition root replaces it on sign-in, sign-out and account switch.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_commit_authority(
+        &mut self,
+        scope: solidcraft_engine::entitlement::AuthenticatedHostScope,
+        account: Box<dyn solidcraft_engine::entitlement::AccountService + Send>,
+        clock: Box<dyn solidcraft_engine::entitlement::MonotonicClock + Send>,
+    ) {
+        self.commit_scope = Some(scope);
+        self.commit_account = Some(account);
+        self.commit_clock = Some(clock);
+    }
+
+    /// Remove the commit authority on sign-out, account switch or teardown. Controlled results
+    /// that arrive afterwards are dropped instead of written into the next session.
+    pub fn clear_commit_authority(&mut self) {
+        self.commit_scope = None;
+        self.commit_account = None;
+        self.commit_clock = None;
+    }
+
+    /// The browser has no commit authority: keep ordinary free CAD and refuse controlled commits.
+    #[cfg(target_arch = "wasm32")]
+    pub fn install_commit_authority(
+        &mut self,
+        scope: solidcraft_engine::entitlement::AuthenticatedHostScope,
+        account: Box<dyn solidcraft_engine::entitlement::AccountService + Send>,
+        clock: Box<dyn solidcraft_engine::entitlement::MonotonicClock + Send>,
+    ) {
+        drop((scope, account, clock));
     }
 
     /// The browser has no billing authority: keep the anonymous free paths and ignore an attempt

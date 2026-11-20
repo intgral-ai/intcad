@@ -680,6 +680,7 @@ impl ValidationPort {
             let control = RunControl {
                 clock: Arc::clone(&self.clock),
                 deadline_ms: job.started_at_ms.saturating_add(duration_ms(self.limits.execution)),
+                stop_at_ms: None,
                 cancel_path: self.store.cancel_path(&job.run_id),
             };
             let outcome = self.runner.run(&job, &control);

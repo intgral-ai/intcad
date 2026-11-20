@@ -6,6 +6,7 @@
 
 mod budget;
 mod clock;
+mod gate;
 mod ports;
 mod types;
 
@@ -16,6 +17,10 @@ pub use budget::BudgetTable;
 #[cfg(test)]
 pub use clock::FakeMonotonicClock;
 pub use clock::{ConservativeDeadline, DeadlineError, MonotonicClock, MonotonicInstant, RenewalAttempt};
+pub use gate::{
+    AuthorizationBound, CommitDecision, CommitGate, LookupDisposition, ResultEvidence, SafeStopPlan, SettlementAction, finalize_lookup_disposition,
+    plan_safe_stop, settlement_for,
+};
 pub use ports::{AccountService, BillingPort, CredentialStore, OperationStore};
 #[cfg(test)]
 pub use ports::{CountingBilling, FakeAccountService, InMemoryOperationStore};

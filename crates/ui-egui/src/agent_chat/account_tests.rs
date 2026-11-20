@@ -209,6 +209,7 @@ fn forwarded_call_is_admitted_once_across_reissue() {
     let billing = CountingBilling::default();
     let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
     app.install_billing(Box::new(billing.clone()), bridge_budget());
+    crate::control::test_support::TestAuthority::from_scope(call.trusted().scope().clone()).install(&mut app);
     let (mut req, _rx) =
         ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"engine.commands"}), call.trusted().clone(), None, None);
     let first = admit_once(&mut app, &mut req).expect("the forwarded host call is admitted");

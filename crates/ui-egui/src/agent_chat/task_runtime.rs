@@ -372,6 +372,7 @@ mod tests {
     fn start(app: &mut SolveApp) -> (Arc<AtomicBool>, skill::Binding) {
         app.session = bracket();
         app.install_billing(Box::<TaskBilling>::default(), verified_budget());
+        crate::control::test_support::TestAuthority::new("test-account", "test-installation", "test-session").install(app);
         let active = Arc::new(AtomicBool::new(true));
         let stamp = app.session.document_stamp();
         app.agent_chat.turn = Some(Turn {
