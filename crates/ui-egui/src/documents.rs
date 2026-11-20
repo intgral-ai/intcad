@@ -925,6 +925,7 @@ impl SolveApp {
             || self.delete_check.is_some()
             || self.pending_feature_edit.is_some()
             || self.editing_state.is_some()
+            || self.dialog.as_ref().is_some_and(|d| d.editing.is_some())
             || self.file_picker.is_some()
             || self.file_load.busy()
             || self.saving.is_some()
@@ -940,7 +941,11 @@ impl SolveApp {
             return true;
         }
         self.docs.slots.iter().flatten().any(|slot| {
-            slot.jobs.blocks_quit() || slot.pending_feature_edit.is_some() || slot.edit_in_place.is_some() || slot.work.editing_state.is_some()
+            slot.jobs.blocks_quit()
+                || slot.pending_feature_edit.is_some()
+                || slot.edit_in_place.is_some()
+                || slot.work.editing_state.is_some()
+                || slot.work.dialog.as_ref().is_some_and(|d| d.editing.is_some())
         })
     }
 }
@@ -2667,6 +2672,102 @@ mod barrier_tests {
             "the editor waits in its inactive tab"
         );
         (h, first, marker)
+    }
+
+    /// Tab 0 holds a cosmetic `solid.thread` editor open (its history rolled back). A cosmetic
+    /// thread has no preview to pin, so the dialog carries `editing` while `editing_state` is
+    /// `None`; this is not the same feature-edit state the previewing fixtures use.
+    fn cosmetic_thread_editor() -> (crate::scenario::Harness, u64, Option<usize>) {
+        use crate::preselect_tests::thread_face;
+        use solidcraft_engine::Sel;
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.run("solid.cylinder", json!({"radius": 10, "height": 20})).unwrap();
+        let Sel::Face { point, .. } = thread_face(&h.app, "Body1") else { panic!("a face") };
+        let id = h
+            .app
+            .run("solid.thread", json!({"designation": "M20", "from": [10, 0, 20], "up_to": [10, 0, 5], "face": [point.x, point.y, point.z]}))
+            .unwrap()["feature"]
+            .as_u64()
+            .unwrap();
+        h.app.edit_feature(id);
+        h.frames(2);
+        assert!(h.app.editing_state.is_none(), "a cosmetic thread has no preview to pin");
+        assert_eq!(h.app.dialog.as_ref().and_then(|d| d.editing).map(|(id, _)| id), Some(id), "the dialog is the feature editor");
+        let marker = h.app.session.doc.marker;
+        (h, id, marker)
+    }
+
+    /// Approved R1 covers feature-edit dialogs, not only the `editing_state` preview pin: the
+    /// active cosmetic `solid.thread` editor owns a feature replace and a rolled-back marker.
+    #[test]
+    fn cosmetic_thread_editor_blocks_programmatic_quit() {
+        let (mut h, id, marker) = cosmetic_thread_editor();
+        let features = h.app.session.doc.features.len();
+        assert_eq!(
+            request_quit_programmatic(&mut h.app, true),
+            Err("quit refused: document-operation-pending"),
+            "force grants no consent while the shown tab holds a feature editor"
+        );
+        assert!(!h.app.quit_requested, "no quit was staged");
+        assert!(h.app.docs.quitting.is_none(), "no prompt or quitting guard");
+        assert!(h.app.docs.quit_intent.is_none(), "no consent token");
+        assert_eq!(h.app.host_close_state, HostCloseState::Ready, "the host close barrier is untouched");
+        assert_eq!(h.app.dialog.as_ref().and_then(|d| d.editing).map(|(id, _)| id), Some(id), "the editor stays open");
+        assert!(h.app.editing_state.is_none(), "still no preview pin");
+        assert_eq!(
+            (h.app.session.doc.features.len(), h.app.session.doc.marker),
+            (features, marker),
+            "the rolled-back history is where the edit left it"
+        );
+        assert!(h.app.session.is_dirty(), "the refused quit discarded nothing");
+    }
+
+    /// Approved R1: the same editor kept in an inactive tab is outstanding owner work. The final
+    /// shared check must refuse the staged quit before any Discard marks the shown tab saved.
+    #[test]
+    fn finish_quit_refuses_pending_work_from_an_inactive_cosmetic_thread_editor() {
+        let (mut h, id, marker) = cosmetic_thread_editor();
+        h.app.preferences.keep_work_on_tab_switch = true;
+        new_design(&mut h.app);
+        h.frames(2);
+        assert!(h.app.editing_state.is_none(), "the editor is not the shown tab's");
+        assert!(
+            h.app.docs.slots.first().and_then(Option::as_ref).is_some_and(|slot| {
+                slot.work.editing_state.is_none() && slot.work.dialog.as_ref().and_then(|d| d.editing).map(|(id, _)| id) == Some(id)
+            }),
+            "the dialog waits in its inactive tab without an editing state"
+        );
+        // Save tab 0 with its editor open, then show and dirty tab 1: the UI quit asks about tab
+        // 1 alone and stages with tab 0's kept editor still in its slot.
+        switch(&mut h.app, 0);
+        h.frames(2);
+        assert_eq!(h.app.dialog.as_ref().and_then(|d| d.editing).map(|(id, _)| id), Some(id));
+        let revision = h.app.session.design_revision();
+        assert_eq!(h.call("document.saved", json!({"revision": revision}))["ok"], true);
+        assert!(!h.app.session.is_dirty(), "the edited design is saved");
+        switch(&mut h.app, 1);
+        h.frames(2);
+        h.app.run("solid.box", json!({"length": 4, "width": 4, "height": 4})).unwrap();
+        assert!(h.app.session.is_dirty());
+        request_quit(&mut h.app);
+        assert_eq!(h.app.docs.closing, Some(1), "only the shown dirty tab is asked about");
+        answer_prompt(&mut h.app, Answer::DontSave);
+        assert!(h.app.quit_requested, "staged");
+        assert_eq!(h.app.docs.quit_intent.as_ref().map(|intent| intent.stage), Some(QuitStage::Staged));
+        assert!(
+            h.app.docs.slots[0].as_ref().is_some_and(|slot| slot.work.dialog.as_ref().and_then(|d| d.editing).map(|(id, _)| id) == Some(id)),
+            "the editor was never shown, so it waits in its inactive tab"
+        );
+        h.app.set_host_close_state(HostCloseState::Ready);
+        assert!(matches!(finish_quit(&mut h.app), Err(QuitIntentError::PendingWork)), "the final check refuses the staged quit");
+        assert!(!h.app.quit_requested && h.app.docs.quit_intent.is_none() && !quit_committed(&h.app));
+        assert!(h.app.session.is_dirty(), "no Discard mark_saved ran before the pending-work refusal");
+        assert!(h.app.docs.slots[0].as_ref().is_some_and(|slot| !slot.session.is_dirty()), "the saved tab is still saved");
+        switch(&mut h.app, 0);
+        h.frames(2);
+        assert_eq!(h.app.dialog.as_ref().and_then(|d| d.editing).map(|(id, _)| id), Some(id));
+        assert_eq!(h.app.session.doc.marker, marker, "the editor's rollback survived the refusal");
     }
 
     /// Approved W3/R1: a kept feature editor in an inactive tab is outstanding owner work that
