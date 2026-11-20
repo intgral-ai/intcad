@@ -83,7 +83,7 @@ fn placed_step_body_uses_imported_opacity_until_a_design_look_overrides_it() {
     let body = kernel::box_solid(Vec3::ZERO, Vec3::new(10.0, 10.0, 10.0))
         .unwrap()
         .with_color(Some([0.2, 0.6, 0.8]))
-        .with_paint(Some(kernel::Paint { opacity: 0.4, faces: Vec::new() }));
+        .with_paint(Some(kernel::Paint { opacity: 0.4, faces: Vec::new(), name: None }));
     let step =
         kernel::step_export_bodies(&[kernel::ExportBody { name: "Imported glass".into(), body: &body, color: body.color() }], &Default::default())
             .unwrap();
@@ -132,7 +132,7 @@ fn placed_step_body_uses_imported_opacity_until_a_design_look_overrides_it() {
 
 /// The colour of a built triangle vertex: its palette index resolves through the scene.
 fn vertex_color(scene: &crate::gpu::GpuScene, v: &[u8]) -> [u8; 4] {
-    let index = v.get(crate::gpu::TRI_SIZE - 4..crate::gpu::TRI_SIZE).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes);
+    let index = v.get(crate::gpu::TRI_COLOR_AT..crate::gpu::TRI_COLOR_AT + 4).and_then(|b| b.try_into().ok()).map_or(0, u32::from_le_bytes);
     scene.palette.get(crate::gpu::PaletteIndex(index)).unwrap_or([0; 4])
 }
 
@@ -243,9 +243,9 @@ fn an_opacity_class_change_keeps_vertices_and_rewrites_only_the_runs() {
     assert!(block.bytes.opaque.is_empty() && !block.bytes.glass.is_empty(), "the triangles moved to the glass runs");
     let triangles: u32 = block.bytes.glass.iter().map(|r| r.len() as u32).sum::<u32>() / 3;
     assert_eq!(block.bytes.glass.len(), 1, "one body of one class is one run, drawn with no index buffer");
-    // The planner's grids, no side longer than a fifth of the box's 26.9 mm diagonal: edges in
-    // 4, 3 and 2 pieces, faces of 4 × 3, 4 × 2 and 3 × 2 cells, 2 · (12 + 8 + 6) · 2 triangles.
-    assert_eq!(triangles, 104, "every triangle of the box");
+    // The vendored solidcore-tess leaves each planar face one triangle pair (two triangles):
+    // the box is drawn with twelve, where truck's planner subdivided each face into a grid.
+    assert_eq!(triangles, 12, "every triangle of the box");
     let vertex = block.bytes.glass.first().map_or(0, |r| r.start) as usize;
     let at = vertex * crate::gpu::TRI_SIZE;
     let colour = first_vertex(&second, block.bytes.vertices.get(at..).unwrap_or_default()).1;

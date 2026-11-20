@@ -175,10 +175,12 @@ fn hidden_bodies_are_out_of_scope() {
     assert_eq!(crate::shown_scope(&s), Some(Vec::new()), "nothing shown");
 }
 
-/// The reviewed Cylinder/Sphere case is refused safely: the preview fails, the document is not
-/// changed, and modeling, undo and saving still work afterwards.
+/// The reviewed Cylinder/Sphere case is handled safely: the sphere meets the cylinder's end face
+/// at one point only, so solidcore v0.44.1 finds no volume contact and the Join is a new, separate
+/// piece (`Apart`) instead of a failed preview; the document is not changed, and modeling, undo
+/// and saving still work afterwards.
 #[test]
-fn a_refused_cyl_sphere_join_leaves_the_document_unchanged() {
+fn a_point_touching_cyl_sphere_join_leaves_the_document_unchanged() {
     let mut s = Session::default();
     run(&mut s, "solid.cylinder", json!({"base": [22.5, 12.5, 2.5], "axis": [1, 0, 0], "radius": 11.25, "height": 5, "body_name": "Base"}));
     let before = s.model.state();
@@ -187,7 +189,7 @@ fn a_refused_cyl_sphere_join_leaves_the_document_unchanged() {
     let before_body_counter = before.body_counter;
     let before_sketches = before.sketches.len();
     let sphere = vec![("solid.sphere".to_string(), json!({"center": [10, 2.5, 0], "radius": 12.5, "operation": "join", "targets": ["Base"]}))];
-    assert_eq!(addition(&s, &sphere, false), None, "the reviewed Cylinder/Sphere Join is refused");
+    assert_eq!(addition(&s, &sphere, false), Some(Addition::Apart), "one point of contact is no Join (K0: solidcore's exact contact)");
     let after = s.model.state();
     assert_eq!(after.bodies.iter().map(|b| b.name.clone()).collect::<Vec<_>>(), before_names);
     assert_eq!(after.threads.len(), before_threads);

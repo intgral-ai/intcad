@@ -5,6 +5,7 @@ use solidcraft_geom::prelude::*;
 use std::f64::consts::{FRAC_PI_2, PI, SQRT_2};
 
 use serde_json::{Value, json};
+use solidcraft_io::DxfShape;
 
 use crate::Session;
 
@@ -195,8 +196,8 @@ fn a_shelled_tray_keeps_its_walls_and_unfolds_by_the_k_factor() {
     // It exports like a sheet made from flanges: an outline and four bend lines up.
     let dxf = run(&mut s, "sheet.export_dxf", json!({}));
     assert_eq!(dxf["bends"], 4);
-    let lines: Vec<&str> = dxf["dxf"].as_str().unwrap_or_default().lines().collect();
-    assert_eq!(lines.windows(2).filter(|w| w[0].trim() == "8" && w[1].trim() == "BEND_UP").count(), 4, "four bend lines");
+    let file = solidcraft_io::read_dxf_file(dxf["dxf"].as_str().unwrap_or_default()).unwrap();
+    assert_eq!(file.entities().iter().filter(|entity| file.layer(entity.layer()).unwrap().name() == "BEND_UP").count(), 4, "four bend lines");
     assert_eq!(run(&mut s, "sheet.export_bend_table", json!({"format": "json"}))["bends"], 4);
 }
 
@@ -917,11 +918,18 @@ fn flat_circles(s: &mut Session) -> Vec<(f64, [f64; 2])> {
 
 /// How many entities of each kind the flat pattern's DXF has.
 fn dxf_entities(s: &mut Session) -> (usize, usize, usize) {
-    let dxf = run(s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or("").replace("\r\n", "\n");
-    // Group codes may be padded (`  0`): compare the code and value lines trimmed.
-    let lines: Vec<&str> = dxf.lines().map(str::trim).collect();
-    let n = |kind: &str| lines.chunks(2).filter(|pair| pair == &["0", kind]).count();
-    (n("LINE"), n("ARC"), n("CIRCLE"))
+    let result = run(s, "sheet.export_dxf", json!({}));
+    let file = solidcraft_io::read_dxf_file(result["dxf"].as_str().unwrap()).unwrap();
+    let mut counts = (0, 0, 0);
+    for entity in file.entities() {
+        match entity.geometry() {
+            DxfShape::Line(..) => counts.0 += 1,
+            DxfShape::Arc { .. } => counts.1 += 1,
+            DxfShape::Circle { .. } => counts.2 += 1,
+            _ => {}
+        }
+    }
+    counts
 }
 
 /// A plate whose round holes' walls are two half-cylinders each (as many exporters write a hole)
@@ -1134,19 +1142,13 @@ fn contains(s: &Session, p: [f64; 3]) -> bool {
         .is_some_and(|b| b.body.classify_point(solidcore_record::Vec3::new(p[0], p[1], p[2])).unwrap() == solidcraft_kernel::PointClass::Inside)
 }
 
-/// The LINE entities a DXF draws on `layer` (group codes and values alternate, a line each).
+/// Count actual LINE geometry on an owned layer after the shared layered read.
 fn lines_on(dxf: &str, layer: &str) -> usize {
-    let lines: Vec<&str> = dxf.lines().map(str::trim).collect();
-    let mut in_line = false;
-    let mut count = 0;
-    for pair in lines.chunks(2) {
-        match pair {
-            ["0", kind] => in_line = *kind == "LINE",
-            ["8", name] if in_line && *name == layer => count += 1,
-            _ => {}
-        }
-    }
-    count
+    let file = solidcraft_io::read_dxf_file(dxf).unwrap();
+    file.entities()
+        .iter()
+        .filter(|entity| matches!(entity.geometry(), DxfShape::Line(..)) && file.layer(entity.layer()).unwrap().name() == layer)
+        .count()
 }
 
 /// A plate with an engraving converts: the engraving is a pocket of the sheet, so the sheet keeps
@@ -1807,6 +1809,12 @@ fn a_wall_on_part_of_an_edge_meets_a_wall_at_a_relieved_corner_and_is_relieved_a
 /// axes 45° round from the base. Returns the new design (with the rule), the picks and the
 /// design the tray was made in.
 fn tray_round_trip(shape: &str, two: bool) -> (Session, Vec<[f64; 3]>, Session) {
+    slotted_tray_round_trip(shape, two, &[])
+}
+
+/// [`tray_round_trip`] with `slots` (x0, y0, x1, y1) cut through the unfolded tray before it is
+/// folded again and written out.
+fn slotted_tray_round_trip(shape: &str, two: bool, slots: &[[f64; 4]]) -> (Session, Vec<[f64; 3]>, Session) {
     let (t, r) = (1.0, 1.0);
     let rule = json!({"name": "T", "thickness": "1 mm", "k_factor": "0.5", "bend_radius": "1 mm", "gap": "0.6 mm", "corner_relief_shape": shape, "corner_relief": "3 mm", "active": true});
     let mut a = Session::default();
@@ -1824,7 +1832,18 @@ fn tray_round_trip(shape: &str, two: bool) -> (Session, Vec<[f64; 3]>, Session) 
         all.extend(short.as_array().cloned().unwrap_or_default());
         run(&mut a, "sheet.flange", json!({"edges": all, "height": 30}));
     }
-    let path = std::env::temp_dir().join(format!("solidcraft-tray-round-trip-{shape}-{two}-{}.step", std::process::id()));
+    if !slots.is_empty() {
+        run(&mut a, "sheet.unfold", json!({}));
+        for (i, [x0, y0, x1, y1]) in slots.iter().enumerate() {
+            let name = format!("Slot{i}");
+            run(&mut a, "sketch.create", json!({"plane": "XY", "name": name}));
+            run(&mut a, "sketch.rectangle.two_point", json!({"p0": [x0, y0], "p1": [x1, y1]}));
+            run(&mut a, "sketch.finish", json!({}));
+            run(&mut a, "solid.extrude", json!({"sketch": name, "through_all": true, "operation": "cut", "direction": "symmetric"}));
+        }
+        run(&mut a, "sheet.refold", json!({}));
+    }
+    let path = std::env::temp_dir().join(format!("solidcraft-tray-round-trip-{shape}-{two}-{}-{}.step", slots.len(), std::process::id()));
     run(&mut a, "file.export", json!({"path": path.to_string_lossy()}));
     let mut s = Session::default();
     run(&mut s, "file.insert_step", json!({"path": path.to_string_lossy()}));
@@ -1873,6 +1892,40 @@ fn trays_of_its_own_sheet_metal_convert_back() {
                 got_bends.len() == bends.len() && got_bends.iter().zip(&bends).all(|(x, y)| (x - y).abs() < 1e-6),
                 "{what}: {got_bends:?} vs {bends:?}"
             );
+        }
+    }
+}
+
+/// A bend that slots cross is one bend, however many of its pieces are picked: the pieces of
+/// its cylinder between the slots are all bent, and the slots come back as cut-outs across it.
+#[test]
+fn a_bend_split_by_slots_across_it_converts_as_one_bend() {
+    // Two slots across the long bend at y = 0, one across the short bend at x = 120, from the
+    // base into the walls of the unfolded tray.
+    let slots = [[30.0, -6.0, 40.0, 8.0], [70.0, -6.0, 80.0, 8.0], [112.0, 55.0, 126.0, 65.0]];
+    for shape in ["notch", "tear"] {
+        for every in [false, true] {
+            let what = format!("{shape}, {}", if every { "every piece picked" } else { "one piece picked" });
+            let (mut s, mut picks, mut source) = slotted_tray_round_trip(shape, false, &slots);
+            if every {
+                let (o, d) = (2.0, 2.0 * std::f64::consts::FRAC_1_SQRT_2);
+                picks.extend([[15.0, o - d, o - d], [100.0, o - d, o - d], [120.0 - o + d, 20.0, o - d], [120.0 - o + d, 75.0, o - d]]);
+            }
+            let body = s.model.state().bodies.first().map(|b| b.name.clone()).unwrap_or_default();
+            let out = s.execute("sheet.convert", &json!({"body": body, "face": [60, 45, 0], "bends": picks, "rule": "T"}));
+            assert!(out.is_ok(), "{what}: {}", out.err().map(|e| e.to_string()).unwrap_or_default());
+            let (v, size, (area, bends)) = (volume(&mut source), flat_size(&mut source), flat_area_and_bends(&mut source));
+            let cutouts = flat(&mut source)["cutouts"].as_array().map(Vec::len);
+            assert_eq!(cutouts, Some(3), "{what}");
+            assert!((volume(&mut s) - v).abs() < 1e-6 * v, "{what}: {} vs {v}", volume(&mut s));
+            assert!(same_size(flat_size(&mut s), size, 1e-6), "{what}: {:?} vs {size:?}", flat_size(&mut s));
+            let (got_area, got_bends) = flat_area_and_bends(&mut s);
+            assert!((got_area - area).abs() < 1e-6 * area, "{what}: {got_area} vs {area}");
+            assert!(
+                got_bends.len() == bends.len() && got_bends.iter().zip(&bends).all(|(x, y)| (x - y).abs() < 1e-6),
+                "{what}: {got_bends:?} vs {bends:?}"
+            );
+            assert_eq!(flat(&mut s)["cutouts"].as_array().map(Vec::len), cutouts, "{what}");
         }
     }
 }

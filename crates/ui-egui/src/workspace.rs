@@ -103,7 +103,20 @@ const CONFIGURE: &[&str] = &["parameters.change", "config.table", "config.config
 /// Commands that stay for agents, MCP and scripts but are not offered to people: the sketch solves
 /// itself after every edit, so a Solve button (and the search hit for it) only confuses; drawn 3D
 /// points are moved with the triad that appears when one is clicked, not a Move button.
-pub const AGENT_ONLY: &[&str] = &["sketch.solve", "sketch.move3d"];
+///
+/// The ported registry also places commands the window has no dialog for; offering a button that
+/// only fails is worse than leaving the command to the control channel. Each stays callable and is
+/// recorded as a UI gap in `docs/upstream-sync/int1454/ledger.md`: assembly constraints, PCB
+/// (Gerber) import, frame end caps, airfoil import and Divide Curve.
+pub const AGENT_ONLY: &[&str] = &[
+    "sketch.solve",
+    "sketch.move3d",
+    "assembly.constraint.create",
+    "file.insert_gerber",
+    "frame.end_cap",
+    "sketch.insert_airfoil",
+    "sketch.point.divide",
+];
 
 pub const SECTIONS: &[Section] = &[
     Section {

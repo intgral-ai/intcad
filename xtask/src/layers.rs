@@ -40,6 +40,16 @@ pub const TABLE: &[(&str, Class)] = &[
     ("agent-task", Class::Layer(0)),
     // the pure DFM rule layer translated from intdfm (no workspace dependencies, no OCP)
     ("dfm-rules", Class::Layer(0)),
+    // colour rules and data any crate may share (no workspace dependencies)
+    ("color", Class::Layer(0)),
+    // a length in a design unit with its decimal places (no workspace dependencies)
+    ("display-units", Class::Layer(0)),
+    // versioned file formats: the tag, the version registry and its container (no app types)
+    ("format", Class::Layer(0)),
+    // the control channel shared by apps: token files, the loopback server and its requests, no UI
+    ("control", Class::Layer(0)),
+    // MCP machinery any app may share: JSON-RPC, tool schemas and checks, image results, no app types
+    ("mcp-server", Class::Layer(0)),
     // 3D mouse descriptors and reports (no workspace dependencies; the apps read the device)
     ("space-mouse", Class::Layer(0)),
     // the derive macros (proc-macro, no workspace dependencies)
@@ -51,9 +61,9 @@ pub const TABLE: &[(&str, Class)] = &[
     ("sketch", Class::Layer(1)),
     // the B-rep kernel, solidcore (the Rust port of NVIDIA's SMLib, ADR 0002); only the kernel uses it
     ("smlib", Class::Layer(1)),
-    // STEP (ISO 10303) exchange structure and geometry, no modelling backend
-    ("step", Class::Layer(1)),
     ("kernel", Class::Layer(1)),
+    // the shared viewport math and headless picture the renderer and the document use
+    ("viewport", Class::Layer(1)),
     ("render", Class::Layer(1)),
     // multibody dynamics (rigid bodies, joints, forces, time integration; geom only)
     ("dynamics", Class::Layer(1)),
@@ -64,6 +74,11 @@ pub const TABLE: &[(&str, Class)] = &[
     ("agent-task-engine", Class::Layer(4)),
     ("ui-egui", Class::Layer(5)),
     ("gpu", Class::Layer(5)),
+    // the viewport renderer's GPU work on wgpu: pipelines, offscreen pictures, adapter selection,
+    // and display plans evaluated in a compute shader; wgpu is a UI toolkit, so it sits at L5
+    ("viewport-gpu", Class::Layer(5)),
+    // the viewport in an egui window: egui-wgpu paint callbacks and install
+    ("viewport-egui", Class::Layer(5)),
     ("mcp", Class::Layer(5)),
     ("testkit", Class::Testkit),
     // apps and tooling
@@ -75,17 +90,24 @@ pub const TABLE: &[(&str, Class)] = &[
 
 /// Explicit orderings *within* a layer (earlier may be used by later).
 /// The viewport draws display plans the GPU crate evaluates and draws with its pipelines; the MCP
-/// server's tests draw screenshots with them. The kernel reads and writes STEP through `step`.
+/// server's tests draw screenshots with them. The kernel reads and writes STEP through `solidcore-step`.
 pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
+    // The viewport's GPU work is drawn with by the app's GPU crate, the egui paint callbacks and
+    // the UI itself (its viewport hands egui's device and pass to the pipelines).
+    &["viewport-gpu", "gpu"],
+    &["viewport-gpu", "viewport-egui"],
+    &["viewport-gpu", "ui-egui"],
+    &["viewport-egui", "ui-egui"],
     &["gpu", "ui-egui"],
     &["gpu", "mcp"],
     // The UI hosts the chat MCP server over the Mastra bridge lane (#9); the server never
     // depends on the UI.
     &["mcp", "ui-egui"],
+    // The renderer draws the viewport's camera, pictures and shading; it builds on them.
+    &["viewport", "render"],
     // The task controller's real engine ports sit beside the engine, below the UI.
     &["engine", "agent-task-engine"],
     &["smlib", "kernel"],
-    &["step", "kernel"],
 ];
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {

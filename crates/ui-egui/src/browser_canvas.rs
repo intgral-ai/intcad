@@ -98,7 +98,8 @@ pub(crate) fn click(app: &mut SolveApp, proj: &Proj, screen: Pos2) -> bool {
         return false;
     };
     let (vals, _) = doc.param_values();
-    let Ok(plane) = doc.canvas_plane(&vals, &c) else {
+    let state = crate::open_meshing::session_world(&app.session);
+    let Ok(plane) = doc.canvas_plane(&vals, &c, &state) else {
         return false;
     };
     let (origin, direction) = proj.ray(screen);
@@ -133,7 +134,8 @@ pub(crate) fn paint_marks(app: &SolveApp, painter: &egui::Painter, proj: &Proj) 
         return;
     };
     let (vals, _) = doc.param_values();
-    let Ok(plane) = doc.canvas_plane(&vals, c) else {
+    let state = crate::open_meshing::session_world(&app.session);
+    let Ok(plane) = doc.canvas_plane(&vals, c, &state) else {
         return;
     };
     let t = Tokens::get();
@@ -235,7 +237,8 @@ mod tests {
         let proj = crate::viewport::projection(&h.app, rect);
         let c = h.app.session.doc.canvases[0].clone();
         let (vals, _) = h.app.session.doc.param_values();
-        let plane = h.app.session.doc.canvas_plane(&vals, &c).unwrap();
+        let state = crate::open_meshing::session_world(&h.app.session);
+        let plane = h.app.session.doc.canvas_plane(&vals, &c, &state).unwrap();
         let ax = c.center.x - 20.0;
         let bx = c.center.x + 20.0;
         let sa = proj.to_screen(plane.to_world(solidcore_record::Vec2::new(ax, c.center.y))).expect("point A on screen");

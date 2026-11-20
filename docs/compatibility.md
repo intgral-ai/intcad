@@ -66,6 +66,19 @@ Not backward-compatible: builds up to 0.5 don't know the new tag and refuse file
 later builds. Test: `version_of` accepts both prefixes; legacy-tagged designs load and are
 re-tagged on save.
 
+The current format is 58: a new design is written as `solidcraft/58` (a drawing keeps its own
+`solidcraft-drawing/N`). There is one persistence implementation, `solidcraft_format` (the
+format `Family` and its `container`), and `crates/doc`/`crates/io` supply only the document types
+and the limits. A build that reads up to 51 cannot open a 58 file; a build newer than the file
+opens it instead of refusing it: what it reads is read, the parts it can't read (a feature, a
+parameter, a section) are named and kept as they came, and the file is saved under its own format
+number and change list. Intcad's five pre-58 pending changes (`bridged-counterbore`, `fillet-turn`,
+`hole-direction-own-faces`, `revolve-axis-origin-expressions`, `transferred-profile-frame`) are
+the files upstream folded into `v51`, byte for byte, so a design any earlier Intcad release saved
+is a prefix subset of `v51` and needs no migration: it opens and upgrades to 58 as usual. Tests:
+`a_design_saved_at_format_51_with_its_pending_changes_saves_and_reopens` (io), the format and
+newer-file tests in `crates/doc/src/format.rs` and `crates/doc/src/newer_file_tests.rs`.
+
 ## 3. `SOLVECRAFT_*` environment variables
 
 Every runtime variable is read through one helper, `solidcraft_geom::env` (`var`, `var_os`):
@@ -231,6 +244,18 @@ when the project moved to `docs.solidcraft.io` (#1920). A remote added from eith
 longer finds updates. Point it at the current one:
 `flatpak remote-modify --user --url=https://docs.solidcraft.io/flatpak/repo/ solidcraft`
 (use your remote's name: `solvecraft` for one added before 0.4), then `flatpak update --user`.
+
+## The geometry kernel
+
+The kernel is **solidcore**, vendored in `solidcore/` with its history, licence and attribution
+files (Apache-2.0; a Rust port of SMLib and SM_API from USD BRep). The workspace takes
+`solidcore`, `solidcore-record`, `solidcore-ops`, `solidcore-tess` and `solidcore-step` from that
+tree by path; there is no git revision pin and no second copy of the kernel. `solidcore/` is
+excluded from this workspace's lints and has its own toolchain file, as upstream publishes it.
+
+`crates/kernel` is the only crate that speaks to the kernel's modelling layer; `crates/smlib` and
+`crates/geom` keep the boundary types. A kernel change is made in `solidcore/` and carried here by
+updating the vendored tree, never by forking a second kernel in `crates/`.
 
 ## Draft design containers
 

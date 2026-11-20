@@ -188,7 +188,11 @@ pub(crate) fn edit_params(app: &SolveApp, effect: &StatusItem, id: &str, value: 
                 base = base.into_iter().zip(new_n).map(|(o, n)| o - n * projection).collect();
             }
             let flip = normal.iter().zip(n).map(|(a, b)| a * b).sum::<f64>() < 0.0;
-            Some(json!({"plane":{"origin":base,"normal":new_n},"offset":format!("{} mm",if id=="offset"{scalar(value)?}else{old_offset}),
+            // This field is the cut's distance along the plane's normal; the engine measures
+            // `offset` against that normal, so it is given negated.
+            let offset = if id == "offset" { scalar(value)? } else { old_offset };
+            let offset = format!("{} mm", -offset);
+            Some(json!({"plane":{"origin":base,"normal":new_n},"offset":offset,
                 "flip":if id=="flip"{check(value)?}else{flip},"hatch":if id=="hatch"{check(value)?}else{hatch}}))
         }
         StatusSetting::Continuity { .. } => {
@@ -243,7 +247,7 @@ pub(crate) fn dispatch(app: &mut SolveApp, ctx: &egui::Context, owner: &str, eve
                 return;
             }
             let mut camera = app.cam;
-            camera.fit(&bounds);
+            camera.fit(&solidcraft_engine::render::view_bounds(&bounds));
             let params = json!({"camera":{"target":camera.target,"yaw":camera.yaw,"pitch":camera.pitch,"distance":camera.distance,"fov":camera.fov,"roll":camera.roll}});
             if let Err(error) = app.run("view.apply", params) {
                 app.set_status(error, true);

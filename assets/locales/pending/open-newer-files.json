@@ -1,0 +1,34 @@
+{
+  "en": {
+    "prefs.open_newer_files": "Open designs saved by a newer Intcad",
+    "prefs.open_newer_files_note": "On (the default): a design saved by a newer Intcad opens, and this version keeps the parts it can't read. Off: it is refused with a message asking to update Intcad."
+  },
+  "ar": {
+    "prefs.open_newer_files": "فتح التصاميم التي حفظها إصدار أحدث من Intcad",
+    "prefs.open_newer_files_note": "مفعّل (افتراضي): يُفتح التصميم الذي حفظه إصدار أحدث من Intcad، ويحتفظ هذا الإصدار بالأجزاء التي لا يستطيع قراءتها. متوقف: يُرفض مع رسالة تطالب بتحديث Intcad."
+  },
+  "de": {
+    "prefs.open_newer_files": "Von einer neueren Intcad gespeicherte Konstruktionen öffnen",
+    "prefs.open_newer_files_note": "Ein (Standard): Eine von einer neueren Intcad gespeicherte Konstruktion wird geöffnet, und diese Version behält die Teile, die sie nicht lesen kann. Aus: Sie wird mit der Aufforderung zum Aktualisieren von Intcad abgelehnt."
+  },
+  "he": {
+    "prefs.open_newer_files": "פתיחת עיצובים שנשמרו ב-Intcad חדש יותר",
+    "prefs.open_newer_files_note": "פועל (ברירת מחדל): עיצוב שנשמר ב-Intcad חדש יותר נפתח, והגרסה הזו שומרת את החלקים שאינה יכולה לקרוא. כבוי: הוא נדחה עם הודעה שמבקשת לעדכן את Intcad."
+  },
+  "ja": {
+    "prefs.open_newer_files": "新しい Intcad で保存された設計を開く",
+    "prefs.open_newer_files_note": "オン（既定）: 新しい Intcad で保存された設計を開き、このバージョンが読めない部分は保持します。オフ: 更新を求めるメッセージとともに拒否します。"
+  },
+  "ko": {
+    "prefs.open_newer_files": "최신 Intcad에서 저장한 설계 열기",
+    "prefs.open_newer_files_note": "켜짐(기본): 최신 Intcad에서 저장한 설계를 열고 이 버전이 읽을 수 없는 부분을 보존합니다. 꺼짐: 업데이트하라는 메시지와 함께 거부합니다."
+  },
+  "vi": {
+    "prefs.open_newer_files": "Mở thiết kế được Intcad mới hơn lưu",
+    "prefs.open_newer_files_note": "Bật (mặc định): thiết kế được Intcad mới hơn lưu sẽ mở, và phiên bản này giữ lại những phần nó không đọc được. Tắt: thiết kế bị từ chối kèm thông báo yêu cầu cập nhật Intcad."
+  },
+  "zh": {
+    "prefs.open_newer_files": "打开由更新版 Intcad 保存的设计",
+    "prefs.open_newer_files_note": "开启（默认）：打开由更新版 Intcad 保存的设计，并保留此版本无法读取的部分。关闭：拒绝打开，并提示更新 Intcad。"
+  }
+}

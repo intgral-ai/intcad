@@ -139,7 +139,8 @@ class Matrix(unittest.TestCase):
     def test_repository_manifest_is_itemised_and_classified(self):
         data, entries = beta_gate.load_exceptions(ROOT / "tests/action_matrix/beta-exceptions.json")
         self.assertEqual(data["source"]["totalActions"], 54033)
-        self.assertEqual(len(entries), 213)
+        # 213 less oracle/77-fillet-variable-linear, whose load exception the vendored kernel fixes.
+        self.assertEqual(len(entries), 212)
         self.assertEqual(len(entries), len({(e["design"], e["entity"], e["action"]) for e in entries.values()}))
         self.assertTrue(all(entry["issue"] in ("#55", "#83", "#88") for entry in entries.values()))
         # The develop manifest carries the 972 reviewed identities; main's older

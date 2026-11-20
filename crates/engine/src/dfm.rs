@@ -520,6 +520,8 @@ mod tests {
             ext: (0.0, 0.0),
             slope: (0.0, 0.0),
             tear: (false, false),
+            tear_curved: (false, false),
+            tear_ease: (0.0, 0.0),
             shape: None,
             exact: None,
             zone_shape: None,

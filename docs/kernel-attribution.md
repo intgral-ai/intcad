@@ -1,5 +1,10 @@
 # Kernel attribution
 
+> **Superseded (INT-1454, CD-7).** The kernel is no longer consumed as pinned git revisions:
+> it is vendored in `solidcore/` (SolidCraft v0.44.1, snapshot `524be9e1`) with path dependencies,
+> and `crates/kernel`/`crates/smlib`/`crates/geom` now carry upstream's newer code. This page
+> records the pre-sync investigation; numbers and pin statements below are historical.
+
 What the kernel is built from, what this fork changed, whether the historical action-matrix
 baseline can judge the Beta run, and what the 213 new failures are. Investigation only: no
 upstream issue, comment or PR was posted, and no code was changed.
@@ -240,9 +245,11 @@ The 24 `bad_params` entries are two different things:
 So the plane/face mismatch is **20**, not 24. The other 4 are a face-class refusal on blend faces,
 not a plane resolution failure.
 
-Load failures: **1**. `oracle/77-fillet-variable-linear` fails while loading, at
-`step 8 (solid.fillet): SMLib variable fillet: operation: SMLib failed (status 1001)`. That is
-a variable-fillet backend limitation, not a design-file or fork deserialisation failure. The
+Load failures: **1** at the time of this investigation. `oracle/77-fillet-variable-linear` failed
+while loading, at `step 8 (solid.fillet): SMLib variable fillet: operation: SMLib failed (status
+1001)` — a variable-fillet backend limitation, not a design-file or fork deserialisation failure.
+On the vendored v0.44.1 kernel it loads again, and its beta exception was removed with that port.
+The
 one `timeline_error` is an edited `oracle/27-sketch-trapezoid` boolean check refusal, not a
 load failure.
 

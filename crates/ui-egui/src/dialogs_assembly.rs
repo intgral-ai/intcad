@@ -395,7 +395,7 @@ fn side_pick(app: &SolveApp, o: &JointOrigin) -> Option<Sel> {
     let (pick, face, edge) = match &o.snap {
         Snap::FaceCenter { pick, face, .. } | Snap::CircleCenter { pick, face, .. } => (*pick, face.as_deref(), None),
         Snap::Edge { pick, edge, .. } => (*pick, None, edge.as_deref()),
-        Snap::Point { .. } | Snap::Frame { .. } => {
+        Snap::Point { .. } | Snap::Frame { .. } | Snap::Plane { .. } | Snap::Axis { .. } => {
             let path = if o.occurrence == 0 {
                 Vec::new()
             } else {
@@ -538,7 +538,7 @@ pub fn find_joint(app: &mut SolveApp, id: u64) {
         return;
     }
     let mut cam = app.cam;
-    cam.fit(&bb);
+    cam.fit(&solidcraft_engine::render::view_bounds(&bb));
     app.animate_to(cam);
 }
 

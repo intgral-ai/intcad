@@ -1035,6 +1035,11 @@ pub(crate) fn preview_curve(
             sk.add_arc(c1, c1 - n, c1 + n, [None; 3], None).ok()?;
             sk.add_line(c1 + n, c0 + n, None, None, None).ok()?;
             sk.add_arc(c0, c0 + n, c0 - n, [None; 3], None).ok()?;
+            // The construction line between the arc centres the slot's middle sits on (#7908),
+            // which the command adds too: the preview draws what the click commits.
+            let axis = sk.add_line(c0, c1, None, None, None).ok()?;
+            sk.curves.get_mut(axis)?.construction = true;
+            sk.add_point((c0 + c1) * 0.5, None).ok()?;
         }
         ("sketch.slot.arc_center" | "sketch.slot.arc_three_point", [a, b, c]) => {
             let (centre, start, end, radius, width) = if t.cmd == "sketch.slot.arc_center" {
@@ -1065,6 +1070,14 @@ pub(crate) fn preview_curve(
             sk.add_arc(at(t0, radius), at(t0, radius - half), at(t0, radius + half), [None; 3], None).ok()?;
             let guide = sk.add_arc(centre, at(t0, radius), at(t1, radius), [None; 3], None).ok()?;
             sk.curves.get_mut(guide)?.construction = true;
+            // The middle, halfway along the centre arc, and its construction chords (#7908),
+            // which the command adds too: the preview draws what the click commits.
+            let mid = at(t0 + sweep * 0.5, radius);
+            sk.add_point(mid, None).ok()?;
+            for end in [at(t0, radius), at(t1, radius)] {
+                let chord = sk.add_line(mid, end, None, None, None).ok()?;
+                sk.curves.get_mut(chord)?.construction = true;
+            }
         }
         ("sketch.ellipse", [c, m]) => {
             let u = (*m - *c).normalized()?;
@@ -1105,6 +1118,7 @@ pub(crate) fn preview_curve(
                     degree: if t.cmd == "sketch.spline.control_point_5" { 5 } else { 3 },
                     periodic,
                     nurbs: None,
+                    handles: Vec::new(),
                 },
                 None,
             )

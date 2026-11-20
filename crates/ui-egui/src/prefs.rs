@@ -1,6 +1,8 @@
 //! Grouped preferences composed with the shared UI kit. Changes apply immediately; Cancel
 //! restores the opening snapshot, Apply keeps editing, and Defaults affects the current page.
 
+#[cfg(test)]
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use solidcraft_engine::geom::prelude::*;
 use std::collections::BTreeMap;
@@ -10,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use solidcore_record::Vec3;
 pub use solidcraft_engine::doc::display_units::{format_length, length_number, length_precision, unit_scale};
-use solidcraft_engine::render::Camera;
+use solidcraft_viewport::Camera;
 
 /// The key the apps keep the preferences under in eframe's storage.
 pub const STORAGE_KEY: &str = "solidcraft.prefs";
@@ -1249,6 +1251,9 @@ preference_settings! {
     max_step_file_mb: u64 = DEFAULT_STEP_MB, PAGE_GENERAL;
     /// The largest design file opened or saved, in MB (#4086): from the default (256) up to 16 GB.
     max_design_file_mb: u64 = DEFAULT_DESIGN_MB, PAGE_GENERAL;
+    /// A design a newer Intcad saved opens, keeping the parts this version can't read (#12166).
+    /// Off: it is refused with a message asking to update, as before.
+    open_newer_files: bool = true, PAGE_GENERAL => check_id("prefs.open_newer_files");
     /// Explicit assembly Move uses joint handles; off keeps the previous Move panel.
     assembly_move_handles: bool = true, PAGE_TOOLS => check_id("joint_move.use_handles");
     /// Degrees per step near the assembly Move ring.
@@ -1897,9 +1902,10 @@ impl Snapshot {
         let units_changed = app.preferences.default_units != self.prefs.default_units;
         // Update bookkeeping isn't a setting: a check that finished while the dialog was open stays.
         let update = std::mem::take(&mut app.preferences.update);
-        app.preferences = self.prefs;
+        let mut prefs = self.prefs;
+        prefs.update = update;
+        store_preferences(app, prefs);
         sync_surface_analysis(app);
-        app.preferences.update = update;
         if units_changed {
             default_units_changed(app);
         }
@@ -2309,7 +2315,9 @@ pub(crate) fn reset_preferences_for_test(p: &mut Prefs, page: usize) {
 fn defaults(app: &mut SolveApp, page: usize) {
     let (msaa, window_system, adapter) = (app.preferences.msaa, app.preferences.window_system.clone(), app.preferences.graphics_adapter.clone());
     let units = app.preferences.default_units.clone();
-    reset_preferences(&mut app.preferences, page);
+    let mut prefs = app.preferences.clone();
+    reset_preferences(&mut prefs, page);
+    store_preferences(app, prefs);
     sync_surface_analysis(app);
     if app.preferences.default_units != units {
         default_units_changed(app);
@@ -2874,6 +2882,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         _ if closed => close(app, true),
         _ => {}
     }
+    if button.is_some() {
+        // The dialog edits preferences in place; on commit the session's policy follows.
+        sync_open_newer_files(app);
+    }
     // The footer was drawn before this frame's edits (and before an Apply): show Apply's new
     // state on the next frame rather than at the next input.
     if app.prefs_window.open && apply_pending(app) != pending {
@@ -2903,7 +2915,7 @@ pub(crate) fn close(app: &mut SolveApp, revert: bool) {
 
 /// The default orientation changed: the view turns to match.
 fn up_axis_changed(app: &mut SolveApp) {
-    use solidcraft_engine::render::UpAxis;
+    use solidcraft_viewport::UpAxis;
     app.prefs_window.applied_up = Some(app.preferences.up_axis.clone());
     let up = if app.preferences.up_axis.eq_ignore_ascii_case("y") { UpAxis::Y } else { UpAxis::Z };
     if app.ui.up_axis != up || app.cam.up != up {
@@ -3333,6 +3345,9 @@ pub fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::
         None => {}
     }
     if button.is_some() {
+        // Cancel restores the snapshot and Defaults resets after the set path: the session's
+        // policy follows the preferences here, before any command runs in the same frame.
+        sync_open_newer_files(app);
         // Cancel and Restore Defaults can change the angle too.
         follow_view_fov(app);
         out = serde_json::to_value(&app.preferences).map_err(|e| e.to_string())?;
@@ -4229,6 +4244,20 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
     apply_preferences(app, new, p)
 }
 
+/// Store preferences and give the session their newer-file policy at once: every path that
+/// assigns preferences goes through here, so a command run before the next frame never sees a
+/// value the preferences no longer hold.
+pub(crate) fn store_preferences(app: &mut SolveApp, preferences: Prefs) {
+    app.preferences = preferences;
+    sync_open_newer_files(app);
+}
+
+/// Make the session's newer-file policy the one the preferences hold. Call this wherever
+/// preferences change in place (a dialog's own button, a page's Defaults).
+fn sync_open_newer_files(app: &mut SolveApp) {
+    app.session.set_open_newer_files(app.preferences.open_newer_files);
+}
+
 /// All fallible preference checks finish before any application or file write.
 fn apply_preferences(app: &mut SolveApp, new: Prefs, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     let file = crate::theme_files::find(&new.theme, &new.custom_themes);
@@ -4247,6 +4276,7 @@ fn apply_preferences(app: &mut SolveApp, new: Prefs, p: &serde_json::Value) -> R
         crate::select_other::close(app);
     }
     app.preferences = new;
+    sync_open_newer_files(app);
     sync_surface_analysis(app);
     apply_file_limits(&app.preferences);
     if units_changed {
@@ -4308,6 +4338,79 @@ mod tests {
         h.call("ui.prefs", json!({"profile_operations": false}));
         h.frames(2);
         assert!(!solidcraft_engine::profile::enabled());
+    }
+
+    /// The newer-file policy applies as soon as the preference changes, with no frame in
+    /// between, and goes with the user across a tab switch: a design a newer Intcad saved is
+    /// refused right after `ui.prefs` turns it off, and opens again when it is turned on.
+    #[test]
+    fn open_newer_files_applies_when_it_changes_and_across_a_tab_switch() {
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("sc-intcad-open-newer-pref-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut source = solidcraft_engine::Session::default();
+        source.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&source.doc.to_json()).unwrap();
+        let newer_format = solidcraft_engine::doc::format::FORMAT + 1;
+        file["format"] = json!(solidcraft_engine::doc::format::format_string(newer_format));
+        let path = dir.join("newer.json").to_string_lossy().to_string();
+        std::fs::write(&path, file.to_string()).unwrap();
+
+        let mut h = crate::scenario::Harness::new();
+        // No frame between this and the open: the session must already hold the new policy.
+        super::set(&mut h.app, &json!({"open_newer_files": false})).unwrap();
+        assert!(!h.app.session.open_newer_files);
+        let error = h.app.run("doc.open", json!({"path": path})).unwrap_err();
+        assert!(error.contains("saved by a newer Intcad"), "{error}");
+
+        // Tabs share the user's policy (`documents::swap_in` copies it): still refused.
+        crate::documents::open_tab(&mut h.app, solidcraft_engine::Session::default()).unwrap();
+        assert!(!h.app.session.open_newer_files);
+        let error = h.app.run("doc.open", json!({"path": path})).unwrap_err();
+        assert!(error.contains("saved by a newer Intcad"), "{error}");
+
+        super::set(&mut h.app, &json!({"open_newer_files": true})).unwrap();
+        let reply = h.app.run("doc.open", json!({"path": path})).unwrap();
+        assert_eq!(reply["newer_file"]["format"], json!(newer_format), "{reply}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The policy follows preferences through the dialog buttons that change them after the set
+    /// path: Cancel restores the snapshot and Restore Defaults resets the page. With no frame in
+    /// between, a command already sees the restored or reset value.
+    #[test]
+    fn open_newer_files_follows_cancel_and_defaults_without_a_frame() {
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("sc-intcad-open-newer-buttons-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut source = solidcraft_engine::Session::default();
+        source.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&source.doc.to_json()).unwrap();
+        let newer_format = solidcraft_engine::doc::format::FORMAT + 1;
+        file["format"] = json!(solidcraft_engine::doc::format::format_string(newer_format));
+        let path = dir.join("newer.json").to_string_lossy().to_string();
+        std::fs::write(&path, file.to_string()).unwrap();
+
+        let mut h = crate::scenario::Harness::new();
+        super::set(&mut h.app, &json!({"open_newer_files": false})).unwrap();
+        // The control channel's set path turns it on while the dialog is open...
+        super::control(&mut h.app, &json!({"open": "General", "open_newer_files": true})).unwrap();
+        assert!(h.app.preferences.open_newer_files && h.app.session.open_newer_files);
+
+        // ...and Cancel restores the snapshot's false. No frame before this open.
+        super::control(&mut h.app, &json!({"button": "cancel"})).unwrap();
+        assert!(!h.app.preferences.open_newer_files, "Cancel restores the snapshot");
+        assert!(!h.app.session.open_newer_files, "the session follows the restore at once");
+        let error = h.app.run("doc.open", json!({"path": path})).unwrap_err();
+        assert!(error.contains("saved by a newer Intcad"), "{error}");
+
+        // Restore Defaults resets General to `true`, and a newer design opens at once.
+        super::control(&mut h.app, &json!({"button": "defaults"})).unwrap();
+        assert!(h.app.preferences.open_newer_files, "Defaults resets to the default");
+        assert!(h.app.session.open_newer_files, "the session follows the reset at once");
+        let reply = h.app.run("doc.open", json!({"path": path})).unwrap();
+        assert_eq!(reply["newer_file"]["format"], json!(newer_format), "{reply}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Preferences saved with a setting this version no longer has still load, every other
@@ -6764,7 +6867,7 @@ mod tests {
             assert_eq!((t.viewport_top, t.viewport_bottom, Tokens::view().viewport_top), (white, white, white), "{theme}");
             assert_eq!(t.panel, Tokens::themed(view_dark, ColorVision::Off).panel, "{theme}: the window");
             let scene = crate::control::view_scene(&h.app, solidcraft_engine::view::Guides::default()).unwrap();
-            let white = solidcraft_engine::render::Rgb(255, 255, 255);
+            let white = solidcraft_viewport::Rgb(255, 255, 255);
             assert_eq!(scene.background, Some((white, white)), "{theme}: a picture of the view");
         }
 
@@ -8187,7 +8290,7 @@ mod tests {
         assert_eq!(Tokens::get().panel, hard.panel);
         assert_eq!(
             crate::viewport::scene_palette(true, ColorVision::Off).background.0,
-            solidcraft_engine::render::Rgb(hard.viewport_top.r(), hard.viewport_top.g(), hard.viewport_top.b())
+            solidcraft_viewport::Rgb(hard.viewport_top.r(), hard.viewport_top.g(), hard.viewport_top.b())
         );
 
         let file = json!({"format": "solidcraft-theme/1", "name": "Paper", "base": "light", "colors": {"panel": "#fffdf0", "accent": "#aa3300"}, "borders":{"primary":{"width":2,"color":"#ffffff"},"tertiary":{"width":0,"color":"#000000"}}, "radii": {"radius_sm": 0, "control_radius": 0, "radius_xl": 16}});
@@ -9821,7 +9924,7 @@ mod tests {
             assert_eq!(s.continuity.len(), 1);
             assert_eq!(s.status_items().len(), 2);
             assert_eq!(s.status_items()[0].command, "inspect.continuity");
-            assert!(s.section.is_some());
+            assert!(s.cut().is_some());
             assert!(!s.is_dirty());
         }
         assert!(std::sync::Arc::ptr_eq(&doc, &app.session.doc));
@@ -10249,7 +10352,7 @@ mod tests {
         assert_eq!(app.preferences.nav, "alias", "Cancel goes back to the last Apply");
         let to = {
             let mut c = app.cam;
-            c.set_view(solidcraft_engine::render::StandardView::Top);
+            c.set_view(solidcraft_viewport::StandardView::Top);
             c
         };
         app.animate_to(to);
@@ -10532,7 +10635,7 @@ mod tests {
     /// The Y up preference turns the view: the camera's up axis follows it, startup included.
     #[test]
     fn up_axis_preference_turns_the_view() {
-        use solidcraft_engine::render::UpAxis;
+        use solidcraft_viewport::UpAxis;
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
         let ctx = crate::fonts::test_context();
         apply(&mut app, &ctx);
@@ -10646,7 +10749,7 @@ mod ambient_occlusion_tests {
     /// up direction; Restore Defaults turns it off again.
     #[test]
     fn dark_parts_shading_is_optional_persistent_and_follows_the_up_axis() {
-        use solidcraft_engine::render::UpAxis;
+        use solidcraft_viewport::UpAxis;
         let old: Prefs = serde_json::from_value(json!({"msaa": 4})).unwrap();
         assert!(!old.dark_parts_shading && !Prefs::default().dark_parts_shading);
         assert_eq!(crate::viewport::sky_uniform(false, UpAxis::Z), [0.0; 4], "off: shaded as before");
@@ -11192,8 +11295,8 @@ mod perspective_fov_tests {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.set", json!({"perspective": true}));
         h.frames(2);
-        let to = solidcraft_engine::render::Camera { distance: 300.0, ..h.app.cam };
-        h.app.cam_anim = Some(solidcraft_engine::render::CameraAnim::new(h.app.cam, to, h.app.now));
+        let to = solidcraft_viewport::Camera { distance: 300.0, ..h.app.cam };
+        h.app.cam_anim = Some(solidcraft_viewport::CameraAnim::new(h.app.cam, to, h.app.now));
         let from = h.app.cam;
         set(&mut h.app, &json!({"perspective_fov": 1.0})).unwrap();
         let k = (0.6f64 * 0.5).tan() / 0.5f64.tan();

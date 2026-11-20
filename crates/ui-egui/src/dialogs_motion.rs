@@ -413,7 +413,7 @@ fn export_animation(app: &mut SolveApp, params: Value, name: &str) {
         }
         let mut sc = app.session.scratch();
         // Cut as the viewport is (a copy leaves the section out).
-        sc.section = app.session.section;
+        sc.section = app.session.section.clone();
         let made = sc.execute("motion.study", &params).and_then(|r| {
             sc.execute(
                 "motion.export_animation",
@@ -1208,7 +1208,7 @@ mod tests {
         #[cfg(not(target_arch = "wasm32"))]
         if solidcraft_engine::capture::installed().is_none() {
             solidcraft_engine::capture::install(std::sync::Arc::new(|scene, cam, w, h| {
-                let (rgba, renderer) = solidcraft_gpu::capture::headless_rgba(scene, cam, w, h)?;
+                let (rgba, renderer) = solidcraft_gpu::env::headless_rgba(scene, cam, w, h)?;
                 Ok(solidcraft_engine::capture::Picture { rgba, renderer })
             }));
         }

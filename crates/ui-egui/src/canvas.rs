@@ -89,10 +89,13 @@ pub fn anchor(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Option<Vec3>)> {
         _ => return None,
     };
     Some(match &d.kind {
-        Kind::Extrude { start, .. } => {
+        Kind::Extrude { start, all, taper, .. } => {
             let n = normal?;
             let plane = solidcore_record::Plane::from_normal(at, n)?;
-            let from = reference_height(app, d, "From Object", &plane, at).unwrap_or(0.0);
+            // A start on a slanted face is at the face's own level over the profiles' merged
+            // centre, where the build starts it; anything else starts at the object's level.
+            let from =
+                from_slope_height(app, d, &plane, at, *all, taper).or_else(|| reference_height(app, d, "From Object", &plane, at)).unwrap_or(0.0);
             let offset = if start.trim().is_empty() { 0.0 } else { crate::length_input::eval(&app.session.doc, start, ValueKind::Length).ok()? };
             (at + n * (from + offset), Some(n))
         }
@@ -203,6 +206,26 @@ pub(crate) fn profile_plane(app: &SolveApp, sketch: u64) -> Option<solidcore_rec
         solidcraft_engine::doc::apply_vector(&frame, plane.x),
         solidcraft_engine::doc::apply_vector(&frame, plane.y),
     )
+}
+
+/// Where an extrude from a slanted face starts above `centre`, on the face, when the build
+/// starts it there ([`solidcraft_engine::doc::from_slope_height`]): not with To Object, Through
+/// All (`all`) or a nonzero `taper`, nor for an edited extrude kept on its old start at the
+/// face's level (`from_level`). `None` otherwise, so the arrow starts at [`reference_height`].
+fn from_slope_height(app: &SolveApp, d: &Dialog, plane: &solidcore_record::Plane, centre: Vec3, all: bool, taper: &str) -> Option<f64> {
+    let to = d.inputs.iter().any(|input| input.label == "To Object" && !input.items.is_empty());
+    let tapered = !taper.trim().is_empty() && crate::length_input::eval(&app.session.doc, taper, ValueKind::Angle).is_ok_and(|a| a != 0.0);
+    let kept_level = d
+        .editing
+        .and_then(|(id, _)| app.session.doc.feature(id))
+        .is_some_and(|f| matches!(&f.kind, solidcraft_engine::doc::FeatureKind::Extrude { extent, .. } if extent.from_level));
+    if to || all || tapered || kept_level {
+        return None;
+    }
+    let point = crate::dialogs::object_point(&d.inputs, "From Object")?;
+    let p = point.as_array()?;
+    let p = Vec3::new(p.first()?.as_f64()?, p.get(1)?.as_f64()?, p.get(2)?.as_f64()?);
+    solidcraft_engine::doc::from_slope_height(&crate::open_meshing::session_world(&app.session), plane, centre, p)
 }
 
 fn reference_height(app: &SolveApp, d: &Dialog, label: &str, plane: &solidcore_record::Plane, centre: Vec3) -> Option<f64> {
@@ -555,7 +578,7 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
                 .and_then(serde_json::Value::as_array)
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default();
-            solidcraft_engine::doc::through_all_distance(&state, &plane, &targets).ok()
+            solidcraft_engine::doc::through_all_distance(&state, &plane, 0.0, &targets).ok()
         })
     } else {
         None
@@ -2031,7 +2054,7 @@ mod tests {
         let mut worst = f32::NEG_INFINITY;
         for n in [Vec3::X, Vec3::Y, Vec3::Z] {
             for dir in crate::viewport::orbit_directions() {
-                let cam = solidcraft_engine::render::Camera::default().looking_from(dir);
+                let cam = solidcraft_viewport::Camera::default().looking_from(dir);
                 let proj = Proj { cam, vp: cam.view_proj(4.0 / 3.0, 100.0), rect };
                 let h = cam.half_height() * 0.25;
                 let (Some(q), Some(c), Some(side)) =
