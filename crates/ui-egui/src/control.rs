@@ -100,6 +100,9 @@ pub struct ControlRequest {
     /// Host-known proof that this dispatch refused before it could touch the design. Set only by
     /// local validation/guard paths, never inferred from a reply payload.
     pub(crate) local_no_effect: std::sync::Arc<AtomicBool>,
+    /// Host-known uncertainty about whether an effect was retained. Settlement finalizes as
+    /// `Unknown`; it never releases or charges silently.
+    pub(crate) local_unknown_effect: std::sync::Arc<AtomicBool>,
     /// The host-minted context for a forwarded bridge call. It binds the operation to the same
     /// account, installation, session, capability and entry; wire fields cannot supply it.
     pub(crate) trusted: Option<TrustedContext>,
@@ -274,6 +277,7 @@ impl ControlRequest {
             admission_scope: None,
             work_started: std::sync::Arc::new(AtomicBool::new(false)),
             local_no_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            local_unknown_effect: std::sync::Arc::new(AtomicBool::new(false)),
             trusted: None,
             deadline: None,
             now: None,
@@ -328,6 +332,7 @@ impl ControlRequest {
             admission_scope: Some(trusted.scope().clone()),
             work_started: std::sync::Arc::new(AtomicBool::new(false)),
             local_no_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            local_unknown_effect: std::sync::Arc::new(AtomicBool::new(false)),
             trusted: Some(trusted),
             deadline,
             now,
@@ -358,6 +363,7 @@ impl ControlRequest {
             admission_scope: None,
             work_started: std::sync::Arc::new(AtomicBool::new(false)),
             local_no_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            local_unknown_effect: std::sync::Arc::new(AtomicBool::new(false)),
             trusted: None,
             deadline: None,
             now: None,
@@ -413,6 +419,7 @@ impl ControlRequest {
             admission_scope: None,
             work_started: std::sync::Arc::new(AtomicBool::new(false)),
             local_no_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            local_unknown_effect: std::sync::Arc::new(AtomicBool::new(false)),
             trusted: None,
             deadline: None,
             now: None,
@@ -456,6 +463,7 @@ pub(crate) struct Reissue {
     admission_scope: Option<AuthenticatedHostScope>,
     work_started: std::sync::Arc<AtomicBool>,
     local_no_effect: std::sync::Arc<AtomicBool>,
+    local_unknown_effect: std::sync::Arc<AtomicBool>,
     trusted: Option<TrustedContext>,
     deadline: Option<ConservativeDeadline>,
     now: Option<MonotonicInstant>,
@@ -471,6 +479,7 @@ impl Reissue {
             admission_scope: req.admission_scope.clone(),
             work_started: req.work_started.clone(),
             local_no_effect: req.local_no_effect.clone(),
+            local_unknown_effect: req.local_unknown_effect.clone(),
             trusted: req.trusted.clone(),
             deadline: req.deadline.clone(),
             now: req.now,
@@ -484,7 +493,8 @@ impl Reissue {
 ///
 /// The origin is not chosen here; it comes only from [`Reissue::from_request`].
 pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
-    let Reissue { entry, operation, admission, admission_scope, work_started, local_no_effect, trusted, deadline, now, helper } = parts;
+    let Reissue { entry, operation, admission, admission_scope, work_started, local_no_effect, local_unknown_effect, trusted, deadline, now, helper } =
+        parts;
     let (tx, rx) = std::sync::mpsc::channel();
     let request = ControlRequest {
         method: method.into(),
@@ -499,6 +509,7 @@ pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) 
         admission_scope,
         work_started,
         local_no_effect,
+        local_unknown_effect,
         trusted,
         deadline,
         now,
@@ -965,6 +976,12 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
 /// batch it also requires every planned step's worst case to fit before that bound, so a started
 /// batch can always reach a safe stop. Free entries and free helpers never reach it.
 fn authority_refusal(app: &SolveApp, req: &ControlRequest, admission: &Admission) -> Option<Refusal> {
+    authority_refusal_with(app, req, admission, true)
+}
+
+/// `require_start_budget` distinguishes starting another step (recheck the whole measured bound)
+/// from retaining a finished result (only the live scope/status and non-expired cutoff matter).
+fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admission, require_start_budget: bool) -> Option<Refusal> {
     if free_entry(req.entry) || req.helper.is_some() {
         return None;
     }
@@ -1009,8 +1026,9 @@ fn authority_refusal(app: &SolveApp, req: &ControlRequest, admission: &Admission
     let Some(bound) = authorization_bound(req, admission) else {
         return Some(Refusal::new(RefusalCode::UnsafeToStart, "this controlled operation has no measured authorization bound"));
     };
-    // The remaining authorization must cover the whole measured bound, not merely be non-zero.
-    if let Err(refusal) = remaining_covers(Some(bound), now, required) {
+    // Starting a step needs the whole measured bound. Retaining a finished result only needs a
+    // live, unexpired cutoff; `CommitGate` below checks the latter.
+    if require_start_budget && let Err(refusal) = remaining_covers(Some(bound), now, required) {
         return Some(refusal);
     }
     // The durable ledger state is the authority for "this operation may still commit". A host
@@ -1045,7 +1063,7 @@ fn commit_decision(app: &SolveApp, req: &ControlRequest, admission: &Admission, 
     if free_entry(req.entry) || req.helper.is_some() || matches!(admission, Admission::Allowed) {
         return CommitDecision::Allow;
     }
-    match authority_refusal(app, req, admission) {
+    match authority_refusal_with(app, req, admission, false) {
         Some(refusal) => CommitDecision::Drop { code: refusal.code },
         None => CommitDecision::Allow,
     }
@@ -1055,9 +1073,12 @@ fn commit_decision(app: &SolveApp, req: &ControlRequest, admission: &Admission, 
 /// host's explicit local pre-dispatch marker; a reply payload (including a remote server body)
 /// never proves that nothing happened. A successful reply is a retained effect; anything else is
 /// an unknown outcome that is finalized, never rerun.
-fn result_evidence(out: &Outcome, host_no_effect: bool) -> ResultEvidence {
+fn result_evidence(out: &Outcome, host_no_effect: bool, host_unknown: bool) -> ResultEvidence {
     if host_no_effect {
         return ResultEvidence::NoEffect;
+    }
+    if host_unknown {
+        return ResultEvidence::Unknown;
     }
     match out {
         Outcome::Screenshot { .. } => ResultEvidence::Unknown,
@@ -1098,10 +1119,11 @@ fn settle_result(
     admission: &Admission,
     decision: CommitDecision,
     host_no_effect: bool,
+    host_unknown: bool,
     out: &Outcome,
 ) -> Option<SettlementNotice> {
     let Admission::NewlyAdmitted { operation, .. } = admission else { return None };
-    let evidence = result_evidence(out, host_no_effect);
+    let evidence = result_evidence(out, host_no_effect, host_unknown);
     let action = settlement_for(evidence);
     if !decision.allowed()
         && let SettlementAction::Commit(_) = action
@@ -1530,10 +1552,33 @@ pub(crate) fn batch_step_command(step: &Value) -> Option<&str> {
 /// `rollback` (the default), the design goes back to its checkpoint. Step failures are part of
 /// the reply; refusals (`engine.batch unavailable: …`) come before anything runs, so the client
 /// can send the steps one by one instead.
+/// A conservative controlled-batch allowlist: only rollbackable document commands and a few
+/// read-only document queries. External file, export, network, UI/render and unknown effects are
+/// refused before any step.
+fn controlled_batch_step_allowed(step: &Value) -> bool {
+    let Some(id) = command(step) else { return false };
+    let Some(spec) = solidcraft_engine::find_command(id) else { return false };
+    if solidcraft_engine::panels::commands::is_command(spec.id) {
+        return false;
+    }
+    if matches!(spec.id, "parameters.list" | "document.inspect" | "engine.commands") {
+        return true;
+    }
+    let document_area = ["parameters.", "sketch.", "solid.", "edit.", "body.", "feature.", "joint.", "assembly.", "component."];
+    spec.undoable && document_area.iter().any(|prefix| spec.id.starts_with(prefix))
+}
+
 /// Apply a controlled `engine.batch` with a verified per-step bound and a live gate before every
 /// step. The gate rechecks the same account/session/operation/status and remaining time; a stop
 /// before the next step is reported truthfully as retained or rolled back.
 fn controlled_batch(app: &mut SolveApp, steps: &[Value], p: &Value, req: &ControlRequest, admission: &Admission) -> Outcome {
+    if steps.iter().any(|step| !controlled_batch_step_allowed(step)) {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(
+            RefusalCode::UnsafeToStart,
+            "this batch step can have an external or non-rollbackable effect; run it separately",
+        ));
+    }
     let panels = steps.iter().filter(|step| command(step).is_some_and(solidcraft_engine::panels::commands::is_command)).count();
     if panels > 0 {
         req.local_no_effect.store(true, Ordering::Relaxed);
@@ -1587,11 +1632,26 @@ fn controlled_batch(app: &mut SolveApp, steps: &[Value], p: &Value, req: &Contro
         }
         Ok(())
     };
+    let before_stamp = app.session.document_stamp();
     let reply = run_document_steps_gated(app, steps, p, execute, SolveApp::run, policy, Some(&mut gate));
     let completed = reply.get("completed").and_then(Value::as_u64).unwrap_or(0);
     let rolled_back = reply.get("rolled_back").and_then(Value::as_bool).unwrap_or(false);
-    if completed == 0 || rolled_back {
-        // This reply was produced locally by the engine runner: no step was retained.
+    let failed = reply.get("failed").is_some();
+    let stopped = reply.get("stopped").and_then(Value::as_bool).unwrap_or(false);
+    let after_stamp = app.session.document_stamp();
+    if !failed && !stopped {
+        // A successful batch charges once even when every completed step is read-only; the
+        // contract's success fee is not a mutation fee.
+        return ok(reply);
+    }
+    if rolled_back || completed == 0 {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+    } else if before_stamp.document_id != after_stamp.document_id {
+        // An unexpected document switch leaves retention uncertain; finalize Unknown, never
+        // release or charge silently.
+        req.local_unknown_effect.store(true, Ordering::Relaxed);
+    } else if before_stamp.revision == after_stamp.revision {
+        // Completed read-only/no-op steps changed no document state.
         req.local_no_effect.store(true, Ordering::Relaxed);
     }
     ok(reply)
@@ -1599,6 +1659,7 @@ fn controlled_batch(app: &mut SolveApp, steps: &[Value], p: &Value, req: &Contro
 
 fn batch(app: &mut SolveApp, p: &Value, guarded: bool, req: &ControlRequest, admission: &Admission) -> Outcome {
     let Some(steps) = p.get("commands").and_then(Value::as_array).filter(|s| s.len() <= MAX_BATCH) else {
+        req.local_no_effect.store(true, Ordering::Relaxed);
         return err(format!("engine.batch: commands must be an array of at most {MAX_BATCH} steps"));
     };
     let controlled = !free_entry(req.entry) && req.helper.is_none();
@@ -1719,6 +1780,7 @@ pub fn view_png(app: &SolveApp, w: u32, h: u32) -> Result<Vec<u8>, String> {
 
 pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest) -> Outcome {
     req.local_no_effect.store(false, Ordering::Relaxed);
+    req.local_unknown_effect.store(false, Ordering::Relaxed);
     // The trusted entry is classified before any method, parameter or command dispatch. Free
     // human and browser entries pass; an unclassified entry is refused without touching the
     // design, and a controlled entry needs host authority before it can dispatch.
@@ -1784,7 +1846,8 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
     // The actual commit point: re-read the advancing clock, the current account/session and the
     // durable state before writing the result back.
     let decision = commit_decision(app, req, &admission, &out);
-    let notice = settle_result(app, &admission, decision, req.local_no_effect.load(Ordering::Relaxed), &out);
+    let notice =
+        settle_result(app, &admission, decision, req.local_no_effect.load(Ordering::Relaxed), req.local_unknown_effect.load(Ordering::Relaxed), &out);
     if !decision.allowed() {
         let CommitDecision::Drop { code } = decision else { return out };
         let reply = with_settlement_notice(
@@ -2986,10 +3049,18 @@ pub(crate) mod test_support {
 
     pub(crate) struct TestClock {
         now_ms: Arc<AtomicU64>,
+        advance_ms: Arc<AtomicU64>,
+        advances_left: Arc<AtomicUsize>,
     }
 
     impl MonotonicClock for TestClock {
         fn now(&self) -> MonotonicInstant {
+            if self.advances_left.load(Ordering::Relaxed) > 0 {
+                let left = self.advances_left.fetch_sub(1, Ordering::Relaxed);
+                if left > 0 {
+                    self.now_ms.fetch_add(self.advance_ms.load(Ordering::Relaxed), Ordering::Relaxed);
+                }
+            }
             MonotonicInstant::from_millis(self.now_ms.load(Ordering::Relaxed))
         }
 
@@ -3006,6 +3077,8 @@ pub(crate) mod test_support {
         version_supported: Arc<AtomicBool>,
         lookups: Arc<AtomicUsize>,
         now_ms: Arc<AtomicU64>,
+        advance_ms: Arc<AtomicU64>,
+        advances_left: Arc<AtomicUsize>,
     }
 
     impl TestAuthority {
@@ -3025,6 +3098,8 @@ pub(crate) mod test_support {
                 version_supported: Arc::new(AtomicBool::new(true)),
                 lookups: Arc::new(AtomicUsize::new(0)),
                 now_ms: Arc::new(AtomicU64::new(0)),
+                advance_ms: Arc::new(AtomicU64::new(0)),
+                advances_left: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -3037,7 +3112,11 @@ pub(crate) mod test_support {
                     version_supported: Arc::clone(&self.version_supported),
                     lookups: Arc::clone(&self.lookups),
                 }),
-                Box::new(TestClock { now_ms: Arc::clone(&self.now_ms) }),
+                Box::new(TestClock {
+                    now_ms: Arc::clone(&self.now_ms),
+                    advance_ms: Arc::clone(&self.advance_ms),
+                    advances_left: Arc::clone(&self.advances_left),
+                }),
             );
         }
 
@@ -3055,6 +3134,11 @@ pub(crate) mod test_support {
 
         pub(crate) fn operation_lookups(&self) -> usize {
             self.lookups.load(Ordering::Relaxed)
+        }
+
+        pub(crate) fn set_clock_advance(&self, milliseconds: u64, reads: usize) {
+            self.advance_ms.store(milliseconds, Ordering::Relaxed);
+            self.advances_left.store(reads, Ordering::Relaxed);
         }
 
         pub(crate) fn advance(&self, milliseconds: u64) {
@@ -3555,6 +3639,90 @@ mod tests {
     }
 
     #[test]
+    fn a_controlled_batch_stops_mid_batch_when_the_clock_advances() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority_grant(300_000);
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.box","params":{"length":5,"width":5,"height":5}}
+            ]}),
+        );
+        req.deadline = Some(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_millis(185_000)));
+        admit_once(&mut app, &mut req).expect("the batch fits at t=0");
+        // Reads: pre-dispatch and batch total, then two clock reads per gate. The first gate passes
+        // at 120 ms and the second fails at 180 ms; the retention check then sees 180 ms, still
+        // before the 185 ms cutoff.
+        authority.set_clock_advance(30_000, 6);
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["stopped"], true, "{reply}");
+        assert_eq!(reply["result"]["rolled_back"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(bodies(&app), 0, "the one applied step was rolled back");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a rolled-back stop is not charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "a rolled-back stop releases once");
+    }
+
+    #[test]
+    fn a_controlled_read_only_failed_batch_is_not_charged() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"rollback":false,"commands":[
+                {"command":"parameters.list"},
+                {"command":"solid.sphere","params":{"radius":"not-a-number"}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(reply["result"]["rolled_back"], false, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a read-only completed step is not a retained mutation");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the untouched document releases the hold");
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
+    fn a_successful_read_only_controlled_batch_still_charges_once() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.batch", json!({"commands":[{"command":"parameters.list"},{"command":"parameters.list"}]}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 2, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "a successful read-only batch charges once");
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_controlled_batch_with_an_external_step_is_refused_before_work() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let path = "/tmp/opencode/int1497-never-exported.step";
+        let _ = std::fs::remove_file(path);
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.batch", json!({"commands":[{"command":"file.export","params":{"path":path}}]}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!std::path::Path::new(path).exists(), "no external write");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the refused fresh admission is released once");
+    }
+
+    #[test]
+    fn a_locally_malformed_batch_is_marked_no_effect() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.batch", json!({"commands":"not-an-array"}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a malformed batch is not charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "a malformed batch releases once");
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
     fn a_controlled_batch_without_rollback_retains_and_charges() {
         let (mut app, _authority, commits, releases) = app_with_commit_authority();
         let (mut req, _rx) = ControlRequest::trusted_control(
@@ -3642,7 +3810,7 @@ mod tests {
     #[test]
     fn a_screenshot_outcome_is_unknown_not_success_before_delivery() {
         let out = Outcome::Screenshot { path: None };
-        assert_eq!(result_evidence(&out, false), ResultEvidence::Unknown);
+        assert_eq!(result_evidence(&out, false, false), ResultEvidence::Unknown);
         assert_eq!(settlement_for(ResultEvidence::Unknown), SettlementAction::Commit(solidcraft_engine::entitlement::BillingResult::Unknown));
     }
 
@@ -3655,7 +3823,7 @@ mod tests {
         let out = Outcome::Done(json!({"ok": true, "result": {}}));
         let decision = commit_decision(&app, &req, &admission, &out);
         assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AccountDisabled });
-        settle_result(&mut app, &admission, decision, false, &out);
+        settle_result(&mut app, &admission, decision, false, false, &out);
         assert_eq!(bodies(&app), 0, "a result observed after revocation writes no state");
         assert_eq!(commits.load(Ordering::Relaxed), 0, "a dropped result is never charged as an applied effect");
         assert_eq!(releases.load(Ordering::Relaxed), 0, "a dropped effect has no positive no-effect proof, so its hold stays");
@@ -3671,11 +3839,11 @@ mod tests {
         let applied = Outcome::Done(json!({"ok": true, "result": {}}));
         assert!(commit_decision(&app, &req, &admission, &applied).allowed());
         let decision = commit_decision(&app, &req, &admission, &applied);
-        settle_result(&mut app, &admission, decision, false, &applied);
+        settle_result(&mut app, &admission, decision, false, false, &applied);
         assert_eq!(commits.load(Ordering::Relaxed), 1);
         authority.revoke();
         let decision = commit_decision(&app, &req, &admission, &applied);
-        settle_result(&mut app, &admission, decision, false, &applied);
+        settle_result(&mut app, &admission, decision, false, false, &applied);
         assert_eq!(commits.load(Ordering::Relaxed), 1, "a committed operation keeps its one settlement after revocation");
     }
 
@@ -3702,7 +3870,7 @@ mod tests {
         let out = Outcome::Done(json!({"ok": true, "result": {}}));
         let decision = commit_decision(&app, &req, &admission, &out);
         assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AuthRequired });
-        settle_result(&mut app, &admission, decision, false, &out);
+        settle_result(&mut app, &admission, decision, false, false, &out);
         assert_eq!(commits.load(Ordering::Relaxed), 0, "another account's result is never written or charged");
     }
 
@@ -3720,7 +3888,7 @@ mod tests {
         ] {
             let decision = commit_decision(&app, &req, &admission, &out);
             assert!(decision.allowed(), "a local refusal that ran no command keeps its authorization");
-            settle_result(&mut app, &admission, decision, true, &out);
+            settle_result(&mut app, &admission, decision, true, false, &out);
         }
         assert_eq!(releases.load(Ordering::Relaxed), 2, "both proven no-effect results release their holds");
         assert_eq!(commits.load(Ordering::Relaxed), 0, "a proven no-effect result is never charged");
@@ -3732,8 +3900,8 @@ mod tests {
         let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
         let admission = admit_once(&mut app, &mut req).expect("admitted");
         let out = Outcome::Done(json!({"ok": false, "error": "not run: stale document", "errorDetails": {"code": "STALE_DOCUMENT"}}));
-        assert_eq!(result_evidence(&out, false), ResultEvidence::Unknown, "a payload string is not host proof");
-        settle_result(&mut app, &admission, CommitDecision::Allow, false, &out);
+        assert_eq!(result_evidence(&out, false, false), ResultEvidence::Unknown, "a payload string is not host proof");
+        settle_result(&mut app, &admission, CommitDecision::Allow, false, false, &out);
         assert_eq!(commits.load(Ordering::Relaxed), 1, "an unproven failure finalizes as unknown");
         assert_eq!(releases.load(Ordering::Relaxed), 0, "a payload string never releases the hold");
     }
@@ -3750,7 +3918,7 @@ mod tests {
         );
         let admission = Admission::NewlyAdmitted { operation, grant };
         let out = Outcome::Done(json!({"ok": true, "result": {}}));
-        settle_result(&mut app, &admission, CommitDecision::Drop { code: RefusalCode::OperationFinalized }, false, &out);
+        settle_result(&mut app, &admission, CommitDecision::Drop { code: RefusalCode::OperationFinalized }, false, false, &out);
         assert_eq!(commits.load(Ordering::Relaxed), 0, "a terminal operation is not charged");
         assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal operation is not released");
         assert!(app.pending_settlements.is_empty(), "a terminal Drop is not a recovery deferred to the host");
@@ -3768,7 +3936,7 @@ mod tests {
         );
         let admission = Admission::NewlyAdmitted { operation, grant };
         let out = Outcome::Done(json!({"ok": true, "result": {}}));
-        settle_result(&mut app, &admission, CommitDecision::Allow, false, &out);
+        settle_result(&mut app, &admission, CommitDecision::Allow, false, false, &out);
         assert_eq!(commits.load(Ordering::Relaxed), 0, "a charged operation is never charged again");
         assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal operation is never released again");
         assert!(app.pending_settlements.is_empty(), "there is nothing to recover");
@@ -3797,7 +3965,7 @@ mod tests {
             ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
         let admission = admit_once(&mut app, &mut req).expect("admitted");
         let out = Outcome::Done(json!({"ok": false, "error": "not run: local validation refused"}));
-        settle_result(&mut app, &admission, CommitDecision::Allow, true, &out);
+        settle_result(&mut app, &admission, CommitDecision::Allow, true, false, &out);
         assert_eq!(releases.load(Ordering::Relaxed), 1, "the release was attempted once");
         assert_eq!(app.pending_settlements.len(), 1);
         assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::TransportFailed { action: SettlementAction::Release(_), .. }));
@@ -3813,7 +3981,7 @@ mod tests {
         let out = Outcome::Done(json!({"ok": true, "result": {}}));
         let decision = commit_decision(&app, &req, &admission, &out);
         assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AccountDisabled });
-        settle_result(&mut app, &admission, decision, false, &out);
+        settle_result(&mut app, &admission, decision, false, false, &out);
         assert_eq!(commits.load(Ordering::Relaxed), 0, "a late effect is not charged under lost authority");
         assert_eq!(releases.load(Ordering::Relaxed), 0, "a retained effect is not released");
         assert_eq!(bodies(&app), 0, "settlement never reruns the engineering operation");
@@ -3975,7 +4143,7 @@ mod tests {
         let decision = commit_decision(&app, &req, &admission, &out);
         assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AuthRequired });
         let before = other.operation_lookups();
-        settle_result(&mut app, &admission, decision, false, &out);
+        settle_result(&mut app, &admission, decision, false, false, &out);
         assert_eq!(other.operation_lookups(), before, "the deferred disposition is recorded before any new-account lookup");
         assert_eq!(commits.load(Ordering::Relaxed), 0);
         assert_eq!(releases.load(Ordering::Relaxed), 0);
@@ -3989,9 +4157,9 @@ mod tests {
         let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
         let admission = admit_once(&mut app, &mut req).expect("admitted");
         let out = Outcome::Done(json!({"ok": false, "error": "the worker disconnected mid-command"}));
-        assert_eq!(result_evidence(&out, false), ResultEvidence::Unknown);
+        assert_eq!(result_evidence(&out, false, false), ResultEvidence::Unknown);
         let decision = commit_decision(&app, &req, &admission, &out);
-        settle_result(&mut app, &admission, decision, false, &out);
+        settle_result(&mut app, &admission, decision, false, false, &out);
         assert_eq!(commits.load(Ordering::Relaxed), 1, "the unknown outcome is finalized under its original id");
         assert_eq!(releases.load(Ordering::Relaxed), 0, "an unknown outcome is not a no-charge release");
         assert_eq!(bodies(&app), 0, "finalizing an unknown result never reruns the engineering operation");
@@ -4003,6 +4171,7 @@ mod tests {
         releases: std::sync::Arc<AtomicUsize>,
         fail_commit: std::sync::Arc<AtomicBool>,
         fail_release: std::sync::Arc<AtomicBool>,
+        grant_expires_ms: u64,
     }
 
     impl BillingPort for SettlingBilling {
@@ -4015,7 +4184,7 @@ mod tests {
             Ok(solidcraft_engine::entitlement::Grant::from_server(
                 solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
                 capability,
-                MonotonicInstant::from_millis(60_000),
+                MonotonicInstant::from_millis(self.grant_expires_ms),
             ))
         }
 
@@ -4041,6 +4210,12 @@ mod tests {
     }
 
     fn app_with_commit_authority() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        app_with_commit_authority_grant(60_000)
+    }
+
+    fn app_with_commit_authority_grant(
+        grant_expires_ms: u64,
+    ) -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
         let commits = std::sync::Arc::new(AtomicUsize::new(0));
         let releases = std::sync::Arc::new(AtomicUsize::new(0));
         let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
@@ -4051,6 +4226,7 @@ mod tests {
                 releases: std::sync::Arc::clone(&releases),
                 fail_commit: std::sync::Arc::new(AtomicBool::new(false)),
                 fail_release: std::sync::Arc::new(AtomicBool::new(false)),
+                grant_expires_ms,
             }),
             verified_budget(),
         );
@@ -4069,6 +4245,7 @@ mod tests {
                 releases: std::sync::Arc::clone(&releases),
                 fail_commit: std::sync::Arc::new(AtomicBool::new(true)),
                 fail_release: std::sync::Arc::new(AtomicBool::new(false)),
+                grant_expires_ms: 60_000,
             }),
             verified_budget(),
         );
@@ -4087,6 +4264,7 @@ mod tests {
                 releases: std::sync::Arc::clone(&releases),
                 fail_commit: std::sync::Arc::new(AtomicBool::new(false)),
                 fail_release: std::sync::Arc::new(AtomicBool::new(true)),
+                grant_expires_ms: 60_000,
             }),
             verified_budget(),
         );
