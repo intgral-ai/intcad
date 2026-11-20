@@ -2243,10 +2243,7 @@ fn assert_exactness_preserved(
             "face {i} {name:?} was exact before the join and is not now"
         );
         let stem = name.split('#').next().unwrap_or(&name);
-        assert!(
-            target_exact.iter().chain(tool_exact).any(|n| n == stem),
-            "new unverified face {i} {name:?} is not a piece of an exact operand face"
-        );
+        assert!(target_exact.iter().chain(tool_exact).any(|n| n == stem), "new unverified face {i} {name:?} is not a piece of an exact operand face");
     }
 }
 
@@ -2424,9 +2421,13 @@ fn front_triangle_join_survives_edit_undo_replay_and_save() {
     let tool51 = front_triangle_tool(5.1);
     let tool51_body = tool51.model.state().body("Body1").unwrap().body.clone();
     let edited_volume = target_volume + volume(&tool51, "Body1");
-    s.execute("timeline.edit", &json!({"feature": feature, "set": {"distance": "5.1 mm"}})).unwrap();
+    s.execute("timeline.edit", &json!({"feature": feature, "set": {"extent.distance": "5.1 mm"}})).unwrap();
     check(&s, edited_volume, &target_body, &tool51_body);
-    s.execute("timeline.edit", &json!({"feature": feature, "set": {"distance": "5.0 mm"}})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    check(&s, joined_volume, &target_body, &tool5_body);
+    s.execute("edit.redo", &json!({})).unwrap();
+    check(&s, edited_volume, &target_body, &tool51_body);
+    s.execute("timeline.edit", &json!({"feature": feature, "set": {"extent.distance": "5.0 mm"}})).unwrap();
     check(&s, joined_volume, &target_body, &tool5_body);
 
     let mut script: Value = serde_json::from_str(FRONT_TRIANGLE_DESIGN).unwrap();
