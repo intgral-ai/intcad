@@ -656,18 +656,20 @@ the whole branch.
 - Source head `c5f2f42fe6f06ed5c2c4ec1df04f7e9c6aae50ad`; test-merge
   `2a20b4b3974d11b68388db8f72facbd44aadedc6`, parents `9714e5b300030f23bc775fa180b1ba7c80047f80`
   (develop) and `c5f2f42…` (PR). `git show -s` in the main checkout.
-- Both revisions have tree `6f289a06dc8635a3e9306e900b5a9682312069fd`; the merge adds no tree
-  change beyond the source.
+- The source head `c5f2f42` and the test-merge `2a20b4b` have the exact same tree
+  `6f289a06dc8635a3e9306e900b5a9682312069fd`; the merge adds no tree change beyond the source.
 - Both revisions have `solidcore` tree `8b5c01445619305dcfc5072db3fe76b8cfea67be`; `git diff
-  --quiet v0.44.1 <rev> -- solidcore` is empty for each. `crates/step` is absent at `c5f2f42`.
-- The D5 paths `crates/io`, `crates/step` and `solidcore/crates/solidcore-step` are byte-identical
-  between `c5f2f42` and the test-merge (`git diff --quiet`), so a native run at the test-merge
-  carries the same D5 source as the source head.
+  --quiet v0.44.1 <rev> -- solidcore` is empty for each. `crates/step` is absent at both
+  `c5f2f42` and the test-merge.
+- The D5 paths `crates/io` and `solidcore/crates/solidcore-step` are byte-identical between
+  `c5f2f42` and the test-merge (`git diff --quiet`); the absent `crates/step` is not a
+  byte-identical path. A native run at the test-merge therefore carries the same D5 source as the
+  source head.
 - The retained plan `selection-plan-c5f2f42/plan.json` records
   `sourceRevision: 2a20b4b…`; the receipt `evidence-rust-c5f2f42/rust/selection.json` build
   metadata records `SOLIDCRAFT_SOURCE_COMMIT: 2a20b4b3…`; `commands.json` records `nextest list`
-  exit 0 and `nextest run` exit **100**; `junit.xml` is the matching report: **16,839 tests,
-  24 failures, 0 skipped, 0 errors**.
+  exit 0, `nextest run` exit **100**, and `xtask known-failing` exit 1. The c5 run was red.
+  `junit.xml` is the matching report: **16,839 tests, 24 failures, 0 skipped, 0 errors**.
   This binds the source and test-merge; it does not make the run green.
 
 **Selected results.** The controller's direct parse of
@@ -685,13 +687,15 @@ four names are examples, not a new selection; the retained receipts do not store
 so the count of 13 remains the controller's parse and is not regenerated here. This selected set is
 separate from the 13 allowed known-failing entries, which failed. The run has 24 failures: 13
 allowed known failures and 11 off-list regressions; the 2 `FIXED` doc-eval entries passed and
-remain listed (§11.2). Whole CI is not green and PR #185 remains BLOCKED. No test was rerun.
+remain listed (§11.2). The prior snapshot recorded whole CI as not green and PR #185 as
+OPEN/BLOCKED, and this entry makes no current status claim. No test was rerun.
 
 **cadmpeg qualification.** At `c5f2f42`, `cadmpeg-core`, `cadmpeg-ir` and `cadmpeg-registry` are
 linked (Apache-2.0; `Cargo.toml`, `ATTRIBUTION.md`). Only the `fcstd`, `rhino` and `step` features
 are built, and the `step` feature is the **writer** used by `crates/io/src/native_cad.rs` to restate
 FreeCAD/Rhino files into STEP text. No callable cadmpeg STEP **decoder** was observed through the
-app/engine; `crates/kernel/src/step_in/p21.rs` re-exports `solidcore_step::p21`. This qualifies the
+app/engine; `crates/kernel/src/step_in/p21.rs` re-exports the `Entity`, `Exchange` and `Param`
+items from `solidcore_step::p21`, not the entire module. This qualifies the
 observed call path; it is **not** a link exclusion and does not claim cadmpeg is absent. The
 `solidcraft-io` tests `formats::tests::a_host_without_cadmpeg_leaves_its_rows_out` and
 `tests::step_import_names_follow_the_choice` pass in the same JUnit; they add no STEP decoder.
@@ -705,8 +709,8 @@ decoder and no SEC-2 result.
 **Low advisories and final-SHA checks.**
 
 - The retained CI plan `selection-plan-c5f2f42/plan.json` is bound to test-merge `2a20b4b` and
-  still decides `packages: not_applicable` (`no_relevant_change`); treat it as a historical plan
-  artifact, not a package or release gate.
+  records `jobs.packages.decision: not_applicable` and `jobs.packages.reason: no_relevant_change`;
+  treat it as a historical plan artifact, not a package or release gate.
 - The cadmpeg/FreeCAD rows in `ATTRIBUTION.md` are historical licence inventory, not a refreshed
   rights clearance; this entry adds no attribution evidence.
 - Layering rules are candidate-dependent: the test-merge's tree changes `xtask/src/layers.rs`
@@ -718,9 +722,9 @@ decoder and no SEC-2 result.
 
 **Disposition.** This is technical source review evidence only. It does **not** reclassify D5: the
 ledger's D5 row (io Adopted; STEP move Blocked until K1) is unchanged, and no owner approval or
-waiver is implied. It approves no merge, no `main` change and no release; PR #185 remains
-OPEN/BLOCKED. No source, ledger, CI, build, test, worktree or Linear change was made for this
-entry.
+waiver is implied. It approves no merge, no `main` change and no release. The prior snapshot
+recorded PR #185 as OPEN/BLOCKED; this entry makes no current status claim. No source, ledger, CI,
+build, test, worktree or Linear change was made for this entry.
 
 Evidence and commands: `git show -s`, `git rev-parse`, `git ls-tree`, `git diff --quiet`, the
 retained JUnit/selection/commands files above, and a Python `xml.etree` count of the JUnit. No
