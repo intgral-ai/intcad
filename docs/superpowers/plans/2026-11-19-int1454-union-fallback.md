@@ -1,6 +1,9 @@
 # INT-1454 temporary union operand-order fallback
 
-Status: approved narrow workaround; source-only. This plan and its tests are the removal record.
+Status: **BLOCKED on the approved strict naming invariant**; the narrow workaround is
+implemented and its geometry/history/edit/undo/replay/save paths pass, but every result face
+is not exact. Do not merge, narrow the acceptance, or adopt a new semantic boundary without
+owner/L3 approval. This plan and its tests are the removal record.
 
 ## Provenance
 
@@ -31,8 +34,10 @@ solidcore operand-order asymmetry, not a face lookup or IntCAD adapter error.
 
 ## Approved boundary
 
-- IntCAD kernel only: `crates/kernel/src/ops.rs` and `crates/kernel/src/history.rs`;
-  tests in the existing `crates/engine/src/boolean_regression_tests.rs`; this plan file.
+- IntCAD kernel only: `crates/kernel/src/ops.rs`, `crates/kernel/src/history.rs`, and the
+  `boolean_original_order` re-export in `crates/kernel/src/lib.rs`; tests in the existing
+  `crates/engine/src/boolean_regression_tests.rs` and `crates/kernel/src/boolean_history_tests.rs`;
+  this plan file.
 - Do not edit vendored `solidcore/`, `crates/doc/src/eval.rs`, shared manifests/lockfiles,
   baselines, beta exceptions, or another worker's validation/Mastra files.
 - Ordinary (`original`) union is always tried first, with the original external operand
@@ -46,8 +51,18 @@ solidcore operand-order asymmetry, not a face lookup or IntCAD adapter error.
   `[a, b]` operands and checked by `Body::with_history`.
 - Fail closed: any retry failure, empty result, missing history, remap failure, or history
   check failure returns the **original** error. No result is accepted with guessed or
-  unverified history. The engine regression must also prove exact face names; if lineage
-  naming is not exact, stop and report instead of accepting the fallback.
+  unverified history.
+- Strict naming result (2026-11-20; targeted runs `44651019376` at `0a6f37f6` and
+  `44663246394` at `5659c5c2`): the approved invariant "every result face name is exact"
+  is **not met**. The target body already has two geometrically named (unverified) faces
+  before any join, `F11:side:e1` (index 6) and `F6:side:e1` (index 10); the tool has none.
+  The retry keeps those two unchanged and adds four new pieces of the exact contact face
+  `F15:start` (indices 19, 20, 23, 24), all from the same target face and identical bounds;
+  exact piece numbering cannot tell them apart from history. All other 21 result faces are
+  exact, and the two probed faces (target away from the contact, tool far cap) keep their
+  names. The branch keeps the strict assertion and fails; this is a blocker report, not a
+  new acceptance criterion. Do not narrow it to exactness preservation without explicit
+  owner/L3 approval.
 - Undo, replay, save/load, body name, material and validation semantics remain the ordinary
   join semantics: the result is the ordinary union body with exact histories over `[a, b]`.
 
@@ -55,22 +70,27 @@ solidcore operand-order asymmetry, not a face lookup or IntCAD adapter error.
 
 - [x] Verify base, provenance and exact defect fingerprint read-only.
 - [x] Write this plan/removal record.
-- [ ] Commit RED product tests on `fix/int1454-union-fallback`; push; observe the exact
-  failure in remote CI (no local build).
-- [ ] Implement original-first retry + exact fingerprint + single-material-region guard +
+- [x] Commit RED product tests on `fix/int1454-union-fallback`; push; observe the exact
+  failure in remote CI (no local build). RED: run `44630726579` at `e84724f0`, both tests
+  failed with the exact fingerprint; Clippy and fmt clean in that run.
+- [x] Implement original-first retry + exact fingerprint + single-material-region guard +
   history `0 <-> 1` permutation in the kernel adapter only.
-- [ ] Add the independent original-path audit and the retry-guard/history unit tests.
-- [ ] Push GREEN; remote CI must pass the targeted engine tests and repository checks.
-- [ ] Report RED/GREEN run IDs, HEADs, dirty state, commands/exits and any NOT RUN checks.
+- [x] Add the independent original-path audit and the retry-guard/history unit tests.
+- [!] Front-triangle geometry/history/volume/edit/undo/replay/save tests pass under the
+  temporary helper, but the approved strict naming test refuses (6 unverified faces). The
+  superseded narrowed-acceptance run `44663246394` passed; it is **not** acceptance.
+- [!] BLOCKED: no GREEN claim. Source-bound strict naming run pending on the reverted test;
+  report RED/GREEN/NOT RUN and the blocker, do not merge or narrow.
 
 ## Invariants and tests
 
 - The result is one closed `FrontTriangle` body with the additive volume of target + tool
   (contact-only union), not a tolerance allowance.
-- `History` has two operands and checks against the original `[a, b]` bodies; every face
-  name is exact (`solidcraft_doc::naming::face_name_exact`). A target face away from the
-  contact keeps its pre-join name; a point on the tool's far cap carries the join feature's
-  role name.
+- `History` has two operands and checks against the original `[a, b]` bodies. The approved
+  invariant is that every result face name is exact (`solidcraft_doc::naming::face_name_exact`);
+  it is **not met** here (six unverified faces, see the strict naming result). A target face
+  away from the contact keeps its pre-join name; a point on the tool's far cap carries the
+  join feature's role name. No narrower naming acceptance is adopted in this branch.
 - A dependent `timeline.edit` of the distance inside the failing window re-evaluates with
   the same exact history/naming; `edit.undo`/`edit.redo`, full script replay, and a saved
   document round-trip preserve volume, validity and names.
@@ -93,6 +113,6 @@ regression first.
   auto-extend it.
 
 Temporary callsite: `crates/kernel/src/ops.rs` (`boolean`, `boolean_original_order`,
-`retry_swapped`, `first_then_retry`) and the history permutation in
+`fallback_if_applicable`, `retry_applies`, `retry_swapped`) and `swap_operands` in
 `crates/kernel/src/history.rs`. The approach is intentionally removable as one branch plus
 one helper.

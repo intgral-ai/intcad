@@ -2220,41 +2220,27 @@ fn unverified_names(body: &solidcraft_doc::ModelBody) -> Vec<(usize, String)> {
     (0..names.len()).filter(|&i| !solidcraft_doc::naming::face_name_exact(body, i)).map(|i| (i, names.get(i).cloned().unwrap_or_default())).collect()
 }
 
-fn exact_names(body: &solidcraft_doc::ModelBody) -> Vec<String> {
-    let names = solidcraft_doc::naming::face_names(body);
-    (0..names.len()).filter(|&i| solidcraft_doc::naming::face_name_exact(body, i)).map(|i| names.get(i).cloned().unwrap_or_default()).collect()
-}
-
-/// The join may split an exact operand face, and a new piece is named from geometry (unverified).
-/// It may also keep a face that was already unverified. It must not make an exact face unverified,
-/// and every new unverified face must be a piece of an exact operand face.
-fn assert_exactness_preserved(
+/// The approved strict invariant: every result face name is exact. If this refuses, the
+/// fallback must not be accepted; the panic lists the pre-join state for the report.
+fn assert_front_triangle_names_exact(
+    body: &solidcraft_doc::ModelBody,
     target_unverified: &[(usize, String)],
-    target_exact: &[String],
-    tool_exact: &[String],
-    joined: &solidcraft_doc::ModelBody,
+    tool_unverified: &[(usize, String)],
 ) {
-    for (i, name) in unverified_names(joined) {
-        if target_unverified.iter().any(|(_, n)| n == &name) {
-            continue;
-        }
-        assert!(
-            !target_exact.iter().chain(tool_exact).any(|n| n == &name),
-            "face {i} {name:?} was exact before the join and is not now"
-        );
-        let stem = name.split('#').next().unwrap_or(&name);
-        assert!(target_exact.iter().chain(tool_exact).any(|n| n == stem), "new unverified face {i} {name:?} is not a piece of an exact operand face");
-    }
+    let unverified = unverified_names(body);
+    assert!(
+        unverified.is_empty(),
+        "unverified {unverified:?}; target before {target_unverified:?}; tool before {tool_unverified:?}"
+    );
 }
 
 #[test]
 fn front_triangle_face_join_keeps_exact_history_and_names() {
     let target = front_triangle();
     let target_body = target.model.state().body("FrontTriangle").unwrap().body.clone();
-    let (target_unverified, target_exact) = {
+    let target_unverified = {
         let state = target.model.state();
-        let body = state.body("FrontTriangle").unwrap();
-        (unverified_names(body), exact_names(body))
+        unverified_names(state.body("FrontTriangle").unwrap())
     };
     eprintln!("target before join unverified: {target_unverified:?}");
     let target_names = solidcraft_doc::naming::face_names(target.model.state().body("FrontTriangle").unwrap());
@@ -2271,10 +2257,9 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
     let target_name = target_names.get(target_index).cloned().expect("the target face's name");
     let tool = front_triangle_tool(5.0);
     let tool_body = tool.model.state().body("Body1").unwrap().body.clone();
-    let (tool_unverified, tool_exact) = {
+    let tool_unverified = {
         let state = tool.model.state();
-        let body = state.body("Body1").unwrap();
-        (unverified_names(body), exact_names(body))
+        unverified_names(state.body("Body1").unwrap())
     };
     eprintln!("tool before join unverified: {tool_unverified:?}");
     let tool_point = tool_body
@@ -2306,10 +2291,7 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
             &[(target_body.face_count(), target_body.edge_count()), (tool_body.face_count(), tool_body.edge_count())],
         )
         .unwrap();
-    {
-        let state = s.model.state();
-        assert_exactness_preserved(&target_unverified, &target_exact, &tool_exact, state.body("FrontTriangle").unwrap());
-    }
+    assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap(), &target_unverified, &tool_unverified);
     let (target_after, tool_after) = {
         let state = s.model.state();
         (solidcraft_doc::naming::face_names_at(&state, &[target_point]), solidcraft_doc::naming::face_names_at(&state, &[tool_point]))
@@ -2327,17 +2309,15 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
 fn front_triangle_press_pull_keeps_exact_history_and_names() {
     let target = front_triangle();
     let target_body = target.model.state().body("FrontTriangle").unwrap().body.clone();
-    let (target_unverified, target_exact) = {
+    let target_unverified = {
         let state = target.model.state();
-        let body = state.body("FrontTriangle").unwrap();
-        (unverified_names(body), exact_names(body))
+        unverified_names(state.body("FrontTriangle").unwrap())
     };
     let tool = front_triangle_tool(5.0);
     let tool_body = tool.model.state().body("Body1").unwrap().body.clone();
-    let (tool_unverified, tool_exact) = {
+    let tool_unverified = {
         let state = tool.model.state();
-        let body = state.body("Body1").unwrap();
-        (unverified_names(body), exact_names(body))
+        unverified_names(state.body("Body1").unwrap())
     };
     eprintln!("press pull target before unverified: {target_unverified:?}; tool before: {tool_unverified:?}");
     let expected = volume(&target, "FrontTriangle") + volume(&tool, "Body1");
@@ -2361,10 +2341,7 @@ fn front_triangle_press_pull_keeps_exact_history_and_names() {
             &[(target_body.face_count(), target_body.edge_count()), (tool_body.face_count(), tool_body.edge_count())],
         )
         .unwrap();
-    {
-        let state = s.model.state();
-        assert_exactness_preserved(&target_unverified, &target_exact, &tool_exact, state.body("FrontTriangle").unwrap());
-    }
+    assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap(), &target_unverified, &tool_unverified);
 }
 
 /// The temporary retry must behave like an ordinary join through the product paths: a dependent
@@ -2374,17 +2351,15 @@ fn front_triangle_press_pull_keeps_exact_history_and_names() {
 fn front_triangle_join_survives_edit_undo_replay_and_save() {
     let target = front_triangle();
     let target_body = target.model.state().body("FrontTriangle").unwrap().body.clone();
-    let (target_unverified, target_exact) = {
+    let target_unverified = {
         let state = target.model.state();
-        let body = state.body("FrontTriangle").unwrap();
-        (unverified_names(body), exact_names(body))
+        unverified_names(state.body("FrontTriangle").unwrap())
     };
     let tool5 = front_triangle_tool(5.0);
     let tool5_body = tool5.model.state().body("Body1").unwrap().body.clone();
-    let (_, tool_exact) = {
+    let tool_unverified = {
         let state = tool5.model.state();
-        let body = state.body("Body1").unwrap();
-        (unverified_names(body), exact_names(body))
+        unverified_names(state.body("Body1").unwrap())
     };
     let joined_volume = volume(&target, "FrontTriangle") + volume(&tool5, "Body1");
     let target_volume = volume(&target, "FrontTriangle");
@@ -2408,7 +2383,7 @@ fn front_triangle_join_survives_edit_undo_replay_and_save() {
                 &[(target.face_count(), target.edge_count()), (tool.face_count(), tool.edge_count())],
             )
             .unwrap();
-        assert_exactness_preserved(&target_unverified, &target_exact, &tool_exact, body);
+        assert_front_triangle_names_exact(body, &target_unverified, &tool_unverified);
     };
 
     check(&s, joined_volume, &target_body, &tool5_body);
