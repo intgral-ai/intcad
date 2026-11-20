@@ -273,8 +273,8 @@ struct ObjectIdentity {
 
 /// The edit evidence in a witness. `changed` is ctime: it catches a write that restores the size
 /// and mtime, which an mtime-only check cannot. A rename of the entry itself also changes ctime,
-/// so a pre-rename ctime is never compared directly with a displaced entry; `displaced_entry_matches`
-/// omits it for that reason.
+/// so a pre-rename ctime is never compared directly with a displaced entry; a test-only displaced
+/// comparison omits it and therefore cannot justify deleting a backup.
 #[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DetectableEdit {
@@ -287,7 +287,9 @@ struct DetectableEdit {
 /// An opaque authorization for one exact named destination. It binds the destination spelling to
 /// the witness read when the question opened. A hard link or another spelling of the same object
 /// is not this destination, so it can never use this authorization. Keep the object-only alias
-/// relation separate: [`same_object_alias`] is evidence, never consent.
+/// relation separate: [`same_object_alias`] is evidence, never consent. This type plus
+/// [`replace_authorization`] and [`authorization_matches`] is the only public destructive-consent
+/// path; the lower-level same-entry checks stay private.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplaceAuthorization {
@@ -318,7 +320,9 @@ pub fn authorization_matches(authorization: &ReplaceAuthorization, destination: 
 /// No-follow applies to the final path component only: `symlink_metadata` does not follow the
 /// entry itself, but parent directories are resolved by the ordinary path lookup. A link,
 /// directory, device, socket or FIFO is refused rather than followed or treated as a file.
-/// This is a single metadata snapshot, not a pinned handle and not a generation proof.
+/// This is a single metadata snapshot, not a pinned handle and not a generation proof. It is
+/// evidence only, never consent: destructive replacement must use [`replace_authorization`] and
+/// [`authorization_matches`].
 ///
 /// Windows replacement stays unsupported in this build. A witness there would require proving,
 /// from the opened entry itself, that its volume is local NTFS. The safe surface of `winapi-util`
@@ -370,10 +374,10 @@ pub fn same_object_alias(a: &EntryWitness, b: &EntryWitness) -> bool {
 }
 
 /// Do two witnesses name the same object *and* the same detectable edits, including change time?
-/// Only this stronger relation may keep destructive consent for the exact named destination: an
-/// in-place edit keeps the object but revokes the snapshot the person saw. A platform with no
-/// witness never reports same.
-pub fn same_entry(a: &EntryWitness, b: &EntryWitness) -> bool {
+/// This is an internal comparison; the only public destructive-consent path is the exact-name
+/// [`authorization_matches`]. An in-place edit keeps the object but revokes the snapshot the
+/// person saw. A platform with no witness never reports same.
+fn same_entry(a: &EntryWitness, b: &EntryWitness) -> bool {
     #[cfg(unix)]
     {
         a == b
@@ -386,34 +390,11 @@ pub fn same_entry(a: &EntryWitness, b: &EntryWitness) -> bool {
 }
 
 /// Does `path` still hold exactly the entry the witness names, including its detectable edits?
-/// Unknown, missing, replaced, edited and unsupported entries never count as the same.
-pub fn witness_matches(expected: &EntryWitness, path: &Path) -> bool {
+/// This is an internal exact-name recheck; public destructive consent must go through
+/// [`authorization_matches`]. Unknown, missing, replaced, edited and unsupported entries never
+/// count as the same.
+fn witness_matches(expected: &EntryWitness, path: &Path) -> bool {
     entry_witness(path).is_some_and(|current| same_entry(expected, &current))
-}
-
-/// Does the entry the application moved aside still match the authorized object and the edits a
-/// rename leaves alone? A rename necessarily changes ctime, so this excludes ctime and compares
-/// object identity, size, modified time and creation time. Call it only after
-/// [`authorization_matches`] succeeded on the exact destination and the application itself renamed
-/// that named entry to `displaced`; this function cannot prove that provenance. It is **not** a
-/// full authorization: a same-length edit whose mtime was restored in the window around the
-/// application's rename is indistinguishable here, and that exact invariant remains unresolved
-/// without a safe handle-based generation proof. Never publish on this result alone.
-pub fn displaced_entry_matches(authorization: &ReplaceAuthorization, displaced: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        entry_witness(displaced).is_some_and(|current| {
-            authorization.witness.object == current.object
-                && authorization.witness.edit.len == current.edit.len
-                && authorization.witness.edit.modified == current.edit.modified
-                && authorization.witness.edit.created == current.edit.created
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (authorization, displaced);
-        false
-    }
 }
 
 /// Copy `source` into the folder `destination`, following `conflict`.

@@ -1368,6 +1368,21 @@ fn authorization_names_only_the_exact_destination_not_a_hard_link_alias() {
     assert!(!authorization_matches(&authorization, &file), "an edit revokes the exact-destination authorization");
 }
 
+/// Test-only evidence for the displaced comparison. It is deliberately not a production API and
+/// must never justify deleting or overwriting a retained backup: a same-length edit whose mtime
+/// was restored after the exact-name check is masked by the application's own rename ctime, and a
+/// recycled inode with matching size, mtime and creation time would also look the same. The exact
+/// invariant remains unresolved without a safe handle-based generation proof.
+#[cfg(unix)]
+fn displaced_entry_matches_for_test(authorization: &ReplaceAuthorization, displaced: &Path) -> bool {
+    entry_witness(displaced).is_some_and(|current| {
+        authorization.witness.object == current.object
+            && authorization.witness.edit.len == current.edit.len
+            && authorization.witness.edit.modified == current.edit.modified
+            && authorization.witness.edit.created == current.edit.created
+    })
+}
+
 #[cfg(unix)]
 #[test]
 fn a_displaced_entry_matches_after_the_application_rename_but_an_edit_still_counts() {
@@ -1380,10 +1395,35 @@ fn a_displaced_entry_matches_after_the_application_rename_but_an_edit_still_coun
     fs::rename(&file, &displaced).unwrap();
     let after = fs::metadata(&displaced).unwrap();
     assert_ne!((after.ctime(), after.ctime_nsec()), (before.ctime(), before.ctime_nsec()), "the application's own rename changes ctime");
-    assert!(displaced_entry_matches(&authorization, &displaced));
+    assert!(displaced_entry_matches_for_test(&authorization, &displaced));
     assert!(!authorization_matches(&authorization, &displaced), "the displaced name is not the named destination");
     fs::write(&displaced, "design plus an edit").unwrap();
-    assert!(!displaced_entry_matches(&authorization, &displaced), "a detectable edit still revokes the displaced match");
+    assert!(!displaced_entry_matches_for_test(&authorization, &displaced), "a detectable edit still revokes the displaced match");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_displaced_match_cannot_detect_a_same_length_restored_mtime_edit_so_a_backup_must_remain() {
+    use std::os::unix::fs::MetadataExt;
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "0123456789");
+    let authorization = replace_authorization(&file).expect("a plain file can be authorized");
+    let displaced = scratch.path().join("displaced.sc");
+    fs::rename(&file, &displaced).unwrap();
+    let renamed = fs::metadata(&displaced).unwrap();
+    let old_modified = renamed.modified().unwrap();
+    fs::write(&displaced, "abcdefghij").unwrap();
+    let edited = fs::OpenOptions::new().write(true).open(&displaced).unwrap();
+    edited.set_times(fs::FileTimes::new().set_modified(old_modified)).unwrap();
+    drop(edited);
+    let after = fs::metadata(&displaced).unwrap();
+    assert_eq!(after.len(), renamed.len());
+    assert_eq!(after.modified().unwrap(), old_modified);
+    assert_ne!((after.ctime(), after.ctime_nsec()), (renamed.ctime(), renamed.ctime_nsec()), "the post-rename edit still changes ctime");
+    assert!(
+        displaced_entry_matches_for_test(&authorization, &displaced),
+        "the test-only displaced helper ignores ctime, so this result can never justify deleting a backup"
+    );
 }
 
 #[cfg(unix)]
