@@ -379,6 +379,10 @@ mod tests {
         fn execution_session_proof(&self, _operation: &OperationId) -> Option<Secret> {
             self.proof.clone()
         }
+
+        fn initial_lease_proof(&self, _authorization: &solidcraft_engine::entitlement::GrantId) -> Option<Secret> {
+            self.proof.clone()
+        }
     }
 
     #[test]
@@ -616,15 +620,19 @@ mod tests {
             "AuthorizationResponse" => {
                 if let Some(proof) = body.get("execution_session_proof").and_then(Value::as_str) {
                     let capability = capability_of(&body)?;
+                    let authorization_id =
+                        body.get("authorization_id").and_then(Value::as_str).ok_or(ContractError::MalformedArtifact("authorization id"))?;
                     if proof.is_empty()
-                        || !log.proofs.iter().any(|(entry_capability, entry_operation, entry_proof)| {
-                            *entry_capability == capability && entry_operation.is_none() && entry_proof.expose_secret() == proof
+                        || !log.initial_proofs.iter().any(|(entry_authorization, entry_capability, entry_proof)| {
+                            entry_authorization.as_str() == authorization_id
+                                && *entry_capability == capability
+                                && entry_proof.expose_secret() == proof
                         })
                     {
                         return Err(ContractError::CoverageMismatch("the initial authorization proof was not handed off"));
                     }
                 }
-                if !log.settlements.is_empty() || !log.installations.is_empty() {
+                if !log.proofs.is_empty() || !log.settlements.is_empty() || !log.installations.is_empty() {
                     return Err(ContractError::CoverageMismatch("an authorization exchange handed off the wrong credential class"));
                 }
             }
@@ -642,8 +650,9 @@ mod tests {
                         .iter()
                         .any(|(entry_operation, entry_credential)| entry_operation == operation && entry_credential.expose_secret() == settlement)
                         || !log.proofs.iter().any(|(entry_capability, entry_operation, entry_proof)| {
-                            *entry_capability == capability && entry_operation.as_ref() == Some(operation) && entry_proof.expose_secret() == proof
+                            *entry_capability == capability && entry_operation == operation && entry_proof.expose_secret() == proof
                         })
+                        || !log.initial_proofs.is_empty()
                         || !log.installations.is_empty()
                     {
                         return Err(ContractError::CoverageMismatch("NEWLY_ADMITTED credential handoff mismatch"));
@@ -665,7 +674,7 @@ mod tests {
                         }
                         _ => return Err(ContractError::MalformedArtifact("settlement credential")),
                     }
-                    if !log.proofs.is_empty() || !log.installations.is_empty() {
+                    if !log.proofs.is_empty() || !log.initial_proofs.is_empty() || !log.installations.is_empty() {
                         return Err(ContractError::CoverageMismatch("ALREADY_EXISTS handed off execution authority"));
                     }
                 }
@@ -677,13 +686,14 @@ mod tests {
                     body.get("installation_credential").and_then(Value::as_str).ok_or(ContractError::MalformedArtifact("installation credential"))?;
                 if !log.installations.iter().any(|(entry_id, entry_credential)| entry_id == id && entry_credential.expose_secret() == credential)
                     || !log.proofs.is_empty()
+                    || !log.initial_proofs.is_empty()
                     || !log.settlements.is_empty()
                 {
                     return Err(ContractError::CoverageMismatch("installation credential handoff mismatch"));
                 }
             }
             _ => {
-                if !log.proofs.is_empty() || !log.settlements.is_empty() || !log.installations.is_empty() {
+                if !log.initial_proofs.is_empty() || !log.proofs.is_empty() || !log.settlements.is_empty() || !log.installations.is_empty() {
                     return Err(ContractError::CoverageMismatch("a non-issuing exchange handed off a credential"));
                 }
             }

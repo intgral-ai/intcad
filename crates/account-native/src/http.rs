@@ -69,8 +69,10 @@ impl fmt::Display for Secret {
 /// credentials in a JSON ledger, or store them in plaintext. A handoff failure must fail the
 /// exchange closed; execution or settlement must not continue without the credential.
 pub trait CredentialHandoff {
-    /// Initial authorization proof, or the execution grant proof for one operation.
-    fn execution_session_proof(&mut self, capability: Capability, operation: Option<&OperationId>, proof: Secret) -> Result<(), Refusal>;
+    /// Initial authorization-lease proof, keyed by the server-issued authorization id.
+    fn initial_lease_proof(&mut self, authorization: &GrantId, capability: Capability, proof: Secret) -> Result<(), Refusal>;
+    /// The execution grant proof for one admitted operation.
+    fn execution_session_proof(&mut self, capability: Capability, operation: &OperationId, proof: Secret) -> Result<(), Refusal>;
     /// A newly issued or reissued settlement credential, scoped to one operation.
     fn settlement_credential(&mut self, operation: &OperationId, credential: Secret) -> Result<(), Refusal>;
     /// The one-time installation credential.
@@ -83,6 +85,8 @@ pub trait WireCredentials {
     fn installation_credential(&self) -> Option<Secret>;
     fn settlement_credential(&self, operation: &OperationId) -> Option<Secret>;
     fn execution_session_proof(&self, operation: &OperationId) -> Option<Secret>;
+    /// Initial lease proof, keyed by the server-issued authorization id.
+    fn initial_lease_proof(&self, authorization: &GrantId) -> Option<Secret>;
 }
 
 /// A fixed credential set. Task 4 replaces this with the OS-protected store.
@@ -92,6 +96,7 @@ pub struct FixedCredentials {
     installation_credential: Option<Secret>,
     settlement_credential: Option<Secret>,
     execution_session_proof: Option<Secret>,
+    initial_lease_proof: Option<Secret>,
 }
 
 impl FixedCredentials {
@@ -118,6 +123,11 @@ impl FixedCredentials {
         self.execution_session_proof = Some(Secret::new(secret));
         self
     }
+
+    pub fn with_initial_lease_proof(mut self, secret: impl Into<String>) -> Self {
+        self.initial_lease_proof = Some(Secret::new(secret));
+        self
+    }
 }
 
 impl WireCredentials for FixedCredentials {
@@ -135,6 +145,10 @@ impl WireCredentials for FixedCredentials {
 
     fn execution_session_proof(&self, _operation: &OperationId) -> Option<Secret> {
         self.execution_session_proof.clone()
+    }
+
+    fn initial_lease_proof(&self, _authorization: &GrantId) -> Option<Secret> {
+        self.initial_lease_proof.clone()
     }
 }
 
@@ -667,7 +681,7 @@ impl<T: Transport> HttpAccountService<T> {
                 let settlement =
                     value.get("settlement_credential").and_then(Value::as_str).filter(|credential| !credential.is_empty()).ok_or_else(unavailable)?;
                 let grant = self.grant_from_absolute(sent_at, wall_sent, grant_id, capability, authorization_expires_at, grant_expires_at)?;
-                self.handoff.execution_session_proof(capability, Some(operation), Secret::new(proof)).map_err(|_| unavailable())?;
+                self.handoff.execution_session_proof(capability, operation, Secret::new(proof)).map_err(|_| unavailable())?;
                 self.handoff.settlement_credential(operation, Secret::new(settlement)).map_err(|_| unavailable())?;
                 Ok(Admission::NewlyAdmitted { operation: operation.clone(), grant })
             }
@@ -786,8 +800,9 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
         let proof = value.get("execution_session_proof").and_then(Value::as_str).filter(|proof| !proof.is_empty()).ok_or_else(unavailable)?;
         let remaining = value.get("remaining_seconds").and_then(Value::as_u64).ok_or_else(unavailable)?;
         let id = value.get("authorization_id").and_then(Value::as_str).ok_or_else(unavailable)?;
+        let authorization = GrantId::new(id);
         let grant = self.grant(sent_at, id, capability, remaining);
-        self.handoff.execution_session_proof(capability, None, Secret::new(proof)).map_err(|_| unavailable())?;
+        self.handoff.initial_lease_proof(&authorization, capability, Secret::new(proof)).map_err(|_| unavailable())?;
         Ok(grant)
     }
 
@@ -1118,7 +1133,8 @@ impl Transport for ScriptedTransport {
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct HandoffLog {
-    pub(crate) proofs: Vec<(Capability, Option<OperationId>, Secret)>,
+    pub(crate) initial_proofs: Vec<(GrantId, Capability, Secret)>,
+    pub(crate) proofs: Vec<(Capability, OperationId, Secret)>,
     pub(crate) settlements: Vec<(OperationId, Secret)>,
     pub(crate) installations: Vec<(String, Secret)>,
 }
@@ -1144,11 +1160,19 @@ impl RecordingHandoff {
 
 #[cfg(test)]
 impl CredentialHandoff for RecordingHandoff {
-    fn execution_session_proof(&mut self, capability: Capability, operation: Option<&OperationId>, proof: Secret) -> Result<(), Refusal> {
+    fn initial_lease_proof(&mut self, authorization: &GrantId, capability: Capability, proof: Secret) -> Result<(), Refusal> {
         if self.fail {
             return Err(unavailable());
         }
-        self.log.borrow_mut().proofs.push((capability, operation.cloned(), proof));
+        self.log.borrow_mut().initial_proofs.push((authorization.clone(), capability, proof));
+        Ok(())
+    }
+
+    fn execution_session_proof(&mut self, capability: Capability, operation: &OperationId, proof: Secret) -> Result<(), Refusal> {
+        if self.fail {
+            return Err(unavailable());
+        }
+        self.log.borrow_mut().proofs.push((capability, operation.clone(), proof));
         Ok(())
     }
 

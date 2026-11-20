@@ -401,10 +401,11 @@ fn initial_authorization_requires_nonempty_proof_and_hands_it_off() {
     let (mut service, log) = scripted_with_log(credentials(), vec![ok(200, auth_response_body(Value::String("proof_SECRET_initial".into())))]);
     service.authorize(&scope(), Capability::Chat).unwrap();
     let log = log.borrow();
-    assert_eq!(log.proofs.len(), 1);
-    assert_eq!(log.proofs[0].0, Capability::Chat);
-    assert!(log.proofs[0].1.is_none());
-    assert_eq!(log.proofs[0].2.expose_secret(), "proof_SECRET_initial");
+    assert_eq!(log.initial_proofs.len(), 1);
+    assert_eq!(log.initial_proofs[0].0, GrantId::new("grant_example_0001"));
+    assert_eq!(log.initial_proofs[0].1, Capability::Chat);
+    assert_eq!(log.initial_proofs[0].2.expose_secret(), "proof_SECRET_initial");
+    assert!(log.proofs.is_empty());
 
     for proof in [Value::Null, Value::String(String::new())] {
         let mut service = scripted(vec![ok(200, auth_response_body(proof))]);
@@ -422,8 +423,9 @@ fn begin_hands_off_credentials_and_already_exists_never_hands_off_execution() {
     assert_eq!(log.settlements[0].1.expose_secret(), "settlement_credential_example_0000000000000000");
     assert_eq!(log.proofs.len(), 1);
     assert_eq!(log.proofs[0].0, Capability::Chat);
-    assert_eq!(log.proofs[0].1.as_ref(), Some(&operation()));
+    assert_eq!(log.proofs[0].1, operation());
     assert_eq!(log.proofs[0].2.expose_secret(), "execution_session_proof_example_000000000000000");
+    assert!(log.initial_proofs.is_empty());
 
     let (mut service, log) = scripted_with_log(credentials(), vec![ok(200, already_exists_body())]);
     assert!(matches!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap(), Admission::AlreadyExists { .. }));
