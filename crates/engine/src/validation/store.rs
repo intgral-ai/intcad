@@ -482,11 +482,27 @@ impl Store {
                 if self.tombstone_path(&run_id).is_file() {
                     // Never delete around a conflicting, malformed or unreadable retirement
                     // record. The existing record remains authority even when the key path was
-                    // unavailable.
+                    // unavailable. When an admission still names the submission key, the
+                    // tombstone must name that exact key; a valid record for another key is not
+                    // evidence that this run's key was retired.
                     match self.read_valid_tombstone(&run_id) {
-                        Ok(Some(existing)) if existing.state == state.state => {}
+                        Ok(Some(existing))
+                            if existing.state == state.state
+                                && admission.as_ref().is_none_or(|admission| existing.submission_key == admission.submission_key) => {}
                         _ => continue,
                     }
+                }
+            } else if let Some(admission) = admission.as_ref()
+                && self.tombstone_path(&run_id).is_file()
+            {
+                // An admission with no state never wrote a tombstone itself. A tombstone can
+                // only come from an earlier terminal retirement; unless it is valid and names
+                // this admission's submission key it is not evidence that the key was retired.
+                // Keep the admission, profile and evidence rather than let a replay rebuild
+                // Queued.
+                match self.read_valid_tombstone(&run_id) {
+                    Ok(Some(existing)) if existing.submission_key == admission.submission_key => {}
+                    _ => continue,
                 }
             }
             // With no tombstone, remove the admission before the state and require that removal
@@ -657,15 +673,20 @@ impl Store {
             if record.expires_at_ms.saturating_add(retention_ms) > now_ms {
                 continue;
             }
-            let tombstone_exists = self.tombstone_path(&record.run_id).is_file();
-            if tombstone_exists {
+            let tombstone = if self.tombstone_path(&record.run_id).is_file() {
                 match self.read_valid_tombstone(&record.run_id) {
-                    Ok(Some(_)) => {}
-                    // Invalid or unreadable retirement evidence is not permission to collect
-                    // its key or records. Keep both for a retry or review.
+                    // A validated tombstone is authority only for the exact key it names,
+                    // including that key's expiry. A record for another key or with a
+                    // conflicting expiry is not permission to collect this key, and it must
+                    // not be deleted on this key's separate retention window.
+                    Ok(Some(existing)) if existing.submission_key == record.submission_key && existing.expires_at_ms == record.expires_at_ms => {
+                        Some(existing)
+                    }
                     _ => continue,
                 }
-            }
+            } else {
+                None
+            };
             let run_terminal_old = self
                 .read_optional_json::<StateRecord>(&self.state_path(&record.run_id), 64 << 10)
                 .ok()
@@ -675,7 +696,9 @@ impl Store {
             let state_exists = self.state_path(&record.run_id).is_file();
             if run_terminal_old || (!state_exists && !admission_exists) {
                 let _ = fs::remove_file(path);
-                if !state_exists && !admission_exists {
+                if !state_exists && !admission_exists && tombstone.is_some_and(|tombstone| tombstone.expires_at_ms <= now_ms) {
+                    // Remove retirement evidence only on its own expiry, never because a
+                    // separate key record reached the assisted retention window.
                     let _ = fs::remove_file(self.tombstone_path(&record.run_id));
                 }
             }
