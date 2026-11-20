@@ -1718,6 +1718,45 @@ fn same_batch_files_row_click_and_delete_does_not_delete_the_cad_selection() {
     assert!(h.app.file_tree.modal.is_some(), "Files asks about its own file");
 }
 
+/// The ordered click position, not the batch's final pointer position, decides that CAD must not
+/// delete. When the pointer leaves Files before its handler runs, the same ambiguous batch
+/// suppresses both owners: CAD keeps its body and the tree asks about no file. The settled
+/// click-then-Delete case without the move keeps the safe Files question below.
+#[test]
+fn files_row_click_then_delete_then_pointer_away_does_not_delete_cad_or_ask() {
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let (mut h, body) = cad_body_and_files(&scratch);
+    let row = crate::scenario::rect_of("files:row:notes.txt").unwrap();
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(key_event(egui::Key::Delete, true, Modifiers::NONE));
+    events.push(key_event(egui::Key::Delete, false, Modifiers::NONE));
+    events.push(egui::Event::PointerMoved(egui::pos2(5.0, 5.0)));
+    h.frame_with(events);
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_some(), "the final pointer move must not hand the key to CAD");
+    assert!(h.app.file_tree.modal.is_none(), "the pointer left Files before its handler ran, so the key is retired from both owners");
+    assert!(h.app.file_tree.editing.is_none());
+}
+
+/// Delete followed by a Files row click must not be retargeted to the file the later click
+/// selects. The key is retired for both owners.
+#[test]
+fn delete_then_files_row_click_does_not_open_a_file_question() {
+    let scratch = Scratch::new();
+    scratch.file("notes.txt", "n");
+    let (mut h, body) = cad_body_and_files(&scratch);
+    let row = crate::scenario::rect_of("files:row:notes.txt").unwrap();
+    let mut events = vec![key_event(egui::Key::Delete, true, Modifiers::NONE), key_event(egui::Key::Delete, false, Modifiers::NONE)];
+    events.extend(pointer_click(row.center(), Modifiers::NONE));
+    h.frame_with(events);
+    h.frames(2);
+    assert!(h.app.session.model.state().body(&body).is_some(), "the key before the click must not delete CAD");
+    assert!(h.app.file_tree.modal.is_none(), "the later Files click must not retarget the earlier Delete");
+    assert!(h.app.file_tree.editing.is_none());
+    assert!(h.app.file_tree.focused, "the click still focuses Files; only the key is retired");
+}
+
 /// The reverse transition loses the ambiguous destructive key rather than guessing: a click that
 /// closes Files and Delete in one batch changes nothing.
 #[test]
