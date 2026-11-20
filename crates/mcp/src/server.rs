@@ -289,11 +289,11 @@ impl Server {
                 self.scope = self.scope.take().map(|s| s.with_design(open.as_deref()));
                 let scope = self.scope.clone();
                 let forwarded = matches!(self.authority, Authority::Forwarded);
-                let helper = crate::account::tool_is_free(name);
+                let helper = crate::account::tool_is_free(name).then_some(name);
                 // A tool that would make more than one controlled backend call cannot yet carry
                 // the parent's validated admission into its substeps. Refuse it before any work;
                 // Task 9 replaces this with safe parent-admission reuse.
-                if forwarded && !helper && crate::account::forwarded_substeps_unsupported(name, &args) {
+                if forwarded && helper.is_none() && crate::account::forwarded_substeps_unsupported(name, &args) {
                     return Ok(crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
                         solidcraft_engine::entitlement::RefusalCode::UnsafeToStart,
                         "this multi-substep call needs the durable parent admission that Task 9 adds; nothing was sent",
@@ -364,7 +364,7 @@ impl Server {
                 let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
                 // Resource reads are protocol helpers: they carry no logical operation and must
                 // not inherit the previous tool call's context.
-                self.backend.begin_tool_call(None, true);
+                self.backend.begin_tool_call(None, Some("@resource"));
                 let v = match uri {
                     // The solvecraft:// URIs are what earlier releases listed (compatibility shim,
                     // docs/compatibility.md); clients that saved them still read the resource.

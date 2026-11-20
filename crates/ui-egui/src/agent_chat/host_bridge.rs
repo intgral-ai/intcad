@@ -189,8 +189,9 @@ struct ChatBackend {
     /// The logical call the server announced for the current request. Replaced on every call
     /// and cleared at [`Backend::end_tool_call`], so protocol/resource paths cannot inherit it.
     forwarded: Option<ToolCallContext>,
-    /// This request is a host-selected free helper or protocol read. It never mints or bills.
-    helper: bool,
+    /// This request is a host-selected free helper or protocol read, named so control can admit
+    /// only that tool's exact methods. It never mints or bills.
+    helper: Option<String>,
 }
 
 impl ChatBackend {
@@ -213,9 +214,10 @@ impl ChatBackend {
             let trusted = context.trusted().cloned();
             (trusted, context.deadline().cloned(), context.now())
         });
-        let (mut request, reply) = if self.helper {
-            // A published free helper or resource read: no operation, no billing.
-            ControlRequest::trusted_bridge_helper(method, params)
+        let (mut request, reply) = if let Some(helper) = self.helper.as_deref() {
+            // A published free helper or resource read: no operation, no billing. The tool name
+            // lets control accept only that tool's exact fixed methods.
+            ControlRequest::trusted_bridge_helper(method, params, helper)
         } else {
             match forwarded {
                 Some((Some(trusted), deadline, now)) => ControlRequest::trusted_bridge_forwarded(method, params, trusted, deadline, now),
@@ -288,14 +290,14 @@ impl Backend for ChatBackend {
         provenance.begin_logical_call(EntryCategory::GuiBridgeMcp, tool).ok().map(|call| call.context())
     }
 
-    fn begin_tool_call(&mut self, context: Option<&ToolCallContext>, helper: bool) {
+    fn begin_tool_call(&mut self, context: Option<&ToolCallContext>, helper: Option<&str>) {
         self.forwarded = context.cloned();
-        self.helper = helper;
+        self.helper = helper.map(str::to_owned);
     }
 
     fn end_tool_call(&mut self) {
         self.forwarded = None;
-        self.helper = false;
+        self.helper = None;
     }
 }
 
@@ -342,7 +344,7 @@ impl HostBridge {
                 next_call: Arc::new(AtomicU64::new(0)),
                 provenance: provenance.clone(),
                 forwarded: None,
-                helper: false,
+                helper: None,
             };
             let reported = Arc::clone(&error);
             let close_state = Arc::clone(&state);

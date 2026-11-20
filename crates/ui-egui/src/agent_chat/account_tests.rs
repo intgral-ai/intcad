@@ -237,7 +237,7 @@ fn mastra_own_tool_is_free_intcad_tool_bills() {
     write_wire(&mut child, &free_call);
     let free_req = rx.recv_timeout(Duration::from_secs(5)).expect("the free helper reaches the control queue");
     assert!(free_req.trusted().is_none(), "a free helper carries no billed operation context");
-    assert!(free_req.helper, "a published free helper is marked as a helper");
+    assert_eq!(free_req.helper.as_deref(), Some("list_commands"), "the originating helper is recorded");
     assert!(free_req.operation().is_none(), "a free helper mints no billable operation");
     reply_to(free_req, true, json!({"commands":[]}));
     let free = read_wire(&mut child);
@@ -257,17 +257,17 @@ fn mastra_own_tool_is_free_intcad_tool_bills() {
 
 #[test]
 fn free_helpers_use_no_credits_and_only_narrow_host_methods() {
-    let (helper, _rx) = ControlRequest::trusted_bridge_helper("engine.commands", json!({}));
+    let (helper, _rx) = ControlRequest::trusted_bridge_helper("engine.commands", json!({}), "list_commands");
     let mut billing = CountingBilling::default();
     assert!(matches!(admit_control_request(&helper, &bridge_budget(), &mut billing), Admission::Allowed));
     assert_eq!(billing.admits(), 0, "a published helper consumes no credits");
     assert!(helper.operation().is_none(), "a published helper mints no operation");
 
-    let (generic, _rx) = ControlRequest::trusted_bridge_helper("engine.execute", json!({"command":"solid.box","params":{"length":10}}));
+    let (generic, _rx) = ControlRequest::trusted_bridge_helper("engine.execute", json!({"command":"solid.box","params":{"length":10}}), "screenshot");
     let mut billing = CountingBilling::default();
     let admission = admit_control_request(&generic, &bridge_budget(), &mut billing);
     assert!(matches!(admission, Admission::Refused(refusal) if refusal.code == RefusalCode::CapabilityDenied));
-    assert_eq!(billing.admits(), 0, "a generic command cannot be made free by the helper origin");
+    assert_eq!(billing.admits(), 0, "a generic command cannot be made free by the screenshot helper");
 }
 
 #[test]
@@ -304,6 +304,43 @@ fn unsupported_multi_substep_tool_is_refused_before_work() {
 }
 
 #[test]
+fn screenshot_camera_and_named_view_helpers_are_exact_and_free() {
+    let camera = ControlRequest::trusted_bridge_helper(
+        "engine.execute",
+        json!({"command":"view.apply","params":{"camera":{"target":[0,0,0],"yaw":0.4,"pitch":0.2,"distance":100}}}),
+        "screenshot",
+    )
+    .0;
+    let named = ControlRequest::trusted_bridge_helper("engine.execute", json!({"command":"view.apply","params":{"view":"Photo"}}), "screenshot").0;
+    let standard = ControlRequest::trusted_bridge_helper("ui.view", json!({"view":"top"}), "screenshot").0;
+    for request in [camera, named, standard] {
+        let mut billing = CountingBilling::default();
+        assert!(matches!(admit_control_request(&request, &bridge_budget(), &mut billing), Admission::Allowed));
+        assert_eq!(billing.admits(), 0, "a screenshot camera/view helper consumes no credits");
+        assert!(request.operation().is_none(), "a screenshot camera/view helper mints no operation");
+    }
+}
+
+#[test]
+fn screenshot_helper_never_allows_generic_commands_or_extra_fields() {
+    let extra = ControlRequest::trusted_bridge_helper(
+        "engine.execute",
+        json!({"command":"view.apply","params":{"camera":{"target":[0,0,0],"yaw":0,"pitch":0,"distance":100},"command":"solid.box"}}),
+        "screenshot",
+    )
+    .0;
+    let mutation = ControlRequest::trusted_bridge_helper("engine.execute", json!({"command":"solid.box","params":{"length":10}}), "screenshot").0;
+    let other_tool =
+        ControlRequest::trusted_bridge_helper("engine.execute", json!({"command":"view.apply","params":{"view":"Photo"}}), "list_commands").0;
+    for request in [extra, mutation, other_tool] {
+        let mut billing = CountingBilling::default();
+        let admission = admit_control_request(&request, &bridge_budget(), &mut billing);
+        assert!(matches!(admission, Admission::Refused(refusal) if refusal.code == RefusalCode::CapabilityDenied));
+        assert_eq!(billing.admits(), 0, "no non-screenshot command is free");
+    }
+}
+
+#[test]
 fn multiple_tool_calls_and_a_resource_read_keep_context_per_request() {
     let (mut bridge, rx, _active) = authorized_bridge();
     let mut child = child(&mut bridge);
@@ -328,7 +365,7 @@ fn multiple_tool_calls_and_a_resource_read_keep_context_per_request() {
     let resource = json!({"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"solidcraft://design"}});
     write_wire(&mut child, &resource);
     let resource_request = rx.recv_timeout(Duration::from_secs(5)).expect("the resource read reaches the control queue");
-    assert!(resource_request.helper, "a resource read is a host helper");
+    assert_eq!(resource_request.helper.as_deref(), Some("@resource"), "a resource read is a host helper");
     assert!(resource_request.trusted().is_none(), "a resource read carries no tool context");
     assert!(resource_request.operation().is_none(), "a resource read mints no operation");
     reply_to(resource_request, true, json!({"bodies":[]}));

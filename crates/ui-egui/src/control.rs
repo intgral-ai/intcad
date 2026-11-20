@@ -95,9 +95,9 @@ pub struct ControlRequest {
     pub(crate) deadline: Option<ConservativeDeadline>,
     /// The host's monotonic reading at which the forwarded call was minted.
     pub(crate) now: Option<MonotonicInstant>,
-    /// A published free helper or protocol read chosen by the host. It never mints an operation
-    /// or consumes credits, and only the exact helper methods below are allowed.
-    pub(crate) helper: bool,
+    /// The published free helper or protocol read chosen by the host. It never mints an
+    /// operation or consumes credits, and only that tool's exact methods below are allowed.
+    pub(crate) helper: Option<String>,
 }
 
 /// Entries whose human host path is free even when it shares command dispatch.
@@ -139,26 +139,54 @@ fn auxiliary_method(method: &str) -> bool {
     )
 }
 
-/// The exact control methods a published MCP free helper or resource read may use. Everything
-/// else, including generic `engine.execute`, needs a host-minted operation and admission.
-fn mcp_helper_method(method: &str, params: &Value) -> bool {
-    match method {
-        "control.running"
-        | "control.pending"
-        | "control.capabilities"
-        | "control.subscribe"
-        | "engine.commands"
-        | "document.inspect"
-        | "ui.inspect"
-        | "ui.rects"
-        | "ui.screenshot"
-        | "ui.render" => true,
-        // These MCP free helpers run one fixed read-only command each; no arbitrary command id
-        // is free.
-        "engine.execute" => matches!(
-            params.get("command").and_then(Value::as_str),
-            Some("engine.describe" | "diagnostics.crash_reports" | "diagnostics.crash_report" | "inspect.compare_picture")
-        ),
+/// The exact screenshot camera helper: `view.apply` with one `camera` object or one named-view
+/// string and no other field. `view.apply` is transient view state (`s.camera`), never saved and
+/// never an undo step; it cannot carry a design mutation.
+fn exact_screenshot_camera(params: &Value) -> bool {
+    let Some(object) = params.as_object() else { return false };
+    if object.len() != 1 {
+        return false;
+    }
+    match (object.get("camera"), object.get("view")) {
+        (Some(camera), None) => camera.is_object(),
+        (None, Some(view)) => view.is_string(),
+        _ => false,
+    }
+}
+
+/// The screenshot standard-view helper: `ui.view` with exactly one standard-view string.
+fn exact_screenshot_view(params: &Value) -> bool {
+    let Some(object) = params.as_object() else { return false };
+    if object.len() != 1 {
+        return false;
+    }
+    matches!(object.get("view").and_then(Value::as_str), Some("front" | "back" | "top" | "bottom" | "left" | "right" | "iso" | "home" | "fit"))
+}
+
+/// The exact host-selected methods a published MCP free helper or resource read may use.
+///
+/// Every branch is tied to the originating tool. Generic `engine.execute`, arbitrary commands
+/// and design mutations are never free, even when a host marks one helper request.
+fn mcp_helper_method(helper: &str, method: &str, params: &Value) -> bool {
+    match helper {
+        "@resource" => matches!(method, "document.inspect" | "engine.commands"),
+        "pending" => method == "control.pending",
+        "running" => method == "control.running",
+        "list_commands" => method == "engine.commands",
+        "describe_command" => method == "engine.execute" && params.get("command").and_then(Value::as_str) == Some("engine.describe"),
+        "crash_reports" => {
+            method == "engine.execute"
+                && matches!(params.get("command").and_then(Value::as_str), Some("diagnostics.crash_reports" | "diagnostics.crash_report"))
+        }
+        "compare_picture" => method == "engine.execute" && params.get("command").and_then(Value::as_str) == Some("inspect.compare_picture"),
+        "screenshot" => match method {
+            "ui.view" => exact_screenshot_view(params),
+            "ui.screenshot" | "ui.render" => true,
+            "engine.execute" => {
+                params.get("command").and_then(Value::as_str) == Some("view.apply") && params.get("params").is_some_and(exact_screenshot_camera)
+            }
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -167,17 +195,15 @@ fn mcp_helper_method(method: &str, params: &Value) -> bool {
 /// operation, trusted context or stale admission. Otherwise it is a controlled request and is
 /// refused here rather than being dispatched for free.
 fn helper_refusal(req: &ControlRequest) -> Option<Refusal> {
-    if !req.helper {
-        return None;
-    }
+    let helper = req.helper.as_deref()?;
     if !matches!(req.entry, EntryCategory::GuiBridgeMcp | EntryCategory::HeadlessMcp | EntryCategory::ExternalAcpMcp) {
         return Some(Refusal::new(RefusalCode::CapabilityDenied, "a free helper cannot use this request entry"));
     }
     if req.operation.is_some() || req.trusted.is_some() || req.admission.as_ref().is_some_and(|admission| !matches!(admission, Admission::Allowed)) {
         return Some(Refusal::new(RefusalCode::CapabilityDenied, "a free helper cannot carry operation authority"));
     }
-    if !mcp_helper_method(&req.method, &req.params) {
-        return Some(Refusal::new(RefusalCode::CapabilityDenied, "this method is not a published free helper"));
+    if !mcp_helper_method(helper, &req.method, &req.params) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "this method is not an exact published free helper"));
     }
     None
 }
@@ -234,7 +260,7 @@ impl ControlRequest {
             trusted: None,
             deadline: None,
             now: None,
-            helper: false,
+            helper: None,
         };
         (request, rx)
     }
@@ -285,15 +311,19 @@ impl ControlRequest {
             trusted: Some(trusted),
             deadline,
             now,
-            helper: false,
+            helper: None,
         };
         (request, rx)
     }
 
     /// A free helper or protocol/resource read chosen by the host bridge. It carries no
-    /// operation and no trusted context; control admits it only when its method is in the exact
-    /// helper set.
-    pub(crate) fn trusted_bridge_helper(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+    /// operation and no trusted context; `helper` names the originating tool (or `@resource`),
+    /// so control admits only that tool's exact fixed methods.
+    pub(crate) fn trusted_bridge_helper(
+        method: impl Into<String>,
+        params: Value,
+        helper: impl Into<String>,
+    ) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let (tx, rx) = std::sync::mpsc::channel();
         let request = Self {
             method: method.into(),
@@ -308,7 +338,7 @@ impl ControlRequest {
             trusted: None,
             deadline: None,
             now: None,
-            helper: true,
+            helper: Some(helper.into()),
         };
         (request, rx)
     }
@@ -360,7 +390,7 @@ impl ControlRequest {
             trusted: None,
             deadline: None,
             now: None,
-            helper: false,
+            helper: None,
         }
     }
 
@@ -400,7 +430,7 @@ pub(crate) struct Reissue {
     trusted: Option<TrustedContext>,
     deadline: Option<ConservativeDeadline>,
     now: Option<MonotonicInstant>,
-    helper: bool,
+    helper: Option<String>,
 }
 
 impl Reissue {
@@ -412,7 +442,7 @@ impl Reissue {
             trusted: req.trusted.clone(),
             deadline: req.deadline.clone(),
             now: req.now,
-            helper: req.helper,
+            helper: req.helper.clone(),
         }
     }
 }
@@ -482,7 +512,7 @@ pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing
     if let Some(refusal) = helper_refusal(req) {
         return Admission::Refused(refusal);
     }
-    if req.helper {
+    if req.helper.is_some() {
         return Admission::Allowed;
     }
     if let Some(refusal) = trusted_refusal(req) {

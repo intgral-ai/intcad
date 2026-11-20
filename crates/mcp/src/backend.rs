@@ -58,10 +58,12 @@ pub trait Backend {
     }
     /// Told by the host which logical operation (if any) this tool call belongs to.
     ///
-    /// `helper` is true only for the published free-helper catalog or a protocol/resource read.
-    /// The backend must keep the context for this one request and clear it at
-    /// [`Backend::end_tool_call`], so protocol and resource paths never inherit it.
-    fn begin_tool_call(&mut self, _context: Option<&crate::ToolCallContext>, _helper: bool) {}
+    /// `helper` is `Some(tool_name)` for the published free-helper catalog and
+    /// `Some("@resource")` for a protocol/resource read. It lets the host control seam admit only
+    /// that tool's exact fixed helper methods, never a generic command. The backend must keep
+    /// the context for this one request and clear it at [`Backend::end_tool_call`], so protocol
+    /// and resource paths never inherit it.
+    fn begin_tool_call(&mut self, _context: Option<&crate::ToolCallContext>, _helper: Option<&str>) {}
     /// The request using this context has ended. A backend must not forward it again.
     fn end_tool_call(&mut self) {}
 }

@@ -7,12 +7,12 @@ use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{
     AccountId, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, ConservativeDeadline, EntryCategory, Grant, GrantId,
     HostSessionBinding, InstallationId, MonotonicInstant, OperationId, OperationRecord, OperationStatus, OperationStore, OperationStoreError,
-    Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, TransportCorrelation,
+    Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, TransportCorrelation, TrustedContext,
 };
 
 use crate::account::{
-    CallOutcome, MeteredReply, ToolCallContext, call_tool_with, expired_state_response, missing_operation_state, operation_for_review,
-    record_review_operation, tool_is_free,
+    CallOutcome, MeteredReply, ToolCallContext, call_tool_forwarded, call_tool_with, expired_state_response, missing_operation_state,
+    operation_for_review, record_review_operation, tool_is_free,
 };
 use crate::backend::NOT_RUNNING;
 use crate::{Backend, Headless};
@@ -99,6 +99,23 @@ fn charged_tool_with_a_free_origin_is_refused_before_dispatch() {
     assert_eq!(reply_body(&reply)["errorDetails"]["reason"], "CAPABILITY_DENIED");
     assert_eq!(billing.admits, 0, "a free origin takes no grant");
     assert!(backend.session.doc.features.is_empty(), "nothing was executed");
+}
+
+#[test]
+fn forwarded_charged_tool_with_a_free_trusted_origin_is_refused() {
+    let scope = AuthenticatedHostScope::new(
+        AccountId::new("acc_forward_free"),
+        InstallationId::new("inst_forward_free"),
+        HostSessionBinding::new("session_forward_free"),
+    );
+    let trusted =
+        TrustedContext::mint(&scope, "op_mcp_forward_free_0001", Capability::Mcp, EntryCategory::HumanGuiFree).expect("host-minted context");
+    let context = ToolCallContext::from_trusted(trusted);
+    let mut backend = Headless::default();
+    let reply = call_tool_forwarded(&mut backend, "execute", &json!({"command":"solid.box","params":{"length":10}}), &context);
+    assert!(reply.is_error(), "{}", reply.value());
+    assert_eq!(reply_body(&reply)["errorDetails"]["reason"], "CAPABILITY_DENIED");
+    assert!(backend.session.doc.features.is_empty(), "a free forwarded origin executes nothing");
 }
 
 #[test]
