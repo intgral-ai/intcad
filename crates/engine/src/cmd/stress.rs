@@ -43,15 +43,17 @@ pub static COMMANDS: &[CommandSpec] = &[
              6082-T6, 5052-H32, S235, S355, 304, 304L: sourced, at the standard's minimum yield) or {name, youngs_modulus: MPa, poisson_ratio, \
              yield_strength: MPa, source}; body?; thickness?: mm (sheet metal: its rule's); mesh_size?: mm; elements?: \
              shell|solid|both (default: shell for sheet metal, solid otherwise); show?: stress|deflection; scale?: yield|auto; mesh_check?: \
-             bool (default true: the first model is solved again with a 1.5x finer mesh, and each number is reported settled (moved 2.5% or \
-             less) or still changing, with how far off it may still be; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
-             this computer can spare: the smaller of 6 GB and half the memory available; SOLIDCRAFT_FEA_MAX_NODES caps its nodes instead); \
+             bool (default true: the first model is solved again with a 1.5x finer mesh, and with a 2.25x finer one when the peak away from \
+             supports moved more than 1%; each number gets an error band, extrapolated from three meshes (Richardson) or from two, and is \
+             settled (band within 3%), still changing, or keeps rising (a sharp inside corner or an idealised support); the finest result is \
+             shown. A finer mesh that would need more memory than this computer can spare is not solved, with the reason: the smaller of 6 \
+             GB and half the memory available; SOLIDCRAFT_FEA_MAX_NODES caps its nodes instead); \
              keep_files?; dry_run?: true (check the setup, describe it and draw its supports and loads on the model; solves nothing: run \
              it first so the user can see the faces); probes?: [{at: [x,y,z] mm, direction?: [x,y,z], name?}] (at most 50: the stress \
              tensor, principal stresses and directions, elastic strain in microstrain (shears as engineering γ), displacement, and along \
              `direction` the stress and strain a gauge laid that way reads, at each point, read inside the solver's element that holds \
-             it, with its own mesh check; a point up to 1 mm outside the part is read at its nearest point; on shells a point on the top \
-             or bottom face reads that face) → estimate: true, setup, summary, runs, fraction_of_yield (of the number the summary leads with), fraction_of_yield_overall, peak_at_support, peak_away (the highest stress \
+             it, with its own band; a point up to 1 mm outside the part is read at its nearest point; on shells a point on the top \
+             or bottom face reads that face) → estimate: true, setup, summary, runs, fraction_of_yield (of the number the summary leads with), band_percent (its band), fraction_of_yield_overall, peak_at_support, peak_away (the highest stress \
              away from fixed supports and loads, with its principal stresses and strains), equilibrium (supports carry vs loads applied; each \
              support's force in N and moment in N·mm about its own middle; the moments' balance), mesh_check, probes, warnings, \
              assumptions, how_to_report, programs (the mesher's and solver's versions; each runs on one thread, so the same request \
@@ -82,9 +84,13 @@ pub(crate) const HOW_TO_REPORT: &[&str] = &[
      shape, change the design and run the estimate again; do not scale or guess numbers for designs that were not solved.",
     "Tell the user the material values used and where they came from; if you chose them, say so.",
     "If `warnings` is not empty, say what each means before the numbers.",
-    "State the mesh check's result for every number you quote: settled or still changing, with its % change and how far off it may still be (`may_be_off_percent`, `mesh_check`); if the mesh \
-     check was skipped or off, say that whether the numbers have settled is unknown, and why (its `reason`). The mesh check is about the \
-     numbers, not the part.",
+    "Quote every stress and deflection with its band from `mesh_check` (its `quote`): \"about 108 MPa (within ±1.2 %), 30 % of the \
+     yield strength given\". The number to quote is its `estimate` (extrapolated from three meshes when `extrapolated`, else the finest \
+     mesh's), and `fraction_of_yield` is the share of the summary's number, within ±`band_percent` %. Say whether it settled; say so when \
+     the bands rest on two meshes (`third_mesh`). A number that keeps rising has no band and no converged value: say it is likely a sharp \
+     inside corner or an idealised support, quote its finest value only as that, and give it no band. If the mesh check was skipped or \
+     off, say that how far the numbers are from settling is unknown, and why (its `reason`). The mesh check is about the numbers, not the \
+     part.",
     "If `peak_at_support` is set, the highest stress sits at that support or load, where an idealised hold concentrates stress: lead with \
      `peak_away` (the highest stress away from supports and loads) and its fraction of yield, and say the value at the support depends on the \
      mesh (even when one refinement step moved it little, it can keep creeping up; say so plainly when the mesh check calls it still \
@@ -651,8 +657,12 @@ fn probe_words(pr: &Probe, near: &str) -> String {
     format!("Read at {}: the stress and strain at {} mm, near {near}{along}", pr.name, point_words(pr.at))
 }
 
-/// The mesh check solves again with the element size divided by this.
-pub(crate) const MESH_CHECK_RATIO: f64 = 1.5;
+/// The mesh check solves again with the element size divided by this, and again for a third mesh.
+pub(crate) const MESH_CHECK_RATIO: f64 = fea::REFINEMENT_RATIO;
+/// The third mesh (h / 2.25) is solved when the lead peak moved by more than this (%) from the first
+/// mesh to the second (PIL-294 A6): a number that moved less is settled on two meshes, its band
+/// (twice its change) within 2 %.
+pub(crate) const THIRD_MESH_PERCENT: f64 = 1.0;
 /// The finer run's nodes per node of the first, for solids. 1.5³ ≈ 3.4 is the count in a part
 /// many elements thick; measured (gmsh 4, PIL-294): R2's plate 199 504 → 595 186 nodes (2.98)
 /// and 66 300 → 199 504 at 1.5 mm (3.01), R3's LE1 ring 44 748 → 132 915 (2.97), R1's 1.5 mm
@@ -713,17 +723,6 @@ pub(crate) fn default_solid_size(diag: f64, smallest: f64, volume: Option<f64>) 
 pub(crate) const MEMORY_CEILING: f64 = 6.0e9;
 /// A node cap for the finer run that replaces the memory limit (for tests and power users).
 pub(crate) const MAX_NODES_VAR: &str = "SOLIDCRAFT_FEA_MAX_NODES";
-/// A number that moves by at most this much (%) with the finer mesh has settled. One step of
-/// [`MESH_CHECK_RATIO`] says how far the number moved, not how far it still has to go: for an
-/// error that falls as the element size to the power `p`, what is left on the finer mesh is about
-/// change / (1.5^p − 1), twice the change for `p` = 1 (the slowest a smooth stress converges with
-/// these elements), 0.8 times for `p` = 2. 2.5 % keeps a settled number within about 5 % even at
-/// `p` = 1. At 5 %, a fillet's peak that moved 4.4 % was called settled while it was 5 to 6 % low
-/// (PIL-294 D4, Peterson's stepped bar).
-pub(crate) const SETTLED_PERCENT: f64 = 2.5;
-/// What may be left of a number's error on the finer mesh, per % it moved: 1 / (1.5 − 1), the
-/// first-order bound (see [`SETTLED_PERCENT`]).
-pub(crate) const REMAINING_PER_CHANGE: f64 = 2.0;
 
 /// The setup's keys, by where they go: one the estimate does not know is refused, not ignored,
 /// because a dropped load or support changes the answer without a word (PIL-294 D6). Kept equal
@@ -982,11 +981,13 @@ fn plan(p: &Value, faces: &BodyFaces, body: &solidcraft_doc::ModelBody, sheet_t:
             Limit::Nodes(cap) => format!("{} nodes, the limit set by {MAX_NODES_VAR}", about_count(cap)),
         };
         format!(
-            "Mesh check: the first model is solved again with a mesh {MESH_CHECK_RATIO}× finer, to see whether its numbers settle (unless \
-             the finer mesh would need more than {limit})"
+            "Mesh check: the first model is solved again with a mesh {MESH_CHECK_RATIO}× finer, and {}× finer when the peak away from \
+             supports and loads moves more than {THIRD_MESH_PERCENT}%, to give each number an error band (unless a finer mesh would need \
+             more than {limit})",
+            MESH_CHECK_RATIO * MESH_CHECK_RATIO
         )
     } else {
-        "Mesh check: off (mesh_check: false), so whether the numbers have settled will be unknown".to_string()
+        "Mesh check: off (mesh_check: false), so how far the numbers are from settling will be unknown".to_string()
     });
     let probes = probes_of(p)?;
     for pr in &probes {
@@ -1207,6 +1208,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 runs: Vec::new(),
                 fraction_of_yield: 0.0,
                 fraction_of_yield_overall: 0.0,
+                band_percent: None,
                 shell_vs_solid: None,
                 peak_at_support: None,
                 peak_away: None,
@@ -1254,9 +1256,11 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             EngineError::Other(format!("{CMD}: {e}"))
         }
     };
-    let total = plan.runs.len() + usize::from(plan.mesh_check);
+    // At most: the mesh check's second and third meshes.
+    let total = plan.runs.len() + if plan.mesh_check { 2 } else { 0 };
     let mut done: Vec<fea::Run> = Vec::new();
-    let mut finer: Option<fea::Run> = None;
+    // The mesh check's finer runs, the second mesh and then the third.
+    let mut finer: Vec<fea::Run> = Vec::new();
     let mut check = Check::Off;
     let mut k = 0usize;
     // Half the memory free when the estimate starts (D1).
@@ -1272,13 +1276,14 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             (None, Elements::Solid, false) => default_solid_size(diag, smallest, volume),
         };
         // The finer run looks at the same region away from supports and loads as this one.
-        let setup = |size: f64| Setup {
+        let setup = |size: f64, level: u32| Setup {
             thickness: plan.thickness,
             mesh_size: size,
             material: plan.material.clone(),
             loads: plan.loads.clone(),
             supports: plan.supports.clone(),
             away_distance: away_distance(h, section_size(*elements, plan.sheet, plan.thickness, volume, area)),
+            level,
         };
         // A solid's mesh is predicted from its volume before meshing, which takes time and memory
         // of its own at a size far too fine; every mesh is counted again before the solver runs.
@@ -1290,7 +1295,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         }
         k += 1;
         let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0, fits: Some(&fits) };
-        let run = fea::solve(&setup(h), &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
+        let run = fea::solve(&setup(h, 0), &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
         if i == 0 && plan.mesh_check {
             // Gated on the finer run's predicted size, not the first run's time: memory is what
             // runs out (R2's finer run took 14 GB), and a solid run that fits solves in about a
@@ -1298,22 +1303,65 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             // 258 s at 595 186). Shells at 104 175 nodes take about 34 s in all (25 s solving;
             // `model::shell_model`'s face matching took about 300 s before it used a grid, P1).
             // Stop ends either at once.
-            if let Some(skip) = mesh_check_gate(run.nodes, *elements, finer_limit_here()) {
+            let limit = finer_limit_here();
+            if let Some(skip) = mesh_check_gate(run.nodes, *elements, limit) {
                 check = skip;
             } else {
                 k += 1;
                 let fine_h = h / MESH_CHECK_RATIO;
-                let fine_setup = setup(fine_h);
                 let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0, fits: Some(&fits) };
-                let fine = fea::solve(&fine_setup, &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
-                check = Check::Ran { first_h: h, finer_h: fine_h, items: settling(&run, &fine) };
-                finer = Some(fine);
+                let fine =
+                    fea::solve(&setup(fine_h, 1), &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
+                // A third mesh when the lead peak moved more than 1 % (PIL-294 A6), predicted from
+                // the second's nodes and counted again once meshed: over the limit, the bands
+                // rest on two meshes.
+                let mut third = match third_wanted(&settling(&[&run, &fine])) {
+                    Ok(()) => match mesh_check_gate(fine.nodes, *elements, limit) {
+                        Some(Check::Skipped { nodes, bytes, limit }) => Third::Skipped { nodes, bytes, limit },
+                        _ => Third::Ran,
+                    },
+                    Err(why) => why,
+                };
+                if third == Third::Ran {
+                    k += 1;
+                    let counted = std::cell::Cell::new(None);
+                    let third_fits = |nodes: usize, elements: Elements, h: f64| {
+                        let n = nodes as f64;
+                        let bytes = solver_bytes(n, elements);
+                        let over = match limit {
+                            Limit::Memory(cap) => bytes > cap,
+                            Limit::Nodes(cap) => n > cap,
+                        };
+                        if over {
+                            counted.set(Some((n, bytes)));
+                            return Some("the third mesh is over the mesh check's limit".to_string());
+                        }
+                        fits(nodes, elements, h)
+                    };
+                    let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0, fits: Some(&third_fits) };
+                    match fea::solve(&setup(fine_h / MESH_CHECK_RATIO, 2), &step, &faces.display, &dir, *elements, &ctx) {
+                        Ok(r) => finer.extend([fine, r]),
+                        Err(f) => match counted.get() {
+                            Some((nodes, bytes)) => {
+                                third = Third::Skipped { nodes, bytes, limit };
+                                finer.push(fine);
+                            }
+                            None => return Err(failed(f.words(|p| faces.near(p)))),
+                        },
+                    }
+                } else {
+                    finer.push(fine);
+                }
+                let mut meshes = vec![h];
+                meshes.extend(finer.iter().map(|r| r.mesh_size));
+                let series: Vec<&fea::Run> = std::iter::once(&run).chain(finer.iter()).collect();
+                check = Check::Ran { meshes, items: settling(&series), third };
             }
         }
         done.push(run);
     }
     fea::set_progress(None);
-    let Some(shown) = finer.as_ref().or(done.first()) else { return Err(bad(CMD, "nothing was solved")) };
+    let Some(shown) = finer.last().or(done.first()) else { return Err(bad(CMD, "nothing was solved")) };
     let near = |at: P| faces.near(at);
 
     // Where the estimate says little.
@@ -1334,15 +1382,16 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         ));
     }
 
-    // The probes, read in every solve; the mesh check compares the first and the finer.
-    let all: Vec<(&fea::Run, bool)> = finer.iter().map(|r| (r, true)).chain(done.iter().map(|r| (r, false))).collect();
-    let pair = match (&check, done.first(), finer.as_ref()) {
-        (Check::Ran { .. }, Some(first), Some(fine)) => Some((first, fine)),
-        _ => None,
+    // The probes, read in every solve (the finest first); the mesh check reads them on its meshes,
+    // first to finest.
+    let all: Vec<(&fea::Run, bool)> = finer.iter().rev().map(|r| (r, true)).chain(done.iter().map(|r| (r, false))).collect();
+    let series: Vec<&fea::Run> = match (&check, done.first()) {
+        (Check::Ran { .. }, Some(first)) => std::iter::once(first).chain(finer.iter()).collect(),
+        _ => Vec::new(),
     };
     let mut probes = Vec::new();
     for pr in &plan.probes {
-        match probe_reading(pr, shown, &all, pair, &plan.material, &near) {
+        match probe_reading(pr, shown, &all, &series, &plan.material, &near) {
             Ok(r) => probes.push(r),
             Err(w) => warnings.push(w),
         }
@@ -1360,6 +1409,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let run_json: Vec<StressRun> = finer
         .iter()
+        .rev()
         .map(|r| (r, true))
         .chain(done.iter().map(|r| (r, false)))
         .map(|(r, fine)| StressRun {
@@ -1382,7 +1432,11 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             solver_threads: r.threads,
         })
         .collect();
-    let fraction = lead_stress(shown.max_stress, &shown.peaks) / plan.material.yield_mpa;
+    // The share of yield of the number the summary leads with: extrapolated, with its band, when
+    // the mesh check gave one (PIL-294 A6, spec section 6 and decision 8).
+    let (lead, lead_item) = lead_quoted(shown, &check);
+    let fraction = lead / plan.material.yield_mpa;
+    let band_percent = lead_item.and_then(|s| if s.at_support { None } else { s.band() }).map(|b| round_to(100.0 * b, 2));
     let isolated = done.iter().chain(finer.iter()).all(|r| r.isolated);
     let network = if isolated {
         "Meshed and solved on this computer, with the solver's networking switched off; the part was not uploaded".to_string()
@@ -1464,6 +1518,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             runs: run_json,
             fraction_of_yield: round_to(fraction, 3),
             fraction_of_yield_overall: round_to(shown.max_stress / plan.material.yield_mpa, 3),
+            band_percent,
             shell_vs_solid,
             peak_at_support: shown.peaks.at.clone(),
             peak_away,
@@ -1644,54 +1699,142 @@ pub(crate) const OVERALL: &str = "highest stress";
 pub(crate) const AWAY: &str = "highest stress away from supports and loads";
 pub(crate) const DEFLECTION: &str = "largest deflection";
 
-/// One number on the first mesh and on the finer one.
+/// One number on each mesh of the check (PIL-294 A6).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Settling {
     pub quantity: &'static str,
     pub unit: &'static str,
-    pub first: f64,
-    pub finer: f64,
-    /// The overall peak sits at a support or load (on the finer mesh): one refinement step
-    /// misses its slow climb, so it is never reported as settled.
+    /// Its value on each mesh, first (coarsest) to finest: two or three.
+    pub values: Vec<f64>,
+    /// The overall peak sits at a support or load (on the finest mesh): an idealised hold
+    /// concentrates stress without limit, so it is never reported as settled and has no band.
     pub at_support: bool,
 }
 
+/// A step's change, %, from `a` to `b`.
+fn change_percent(a: f64, b: f64) -> f64 {
+    if a.abs() > 1e-12 {
+        100.0 * (b - a) / a.abs()
+    } else if b.abs() > 1e-12 {
+        100.0
+    } else {
+        0.0
+    }
+}
+
+/// What a number that keeps rising or falling with the mesh is, in the reply's words.
+pub(crate) const RISING: &str = "keeps rising: likely a sharp inside corner or an idealised support";
+pub(crate) const FALLING: &str = "keeps falling with the mesh: it has not converged";
+
 impl Settling {
-    /// (finer − first) / first, %.
+    /// The finest mesh's value.
+    pub(crate) fn finest(&self) -> f64 {
+        self.values.last().copied().unwrap_or(f64::NAN)
+    }
+    /// Each step's change, % (first to second, then second to third).
+    pub(crate) fn changes(&self) -> Vec<f64> {
+        self.values.windows(2).map(|w| change_percent(w[0], w[1])).collect()
+    }
+    /// The first step's change, %: what decides whether a third mesh is solved.
     pub(crate) fn change(&self) -> f64 {
-        if self.first.abs() > 1e-12 {
-            100.0 * (self.finer - self.first) / self.first.abs()
-        } else if self.finer.abs() > 1e-12 {
-            100.0
-        } else {
-            0.0
-        }
+        self.changes().first().copied().unwrap_or(0.0)
     }
-    /// It moved by at most [`SETTLED_PERCENT`].
+    /// What the meshes say about it, as if it were not at a support.
+    pub(crate) fn raw_estimate(&self) -> Option<fea::convergence::Estimate> {
+        fea::convergence::estimate(&self.values, MESH_CHECK_RATIO)
+    }
+    /// What the meshes say about it: `None` at a support or load, where it has no value to
+    /// settle on.
+    pub(crate) fn estimate(&self) -> Option<fea::convergence::Estimate> {
+        if self.at_support { None } else { self.raw_estimate() }
+    }
+    /// It settled: within a 3 % band, at an order the extrapolation trusts.
     pub(crate) fn settled(&self) -> bool {
-        self.change().abs() <= SETTLED_PERCENT
+        self.estimate().is_some_and(|e| e.trend == fea::convergence::Trend::Settled)
     }
-    /// How far off the finer value may still be, %: [`REMAINING_PER_CHANGE`] times its change.
-    /// None at a support or load, where the value has no limit to settle on.
-    pub(crate) fn may_be_off(&self) -> Option<f64> {
-        (!self.at_support).then(|| REMAINING_PER_CHANGE * self.change().abs())
+    /// It keeps rising (or falling) with the mesh: it has no band.
+    pub(crate) fn unbounded(&self) -> bool {
+        self.estimate().is_some_and(|e| matches!(e.trend, fea::convergence::Trend::Rising | fea::convergence::Trend::Falling))
+    }
+    /// The value to quote: the extrapolated one when three meshes allowed it, else the finest.
+    pub(crate) fn quoted(&self) -> f64 {
+        self.estimate().map_or_else(|| self.finest(), |e| e.value)
+    }
+    /// How far the quoted value may be from the converged one, as a share of it (0.02 is ±2 %).
+    pub(crate) fn band(&self) -> Option<f64> {
+        self.estimate().and_then(|e| e.band())
     }
     pub(crate) fn status(&self) -> &'static str {
-        if self.at_support {
-            "at a support or load: depends on the mesh"
-        } else if self.settled() {
-            "settled"
-        } else {
-            "still changing"
+        use fea::convergence::Trend;
+        match self.estimate().map(|e| e.trend) {
+            _ if self.at_support => "at a support or load: depends on the mesh",
+            Some(Trend::Settled) => "settled",
+            Some(Trend::Rising) => RISING,
+            Some(Trend::Falling) => FALLING,
+            Some(Trend::Changing) | None => "still changing",
         }
     }
+    /// How the band was found, in words.
+    pub(crate) fn basis(&self) -> String {
+        use fea::convergence::Basis;
+        let Some(e) = self.estimate() else { return "at a support or load: no band".into() };
+        let order = e.order.map_or_else(String::new, |p| format!(", order {p:.1}"));
+        let floor = format!("at least ±{} %", 100.0 * fea::convergence::MIN_BAND);
+        match e.basis {
+            Basis::TwoMeshes => {
+                format!("two meshes: the change over (1.5 − 1), for an error that falls at least as fast as the element size; {floor}")
+            }
+            Basis::Extrapolated => {
+                format!("three meshes, extrapolated (Richardson{order}): 1.25 times the distance from the finest mesh's value, {floor}")
+            }
+            Basis::Noise => format!("three meshes that moved under 0.25 % a step: twice the larger step, {floor}"),
+            Basis::FastOrder => format!(
+                "three meshes, the first too coarse to count (its step was over five times the next{order}): the two finer meshes' change \
+                 over (1.5 − 1), {floor}"
+            ),
+            Basis::Oscillating => format!("three meshes that go up and down: the larger step, {floor}"),
+            Basis::NoLimit => format!("three meshes: it keeps growing without settling{order}, so it has no band"),
+        }
+    }
+    /// The number with its band, for sentences: "about 108 MPa, within ±1.2 %", or what it does
+    /// when it has none.
+    pub(crate) fn quote(&self) -> String {
+        match (self.at_support, self.band()) {
+            (true, _) => format!("{} {}, depending on the mesh", sig(self.finest()), self.unit),
+            (false, Some(b)) => format!("about {} {}, within ±{}", sig(self.quoted()), self.unit, band_words(b)),
+            (false, None) => format!("{} {} on the finest mesh, and it {}", sig(self.finest()), self.unit, self.status()),
+        }
+    }
+}
+
+/// A band in words: "1.2 %", at least "0.1 %".
+pub(crate) fn band_words(band: f64) -> String {
+    if !band.is_finite() {
+        return "? %".into();
+    }
+    format!("{:.1} %", (100.0 * band).max(0.1))
+}
+
+/// Why the mesh check stopped at two meshes, or that it solved three.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Third {
+    /// Solved.
+    Ran,
+    /// Not needed: the lead peak (`quantity`) moved by `moved` %, no more than
+    /// [`THIRD_MESH_PERCENT`].
+    NotNeeded { quantity: &'static str, moved: f64 },
+    /// Not solved: every node lies near a support or load, whose peak a finer mesh never settles.
+    AtSupport,
+    /// Not solved: the third mesh would have (or has) about `nodes` nodes and need about `bytes`
+    /// of memory, over `limit`.
+    Skipped { nodes: f64, bytes: f64, limit: Limit },
 }
 
 /// What the mesh check did.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Check {
-    /// Solved again with a finer mesh.
-    Ran { first_h: f64, finer_h: f64, items: Vec<Settling> },
+    /// Solved again with finer meshes: `meshes` are their element sizes, first to finest.
+    Ran { meshes: Vec<f64>, items: Vec<Settling>, third: Third },
     /// Not run: the finer run would have about `nodes` nodes and need about `bytes` of memory,
     /// over `limit`.
     Skipped { nodes: f64, bytes: f64, limit: Limit },
@@ -1905,47 +2048,100 @@ pub(crate) fn skip_reason(nodes: f64, bytes: f64, limit: Limit) -> String {
     }
 }
 
-/// The overall peak, the peak away from supports and loads (when both runs have one) and the
-/// largest deflection, on the first mesh and the finer one.
-pub(crate) fn settling(first: &fea::Run, finer: &fea::Run) -> Vec<Settling> {
-    let mut out =
-        vec![Settling { quantity: OVERALL, unit: "MPa", first: first.max_stress, finer: finer.max_stress, at_support: finer.peaks.at.is_some() }];
-    if let (Some((a, _)), Some((b, _))) = (first.peaks.away, finer.peaks.away) {
-        out.push(Settling { quantity: AWAY, unit: "MPa", first: a, finer: b, at_support: false });
+/// The overall peak, the peak away from supports and loads (when every run has one) and the
+/// largest deflection, on each mesh of the check (`runs`, first to finest).
+pub(crate) fn settling(runs: &[&fea::Run]) -> Vec<Settling> {
+    let at_support = runs.last().is_some_and(|r| r.peaks.at.is_some());
+    let mut out = vec![Settling { quantity: OVERALL, unit: "MPa", values: runs.iter().map(|r| r.max_stress).collect(), at_support }];
+    if let Some(away) = runs.iter().map(|r| r.peaks.away.map(|(v, _)| v)).collect::<Option<Vec<f64>>>() {
+        out.push(Settling { quantity: AWAY, unit: "MPa", values: away, at_support: false });
     }
-    out.push(Settling { quantity: DEFLECTION, unit: "mm", first: first.max_disp, finer: finer.max_disp, at_support: false });
+    out.push(Settling { quantity: DEFLECTION, unit: "mm", values: runs.iter().map(|r| r.max_disp).collect(), at_support: false });
     out
+}
+
+/// The peak the third mesh is decided on, and the summary leads with: the one away from supports
+/// and loads when there is one, else the overall peak.
+pub(crate) fn lead_item(items: &[Settling]) -> Option<&Settling> {
+    items.iter().find(|s| s.quantity == AWAY).or_else(|| items.iter().find(|s| s.quantity == OVERALL))
+}
+
+/// Whether the third mesh is wanted after the first two (`items` on two meshes): the lead peak
+/// moved by more than [`THIRD_MESH_PERCENT`]. `Err` says why not. A peak at a support never
+/// settles, so a third mesh would not help it: with no peak away from supports and loads, none is
+/// solved.
+pub(crate) fn third_wanted(items: &[Settling]) -> std::result::Result<(), Third> {
+    match lead_item(items) {
+        Some(s) if s.at_support => Err(Third::AtSupport),
+        Some(s) if s.change().abs() > THIRD_MESH_PERCENT => Ok(()),
+        Some(s) => Err(Third::NotNeeded { quantity: s.quantity, moved: s.change() }),
+        None => Err(Third::AtSupport),
+    }
+}
+
+/// One number of the mesh check in words: "highest stress away from supports and loads 97.8 →
+/// 102 → 104 MPa: about 108 MPa, within ±1.2 % (settled)".
+fn settling_words(s: &Settling) -> String {
+    let values: Vec<String> = s.values.iter().map(|v| sig(*v)).collect();
+    let trail = match (s.at_support, s.band()) {
+        (true, _) => format!(" ({})", s.status()),
+        (false, Some(_)) => format!(": {} ({})", s.quote(), s.status()),
+        (false, None) => format!(" ({})", s.status()),
+    };
+    format!("{} {} {}{trail}", s.quantity, values.join(" → "), s.unit)
+}
+
+/// Why the third mesh was not solved, in words; `None` when it was.
+pub(crate) fn third_words(third: &Third, finest_h: f64) -> Option<String> {
+    match third {
+        Third::Ran => None,
+        Third::NotNeeded { quantity, moved } => {
+            Some(format!("no third mesh was needed: the {quantity} moved {moved:+.1}%, within {THIRD_MESH_PERCENT}%"))
+        }
+        Third::AtSupport => Some(
+            "no third mesh was solved: the highest stress sits at a support or load, which a finer mesh does not settle, and no node lies \
+             away from them"
+                .to_string(),
+        ),
+        Third::Skipped { nodes, bytes, limit } => Some(format!(
+            "the third mesh ({} mm) was not solved, so the bands rest on two meshes: {}",
+            sig(finest_h / MESH_CHECK_RATIO),
+            skip_reason(*nodes, *bytes, *limit).replacen("the finer mesh", "it", 1)
+        )),
+    }
 }
 
 /// The mesh check in one line, for the legend and the reply.
 pub(crate) fn check_line(check: &Check) -> String {
     match check {
-        Check::Ran { first_h, finer_h, items } => {
-            let parts: Vec<String> = items
-                .iter()
-                .map(|s| {
-                    let off = s.may_be_off().map_or_else(String::new, |r| format!(", may be off by about {r:.1}%"));
-                    format!("{} {} → {} {} ({:+.1}%, {}{off})", s.quantity, sig(s.first), sig(s.finer), s.unit, s.change(), s.status())
-                })
-                .collect();
-            format!("mesh {} → {} mm: {}", sig(*first_h), sig(*finer_h), parts.join("; "))
+        Check::Ran { meshes, items, third } => {
+            let sizes: Vec<String> = meshes.iter().map(|h| sig(*h)).collect();
+            let parts: Vec<String> = items.iter().map(settling_words).collect();
+            let finest = meshes.last().copied().unwrap_or(f64::NAN);
+            let why = third_words(third, finest).map_or_else(String::new, |w| format!("; {w}"));
+            format!("meshes {} mm: {}{why}", sizes.join(" → "), parts.join("; "))
         }
         Check::Skipped { nodes, bytes, limit } => {
-            format!("skipped: {}, so whether the numbers have settled is unknown", skip_reason(*nodes, *bytes, *limit))
+            format!("skipped: {}, so how far the numbers are from settling is unknown", skip_reason(*nodes, *bytes, *limit))
         }
-        Check::Off => "off (mesh_check: false), so whether the numbers have settled is unknown".to_string(),
+        Check::Off => "off (mesh_check: false), so how far the numbers are from settling is unknown".to_string(),
     }
 }
 
 fn settling_json(s: &Settling) -> StressSettling {
+    let e = s.estimate();
     StressSettling {
         quantity: s.quantity.into(),
         unit: s.unit.into(),
-        first: round_to(s.first, 4),
-        finer: round_to(s.finer, 4),
-        change_percent: round_to(s.change(), 2),
+        values: s.values.iter().map(|v| round_to(*v, 4)).collect(),
+        changes_percent: s.changes().iter().map(|c| round_to(*c, 2)).collect(),
         status: s.status().into(),
-        may_be_off_percent: s.may_be_off().map(|r| round_to(r, 1)),
+        estimate: e.as_ref().filter(|e| e.error.is_some()).map(|e| round_to(e.value, 4)),
+        band_percent: s.band().map(|b| round_to(100.0 * b, 2)),
+        observed_order: e.as_ref().and_then(|e| e.order).map(|p| round_to(p, 2)),
+        extrapolated: e.as_ref().is_some_and(|e| e.extrapolated()),
+        basis: s.basis(),
+        quote: s.quote(),
     }
 }
 
@@ -1953,13 +2149,14 @@ fn settling_json(s: &Settling) -> StressSettling {
 pub(crate) const PROBE_QUANTITY: &str = "von Mises stress at the probe";
 
 /// A probe read in the shown run, with its von Mises stress in every run (`all`: each run and
-/// whether it is the mesh check's finer one) and, when the mesh check ran (`pair`: the first run
-/// and the finer), how it moved. `Err` is the warning when the shown run cannot read the point.
+/// whether it is one of the mesh check's finer ones) and, when the mesh check ran (`series`: its
+/// meshes' runs, first to finest), its band. `Err` is the warning when the shown run cannot read the
+/// point.
 pub(crate) fn probe_reading(
     pr: &Probe,
     shown: &fea::Run,
     all: &[(&fea::Run, bool)],
-    pair: Option<(&fea::Run, &fea::Run)>,
+    series: &[&fea::Run],
     material: &Material,
     near: &dyn Fn(P) -> String,
 ) -> std::result::Result<StressProbe, String> {
@@ -1980,16 +2177,10 @@ pub(crate) fn probe_reading(
     // `+ 0.0` reads a rounded −0 as 0.
     let micro = |x: f64| round_to(x * 1e6, 1) + 0.0;
     let mpa = |x: f64| round_to(x, 2) + 0.0;
-    let settling = pair.and_then(|(first, fine)| {
-        let (a, b) = (read(first).ok()?, read(fine).ok()?);
-        Some(Settling {
-            quantity: PROBE_QUANTITY,
-            unit: "MPa",
-            first: fea::formats::von_mises(&a.stress),
-            finer: fea::formats::von_mises(&b.stress),
-            at_support: false,
-        })
-    });
+    let settling = (series.len() >= 2)
+        .then(|| series.iter().map(|r| read(r).ok().map(|x| fea::formats::von_mises(&x.stress))).collect::<Option<Vec<f64>>>())
+        .flatten()
+        .map(|values| Settling { quantity: PROBE_QUANTITY, unit: "MPa", values, at_support: false });
     let runs = all
         .iter()
         .filter_map(|(r, fine)| {
@@ -2009,10 +2200,10 @@ pub(crate) fn probe_reading(
     });
     let near_words = near(pr.at);
     let check_words = settling.as_ref().map_or_else(
-        || "mesh check: not run".to_string(),
-        |st| {
-            let off = st.may_be_off().map_or_else(String::new, |r| format!(", may be off by about {r:.1}%"));
-            format!("mesh check: {} ({:+.1}%{off})", st.status(), st.change())
+        || "mesh check: not run, so how far it is from settling is unknown".to_string(),
+        |st| match st.band() {
+            Some(_) => format!("mesh check: {}, {}", st.status(), st.quote()),
+            None => format!("mesh check: it {}", st.status()),
         },
     );
     let gauge = match (&along, pr.direction) {
@@ -2070,87 +2261,102 @@ pub(crate) fn probe_reading(
 fn mesh_check_json(check: &Check) -> StressMeshCheck {
     let line = check_line(check);
     match check {
-        Check::Ran { first_h, finer_h, items } => StressMeshCheck {
+        Check::Ran { meshes, items, third } => StressMeshCheck {
             status: "ran".into(),
             reason: None,
-            first_mesh_mm: Some(round_to(*first_h, 3)),
-            finer_mesh_mm: Some(round_to(*finer_h, 3)),
+            meshes_mm: meshes.iter().map(|h| round_to(*h, 3)).collect(),
+            third_mesh: third_words(third, meshes.last().copied().unwrap_or(f64::NAN)),
             quantities: items.iter().map(settling_json).collect(),
             line,
         },
         Check::Skipped { nodes, bytes, limit } => StressMeshCheck {
             status: "skipped".into(),
             reason: Some(skip_reason(*nodes, *bytes, *limit)),
-            first_mesh_mm: None,
-            finer_mesh_mm: None,
+            meshes_mm: Vec::new(),
+            third_mesh: None,
             quantities: Vec::new(),
             line,
         },
         Check::Off => StressMeshCheck {
             status: "off".into(),
             reason: Some("mesh_check: false".into()),
-            first_mesh_mm: None,
-            finer_mesh_mm: None,
+            meshes_mm: Vec::new(),
+            third_mesh: None,
             quantities: Vec::new(),
             line,
         },
     }
 }
 
-/// What the mesh check means for reading the numbers. `shown` is the finer run.
+/// A number's values over the mesh check, in words: "97.8 → 102 → 104 MPa".
+fn values_words(s: &Settling) -> String {
+    let values: Vec<String> = s.values.iter().map(|v| sig(*v)).collect();
+    format!("{} {}", values.join(" → "), s.unit)
+}
+
+/// How many meshes a number rests on, in words.
+fn meshes_words(s: &Settling) -> &'static str {
+    if s.values.len() >= 3 { "over three meshes" } else { "over two meshes" }
+}
+
+/// What the mesh check means for reading the numbers. `shown` is the finest run.
 pub(crate) fn check_warnings(check: &Check, shown: &fea::Run, face_label: &dyn Fn(P) -> String) -> Vec<String> {
     let Check::Ran { items, .. } = check else { return Vec::new() };
     let item = |q: &str| items.iter().find(|s| s.quantity == q);
     let mut out = Vec::new();
     let away = item(AWAY);
+    // The peak at a support moved too much to call it settled had it been anywhere else, and the
+    // stress away from it settled: say which to lead with.
     if let (Some(o), Some(at), Some(a)) = (item(OVERALL), shown.peaks.at.as_deref(), away)
-        && !o.settled()
+        && !o.raw_estimate().is_some_and(|e| e.trend == fea::convergence::Trend::Settled)
         && a.settled()
     {
         let away_at = shown.peaks.away.map_or_else(String::new, |(_, p)| format!(", near {}", face_label(p)));
         out.push(format!(
-            "The value at {at} depends on the mesh: the highest stress there went from {} to {} MPa ({:+.1}%) with a finer mesh. An idealised \
-             support or point load concentrates stress without limit, so that number keeps growing as the mesh is refined and says nothing \
-             about the part. Lead with the stress away from it: {} MPa{away_at}, which settled ({:+.1}%)",
-            sig(o.first),
-            sig(o.finer),
-            o.change(),
-            sig(a.finer),
-            a.change()
+            "The value at {at} depends on the mesh: the highest stress there went {} as the mesh was refined. An idealised support or \
+             point load concentrates stress without limit, so that number keeps growing as the mesh is refined and says nothing about the \
+             part. Lead with the stress away from it: {}{away_at}, which settled",
+            values_words(o),
+            a.quote()
         ));
     }
+    let at = |p: Option<(f64, P)>| p.map_or_else(String::new, |(_, p)| format!(" near {}", face_label(p)));
     if let Some(a) = away
         && !a.settled()
     {
-        let at = shown.peaks.away.map_or_else(String::new, |(_, p)| format!(" near {}", face_label(p)));
-        out.push(format!(
-            "The highest stress away from supports and loads ({} MPa{at}) moved by {:+.1}% with a finer mesh, so it has not settled: it may be \
-             a sharp inside corner, where the stress keeps rising as the mesh is refined, or a fillet or hole the mesh is coarse for, where \
-             it may still be {:.0}% or more off. It needs a finer mesh there (or, at a sharp corner, a fillet) before it can be read",
-            sig(a.finer),
-            a.change(),
-            a.may_be_off().unwrap_or(0.0)
-        ));
+        let where_ = at(shown.peaks.away);
+        out.push(if a.unbounded() {
+            format!(
+                "The highest stress away from supports and loads{where_} keeps rising as the mesh is refined ({}), so it has no value to \
+                 settle on: it is likely a sharp inside corner, where the stress grows without limit, or an idealised support. It cannot be \
+                 read as the part's stress; a fillet there gives a value that settles",
+                values_words(a)
+            )
+        } else {
+            format!(
+                "The highest stress away from supports and loads{where_} has not settled {} ({}): {}. It may be a sharp inside corner, where \
+                 the stress keeps rising as the mesh is refined, or a fillet or hole the mesh is coarse for. It needs a finer mesh there (or, \
+                 at a sharp corner, a fillet) before it can be read",
+                meshes_words(a),
+                values_words(a),
+                a.quote()
+            )
+        });
     } else if away.is_none()
         && let Some(o) = item(OVERALL)
+        && !o.at_support
         && !o.settled()
     {
-        out.push(format!(
-            "The highest stress moved by {:+.1}% with a finer mesh ({} to {} MPa), so it has not settled; read it as rough",
-            o.change(),
-            sig(o.first),
-            sig(o.finer)
-        ));
+        out.push(format!("The highest stress has not settled {} ({}): {}; read it as rough", meshes_words(o), values_words(o), o.quote()));
     }
     if let Some(d) = item(DEFLECTION)
         && !d.settled()
     {
         out.push(format!(
-            "The largest deflection moved by {:+.1}% with a finer mesh ({} to {} mm), so it has not settled: the mesh is coarse for this \
-             part; read it as rough",
-            d.change(),
-            sig(d.first),
-            sig(d.finer)
+            "The largest deflection has not settled {} ({}): {}. The mesh is coarse for this part; read it as rough",
+            meshes_words(d),
+            values_words(d),
+            d.quote()
         ));
     }
     out
@@ -2208,6 +2414,36 @@ pub(crate) fn lead_stress(max_stress: f64, peaks: &fea::Peaks) -> f64 {
     match (&peaks.at, peaks.away) {
         (Some(_), Some((away, _))) => away,
         _ => max_stress,
+    }
+}
+
+/// The number the summary leads with and `fraction_of_yield` shares (PIL-294 D8 and A6): the peak
+/// away from supports and loads when the highest sits at one, else the highest ([`lead_stress`]),
+/// quoted as the mesh check gives it when it gives a band (extrapolated from three meshes, or the
+/// finest mesh's with two), else the finest mesh's own value. With the mesh check's item for it.
+pub(crate) fn lead_quoted<'a>(shown: &fea::Run, check: &'a Check) -> (f64, Option<&'a Settling>) {
+    let finest = lead_stress(shown.max_stress, &shown.peaks);
+    let Check::Ran { items, .. } = check else { return (finest, None) };
+    let has_away = items.iter().any(|s| s.quantity == AWAY);
+    let q = match (&shown.peaks.at, shown.peaks.away) {
+        (Some(_), Some(_)) | (None, _) if has_away => AWAY,
+        _ => OVERALL,
+    };
+    match items.iter().find(|s| s.quantity == q) {
+        Some(s) if !s.at_support && s.band().is_some() => (s.quoted(), Some(s)),
+        item => (finest, item),
+    }
+}
+
+/// A number in a sentence with its band when the mesh check (`item`) gave one: "about 108 MPa
+/// (within ±1.2 %)". One that keeps rising is given on the finest mesh (`value`) with what it does.
+pub(crate) fn quoted_words(item: Option<&Settling>, value: f64, unit: &str) -> String {
+    match item {
+        Some(s) if !s.at_support && s.band().is_some() => {
+            format!("about {} {unit} (within ±{})", sig(s.quoted()), band_words(s.band().unwrap_or(f64::NAN)))
+        }
+        Some(s) if s.unbounded() => format!("{} {unit} on the finest mesh, and it {}", sig(value), s.status()),
+        _ => format!("about {} {unit}", sig(value)),
     }
 }
 
@@ -2273,8 +2509,14 @@ pub(crate) fn wording(
     for r in outcome.done {
         assumptions.push(format!("Model: {}; mesh about {} mm ({} nodes)", r.elements.plain(thickness), sig(r.mesh_size), r.nodes));
     }
-    if let Check::Ran { finer_h, .. } = outcome.check {
-        assumptions.push(format!("Shown: the mesh check's finer mesh, about {} mm ({} nodes)", sig(*finer_h), shown.nodes));
+    if let Check::Ran { meshes, .. } = outcome.check {
+        assumptions.push(format!(
+            "Shown: the mesh check's finest mesh, about {} mm ({} nodes). The numbers quoted with a band are extrapolated from the meshes \
+             (Richardson, at the rate they converge) where three meshes allow it, else the finest mesh's own; the colours are the finest \
+             mesh's",
+            sig(meshes.last().copied().unwrap_or(f64::NAN)),
+            shown.nodes
+        ));
     }
     for l in loads {
         assumptions.push(load_words(l));
@@ -2300,47 +2542,49 @@ pub(crate) fn wording(
         ));
     }
 
-    let fraction = shown.max_stress / material.yield_mpa;
-    let deflection = format!("The largest deflection is about {} mm, near {}.", sig(shown.max_disp), face_label(shown.max_disp_at));
     let check_items: &[Settling] = match outcome.check {
         Check::Ran { items, .. } => items,
         _ => &[],
     };
     let status_of = |q: &str| check_items.iter().find(|s| s.quantity == q);
+    let deflection =
+        format!("The largest deflection is {}, near {}.", quoted_words(status_of(DEFLECTION), shown.max_disp, "mm"), face_label(shown.max_disp_at));
+    let (lead, lead_item) = lead_quoted(shown, outcome.check);
     let mut summary = match (&shown.peaks.at, shown.peaks.away) {
         (Some(at), Some((away, away_at))) => {
-            // One step of refinement can miss the slow climb of a peak at an idealised support
-            // (a clamped strip's crept up 145 → 151 MPa from 1.5 to 0.35 mm, 0.4% over the first
-            // 1.5× step), so a value there is never called settled.
+            // A value at an idealised support is never called settled: a clamped strip's crept up
+            // 145 → 151 MPa from 1.5 to 0.35 mm, 0.4% over the first 1.5× step.
             let settled = match status_of(OVERALL) {
-                Some(s) if s.settled() => format!(
-                    "; it moved {:+.1}% with a finer mesh, but a value at an idealised support or load can keep creeping up as the mesh is \
-                     refined, so read it as depending on the mesh",
-                    s.change()
-                ),
+                Some(s) if s.raw_estimate().is_some_and(|e| e.trend == fea::convergence::Trend::Settled) => {
+                    format!(
+                        "; it went {} with the mesh, but a value at an idealised support or load can keep creeping up as the mesh is \
+                         refined, so read it as depending on the mesh",
+                        values_words(s)
+                    )
+                }
                 Some(_) => "; it is still changing with the mesh, so it depends on the mesh and is not the part's".to_string(),
                 None => String::new(),
             };
             format!(
-                "Estimate ({}): away from the supports and loads, the highest von Mises stress is about {} MPa, near {}; that is about {}% of \
-                 the yield strength given ({} MPa, {}). The highest overall, about {} MPa, sits at {at}, where an idealised support or load \
-                 concentrates stress{settled}. {deflection}",
+                "Estimate ({}): away from the supports and loads, the highest von Mises stress is {}, near {}; that is about {}% of the \
+                 yield strength given ({} MPa, {}). The highest overall, {} MPa on the finest mesh, sits at {at}, where an idealised support \
+                 or load concentrates stress{settled}. {deflection}",
                 shown.elements.plain(thickness),
-                sig(away),
+                quoted_words(lead_item, away, "MPa"),
                 face_label(away_at),
-                sig(100.0 * away / material.yield_mpa),
+                sig(100.0 * lead / material.yield_mpa),
                 sig(material.yield_mpa),
                 material.name,
                 sig(shown.max_stress),
             )
         }
         _ => format!(
-            "Estimate ({}): the highest von Mises stress is about {} MPa, near {}; that is about {}% of the yield strength given ({} MPa, {}). \
+            "Estimate ({}): the highest von Mises stress is {}, near {}; that is about {}% of the yield strength given ({} MPa, {}). \
              {deflection}",
             shown.elements.plain(thickness),
-            sig(shown.max_stress),
+            quoted_words(lead_item, shown.max_stress, "MPa"),
             face_label(shown.max_stress_at),
-            sig(100.0 * fraction),
+            sig(100.0 * lead / material.yield_mpa),
             sig(material.yield_mpa),
             material.name,
         ),
