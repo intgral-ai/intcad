@@ -138,7 +138,7 @@ logic**, adapted into IntCAD's fork (537 upstream-changed files; 63 also changed
 | U14 | 153 commits, dialogs | Constraint picker, end caps, airfoil, auto-dialog | Files absent; `sketch.insert_airfoil` absent | MIT/Apache | D3 | **Adopted** except airfoil (**Blocked** on engine command) |
 | U15 | browser/navigation chrome | Orbit/roll controls, design views, new window, view slots | Partial; `tab.view.*` absent | MIT/Apache | D3 | **Adopted** (design views only) |
 | U16 | library/start page/links | Folder library, thumbnails, start page, link registry | `home.rs` exists; library absent | MIT/Apache | D3 | **Adopted** (adapted, IntCAD URLs) |
-| U17 | diagnostics/export/mesh units | Problem tickets, signature verify, export name templates, mesh-unit dialog, safe graphics | All absent | MIT/Apache | D3, host startup | **Adopted** for export/mesh units/view memory; **Blocked** for tickets (upstream service) and Windows policy |
+| U17 | diagnostics/export/mesh units | Problem tickets, signature verify, export name templates, mesh-unit dialog, safe graphics | All absent | MIT/Apache | D3, host startup | **Adopted** for export/mesh units/view memory; tickets and Windows policy remain **Blocked**, with separate owner-approved deferrals for this sync. See [Blocked dispositions](blocked-dispositions.md). |
 | U18 | plugin UI | Install/approve/menus/slots | Metadata list only | MIT/Apache | A3 | **Blocked** (no plugin runtime) |
 | U19 | 43 commits, render workspace | Live/prepare/quality/displayed/surface-import panes | 16 files, lacks 5 panes | MIT/Apache | D3 | **Adopted** (adapt; largest surface) |
 | U20 | `16f3b939b` | egui/eframe 0.36 → 0.37 | 0.36 | MIT/Apache | vendor re-base | **Adopted** (prerequisite for wholesale backports) |
