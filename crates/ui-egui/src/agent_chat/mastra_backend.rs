@@ -156,6 +156,20 @@ struct ValidationRunRecord {
     cancellation_dirty: bool,
 }
 
+impl ValidationRunRecord {
+    /// A delayed snapshot never moves a settled terminal state back to Queued/Running, and never
+    /// moves Running back to Queued. The port's actual terminal state still wins over a record
+    /// that has not settled yet.
+    fn merge_state(&mut self, observed: validation_port::ValidationState) {
+        if self.state.is_terminal()
+            || (observed == validation_port::ValidationState::Queued && self.state != validation_port::ValidationState::Queued)
+        {
+            return;
+        }
+        self.state = observed;
+    }
+}
+
 #[derive(Clone)]
 struct CachedValidationReport {
     reference: validation_port::ArtifactRef,
@@ -340,7 +354,7 @@ impl HostValidation {
         if let Ok(mut book) = self.book.lock()
             && let Some(record) = book.runs.get_mut(params.run_id.as_str())
         {
-            record.state = status.state;
+            record.merge_state(status.state);
         }
         encode_wire(&status)
     }
@@ -364,7 +378,7 @@ impl HostValidation {
         if let Ok(mut book) = self.book.lock()
             && let Some(record) = book.runs.get_mut(params.run_id.as_str())
         {
-            record.state = result.state;
+            record.merge_state(result.state);
         }
         encode_wire(&result)
     }
@@ -724,6 +738,22 @@ impl HostValidation {
         Some((identity.state, identity.cancellation_status))
     }
 
+    /// The state merge used by `validation.status`, `validation.cancel` and the control worker.
+    /// A test can feed the delayed snapshot that lost the book lock race without a real socket.
+    #[cfg(test)]
+    pub(crate) fn merge_state_for_test(&self, run_id: &str, state: validation_port::ValidationState) {
+        if let Ok(mut book) = self.book.lock()
+            && let Some(record) = book.runs.get_mut(run_id)
+        {
+            record.merge_state(state);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state_for_test(&self, run_id: &str) -> Option<validation_port::ValidationState> {
+        self.book.lock().ok()?.runs.get(run_id).map(|record| record.state)
+    }
+
     #[cfg(test)]
     pub(crate) fn cancellation_harness_for_test(&self, run: &Id) -> Result<validation_control::Harness, String> {
         let book = self.book.lock().map_err(|_| "validation book poisoned".to_string())?;
@@ -786,11 +816,7 @@ impl ValidationBook {
                 }
                 existing.cancellation_dirty |= record.cancellation_dirty;
             }
-            if !existing.state.is_terminal()
-                && !(record.state == validation_port::ValidationState::Queued && existing.state != validation_port::ValidationState::Queued)
-            {
-                existing.state = record.state;
-            }
+            existing.merge_state(record.state);
             return;
         }
         self.runs.insert(run_id.to_owned(), record);

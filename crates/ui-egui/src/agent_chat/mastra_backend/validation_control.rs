@@ -110,7 +110,7 @@ pub(super) fn record(book: &Mutex<ValidationBook>, run: &ValidationRunRecord, re
     }
     current.cancellation = Some(match result {
         Ok(state) => {
-            current.state = state;
+            current.merge_state(state);
             CancellationStatus::Persisted
         }
         Err(error) => CancellationStatus::Failed(error),

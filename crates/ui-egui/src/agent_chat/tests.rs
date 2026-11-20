@@ -14559,6 +14559,32 @@ mod mastra_backend_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A status snapshot captured before Stop can lose the book-lock race to the control worker
+    /// and arrive after the cancellation is persisted. Both wire status and wire cancel must
+    /// merge it monotonically instead of assigning the delayed state over the settled one.
+    #[test]
+    fn mastra_validation_delayed_status_does_not_downgrade_settled_cancellation() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("late-status-settled");
+        let (candidate, _live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-late-status", "t-late-status", "w-late-status");
+        let profile = host.profile().unwrap();
+        let candidate_engine: solidcraft_engine::schema::snapshot::CandidateRef =
+            serde_json::from_value(serde_json::to_value(&candidate).unwrap()).unwrap();
+        let profile_engine: solidcraft_engine::validation::ProfileRef = serde_json::from_value(serde_json::to_value(&profile).unwrap()).unwrap();
+        let run_id = host.seed_queued_run_for_test(&turn, &candidate_engine, &profile_engine);
+        let (state, cancellation) = host.simulate_late_registration_for_test(&run_id).expect("the seeded run is in the book");
+        assert_eq!(state, "cancelled");
+        assert_eq!(cancellation.as_deref(), Some("persisted"));
+        host.merge_state_for_test(&run_id, ValidationState::Queued);
+        assert_eq!(host.state_for_test(&run_id), Some(ValidationState::Cancelled), "a delayed Queued snapshot must not reopen the settled run");
+        host.merge_state_for_test(&run_id, ValidationState::Running);
+        assert_eq!(host.state_for_test(&run_id), Some(ValidationState::Cancelled), "a delayed Running snapshot must not reopen the settled run");
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn mastra_validation_panel_shows_identity_and_refuses_stale_or_cancelled_success() {
         let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
