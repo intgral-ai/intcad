@@ -156,9 +156,15 @@ impl Lifecycle {
     /// Classify a retained failed start for the no-Assistant host decision.
     /// A pending request is unresolved even if the platform constructor already
     /// returned an error: the app cannot prove the vendor never entered native
-    /// creation, and an HTTP stop is not that proof either.
+    /// creation, and an HTTP stop is not that proof either. A browser observed
+    /// after the failure is live too: it is a real owner, so the retained start
+    /// stays unresolved even though no creation is pending any more.
     pub(crate) fn failed_start_ownership(&self) -> FailedStartOwnership {
-        if self.pending_creation == 0 { FailedStartOwnership::NoBrowserCreation } else { FailedStartOwnership::BrowserCreationUnresolved }
+        if self.pending_creation == 0 && self.live.is_empty() {
+            FailedStartOwnership::NoBrowserCreation
+        } else {
+            FailedStartOwnership::BrowserCreationUnresolved
+        }
     }
 
     /// The DRAFT native `cef_initialize == false` branch: terminal for this
@@ -410,6 +416,40 @@ mod tests {
         // clears the retained pending creation: the host decision stays closed.
         assert_eq!(host_close_without_assistant(lifecycle.failed_start_ownership(), true), FailedStartHostClose::Quarantined);
         assert_eq!(lifecycle.phase(), Phase::Quarantined);
+    }
+
+    #[test]
+    fn late_created_owner_keeps_failed_start_quarantined_after_real_http_stop() {
+        let mut lifecycle = Lifecycle::new();
+        lifecycle.begin_initialization().unwrap();
+        lifecycle.browser_requested().unwrap();
+        lifecycle.observe_creation_failed().unwrap();
+        assert_eq!(lifecycle.failed_start_ownership(), FailedStartOwnership::BrowserCreationUnresolved);
+        // A BrowserCreated observation after the retained failure is a real
+        // owned browser: the pending request moves to live while the phase
+        // stays Quarantined. No release or clean-close transition is allowed.
+        lifecycle.observe_created(17).unwrap();
+        assert_eq!(lifecycle.phase(), Phase::Quarantined);
+        assert!(!lifecycle.permits_retry());
+        // A live owner makes the retained start unresolved even though no
+        // creation is pending any more.
+        assert_eq!(lifecycle.failed_start_ownership(), FailedStartOwnership::BrowserCreationUnresolved);
+        assert_eq!(host_close_without_assistant(lifecycle.failed_start_ownership(), false), FailedStartHostClose::Pending);
+        // The same real owned HTTP pool through the production failed-start reaper.
+        let authority = Arc::new(DocumentAuthority::new());
+        let pictures: Pictures = Arc::new(Mutex::new(HashMap::new()));
+        let mut server = crate::assistant_cef_http::FailedStartServer::retain(
+            PageServer::start(PageAssets { resolve: crate::assistant_page::page_file, font: b"font" }, pictures, authority).unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while server.advance() != ServerProgress::Stopped {
+            assert!(Instant::now() < deadline, "owned HTTP workers did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(server.advance(), ServerProgress::Stopped);
+        // Stopping the HTTP transport is neither the live browser's completion
+        // nor proof that its creation was never requested.
+        assert_eq!(host_close_without_assistant(lifecycle.failed_start_ownership(), true), FailedStartHostClose::Quarantined);
     }
 
     #[test]
