@@ -491,6 +491,66 @@ fn event_modifiers(event: egui::Modifiers, held: EventModifiers) -> EventModifie
     EventModifiers { shift: event.shift, ctrl: event.ctrl, alt: event.alt, meta: event.mac_cmd, ..held }
 }
 
+/// Page pointer buttons held while a frame's events are delivered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HeldButtons {
+    left: bool,
+    middle: bool,
+    right: bool,
+}
+
+impl HeldButtons {
+    /// Buttons egui reports down at the end of the frame.
+    fn from_context(ctx: &Context) -> Self {
+        ctx.input(|input| Self {
+            left: input.pointer.button_down(egui::PointerButton::Primary),
+            middle: input.pointer.button_down(egui::PointerButton::Middle),
+            right: input.pointer.button_down(egui::PointerButton::Secondary),
+        })
+    }
+
+    fn set(&mut self, button: egui::PointerButton, pressed: bool) {
+        match button {
+            egui::PointerButton::Primary => self.left = pressed,
+            egui::PointerButton::Middle => self.middle = pressed,
+            egui::PointerButton::Secondary => self.right = pressed,
+            _ => {}
+        }
+    }
+
+    fn modifiers(self) -> EventModifiers {
+        EventModifiers { left_mouse_button: self.left, middle_mouse_button: self.middle, right_mouse_button: self.right, ..EventModifiers::default() }
+    }
+}
+
+/// Held-button flags for each event in delivery order.
+///
+/// egui reports `pointer.button_down` at the end of the frame, so a same-frame
+/// press/motion/release would otherwise lose the held flag from the press and
+/// every motion between the press and release. The frame starts from that end
+/// state with its own button events undone, then every event applies in order:
+/// a press keeps its button held, a release clears it, and motion or wheel use
+/// the state at their place in the queue.
+fn pointer_flags_in_order(events: &[egui::Event], end: HeldButtons) -> Vec<EventModifiers> {
+    let mut held = end;
+    for event in events.iter().rev() {
+        if let egui::Event::PointerButton { button, pressed, .. } = event {
+            // Undo the frame: a press implies the button was up before it and
+            // a release implies it was down.
+            held.set(*button, !pressed);
+        }
+    }
+    events
+        .iter()
+        .map(|event| {
+            if let egui::Event::PointerButton { button, pressed, .. } = event {
+                held.set(*button, *pressed);
+            }
+            held.modifiers()
+        })
+        .collect()
+}
+
 /// One wheel event in physical page-local coordinates. Delta scaling and
 /// rounding are the page path's, so only admission and flags can change.
 fn wheel_mouse_event(
@@ -1846,20 +1906,6 @@ impl CefAssistant {
         }
     }
 
-    fn pointer_modifiers(&self, ctx: &Context) -> EventModifiers {
-        let modifiers = ctx.input(|input| input.modifiers);
-        let down = |button| ctx.input(|input| input.pointer.button_down(button));
-        EventModifiers {
-            shift: modifiers.shift,
-            ctrl: modifiers.ctrl,
-            alt: modifiers.alt,
-            meta: modifiers.mac_cmd,
-            left_mouse_button: down(egui::PointerButton::Primary),
-            middle_mouse_button: down(egui::PointerButton::Middle),
-            right_mouse_button: down(egui::PointerButton::Secondary),
-        }
-    }
-
     /// The one admission test for page, popup drag and popup wheel input.
     fn input_hit(&self, page: egui::Rect, pos: egui::Pos2, ppp: f32) -> bool {
         let popup = self.popup.map(|(_, at, size)| (self.popup_current, at, size));
@@ -1912,7 +1958,8 @@ impl CefAssistant {
             return;
         }
         let events = ctx.input(|input| input.events.clone());
-        for event in events {
+        let held_flags = pointer_flags_in_order(&events, HeldButtons::from_context(ctx));
+        for (event, held) in events.into_iter().zip(held_flags) {
             match event {
                 egui::Event::PointerMoved(pos) => {
                     // A captured drag keeps reporting outside the page; a current
@@ -1924,7 +1971,7 @@ impl CefAssistant {
                             y: local.y.round() as i32,
                             button: MouseButton::Left,
                             action: MouseAction::Moved,
-                            modifiers: self.pointer_modifiers(ctx),
+                            modifiers: event_modifiers(ctx.input(|input| input.modifiers), held),
                         }));
                     }
                 }
@@ -1962,7 +2009,7 @@ impl CefAssistant {
                         // queue still filters one whose press was invalidated.
                     }
                     let local = (pos - rect.min) * ppp;
-                    let held = event_modifiers(modifiers, self.pointer_modifiers(ctx));
+                    let held = event_modifiers(modifiers, held);
                     self.queue.push(Queued::Mouse(MouseEvent {
                         x: local.x.round() as i32,
                         y: local.y.round() as i32,
@@ -1982,7 +2029,7 @@ impl CefAssistant {
                         continue;
                     }
                     let pos = latest.unwrap_or(rect.center());
-                    self.queue.push(Queued::Mouse(wheel_mouse_event(rect, pos, ppp, unit, delta, modifiers, self.pointer_modifiers(ctx))));
+                    self.queue.push(Queued::Mouse(wheel_mouse_event(rect, pos, ppp, unit, delta, modifiers, held)));
                 }
                 egui::Event::Text(text) if self.focused => {
                     for ch in text.chars() {
@@ -3062,6 +3109,80 @@ mod w4_input_tests {
             wheel.modifiers.left_mouse_button && wheel.modifiers.right_mouse_button && !wheel.modifiers.middle_mouse_button,
             "wheel keeps held-button flags from pointer state"
         );
+    }
+
+    fn button_event(pos: egui::Pos2, button: egui::PointerButton, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::PointerButton { pos, button, pressed, modifiers }
+    }
+
+    /// Plan W4/F6: held buttons come from the event order, not egui's
+    /// end-of-frame pointer state. A press, motion and release in one frame
+    /// (where `button_down` already reports up) must still flag the press and
+    /// the motion as held, and clear the flag on the release.
+    #[test]
+    fn same_frame_press_motion_release_keeps_held_buttons() {
+        let at = egui::pos2(10.0, 20.0);
+        let moved = egui::pos2(30.0, 40.0);
+        let events = [
+            button_event(at, egui::PointerButton::Primary, true, egui::Modifiers::default()),
+            egui::Event::PointerMoved(moved),
+            button_event(moved, egui::PointerButton::Primary, false, egui::Modifiers::default()),
+        ];
+        // egui reports end-of-frame state: the same-frame release already cleared it.
+        let flags = pointer_flags_in_order(&events, HeldButtons::default());
+        assert_eq!(flags.len(), 3);
+        assert!(flags[0].left_mouse_button, "the press carries its own held button");
+        assert!(flags[1].left_mouse_button, "motion between press and release keeps the drag button");
+        assert!(!flags[2].left_mouse_button, "the release ends the hold");
+        assert!(!flags[0].middle_mouse_button && !flags[0].right_mouse_button);
+        let press = event_modifiers(egui::Modifiers { ctrl: true, ..Default::default() }, flags[0]);
+        assert!(press.ctrl && press.left_mouse_button, "keyboard modifiers stay with the event");
+    }
+
+    /// Plan W4/F6: independent buttons and release order are replayed in order;
+    /// releasing one button does not clear another.
+    #[test]
+    fn buttons_are_held_and_released_independently() {
+        let p = egui::pos2(1.0, 2.0);
+        let events = [
+            button_event(p, egui::PointerButton::Primary, true, egui::Modifiers::default()),
+            button_event(p, egui::PointerButton::Middle, true, egui::Modifiers::default()),
+            button_event(p, egui::PointerButton::Secondary, true, egui::Modifiers::default()),
+            egui::Event::PointerMoved(p),
+            button_event(p, egui::PointerButton::Primary, false, egui::Modifiers::default()),
+            egui::Event::PointerMoved(p),
+            button_event(p, egui::PointerButton::Middle, false, egui::Modifiers::default()),
+            button_event(p, egui::PointerButton::Secondary, false, egui::Modifiers::default()),
+        ];
+        let flags = pointer_flags_in_order(&events, HeldButtons::default());
+        let held = |index: usize| (flags[index].left_mouse_button, flags[index].middle_mouse_button, flags[index].right_mouse_button);
+        assert_eq!(held(0), (true, false, false));
+        assert_eq!(held(1), (true, true, false));
+        assert_eq!(held(2), (true, true, true));
+        assert_eq!(held(3), (true, true, true));
+        assert_eq!(held(4), (false, true, true));
+        assert_eq!(held(5), (false, true, true));
+        assert_eq!(held(6), (false, false, true));
+        assert_eq!(held(7), (false, false, false));
+    }
+
+    /// Plan W4/F6: a drag that began before this frame keeps its held button on
+    /// motion up to the release, even when the frame's end state is already up.
+    #[test]
+    fn drag_from_an_earlier_frame_stays_held_until_its_release() {
+        // Continued drag: no button event this frame, end state still down.
+        let continued = [egui::Event::PointerMoved(egui::pos2(5.0, 6.0))];
+        let flags = pointer_flags_in_order(&continued, HeldButtons { left: true, ..Default::default() });
+        assert!(flags[0].left_mouse_button);
+
+        // Release-only frame: end state is up, the motion before the release is
+        // still part of the drag.
+        let release_at = egui::pos2(7.0, 8.0);
+        let ending =
+            [egui::Event::PointerMoved(release_at), button_event(release_at, egui::PointerButton::Primary, false, egui::Modifiers::default())];
+        let flags = pointer_flags_in_order(&ending, HeldButtons::default());
+        assert!(flags[0].left_mouse_button, "motion before the release is still a drag");
+        assert!(!flags[1].left_mouse_button);
     }
 }
 
