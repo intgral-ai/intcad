@@ -141,8 +141,6 @@ fn run(shared: Arc<Shared>, port: Arc<validation_port::ValidationPort>, book: Ar
             .map(|result| result.state)
             .map_err(|error| format!("validation cancellation was not confirmed: {error}"));
         record(&book, &request.run, result);
-        #[cfg(test)]
-        completion_barrier();
         if let Ok(mut queue) = shared.queue.lock() {
             queue.active.remove(&request.run.run_id);
             shared.ready.notify_all();
@@ -153,7 +151,6 @@ fn run(shared: Arc<Shared>, port: Arc<validation_port::ValidationPort>, book: Ar
 #[cfg(test)]
 thread_local! {
     static SUBMISSION_BARRIER: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
-    static REGISTRATION_BARRIER: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -166,19 +163,7 @@ fn prewait_barrier() {
 }
 
 #[cfg(test)]
-fn completion_barrier() {
-    let pair = COMPLETION_BARRIERS.lock().ok().and_then(|slot| slot.clone());
-    if let Some((reached, release)) = pair {
-        reached.wait();
-        release.wait();
-    }
-}
-
-#[cfg(test)]
 static PREWAIT_BARRIER: Mutex<Option<Arc<std::sync::Barrier>>> = Mutex::new(None);
-
-#[cfg(test)]
-static COMPLETION_BARRIERS: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>> = Mutex::new(None);
 
 /// Pause the control worker immediately before it waits for work, while it still holds the queue
 /// mutex. The test proves `shutdown` takes that same mutex instead of racing the wait predicate.
@@ -196,21 +181,6 @@ pub(super) fn clear_prewait_barrier() {
     }
 }
 
-/// Pause the control worker after it recorded a result but before it clears the active entry.
-#[cfg(test)]
-pub(super) fn install_completion_barriers(reached: Arc<std::sync::Barrier>, release: Arc<std::sync::Barrier>) {
-    if let Ok(mut slot) = COMPLETION_BARRIERS.lock() {
-        *slot = Some((reached, release));
-    }
-}
-
-#[cfg(test)]
-pub(super) fn clear_completion_barriers() {
-    if let Ok(mut slot) = COMPLETION_BARRIERS.lock() {
-        *slot = None;
-    }
-}
-
 #[cfg(test)]
 pub(super) fn submission_barrier() {
     SUBMISSION_BARRIER.with(|barrier| {
@@ -219,21 +189,6 @@ pub(super) fn submission_barrier() {
             barrier.wait();
         }
     });
-}
-
-#[cfg(test)]
-pub(super) fn registration_barrier() {
-    REGISTRATION_BARRIER.with(|barrier| {
-        if let Some(barrier) = barrier.borrow_mut().take() {
-            barrier.wait();
-            barrier.wait();
-        }
-    });
-}
-
-#[cfg(test)]
-pub(super) fn install_registration_barrier(barrier: Arc<std::sync::Barrier>) {
-    REGISTRATION_BARRIER.with(|slot| *slot.borrow_mut() = Some(barrier));
 }
 
 #[cfg(test)]

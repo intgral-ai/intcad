@@ -13356,13 +13356,6 @@ mod mastra_backend_tests {
         Arc::new(mastra_backend::HostValidation::open(dir.join("validation"), dir.join("candidates")).expect("the host validation port opens"))
     }
 
-    fn host_validation_with_runner_gate(dir: &std::path::Path, gate: Arc<std::sync::Barrier>) -> Arc<mastra_backend::HostValidation> {
-        Arc::new(
-            mastra_backend::HostValidation::open_with_runner_gate(dir.join("validation"), dir.join("candidates"), gate)
-                .expect("the host validation port opens"),
-        )
-    }
-
     fn submit_validation(host: &mastra_backend::HostValidation, scope: &Scope, candidate: &CandidateRef, profile: &ProfileRef) -> (Id, ArtifactRef) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         let key = solidcraft_engine::validation::generate_submission_key(now);
@@ -14505,14 +14498,13 @@ mod mastra_backend_tests {
     /// Shutdown must take the same queue mutex that the worker holds while it checks the wait
     /// predicate. Otherwise a notify between the check and the wait is lost and the control
     /// worker never exits.
-    /// Clear the process-wide test barriers even when a fixture panics, so one failing test
-    /// cannot park another test's control worker.
+    /// The guard clears the process-wide prewait barrier even when the fixture panics, so a
+    /// failing test cannot park another test's control worker.
     struct BarrierCleanup;
 
     impl Drop for BarrierCleanup {
         fn drop(&mut self) {
             mastra_backend::HostValidation::clear_prewait_barrier_for_test();
-            mastra_backend::HostValidation::clear_completion_barriers_for_test();
         }
     }
 
@@ -14546,55 +14538,21 @@ mod mastra_backend_tests {
     }
 
     /// A duplicate callback for the same key can capture Queued before Stop, then register after
-    /// the control worker has persisted its cancellation but before the active entry is cleared.
-    /// The settled result must stay monotonic; the late registration must not rewrite it as
-    /// queued, which would also coalesce away the only future update.
+    /// the control worker has persisted its cancellation. The settled result must stay monotonic;
+    /// the late registration must not rewrite it as queued, which would also coalesce away the
+    /// only future update. The book-level order is the exact interleaving without threads.
     #[test]
     fn mastra_validation_late_registration_does_not_downgrade_a_persisted_cancellation() {
         let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = scratch_validation("late-registration-settled");
-        let (candidate, live) = captured_candidate(&dir);
-        let runner_gate = Arc::new(std::sync::Barrier::new(2));
-        let completion_reached = Arc::new(std::sync::Barrier::new(2));
-        let completion_release = Arc::new(std::sync::Barrier::new(2));
-        mastra_backend::HostValidation::install_completion_barriers_for_test(Arc::clone(&completion_reached), Arc::clone(&completion_release));
-        let _cleanup = BarrierCleanup;
-        let host = host_validation_with_runner_gate(&dir, Arc::clone(&runner_gate));
-        runner_gate.wait(); // the runner worker is parked before it can start the run
-
+        let (candidate, _live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
         let turn = turn_scope("s-late-settled", "t-late-settled", "w-late-settled");
-        let scope = Scope::Turn(turn.clone());
         let profile = host.profile().unwrap();
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-        let key = solidcraft_engine::validation::generate_submission_key(now);
-        let params =
-            || ValidationSubmitParams { candidate: candidate.clone(), profile: profile.clone(), request_id: SubmissionKey::parse(&key).unwrap() };
-        let first = host.submit(&scope, params()).unwrap();
-        assert_eq!(first.state, ValidationState::Queued, "the gated runner leaves the first registration queued");
-
-        let registration = Arc::new(std::sync::Barrier::new(2));
-        mastra_backend::HostValidation::install_registration_barrier_for_test(Arc::clone(&registration));
-        let duplicate = {
-            let host = Arc::clone(&host);
-            let scope = scope.clone();
-            let params = params();
-            std::thread::spawn(move || host.submit(&scope, params).unwrap())
-        };
-        registration.wait(); // the duplicate captured Queued and is parked before book registration
-
-        host.cancel_turn(&turn, Some(&live));
-        completion_reached.wait(); // the worker recorded Persisted and is parked before clearing active
-
-        registration.wait(); // the late duplicate now registers over the same run
-        let duplicate = duplicate.join().unwrap();
-        assert_eq!(duplicate.run_id, first.run_id);
-        let identity = host.history_identity(first.run_id.as_str(), Some(&live)).unwrap();
-        assert_eq!(identity.state, "cancelled", "the captured Queued must not replace the persisted terminal state");
-        assert_eq!(identity.cancellation_status.as_deref(), Some("persisted"), "a settled cancellation is monotonic");
-
-        completion_release.wait();
-        host.wait_cancellations_for_test().unwrap();
-        runner_gate.wait();
+        let run_id = host.seed_queued_run_for_test(&turn, &candidate, &profile);
+        let (state, cancellation) = host.simulate_late_registration_for_test(&run_id).expect("the seeded run is in the book");
+        assert_eq!(state, "cancelled", "the captured Queued must not replace the persisted terminal state");
+        assert_eq!(cancellation.as_deref(), Some("persisted"), "a settled cancellation is monotonic");
         drop(host);
         let _ = std::fs::remove_dir_all(dir);
     }

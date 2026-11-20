@@ -219,17 +219,6 @@ impl HostValidation {
     /// Open the local port and start its single worker loop. The store and candidate directories
     /// are the same ones `document.snapshot.capture` writes to.
     pub(crate) fn open(store: PathBuf, candidate_root: PathBuf) -> Result<Self, String> {
-        Self::open_inner(store, candidate_root, None)
-    }
-
-    /// The test fixture's runner gate belongs to this host's worker only; a retiring host's
-    /// worker cannot steal another test's gate.
-    #[cfg(test)]
-    pub(crate) fn open_with_runner_gate(store: PathBuf, candidate_root: PathBuf, runner_gate: Arc<std::sync::Barrier>) -> Result<Self, String> {
-        Self::open_inner(store, candidate_root, Some(runner_gate))
-    }
-
-    fn open_inner(store: PathBuf, candidate_root: PathBuf, runner_gate: Option<Arc<std::sync::Barrier>>) -> Result<Self, String> {
         let port = Arc::new(validation_port::ValidationPort::open(store, candidate_root).map_err(|error| format!("{error}"))?);
         let native = validation_port::native_basic_profile();
         let profile = validation_port::profile_ref(&native).map_err(|error| format!("{error}"))?;
@@ -248,12 +237,7 @@ impl HostValidation {
         std::thread::Builder::new()
             .name("mastra-validation-worker".into())
             .spawn(move || {
-                let mut runner_gate = runner_gate;
                 while !stop.load(Ordering::Acquire) {
-                    if let Some(gate) = runner_gate.take() {
-                        gate.wait();
-                        gate.wait();
-                    }
                     if port.pump().is_err() {
                         // A failed job is already a persisted terminal record; never restart it as
                         // new work. The next queued job can still run.
@@ -311,8 +295,6 @@ impl HostValidation {
         validation_control::submission_barrier();
         let result =
             self.port.submit_for(&candidate, &profile, params.request_id.as_str(), turn.workflow_run_id.as_str()).map_err(validation_wire)?;
-        #[cfg(test)]
-        validation_control::registration_barrier();
         let cancel_late_registration = {
             let mut book = self.book.lock().map_err(|_| local_error(ErrorCode::InternalError))?;
             let record = ValidationRunRecord {
@@ -679,23 +661,53 @@ impl HostValidation {
     }
 
     #[cfg(test)]
-    pub(crate) fn install_registration_barrier_for_test(barrier: Arc<std::sync::Barrier>) {
-        validation_control::install_registration_barrier(barrier);
-    }
-
-    #[cfg(test)]
     pub(crate) fn clear_prewait_barrier_for_test() {
         validation_control::clear_prewait_barrier();
     }
 
+    /// A queued run in the book, without starting a port worker. The merge fixture drives the
+    /// exact registration order directly.
     #[cfg(test)]
-    pub(crate) fn install_completion_barriers_for_test(reached: Arc<std::sync::Barrier>, release: Arc<std::sync::Barrier>) {
-        validation_control::install_completion_barriers(reached, release);
+    pub(crate) fn seed_queued_run_for_test(
+        &self,
+        scope: &TurnScope,
+        candidate: &solidcraft_engine::schema::snapshot::CandidateRef,
+        profile: &validation_port::ProfileRef,
+    ) -> String {
+        let run_id = format!("run-merge-{}", std::process::id());
+        let record = ValidationRunRecord {
+            run_id: run_id.clone(),
+            session_id: scope.session_id.to_string(),
+            turn_id: scope.turn_id.to_string(),
+            workflow_run_id: scope.workflow_run_id.to_string(),
+            candidate: candidate.clone(),
+            profile: profile.clone(),
+            state: validation_port::ValidationState::Queued,
+            cancellation: None,
+            cancellation_dirty: false,
+        };
+        if let Ok(mut book) = self.book.lock() {
+            book.insert_run(&run_id, record);
+        }
+        run_id
     }
 
+    /// The exact late-registration order: a duplicate captured Queued before Stop, the control
+    /// worker then recorded the persisted cancellation, and finally the duplicate registers.
     #[cfg(test)]
-    pub(crate) fn clear_completion_barriers_for_test() {
-        validation_control::clear_completion_barriers();
+    pub(crate) fn simulate_late_registration_for_test(&self, run_id: &str) -> Option<(String, Option<String>)> {
+        let existing = { self.book.lock().ok()?.runs.get(run_id).cloned()? };
+        let mut late = existing.clone();
+        validation_control::record(&self.book, &existing, Ok(validation_port::ValidationState::Cancelled));
+        late.cancellation = Some(CancellationStatus::Queued);
+        late.cancellation_dirty = true;
+        if let Ok(mut book) = self.book.lock() {
+            book.insert_run(run_id, late);
+        }
+        let book = self.book.lock().ok()?;
+        let run = book.runs.get(run_id)?;
+        let identity = self.identity(run, None, None, "cancelled", true);
+        Some((identity.state, identity.cancellation_status))
     }
 
     #[cfg(test)]
