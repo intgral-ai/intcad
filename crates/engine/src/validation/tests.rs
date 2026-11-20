@@ -1384,9 +1384,7 @@ fn authoritative_tombstone_expiry_ends_replay_but_not_selection_or_gc_with_resid
     assert_eq!(replay.code, ErrorCode::RequestExpired);
 
     let candidates = fixture.root.join("candidates");
-    let expiry_clock = Arc::new(ManualClock::new(expiry));
-    let expiry_clock_dyn: Arc<dyn Clock> = Arc::clone(&expiry_clock);
-    let cleaner = port_with(&fixture.port.store.root, &candidates, runner_with(Vec::new()), Limits::default(), expiry_clock_dyn);
+    let cleaner = port_with(&fixture.port.store.root, &candidates, runner_with(Vec::new()), Limits::default(), Arc::new(ManualClock::new(expiry)));
     cleaner.cleanup(expiry);
     assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup keeps the expired tombstone while a live-looking state exists");
 
@@ -1397,8 +1395,14 @@ fn authoritative_tombstone_expiry_ends_replay_but_not_selection_or_gc_with_resid
     cleaner.cleanup(expiry);
     assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup keeps the expired tombstone while admission residue exists");
 
-    expiry_clock.set(expiry + 8 * 24 * 60 * 60 * 1000);
-    cleaner.cleanup(expiry + 8 * 24 * 60 * 60 * 1000);
+    let later = port_with(
+        &fixture.port.store.root,
+        &candidates,
+        runner_with(Vec::new()),
+        Limits::default(),
+        Arc::new(ManualClock::new(expiry + 8 * 24 * 60 * 60 * 1000)),
+    );
+    later.cleanup(expiry + 8 * 24 * 60 * 60 * 1000);
     assert!(!fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup collects the expired tombstone after the residue is gone");
     let _ = std::fs::remove_dir_all(fixture.root);
 }
