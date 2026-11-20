@@ -595,7 +595,8 @@ impl SolveApp {
             let mut i = 0;
             while i < self.control_answering.len() {
                 if self.control_answering.get(i).is_some_and(|job| job.req.refuse_cancelled_chat()) {
-                    self.control_answering.remove(i);
+                    let mut job = self.control_answering.remove(i);
+                    crate::control::release_unstarted(self, &mut job.req);
                     continue;
                 }
                 match self.control_answering.get(i).and_then(ControlJob::poll) {
@@ -608,13 +609,15 @@ impl SolveApp {
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-        let Some(job) = self.control_job.take() else { return };
+        let Some(mut job) = self.control_job.take() else { return };
         if job.req.refuse_cancelled_chat() {
+            crate::control::release_unstarted(self, &mut job.req);
             return;
         }
         // A guarded request never waits for a new base or uses legacy Arc ancestry to decide
         // its target. In particular, leaving and returning cannot revive its original token.
         if let Err(error) = crate::execution_guard::check_application(self, &job.req) {
+            crate::control::release_unstarted(self, &mut job.req);
             let _ = job.req.reply.send(crate::execution_guard::refusal_json(&error));
             return;
         }
@@ -623,6 +626,7 @@ impl SolveApp {
         // are for the design shown, don't wait for it.
         let left = matches!(&job.work, Work::Ahead { doc, .. } if !shows_design(&self.session, doc));
         if left {
+            crate::control::release_unstarted(self, &mut job.req);
             let _ = job.req.reply.send(design_replaced(&job.label));
             return;
         }
@@ -636,10 +640,14 @@ impl SolveApp {
             self.control_held.push_front(job.req);
             return;
         }
-        let Work::Ahead { commands, doc, revision, tries, kept } = job.work else { return };
+        let Work::Ahead { commands, doc, revision, tries, kept } = job.work else {
+            crate::control::release_unstarted(self, &mut job.req);
+            return;
+        };
         let s = &self.session;
         let same = Arc::ptr_eq(&s.doc, &doc);
         if !shows_design(s, &doc) {
+            crate::control::release_unstarted(self, &mut job.req);
             let _ = job.req.reply.send(design_replaced(&job.label));
             return;
         }

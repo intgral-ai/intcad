@@ -1009,6 +1009,69 @@ mod tests {
     #[derive(Default)]
     struct ControlTestBilling;
 
+    /// Host-side account/clock authority for this external-control harness. It never ships.
+    struct ControlTestAccount;
+
+    impl solidcraft_engine::entitlement::AccountService for ControlTestAccount {
+        fn status(&self) -> Result<solidcraft_engine::entitlement::Availability, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Availability {
+                online: true,
+                version_supported: true,
+                model_available: true,
+                balance: 100,
+                held: 0,
+                reasons: Vec::new(),
+            })
+        }
+
+        fn authorize(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _capability: solidcraft_engine::entitlement::Capability,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn begin(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Admission, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn finalize(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::OperationStatus, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn operation(
+            &self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+        ) -> Result<solidcraft_engine::entitlement::OperationStatus, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::OperationStatus::Held)
+        }
+    }
+
+    struct ControlTestClock;
+
+    impl solidcraft_engine::entitlement::MonotonicClock for ControlTestClock {
+        fn now(&self) -> solidcraft_engine::entitlement::MonotonicInstant {
+            solidcraft_engine::entitlement::MonotonicInstant::from_millis(0)
+        }
+
+        fn wall_now(&self) -> std::time::SystemTime {
+            std::time::SystemTime::UNIX_EPOCH
+        }
+    }
+
     impl solidcraft_engine::entitlement::BillingPort for ControlTestBilling {
         fn admit(
             &mut self,
@@ -1063,17 +1126,26 @@ mod tests {
         let owner = std::thread::spawn(move || {
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), Services::default());
             app.install_billing(Box::<ControlTestBilling>::default(), control_test_budget());
+            app.install_commit_authority(
+                solidcraft_engine::entitlement::AuthenticatedHostScope::new(
+                    solidcraft_engine::entitlement::AccountId::new("control-test-account"),
+                    solidcraft_engine::entitlement::InstallationId::new("control-test-installation"),
+                    solidcraft_engine::entitlement::HostSessionBinding::new("control-test-session"),
+                ),
+                Box::new(ControlTestAccount),
+                Box::new(ControlTestClock),
+            );
             let ctx = egui::Context::default();
             let stamp = app.session.document_stamp();
             base_tx.send(json!({"documentId":stamp.document_id,"revision":stamp.revision.to_string()})).unwrap();
-            for req in rx {
+            for mut req in rx {
                 if req.params["command"] == "parameters.list" {
                     gate_rx.recv().unwrap();
                 }
-                let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &req) else { panic!("synchronous test command") };
+                let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &mut req) else { panic!("synchronous test command") };
                 req.reply.send(reply).unwrap();
             }
-            assert_eq!(app.session.doc.param("width").unwrap().expr, "30 mm");
+            assert_eq!(app.session.doc.param("width").unwrap().expr, "20 mm", "the controlled batch was refused before work");
         });
         let waits = Waits { short: Duration::from_millis(100), long: Duration::from_secs(10), token: TOKEN_WAIT };
         let server = std::thread::spawn(move || {
@@ -1102,8 +1174,9 @@ mod tests {
             "engine.batch",
             json!({"expectedDocument":write["documentStamp"],"commands":[{"command":"parameters.change","params":{"name":"width","expression":"30 mm"}}]}),
         );
-        assert_eq!(batch["result"]["completed"], 1);
-        assert_ne!(batch["documentStamp"], write["documentStamp"]);
+        assert_eq!(batch["ok"], false, "{batch}");
+        assert_eq!(batch["errorDetails"]["code"], "UnsafeToStart", "{batch}");
+        assert_ne!(write["result"]["value"], 30.0, "the controlled batch did not apply");
         let late = ask("engine.execute", json!({"command":"parameters.list","expectedDocument":base}));
         assert_eq!(late["running"], true);
         assert_eq!(ask("control.capabilities", json!({}))["result"], capability["result"], "query while pending is not busy");
@@ -1120,7 +1193,7 @@ mod tests {
         let stale = &pending["result"]["reply"];
         assert_eq!(stale["ok"], false);
         assert_eq!(stale["errorDetails"]["code"], "STALE_DOCUMENT");
-        assert_eq!(stale["errorDetails"]["details"], json!({"expected":base,"current":batch["documentStamp"]}));
+        assert_eq!(stale["errorDetails"]["details"], json!({"expected":base,"current":write["documentStamp"]}));
         drop(lines);
         drop(out);
         server.join().unwrap();

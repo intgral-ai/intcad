@@ -1098,6 +1098,11 @@ fn settle_result(
     if !decision.allowed()
         && let SettlementAction::Commit(_) = action
     {
+        if let CommitDecision::Drop { code: RefusalCode::OperationFinalized } = decision {
+            // A terminal operation is already settled. Do not turn the terminal drop into a
+            // recovery item, and do not consult any new account state.
+            return None;
+        }
         // A late retained/apply effect whose commit authority was lost. Record the original
         // operation's disposition before any lookup under the new account; never retry it as an
         // engineering operation and never charge it silently.
@@ -3578,6 +3583,24 @@ mod tests {
         settle_result(&mut app, &admission, CommitDecision::Allow, false, &out);
         assert_eq!(commits.load(Ordering::Relaxed), 1, "an unproven failure finalizes as unknown");
         assert_eq!(releases.load(Ordering::Relaxed), 0, "a payload string never releases the hold");
+    }
+
+    #[test]
+    fn a_terminal_drop_with_effect_does_not_enqueue_recovery() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        authority.set_status(OperationStatus::Charged);
+        let operation = OperationId::parse("op_settle_terminal_drop_0001").unwrap();
+        let grant = solidcraft_engine::entitlement::Grant::from_server(
+            solidcraft_engine::entitlement::GrantId::new("grant_settle_terminal_drop"),
+            Capability::Control,
+            MonotonicInstant::from_millis(60_000),
+        );
+        let admission = Admission::NewlyAdmitted { operation, grant };
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        settle_result(&mut app, &admission, CommitDecision::Drop { code: RefusalCode::OperationFinalized }, false, &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a terminal operation is not charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal operation is not released");
+        assert!(app.pending_settlements.is_empty(), "a terminal Drop is not a recovery deferred to the host");
     }
 
     #[test]

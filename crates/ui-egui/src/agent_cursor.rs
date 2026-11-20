@@ -477,6 +477,7 @@ fn finish(app: &mut SolveApp, ctx: &egui::Context) {
     // Check before installing kept results or changing followed camera bookkeeping. Returning
     // to the same tab/stamp must not re-admit a request whose original context is dead.
     if let Err(error) = crate::execution_guard::check_application(app, &req) {
+        crate::control::release_unstarted(app, &mut req);
         let _ = job.reply.send(crate::execution_guard::refusal_json(&error));
         return;
     }
