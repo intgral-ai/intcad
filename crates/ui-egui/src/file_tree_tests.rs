@@ -666,6 +666,9 @@ fn a_dirty_open_document_follows_a_case_only_file_tree_rename() {
     app.file_tree.editing.as_mut().unwrap().name = "Bracket.sc".into();
     assert!(app.file_tree.commit_edit().is_none(), "rename must not open another document");
     tick(&mut app, &egui::Context::default(), 1.0);
+    // The app takes Files answers once per frame before layout; a direct `tick` is only the panel's
+    // draw, so drive the same drain the frame logic does.
+    crate::file_tree::drain_documents(&mut app, &egui::Context::default());
     assert_eq!(app.session.path.as_deref(), new.to_str());
     assert_eq!(app.session.doc.name, "Bracket");
     assert!(app.session.is_dirty(), "unsaved geometry follows the renamed file");
@@ -1733,7 +1736,6 @@ fn a_nested_move_keeps_unrelated_tree_state_and_remaps_affected_paths() {
     tree.selection.insert(opened.clone());
     tree.focus = Some(notes.clone());
     tree.anchor = Some(opened.clone());
-    tree.scroll_to = Some(opened.clone());
     h.app.file_tree = tree;
     h.frames(2);
 
@@ -1746,6 +1748,9 @@ fn a_nested_move_keeps_unrelated_tree_state_and_remaps_affected_paths() {
     h.app.preferences.right_rail = false;
     h.app.preferences.right_rail_open = String::new();
     h.frame();
+    // A pending scroll request is set while the panel is closed: an open draw would consume it
+    // before the move answer arrives, which is not what this test is about.
+    h.app.file_tree.scroll_to = Some(opened.clone());
     release.send(()).unwrap();
     for _ in 0..2000 {
         h.frame();
