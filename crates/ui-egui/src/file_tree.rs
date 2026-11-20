@@ -232,16 +232,25 @@ pub(crate) struct ReplaceConsent {
 }
 
 /// What a file entry was, not just how its path was spelled. Unix gives reliable device and inode
-/// identity; elsewhere the size and timestamps are the best available standard-library evidence.
+/// identity. Other platforms cannot prove entry identity with only stable standard-library
+/// metadata, so they stay [`EntryIdentity::Unknown`] rather than treating equal sizes or timestamps
+/// as proof.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct EntryIdentity {
+enum EntryIdentity {
+    #[cfg(unix)]
+    Known(FileIdentity),
+    #[cfg(any(not(unix), test))]
+    Unknown,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    dev: u64,
+    ino: u64,
     len: u64,
     modified: Option<std::time::SystemTime>,
     created: Option<std::time::SystemTime>,
-    #[cfg(unix)]
-    dev: u64,
-    #[cfg(unix)]
-    ino: u64,
 }
 
 /// A question the panel keeps until the person answers it.
@@ -902,7 +911,7 @@ impl FileTree {
                     let unchanged = replaceable
                         .iter()
                         .find(|consent| same_source(&consent.source, &source))
-                        .is_some_and(|consent| entry_identity(&target).as_ref() == Some(&consent.identity));
+                        .is_some_and(|consent| same_known_entry(&target, &consent.identity));
                     if unchanged && !replacing.iter().any(|earlier| same_destination(earlier, &target)) {
                         replacing.push(target.clone());
                         Conflict::Replace
@@ -1353,7 +1362,9 @@ impl FileTree {
 }
 
 /// Read what a file entry was. A symbolic link is not a plain file for this purpose, matching the
-/// no-follow rule of the file operations.
+/// no-follow rule of the file operations. Only Unix has a stable, safe standard-library identity
+/// here; another platform returns Unknown so no destructive consent is granted from metadata that
+/// cannot prove the entry is the same one.
 fn entry_identity(path: &Path) -> Option<EntryIdentity> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     if !metadata.is_file() {
@@ -1362,42 +1373,66 @@ fn entry_identity(path: &Path) -> Option<EntryIdentity> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Some(EntryIdentity {
+        Some(EntryIdentity::Known(FileIdentity {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
             len: metadata.len(),
             modified: metadata.modified().ok(),
             created: metadata.created().ok(),
-            dev: metadata.dev(),
-            ino: metadata.ino(),
-        })
+        }))
     }
     #[cfg(not(unix))]
     {
-        Some(EntryIdentity { len: metadata.len(), modified: metadata.modified().ok(), created: metadata.created().ok() })
+        Some(EntryIdentity::Unknown)
     }
 }
 
+/// Are two known identities the same entry? `None` means the platform or path cannot prove either
+/// side, which must behave as unknown rather than as same or different.
+#[cfg(unix)]
+fn known_relation(a: &EntryIdentity, b: &EntryIdentity) -> Option<bool> {
+    match (a, b) {
+        (EntryIdentity::Known(a), EntryIdentity::Known(b)) => Some(a == b),
+        #[cfg(any(not(unix), test))]
+        _ => None,
+    }
+}
+
+#[cfg(not(unix))]
+fn known_relation(_: &EntryIdentity, _: &EntryIdentity) -> Option<bool> {
+    None
+}
+
+/// Does `path` still hold exactly the entry a saved consent names? Unknown never counts as same.
+fn same_known_entry(path: &Path, expected: &EntryIdentity) -> bool {
+    entry_identity(path).as_ref().and_then(|current| known_relation(current, expected)) == Some(true)
+}
+
 /// Is `b` the source the person allowed? Exact equality covers the normal answer. A different
-/// spelling of the same existing entry is also the same source where standard metadata can show
-/// that; it does not depend on a path spelling.
+/// spelling of the same existing entry is also the same source where a known identity proves it;
+/// an unknown identity never grants that alias.
 fn same_source(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }
-    matches!((entry_identity(a), entry_identity(b)), (Some(a), Some(b)) if a == b)
+    match (entry_identity(a), entry_identity(b)) {
+        (Some(a), Some(b)) => known_relation(&a, &b) == Some(true),
+        _ => false,
+    }
 }
 
-/// Do two items of one batch write the same destination? Exact paths are equal. Existing entries
-/// are compared by their metadata identity, so a case alias remains one destination even when the
-/// native realpath keeps the two input spellings. Distinct existing entries stay distinct. When
-/// the paths cannot be resolved as existing files, names that differ only in case are treated as
-/// one uncertain alias: keeping the later item under a free name is safer than replacing an
-/// earlier output, while differing names remain distinct.
+/// Do two items of one batch write the same destination? Exact paths are equal. Known identities
+/// decide same or distinct without relying on a native realpath spelling: a case alias remains one
+/// destination, and distinct existing entries stay distinct. Unknown stays conservative only for
+/// case-only spellings; differing names remain distinct.
 fn same_destination(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }
-    if let (Some(a), Some(b)) = (entry_identity(a), entry_identity(b)) {
-        return a == b;
+    if let (Some(a), Some(b)) = (entry_identity(a), entry_identity(b))
+        && let Some(same) = known_relation(&a, &b)
+    {
+        return same;
     }
     let (Some(a_parent), Some(b_parent)) = (a.parent(), b.parent()) else { return false };
     if a_parent != b_parent {

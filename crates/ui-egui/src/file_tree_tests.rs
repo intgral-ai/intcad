@@ -1178,6 +1178,33 @@ fn a_batch_replace_does_not_consent_for_a_destination_that_appears_later() {
 }
 
 #[test]
+fn unknown_entry_identity_is_never_same_or_distinct_evidence() {
+    assert_eq!(
+        super::known_relation(&super::EntryIdentity::Unknown, &super::EntryIdentity::Unknown),
+        None,
+        "equal unknown values, including equal metadata on different entries, are not proof"
+    );
+}
+
+#[test]
+fn an_unknown_entry_identity_keeps_both_entries() {
+    let scratch = Scratch::new();
+    let source = scratch.file("bracket.sc", "new");
+    let into = scratch.dir("parts");
+    fs::write(into.join("bracket.sc"), "old").unwrap();
+    let mut tree = listing(scratch.path());
+    let consent = super::ReplaceConsent { source: source.clone(), identity: super::EntryIdentity::Unknown };
+    tree.resolve_conflict(vec![source.clone()], into.clone(), false, Conflict::Replace, &[consent]);
+    let answer = wait_for_answer(&mut tree);
+    assert_eq!(answer.results.len(), 1);
+    let result = &answer.results[0];
+    assert_eq!(fs::read(into.join("bracket.sc")).unwrap(), b"old", "an unknown identity never replaces the entry");
+    assert!(result.succeeded(), "{result:?}");
+    assert_ne!(result.target, into.join("bracket.sc"), "the source is placed under a free name");
+    assert_eq!(fs::read(&result.target).unwrap(), b"new");
+}
+
+#[test]
 fn an_unresolved_case_only_spelling_is_an_uncertain_destination_alias() {
     let scratch = Scratch::new();
     let existing = scratch.file("part.sc", "existing");
@@ -1189,15 +1216,19 @@ fn an_unresolved_case_only_spelling_is_an_uncertain_destination_alias() {
 #[test]
 fn a_case_alias_of_one_entry_is_one_destination_without_realpath_normalization() {
     let scratch = Scratch::new();
-    let first = scratch.file("part.sc", "same entry");
-    let second = scratch.path().join("Part.sc");
-    fs::hard_link(&first, &second).expect("a same-entry fixture");
-    assert_ne!(
-        std::fs::canonicalize(&first).unwrap(),
-        std::fs::canonicalize(&second).unwrap(),
-        "the observable spellings must differ, so this cannot rely on realpath case normalization"
-    );
+    // Neutral spellings keep this fixture usable on a case-insensitive volume, where a hard link
+    // to a case-only name could be refused as EEXIST.
+    let first = scratch.file("entry-one", "same entry");
+    let second = scratch.path().join("entry-two");
+    fs::hard_link(&first, &second).expect("a same-entry fixture with distinct neutral names");
+    assert_ne!(first, second, "the two paths have distinct neutral spellings");
     assert!(same_destination(&first, &second), "one entry reached by two spellings is one destination");
+    // On the default case-insensitive APFS volume the case-only lookup names this same entry.
+    let lower = scratch.file("part.sc", "case alias");
+    let upper = scratch.path().join("Part.sc");
+    if fs::metadata(&upper).is_ok() {
+        assert!(same_destination(&lower, &upper), "a case-only lookup of an existing entry is one destination");
+    }
 }
 
 #[test]
