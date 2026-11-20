@@ -36,6 +36,7 @@ neg_cmp_op_on_partial_ord = "allow"
 
 [dependencies]
 solidcraft-engine = { workspace = true }
+solidcraft-account-native = { workspace = true }
 # The D3D12 shader compiler the window starts with (#6756).
 solidcraft-gpu = { workspace = true }
 solidcraft-ui-egui = { workspace = true }

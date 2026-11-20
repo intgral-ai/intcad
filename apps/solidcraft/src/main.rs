@@ -31,6 +31,7 @@ mod desktop_theme;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod desktop_transparency;
 mod device_lost;
+mod keyring_store;
 #[cfg(target_os = "windows")]
 mod native_crash;
 #[cfg(target_os = "macos")]

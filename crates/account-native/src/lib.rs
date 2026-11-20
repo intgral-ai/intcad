@@ -9,11 +9,14 @@
 
 mod contract;
 mod credentials;
+mod device_code;
 mod http;
 mod ledger;
 
 #[cfg(test)]
 mod credentials_tests;
+#[cfg(test)]
+mod device_code_tests;
 #[cfg(test)]
 mod http_tests;
 #[cfg(test)]
@@ -21,6 +24,10 @@ mod ledger_tests;
 
 pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
 pub use credentials::{ACCOUNT_KEYRING_SERVICE, CredentialSession, KeyringStore, MemorySession, NoPersistentStore};
+pub use device_code::{
+    CompletedDeviceLogin, DeviceCodeError, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport,
+    UreqDeviceCodeTransport, WORKOS_DEVICE_AUTHORIZATION_URL, WORKOS_DEVICE_GRANT_TYPE, WORKOS_TOKEN_URL, WorkOsPublicClient,
+};
 pub use http::{
     BootstrapPlatform, CredentialHandoff, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, Secret, Transport,
     TransportFailure, WireConnection, WireCredentials, WireRequest, WireResponse,

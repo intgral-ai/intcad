@@ -31,6 +31,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod account;
 mod bench_agent;
 mod bench_assistant;
 mod crashes;
