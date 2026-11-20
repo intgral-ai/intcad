@@ -265,11 +265,34 @@ fn begin_ahead(
     Some((Work::Ahead { commands, doc: app.session.doc.clone(), revision: app.session.revision, tries, kept }, rx, steps))
 }
 
+/// A copy answered on a worker cannot carry typed admission into a durable commit gate yet.
+/// Refuse a controlled entry before starting the worker or taking a grant; free GUI and browser
+/// work still answers on the copy.
+fn admit_copy_path(app: &mut SolveApp, req: &mut ControlRequest) -> bool {
+    if !crate::control::free_entry(req.entry) {
+        crate::control::release_unstarted(app, req);
+        let _ = req.reply.send(crate::control::async_controlled_refusal(req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+        return false;
+    }
+    match crate::control::admit_once(app, req) {
+        Ok(_) => true,
+        Err(refusal) => {
+            let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+            false
+        }
+    }
+}
+
 impl SolveApp {
     /// Both immediate and deferred completion are only cache warming: the original admission
     /// must still match on the owner before installing kept results or touching history.
     pub(crate) fn finish_control_ahead(&mut self, ctx: &egui::Context, req: ControlRequest, kept: Arc<KeptResults>) {
         if req.refuse_cancelled_chat() {
+            return;
+        }
+        let mut req = req;
+        if let Err(refusal) = crate::control::admit_once(self, &mut req) {
+            let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
             return;
         }
         if let Err(error) = crate::execution_guard::check_application(self, &req) {
@@ -431,6 +454,9 @@ impl SolveApp {
         if self.control_answering.len() < MAX_ANSWERING
             && let Some((id, params)) = reading(&req)
         {
+            if !admit_copy_path(self, &mut req) {
+                return None;
+            }
             return self.answer_on_a_copy(req, id, params);
         }
         // A snapshot freezes and writes a large artifact: answer on a copy even when the general
@@ -440,6 +466,9 @@ impl SolveApp {
             && let Some((command, params)) = executed(&req.params)
             && spec_id(command) == Some("document.snapshot.capture")
         {
+            if !admit_copy_path(self, &mut req) {
+                return None;
+            }
             return self.answer_on_a_copy(req, "document.snapshot.capture", params);
         }
         if !self.preferences.agent_off_thread {
@@ -451,10 +480,19 @@ impl SolveApp {
             && let Some((command, params)) = executed(&req.params)
             && let Some(id) = spec_id(command).filter(|id| ANSWERED_ON_A_COPY.contains(id))
         {
+            if !admit_copy_path(self, &mut req) {
+                return None;
+            }
             return self.answer_on_a_copy(req, id, params);
         }
         let commands = ahead_commands(&req.method, &req.params);
         let Some(first) = commands.first().map(|(c, _)| c.clone()) else { return Some(req) };
+        // Computing ahead is only cache warming for the real dispatch, which resolves this same
+        // typed admission; refuse a controlled entry without authority before any worker starts.
+        if let Err(refusal) = crate::control::admit_once(self, &mut req) {
+            let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+            return None;
+        }
         let Some((work, rx, steps)) = begin_ahead(self, &req, commands, 0) else { return Some(req) };
         let job = ControlJob { label: label(self, &first), req, work, done: rx, started: crate::now_ms(), steps: Some(steps) };
         if within_wait(self, &job.done).is_some() {
@@ -520,6 +558,10 @@ impl SolveApp {
     /// runs here.
     fn answered(&mut self, job: ControlJob, reply: Option<Value>) {
         if job.req.refuse_cancelled_chat() {
+            return;
+        }
+        if !crate::control::free_entry(job.req.entry) && job.req.admission.is_none() {
+            let _ = job.req.reply.send(crate::control::async_controlled_refusal(&job.req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
             return;
         }
         if let Err(error) = crate::execution_guard::check_application(self, &job.req) {

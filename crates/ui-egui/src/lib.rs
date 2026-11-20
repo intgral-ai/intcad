@@ -3485,11 +3485,11 @@ impl SolveApp {
             }
             req.started.store(true, std::sync::atomic::Ordering::Relaxed);
             // Opening or importing a file: answered when the file is in, without freezing the window.
-            let Some(req) = file_load::control(self, req) else {
+            let Some(mut req) = file_load::control(self, req) else {
                 ctx.request_repaint();
                 continue;
             };
-            if agent_cursor::intercept(self, &req) {
+            if agent_cursor::intercept(self, &mut req) {
                 ctx.request_repaint();
                 continue;
             }
@@ -3504,8 +3504,12 @@ impl SolveApp {
     }
 
     /// Run a control request here, now, and reply (or queue the screenshot it asks for).
-    pub(crate) fn run_control(&mut self, ctx: &egui::Context, req: ControlRequest) {
+    pub(crate) fn run_control(&mut self, ctx: &egui::Context, mut req: ControlRequest) {
         if req.refuse_cancelled_chat() {
+            return;
+        }
+        if let Err(refusal) = control::admit_once(self, &mut req) {
+            let _ = req.reply.send(control::admission_refusal_json(&refusal));
             return;
         }
         let reply = req.reply.clone();

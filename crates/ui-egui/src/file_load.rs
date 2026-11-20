@@ -390,6 +390,17 @@ pub fn control(app: &mut SolveApp, mut req: crate::control::ControlRequest) -> O
         Some("file.export_view_dxf") => Kind::ExportDxf,
         _ => return Some(req),
     };
+    // This loader answers from an async worker, so a controlled entry has no durable commit path
+    // yet: refuse before reading a file or taking a grant. Free GUI/local CAD loading is unchanged.
+    if !crate::control::free_entry(req.entry) {
+        crate::control::release_unstarted(app, &req);
+        let _ = req.reply.send(crate::control::async_controlled_refusal(&req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+        return None;
+    }
+    if let Err(refusal) = crate::control::admit_once(app, &mut req) {
+        let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+        return None;
+    }
     let params = req.params.get("params");
     let path = match params.and_then(|p| p.get("path")).and_then(Value::as_str) {
         Some(path) => path,

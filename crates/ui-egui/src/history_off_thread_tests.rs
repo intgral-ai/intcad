@@ -252,7 +252,7 @@ fn guarded_immediate_completion_and_cursor_keep_original_guard() {
             if ahead {
                 guarded_workers::immediate();
             }
-            assert!(crate::agent_cursor::intercept(&mut h.app, &req));
+            assert!(crate::agent_cursor::intercept(&mut h.app, &mut req));
             assert!(h.app.agent.computing().is_none(), "still gliding");
             if action == "return" {
                 crate::documents::open_tab(&mut h.app, solidcraft_engine::Session::default()).unwrap();

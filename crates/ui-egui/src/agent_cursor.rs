@@ -141,6 +141,8 @@ pub struct Job {
     /// it after the glide cannot turn a controlled entry into a free GUI one.
     entry: solidcraft_engine::entitlement::EntryCategory,
     operation: Option<solidcraft_engine::entitlement::OperationId>,
+    /// The typed admission taken before the pointer started computing ahead; reissue must keep it.
+    admission: Option<solidcraft_engine::entitlement::Admission>,
     /// Seconds per glide and per click for this request (within [`TIME_BUDGET`] in all).
     glide: f64,
     click: f64,
@@ -341,13 +343,15 @@ fn walk<'a>(v: &'a Value, key: Option<&'a str>, f: &mut dyn FnMut(Option<&'a str
 
 /// Take over a control request when the pointer should act it out first: returns the request
 /// back when it should simply run.
-pub fn intercept(app: &mut SolveApp, req: &crate::control::ControlRequest) -> bool {
-    let (method, params, reply) = (req.method.as_str(), &req.params, &req.reply);
+pub fn intercept(app: &mut SolveApp, req: &mut crate::control::ControlRequest) -> bool {
+    let method = req.method.clone();
+    let params = req.params.clone();
+    let reply = req.reply.clone();
     let s = app.ui.agent_cursor;
     if !s.show || params.get("animate").and_then(Value::as_bool) == Some(false) {
         return false;
     }
-    let stops: VecDeque<_> = match method {
+    let stops: VecDeque<_> = match method.as_str() {
         "engine.execute" | "command" => {
             let Some(cmd) = params.get("command").or(params.get("id")).and_then(Value::as_str) else { return false };
             let inner = params.get("params").cloned().unwrap_or(json!({}));
@@ -372,18 +376,25 @@ pub fn intercept(app: &mut SolveApp, req: &crate::control::ControlRequest) -> bo
     if stops.is_empty() {
         return false;
     }
+    // Admission is typed before the pointer starts computing the change ahead. The held job
+    // carries it, and the final dispatch resolves it instead of billing again.
+    if let Err(refusal) = crate::control::admit_once(app, req) {
+        let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+        return true;
+    }
     let from = app.cursor_start();
     // Computed ahead (a command or a batch's steps) while the pointer glides (#1989).
-    let ahead = crate::control_job::Ahead::begin(app, method, params);
+    let ahead = crate::control_job::Ahead::begin(app, &method, &params);
     let (glide, click) = leg_times(s.speed, stops.len());
     app.agent.job = Some(Job {
-        method: method.to_string(),
-        params: params.clone(),
-        reply: reply.clone(),
+        method,
+        params,
+        reply,
         chat_turn: req.chat_turn.clone(),
         guarded: req.guarded.clone(),
         entry: req.entry(),
         operation: req.operation().cloned(),
+        admission: req.admission.clone(),
         stops,
         glide,
         click,
@@ -462,7 +473,7 @@ fn finish(app: &mut SolveApp, ctx: &egui::Context) {
     params["animate"] = json!(false);
     let cmd = params.get("command").or(params.get("id")).and_then(Value::as_str).unwrap_or_default().to_string();
     let id = solidcraft_engine::find_command(&cmd).map_or(cmd.clone(), |c| c.id.to_string());
-    let (mut req, _rx) = crate::control::reissue(job.entry, job.operation, job.method, params);
+    let (mut req, _rx) = crate::control::reissue(job.entry, job.operation, job.admission, job.method, params);
     req.chat_turn = job.chat_turn;
     req.guarded = job.guarded;
     // Check before installing kept results or changing followed camera bookkeeping. Returning
@@ -637,16 +648,31 @@ mod tests {
     }
 
     #[test]
+    fn a_controlled_request_is_refused_before_the_pointer_computes_ahead() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.agent_cursor", json!({"show": true, "speed": 1}));
+        let (mut req, reply) = crate::control::ControlRequest::trusted_control(
+            "engine.execute",
+            json!({"command":"solid.box", "params":{"length":10,"width":10,"height":10}}),
+        );
+        assert!(intercept(&mut h.app, &mut req), "the refusal is handled before dispatch");
+        let reply = reply.try_recv().expect("no admission, so an immediate refusal");
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!h.app.agent.busy(), "no cursor job or ahead worker started");
+    }
+
+    #[test]
     fn a_command_in_a_closed_group_is_named_while_the_pointer_acts_it_out() {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.agent_cursor", json!({"show": true, "speed": 1}));
         assert!(crate::scenario::handle_at("toolbar:solid.box").is_none());
         assert!(button("solid.box").is_some(), "the closed group is the pointer's target");
-        let (req, rx) = crate::control::ControlRequest::trusted_gui(
+        let (mut req, rx) = crate::control::ControlRequest::trusted_gui(
             "engine.execute",
             json!({"command":"solid.box", "params":{"length":10,"width":10,"height":10}}),
         );
-        assert!(intercept(&mut h.app, &req));
+        assert!(intercept(&mut h.app, &mut req));
         h.frames(3);
         assert!(h.widget("Box").is_some(), "the command must be identified before it executes");
         assert!(rx.try_recv().is_err());
@@ -667,8 +693,8 @@ mod tests {
             {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
             {"command":"solid.sphere","params":{"center":[30,0,0],"radius":3}}
         ]});
-        let (req, rx) = crate::control::ControlRequest::trusted_gui("engine.batch", params);
-        assert!(intercept(&mut h.app, &req));
+        let (mut req, rx) = crate::control::ControlRequest::trusted_gui("engine.batch", params);
+        assert!(intercept(&mut h.app, &mut req));
         let mut seen = Vec::new();
         for _ in 0..120 {
             h.frame();

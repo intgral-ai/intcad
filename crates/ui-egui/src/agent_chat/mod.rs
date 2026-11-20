@@ -2576,6 +2576,17 @@ fn hand_over(app: &mut SolveApp, mut req: ControlRequest) {
     if review::running(&app.agent_chat) {
         match review::route(&req.method, &req.params) {
             Some(true) => {
+                // The preview runs a real agent request on a copy, but its commit happens later
+                // on Accept, outside any typed admission/commit path. Controlled entries are
+                // refused here pending Task 8/9; ordinary GUI preview cad still runs.
+                if !crate::control::free_entry(req.entry) {
+                    let _ = req.reply.send(crate::control::async_controlled_refusal(&req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+                    return;
+                }
+                if let Err(refusal) = crate::control::admit_once(app, &mut req) {
+                    let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+                    return;
+                }
                 review::hand_over(app, req);
                 return;
             }
@@ -2587,7 +2598,15 @@ fn hand_over(app: &mut SolveApp, mut req: ControlRequest) {
         }
     }
     match crate::execution_guard::admit(app, &mut req) {
-        Ok(()) => app.control_held.push_back(req),
+        Ok(()) => {
+            // The queue and every later seam carry this one typed admission; none may take it
+            // again on resumption.
+            if let Err(refusal) = crate::control::admit_once(app, &mut req) {
+                let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+                return;
+            }
+            app.control_held.push_back(req);
+        }
         Err(error) => {
             let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
         }

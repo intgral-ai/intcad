@@ -81,6 +81,10 @@ pub struct ControlRequest {
     /// The host-minted logical operation for a controlled entry; `None` for free entries and
     /// when the host could not mint one (admission then fails closed).
     pub(crate) operation: Option<OperationId>,
+    /// The typed admission taken at the first trusted host seam. Every forwarding/resumption
+    /// carries it, so a request is never billed twice and an unclassified request is never
+    /// admitted later by a shared dispatch helper.
+    pub(crate) admission: Option<Admission>,
 }
 
 /// Entries whose human host path is free even when it shares command dispatch.
@@ -122,6 +126,18 @@ fn auxiliary_method(method: &str) -> bool {
     )
 }
 
+/// Methods that start a native file operation answered later by a worker/save path, outside
+/// the typed admission carried into the current request. A controlled entry cannot carry that
+/// admission into their eventual commit yet, so it is refused before any admission or work.
+fn starts_async_file_work(method: &str, params: &Value) -> bool {
+    method == "ui.file" || (method == "ui.home" && params.get("sample").is_some())
+}
+
+fn async_file_refusal(req: &ControlRequest) -> Option<Refusal> {
+    (!free_entry(req.entry) && starts_async_file_work(&req.method, &req.params))
+        .then(|| Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry starts a native file operation that has no durable commit path yet"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn mint_operation() -> Option<OperationId> {
     let mut entropy = [0_u8; 16];
@@ -139,8 +155,17 @@ impl ControlRequest {
     fn pending(entry: EntryCategory, method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let operation = entry_capability(entry).and_then(|_| mint_operation());
         let (tx, rx) = std::sync::mpsc::channel();
-        let request =
-            Self { method: method.into(), params, reply: tx, started: Default::default(), chat_turn: None, guarded: None, entry, operation };
+        let request = Self {
+            method: method.into(),
+            params,
+            reply: tx,
+            started: Default::default(),
+            chat_turn: None,
+            guarded: None,
+            entry,
+            operation,
+            admission: None,
+        };
         (request, rx)
     }
 
@@ -207,6 +232,7 @@ impl ControlRequest {
             guarded: None,
             entry: EntryCategory::Unknown,
             operation: None,
+            admission: None,
         }
     }
 
@@ -236,12 +262,22 @@ impl ControlRequest {
 pub(crate) fn reissue(
     entry: EntryCategory,
     operation: Option<OperationId>,
+    admission: Option<Admission>,
     method: impl Into<String>,
     params: Value,
 ) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
     let (tx, rx) = std::sync::mpsc::channel();
-    let request =
-        ControlRequest { method: method.into(), params, reply: tx, started: Default::default(), chat_turn: None, guarded: None, entry, operation };
+    let request = ControlRequest {
+        method: method.into(),
+        params,
+        reply: tx,
+        started: Default::default(),
+        chat_turn: None,
+        guarded: None,
+        entry,
+        operation,
+        admission,
+    };
     (request, rx)
 }
 
@@ -291,6 +327,9 @@ pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing
     if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
         return Admission::Allowed;
     }
+    if let Some(refusal) = async_file_refusal(req) {
+        return Admission::Refused(refusal);
+    }
     if !budget.is_verified(capability, req.entry) {
         return Admission::Refused(Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry has no verified safe-stop bound"));
     }
@@ -314,12 +353,60 @@ fn admit_for_app(app: &mut SolveApp, req: &ControlRequest) -> Admission {
     }
 }
 
-fn admission_refusal(reason: &Refusal) -> Outcome {
-    Outcome::Done(json!({
+/// Take the typed admission once, at the first trusted host seam that can still carry it.
+///
+/// The result is stored in the request and every forwarding, queue, offload or cursor resumption
+/// keeps it; later shared dispatch resolves the stored value instead of billing again. A refusal
+/// is never stored and is sent to the caller by the seam that took it.
+pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result<Admission, Refusal> {
+    if let Some(admission) = &req.admission {
+        return match admission {
+            Admission::Refused(refusal) => Err(refusal.clone()),
+            admission => Ok(admission.clone()),
+        };
+    }
+    match admit_for_app(app, req) {
+        Admission::Refused(refusal) => Err(refusal),
+        admission => {
+            req.admission = Some(admission.clone());
+            Ok(admission)
+        }
+    }
+}
+
+/// Release a grant taken earlier when a later seam discovers that the async path cannot carry it
+/// to a durable commit. Free entries have no grant. This never dispatches or grants anything.
+pub(crate) fn release_unstarted(app: &mut SolveApp, req: &ControlRequest) {
+    if let Some(Admission::NewlyAdmitted { operation, .. }) = &req.admission
+        && let Some(billing) = app.billing.as_mut()
+    {
+        let _ = billing.release(operation, RefusalCode::UnsafeToStart);
+    }
+}
+
+/// A path that answers a controlled entry from an async worker has no typed admission carried
+/// into a durable commit gate yet. Refuse it before any work or grant, pending Task 8/9; free
+/// human and browser entries stay on this path unchanged.
+pub(crate) fn async_controlled_refusal(req: &ControlRequest) -> Option<Value> {
+    if free_entry(req.entry) {
+        return None;
+    }
+    Some(admission_refusal_json(&Refusal::new(
+        RefusalCode::UnsafeToStart,
+        "this controlled entry needs a durable commit path that is not available yet",
+    )))
+}
+
+pub(crate) fn admission_refusal_json(reason: &Refusal) -> Value {
+    json!({
         "ok": false,
         "error": reason.message,
         "errorDetails": {"code": format!("{:?}", reason.code), "retry": "never"},
-    }))
+    })
+}
+
+fn admission_refusal(reason: &Refusal) -> Outcome {
+    Outcome::Done(admission_refusal_json(reason))
 }
 
 /// The origin-only fail-closed check: no method, parameter or local task gate may run before an
@@ -801,6 +888,9 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
     if let Some(refusal) = entry_refusal(req) {
         return admission_refusal(&refusal);
     }
+    if let Some(refusal) = async_file_refusal(req) {
+        return admission_refusal(&refusal);
+    }
     if chat_turn_cancelled(req.chat_turn.as_deref()) {
         return Outcome::Done(cancelled_request_response(&req.method, &req.params, req.guarded.is_some()));
     }
@@ -811,7 +901,10 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
     if let Some(reason) = crate::agent_chat::task_runtime::before_tool(app, &req.method, &req.params, req.chat_turn.as_ref()) {
         return Outcome::Done(json!({"ok": false, "error": format!("refused by the host task: {reason}")}));
     }
-    let admission = admit_for_app(app, req);
+    let admission = match req.admission.as_ref() {
+        Some(admission) => admission.clone(),
+        None => admit_for_app(app, req),
+    };
     if let Admission::Refused(refusal) = &admission {
         return admission_refusal(refusal);
     }
@@ -1948,6 +2041,119 @@ mod tests {
             spy.calls = spy.calls.saturating_add(1);
         }
         admission
+    }
+
+    /// A billing double whose admission count survives being installed in the app.
+    struct SharedCounting {
+        admits: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl BillingPort for SharedCounting {
+        fn admit(
+            &mut self,
+            operation: &OperationId,
+            capability: Capability,
+            _entry: EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, Refusal> {
+            self.admits.fetch_add(1, Ordering::Relaxed);
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
+            Ok(result)
+        }
+
+        fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+            Ok(())
+        }
+    }
+
+    fn app_with_billing() -> (SolveApp, std::sync::Arc<AtomicUsize>) {
+        let admits = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_billing(Box::new(SharedCounting { admits: std::sync::Arc::clone(&admits) }), verified_budget());
+        (app, admits)
+    }
+
+    #[test]
+    fn controlled_file_load_is_refused_before_a_loader_starts() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let (req, reply) = ControlRequest::trusted_control(
+            "engine.execute",
+            json!({"command":"doc.open","params":{"path":"/tmp/opencode/int1497-never-opened.sc"}}),
+        );
+        assert!(crate::file_load::control(&mut app, req).is_none(), "the loader does not take the request");
+        let reply = reply.try_recv().expect("a refusal before loading");
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!app.file_load.busy(), "no file load started");
+    }
+
+    #[test]
+    fn controlled_copy_answer_is_refused_before_computation() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.apply_off_thread = Some(Duration::from_secs(1));
+        let (req, reply) = ControlRequest::trusted_control("document.inspect", json!({}));
+        assert!(app.offload_control(&egui::Context::default(), req).is_none(), "no copy job starts");
+        let reply = reply.try_recv().expect("a refusal before copying");
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(app.control_answering.is_empty() && app.control_job.is_none(), "nothing computed");
+    }
+
+    #[test]
+    fn stored_admission_is_reused_by_a_reissued_request() {
+        let (mut app, admits) = app_with_billing();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::NewlyAdmitted { .. })));
+        assert_eq!(admits.load(Ordering::Relaxed), 1);
+        let admission = req.admission.clone();
+        let (mut reissued, _rx) = reissue(req.entry, req.operation.clone(), admission, "engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_once(&mut app, &mut reissued), Ok(Admission::NewlyAdmitted { .. })));
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "a resumption keeps the first admission");
+    }
+
+    #[test]
+    fn a_pre_admitted_request_is_not_billed_again_at_dispatch() {
+        let (mut app, admits) = app_with_billing();
+        let (mut req, rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        assert!(admit_once(&mut app, &mut req).is_ok());
+        app.run_control(&egui::Context::default(), req);
+        let reply = rx.try_recv().expect("answered");
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "dispatch resolved the stored admission");
+        assert_eq!(crate::open_meshing::session_world(&app.session).bodies.len(), 1, "{reply}");
+    }
+
+    #[test]
+    fn controlled_ui_file_request_is_refused_before_async_load() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let (mut req, reply) = ControlRequest::trusted_control("ui.file", json!({"path":"/tmp/opencode/int1497-never-opened.sc"}));
+        let refusal = admit_once(&mut app, &mut req).expect_err("a native async file path has no durable commit yet");
+        assert_eq!(refusal.code, RefusalCode::UnsafeToStart);
+        assert!(reply.try_recv().is_err(), "admission itself sent nothing; the seam answers");
+        assert!(!app.file_load.busy(), "no file load started");
+    }
+
+    #[test]
+    fn controlled_offload_ahead_is_refused_before_a_worker_starts() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.apply_off_thread = Some(Duration::from_secs(1));
+        app.preferences.agent_off_thread = true;
+        let (req, reply) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        assert!(app.offload_control(&egui::Context::default(), req).is_none(), "no worker starts");
+        let reply = reply.try_recv().expect("a refusal before computing ahead");
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(app.control_job.is_none() && app.control_answering.is_empty(), "nothing computed");
     }
 
     #[test]

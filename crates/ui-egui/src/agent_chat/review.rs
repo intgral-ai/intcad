@@ -98,8 +98,8 @@ enum Slot {
 
 /// What a worker computes on the copy.
 enum Work {
-    /// One of the agent's requests, answered once the copy is back.
-    Request(ControlRequest),
+    /// One of the agent's requests (boxed: the request owns admission and a reply).
+    Request(Box<ControlRequest>),
     /// The card's lists, once the turn ended.
     Card,
 }
@@ -610,6 +610,10 @@ fn lost(app: &mut SolveApp) {
 
 /// Run one of the agent's requests for the copy, now or after the one computing.
 pub(crate) fn hand_over(app: &mut SolveApp, req: ControlRequest) {
+    if !crate::control::free_entry(req.entry) {
+        let _ = req.reply.send(crate::control::async_controlled_refusal(&req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+        return;
+    }
     let Some(preview) = app.agent_chat.preview.as_mut() else { return };
     match &preview.slot {
         Slot::Lost => {
@@ -624,11 +628,15 @@ fn start_request(app: &mut SolveApp, req: ControlRequest) {
     if req.refuse_cancelled_chat() {
         return;
     }
+    if !crate::control::free_entry(req.entry) {
+        let _ = req.reply.send(crate::control::async_controlled_refusal(&req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+        return;
+    }
     let Some(preview) = app.agent_chat.preview.as_mut() else { return };
     req.started.store(true, Ordering::Relaxed);
     let labels = labels(&req.method, &req.params);
     let ask = Ask::Request { method: req.method.clone(), params: req.params.clone() };
-    match send_away(preview, Work::Request(req), ask, labels) {
+    match send_away(preview, Work::Request(Box::new(req)), ask, labels) {
         Sent::Back(back) => {
             let (copy, done, work) = *back;
             come_back(app, copy, done, work, false);

@@ -8857,7 +8857,7 @@ fn guarded_stop_refuses_matching_queue_cursor_and_ahead() {
         send(&mut app, &ctx, "make a box".into());
         let method = if route == "copy" { "document.inspect" } else { "engine.batch" };
         let params = if route == "copy" { json!({}) } else { json!({"commands":[boxed(0.0),boxed(20.0)]}) };
-        let (req, reply) = guarded_stop_request(&mut app, method, params);
+        let (mut req, reply) = guarded_stop_request(&mut app, method, params);
         let expected = req.guarded.as_ref().unwrap().expected.clone();
         let mut gate = None;
         let mut immediate = None;
@@ -8869,7 +8869,7 @@ fn guarded_stop_refuses_matching_queue_cursor_and_ahead() {
                 app.preferences.agent_off_thread = true;
                 gate = Some(crate::history_off_thread_tests::guarded_workers::gate());
             }
-            assert!(crate::agent_cursor::intercept(&mut app, &req));
+            assert!(crate::agent_cursor::intercept(&mut app, &mut req));
         } else if matches!(route, "ahead" | "copy") {
             app.apply_off_thread = Some(std::time::Duration::ZERO);
             app.preferences.agent_off_thread = true;
@@ -9006,13 +9006,13 @@ fn guarded_command_chip_stop_allows_next_request() {
         let active = app.agent_chat.turn.as_ref().unwrap().active.clone();
         app.apply_off_thread = Some(std::time::Duration::ZERO);
         app.preferences.agent_off_thread = true;
-        let (req, reply) = guarded_stop_request(&mut app, "engine.execute", boxed(0.0));
+        let (mut req, reply) = guarded_stop_request(&mut app, "engine.execute", boxed(0.0));
         let (next, next_reply) = guarded_stop_request(&mut app, "engine.execute", boxed(20.0));
         let gate = crate::history_off_thread_tests::guarded_workers::gate();
         if cursor {
             app.ui.agent_cursor.show = true;
             crate::scenario::publish_handle("toolbar:solid.box", egui::pos2(100.0, 100.0));
-            assert!(crate::agent_cursor::intercept(&mut app, &req));
+            assert!(crate::agent_cursor::intercept(&mut app, &mut req));
             for _ in 0..8 {
                 app.now += 2.0;
                 crate::agent_cursor::step(&mut app, &ctx);
@@ -9064,7 +9064,7 @@ fn assert_legacy_command_chip_reply(cursor: bool) {
     if cursor {
         app.ui.agent_cursor.show = true;
         crate::scenario::publish_handle("toolbar:solid.box", egui::pos2(100.0, 100.0));
-        assert!(crate::agent_cursor::intercept(&mut app, &req));
+        assert!(crate::agent_cursor::intercept(&mut app, &mut req));
         for _ in 0..8 {
             app.now += 2.0;
             crate::agent_cursor::step(&mut app, &ctx);
@@ -18262,6 +18262,21 @@ fn step_text(session: &mut solidcraft_engine::Session, name: &str) -> String {
     let text = std::fs::read_to_string(&path).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     text.lines().filter(|l| !l.starts_with("FILE_NAME")).collect::<Vec<_>>().join("\n")
+}
+
+/// A controlled bridge request is refused before the preview copy computes anything. Ordinary
+/// GUI preview stays on the existing path; the refusal is an inert, in-process check.
+#[test]
+fn a_controlled_request_is_refused_before_preview_computation() {
+    let (mut app, _tx, _script, _ctx) = previewed_turn("middle box");
+    assert!(review::running(&app.agent_chat));
+    let (req, reply) = ControlRequest::trusted_bridge("engine.execute", boxed(0.0));
+    super::hand_over(&mut app, req);
+    let reply = reply.recv_timeout(std::time::Duration::from_secs(30)).expect("a refusal before the copy computes");
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+    assert!(review::computing(&app.agent_chat).is_none(), "nothing started on the copy");
+    assert_eq!(body_count(&app.session), 0, "the open design was not touched");
 }
 
 /// Off (the default), a turn changes the open design as before and no card asks anything.
