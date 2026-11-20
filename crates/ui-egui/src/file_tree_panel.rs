@@ -825,19 +825,22 @@ fn clipboard_target(app: &SolveApp) -> ClipboardTarget {
     ClipboardTarget { selected: app.file_tree.selected(focus.as_deref()), folder: app.file_tree.target_folder() }
 }
 
-/// The panel handled this key itself, so it can say whether the command's effective target
-/// changed and which command came before that key. Entry-frame focus cannot know either.
-fn note_retarget(app: &mut SolveApp, before_command: crate::edit_clipboard::CommandBefore, before: ClipboardTarget) {
+/// The panel handled this key itself, so it can say which earlier commands had their effective
+/// target changed by that action. Entry-frame focus cannot know either.
+fn note_retarget(app: &mut SolveApp, before_key: crate::edit_clipboard::CommandsBeforeKey, before: ClipboardTarget) {
     let after = clipboard_target(app);
-    if (before_command.selection && after.selected != before.selected) || (before_command.paste_folder && after.folder != before.folder) {
-        app.clipboard_input.retargeted = true;
+    if after.selected != before.selected {
+        app.clipboard_input.retire_commands(&before_key.selection);
+    }
+    if after.folder != before.folder {
+        app.clipboard_input.retire_commands(&before_key.paste_folder);
     }
 }
 
-/// Consume the key the panel handles and report which command targets its first event follows.
+/// Consume the key the panel handles and report the commands its first event follows.
 /// `consume_key` uses the same logical modifier match, so accepted Alt/Shift chords count too.
-fn take_key(ui: &mut egui::Ui, modifiers: egui::Modifiers, key: egui::Key) -> Option<crate::edit_clipboard::CommandBefore> {
-    let before = crate::edit_clipboard::key_after_command(ui, modifiers, key);
+fn take_key(ui: &mut egui::Ui, modifiers: egui::Modifiers, key: egui::Key) -> Option<crate::edit_clipboard::CommandsBeforeKey> {
+    let before = crate::edit_clipboard::commands_before_key(ui, modifiers, key);
     ui.input_mut(|i| i.consume_key(modifiers, key)).then_some(before)
 }
 

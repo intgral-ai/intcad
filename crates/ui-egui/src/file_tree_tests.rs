@@ -889,6 +889,112 @@ fn same_batch_native_cut_then_command_shift_a_retires_the_command() {
     assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
 }
 
+/// Each command has its own position: the Copy before the Down is retired, but the later Cut
+/// after the Down keeps the target it can see. A single batch-wide retarget flag loses it.
+#[test]
+fn same_batch_copy_then_down_then_native_cut_retains_the_later_cut() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "first.txt");
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        egui::Event::Copy,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Cut,
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down settles the later row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the later Cut is not retired with the earlier Copy");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later), "the Cut acts on the row after the Down");
+    assert!(clip.cut, "the later command is the Cut");
+    assert_eq!(cad_mark(&h), before, "both commands belong to Files");
+}
+
+/// A Cut before a Down into another folder is retired, but the Paste after that Down keeps the
+/// folder the person can see. The seeded file clipboard proves the real paste destination.
+#[test]
+fn same_batch_cut_then_down_to_another_folder_then_native_paste_retains_the_later_paste() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    focus_file_row(&mut h, "first");
+    h.frame_with(vec![
+        egui::Event::Cut,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Paste("native".into()),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down settles the later folder");
+    h.frames(30);
+    assert_eq!(fs::read(later.join("source.txt")).unwrap(), b"source", "the later Paste enters the later folder");
+    assert!(!first.join("source.txt").exists(), "the retired Cut did not paste into the earlier folder");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source), "the earlier Cut is retired, leaving the seeded clipboard");
+    assert!(!clip.cut);
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+}
+
+/// Target kinds are separate: a Down within one folder changes the Copy selection but not the
+/// Paste destination, so only the Copy is retired. The seeded clipboard proves the Paste ran.
+#[test]
+fn same_batch_copy_then_native_paste_then_down_in_one_folder_retires_only_the_copy() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    scratch.file("into/a.txt", "a");
+    scratch.file("into/b.txt", "b");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.app.file_tree.toggle_dir(&into);
+    h.frames(2);
+    focus_file_row(&mut h, "a.txt");
+    h.frame_with(vec![
+        egui::Event::Copy,
+        egui::Event::Paste("native".into()),
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(into.join("b.txt")), "the Down moves within the same folder");
+    h.frames(30);
+    assert_eq!(fs::read(into.join("source.txt")).unwrap(), b"source", "the Paste destination is unchanged and still runs");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source), "the Copy is retired instead of replacing the clipboard");
+    assert!(!clip.cut);
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+}
+
+/// Duplicate Down press events in one batch are consumed together and move the row once, as
+/// egui's all-consume one-action semantics do. With both Downs before the command it still acts
+/// on that single-step row; this is a control, not a demonstrated wrong target.
+#[test]
+fn same_batch_duplicate_down_events_move_once_and_document_all_consume_one_action() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let second = scratch.file("second.txt", "2");
+    scratch.file("third.txt", "3");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "first.txt");
+    let repeat = egui::Event::Key { key: egui::Key::ArrowDown, physical_key: None, pressed: true, repeat: true, modifiers: Modifiers::NONE };
+    h.frame_with(vec![
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        repeat,
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Cut,
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(second.clone()), "two Down events move exactly one row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the Cut after the Downs is settled");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&second));
+    assert!(clip.cut);
+    assert!(h.app.file_tree.focused, "the tree keeps the keys");
+}
+
 /// The converse transition: Files has the keys when the batch starts, but a click in the
 /// retained-open viewport ends that before the native CAD command. The tree never moves its
 /// row in this batch, so the CAD Cut or Paste must run rather than be suppressed by the entry

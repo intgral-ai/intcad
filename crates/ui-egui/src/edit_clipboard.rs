@@ -747,8 +747,21 @@ pub(crate) struct InputBatch {
     pub(crate) files_rendered: bool,
     pub(crate) entry_keyboard_owned: bool,
     ambiguous: bool,
-    /// A tree key after the batch's clipboard command changed the target it would act on.
-    pub(crate) retargeted: bool,
+    /// Ordinals of clipboard commands a later tree key retargeted. Commands after that key,
+    /// and commands the key did not affect, keep their place in the batch's order.
+    pub(crate) retired_commands: Vec<usize>,
+}
+
+impl InputBatch {
+    /// Retire the commands at these ordinals. Repeated layout passes may report the same key
+    /// again; the ordinals stay unique so the finish pass cannot apply the command twice.
+    pub(crate) fn retire_commands(&mut self, ordinals: &[usize]) {
+        for &ordinal in ordinals {
+            if !self.retired_commands.contains(&ordinal) {
+                self.retired_commands.push(ordinal);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -794,29 +807,31 @@ fn keyboard_owned(app: &mut SolveApp, ctx: &egui::Context) -> bool {
         || app.file_load.busy()
 }
 
-/// Which command targets a clipboard command before the tree's key would use. A Cut or Copy
-/// acts on the selection; a Paste acts on the folder. Navigation that changes only the other
-/// target does not make the command ambiguous.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct CommandBefore {
-    pub(crate) selection: bool,
-    pub(crate) paste_folder: bool,
+/// The clipboard commands before the first key event the tree would consume, by their position
+/// in the batch. Copy/Cut act on the selection; Paste acts on the folder. The positions let the
+/// panel retire only the commands whose target the key changed, even when several commands or
+/// identical duplicate events share the batch.
+#[derive(Default)]
+pub(crate) struct CommandsBeforeKey {
+    pub(crate) selection: Vec<usize>,
+    pub(crate) paste_folder: Vec<usize>,
 }
 
-/// The first key event the tree would consume, and which command targets come before it. An
-/// empty result means no clipboard command precedes that key. Matching uses egui's logical
-/// modifiers, the same match `consume_key` uses, so an extra Alt or Shift the panel accepts is
-/// counted too. The panel supplies the key it actually handles: this is not a second list of
-/// navigation keys.
-pub(crate) fn key_after_command(ui: &egui::Ui, modifiers: egui::Modifiers, key: egui::Key) -> CommandBefore {
+/// The first key event the tree would consume, and the positions of the commands before it.
+/// Matching uses egui's logical modifiers, the same match `consume_key` uses, so an extra Alt or
+/// Shift the panel accepts is counted too. The panel supplies the key it actually handles: this
+/// is not a second list of navigation keys.
+pub(crate) fn commands_before_key(ui: &egui::Ui, modifiers: egui::Modifiers, key: egui::Key) -> CommandsBeforeKey {
     ui.input(|i| {
-        let mut before = CommandBefore::default();
+        let mut before = CommandsBeforeKey::default();
+        let mut ordinal = 0;
         for event in &i.events {
             if let Some(command) = clipboard_command(event) {
                 match command {
-                    ClipboardCommand::Copy | ClipboardCommand::Cut => before.selection = true,
-                    ClipboardCommand::Paste => before.paste_folder = true,
+                    ClipboardCommand::Copy | ClipboardCommand::Cut => before.selection.push(ordinal),
+                    ClipboardCommand::Paste => before.paste_folder.push(ordinal),
                 }
+                ordinal += 1;
                 continue;
             }
             if matches!(
@@ -827,7 +842,7 @@ pub(crate) fn key_after_command(ui: &egui::Ui, modifiers: egui::Modifiers, key: 
                 return before;
             }
         }
-        before
+        CommandsBeforeKey::default()
     })
 }
 
@@ -886,26 +901,34 @@ pub(crate) fn finish_input(app: &mut SolveApp, ctx: &egui::Context) {
         // A theme on the Appearance page precedes CAD/Files. Retire replay input below too.
         crate::prefs::take_theme_paste(app, ctx);
         if rendered && app.file_tree.focused {
-            // The tree consumed a key after the command and actually changed the target it
-            // would act on before this handler ran. Its command is retired for both owners
-            // rather than applied to the row the person did not select when pressing it.
-            if !app.clipboard_input.retargeted {
-                let commands: Vec<_> = ctx.input(|i| {
-                    i.events
-                        .iter()
-                        .filter_map(
-                            |event| if matches!(event, egui::Event::Paste(_)) && middle_navigation(i) { None } else { clipboard_command(event) },
-                        )
-                        .collect()
-                });
-                for command in commands {
-                    match command {
-                        ClipboardCommand::Copy => app.file_tree.copy_selection(false),
-                        ClipboardCommand::Cut => app.file_tree.copy_selection(true),
-                        ClipboardCommand::Paste => {
-                            if let Some(folder) = app.file_tree.target_folder() {
-                                app.file_tree.paste(&folder);
-                            }
+            // The tree consumed a key and changed the target of the commands before it. Retire
+            // those commands only; a later command has already settled on the visible target and
+            // keeps its place in the batch's order.
+            let retired = app.clipboard_input.retired_commands.clone();
+            let commands: Vec<_> = ctx.input(|i| {
+                let mut ordinal = 0;
+                let mut commands = Vec::new();
+                for event in &i.events {
+                    let Some(command) = clipboard_command(event) else { continue };
+                    let this = ordinal;
+                    ordinal += 1;
+                    if retired.contains(&this) {
+                        continue;
+                    }
+                    if matches!(event, egui::Event::Paste(_)) && middle_navigation(i) {
+                        continue;
+                    }
+                    commands.push(command);
+                }
+                commands
+            });
+            for command in commands {
+                match command {
+                    ClipboardCommand::Copy => app.file_tree.copy_selection(false),
+                    ClipboardCommand::Cut => app.file_tree.copy_selection(true),
+                    ClipboardCommand::Paste => {
+                        if let Some(folder) = app.file_tree.target_folder() {
+                            app.file_tree.paste(&folder);
                         }
                     }
                 }
