@@ -1,0 +1,54 @@
+# Temporary branch-only diagnostic for INT-1454's edge-round action-matrix test.
+# It runs the exact test against the exact pushed tree. Delete before integration.
+name: INT-1454 edge-round diagnostic
+
+on:
+  push:
+    branches: [fix/int1454-edge-round-body]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: int1454-edge-round-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  edge-round:
+    name: edge_round_actions_keep_the_picked_body
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Size parallel compiles to the job's memory
+        run: scripts/ci/build-jobs.sh
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: native-tests
+          save-if: false
+      - name: Exact action-matrix test
+        run: |
+          mkdir -p evidence
+          set -o pipefail
+          cargo test -p solidcraft-cli --test action_matrix edge_round_actions_keep_the_picked_body --locked -- --exact --nocapture 2>&1 | tee evidence/edge-round.log
+      - name: Format
+        if: always()
+        run: cargo fmt --all -- --check 2>&1 | tee evidence/fmt.log
+      - name: Clippy the test target
+        if: always()
+        run: |
+          set -o pipefail
+          cargo clippy -p solidcraft-cli --test action_matrix --locked -- -D warnings 2>&1 | tee evidence/clippy.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: int1454-edge-round-diagnostic
+          path: evidence/
+          if-no-files-found: error
