@@ -19,6 +19,8 @@
  * The model service is in this process, on a port the system picks; the MCP server is this file
  * started again with `--mcp-server`. `--only` runs the cases whose name has the text; `--raw`
  * keeps every ACP message and every request to the model service, one folder per case.
+ * `--only "no-close control"` instead runs a text-only held stream without cancelling it.
+ * This control must fail because the server does not see the response close.
  *
  * Nothing of the person running it is used. The agent gets a new, empty data folder
  * (`MASTRA_APP_DATA_DIR`), which is also where Mastra keeps plan sign-ins, and the agent's entry
@@ -38,6 +40,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
@@ -84,15 +87,15 @@ const textOf = (message) => (typeof message?.content === "string" ? message.cont
  *   "run the command: <command>"                        asks for the command tool with that command;
  *   "write the file: <path>"                            asks for the file-writing tool, the text being MARK;
  *   "measure the part"                                  asks for the MCP server's `measure_part`;
- *   "answer slowly, then run the command: <command>"    streams the start of an answer and stops there
- *                                                       until `release()`, which goes on to that command;
+ *   "answer slowly, then run the command: <command>"    holds the answer open before the command;
+ *   "hold the answer open"                              holds a text-only answer open;
  *   a tool's result                                     says whether the result had MARK in it;
  *   anything else                                       a plain sentence.
  * `keep(file, value)` is told every request, for a run that keeps its raw output.
  */
 export function modelService({ keep = () => {}, status = () => 200 } = {}) {
-  const seen = { requests: 0, closedEarly: 0 };
-  const held = new Set();
+  const seen = { requests: 0 };
+  let heldResponse;
   const server = http.createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
@@ -147,16 +150,12 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
       // Mastra Code's own names for its tools, as it offers them (SDK 1.19.1).
       const commandTool = find(/^execute_command$/u);
       const writeTool = find(/^write_file$/u);
-      if (slow && commandTool) {
+      if ((slow && commandTool) || asked === "hold the answer open") {
+        heldResponse = response;
         response.writeHead(200, { "content-type": "text/event-stream" });
         response.write(chunk({ role: "assistant", content: "" }));
         response.write(chunk({ content: "The start of a slow answer. " }));
-        const entry = { release: () => call(commandTool, { command: slow[1].trim() }) };
-        held.add(entry);
-        // The agent ends the request when the turn is cancelled; then there is nothing to go on with.
-        response.on("close", () => {
-          if (held.delete(entry)) seen.closedEarly += 1;
-        });
+        // Only the client can end this response before teardown.
         return;
       }
       const [tool, args] = command && commandTool ? [commandTool, { command: command[1].trim() }] : write && writeTool ? [writeTool, { path: write[1].trim(), content: MARK }] : /measure the part/u.test(asked) && find(/measure_part/u) ? [find(/measure_part/u), { unit: "mm" }] : [];
@@ -168,17 +167,23 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
       say(command || write || /measure the part/u.test(asked) ? "No such tool was offered." : `Hello from the stand-in model (request ${seen.requests}).`);
     });
   });
-  const release = () => {
-    for (const entry of [...held]) {
-      held.delete(entry);
-      entry.release();
+  const waitForHeldClose = async (ms) => {
+    const response = heldResponse;
+    if (!response) throw new Error("the stand-in did not hold a response open");
+    // The server may already have seen 'close' before the ACP reply arrived.
+    if (response.closed) return;
+    try {
+      await once(response, "close", { signal: AbortSignal.timeout(ms) });
+    } catch (error) {
+      if (error.name !== "AbortError") throw error;
+      throw new Error(`the stand-in's held response did not close in ${ms} ms`);
     }
   };
   const close = () => {
     server.close();
     server.closeAllConnections();
   };
-  return new Promise((ready) => server.listen(0, "127.0.0.1", () => ready({ port: server.address().port, seen, release, close })));
+  return new Promise((ready) => server.listen(0, "127.0.0.1", () => ready({ port: server.address().port, seen, waitForHeldClose, close })));
 }
 
 // ---- Talking ACP with an agent ------------------------------------------------------------------
@@ -329,7 +334,6 @@ export function findFile(folder, name) {
   return null;
 }
 
-const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 const refuse = (message) => {
   const option = message.params?.options?.find((item) => /reject/u.test(item.kind));
   return option ? { outcome: { outcome: "selected", optionId: option.optionId } } : { outcome: { outcome: "cancelled" } };
@@ -429,14 +433,13 @@ async function main(args) {
     console.log(JSON.stringify(out));
   }
 
-  /** After a turn that was refused or cancelled: nothing is left behind, and the session answers the next message. */
+  /** After a terminal reply, check same-session recovery before looking for side effects. */
   const nothingLeft = async (context, file) => {
     const { out } = context;
-    await pause(1500);
+    out.next = await context.prompt("hi");
     out.markerFile = context.marker(file);
     out.projectUnchanged = context.unchanged();
-    out.next = await context.prompt("hi");
-    return out.markerFile === null && out.projectUnchanged && out.next.stop === "end_turn" && /stand-in model/u.test(out.next.answer);
+    return out.markerFile === null && out.projectUnchanged && out.next.stop === "end_turn" && out.next.askedStandIn && /stand-in model/u.test(out.next.answer);
   };
 
   await run("three turns", {}, async ({ out, prompt }) => {
@@ -466,7 +469,7 @@ async function main(args) {
   let refuseWrites = true;
   await run("a refused file write writes nothing, an allowed one writes", { permission: (message) => (refuseWrites ? refuse(message) : { outcome: { outcome: "selected", optionId: message.params.options.find((item) => /allow/u.test(item.kind))?.optionId } }) }, async (context) => {
     const refused = (context.out.refused = await context.prompt(`write the file: ${join(context.project, "refused-write.txt")}`));
-    if (!(refused.asked === 1 && (await nothingLeft(context, "refused-write.txt")))) return false;
+    if (!(refused.stop === "end_turn" && refused.asked === 1 && (await nothingLeft(context, "refused-write.txt")))) return false;
     refuseWrites = false;
     const allowed = (context.out.allowed = await context.prompt(`write the file: ${join(context.project, "allowed-write.txt")}`));
     const written = context.marker("allowed-write.txt");
@@ -486,19 +489,28 @@ async function main(args) {
     return reply.stopReason === "cancelled" && (await nothingLeft(context, "cancelled-command.txt"));
   });
 
-  await run("a turn cancelled while the answer streams", {}, async (context) => {
+  const noClose = only === "no-close control";
+  await run(noClose ? only : "a turn cancelled while the answer streams", {}, async (context) => {
     const from = context.agent.notes.length;
-    const turn = context.send(`answer slowly, then run the command: echo ${MARK} > cancelled-stream.txt`);
+    const turn = context.send(noClose ? "hold the answer open" : `answer slowly, then run the command: echo ${MARK} > cancelled-stream.txt`);
     await context.agent.waitFor((message) => message.params?.update?.sessionUpdate === "agent_message_chunk", 60000, from);
+    if (noClose) {
+      context.out.streamStarted = true;
+      await Promise.race([
+        context.service.waitForHeldClose(1500),
+        turn.then(() => { throw new Error("the open control prompt ended unexpectedly"); }),
+      ]);
+      return true;
+    }
     context.agent.notify("session/cancel", { sessionId: context.sessionId });
     const reply = await turn;
-    // Had the agent kept the model's request open, the model would now ask for the command.
     context.out.stop = reply.stopReason;
-    context.out.modelRequestEndedByAgent = context.service.seen.closedEarly;
-    context.service.release();
+    if (reply.stopReason !== "cancelled") return false;
+    await context.service.waitForHeldClose(10000);
+    context.out.modelRequestEndedByAgent = true;
     const left = await nothingLeft(context, "cancelled-stream.txt");
     context.out.permissionsAsked = context.agent.notes.slice(from).filter(isPermission).length;
-    return reply.stopReason === "cancelled" && context.out.permissionsAsked === 0 && left;
+    return context.out.permissionsAsked === 0 && left;
   });
 
   try {
