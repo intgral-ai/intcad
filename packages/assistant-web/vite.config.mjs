@@ -13,11 +13,48 @@ const here = dirname(fileURLToPath(import.meta.url));
 const mastra = resolve(here, process.env.MASTRA_CHECKOUT ?? '../../../../open-source/mastra');
 const ui = resolve(mastra, 'packages/playground-ui');
 
+// Mastra's model picker has three fixed English texts and no property for them. As the page is
+// built they are replaced by the page's own messages, which src/App.tsx sets (`assistantPickerText`);
+// the English stays as the fallback. Each text must be found exactly once in its file and all
+// three must be met, so a Mastra commit that words or moves one fails the build instead of
+// leaving a text untranslated.
+const PICKER_TEXTS = [
+  ['domains/llm/model-picker-panel.tsx', 'placeholder="Search models"', 'placeholder={globalThis.assistantPickerText?.search ?? "Search models"}'],
+  [
+    'domains/llm/model-picker-panel.tsx',
+    '<CommandEmpty>No matching model.</CommandEmpty>',
+    '<CommandEmpty>{globalThis.assistantPickerText?.none ?? "No matching model."}</CommandEmpty>',
+  ],
+  ['domains/llm/model-picker-provider-filter.tsx', '>\n        All\n      </Button>', '>\n        {globalThis.assistantPickerText?.all ?? "All"}\n      </Button>'],
+];
+
+function pickerTexts() {
+  const met = new Set();
+  return {
+    name: 'assistant-web-picker-texts',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.split('?')[0].replaceAll('\\', '/');
+      let out = code.replace(/\r\n/g, '\n');
+      for (const [index, [path, from, to]] of PICKER_TEXTS.entries()) {
+        if (!file.endsWith(`/playground-ui/src/${path}`)) continue;
+        if (out.split(from).length !== 2) this.error(`${path}: expected ${JSON.stringify(from)} exactly once (see PICKER_TEXTS in vite.config.mjs)`);
+        out = out.replace(from, to);
+        met.add(index);
+      }
+      return met.size && out !== code ? { code: out, map: null } : null;
+    },
+    buildEnd(error) {
+      if (!error && met.size !== PICKER_TEXTS.length) this.error(`the model picker's texts were met ${met.size} times, not ${PICKER_TEXTS.length} (see PICKER_TEXTS in vite.config.mjs)`);
+    },
+  };
+}
+
 export default defineConfig({
   root: here,
   base: './',
   cacheDir: resolve(here, '.vite-cache'),
-  plugins: [react(), tailwindcss()],
+  plugins: [pickerTexts(), react(), tailwindcss()],
   resolve: {
     alias: [{ find: /^@\//, replacement: `${ui}/src/` }],
   },

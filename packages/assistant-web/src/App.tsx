@@ -951,6 +951,11 @@ function effortOf(state: AssistantState) {
   return { options, value: option.currentValue, label: strings.effort || option.name, set: (value: string) => post({ type: 'config', id: option.id, value }) };
 }
 
+declare global {
+  // Read by Mastra's model picker in place of its fixed English (PICKER_TEXTS in vite.config.mjs).
+  var assistantPickerText: { search: string; none: string; all: string } | undefined;
+}
+
 /**
  * The built-in agent's model and its reasoning effort, at the composer's lower right, as Mastra
  * groups the two (its story "ThinkingLevel / Picker / Grouped With Model Picker"). The model is
@@ -981,6 +986,9 @@ function ProviderPicker({ state, connect, onConnections }: { state: AssistantSta
   const providers = inUse ? [inUse] : [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
   const effort = effortOf(state);
   const mark = (group: string) => <Mark name={names.get(group) ?? group} size={14} />;
+  // Mastra's picker has no property for its search box, its empty list and its "All" filter: the
+  // build puts these in their place (PICKER_TEXTS in vite.config.mjs).
+  globalThis.assistantPickerText = { search: strings.modelSearch, none: strings.modelNoMatch, all: strings.dfmAll };
   const model = (
     <MastraModelPicker
       providers={providers}

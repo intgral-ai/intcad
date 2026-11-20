@@ -526,7 +526,8 @@ everything again.
 The model is picked at the lower right of the message box, in Mastra's own model picker: the
 models of the connection in use, newest first, with a search box and a row that opens the
 Connections page. Another provider is taken with **Switch** on its row there; the model list then
-holds that provider's models.
+holds that provider's models. The picker's own words (its search box, its empty list and its **All**
+filter) are in the app's language.
 
 A tool the agent calls is a row of the conversation, drawn as Mastra draws it: the row names the
 tool and the argument worth a glance (a command, a path), and opened it shows the details, a
