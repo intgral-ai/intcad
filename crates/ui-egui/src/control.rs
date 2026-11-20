@@ -1101,6 +1101,9 @@ pub enum SettlementNoticeKind {
     /// The result was produced after commit authority was lost. Keep the effect, do not retry or
     /// charge silently; the host resumes the original operation's disposition.
     Deferred { evidence: ResultEvidence },
+    /// The outcome was finalized as UNKNOWN under the original id. The host may query or settle
+    /// it, but must never rerun the engineering operation.
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1175,6 +1178,11 @@ fn settle_result(
             }
         },
         SettlementAction::Commit(result) => match billing.commit(operation, result) {
+            Ok(_) if evidence == ResultEvidence::Unknown => {
+                let notice = SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::Unknown };
+                app.pending_settlements.push(notice.clone());
+                Some(notice)
+            }
             Ok(_) => None,
             Err(refusal) => {
                 let notice = failure(refusal.code);
@@ -1207,6 +1215,7 @@ fn settlement_notice_json(notice: &SettlementNotice) -> Value {
                 },
             }),
         ),
+        SettlementNoticeKind::Unknown => ("unknown_recovery", json!({})),
     };
     json!({
         "state": state,
@@ -1672,6 +1681,10 @@ fn controlled_batch(app: &mut SolveApp, steps: &[Value], p: &Value, req: &Contro
     } else if before_stamp.revision == after_stamp.revision {
         // Completed read-only/no-op steps changed no document state.
         req.local_no_effect.store(true, Ordering::Relaxed);
+    } else {
+        // A changed revision cannot prove retained content: unchanged parameter edits bump it too.
+        // Fail closed as Unknown under the original operation id instead of charging success.
+        req.local_unknown_effect.store(true, Ordering::Relaxed);
     }
     ok(reply)
 }
@@ -3838,8 +3851,8 @@ mod tests {
     }
 
     #[test]
-    fn a_controlled_batch_without_rollback_retains_and_charges() {
-        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+    fn a_controlled_batch_without_rollback_has_unknown_retention() {
+        let (mut app, _authority, commits, releases, last_commit) = app_with_commit_authority_result();
         let (mut req, _rx) = ControlRequest::trusted_control(
             "engine.batch",
             json!({"rollback":false,"commands":[
@@ -3851,9 +3864,39 @@ mod tests {
         let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
         assert_eq!(reply["result"]["rolled_back"], false, "{reply}");
         assert_eq!(reply["result"]["completed"], 1, "{reply}");
-        assert_eq!(commits.load(Ordering::Relaxed), 1, "a retained step is charged");
-        assert_eq!(releases.load(Ordering::Relaxed), 0, "retained work keeps its hold");
-        assert_eq!(bodies(&app), 1, "the first box remains");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "the uncertain outcome is finalized under its original id");
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            last_commit.lock().unwrap().as_ref(),
+            Some(&solidcraft_engine::entitlement::BillingResult::Unknown),
+            "changed revision alone cannot prove retained mutation"
+        );
+        assert_eq!(bodies(&app), 1, "the first box remains locally, but its charge is unknown");
+    }
+
+    #[test]
+    fn a_same_parameter_expression_then_failure_is_never_a_success_charge() {
+        let (mut app, _authority, commits, releases, last_commit) = app_with_commit_authority_result();
+        app.session.execute("parameters.add", &json!({"name":"width","expression":"10 mm"})).unwrap();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"rollback":false,"commands":[
+                {"command":"parameters.change","params":{"name":"width","expression":"10 mm"}},
+                {"command":"solid.sphere","params":{"radius":"not-a-number"}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(reply["result"]["rolled_back"], false, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "the unknown outcome is finalized once");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a changed revision is not a proven no-effect");
+        assert_eq!(
+            last_commit.lock().unwrap().as_ref(),
+            Some(&solidcraft_engine::entitlement::BillingResult::Unknown),
+            "same-parameter revision bump must not become a success charge"
+        );
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::Unknown), "the original operation is surfaced for recovery");
     }
 
     #[test]
@@ -4287,6 +4330,7 @@ mod tests {
         fail_commit: std::sync::Arc<AtomicBool>,
         fail_release: std::sync::Arc<AtomicBool>,
         grant_expires_ms: u64,
+        last_commit: std::sync::Arc<std::sync::Mutex<Option<solidcraft_engine::entitlement::BillingResult>>>,
     }
 
     impl BillingPort for SettlingBilling {
@@ -4309,6 +4353,9 @@ mod tests {
             result: solidcraft_engine::entitlement::BillingResult,
         ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
             self.commits.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut last) = self.last_commit.lock() {
+                *last = Some(result);
+            }
             if self.fail_commit.load(Ordering::Relaxed) {
                 return Err(Refusal::new(RefusalCode::AuthUnavailable, "the settlement transport failed"));
             }
@@ -4325,14 +4372,39 @@ mod tests {
     }
 
     fn app_with_commit_authority() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
-        app_with_commit_authority_grant(60_000)
+        let (app, authority, commits, releases, _last) = app_with_commit_authority_parts(60_000);
+        (app, authority, commits, releases)
+    }
+
+    fn app_with_commit_authority_result() -> (
+        SolveApp,
+        test_support::TestAuthority,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<std::sync::Mutex<Option<solidcraft_engine::entitlement::BillingResult>>>,
+    ) {
+        app_with_commit_authority_parts(60_000)
     }
 
     fn app_with_commit_authority_grant(
         grant_expires_ms: u64,
     ) -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        let (app, authority, commits, releases, _last) = app_with_commit_authority_parts(grant_expires_ms);
+        (app, authority, commits, releases)
+    }
+
+    fn app_with_commit_authority_parts(
+        grant_expires_ms: u64,
+    ) -> (
+        SolveApp,
+        test_support::TestAuthority,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<std::sync::Mutex<Option<solidcraft_engine::entitlement::BillingResult>>>,
+    ) {
         let commits = std::sync::Arc::new(AtomicUsize::new(0));
         let releases = std::sync::Arc::new(AtomicUsize::new(0));
+        let last_commit = std::sync::Arc::new(std::sync::Mutex::new(None));
         let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         app.install_billing(
@@ -4342,11 +4414,12 @@ mod tests {
                 fail_commit: std::sync::Arc::new(AtomicBool::new(false)),
                 fail_release: std::sync::Arc::new(AtomicBool::new(false)),
                 grant_expires_ms,
+                last_commit: std::sync::Arc::clone(&last_commit),
             }),
             verified_budget(),
         );
         authority.install(&mut app);
-        (app, authority, commits, releases)
+        (app, authority, commits, releases, last_commit)
     }
 
     fn app_with_failing_commit() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>) {
@@ -4361,6 +4434,7 @@ mod tests {
                 fail_commit: std::sync::Arc::new(AtomicBool::new(true)),
                 fail_release: std::sync::Arc::new(AtomicBool::new(false)),
                 grant_expires_ms: 60_000,
+                last_commit: std::sync::Arc::new(std::sync::Mutex::new(None)),
             }),
             verified_budget(),
         );
@@ -4380,6 +4454,7 @@ mod tests {
                 fail_commit: std::sync::Arc::new(AtomicBool::new(false)),
                 fail_release: std::sync::Arc::new(AtomicBool::new(true)),
                 grant_expires_ms: 60_000,
+                last_commit: std::sync::Arc::new(std::sync::Mutex::new(None)),
             }),
             verified_budget(),
         );
