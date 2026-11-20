@@ -23,8 +23,9 @@
  * Nothing of the person running it is used. The agent gets a new, empty data folder
  * (`MASTRA_APP_DATA_DIR`), which is also where Mastra keeps plan sign-ins, and the agent's entry
  * drops every provider key from its environment and takes a home of its own in that folder; no
- * keychain is read by the agent. Before the first message the run still checks that no key is
- * saved, no plan is signed in and the only models offered are the stand-in's, and stops if not.
+ * keychain is read by the agent. Before the first message the run chooses the stand-in's model
+ * itself, whatever model the session started on, and checks that no key is saved, no plan is
+ * signed in and the model in use is the stand-in's; it stops if not.
  * After each turn it checks that the stand-in was the one asked, and after each case that the
  * session made no vector store (the agent's sessions have none: agent/session.mjs). Mastra's
  * usage reporting is off: the agent's entry switches it off itself.
@@ -389,10 +390,14 @@ async function main(args) {
       await agent.call("initialize", { protocolVersion: 1, clientCapabilities: {} });
       const snapshot = await agent.call("_intcad/connections/setup", { keys: {}, custom: [{ name: "Stand-in", url: `http://127.0.0.1:${service.port}/v1`, apiKey: "stand-in", models: ["hello-1"] }] });
       const session = await agent.call("session/new", { cwd: project, mcpServers });
-      const models = session.configOptions?.find((option) => option.id === "model")?.options?.map((option) => option.value) ?? [];
+      // The run chooses the stand-in's model itself, so it does not depend on which model a new session starts on.
+      const model = () => session.configOptions?.find((option) => option.id === "model");
+      const standIn = model()?.options?.map((option) => option.value).find((value) => value.startsWith("mastracode/stand-in/"));
+      if (standIn && model().currentValue !== standIn) session.configOptions = (await agent.call("session/set_config_option", { sessionId: session.sessionId, configId: "model", value: standIn })).configOptions;
+      const inUse = model()?.currentValue ?? "";
       // Nothing is sent unless the stand-in is the only thing the agent could talk to.
-      const alone = snapshot.keys.every((key) => !key.saved) && snapshot.plans.every((plan) => plan.state === "out") && models.length > 0 && models.every((model) => model.startsWith("mastracode/stand-in/"));
-      if (!alone) throw new Error(`not alone with the stand-in (keys saved: ${snapshot.keys.filter((key) => key.saved).length}, plans signed in: ${snapshot.plans.filter((plan) => plan.state !== "out").length}, models: ${models.length}); nothing was sent`);
+      const alone = snapshot.keys.every((key) => !key.saved) && snapshot.plans.every((plan) => plan.state === "out") && inUse.startsWith("mastracode/stand-in/");
+      if (!alone) throw new Error(`not alone with the stand-in (keys saved: ${snapshot.keys.filter((key) => key.saved).length}, plans signed in: ${snapshot.plans.filter((plan) => plan.state !== "out").length}, model in use: ${inUse || "none"}); nothing was sent`);
       const send = (text) => agent.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text }] });
       const prompt = async (text) => {
         const [from, before] = [agent.notes.length, service.seen.requests];
