@@ -348,18 +348,25 @@ fn classify_reply(value: &Value) -> CallOutcome {
     if !is_error {
         return CallOutcome::Succeeded;
     }
+    // Host-local proof that this rejection or input refusal happened before dispatch. A remote
+    // tool reply never carries this marker.
+    if value.get("noEffect") == Some(&Value::Bool(true)) {
+        return CallOutcome::FailedNoEffect;
+    }
     let Some(body) = reply_body(value) else {
         let text = reply_text(value).unwrap_or_default();
         if text.starts_with("still running:") || text.contains("was lost while") {
             return CallOutcome::Unknown;
         }
-        let no_effect = text.starts_with("not run:") || text.contains("was not sent") || text.starts_with("the app is not running");
+        let no_effect = text.starts_with("not run:") || text.starts_with(crate::backend::NOT_RUNNING);
         return if no_effect { CallOutcome::FailedNoEffect } else { CallOutcome::Unknown };
     };
     if body.get("pending") == Some(&Value::Bool(true)) || body.get("outcomeUnknown") == Some(&Value::Bool(true)) {
         return CallOutcome::Unknown;
     }
-    // A typed proof that the request never reached the engine.
+    // A typed proof that the request never reached the engine. `noEffect` is only added by
+    // this host for rejections and input refusals it made before dispatch; a remote `Rejected`
+    // reply never carries it.
     if body.get("notSent") == Some(&Value::Bool(true)) {
         return CallOutcome::FailedNoEffect;
     }

@@ -14,6 +14,7 @@ use crate::account::{
     CallOutcome, MeteredReply, ToolCallContext, call_tool_with, expired_state_response, missing_operation_state, operation_for_review,
     record_review_operation, tool_is_free,
 };
+use crate::backend::NOT_RUNNING;
 use crate::{Backend, Headless};
 
 #[derive(Default)]
@@ -753,4 +754,121 @@ fn default_server_still_serves_a_free_helper() {
     let result = server_call(&mut server, "skill_reference", json!({"skill":"solidcraft-modeling"}));
     assert_ne!(result["isError"], true, "{result}");
     assert_eq!(calls.get(), 0);
+}
+
+struct RemoteRejectBackend {
+    calls: usize,
+}
+
+impl Backend for RemoteRejectBackend {
+    fn call(&mut self, _method: &str, _params: Value) -> Result<Value, String> {
+        self.calls = self.calls.saturating_add(1);
+        Err("remote call should not be reached".into())
+    }
+    fn call_guarded(&mut self, _method: &str, _params: Value) -> Result<crate::GuardedReply, crate::GuardedCallError> {
+        self.calls = self.calls.saturating_add(1);
+        Err(crate::GuardedCallError::Rejected {
+            message: "the remote app rejected the guarded request".into(),
+            error_details: json!({"code":"REMOTE_REJECTED","retry":"unknown"}),
+        })
+    }
+    fn has_ui(&self) -> bool {
+        false
+    }
+    fn describe(&self) -> String {
+        "inert remote rejection backend".into()
+    }
+}
+
+#[test]
+fn local_guarded_rejection_is_typed_no_effect_and_releases() {
+    let mut backend = ScriptedBackend { calls: 0, reply: Ok(json!({"ok":true})) };
+    let mut billing = CountingBilling::default();
+    let reply = call_tool_with(
+        &mut backend,
+        "execute",
+        &json!({
+            "command":"file.save",
+            "params":{},
+            "expectedDocument":{"documentId":"doc-A","revision":"0"},
+        }),
+        &context("op_mcp_local_reject_0001"),
+        &verified_budget(),
+        &mut billing,
+    );
+    assert!(reply.is_error());
+    assert_eq!(reply.value()["noEffect"], true, "{}", reply.value());
+    assert_eq!(reply_body(&reply)["error"]["code"], "UNSUPPORTED_CAPABILITY");
+    assert_eq!((billing.admits, billing.commits, billing.releases), (1, 0, 1), "a local pre-dispatch refusal is no effect");
+    assert_eq!(backend.calls, 0, "the local guard refused before any backend call");
+}
+
+#[test]
+fn remote_guarded_rejection_stays_unknown_without_no_effect_proof() {
+    let mut backend = RemoteRejectBackend { calls: 0 };
+    let mut billing = CountingBilling::default();
+    let reply = call_tool_with(
+        &mut backend,
+        "execute",
+        &json!({
+            "command":"solid.box",
+            "params":{"length":10,"width":10,"height":5},
+            "expectedDocument":{"documentId":"doc-A","revision":"0"},
+        }),
+        &context("op_mcp_remote_reject_0001"),
+        &verified_budget(),
+        &mut billing,
+    );
+    assert!(reply.is_error());
+    assert_eq!(*reply.outcome(), CallOutcome::Unknown, "a remote Rejected reply has no proof that no work ran");
+    assert_eq!(reply_body(&reply)["code"], "OP_OUTCOME_UNKNOWN");
+    assert_eq!((billing.admits, billing.commits, billing.releases), (1, 1, 0));
+    assert_eq!(backend.calls, 1);
+}
+
+#[test]
+fn confirmed_no_send_backend_error_releases() {
+    let mut backend = ScriptedBackend { calls: 0, reply: Err(format!("{NOT_RUNNING} 127.0.0.1:9: it is not running")) };
+    let mut billing = CountingBilling::default();
+    let reply = call_tool_with(
+        &mut backend,
+        "execute",
+        &json!({"command":"solid.box","params":{"length":10,"width":10,"height":5}}),
+        &context("op_mcp_no_send_0001"),
+        &verified_budget(),
+        &mut billing,
+    );
+    assert!(reply.is_error());
+    assert_eq!(*reply.outcome(), CallOutcome::FailedNoEffect);
+    assert_eq!((billing.admits, billing.commits, billing.releases), (1, 0, 1));
+    assert_eq!(backend.calls, 1);
+}
+
+#[test]
+fn free_helper_catalog_matches_the_mcp_tool_definitions() {
+    let defs = crate::tool_definitions();
+    let mut free: Vec<String> = defs
+        .iter()
+        .filter_map(|definition| definition.get("name").and_then(Value::as_str))
+        .filter(|name| tool_is_free(name))
+        .map(str::to_owned)
+        .collect();
+    free.sort();
+    assert_eq!(
+        free,
+        vec![
+            "compare_picture".to_string(),
+            "crash_reports".to_string(),
+            "describe_command".to_string(),
+            "list_commands".to_string(),
+            "pending".to_string(),
+            "running".to_string(),
+            "screenshot".to_string(),
+            "skill_reference".to_string(),
+        ],
+        "the free helper list must match the published MCP catalog"
+    );
+    for charged in ["execute", "batch", "measure", "inspect_design", "check_parameters", "save", "open"] {
+        assert!(!tool_is_free(charged), "{charged} is an Intcad logical operation and must be charged");
+    }
 }
