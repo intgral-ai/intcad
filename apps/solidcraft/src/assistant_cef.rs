@@ -25,10 +25,12 @@ use welding::{
     HostWgpuContext, ImportedTexture, KeyEvent, KeyEventKind, MouseAction, MouseButton, MouseEvent, RuntimeLease, WebRequestId,
 };
 
+use crate::assistant_cef_http::{
+    BrowserOwnerId, DocumentAuthority, DocumentId, FailedStartServer, NavigationIdentity, PageAssets, PageServer, Pictures, ServerProgress,
+};
+use crate::assistant_cef_lifecycle::{CloseProgress, Lifecycle, Phase, advance_owned_close};
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
-use crate::assistant_cef_http::{BrowserOwnerId, DocumentAuthority, DocumentId, FailedStartServer, NavigationIdentity, PageAssets, PageServer, Pictures, ServerProgress};
-use crate::assistant_cef_lifecycle::{advance_owned_close, CloseProgress, Lifecycle, Phase};
 
 #[path = "assistant_cef_frame.rs"]
 mod admission;
@@ -90,7 +92,9 @@ fn retain_failed_start(runtime: CefRuntime, server: Option<PageServer>, host: Op
     let owners = std::mem::ManuallyDrop::new(FailedOwners { _runtime: runtime, server, _host: host });
     FAILED_OWNERS.with(|slot| {
         if let Ok(mut slot) = slot.try_borrow_mut() {
-            if slot.is_none() { *slot = Some(owners); }
+            if slot.is_none() {
+                *slot = Some(owners);
+            }
             // A second bundle also remains non-dropping; never replace/release
             // an older owner if an impossible re-entrant failure is observed.
         }
@@ -141,18 +145,25 @@ fn quarantine(runtime: CefRuntime, producer: Option<Producer>) {
 }
 
 fn private_request_policy(
-    authority: Arc<DocumentAuthority>, owner: BrowserOwnerId, renewal: Arc<AtomicBool>,
+    authority: Arc<DocumentAuthority>,
+    owner: BrowserOwnerId,
+    renewal: Arc<AtomicBool>,
 ) -> welding::request_policy::RequestPolicy {
     use welding::request_policy::{RequestCheck, RequestDecision};
     Arc::new(move |check| match check {
         RequestCheck::BrowserCreated { browser_id } => {
-            if authority.bind_browser(owner, browser_id).is_ok() { RequestDecision::Allow } else { RequestDecision::Cancel }
+            if authority.bind_browser(owner, browser_id).is_ok() {
+                RequestDecision::Allow
+            } else {
+                RequestDecision::Cancel
+            }
         }
         RequestCheck::BeforeBrowse { browser_id, main_frame, target_url, is_redirect } => {
             if authority.check_inert_navigation(owner, browser_id, target_url, main_frame, is_redirect).is_ok() {
                 return RequestDecision::Allow;
             }
-            let result = authority.navigation_identity(owner, browser_id, target_url)
+            let result = authority
+                .navigation_identity(owner, browser_id, target_url)
                 .and_then(|identity| authority.claim_main_navigation(&identity, main_frame, is_redirect));
             match result {
                 Ok(_) => RequestDecision::Allow,
@@ -163,14 +174,14 @@ fn private_request_policy(
                 _ => RequestDecision::Cancel,
             }
         }
-        RequestCheck::Resource { browser_id, target_url, is_image } |
-        RequestCheck::Redirect { browser_id, target_url, is_image } => {
+        RequestCheck::Resource { browser_id, target_url, is_image } | RequestCheck::Redirect { browser_id, target_url, is_image } => {
             let authorized = authority.check_resource(owner, browser_id, target_url, is_image).is_ok();
             let asset = (is_image && (target_url.starts_with("data:image/") || target_url.starts_with("blob:")))
                 || target_url.contains("/picture/")
-                || target_url.rsplit('/').next().is_some_and(|name| {
-                    matches!(name, "ipc" | "ipc.js" | "intcad-plex.ttf") || crate::assistant_page::page_file(name).is_some()
-                });
+                || target_url
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|name| matches!(name, "ipc" | "ipc.js" | "intcad-plex.ttf") || crate::assistant_page::page_file(name).is_some());
             if authorized && asset { RequestDecision::Allow } else { RequestDecision::Cancel }
         }
     })
@@ -207,7 +218,9 @@ fn sandbox() -> CefSandboxMode {
 /// Preserve the full selected CAD descriptor; add only supported interop.
 #[cfg(any(target_os = "linux", test))]
 fn interop_descriptor(
-    base: &wgpu::DeviceDescriptor<'static>, backend: wgpu::Backend, supported: wgpu::Features,
+    base: &wgpu::DeviceDescriptor<'static>,
+    backend: wgpu::Backend,
+    supported: wgpu::Features,
 ) -> Option<wgpu::DeviceDescriptor<'static>> {
     if backend != wgpu::Backend::Vulkan || !supported.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
         return None;
@@ -227,14 +240,15 @@ const NATIVE_INTEROP_CLEANUP_VERIFIED: bool = false;
 /// the retained CAD setup. False leaves the selected CAD device untouched.
 #[cfg(target_os = "linux")]
 fn interop_device_admissible(features: wgpu::Features) -> bool {
-    NATIVE_INTEROP_CLEANUP_VERIFIED
-        && features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF)
+    NATIVE_INTEROP_CLEANUP_VERIFIED && features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF)
 }
 
 /// Install only on CAD's existing setup, after all its descriptor/adapter policy.
 /// Coarse eligibility asserts no display backend and initializes no CEF runtime.
 pub fn configure_interop(setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew, eligible: bool) -> Result<(), String> {
-    if !eligible { return Ok(()); }
+    if !eligible {
+        return Ok(());
+    }
     if setup.native_device_creator.is_some() {
         return Err("CEF interop refused: a native device factory is already installed".into());
     }
@@ -251,9 +265,7 @@ pub fn configure_interop(setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew, elig
             }
             // This call remains disabled until every failure path has native
             // proof of release before returning to ordinary CAD request_device.
-            welding::build_dmabuf_capable_device(adapter, &descriptor)
-                .map(Some)
-                .map_err(|_| "CEF interop device creation refused".into())
+            welding::build_dmabuf_capable_device(adapter, &descriptor).map(Some).map_err(|_| "CEF interop device creation refused".into())
         }));
     }
     Ok(())
@@ -735,7 +747,9 @@ impl CefAssistant {
     /// Make the browser and its page. `None` when CEF cannot start: the panel then says why
     /// instead of drawing a second conversation.
     pub fn new(render_state: &eframe::egui_wgpu::RenderState, backend: HostBackend) -> Option<Self> {
-        if FAILED_START.load(Ordering::Acquire) { return None; }
+        if FAILED_START.load(Ordering::Acquire) {
+            return None;
+        }
         #[cfg(target_os = "linux")]
         if !interop_device_admissible(render_state.device.features()) {
             emit_accelerated_limit(false, "selected CAD device interop is unavailable or native validation is blocked");
@@ -845,9 +859,12 @@ impl CefAssistant {
             }
         };
         let mut server = match PageServer::start(
-            PageAssets { resolve: crate::assistant_page::page_file,
-                font: include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Variable.ttf") },
-            pictures.clone(), authority.clone(),
+            PageAssets {
+                resolve: crate::assistant_page::page_file,
+                font: include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Variable.ttf"),
+            },
+            pictures.clone(),
+            authority.clone(),
         ) {
             Ok(server) => server,
             Err(_) => {
@@ -981,16 +998,18 @@ impl CefAssistant {
         }
         match self.server.take_batch() {
             Ok(batch) => {
-                if !batch.is_empty() { ctx.request_repaint(); }
-                for entry in batch {
-                let admitted = self.can_input();
-                let authority = self.authority.clone();
-                // Only the bounded business decision runs under this lease.
-                // CEF/native housekeeping is deliberately deferred below.
-                if let Ok(_lease) = authority.dispatch_lease(entry.document) {
-                    self.receive(solve, ctx, &entry.body, admitted);
+                if !batch.is_empty() {
+                    ctx.request_repaint();
                 }
-                self.apply_theme_ack();
+                for entry in batch {
+                    let admitted = self.can_input();
+                    let authority = self.authority.clone();
+                    // Only the bounded business decision runs under this lease.
+                    // CEF/native housekeeping is deliberately deferred below.
+                    if let Ok(_lease) = authority.dispatch_lease(entry.document) {
+                        self.receive(solve, ctx, &entry.body, admitted);
+                    }
+                    self.apply_theme_ack();
                 }
             }
             Err(_) => self.failed = true,
@@ -1022,7 +1041,9 @@ impl CefAssistant {
             }
             Some("theme-ready") => {
                 let ticket = value.get("ticket").and_then(serde_json::Value::as_str).and_then(ThemeTicket::parse);
-                if ticket.is_some() && self.pending_theme == ticket { self.deferred_theme_ack = ticket; }
+                if ticket.is_some() && self.pending_theme == ticket {
+                    self.deferred_theme_ack = ticket;
+                }
             }
             Some("focus") => {
                 self.focused = !self.input_quarantined && admitted && value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false);
@@ -1031,7 +1052,9 @@ impl CefAssistant {
                 let text = value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default();
                 let scope = text.starts_with("SCOPE ") && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE").is_some();
                 let dom = text.starts_with("DOM ") && std::env::var_os("SOLIDCRAFT_ASSISTANT_CEF_PROBE_DOM").is_some();
-                if scope || dom { note(&bounded_log_text(&crate::assistant_cef_http::sanitized_diagnostic(text))); }
+                if scope || dom {
+                    note(&bounded_log_text(&crate::assistant_cef_http::sanitized_diagnostic(text)));
+                }
             }
             _ => {
                 if self.admission.is_some() && !admitted {
@@ -1046,18 +1069,24 @@ impl CefAssistant {
 
     fn apply_theme_ack(&mut self) {
         let Some(ticket) = self.deferred_theme_ack.take() else { return };
-        if self.document.is_none_or(|id| !self.authority.permits(id)) || self.pending_theme != Some(ticket) { return; }
+        if self.document.is_none_or(|id| !self.authority.permits(id)) || self.pending_theme != Some(ticket) {
+            return;
+        }
         let Some(floors) = self.drain_frames() else { return };
         if self.admission.as_mut().is_none_or(|a| a.theme_applied(ticket, floors, Instant::now())) {
             self.pending_theme = None;
             let due = self.admission.as_mut().is_none_or(|a| a.retry_due(Instant::now()));
-            if due && self.producer.request_repaint().is_err() { note("CEF: themed repaint failed"); }
+            if due && self.producer.request_repaint().is_err() {
+                note("CEF: themed repaint failed");
+            }
         }
     }
 
     fn navigate_private(&mut self, ctx: &Context) -> Result<(), crate::assistant_cef_http::TransportError> {
         use crate::assistant_cef_http::TransportError;
-        if self.document.take().is_some() { self.authority.revoke(); }
+        if self.document.take().is_some() {
+            self.authority.revoke();
+        }
         self.new_page(ctx);
         let mut random = [0; 32];
         getrandom::fill(&mut random).map_err(|_| TransportError::Io)?;
@@ -1340,7 +1369,10 @@ impl CefAssistant {
         {
             self.test_reloaded = true;
             note("CEF: test reload");
-            if self.navigate_private(ctx).is_err() { self.failed = true; self.close(); }
+            if self.navigate_private(ctx).is_err() {
+                self.failed = true;
+                self.close();
+            }
         }
         // Test only: a fixed, in-source scope probe, once per page lifetime.
         if !self.scope_injected && self.page_ready && self.shown && std::env::var("SOLIDCRAFT_ASSISTANT_CEF_TEST_SCOPE").ok().as_deref() == Some("1")
@@ -1358,7 +1390,9 @@ impl CefAssistant {
     }
 
     fn sync_page(&mut self, solve: &mut SolveApp, ctx: &Context) {
-        if !self.page_ready || self.document.is_none_or(|id| !self.authority.permits(id)) { return; }
+        if !self.page_ready || self.document.is_none_or(|id| !self.authority.permits(id)) {
+            return;
+        }
         self.check_transport();
         // State is pushed with the app's own logic; the page is told when it changed.
         let state = web::state(solve);
@@ -1497,9 +1531,7 @@ impl CefAssistant {
             drop(host);
             drop(lease);
             quarantine(runtime, Some(producer));
-            return Err(welding::WeldError::BrowserOp(
-                "CEF close completion was not observed".into(),
-            ));
+            return Err(welding::WeldError::BrowserOp("CEF close completion was not observed".into()));
         }
         // Phase::Closed is only reached through advance_owned_close: it means the
         // matching platform completion was observed *and* every owned HTTP worker
@@ -1710,12 +1742,7 @@ impl CefAssistant {
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
-                    wgpu::TexelCopyTextureInfo {
-                        texture: copy,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
+                    wgpu::TexelCopyTextureInfo { texture: copy, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                     wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
                 );
                 self.host.queue.submit([encoder.finish()]);
@@ -1886,16 +1913,15 @@ impl CefAssistant {
             }
             if let CefSurfaceEvent::ScriptCompleted { id, result } = &event {
                 if self.transport_probe.is_some_and(|(pending, _)| pending == id.get()) {
-                    let current = self.transport_probe.take().is_some_and(|(_, document)| {
-                        self.document == Some(document) && self.authority.permits(document)
-                    });
-                    if current && result.as_ref().is_ok_and(|json| json == "true") { self.failed = true; }
+                    let current =
+                        self.transport_probe.take().is_some_and(|(_, document)| self.document == Some(document) && self.authority.permits(document));
+                    if current && result.as_ref().is_ok_and(|json| json == "true") {
+                        self.failed = true;
+                    }
                     self.probe_due = Instant::now() + Duration::from_millis(500);
                 }
                 if self.copy_request.is_some_and(|(pending, _)| pending == id.get()) {
-                    let current = self.copy_request.is_some_and(|(_, document)| {
-                        self.document == Some(document) && self.authority.permits(document)
-                    });
+                    let current = self.copy_request.is_some_and(|(_, document)| self.document == Some(document) && self.authority.permits(document));
                     self.copy_request = None;
                     if current && let Ok(json) = result {
                         let text = json_string(json);
@@ -1941,12 +1967,8 @@ impl CefAssistant {
         };
         let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
         ctx.output_mut(|output| {
-            output.ime = Some(egui::output::IMEOutput {
-                purpose: egui::IMEPurpose::Normal,
-                rect,
-                cursor_rect: rect,
-                should_interrupt_composition: false,
-            });
+            output.ime =
+                Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Normal, rect, cursor_rect: rect, should_interrupt_composition: false });
         });
         self.ime_output_active = true;
     }
@@ -2093,8 +2115,7 @@ impl CefAssistant {
                     self.queue.push(Queued::ImeCommit(text));
                 }
                 egui::Event::Ime(egui::ImeEvent::Preedit { text, active_range_chars }) if self.focused => {
-                    if !text.is_empty() {
-                    }
+                    if !text.is_empty() {}
                     if text.is_empty() {
                         self.queue.push(Queued::ImeCancel);
                         self.clear_ime_output(ctx);
@@ -2137,27 +2158,44 @@ impl CefAssistant {
     }
 
     fn request_copy(&mut self) {
-        if self.copy_request.is_some() { return; }
+        if self.copy_request.is_some() {
+            return;
+        }
         let Some(document) = self.document.filter(|id| self.authority.permits(*id)) else { return };
         let Some(id) = self.next_script_id() else { return };
-        if self.producer.request_script_result(
-            WebRequestId::new(id),
-            "(() => { const el = document.activeElement; \
+        if self
+            .producer
+            .request_script_result(
+                WebRequestId::new(id),
+                "(() => { const el = document.activeElement; \
              if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) { \
                return el.value.substring(el.selectionStart, el.selectionEnd); } \
              return window.getSelection().toString(); })()",
-        ).is_ok() { self.copy_request = Some((id, document)); }
+            )
+            .is_ok()
+        {
+            self.copy_request = Some((id, document));
+        }
     }
 
     fn next_script_id(&mut self) -> Option<u64> {
         match self.script_serial.checked_add(1) {
-            Some(id) => { self.script_serial = id; Some(id) }
-            None => { self.identity_exhausted = true; self.failed = true; None }
+            Some(id) => {
+                self.script_serial = id;
+                Some(id)
+            }
+            None => {
+                self.identity_exhausted = true;
+                self.failed = true;
+                None
+            }
         }
     }
 
     fn check_transport(&mut self) {
-        if self.transport_probe.is_some() || Instant::now() < self.probe_due { return; }
+        if self.transport_probe.is_some() || Instant::now() < self.probe_due {
+            return;
+        }
         let Some(document) = self.document.filter(|id| self.authority.permits(*id)) else { return };
         let Some(id) = self.next_script_id() else { return };
         self.probe_due = Instant::now() + Duration::from_millis(500);
@@ -2383,9 +2421,7 @@ impl CefAssistant {
         // from reversing a capture. Effective native scale stays unknown here.
         let requested = self.producer.requested_view_metrics().ok();
         let scale = requested.map(|metrics| metrics.scale).or_else(|| self.placement.map(|placement| placement.scale));
-        let dip = requested
-            .map(|metrics| serde_json::json!([metrics.dip[0], metrics.dip[1]]))
-            .unwrap_or(serde_json::Value::Null);
+        let dip = requested.map(|metrics| serde_json::json!([metrics.dip[0], metrics.dip[1]])).unwrap_or(serde_json::Value::Null);
         let requested_physical = requested.map(|metrics| serde_json::json!(metrics.physical)).unwrap_or(serde_json::Value::Null);
         let rect = |rect: FrameRect| serde_json::json!([rect.x, rect.y, rect.width, rect.height]);
         let (coded, visible, content, source, generation, capture_counter) = match metadata {
@@ -2749,8 +2785,7 @@ mod tests {
         if !adapter.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
             assert!(interop_descriptor(&base, wgpu::Backend::Vulkan, adapter.features()).is_none());
             // The unchanged base descriptor still opens the ordinary CAD device.
-            let (device, _queue) = pollster::block_on(adapter.request_device(&base))
-                .expect("the ordinary CAD device request stays available");
+            let (device, _queue) = pollster::block_on(adapter.request_device(&base)).expect("the ordinary CAD device request stays available");
             drop(device);
         }
     }
@@ -2804,8 +2839,7 @@ mod tests {
         let result = factory(&adapter, &base).expect("refusal is a clean fallback, not an error");
         assert!(result.is_none());
         // CAD then opens its ordinary device on the same adapter/descriptor.
-        let (device, _queue) = pollster::block_on(adapter.request_device(&base))
-            .expect("the ordinary CAD device request stays available");
+        let (device, _queue) = pollster::block_on(adapter.request_device(&base)).expect("the ordinary CAD device request stays available");
         drop(device);
         // Native release of an actually opened owner is covered by the four
         // ignored HAL boundary tests; this test never claims that proof.
@@ -2825,14 +2859,20 @@ mod tests {
             assert!(matches!(policy(RequestCheck::BeforeBrowse { browser_id, main_frame, target_url: &url, is_redirect }), RequestDecision::Cancel));
         }
         assert!(!authority.permits(document), "refusals cannot consume the permit");
-        assert!(matches!(policy(RequestCheck::BeforeBrowse { browser_id: 7, main_frame: true, target_url: &url, is_redirect: false }), RequestDecision::Allow));
+        assert!(matches!(
+            policy(RequestCheck::BeforeBrowse { browser_id: 7, main_frame: true, target_url: &url, is_redirect: false }),
+            RequestDecision::Allow
+        ));
         assert!(authority.permits(document));
         for target_url in ["https://outside.invalid/picture/key", "data:text/html,evil", "about:blank"] {
             assert!(matches!(policy(RequestCheck::Resource { browser_id: 7, target_url, is_image: false }), RequestDecision::Cancel));
         }
         let image = url.replace("index.html", "picture/key");
         assert!(matches!(policy(RequestCheck::Resource { browser_id: 7, target_url: &image, is_image: true }), RequestDecision::Allow));
-        assert!(matches!(policy(RequestCheck::Redirect { browser_id: 7, target_url: "https://outside.invalid/index.html", is_image: false }), RequestDecision::Cancel));
+        assert!(matches!(
+            policy(RequestCheck::Redirect { browser_id: 7, target_url: "https://outside.invalid/index.html", is_image: false }),
+            RequestDecision::Cancel
+        ));
     }
 
     #[test]

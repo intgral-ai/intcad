@@ -66,11 +66,7 @@ fn coordinator(dir: &Path) -> Result<Coordinator, StartupError> {
 }
 
 fn legacy_count(dir: &Path) -> u32 {
-    std::fs::read_to_string(dir.join(LEGACY_MARKER))
-        .ok()
-        .and_then(|text| text.trim().parse::<u32>().ok())
-        .unwrap_or(0)
-        .min(HISTORY_CAP)
+    std::fs::read_to_string(dir.join(LEGACY_MARKER)).ok().and_then(|text| text.trim().parse::<u32>().ok()).unwrap_or(0).min(HISTORY_CAP)
 }
 
 fn read_ledger(dir: &Path) -> Result<Option<u32>, StartupError> {
@@ -212,9 +208,7 @@ fn entry_paths(dir: &Path) -> Result<Vec<PathBuf>, StartupError> {
 
 fn unique_id() -> String {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("{}-{nanos}-{seq}", std::process::id())
 }

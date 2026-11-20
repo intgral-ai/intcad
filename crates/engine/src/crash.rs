@@ -479,19 +479,14 @@ fn finish_session(state: &State, journal: &mut Journal, allow_unlink_failure: bo
     }
     // Repeat-count persistence is preserved even when the unlink failed.
     persist_counts(state)?;
-    if unlink_error { return Err(CrashError::Io); }
+    if unlink_error {
+        return Err(CrashError::Io);
+    }
     Ok(())
 }
 
 fn persist_counts(state: &State) -> Result<(), CrashError> {
-    let counts: Vec<(u64, String)> = state
-        .known
-        .lock()
-        .map_err(|_| CrashError::Poisoned)?
-        .values()
-        .filter(|(n, _)| *n > 0)
-        .cloned()
-        .collect();
+    let counts: Vec<(u64, String)> = state.known.lock().map_err(|_| CrashError::Poisoned)?.values().filter(|(n, _)| *n > 0).cloned().collect();
     for (n, id) in counts {
         bump(&state.dir, &id, n);
     }

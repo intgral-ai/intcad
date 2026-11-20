@@ -586,7 +586,11 @@ struct StartOptions {
 }
 impl StartOptions {
     fn standard() -> Self {
-        Self { worker_limit: WORKERS, #[cfg(test)] finish_gate: None }
+        Self {
+            worker_limit: WORKERS,
+            #[cfg(test)]
+            finish_gate: None,
+        }
     }
     #[cfg(test)]
     fn partial(worker_limit: usize, gate: Arc<WorkerGate>) -> Self {
@@ -613,7 +617,11 @@ impl PageServer {
         Self::start_with(assets, pictures, authority, StartOptions::standard())
     }
     fn start_with(assets: PageAssets, pictures: Pictures, authority: Arc<DocumentAuthority>, options: StartOptions) -> std::io::Result<Self> {
-        let StartOptions { worker_limit, #[cfg(test)] finish_gate } = options;
+        let StartOptions {
+            worker_limit,
+            #[cfg(test)]
+            finish_gate,
+        } = options;
         let (_, raw) = (assets.resolve)("index.html").ok_or_else(|| std::io::Error::other("Assistant index unavailable"))?;
         let index = Arc::new(index_with_bridge(raw).map_err(std::io::Error::other)?);
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -669,7 +677,13 @@ impl PageServer {
         Ok(server)
     }
     #[cfg(test)]
-    fn start_partial(assets: PageAssets, pictures: Pictures, authority: Arc<DocumentAuthority>, worker_limit: usize, gate: Arc<WorkerGate>) -> std::io::Result<Self> {
+    fn start_partial(
+        assets: PageAssets,
+        pictures: Pictures,
+        authority: Arc<DocumentAuthority>,
+        worker_limit: usize,
+        gate: Arc<WorkerGate>,
+    ) -> std::io::Result<Self> {
         Self::start_with(assets, pictures, authority, StartOptions::partial(worker_limit, gate))
     }
     pub fn port(&self) -> u16 {

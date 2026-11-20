@@ -243,9 +243,7 @@ impl eframe::App for App {
         self.solve.session.crash_journal = solidcraft_engine::crash::enabled();
         // The OS closing the window (Alt+F4, Cmd+Q, the window manager): ask about unsaved
         // designs first; the window closes once they are answered (`quit_requested`).
-        if ctx.input(|i| i.viewport().close_requested())
-            && !solidcraft_ui_egui::documents::quit_committed(&self.solve)
-        {
+        if ctx.input(|i| i.viewport().close_requested()) && !solidcraft_ui_egui::documents::quit_committed(&self.solve) {
             // Every direct OS Close is intercepted until the committed receipt, including a
             // second request while a staged quit is already waiting for the host barrier.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -318,8 +316,7 @@ impl eframe::App for App {
         if !self.solve.quit_requested
             && matches!(
                 self.solve.host_close_state(),
-                solidcraft_ui_egui::documents::HostCloseState::Closing
-                    | solidcraft_ui_egui::documents::HostCloseState::Quarantined
+                solidcraft_ui_egui::documents::HostCloseState::Closing | solidcraft_ui_egui::documents::HostCloseState::Quarantined
             )
             && let Some(cef) = self.assistant_cef.as_mut()
             && cef.poll_close() == crate::assistant_cef_lifecycle::CloseProgress::Complete
@@ -378,10 +375,7 @@ impl eframe::App for App {
                         cef.edit_text(redo);
                     }
                 }
-                let editing = self
-                    .assistant_cef
-                    .as_ref()
-                    .is_some_and(assistant_cef::CefAssistant::focused);
+                let editing = self.assistant_cef.as_ref().is_some_and(assistant_cef::CefAssistant::focused);
                 menu.set_text_editing(&self.solve, editing);
             }
         }
@@ -395,16 +389,12 @@ impl eframe::App for App {
         }
         // All mutable UI work is done. Commit the staged quit once and take its receipt
         // for the single final Close; nothing after this may mutate the app.
-        if self.solve.quit_requested
-            && self.solve.host_close_state() == solidcraft_ui_egui::documents::HostCloseState::Ready
-        {
+        if self.solve.quit_requested && self.solve.host_close_state() == solidcraft_ui_egui::documents::HostCloseState::Ready {
             match solidcraft_ui_egui::documents::finish_quit(&mut self.solve) {
                 Ok(_commit) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
                 // A lost GPU cannot draw or ask: the existing forced restart closes with
                 // recovery copies, not with a fabricated quit consent.
-                Err(solidcraft_ui_egui::documents::QuitIntentError::Missing)
-                    if self.gpu.as_ref().is_some_and(|gpu| gpu.lost_at.is_some()) =>
-                {
+                Err(solidcraft_ui_egui::documents::QuitIntentError::Missing) if self.gpu.as_ref().is_some_and(|gpu| gpu.lost_at.is_some()) => {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 Err(error) => log::debug!("quit not committed: {error}"),
@@ -1559,10 +1549,7 @@ fn main() -> eframe::Result {
                     Some(cef)
                 }
                 None => {
-                    solidcraft_ui_egui::agent_chat::web::set_problem(
-                        &mut app,
-                        solidcraft_ui_egui::agent_chat::web::Problem::Failed,
-                    );
+                    solidcraft_ui_egui::agent_chat::web::set_problem(&mut app, solidcraft_ui_egui::agent_chat::web::Problem::Failed);
                     None
                 }
             };

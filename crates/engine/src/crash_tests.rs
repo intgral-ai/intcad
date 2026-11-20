@@ -728,10 +728,7 @@ fn header() -> Value {
 #[test]
 fn only_an_otherwise_empty_pre_document_journal_is_a_controlled_cancel() {
     let d = fresh_dir("terminal-read");
-    let terminal = journal_file(
-        &d,
-        &[header(), json!({"base":"new"}), json!({"phase":"window","ms":5}), json!({"controlled_startup_cancel":true})],
-    );
+    let terminal = journal_file(&d, &[header(), json!({"base":"new"}), json!({"phase":"window","ms":5}), json!({"controlled_startup_cancel":true})]);
     let read = read_journal(&terminal);
     assert!(read.controlled_cancel);
     assert!(read.pre_document_empty(), "a retired pre-document journal is empty of design evidence");
@@ -752,10 +749,7 @@ fn only_an_otherwise_empty_pre_document_journal_is_a_controlled_cancel() {
     let running = journal_file(&d, &[header(), json!({"base":"new"}), json!({"phase":"running","ms":9}), json!({"controlled_startup_cancel":true})]);
     assert!(!read_journal(&running).pre_document_empty(), "RUNNING ends the pre-document window");
 
-    let filed = journal_file(
-        &d,
-        &[header(), json!({"base":{"file":"/tmp/design.solidcraft"}}), json!({"controlled_startup_cancel":true})],
-    );
+    let filed = journal_file(&d, &[header(), json!({"base":{"file":"/tmp/design.solidcraft"}}), json!({"controlled_startup_cancel":true})]);
     assert!(!read_journal(&filed).pre_document_empty(), "an opened design is not pre-document");
     assert!(!read_journal(&filed).header.is_null());
 
@@ -767,10 +761,7 @@ fn only_an_otherwise_empty_pre_document_journal_is_a_controlled_cancel() {
 #[test]
 fn the_next_install_skips_a_terminal_cancel_but_reports_genuine_evidence() {
     let d = fresh_dir("terminal-install");
-    let terminal = journal_file(
-        &d,
-        &[header(), json!({"base":"new"}), json!({"phase":"window","ms":4}), json!({"controlled_startup_cancel":true})],
-    );
+    let terminal = journal_file(&d, &[header(), json!({"base":"new"}), json!({"phase":"window","ms":4}), json!({"controlled_startup_cancel":true})]);
     unclean_exit(&d, &build(), &terminal);
     assert!(list(&d).is_empty(), "an otherwise-empty terminal cancel is not an unclean exit");
     let _ = fs::remove_file(&terminal);

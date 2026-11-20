@@ -802,13 +802,7 @@ pub fn request_quit(app: &mut SolveApp) {
         app.docs.quitting = Some(Vec::new());
     }
     if app.docs.quit_intent.is_none() {
-        match capture_quit_intent(app, |_, session| {
-            if session.is_dirty() {
-                QuitDecision::Pending
-            } else {
-                QuitDecision::KeepSaved
-            }
-        }) {
+        match capture_quit_intent(app, |_, session| if session.is_dirty() { QuitDecision::Pending } else { QuitDecision::KeepSaved }) {
             Ok(intent) => app.docs.quit_intent = Some(intent),
             Err(_) => {
                 // No consent token means no quit: do not prompt or discard anything.
@@ -841,13 +835,7 @@ fn quit_step(app: &mut SolveApp) {
             // barrier is clear and every approved snapshot still matches.
             let mut intent = match app.docs.quit_intent.take() {
                 Some(intent) => intent,
-                None => match capture_quit_intent(app, |tab, _| {
-                    if skip.contains(&tab) {
-                        QuitDecision::Discard
-                    } else {
-                        QuitDecision::KeepSaved
-                    }
-                }) {
+                None => match capture_quit_intent(app, |tab, _| if skip.contains(&tab) { QuitDecision::Discard } else { QuitDecision::KeepSaved }) {
                     Ok(intent) => intent,
                     Err(_) => {
                         app.docs.quitting = None;
@@ -859,8 +847,7 @@ fn quit_step(app: &mut SolveApp) {
                 cancel_quit(app);
                 return;
             }
-            let discards: Vec<usize> =
-                intent.entries.iter().filter(|entry| entry.decision == QuitDecision::Discard).map(|entry| entry.tab).collect();
+            let discards: Vec<usize> = intent.entries.iter().filter(|entry| entry.decision == QuitDecision::Discard).map(|entry| entry.tab).collect();
             intent.stage = QuitStage::Staged;
             app.docs.quit_intent = Some(intent);
             app.docs.pending_quit_discard = Some(discards);
@@ -1127,14 +1114,9 @@ pub fn request_quit_programmatic(app: &mut SolveApp, force: bool) -> Result<(), 
     if !force && dirty.iter().any(|dirty| *dirty) {
         return Err("quit refused: unsaved-documents");
     }
-    let mut intent = capture_quit_intent(app, |tab, _| {
-        if dirty.get(tab).copied().unwrap_or(false) {
-            QuitDecision::Discard
-        } else {
-            QuitDecision::KeepSaved
-        }
-    })
-    .map_err(|_| "quit refused: document-operation-pending")?;
+    let mut intent =
+        capture_quit_intent(app, |tab, _| if dirty.get(tab).copied().unwrap_or(false) { QuitDecision::Discard } else { QuitDecision::KeepSaved })
+            .map_err(|_| "quit refused: document-operation-pending")?;
     intent.stage = QuitStage::Staged;
     let discards: Vec<usize> = intent.entries.iter().filter(|e| e.decision == QuitDecision::Discard).map(|e| e.tab).collect();
     app.docs.quit_intent = Some(intent);
@@ -1719,8 +1701,7 @@ pub(crate) fn saved_for_close(app: &mut SolveApp) {
             let snapshot = open_sessions(app).get(target).and_then(|session| session.quit_snapshot().ok());
             match snapshot {
                 Some(snapshot) => {
-                    if let Some(entry) =
-                        app.docs.quit_intent.as_mut().and_then(|intent| intent.entries.iter_mut().find(|entry| entry.tab == target))
+                    if let Some(entry) = app.docs.quit_intent.as_mut().and_then(|intent| intent.entries.iter_mut().find(|entry| entry.tab == target))
                         && entry.decision == QuitDecision::Pending
                     {
                         entry.snapshot = snapshot;
