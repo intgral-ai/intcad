@@ -33,6 +33,16 @@ from pathlib import Path
 
 REPORT_STATUSES = ("PASS", "FAIL", "BLOCKED", "NOT_RUN")
 DEFAULT_SCALES = (1.0, 1.25, 1.5, 2.0)
+# Minimum Linux CEF 154 runtime resources that a complete bundle must inventory.
+# The authenticated distribution's full bundle and optional sandbox/GPU payload
+# still need independent origin evidence; these names are not such evidence.
+LINUX_MANDATORY_RESOURCE_FILES = (
+    "icudtl.dat",
+    "resources.pak",
+    "chrome_100_percent.pak",
+    "chrome_200_percent.pak",
+)
+LINUX_V8_SNAPSHOT_PREFIXES = ("v8_context_snapshot", "snapshot_blob")
 TAG_FRAME = "CEF_FRAME"
 TAG_RUNTIME = "CEF_RUNTIME"
 TAG_BROWSER = "CEF_BROWSER"
@@ -517,6 +527,35 @@ def _manifest_artifact_problem(entry, base):
     return None
 
 
+def _linux_mandatory_resource_problems(resources, base, root):
+    """Check the Linux CEF 154 minima in the *inventory*, not only on disk."""
+    if not isinstance(resources, list):
+        return ["resource inventory is not a list"]
+    relative = []
+    for entry in resources:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            continue
+        path = Path(entry["path"])
+        resolved = path if path.is_absolute() else (base / path)
+        try:
+            rel = resolved.resolve().relative_to(root)
+        except (OSError, ValueError):
+            # An escaped resource already FAILs resource_origin; counting it as
+            # present would hide the escape, so skip it here.
+            continue
+        relative.append(rel)
+    problems = [
+        f"missing mandatory Linux resource {name}"
+        for name in LINUX_MANDATORY_RESOURCE_FILES
+        if not any(rel == Path(name) for rel in relative)
+    ]
+    if not any(rel.parts and rel.parts[0] == "locales" and rel.suffix == ".pak" for rel in relative):
+        problems.append("missing mandatory Linux locale pak under locales/")
+    if not any(rel.suffix == ".bin" and rel.name.startswith(LINUX_V8_SNAPSHOT_PREFIXES) for rel in relative):
+        problems.append("missing mandatory Linux V8 snapshot blob")
+    return problems
+
+
 def validate_manifest(manifest, base_dir):
     """Check whole-file hashes, resources and the complete built-in theme set."""
     checks = []
@@ -559,12 +598,20 @@ def validate_manifest(manifest, base_dir):
 
     # Resource origin: every resource must stay inside the declared CEF root (or
     # the manifest's own directory) and the inventory cannot be empty.
-    if not isinstance(resources, list) or not resources:
+    root_problem = None
+    try:
+        root = Path(manifest.get("cef_root", base))
+        if not root.is_absolute():
+            root = base / root
+        root = root.resolve()
+    except (TypeError, ValueError, OSError) as error:
+        root = base.resolve()
+        root_problem = f"cef_root is not a usable path: {error}"
+    if root_problem is not None:
+        checks.append(_check("resource_origin", "FAIL", root_problem))
+    elif not isinstance(resources, list) or not resources:
         checks.append(_check("resource_inventory", "FAIL", "missing mandatory CEF resources"))
     else:
-        root = Path(manifest.get("cef_root", base)).resolve()
-        if not root.is_absolute():
-            root = (base / root).resolve()
         escapes = []
         for entry in resources:
             if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
@@ -580,16 +627,46 @@ def validate_manifest(manifest, base_dir):
                 escapes.append(f"unknown resource origin for {entry['path']}")
         checks.append(_check("resource_origin", "FAIL" if escapes else "PASS", "; ".join(escapes[:4]) or "resources stay under their declared CEF root"))
 
-    # A self-consistent manifest is not authenticated origin. Without an explicit
-    # authenticated receipt the origin remains BLOCKED, never PASS.
-    origin = manifest.get("origin")
-    if not isinstance(origin, dict) or origin.get("authenticated") is not True:
-        checks.append(_check("authenticated_origin", "BLOCKED", "no authenticated artifact origin receipt"))
-    elif not _bounded_string(origin.get("source"), 160) or not isinstance(origin.get("sha256"), str) or len(origin["sha256"]) != 64:
-        checks.append(_check("authenticated_origin", "FAIL", "authenticated origin receipt is malformed"))
+    # Partial inventories are a known mismatch for a declared Linux bundle.
+    # A missing platform is unknown, not a mismatch, so it stays BLOCKED.
+    platform = manifest.get("platform")
+    if root_problem is not None:
+        checks.append(_check("mandatory_resources", "FAIL", root_problem))
+    elif platform is None:
+        checks.append(_check("mandatory_resources", "BLOCKED", "platform is not declared; the mandatory resource set is unknown"))
+    elif platform != "linux":
+        checks.append(_check("mandatory_resources", "BLOCKED", f"mandatory resource set for platform {platform!r} is not established offline"))
     else:
-        checks.append(_check("authenticated_origin", "PASS", f"origin {origin['source']} recorded"))
-    return _report(checks)
+        problems = _linux_mandatory_resource_problems(resources, base, root)
+        checks.append(_check("mandatory_resources", "FAIL" if problems else "PASS", "; ".join(problems[:4]) or "Linux CEF 154 mandatory resources are inventoried"))
+
+    # A self-consistent manifest is not authenticated origin. A manifest-supplied
+    # `authenticated` boolean is caller self-attestation, not independent proof.
+    # The plan has no approved offline trust authority, so a plausible receipt
+    # stays BLOCKED; only a malformed receipt is a known mismatch (FAIL).
+    origin = manifest.get("origin")
+    if not isinstance(origin, dict):
+        checks.append(_check("authenticated_origin", "BLOCKED", "no artifact origin receipt"))
+    else:
+        authenticated = origin.get("authenticated")
+        if authenticated is not None and not isinstance(authenticated, bool):
+            checks.append(_check("authenticated_origin", "FAIL", "authenticated origin receipt is malformed"))
+        elif authenticated is not True:
+            # Absent or explicitly false is unknown, not a known mismatch.
+            checks.append(_check("authenticated_origin", "BLOCKED", "origin receipt does not claim authentication"))
+        elif (
+            not _bounded_string(origin.get("source"), 160)
+            or not isinstance(origin.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", origin["sha256"]) is None
+        ):
+            checks.append(_check("authenticated_origin", "FAIL", "authenticated origin receipt is malformed"))
+        else:
+            checks.append(_check("authenticated_origin", "BLOCKED", "origin receipt is self-asserted; independent authentication is unavailable"))
+    limitations = [
+        "The authenticated distribution's whole bundle and required sandbox/GPU binaries cannot be verified offline.",
+        "The mandatory resource list is a minimum inventory check, not proof the files match an authenticated origin.",
+    ]
+    return _report(checks, limitations=limitations)
 
 
 def parse_stat_line(line):
@@ -789,6 +866,13 @@ def _assert_status(report, wanted):
         raise AssertionError(f"expected {wanted}, got {report.get('status')}: {report.get('checks')}")
 
 
+def _check_status(report, name):
+    for check in report.get("checks", []):
+        if check.get("name") == name:
+            return check.get("status")
+    return None
+
+
 def _test_complete_receipts_pass():
     report = validate_receipts(_fixture_records(), DEFAULT_SCALES)
     _assert_status(report, "PASS")
@@ -863,16 +947,49 @@ def _complete_manifest(base, artifacts):
     resource.write_bytes(b"cef resource")
     artifacts.append({"path": "app.bin", "sha256": _sha256_file(app), "size": app.stat().st_size, "role": "app"})
     artifacts.append({"path": "cef/libcef.so", "sha256": _sha256_file(resource), "size": resource.stat().st_size, "role": "supplied-libcef"})
-    return {
-        "themes": theme_ids_from_source(),
-        "artifacts": artifacts,
-        "resources": [{
-            "path": "cef/libcef.so",
-            "sha256": _sha256_file(resource),
-            "size": resource.stat().st_size,
+    resources = [{
+        "path": "cef/libcef.so",
+        "sha256": _sha256_file(resource),
+        "size": resource.stat().st_size,
+        "role": "cef-resource",
+        "origin": "cef-root",
+    }]
+    # The Linux CEF 154 runtime minima named by the repair addendum. The full
+    # bundle and sandbox/GPU requirements still depend on authenticated origin.
+    mandatory = {
+        "icudtl.dat": b"icu fixture",
+        "resources.pak": b"resources fixture",
+        "chrome_100_percent.pak": b"100 percent fixture",
+        "chrome_200_percent.pak": b"200 percent fixture",
+        "v8_context_snapshot.bin": b"v8 fixture",
+    }
+    for name, payload in mandatory.items():
+        path = resources_dir / name
+        path.write_bytes(payload)
+        resources.append({
+            "path": f"cef/{name}",
+            "sha256": _sha256_file(path),
+            "size": path.stat().st_size,
             "role": "cef-resource",
             "origin": "cef-root",
-        }],
+        })
+    locales = resources_dir / "locales"
+    locales.mkdir(exist_ok=True)
+    locale = locales / "en-US.pak"
+    locale.write_bytes(b"locale fixture")
+    resources.append({
+        "path": "cef/locales/en-US.pak",
+        "sha256": _sha256_file(locale),
+        "size": locale.stat().st_size,
+        "role": "cef-resource",
+        "origin": "cef-root",
+    })
+    return {
+        "themes": theme_ids_from_source(),
+        "platform": "linux",
+        "cef_root": "cef",
+        "artifacts": artifacts,
+        "resources": resources,
         "origin": {"authenticated": True, "source": "stock-cef-fixture", "sha256": "0" * 64},
     }
 
@@ -889,8 +1006,9 @@ def _test_altered_whole_file_hash_with_same_text_hash_fails():
             "text_sha256": _normalised_text_sha256(artifact),
             "role": "bundle",
         }])
-        if validate_manifest(manifest, base)["status"] != "PASS":
-            raise AssertionError("unchanged manifest should pass")
+        report = validate_manifest(manifest, base)
+        if report["status"] == "FAIL" or _check_status(report, "artifact_hashes") != "PASS":
+            raise AssertionError(f"unchanged manifest should not FAIL on hashes: {report['checks']}")
         artifact.write_text("alpha ", encoding="utf-8")
         if _normalised_text_sha256(artifact) != manifest["artifacts"][0]["text_sha256"]:
             raise AssertionError("fixture did not keep the normalised text hash equal")
@@ -948,6 +1066,73 @@ def _test_missing_authenticated_origin_is_blocked():
         _assert_status(report, "BLOCKED")
         if not any(check["name"] == "authenticated_origin" and check["status"] == "BLOCKED" for check in report["checks"]):
             raise AssertionError("missing origin must BLOCK")
+
+
+def _test_plausible_self_asserted_origin_is_blocked():
+    with tempfile.TemporaryDirectory(prefix="native-density-self-origin-") as tmp:
+        base = Path(tmp)
+        manifest = _complete_manifest(base, [])
+        report = validate_manifest(manifest, base)
+        # No offline independent trust receipt exists. A manifest-supplied
+        # authenticated=true is self-attestation, never independent origin.
+        _assert_status(report, "BLOCKED")
+        if _check_status(report, "authenticated_origin") != "BLOCKED":
+            raise AssertionError("a plausible self-asserted origin must remain BLOCKED")
+
+
+def _test_malformed_self_asserted_origin_fails():
+    with tempfile.TemporaryDirectory(prefix="native-density-malformed-origin-") as tmp:
+        base = Path(tmp)
+        manifest = _complete_manifest(base, [])
+        manifest["origin"]["source"] = "x" * 200
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+        manifest = _complete_manifest(base, [])
+        manifest["origin"]["sha256"] = "not-a-64-byte-hash"
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+        manifest = _complete_manifest(base, [])
+        manifest["origin"]["sha256"] = "z" * 64
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+        manifest = _complete_manifest(base, [])
+        manifest["origin"]["authenticated"] = "true"
+        _assert_status(validate_manifest(manifest, base), "FAIL")
+        manifest = _complete_manifest(base, [])
+        manifest["origin"] = {"authenticated": False}
+        report = validate_manifest(manifest, base)
+        _assert_status(report, "BLOCKED")
+        if _check_status(report, "authenticated_origin") != "BLOCKED":
+            raise AssertionError("an unauthenticated origin must BLOCK, not FAIL")
+
+
+def _test_known_missing_linux_mandatory_resource_fails():
+    with tempfile.TemporaryDirectory(prefix="native-density-partial-") as tmp:
+        base = Path(tmp)
+        manifest = _complete_manifest(base, [])
+        # A partial inventory that omits a mandatory Linux 154 resource is a
+        # known mismatch, not unknown origin evidence.
+        manifest["resources"] = [
+            entry for entry in manifest["resources"]
+            if entry.get("path") != "cef/icudtl.dat"
+        ]
+        report = validate_manifest(manifest, base)
+        _assert_status(report, "FAIL")
+        if _check_status(report, "mandatory_resources") != "FAIL":
+            raise AssertionError("a known missing Linux mandatory resource must FAIL")
+        if "icudtl.dat" not in " ".join(
+            check["detail"] for check in report["checks"]
+            if check["name"] == "mandatory_resources"
+        ):
+            raise AssertionError("the missing mandatory resource should be named")
+
+
+def _test_unknown_platform_mandatory_set_is_blocked():
+    with tempfile.TemporaryDirectory(prefix="native-density-platform-") as tmp:
+        base = Path(tmp)
+        manifest = _complete_manifest(base, [])
+        manifest.pop("platform")
+        report = validate_manifest(manifest, base)
+        if _check_status(report, "mandatory_resources") != "BLOCKED":
+            raise AssertionError("an unknown platform cannot be a known mismatch")
+        _assert_status(report, "BLOCKED")
 
 
 def _test_supplied_app_must_match_pid_executable():
@@ -1272,8 +1457,12 @@ def _test_offline_cli_round_trip():
         report_path = base / "report.json"
         code = main(["--check-log", str(log), "--manifest", str(manifest_path), "--out", str(report_path)])
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        if code != 0 or report.get("status") != "PASS":
-            raise AssertionError(f"offline CLI did not PASS: exit={code} status={report.get('status')} {report.get('checks')}")
+        # A complete artifact manifest still cannot PASS offline: its origin is
+        # self-asserted and must stay BLOCKED until independent trust exists.
+        if code != 2 or report.get("status") != "BLOCKED":
+            raise AssertionError(f"offline CLI must stay BLOCKED without independent origin: exit={code} status={report.get('status')} {report.get('checks')}")
+        if _check_status(report, "authenticated_origin") != "BLOCKED":
+            raise AssertionError("offline CLI must report a BLOCKED authenticated_origin")
         records = _fixture_records((1.0, 1.25, 1.5))
         log.write_text("".join(
             f"CEF_TAG {record['tag']} {json.dumps(record['data'], sort_keys=True)}\n"
@@ -1320,6 +1509,10 @@ def _run_self_tests():
         _test_empty_inventory_and_missing_roles_never_pass,
         _test_resource_escape_or_origin_mismatch_fails,
         _test_missing_authenticated_origin_is_blocked,
+        _test_plausible_self_asserted_origin_is_blocked,
+        _test_malformed_self_asserted_origin_fails,
+        _test_known_missing_linux_mandatory_resource_fails,
+        _test_unknown_platform_mandatory_set_is_blocked,
         _test_supplied_app_must_match_pid_executable,
         _test_missing_pid_fails_instead_of_passing,
         _test_pid_reuse_wrong_generation_and_helper_mismatch_fail,
