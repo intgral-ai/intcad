@@ -131,6 +131,24 @@ function activityStatus(tool: Tool, waiting: boolean) {
   return tool.status === 'running' && !waiting ? ('running' as const) : ('idle' as const);
 }
 
+/** What an approval beside its tool row says beyond the row: while it waits, the lines the app
+ * added under the request (a stress estimate's prediction and setup); once a run of it has
+ * meshed, what it will still take. Nothing for a request of one line. */
+function ApprovalText({ approval }: { approval: Approval }) {
+  const lines = approval.answer === null ? approval.title.split('\n').slice(1).filter(line => line.trim()) : [];
+  if (!lines.length && !approval.counted) return null;
+  return (
+    <div className="flex min-w-0 flex-col gap-1 pl-7">
+      {lines.map((line, at) => (
+        <Txt key={at} variant="caption" tone={at === 0 ? undefined : 'muted'}>
+          {line}
+        </Txt>
+      ))}
+      {approval.counted && <Txt variant="caption">{approval.counted}</Txt>}
+    </div>
+  );
+}
+
 /** The app's three answers to its own approval request, as Mastra buttons. */
 function ApprovalChoices({ approval, strings }: { approval: Approval; strings: Strings }) {
   return (
@@ -183,6 +201,7 @@ function ToolRow({ tool, approval, strings }: { tool: Tool; approval?: Approval;
           {tool.output && <ToolCallOutput text={tool.output} error={tool.status === 'failed'} />}
         </ActivityContent>
       </Activity>
+      {approval && <ApprovalText approval={approval} />}
       {/* Outside the row's fold: a request that arrives after the row is drawn must still be seen. */}
       {waiting && approval && (
         <div className="pl-7">
@@ -491,6 +510,7 @@ function Response({ turn, busy, strings }: { turn: Turn; busy: boolean; strings:
                 ) : (
                   <Notice.Message>{part.item.answer ? strings.allowed : strings.denied}</Notice.Message>
                 )}
+                {part.item.counted && <Notice.Message>{part.item.counted}</Notice.Message>}
               </Notice>
             );
           case 'review':

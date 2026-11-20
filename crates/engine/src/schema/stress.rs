@@ -432,6 +432,23 @@ pub struct StressMeshCheck {
     pub line: String,
 }
 
+/// What a run of this setup is predicted to take, from the part's size before anything is meshed
+/// (a dry run starts no program). The run counts its nodes after meshing and refuses a mesh this
+/// computer cannot solve.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StressPredicted {
+    /// The largest run's nodes (the mid-surface's for shells).
+    pub nodes: u64,
+    /// The most memory one solve needs, GB.
+    pub memory_gb: f64,
+    /// Every run meshed and solved, seconds (measured on one computer; others differ).
+    pub seconds: f64,
+    /// How many runs: each kind of elements, and the mesh check's finer run.
+    pub runs: usize,
+    /// The same in words.
+    pub line: String,
+}
+
 /// What `inspect.stress_estimate` returns.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct StressEstimateResult {
@@ -484,6 +501,9 @@ pub struct StressEstimateResult {
     /// The mesher's and solver's versions. Absent on a dry run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub programs: Option<StressPrograms>,
+    /// On a dry run: the nodes, memory and time the run is predicted to take, from the part's size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted: Option<StressPredicted>,
     /// The folder with the mesh, the solver's job and its results, with `keep_files`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,

@@ -16,7 +16,8 @@ use crate::fea::{
 use crate::params::bad;
 use crate::schema::stress::{
     StrainComponents, StressAlong, StressComponents, StressEquilibrium, StressEstimateParams, StressEstimateResult, StressMeshCheck, StressPeak,
-    StressProbe, StressProbeRun, StressPrograms, StressRun, StressSettling, StressShowParams, StressShowResult, StressSupportReaction,
+    StressPredicted, StressProbe, StressProbeRun, StressPrograms, StressRun, StressSettling, StressShowParams, StressShowResult,
+    StressSupportReaction,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
@@ -47,7 +48,8 @@ pub static COMMANDS: &[CommandSpec] = &[
              less) or still changing, with how far off it may still be; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
              this computer can spare: the smaller of 6 GB and half the memory available; SOLIDCRAFT_FEA_MAX_NODES caps its nodes instead); \
              keep_files?; dry_run?: true (check the setup, describe it and draw its supports and loads on the model; solves nothing: run \
-             it first so the user can see the faces); probes?: [{at: [x,y,z] mm, direction?: [x,y,z], name?}] (at most 50: the stress \
+             it first so the user can see the faces; `predicted`: the nodes, memory and time a run will take); probes?: [{at: \
+             [x,y,z] mm, direction?: [x,y,z], name?}] (at most 50: the stress \
              tensor, principal stresses and directions, elastic strain in microstrain (shears as engineering γ), displacement, and along \
              `direction` the stress and strain a gauge laid that way reads, at each point, read inside the solver's element that holds \
              it, with its own mesh check; a point up to 1 mm outside the part is read at its nearest point; on shells a point on the top \
@@ -693,6 +695,28 @@ pub(crate) const SOLID_NODES_PER_MM3: f64 = 10.0;
 /// the mesh check is skipped (PIL-294 D9, the review's Ø100 x 2 mm disc).
 pub(crate) const DEFAULT_SOLID_NODES: f64 = 80_000.0;
 
+/// The element size of a run of `elements`: `mesh_size` when given (a sheet's solids no coarser
+/// than its thickness), else the default for the part (`diag` its bounding box's diagonal,
+/// `smallest` its thinnest side, `volume` a solid's that is not a sheet).
+pub(crate) fn run_size(
+    mesh_size: Option<f64>,
+    elements: Elements,
+    sheet: bool,
+    thickness: f64,
+    diag: f64,
+    smallest: f64,
+    volume: Option<f64>,
+) -> f64 {
+    match (mesh_size, elements, sheet) {
+        (Some(h), Elements::Shell, _) => h,
+        (Some(h), Elements::Solid, true) => h.min(thickness.max(0.3)),
+        (Some(h), Elements::Solid, false) => h,
+        (None, Elements::Shell, _) => (diag / 30.0).clamp(1.5 * thickness, 8.0 * thickness),
+        (None, Elements::Solid, true) => thickness.max(0.3),
+        (None, Elements::Solid, false) => default_solid_size(diag, smallest, volume),
+    }
+}
+
 /// The default element size for a solid part that is not sheet metal, mm: about 25 elements
 /// across and two through its thinnest side, but no finer than a mesh of about
 /// [`DEFAULT_SOLID_NODES`] for its `volume` (mm³). Without that, a large thin part got a mesh too
@@ -1186,6 +1210,20 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
     // as its bounding box's thinnest side.
     let stock = if plan.sheet || !plan.runs.contains(&Elements::Solid) { plan.thickness } else { smallest };
     warnings.extend(grade_thickness_warning(&plan.material, stock, plan.sheet || !plan.runs.contains(&Elements::Solid)));
+    // What the runs will take, from the part's size (A13): on a dry run for the approval card,
+    // and again in each run once it has counted its nodes.
+    let sized: Vec<(Elements, f64, f64)> = plan
+        .runs
+        .iter()
+        .map(|e| {
+            (
+                *e,
+                run_size(plan.mesh_size, *e, plan.sheet, plan.thickness, diag, smallest, volume),
+                section_size(*e, plan.sheet, plan.thickness, volume, area),
+            )
+        })
+        .collect();
+    let planned = forecast::planned(&sized, plan.mesh_check, volume, area, plan.thickness);
     if p.get("dry_run").and_then(Value::as_bool).unwrap_or(false) {
         // Drawn on the model until the estimate runs or is declined: the user sees the faces.
         let (loads, supports) = markers_of(&plan, &faces);
@@ -1218,6 +1256,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 how_to_report: HOW_TO_REPORT.iter().map(|x| x.to_string()).collect(),
                 network: String::new(),
                 programs: None,
+                predicted: predicted(&planned),
                 folder: None,
                 param_warnings: Vec::new(),
             },
@@ -1261,16 +1300,13 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
     let mut k = 0usize;
     // Half the memory free when the estimate starts (D1).
     let run_cap = first_run_limit(memory_available_here());
-    let fits = |nodes: usize, elements: Elements, h: f64| memory_refusal(nodes as f64, elements, h, run_cap, true);
+    let tracker = forecast::Tracker::new(&planned, s.document_id.clone(), &forecast::finer_fits);
+    let fits = |nodes: usize, elements: Elements, h: f64| {
+        tracker.counted(elements, h, nodes);
+        memory_refusal(nodes as f64, elements, h, run_cap, true)
+    };
     for (i, elements) in plan.runs.iter().enumerate() {
-        let h = match (plan.mesh_size, elements, plan.sheet) {
-            (Some(h), Elements::Shell, _) => h,
-            (Some(h), Elements::Solid, true) => h.min(plan.thickness.max(0.3)),
-            (Some(h), Elements::Solid, false) => h,
-            (None, Elements::Shell, _) => (diag / 30.0).clamp(1.5 * plan.thickness, 8.0 * plan.thickness),
-            (None, Elements::Solid, true) => plan.thickness.max(0.3),
-            (None, Elements::Solid, false) => default_solid_size(diag, smallest, volume),
-        };
+        let h = run_size(plan.mesh_size, *elements, plan.sheet, plan.thickness, diag, smallest, volume);
         // The finer run looks at the same region away from supports and loads as this one.
         let setup = |size: f64| Setup {
             thickness: plan.thickness,
@@ -1475,6 +1511,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             how_to_report: HOW_TO_REPORT.iter().map(|x| x.to_string()).collect(),
             network,
             programs,
+            predicted: None,
             folder,
             param_warnings: Vec::new(),
         },
@@ -2397,6 +2434,48 @@ fn show(s: &mut Session, p: &Value) -> Result<Value> {
     let shown = if want == "off" { "hide" } else { want };
     json_of(SHOW, StressShowResult { shown: shown.to_string(), param_warnings: Vec::new() })
 }
+
+/// The dry run's prediction, in numbers and words.
+fn predicted(planned: &[forecast::Planned]) -> Option<StressPredicted> {
+    let (nodes, bytes, seconds, runs) = forecast::before_meshing(planned, &forecast::finer_fits)?;
+    let what = if runs == 1 { "one run".to_string() } else { format!("{runs} runs") };
+    Some(StressPredicted {
+        nodes: nodes.round() as u64,
+        memory_gb: round_to(bytes / 1.0e9, 2),
+        seconds: round_to(seconds, 0),
+        runs,
+        line: format!(
+            "From the part's size, before meshing: about {} nodes, about {} of memory, and about {} for {what} to mesh and solve. Small \
+             holes, fillets and bends can make the mesh several times larger; each run counts its nodes after meshing and refuses a \
+             mesh this computer cannot solve",
+            about_count(nodes),
+            about_bytes(bytes),
+            about_time(seconds)
+        ),
+    })
+}
+
+/// A time in words, as roughly as it is known: "8 s", "45 s", "2.5 min", "25 min", "1.7 h".
+pub(crate) fn about_time(seconds: f64) -> String {
+    if !(seconds.is_finite() && seconds >= 0.0) {
+        return "?".into();
+    }
+    if seconds < 1.0 {
+        return "under a second".into();
+    }
+    if seconds < 90.0 {
+        let k = if seconds < 10.0 { 1.0 } else { 5.0 };
+        return format!("{} s", ((seconds / k).round() * k).max(1.0));
+    }
+    let minutes = seconds / 60.0;
+    if minutes < 90.0 {
+        return if minutes < 10.0 { format!("{} min", (minutes * 2.0).round() / 2.0) } else { format!("{} min", minutes.round()) };
+    }
+    format!("{} h", (minutes / 6.0).round() / 10.0)
+}
+
+#[path = "stress_forecast.rs"]
+mod forecast;
 
 #[cfg(test)]
 #[path = "stress_tests.rs"]
