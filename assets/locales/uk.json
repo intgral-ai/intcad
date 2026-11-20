@@ -4465,7 +4465,7 @@
   "ui.agent_chat_limit": "Агент досяг межі {limit} змін на одне повідомлення. Надішліть інше повідомлення, щоб дозволити йому продовжити.",
   "ui.agent_chat_login_found": "вхід знайдено",
   "ui.agent_chat_minimize": "Згорнути до смужки",
-  "ui.agent_chat_mode_all": "Усе",
+  "ui.agent_chat_mode_all": "Автоматично",
   "ui.agent_chat_mode_ask": "Запит",
   "ui.agent_chat_mode_edits": "Зміни",
   "ui.agent_chat_model_custom": "Використати власну: {model}",

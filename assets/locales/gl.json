@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "O axente chegou ao límite de {limit} cambios por mensaxe. Envía outra mensaxe para que continúe.",
   "ui.agent_chat_login_found": "inicio de sesión atopado",
   "ui.agent_chat_minimize": "Minimizar nunha franxa",
-  "ui.agent_chat_mode_all": "Todo",
+  "ui.agent_chat_mode_all": "Automático",
   "ui.agent_chat_mode_ask": "Preguntar",
   "ui.agent_chat_mode_edits": "Edicións",
   "ui.agent_chat_model_custom": "Usar o personalizado: {model}",

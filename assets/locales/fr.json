@@ -4192,7 +4192,7 @@
   "ui.agent_chat_limit": "L'agent a atteint la limite de {limit} modifications pour un message. Envoyez un autre message pour qu'il poursuive.",
   "ui.agent_chat_login_found": "identifiants trouvés",
   "ui.agent_chat_minimize": "Réduire en bandeau",
-  "ui.agent_chat_mode_all": "Tout",
+  "ui.agent_chat_mode_all": "Automatique",
   "ui.agent_chat_mode_ask": "Demander",
   "ui.agent_chat_mode_edits": "Édition",
   "ui.agent_chat_model_custom": "Utiliser le modèle personnalisé : {model}",

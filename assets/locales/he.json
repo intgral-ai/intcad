@@ -4536,7 +4536,7 @@
   "ui.agent_chat_limit": "הסוכן הגיע למגבלה של {limit} שינויים להודעה אחת. יש לשלוח הודעה נוספת כדי שימשיך.",
   "ui.agent_chat_login_found": "נמצאה התחברות",
   "ui.agent_chat_minimize": "מזעור לפס",
-  "ui.agent_chat_mode_all": "הכול",
+  "ui.agent_chat_mode_all": "אוטומטי",
   "ui.agent_chat_mode_ask": "שאלה",
   "ui.agent_chat_mode_edits": "עריכות",
   "ui.agent_chat_model_custom": "שימוש במותאם אישית: {model}",
