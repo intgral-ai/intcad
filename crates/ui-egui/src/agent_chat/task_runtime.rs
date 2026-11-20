@@ -416,7 +416,7 @@ mod tests {
     fn call(app: &mut SolveApp, active: &Arc<AtomicBool>, method: &str, params: Value) -> Value {
         let (mut req, _receiver) = ControlRequest::trusted_mastra(method, params);
         req.chat_turn = Some(Arc::clone(active));
-        match crate::control::handle(app, &egui::Context::default(), &req) {
+        match crate::control::handle(app, &egui::Context::default(), &mut req) {
             Outcome::Done(value) => value,
             Outcome::Screenshot { .. } => panic!("a CAD request did not answer with a value"),
         }

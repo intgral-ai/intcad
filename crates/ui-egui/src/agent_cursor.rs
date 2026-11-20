@@ -190,12 +190,12 @@ impl AgentCursor {
     }
 
     /// Stop the request the pointer waits on: answered as stopped, nothing of it applied.
-    pub(crate) fn stop(&mut self) -> Option<(Sender<ControlResponse>, Value)> {
+    pub(crate) fn stop(&mut self) -> Option<(Sender<ControlResponse>, Value, crate::control::Reissue)> {
         self.computing()?;
         let job = self.job.take()?;
         let label = job.ahead.map(|a| a.label).unwrap_or_default();
         let response = crate::control::stopped_command_response(&job.method, &job.params, job.guarded.is_some(), &label);
-        Some((job.reply, response))
+        Some((job.reply, response, job.reissue))
     }
 }
 
@@ -420,13 +420,15 @@ pub fn step(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.agent.ripples.is_empty() {
         ctx.request_repaint();
     }
-    let Some(job) = app.agent.job.as_mut() else { return };
-    if crate::control::chat_turn_cancelled(job.chat_turn.as_deref()) {
-        if let Some(job) = app.agent.job.take() {
+    let cancelled = app.agent.job.as_ref().is_some_and(|job| crate::control::chat_turn_cancelled(job.chat_turn.as_deref()));
+    if cancelled {
+        if let Some(mut job) = app.agent.job.take() {
+            crate::control::release_reissue_unstarted(app, &mut job.reissue, solidcraft_engine::entitlement::RefusalCode::UnsafeToStart);
             let _ = job.reply.send(crate::control::cancelled_request_response(&job.method, &job.params, job.guarded.is_some()));
         }
         return;
     }
+    let Some(job) = app.agent.job.as_mut() else { return };
     let (glide, click) = (job.glide, job.click);
     ctx.request_repaint();
     let Some(&(to, _)) = job.stops.front() else {
@@ -459,8 +461,9 @@ pub fn step(app: &mut SolveApp, ctx: &egui::Context) {
 
 /// Run the held request now (as a call without animation) and send its reply.
 fn finish(app: &mut SolveApp, ctx: &egui::Context) {
-    let Some(job) = app.agent.job.take() else { return };
+    let Some(mut job) = app.agent.job.take() else { return };
     if crate::control::chat_turn_cancelled(job.chat_turn.as_deref()) {
+        crate::control::release_reissue_unstarted(app, &mut job.reissue, solidcraft_engine::entitlement::RefusalCode::UnsafeToStart);
         let _ = job.reply.send(crate::control::cancelled_request_response(&job.method, &job.params, job.guarded.is_some()));
         return;
     }
@@ -482,7 +485,7 @@ fn finish(app: &mut SolveApp, ctx: &egui::Context) {
         app.agent.saved_view = Some(app.cam);
     }
     // What was computed ahead while the pointer glided is found rather than computed again here.
-    let out = app.run_with_kept(job.ahead.map(|a| a.kept), |app| match crate::control::handle(app, ctx, &req) {
+    let out = app.run_with_kept(job.ahead.map(|a| a.kept), |app| match crate::control::handle(app, ctx, &mut req) {
         crate::control::Outcome::Done(v) => v,
         crate::control::Outcome::Screenshot { .. } => json!({"ok": false, "error": "not a command"}),
     });

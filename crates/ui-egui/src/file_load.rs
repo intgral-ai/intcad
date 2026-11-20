@@ -1574,8 +1574,8 @@ mod tests {
         h.frames(4);
         assert!(h.app.file_load.busy());
         let at = crate::scenario::handle_at("file_loading:cancel").unwrap();
-        let (request, _reply) = crate::control::ControlRequest::trusted_gui("ui.click", json!({"x":at.x,"y":at.y}));
-        let _ = crate::control::handle(&mut h.app, &h.ctx, &request);
+        let (mut request, _reply) = crate::control::ControlRequest::trusted_gui("ui.click", json!({"x":at.x,"y":at.y}));
+        let _ = crate::control::handle(&mut h.app, &h.ctx, &mut request);
         h.frames(4);
         assert!(progress.is_cancelled());
         tx.send(Err("DXF export cancelled".into())).unwrap();

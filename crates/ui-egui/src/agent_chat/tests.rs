@@ -8935,7 +8935,7 @@ fn guarded_stop_inactive_direct_calls_ignore_forged_authority() {
             let doc = app.session.doc.clone();
             let history = guarded_stop_history(&app);
             let r = match route {
-                "handle" => match crate::control::handle(&mut app, &ctx, &req) {
+                "handle" => match crate::control::handle(&mut app, &ctx, &mut req) {
                     crate::control::Outcome::Done(r) => r,
                     _ => panic!("not a screenshot"),
                 },

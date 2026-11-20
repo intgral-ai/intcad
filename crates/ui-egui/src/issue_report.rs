@@ -976,8 +976,8 @@ mod tests {
 
     fn click_commands_at(h: &mut crate::scenario::Harness, [x, y]: [f64; 2]) -> Vec<egui::OutputCommand> {
         assert_eq!(h.call("ui.move", json!({"x":x,"y":y}))["ok"], true);
-        let (request, _reply) = crate::control::ControlRequest::trusted_gui("ui.click", json!({"x":x,"y":y}));
-        assert!(matches!(crate::control::handle(&mut h.app, &h.ctx, &request), crate::control::Outcome::Done(value) if value["ok"] == true));
+        let (mut request, _reply) = crate::control::ControlRequest::trusted_gui("ui.click", json!({"x":x,"y":y}));
+        assert!(matches!(crate::control::handle(&mut h.app, &h.ctx, &mut request), crate::control::Outcome::Done(value) if value["ok"] == true));
         let mut commands = Vec::new();
         for _ in 0..12 {
             h.frame();

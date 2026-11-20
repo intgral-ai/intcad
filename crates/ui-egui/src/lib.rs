@@ -3561,6 +3561,7 @@ impl SolveApp {
     /// Run a control request here, now, and reply (or queue the screenshot it asks for).
     pub(crate) fn run_control(&mut self, ctx: &egui::Context, mut req: ControlRequest) {
         if req.refuse_cancelled_chat() {
+            control::release_unstarted(self, &mut req);
             return;
         }
         if let Err(refusal) = control::admit_once(self, &mut req) {
@@ -3568,7 +3569,7 @@ impl SolveApp {
             return;
         }
         let reply = req.reply.clone();
-        match control::handle(self, ctx, &req) {
+        match control::handle(self, ctx, &mut req) {
             control::Outcome::Done(v) => {
                 let _ = reply.send(v);
             }

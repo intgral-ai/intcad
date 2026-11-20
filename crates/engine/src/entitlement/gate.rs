@@ -155,11 +155,16 @@ impl<'a> CommitGate<'a> {
                 return CommitDecision::Drop { code: RefusalCode::CapabilityDenied };
             }
             match self.current_scope {
-                Some(scope) if !scope.is_provable() => return CommitDecision::Drop { code: RefusalCode::AuthRequired },
                 Some(scope) if scope != trusted.scope() => return CommitDecision::Drop { code: RefusalCode::AuthRequired },
                 Some(_) => {}
                 None => return CommitDecision::Drop { code: RefusalCode::AuthUnavailable },
             }
+        }
+        let Some(scope) = self.current_scope else {
+            return CommitDecision::Drop { code: RefusalCode::AuthUnavailable };
+        };
+        if !scope.is_provable() {
+            return CommitDecision::Drop { code: RefusalCode::AuthRequired };
         }
         let Some(availability) = self.availability else {
             return CommitDecision::Drop { code: RefusalCode::AuthUnavailable };
@@ -173,7 +178,10 @@ impl<'a> CommitGate<'a> {
         if !availability.version_supported {
             return CommitDecision::Drop { code: RefusalCode::VersionUnsupported };
         }
-        if matches!(self.status, Some(OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired)) {
+        let Some(status) = self.status else {
+            return CommitDecision::Drop { code: RefusalCode::AuthUnavailable };
+        };
+        if matches!(status, OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired) {
             return CommitDecision::Drop { code: RefusalCode::OperationFinalized };
         }
         let Some(bound) = self.bound else {
@@ -324,6 +332,7 @@ mod tests {
             .with_trusted(trusted)
             .with_current_scope(scope)
             .with_availability(availability)
+            .with_status(OperationStatus::Held)
             .with_bound(AuthorizationBound::Deadline(deadline))
             .with_now(MonotonicInstant::from_millis(now_ms))
     }
@@ -380,6 +389,39 @@ mod tests {
             let decision = gate(&operation(), &online, &trusted, &scope, &deadline(60_000), 1_000).with_status(status).check();
             assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::OperationFinalized }, "{status:?}");
         }
+    }
+
+    #[test]
+    fn a_controlled_commit_without_a_durable_status_is_refused() {
+        let scope = scope("acct-no-status");
+        let trusted = trusted(&scope);
+        let availability = online();
+        let deadline = deadline(60_000);
+        let operation = operation();
+        let decision = CommitGate::new(&operation, Capability::Control, EntryCategory::DirectControl)
+            .with_trusted(&trusted)
+            .with_current_scope(&scope)
+            .with_availability(&availability)
+            .with_bound(AuthorizationBound::Deadline(&deadline))
+            .with_now(MonotonicInstant::from_millis(1_000))
+            .check();
+        assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AuthUnavailable });
+    }
+
+    #[test]
+    fn a_controlled_commit_without_a_provable_current_scope_is_refused() {
+        let scope = AuthenticatedHostScope::new(AccountId::new(""), InstallationId::new(""), HostSessionBinding::new(""));
+        let availability = online();
+        let deadline = deadline(60_000);
+        let operation = operation();
+        let decision = CommitGate::new(&operation, Capability::Control, EntryCategory::DirectControl)
+            .with_current_scope(&scope)
+            .with_availability(&availability)
+            .with_status(OperationStatus::Held)
+            .with_bound(AuthorizationBound::Deadline(&deadline))
+            .with_now(MonotonicInstant::from_millis(1_000))
+            .check();
+        assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AuthRequired });
     }
 
     #[test]

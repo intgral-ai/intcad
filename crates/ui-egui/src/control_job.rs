@@ -287,15 +287,17 @@ impl SolveApp {
     /// Both immediate and deferred completion are only cache warming: the original admission
     /// must still match on the owner before installing kept results or touching history.
     pub(crate) fn finish_control_ahead(&mut self, ctx: &egui::Context, req: ControlRequest, kept: Arc<KeptResults>) {
+        let mut req = req;
         if req.refuse_cancelled_chat() {
+            crate::control::release_unstarted(self, &mut req);
             return;
         }
-        let mut req = req;
         if let Err(refusal) = crate::control::admit_once(self, &mut req) {
             let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
             return;
         }
         if let Err(error) = crate::execution_guard::check_application(self, &req) {
+            crate::control::release_unstarted(self, &mut req);
             let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
             return;
         }
@@ -417,11 +419,16 @@ impl SolveApp {
     /// behind it go on.
     pub fn stop_agent_command(&mut self) {
         let stopped = match self.control_job.take() {
-            Some(job) => {
+            Some(mut job) => {
+                // The job never reached the dispatch boundary; its admission is unused.
+                crate::control::release_unstarted(self, &mut job.req);
                 let response = crate::control::stopped_command_response(&job.req.method, &job.req.params, job.req.guarded.is_some(), &job.label);
                 Some((job.req.reply, response))
             }
-            None => self.agent.stop(),
+            None => self.agent.stop().map(|(reply, response, mut reissue)| {
+                crate::control::release_reissue_unstarted(self, &mut reissue, solidcraft_engine::entitlement::RefusalCode::UnsafeToStart);
+                (reply, response)
+            }),
         };
         match stopped {
             Some((reply, response)) => {
