@@ -402,7 +402,7 @@ mod cef_backed {
                 unsafe { app.add_ref() };
                 app.get_raw()
             };
-            let frame = RetainedInitInputs { args, settings, app, main_args, raw_settings, raw_app };
+            let frame = InitCallFrame::new(RetainedInitInputs { args, settings, app, main_args, raw_settings, raw_app });
             let code = unsafe {
                 cef::sys::cef_initialize(
                     &frame.main_args,
@@ -412,11 +412,14 @@ mod cef_backed {
                 )
             };
             if code == 0 {
-                // Failure-only retention: no CEF destructor may run after native false.
-                std::mem::forget(frame);
+                // Failure-only retention: no CEF destructor may run after native
+                // false, and the pointers just handed to native still refer to
+                // the retained allocation.
+                frame.retain();
                 return Err(WeldError::InitFailed { code });
             }
-            drop(frame);
+            // Success: drop normally while the runtime is live.
+            frame.release();
             Ok(CefRuntime {
                 config,
                 leases: Arc::new(LeaseState::default()),
@@ -614,6 +617,93 @@ mod cef_backed {
         main_args: cef::sys::cef_main_args_t,
         raw_settings: cef::sys::cef_settings_t,
         raw_app: *mut cef::sys::cef_app_t,
+    }
+
+    /// The complete init-call frame in owned storage at a stable address.
+    ///
+    /// Native receives pointers into this allocation, so the addresses derived
+    /// for [`InitCallFrame::retain`] stay inside live storage after
+    /// `cef_initialize` returns. This does not prove the callee keeps or honors
+    /// those pointers; that remains a separate conformance gate.
+    struct InitCallFrame<F> {
+        frame: Box<F>,
+    }
+
+    impl<F> InitCallFrame<F> {
+        fn new(frame: F) -> Self {
+            Self { frame: Box::new(frame) }
+        }
+
+        /// Keep the whole frame (and every destructor it owns) after native false.
+        fn retain(self) {
+            std::mem::forget(self.frame);
+        }
+
+        /// Release the whole frame normally; the success path transfers ownership.
+        fn release(self) {
+            drop(self.frame);
+        }
+    }
+
+    impl<F> std::ops::Deref for InitCallFrame<F> {
+        type Target = F;
+
+        fn deref(&self) -> &F {
+            &self.frame
+        }
+    }
+
+    #[cfg(test)]
+    mod init_call_frame_tests {
+        use super::*;
+
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Stand-in for the native call: these tests observe only the Rust
+        /// storage and drop contract, never CEF's own behaviour.
+        #[derive(Default)]
+        struct Probe {
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        fn probe() -> (Probe, Arc<AtomicUsize>) {
+            let drops = Arc::new(AtomicUsize::new(0));
+            (Probe { drops: Arc::clone(&drops) }, drops)
+        }
+
+        #[test]
+        fn retained_frame_never_runs_its_drop_glue() {
+            let (input, drops) = probe();
+            let frame = InitCallFrame::new(input);
+            // The address derived for native must be inside the retained frame.
+            let _handed_to_native = std::ptr::from_ref(&*frame);
+            frame.retain();
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn released_frame_runs_its_drop_glue_exactly_once() {
+            let (input, drops) = probe();
+            let frame = InitCallFrame::new(input);
+            frame.release();
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn owned_frame_address_survives_moving_the_frame_to_the_call_site() {
+            let (input, _drops) = probe();
+            let frame = InitCallFrame::new(input);
+            let handed_to_native = std::ptr::from_ref(&*frame);
+            let at_call_site = std::hint::black_box(frame);
+            assert_eq!(handed_to_native, std::ptr::from_ref(&*at_call_site));
+        }
     }
 
     fn sandbox_info_for(sandbox: CefSandboxMode) -> *mut u8 {
