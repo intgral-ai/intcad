@@ -12,3 +12,8 @@ workspace = true
 solidcraft-engine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+# Native-only HTTPS client. The crate is cfg(not(wasm32)); `xtask layers` keeps it out of the
+# wasm closure. Certificates come from the operating system; no redirect is followed.
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

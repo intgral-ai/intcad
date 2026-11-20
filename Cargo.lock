@@ -5091,9 +5091,12 @@ version = "0.1.2"
 name = "solidcraft-account-native"
 version = "0.1.2"
 dependencies = [
+ "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "solidcraft-engine",
+ "ureq",
 ]
 
 [[package]]

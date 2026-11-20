@@ -7,11 +7,16 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod http;
 mod ledger;
 
 #[cfg(test)]
 mod ledger_tests;
 
+pub use http::{
+    BootstrapPlatform, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, Secret, Transport, TransportFailure,
+    WireConnection, WireCredentials, WireRequest, WireResponse,
+};
 pub use ledger::{FileOperationStore, InMemoryOperationStore};
 pub use solidcraft_engine::entitlement::{
     AuthenticatedHostScope, Capability, EntryCategory, FreshIntent, OperationId, OperationRecord, OperationStatus, OperationStore,
