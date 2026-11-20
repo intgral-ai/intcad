@@ -99,8 +99,7 @@ fn account_keyring_service_is_independent_and_workos_urls_are_https() {
 fn device_code_prints_url_and_code_but_noninteractive_call_returns_auth_required() {
     let transport = ScriptedDeviceTransport::scripted(vec![(200, device_body())]);
     let (session, _) = session_with_memory();
-    let mut flow =
-        DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport.clone(), session, DeviceCodeMode::Programmatic);
+    let mut flow = DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport.clone(), session, DeviceCodeMode::Programmatic);
     assert_eq!(flow.start().unwrap_err().code, RefusalCode::AuthRequired);
     assert_eq!(transport.request_count(), 0);
 
@@ -170,9 +169,10 @@ fn device_code_denied_expired_and_bad_responses_fail_closed() {
         assert_eq!(flow.poll().unwrap(), expected, "{error}");
     }
 
-    let transport = ScriptedDeviceTransport::scripted(vec![
-        (200, json!({"device_code": "d", "user_code": "U", "verification_uri": "http://insecure.example/device", "expires_in": 300, "interval": 5})),
-    ]);
+    let transport = ScriptedDeviceTransport::scripted(vec![(
+        200,
+        json!({"device_code": "d", "user_code": "U", "verification_uri": "http://insecure.example/device", "expires_in": 300, "interval": 5}),
+    )]);
     let (session, _) = session_with_memory();
     let mut flow = DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport, session, DeviceCodeMode::Explicit);
     assert_eq!(flow.start().unwrap_err().code, RefusalCode::AuthUnavailable);

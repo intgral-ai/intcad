@@ -5,7 +5,7 @@
 //! injects this session into the HTTP adapter. No credential is written to a file or the ledger.
 #![allow(dead_code)]
 
-use solidcraft_account_native::{CredentialSession, KeyringStore, ACCOUNT_KEYRING_SERVICE};
+use solidcraft_account_native::{ACCOUNT_KEYRING_SERVICE, CredentialSession, KeyringStore};
 
 /// Keychain (macOS), Credential Manager (Windows), or Secret Service (Linux).
 pub fn account_credential_session() -> CredentialSession {

@@ -30,8 +30,7 @@ pub fn programmatic_login() -> Result<DeviceCodePrompt, Refusal> {
 /// Start an explicitly requested device-code sign-in. The caller polls and completes the returned
 /// flow; the prompt contains the verification URL and user code, never the device code.
 pub fn begin_explicit_device_login(client_id: &str) -> Result<(DeviceCodeFlow<UreqDeviceCodeTransport>, DeviceCodePrompt), Refusal> {
-    let client = WorkOsPublicClient::new(client_id)
-        .ok_or_else(|| Refusal::new(RefusalCode::AuthRequired, "no WorkOS client id is configured"))?;
+    let client = WorkOsPublicClient::new(client_id).ok_or_else(|| Refusal::new(RefusalCode::AuthRequired, "no WorkOS client id is configured"))?;
     let mut flow = DeviceCodeFlow::new(client, UreqDeviceCodeTransport::new(), process_memory_session(), DeviceCodeMode::Explicit);
     let prompt = flow.start()?;
     Ok((flow, prompt))

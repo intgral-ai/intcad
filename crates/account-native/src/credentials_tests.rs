@@ -23,7 +23,6 @@ fn grant() -> GrantId {
     GrantId::new("grant_example_0001")
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Call {
     Get(String),
@@ -98,7 +97,6 @@ impl CredentialStore for RecordingStore {
     }
 }
 
-
 fn unavailable() -> CredentialError {
     CredentialError { code: CredentialErrorCode::Unavailable, message: "unavailable".into() }
 }
@@ -123,7 +121,6 @@ fn memory_session_is_process_local_and_clears_on_sign_out() {
     assert!(!format!("{memory:?}").contains("secret"));
 }
 
-
 #[test]
 fn logout_and_switch_account_delete_old_credential_first() {
     let store = RecordingStore::default();
@@ -132,8 +129,7 @@ fn logout_and_switch_account_delete_old_credential_first() {
     session.bind_scope(&scope("acct_old", "inst_old")).unwrap();
     let mut handoff = session.clone();
     CredentialHandoff::initial_lease_proof(&mut handoff, &grant(), Capability::Chat, crate::http::Secret::new("proof_old_SECRET")).unwrap();
-    CredentialHandoff::execution_session_proof(&mut handoff, Capability::Chat, &operation(), crate::http::Secret::new("op_proof_secret"))
-        .unwrap();
+    CredentialHandoff::execution_session_proof(&mut handoff, Capability::Chat, &operation(), crate::http::Secret::new("op_proof_secret")).unwrap();
     CredentialHandoff::settlement_credential(&mut handoff, &operation(), crate::http::Secret::new("settle_old_SECRET")).unwrap();
     CredentialHandoff::installation_credential(&mut handoff, "inst_old", crate::http::Secret::new("install_old_SECRET")).unwrap();
     assert_eq!(WireCredentials::initial_lease_proof(&session, &grant()).unwrap().expose_secret(), "proof_old_SECRET");
@@ -178,12 +174,9 @@ fn initial_lease_proofs_and_operation_credentials_share_one_store_and_use_separa
     let wire = handoff.clone();
     let other_grant = GrantId::new("grant_example_0002");
 
-    CredentialHandoff::initial_lease_proof(&mut handoff, &grant(), Capability::Chat, crate::http::Secret::new("initial_one"))
-        .unwrap();
-    CredentialHandoff::initial_lease_proof(&mut handoff, &other_grant, Capability::Chat, crate::http::Secret::new("initial_two"))
-        .unwrap();
-    CredentialHandoff::execution_session_proof(&mut handoff, Capability::Chat, &operation(), crate::http::Secret::new("operation_one"))
-        .unwrap();
+    CredentialHandoff::initial_lease_proof(&mut handoff, &grant(), Capability::Chat, crate::http::Secret::new("initial_one")).unwrap();
+    CredentialHandoff::initial_lease_proof(&mut handoff, &other_grant, Capability::Chat, crate::http::Secret::new("initial_two")).unwrap();
+    CredentialHandoff::execution_session_proof(&mut handoff, Capability::Chat, &operation(), crate::http::Secret::new("operation_one")).unwrap();
     CredentialHandoff::settlement_credential(&mut handoff, &operation(), crate::http::Secret::new("settlement_one")).unwrap();
 
     assert_eq!(WireCredentials::initial_lease_proof(&wire, &grant()).unwrap().expose_secret(), "initial_one");
@@ -224,16 +217,21 @@ fn token_never_in_debug_display_logs_or_error_messages() {
     session.complete_device_login("acct_one", "access_SECRET_alpha", Some("refresh_SECRET_beta")).unwrap();
     session.bind_scope(&scope("acct_one", "inst_one")).unwrap();
     let mut handoff = session.clone();
-    CredentialHandoff::initial_lease_proof(&mut handoff, &grant(), Capability::Chat, crate::http::Secret::new("proof_SECRET_gamma"))
-        .unwrap();
+    CredentialHandoff::initial_lease_proof(&mut handoff, &grant(), Capability::Chat, crate::http::Secret::new("proof_SECRET_gamma")).unwrap();
     CredentialHandoff::execution_session_proof(&mut handoff, Capability::Chat, &operation(), crate::http::Secret::new("operation_SECRET_delta"))
         .unwrap();
-    CredentialHandoff::settlement_credential(&mut handoff, &operation(), crate::http::Secret::new("settlement_SECRET_epsilon"))
-        .unwrap();
+    CredentialHandoff::settlement_credential(&mut handoff, &operation(), crate::http::Secret::new("settlement_SECRET_epsilon")).unwrap();
     CredentialHandoff::installation_credential(&mut handoff, "inst_one", crate::http::Secret::new("install_SECRET_zeta")).unwrap();
 
     let rendered = [format!("{session:?}"), format!("{session}"), format!("{handoff:?}")].join("\n");
-    for secret in ["access_SECRET_alpha", "refresh_SECRET_beta", "proof_SECRET_gamma", "operation_SECRET_delta", "settlement_SECRET_epsilon", "install_SECRET_zeta"] {
+    for secret in [
+        "access_SECRET_alpha",
+        "refresh_SECRET_beta",
+        "proof_SECRET_gamma",
+        "operation_SECRET_delta",
+        "settlement_SECRET_epsilon",
+        "install_SECRET_zeta",
+    ] {
         assert!(!rendered.contains(secret), "{secret} leaked through Debug or Display");
     }
 
@@ -259,8 +257,7 @@ fn a_restarted_session_preserves_and_then_clears_every_tracked_credential() {
         "a restart must keep the settlement credential for recovery"
     );
     let mut second_handoff = second.clone();
-    CredentialHandoff::initial_lease_proof(&mut second_handoff, &grant(), Capability::Chat, crate::http::Secret::new("initial_one"))
-        .unwrap();
+    CredentialHandoff::initial_lease_proof(&mut second_handoff, &grant(), Capability::Chat, crate::http::Secret::new("initial_one")).unwrap();
     assert!(store.keys().iter().any(|key| key.starts_with("scope/")));
 
     second.sign_out().unwrap();

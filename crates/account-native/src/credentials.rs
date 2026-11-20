@@ -10,13 +10,13 @@
 //! and every error message this module produces. The explicit device-code login lives in
 //! [`crate::device_code`].
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
 use sha2::{Digest, Sha256};
 use solidcraft_engine::entitlement::{
     AuthenticatedHostScope, Capability, CredentialError, CredentialErrorCode, CredentialStore, GrantId, OperationId, Refusal, RefusalCode,
 };
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::http::{CredentialHandoff, Secret, WireCredentials};
 
@@ -422,7 +422,9 @@ fn set_installation(state: &mut SessionState, installation: &str) -> Result<(), 
         }
     }
     state.installation = Some(installation.to_owned());
-    if persisted.as_deref() != Some(installation) && let Err(error) = state.store.set(INSTALLATION_ID_KEY, installation) {
+    if persisted.as_deref() != Some(installation)
+        && let Err(error) = state.store.set(INSTALLATION_ID_KEY, installation)
+    {
         return Err(store_failure(state, error));
     }
     Ok(())

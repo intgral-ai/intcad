@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, Refusal, RefusalCode};
 
-use crate::credentials::{auth_unavailable, has_control, safe_token, unavailable, CredentialSession, MAX_ACCOUNT_BYTES};
+use crate::credentials::{CredentialSession, MAX_ACCOUNT_BYTES, auth_unavailable, has_control, safe_token, unavailable};
 use crate::http::Secret;
 
 /// WorkOS CLI Auth device authorization endpoint (`POST`).
@@ -69,11 +69,7 @@ impl DeviceCodePrompt {
 
 impl fmt::Display for DeviceCodePrompt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "To sign in, open {} on any device and enter the code {}.",
-            self.verification_uri, self.user_code
-        )?;
+        write!(formatter, "To sign in, open {} on any device and enter the code {}.", self.verification_uri, self.user_code)?;
         if let Some(complete) = self.verification_uri_complete.as_deref() {
             write!(formatter, " You can also open {complete}.")?;
         }
@@ -153,13 +149,8 @@ impl Default for UreqDeviceCodeTransport {
 
 impl DeviceCodeTransport for UreqDeviceCodeTransport {
     fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError> {
-        let mut response = self
-            .agent
-            .post(url)
-            .header("Accept", "application/json")
-            .header("Content-Type", content_type)
-            .send(body)
-            .map_err(|_| unavailable())?;
+        let mut response =
+            self.agent.post(url).header("Accept", "application/json").header("Content-Type", content_type).send(body).map_err(|_| unavailable())?;
         let status = response.status().as_u16();
         let body = response.body_mut().with_config().limit(MAX_DEVICE_RESPONSE_BYTES as u64).read_to_vec().map_err(|_| unavailable())?;
         Ok((status, body))
@@ -233,7 +224,8 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
         if self.pending.is_some() || self.authorized.is_some() {
             return Err(auth_unavailable("a device sign-in is already in progress"));
         }
-        let body = serde_json::to_vec(&json!({"client_id": self.client.client_id})).map_err(|_| auth_unavailable("the sign-in request is unavailable"))?;
+        let body =
+            serde_json::to_vec(&json!({"client_id": self.client.client_id})).map_err(|_| auth_unavailable("the sign-in request is unavailable"))?;
         let (status, body) = self
             .transport
             .post(WORKOS_DEVICE_AUTHORIZATION_URL, "application/json", &body)
@@ -259,15 +251,12 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
             let pending = self.pending.as_ref().ok_or_else(|| auth_required("start a device sign-in first"))?;
             (pending.device_code.clone(), pending.interval)
         };
-        let form = [
-            ("grant_type", WORKOS_DEVICE_GRANT_TYPE),
-            ("device_code", device_code.expose_secret()),
-            ("client_id", self.client.client_id.as_str()),
-        ]
-        .iter()
-        .map(|(name, value)| format!("{}={}", form_encode(name), form_encode(value)))
-        .collect::<Vec<_>>()
-        .join("&");
+        let form =
+            [("grant_type", WORKOS_DEVICE_GRANT_TYPE), ("device_code", device_code.expose_secret()), ("client_id", self.client.client_id.as_str())]
+                .iter()
+                .map(|(name, value)| format!("{}={}", form_encode(name), form_encode(value)))
+                .collect::<Vec<_>>()
+                .join("&");
         let (status, body) = self
             .transport
             .post(WORKOS_TOKEN_URL, "application/x-www-form-urlencoded", form.as_bytes())
