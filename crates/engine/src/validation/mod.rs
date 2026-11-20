@@ -1158,7 +1158,7 @@ impl ValidationPort {
     /// One validated retirement decision for this run. A missing file is no tombstone; an
     /// unreadable or structurally invalid file is an error, never absence. Expiry deliberately
     /// does not erase the scheduling barrier here; only replay consults the key expiry.
-    fn retirement(&self, run_id: &str, _transaction: &TransactionGuard) -> Result<Option<TombstoneRecord>, ValidationError> {
+    fn retirement(&self, run_id: &str, _transaction: &TransactionGuard) -> Result<Option<TombstoneRecord>> {
         if !keys::valid_run_id(run_id) {
             return Err(ValidationError::not_found("no such validation run"));
         }
