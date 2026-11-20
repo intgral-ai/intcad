@@ -50,6 +50,12 @@ pub trait Backend {
     fn param_check(&self) -> ParamCheck {
         ParamCheck::Off
     }
+    /// The host-minted logical operation for this tool call, when the backend is part of an
+    /// authenticated host. A source label, request id or tool-call id is data; only an operation
+    /// the host already minted belongs here. `None` keeps a charged call fail-closed.
+    fn tool_context(&self, _tool: &str) -> Option<crate::ToolCallContext> {
+        None
+    }
 }
 
 /// Longest reply line accepted from the app.

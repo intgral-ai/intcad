@@ -57,10 +57,16 @@ Fix, don't rebuild: a wrong number in a feature is changed with `timeline.edit` 
 (`parameters.list {\"filter\":\"feature\"}` names them); `edit.checkpoint` and `edit.restore_checkpoint` go back exactly.\n\n\
 A call whose error starts `still running:` was not cancelled: don't send it again; `pending` waits for its result.";
 
+struct Accounting {
+    billing: Box<dyn solidcraft_engine::entitlement::BillingPort>,
+    budget: solidcraft_engine::entitlement::BudgetTable,
+}
+
 pub struct Server {
     backend: Box<dyn Backend>,
     initialized: bool,
     scope: Option<PathScope>,
+    accounting: Option<Accounting>,
 }
 
 /// The design files a call opens or saves (#7181): `open` and `save`, and the commands they run
@@ -95,12 +101,24 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
 
 impl Server {
     pub fn new(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false, scope: None }
+        Self { backend, initialized: false, scope: None, accounting: None }
     }
     /// Confine the files tool calls may reach to `scope` (`None`: anywhere). `intcad-cli mcp`
     /// always sets one unless started with `--allow-any-path` (docs/mcp.md).
     pub fn with_path_scope(mut self, scope: Option<PathScope>) -> Self {
         self.scope = scope;
+        self
+    }
+    /// Install the host's billing authority and the verified safe-stop budget. A charged tool
+    /// without a host-minted [`ToolCallContext`] is refused before dispatch, so a source label or
+    /// request id can never stand in for admission. Until the desktop/headless lifecycle installs
+    /// both, `Server::new` keeps its local embedded behaviour.
+    pub fn with_billing(
+        mut self,
+        billing: Box<dyn solidcraft_engine::entitlement::BillingPort>,
+        budget: solidcraft_engine::entitlement::BudgetTable,
+    ) -> Self {
+        self.accounting = Some(Accounting { billing, budget });
         self
     }
     pub fn backend(&mut self) -> &mut dyn Backend {
@@ -233,8 +251,24 @@ impl Server {
                 let open = self.backend.design_path();
                 self.scope = self.scope.take().map(|s| s.with_design(open.as_deref()));
                 let scope = self.scope.clone();
+                let context = self.backend.tool_context(name);
+                let accounting = self.accounting.as_mut();
                 let backend = self.backend.as_mut();
-                let mut result = vfs::scoped(scope, || call_tool(backend, name, &args));
+                let mut result = vfs::scoped(scope, || match accounting {
+                    Some(accounting) => match context {
+                        Some(context) => {
+                            let reply =
+                                crate::account::call_tool_with(backend, name, &args, &context, &accounting.budget, accounting.billing.as_mut());
+                            reply.into_value()
+                        }
+                        None if crate::account::tool_is_free(name) => call_tool(backend, name, &args),
+                        None => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
+                            solidcraft_engine::entitlement::RefusalCode::AuthUnavailable,
+                            "this charged tool has no host-minted logical operation context",
+                        )),
+                    },
+                    None => call_tool(backend, name, &args),
+                });
                 // So does the folder of each design file the call opened or saved: the call reached
                 // it, so it was one of the agent's folders already. Only paths given in full: a
                 // running app resolves a relative one against its own working folder.
