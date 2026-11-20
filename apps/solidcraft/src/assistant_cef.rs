@@ -462,6 +462,61 @@ fn same_motion_flags(left: &EventModifiers, right: &EventModifiers) -> bool {
         && left.right_mouse_button == right.right_mouse_button
 }
 
+/// A popup rectangle in physical pixels plus whether it is the current one.
+type PopupHit = (bool, [i32; 2], [u32; 2]);
+
+/// The popup rectangle drawing uses, in page-relative DIPs. A stale popup has
+/// no input rectangle even when its last texture is still retained.
+fn popup_rect(page: egui::Rect, current: bool, at: [i32; 2], size: [u32; 2], ppp: f32) -> Option<egui::Rect> {
+    if !current || !ppp.is_finite() || ppp <= 0.0 {
+        return None;
+    }
+    Some(egui::Rect::from_min_size(
+        page.min + egui::vec2(at[0] as f32 / ppp, at[1] as f32 / ppp),
+        egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
+    ))
+}
+
+/// Page or drawn, current popup admission. A stale popup never receives input.
+fn input_surface_hit(page: egui::Rect, popup: Option<PopupHit>, pos: egui::Pos2, ppp: f32) -> bool {
+    if page.contains(pos) {
+        return true;
+    }
+    let Some((current, at, size)) = popup else { return false };
+    popup_rect(page, current, at, size, ppp).is_some_and(|rect| rect.contains(pos))
+}
+
+/// Keyboard flags belong to the event; held buttons come from pointer state.
+fn event_modifiers(event: egui::Modifiers, held: EventModifiers) -> EventModifiers {
+    EventModifiers { shift: event.shift, ctrl: event.ctrl, alt: event.alt, meta: event.mac_cmd, ..held }
+}
+
+/// One wheel event in physical page-local coordinates. Delta scaling and
+/// rounding are the page path's, so only admission and flags can change.
+fn wheel_mouse_event(
+    page: egui::Rect,
+    pos: egui::Pos2,
+    ppp: f32,
+    unit: egui::MouseWheelUnit,
+    delta: egui::Vec2,
+    event: egui::Modifiers,
+    held: EventModifiers,
+) -> MouseEvent {
+    let scale = match unit {
+        egui::MouseWheelUnit::Line => 20.0,
+        egui::MouseWheelUnit::Page => 120.0,
+        egui::MouseWheelUnit::Point => 1.0,
+    };
+    let local = (pos - page.min) * ppp;
+    MouseEvent {
+        x: local.x.round() as i32,
+        y: local.y.round() as i32,
+        button: MouseButton::Left,
+        action: MouseAction::WheelScrolled { delta_x: (delta.x * scale) as i32, delta_y: (delta.y * scale) as i32 },
+        modifiers: event_modifiers(event, held),
+    }
+}
+
 pub struct CefAssistant {
     runtime: CefRuntime,
     /// The app's live claim on the runtime; released only before checked shutdown.
@@ -1805,17 +1860,10 @@ impl CefAssistant {
         }
     }
 
-    /// The popup hit area is exactly the rectangle the page is drawn into.
-    fn popup_hit(&self, page: egui::Rect, pos: egui::Pos2, ppp: f32) -> bool {
-        if !self.popup_current || !ppp.is_finite() || ppp <= 0.0 {
-            return false;
-        }
-        let Some((_, at, size)) = self.popup else { return false };
-        let rect = egui::Rect::from_min_size(
-            page.min + egui::vec2(at[0] as f32 / ppp, at[1] as f32 / ppp),
-            egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
-        );
-        rect.contains(pos)
+    /// The one admission test for page, popup drag and popup wheel input.
+    fn input_hit(&self, page: egui::Rect, pos: egui::Pos2, ppp: f32) -> bool {
+        let popup = self.popup.map(|(_, at, size)| (self.popup_current, at, size));
+        input_surface_hit(page, popup, pos, ppp)
     }
 
     fn clear_ime_output(&mut self, ctx: &Context) {
@@ -1869,7 +1917,7 @@ impl CefAssistant {
                 egui::Event::PointerMoved(pos) => {
                     // A captured drag keeps reporting outside the page; a current
                     // popup list is part of the page for hit-testing.
-                    if rect.contains(pos) || self.pointer_capture.is_some() || self.popup_hit(rect, pos, ppp) {
+                    if self.input_hit(rect, pos, ppp) || self.pointer_capture.is_some() {
                         let local = (pos - rect.min) * ppp;
                         self.queue.push(Queued::Mouse(MouseEvent {
                             x: local.x.round() as i32,
@@ -1887,10 +1935,8 @@ impl CefAssistant {
                         egui::PointerButton::Middle => MouseButton::Middle,
                         _ => continue,
                     };
-                    let in_page = rect.contains(pos);
-                    let in_popup = self.popup_hit(rect, pos, ppp);
                     let captured = self.pointer_capture == Some(cef_button);
-                    if pressed && !in_page && !in_popup {
+                    if pressed && !self.input_hit(rect, pos, ppp) {
                         // The CAD side takes the keyboard back.
                         self.cancel_input(ctx);
                         // Blurring does not invalidate the admitted picture.
@@ -1916,11 +1962,7 @@ impl CefAssistant {
                         // queue still filters one whose press was invalidated.
                     }
                     let local = (pos - rect.min) * ppp;
-                    let mut held = self.pointer_modifiers(ctx);
-                    held.shift = modifiers.shift;
-                    held.ctrl = modifiers.ctrl;
-                    held.alt = modifiers.alt;
-                    held.meta = modifiers.mac_cmd;
+                    let held = event_modifiers(modifiers, self.pointer_modifiers(ctx));
                     self.queue.push(Queued::Mouse(MouseEvent {
                         x: local.x.round() as i32,
                         y: local.y.round() as i32,
@@ -1932,21 +1974,15 @@ impl CefAssistant {
                         self.pointer_capture = None;
                     }
                 }
-                egui::Event::MouseWheel { unit, delta, .. } if rect.contains(ctx.pointer_latest_pos().unwrap_or(egui::Pos2::ZERO)) => {
-                    let scale = match unit {
-                        egui::MouseWheelUnit::Line => 20.0,
-                        egui::MouseWheelUnit::Page => 120.0,
-                        egui::MouseWheelUnit::Point => 1.0,
-                    };
-                    let pos = ctx.pointer_latest_pos().unwrap_or(rect.center());
-                    let local = (pos - rect.min) * ppp;
-                    self.queue.push(Queued::Mouse(MouseEvent {
-                        x: local.x.round() as i32,
-                        y: local.y.round() as i32,
-                        button: MouseButton::Left,
-                        action: MouseAction::WheelScrolled { delta_x: (delta.x * scale) as i32, delta_y: (delta.y * scale) as i32 },
-                        modifiers: EventModifiers::default(),
-                    }));
+                egui::Event::MouseWheel { unit, delta, modifiers, phase: _ } => {
+                    // Admission uses the same pointer position and fallback as before;
+                    // only the surface and the forwarded flags change.
+                    let latest = ctx.pointer_latest_pos();
+                    if !self.input_hit(rect, latest.unwrap_or(egui::Pos2::ZERO), ppp) {
+                        continue;
+                    }
+                    let pos = latest.unwrap_or(rect.center());
+                    self.queue.push(Queued::Mouse(wheel_mouse_event(rect, pos, ppp, unit, delta, modifiers, self.pointer_modifiers(ctx))));
                 }
                 egui::Event::Text(text) if self.focused => {
                     for ch in text.chars() {
@@ -2987,6 +3023,45 @@ mod w4_input_tests {
             queue.push(Queued::ImeCancel);
         }
         assert_eq!(queue.critical.len(), 256);
+    }
+
+    fn popup_of(current: bool) -> PopupHit {
+        (current, [150, 20], [60, 40])
+    }
+
+    /// Plan W4: a drawn popup outside the page accepts wheel input only while
+    /// current; the page itself is always admitted.
+    #[test]
+    fn outside_page_popup_is_clickable_only_when_current() {
+        let page = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(100.0, 80.0));
+        // Exactly the drawing formula: page.min + physical at / ppp, physical size / ppp.
+        assert_eq!(popup_rect(page, true, [150, 20], [60, 40], 2.0), Some(egui::Rect::from_min_size(egui::pos2(85.0, 30.0), egui::vec2(30.0, 20.0))));
+        let outside_page = egui::pos2(112.0, 40.0);
+        assert!(!page.contains(outside_page), "the sample must be outside the page");
+        assert!(input_surface_hit(page, Some(popup_of(true)), outside_page, 2.0), "a current popup outside the page receives wheel input");
+        assert!(input_surface_hit(page, Some(popup_of(true)), page.center(), 2.0), "the page remains admitted");
+        assert!(!input_surface_hit(page, Some(popup_of(false)), outside_page, 2.0), "a stale popup must not receive input");
+        assert!(!input_surface_hit(page, None, outside_page, 2.0));
+        assert!(!input_surface_hit(page, Some(popup_of(true)), outside_page, 0.0), "no placeable popup at zero ppp");
+        assert!(!input_surface_hit(page, Some(popup_of(true)), outside_page, f32::NAN), "no placeable popup at NaN ppp");
+    }
+
+    /// Plan W4: wheel keeps ctrl/shift/alt/meta from the egui event and the
+    /// held-button flags from pointer state; coordinates and delta stay physical.
+    #[test]
+    fn wheel_keeps_event_modifiers_and_held_buttons() {
+        let page = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(200.0, 100.0));
+        let held = EventModifiers { left_mouse_button: true, right_mouse_button: true, ..Default::default() };
+        let event = egui::Modifiers { ctrl: true, shift: true, alt: true, mac_cmd: true, command: true };
+        let wheel = wheel_mouse_event(page, egui::pos2(60.0, 70.0), 2.0, egui::MouseWheelUnit::Line, egui::vec2(1.0, -2.0), event, held);
+        assert!(matches!(wheel.action, MouseAction::WheelScrolled { delta_x: 20, delta_y: -40 }), "line delta keeps its 20x scale");
+        assert_eq!((wheel.x, wheel.y), (100, 100), "coordinates stay physical and page-local");
+        assert_eq!(wheel.button, MouseButton::Left);
+        assert!(wheel.modifiers.ctrl && wheel.modifiers.shift && wheel.modifiers.alt && wheel.modifiers.meta, "wheel forwards event modifiers");
+        assert!(
+            wheel.modifiers.left_mouse_button && wheel.modifiers.right_mouse_button && !wheel.modifiers.middle_mouse_button,
+            "wheel keeps held-button flags from pointer state"
+        );
     }
 }
 
