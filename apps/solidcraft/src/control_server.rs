@@ -1145,7 +1145,7 @@ mod tests {
                 let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &mut req) else { panic!("synchronous test command") };
                 req.reply.send(reply).unwrap();
             }
-            assert_eq!(app.session.doc.param("width").unwrap().expr, "20 mm", "the controlled batch was refused before work");
+            assert_eq!(app.session.doc.param("width").unwrap().expr, "30 mm", "the controlled batch applied its retained step");
         });
         let waits = Waits { short: Duration::from_millis(100), long: Duration::from_secs(10), token: TOKEN_WAIT };
         let server = std::thread::spawn(move || {
@@ -1174,9 +1174,8 @@ mod tests {
             "engine.batch",
             json!({"expectedDocument":write["documentStamp"],"commands":[{"command":"parameters.change","params":{"name":"width","expression":"30 mm"}}]}),
         );
-        assert_eq!(batch["ok"], false, "{batch}");
-        assert_eq!(batch["errorDetails"]["code"], "UnsafeToStart", "{batch}");
-        assert_ne!(write["result"]["value"], 30.0, "the controlled batch did not apply");
+        assert_eq!(batch["result"]["completed"], 1, "{batch}");
+        assert_ne!(batch["documentStamp"], write["documentStamp"]);
         let late = ask("engine.execute", json!({"command":"parameters.list","expectedDocument":base}));
         assert_eq!(late["running"], true);
         assert_eq!(ask("control.capabilities", json!({}))["result"], capability["result"], "query while pending is not busy");
@@ -1193,7 +1192,7 @@ mod tests {
         let stale = &pending["result"]["reply"];
         assert_eq!(stale["ok"], false);
         assert_eq!(stale["errorDetails"]["code"], "STALE_DOCUMENT");
-        assert_eq!(stale["errorDetails"]["details"], json!({"expected":base,"current":write["documentStamp"]}));
+        assert_eq!(stale["errorDetails"]["details"], json!({"expected":base,"current":batch["documentStamp"]}));
         drop(lines);
         drop(out);
         server.join().unwrap();

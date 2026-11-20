@@ -13969,12 +13969,13 @@ mod mastra_backend_tests {
 
     #[test]
     #[cfg(unix)]
-    fn mastra_bridge_batch_is_refused_before_it_reaches_the_chat_document() {
+    fn mastra_bridge_batch_reaches_the_chat_document_as_one_tool_event_and_one_undo_step() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        let before_doc = Arc::clone(&app.session.doc);
         let stamp = app.session.document_stamp();
         let finished = json!({
             "state": "task_failed",
-            "reason": "the controlled bridge batch has no enforced safe stop",
+            "reason": "the bridge batch applied",
             "document": {"documentId": stamp.document_id, "revision": (stamp.revision + 1).to_string()},
             "changes": "applied",
             "validationRunId": null,
@@ -13985,15 +13986,19 @@ mod mastra_backend_tests {
         settle_bridge(&mut app, &ctx, |app| app.agent_chat.state() == State::Ready);
         send(&mut app, &ctx, "make a box through the bridge".into());
         settle_bridge(&mut app, &ctx, |app| app.agent_chat.turn.is_none());
-        assert_eq!(app.session.doc.features.len(), 0, "the controlled batch is refused before any step");
-        assert_eq!(app.session.undo.len(), 0, "a refused batch leaves no undo step");
+        assert_eq!(app.session.doc.features.len(), 1, "the batch reached the current chat document");
+        assert_eq!(app.session.undo.len(), 1, "the turn's edits are one undo step");
         assert!(
             app.agent_chat
                 .items
                 .iter()
-                .any(|item| matches!(item, Item::Tool { kind, output: Some(output), .. } if kind == "bridge" && output.contains("UnsafeToStart"))),
-            "the bridge call is visible as the refusal it got"
+                .any(|item| matches!(item, Item::Tool { kind, output: Some(output), .. } if kind == "bridge" && output.contains("documentStamp"))),
+            "the bridge call is visible as an existing tool event"
         );
+        let changes = app.agent_chat.items.iter().rposition(|item| matches!(item, Item::Changes { .. })).expect("one undo entry");
+        assert_eq!(app.session.undo.len(), 1);
+        agent_chat::undo_changes(&mut app, changes);
+        assert!(Arc::ptr_eq(&app.session.doc, &before_doc), "the bridge batch undoes as one step");
     }
 
     #[test]

@@ -54,7 +54,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps};
+use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps, run_document_steps_gated};
 use solidcraft_engine::entitlement::{
     AccountService, Admission, AuthenticatedHostScope, AuthorizationBound, BillingPort, BudgetTable, Capability, CommitDecision, CommitGate,
     ConservativeDeadline, EntryCategory, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode, ResultEvidence,
@@ -860,11 +860,8 @@ fn controlled_multi_step_refusal(req: &ControlRequest) -> Option<Refusal> {
         return None;
     }
     let nested = req.params.get("command").and_then(Value::as_str).is_some_and(|command| matches!(command, "engine.batch" | "engine.script"));
-    if matches!(req.method.as_str(), "engine.batch" | "engine.script") || nested {
-        return Some(Refusal::new(
-            RefusalCode::UnsafeToStart,
-            "controlled batch/script execution has no enforced safe-stop yet; run the steps separately",
-        ));
+    if req.method == "engine.script" || nested {
+        return Some(Refusal::new(RefusalCode::UnsafeToStart, "controlled script execution has no enforced safe-stop yet; run the steps separately"));
     }
     None
 }
@@ -1036,14 +1033,6 @@ fn authority_refusal(app: &SolveApp, req: &ControlRequest, admission: &Admission
     }
     if let CommitDecision::Drop { code } = gate.check() {
         return Some(Refusal::new(code, "the operation's authorization is no longer valid at this commit point"));
-    }
-    if req.method == "engine.batch" {
-        let steps = req.params.get("commands").and_then(Value::as_array).map_or(0, Vec::len);
-        let step = app.budget.bound(capability, req.entry);
-        let bounds = vec![step; steps];
-        if let Err(refusal) = solidcraft_engine::entitlement::plan_safe_stop(now, Some(bound), &bounds) {
-            return Some(refusal);
-        }
     }
     None
 }
@@ -1541,10 +1530,81 @@ pub(crate) fn batch_step_command(step: &Value) -> Option<&str> {
 /// `rollback` (the default), the design goes back to its checkpoint. Step failures are part of
 /// the reply; refusals (`engine.batch unavailable: …`) come before anything runs, so the client
 /// can send the steps one by one instead.
-fn batch(app: &mut SolveApp, p: &Value, guarded: bool) -> Outcome {
+/// Apply a controlled `engine.batch` with a verified per-step bound and a live gate before every
+/// step. The gate rechecks the same account/session/operation/status and remaining time; a stop
+/// before the next step is reported truthfully as retained or rolled back.
+fn controlled_batch(app: &mut SolveApp, steps: &[Value], p: &Value, req: &ControlRequest, admission: &Admission) -> Outcome {
+    let panels = steps.iter().filter(|step| command(step).is_some_and(solidcraft_engine::panels::commands::is_command)).count();
+    if panels > 0 {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(RefusalCode::UnsafeToStart, "controlled batches cannot mix panel steps"));
+    }
+    if let Some(why) = batch_refusal(steps) {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return err(why);
+    }
+    if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, app.session.param_check, &["view.pick"]) {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return ok(refusal.reply(steps.len()));
+    }
+    let step_bound = match required_bound(app, req) {
+        Ok(bound) => bound,
+        Err(refusal) => {
+            req.local_no_effect.store(true, Ordering::Relaxed);
+            return admission_refusal(&refusal);
+        }
+    };
+    let total = step_bound.saturating_mul(u32::try_from(steps.len()).unwrap_or(u32::MAX));
+    let Some(bound) = authorization_bound(req, admission) else {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(RefusalCode::UnsafeToStart, "this checked batch has no measured authorization bound"));
+    };
+    let Some(now) = app.commit_clock.as_deref().map(|clock| clock.now()) else {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(RefusalCode::AuthUnavailable, "the host has no clock for this checked batch"));
+    };
+    if bound.remaining(now).is_none_or(|remaining| remaining < total) {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(
+            RefusalCode::UnsafeToStart,
+            "the remaining authorization is shorter than the batch's safe-stop bound",
+        ));
+    }
+    let rollback = p.get("rollback").and_then(Value::as_bool).unwrap_or(true);
+    let policy = if rollback { CheckpointPolicy::Required } else { CheckpointPolicy::BestEffort };
+    let mut gate = |app: &mut SolveApp, index: usize| -> Result<(), String> {
+        if let Some(refusal) = authority_refusal(app, req, admission) {
+            return Err(refusal.message);
+        }
+        let Some(bound) = authorization_bound(req, admission) else { return Err("no measured authorization bound".into()) };
+        let Some(clock) = app.commit_clock.as_deref() else { return Err("the host has no clock".into()) };
+        let now = clock.now();
+        let Some(remaining) = bound.remaining(now) else { return Err("the authorization expired".into()) };
+        let left = steps.len().saturating_sub(index);
+        let needed = step_bound.saturating_mul(u32::try_from(left).unwrap_or(u32::MAX));
+        if remaining < needed {
+            return Err("the remaining authorization is shorter than the steps left to run".into());
+        }
+        Ok(())
+    };
+    let reply = run_document_steps_gated(app, steps, p, execute, SolveApp::run, policy, Some(&mut gate));
+    let completed = reply.get("completed").and_then(Value::as_u64).unwrap_or(0);
+    let rolled_back = reply.get("rolled_back").and_then(Value::as_bool).unwrap_or(false);
+    if completed == 0 || rolled_back {
+        // This reply was produced locally by the engine runner: no step was retained.
+        req.local_no_effect.store(true, Ordering::Relaxed);
+    }
+    ok(reply)
+}
+
+fn batch(app: &mut SolveApp, p: &Value, guarded: bool, req: &ControlRequest, admission: &Admission) -> Outcome {
     let Some(steps) = p.get("commands").and_then(Value::as_array).filter(|s| s.len() <= MAX_BATCH) else {
         return err(format!("engine.batch: commands must be an array of at most {MAX_BATCH} steps"));
     };
+    let controlled = !free_entry(req.entry) && req.helper.is_none();
+    if controlled {
+        return controlled_batch(app, steps, p, req, admission);
+    }
     let panels = steps.iter().filter(|step| command(step).is_some_and(solidcraft_engine::panels::commands::is_command)).count();
     if panels > 0 {
         if let Some(why) = batch_refusal(steps) {
@@ -1720,7 +1780,7 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
     // The host marks the actual dispatch boundary. Pre-dispatch refusals before this point can
     // release an unstarted admission; nothing reads this flag from request parameters.
     req.work_started.store(true, Ordering::Relaxed);
-    let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req));
+    let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req, &admission));
     // The actual commit point: re-read the advancing clock, the current account/session and the
     // durable state before writing the result back.
     let decision = commit_decision(app, req, &admission, &out);
@@ -1744,7 +1804,7 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
     out
 }
 
-fn handle_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+fn handle_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest, admission: &Admission) -> Outcome {
     let guarded = match crate::execution_guard::check_application(app, req) {
         Ok(stamp) => stamp.is_some(),
         Err(error) => {
@@ -1753,11 +1813,11 @@ fn handle_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest)
             return Outcome::Done(crate::execution_guard::refusal_json(&error));
         }
     };
-    let out = dispatch_request(app, ctx, req, guarded);
+    let out = dispatch_request(app, ctx, req, guarded, admission);
     if guarded { crate::execution_guard::stamp_outcome(app, out) } else { out }
 }
 
-fn dispatch_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest, guarded: bool) -> Outcome {
+fn dispatch_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest, guarded: bool, admission: &Admission) -> Outcome {
     let level = match request_param_check(&req.method, &req.params) {
         Ok(level) => level,
         Err(e) => {
@@ -1773,7 +1833,7 @@ fn dispatch_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlReques
         }
     };
     if scope.is_none() && level.is_none() && !guarded {
-        return dispatch(app, ctx, &req.method, &req.params, false);
+        return dispatch(app, ctx, &req.method, &req.params, false, req, admission);
     }
     let mut p = req.params.clone();
     if let Some(o) = p.as_object_mut() {
@@ -1783,8 +1843,8 @@ fn dispatch_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlReques
         o.remove("expectedDocument");
     }
     let run = |app: &mut SolveApp| match level {
-        Some(level) => dispatch_checked(app, ctx, &req.method, &p, level, guarded, &req.local_no_effect),
-        None => dispatch(app, ctx, &req.method, &p, guarded),
+        Some(level) => dispatch_checked(app, ctx, &req.method, &p, level, guarded, &req.local_no_effect, req, admission),
+        None => dispatch(app, ctx, &req.method, &p, guarded, req, admission),
     };
     match scope {
         Some(scope) => vfs::scoped(Some(scope), || run(app)),
@@ -1816,6 +1876,8 @@ fn dispatch_checked(
     level: ParamCheck,
     guarded: bool,
     no_effect: &AtomicBool,
+    req: &ControlRequest,
+    admission: &Admission,
 ) -> Outcome {
     // A strict contract refusal is host-known validation that runs before the command applies.
     if level == ParamCheck::Strict
@@ -1833,11 +1895,11 @@ fn dispatch_checked(
         return out;
     }
     let mut out = if switches_design(p).is_some() {
-        switch_checked(app, ctx, method, p, level, guarded, no_effect)
+        switch_checked(app, ctx, method, p, level, guarded, no_effect, req, admission)
     } else {
         let own = app.session.param_check;
         app.session.param_check = level;
-        let out = dispatch(app, ctx, method, p, guarded);
+        let out = dispatch(app, ctx, method, p, guarded, req, admission);
         app.session.param_check = own;
         out
     };
@@ -1857,6 +1919,8 @@ fn switch_checked(
     level: ParamCheck,
     guarded: bool,
     no_effect: &AtomicBool,
+    req: &ControlRequest,
+    admission: &Admission,
 ) -> Outcome {
     let id = command(p).unwrap_or_default();
     let issues: Vec<String> = solidcraft_engine::schema::issues(id, p.get("params").unwrap_or(&Value::Null)).into_iter().map(|i| i.message).collect();
@@ -1866,7 +1930,7 @@ fn switch_checked(
         no_effect.store(true, Ordering::Relaxed);
         return err(solidcraft_engine::params::bad(id, first.as_str()));
     }
-    let mut out = dispatch(app, ctx, method, p, guarded);
+    let mut out = dispatch(app, ctx, method, p, guarded, req, admission);
     if level == ParamCheck::Warn
         && !issues.is_empty()
         && let Outcome::Done(v) = &mut out
@@ -1877,7 +1941,7 @@ fn switch_checked(
     out
 }
 
-fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, guarded: bool) -> Outcome {
+fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, guarded: bool, req: &ControlRequest, admission: &Admission) -> Outcome {
     crate::render_workspace::sync_backend(app);
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     let f = |k: &str| p.get(k).and_then(Value::as_f64).filter(|x| x.is_finite());
@@ -1990,7 +2054,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
         }
         #[cfg(not(target_arch = "wasm32"))]
         "agent.task.revalidate" => wrap(crate::agent_chat::task_runtime::revalidate(app)),
-        "engine.batch" => batch(app, p, guarded),
+        "engine.batch" => batch(app, p, guarded, req, admission),
         "ui.agent_cursor" => {
             let s = &mut app.ui.agent_cursor;
             if let Some(v) = p.get("show").and_then(Value::as_bool) {
@@ -3367,7 +3431,7 @@ mod tests {
     }
 
     #[test]
-    fn a_controlled_batch_is_refused_before_taking_a_grant() {
+    fn a_controlled_batch_longer_than_its_bound_refuses_before_the_first_step() {
         let (mut app, admits, releases) = app_with_billing();
         let (mut req, _rx) = ControlRequest::trusted_control(
             "engine.batch",
@@ -3377,12 +3441,12 @@ mod tests {
             ]}),
         );
         req.deadline = Some(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(30)));
-        let refusal = admit_once(&mut app, &mut req).expect_err("controlled batch execution has no enforced stop yet");
-        assert_eq!(refusal.code, RefusalCode::UnsafeToStart);
-        assert_eq!(admits.load(Ordering::Relaxed), 0, "an unsupported path is refused before any grant");
-        assert_eq!(releases.load(Ordering::Relaxed), 0, "there is no grant to release");
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "the grant was taken then released");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "a proven-unstarted batch releases once");
         assert_eq!(bodies(&app), 0, "no batch step ran");
-        assert!(req.admission.is_none(), "the refused batch cannot be reused as admitted");
     }
 
     #[test]
@@ -3454,7 +3518,7 @@ mod tests {
     }
 
     #[test]
-    fn a_controlled_batch_is_refused_before_any_step_applies() {
+    fn a_controlled_batch_within_its_bound_applies_all_steps() {
         let (mut app, _authority, commits, _releases) = app_with_commit_authority();
         let (mut req, _rx) = ControlRequest::trusted_control(
             "engine.batch",
@@ -3465,9 +3529,48 @@ mod tests {
         );
         let out = handle(&mut app, &egui::Context::default(), &mut req);
         let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
-        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
-        assert_eq!(bodies(&app), 0, "no step ran");
-        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 2, "{reply}");
+        assert_eq!(bodies(&app), 2, "both steps applied");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "one retained batch is charged once");
+    }
+
+    #[test]
+    fn a_controlled_batch_rollback_is_not_charged() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.sphere","params":{"radius":"not-a-number"}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["rolled_back"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a full rollback is not charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "a full rollback releases the hold");
+        assert_eq!(bodies(&app), 0, "the first box was rolled back");
+    }
+
+    #[test]
+    fn a_controlled_batch_without_rollback_retains_and_charges() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"rollback":false,"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.sphere","params":{"radius":"not-a-number"}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["rolled_back"], false, "{reply}");
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "a retained step is charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "retained work keeps its hold");
+        assert_eq!(bodies(&app), 1, "the first box remains");
     }
 
     #[test]
