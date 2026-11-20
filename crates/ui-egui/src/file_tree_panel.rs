@@ -918,9 +918,13 @@ fn modals(app: &mut SolveApp, ctx: &egui::Context) {
     match modal {
         Modal::Delete { paths, dirty } => delete_modal(app, ctx, paths, dirty),
         Modal::Permanent { paths, reason } => permanent_modal(app, ctx, paths, reason),
-        Modal::Conflict { sources, destination, cut, names, files_only } => conflict_modal(app, ctx, sources, destination, cut, names, files_only),
+        Modal::Conflict { sources, destination, cut, names, files_only, replaceable } => {
+            conflict_modal(app, ctx, sources, destination, cut, names, files_only, replaceable)
+        }
         Modal::DiscardReload { path } => discard_reload_modal(app, ctx, path),
-        Modal::ReplaceOpen { sources, destination, cut, dirty } => replace_open_modal(app, ctx, sources, destination, cut, dirty),
+        Modal::ReplaceOpen { sources, destination, cut, dirty, replaceable } => {
+            replace_open_modal(app, ctx, sources, destination, cut, dirty, replaceable)
+        }
     }
 }
 
@@ -999,6 +1003,7 @@ fn conflict_modal(
     cut: bool,
     names: Vec<String>,
     files_only: bool,
+    replaceable: Vec<std::path::PathBuf>,
 ) {
     let title = tr("ui.files_conflict_title");
     let summary = trf("ui.files_conflict_count", &[("n", &names.len().to_string()), ("names", &names_summary(&names, names.len()))]);
@@ -1016,16 +1021,22 @@ fn conflict_modal(
             }
         });
     let restore = |app: &mut SolveApp| {
-        app.file_tree.modal =
-            Some(Modal::Conflict { sources: sources.clone(), destination: destination.clone(), cut, names: names.clone(), files_only });
+        app.file_tree.modal = Some(Modal::Conflict {
+            sources: sources.clone(),
+            destination: destination.clone(),
+            cut,
+            names: names.clone(),
+            files_only,
+            replaceable: replaceable.clone(),
+        });
     };
     if skip {
-        app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Skip);
+        app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Skip, &replaceable);
         return;
     }
     match action {
-        ui_kit::Action::Apply if files_only => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Replace),
-        ui_kit::Action::Ok => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::KeepBoth),
+        ui_kit::Action::Apply if files_only => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Replace, &replaceable),
+        ui_kit::Action::Ok => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::KeepBoth, &replaceable),
         // Cancel is an answer: the question closes and nothing changes.
         ui_kit::Action::Cancel => {}
         _ if !closed => restore(app),
@@ -1040,6 +1051,7 @@ fn replace_open_modal(
     destination: std::path::PathBuf,
     cut: bool,
     dirty: Vec<String>,
+    replaceable: Vec<std::path::PathBuf>,
 ) {
     let count = dirty.len();
     let message = trf("ui.files_replace_dirty", &[("n", &count.to_string())]);
@@ -1050,12 +1062,18 @@ fn replace_open_modal(
             ui_kit::text(ui, &message, ui_kit::Text::Error(&message));
         });
     let restore = |app: &mut SolveApp| {
-        app.file_tree.modal = Some(Modal::ReplaceOpen { sources: sources.clone(), destination: destination.clone(), cut, dirty: dirty.clone() });
+        app.file_tree.modal = Some(Modal::ReplaceOpen {
+            sources: sources.clone(),
+            destination: destination.clone(),
+            cut,
+            dirty: dirty.clone(),
+            replaceable: replaceable.clone(),
+        });
     };
     match action {
-        ui_kit::Action::Ok => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Replace),
+        ui_kit::Action::Ok => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Replace, &replaceable),
         ui_kit::Action::Apply => match crate::file_tree::save_copies(app, &dirty.iter().map(std::path::PathBuf::from).collect::<Vec<_>>()) {
-            Ok(_) => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Replace),
+            Ok(_) => app.file_tree.resolve_conflict(sources, destination, cut, Conflict::Replace, &replaceable),
             Err(e) => {
                 app.file_tree.notice = Some((trf("ui.files_save_copies_failed", &[("reason", &e)]), true));
                 restore(app);

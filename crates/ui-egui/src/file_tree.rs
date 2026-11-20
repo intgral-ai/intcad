@@ -225,16 +225,20 @@ pub(crate) enum EditKind {
 
 /// A question the panel keeps until the person answers it.
 pub(crate) enum Modal {
-    /// Pasting or dropping would replace entries that are already there.
-    Conflict { sources: Vec<PathBuf>, destination: PathBuf, cut: bool, names: Vec<String>, files_only: bool },
+    /// Pasting or dropping would replace entries that are already there. `replaceable` is the
+    /// sources whose destination existed when the question opened: a name that appears later is
+    /// not included, and a second source for the same destination is kept as a copy rather than
+    /// replacing the first result.
+    Conflict { sources: Vec<PathBuf>, destination: PathBuf, cut: bool, names: Vec<String>, files_only: bool, replaceable: Vec<PathBuf> },
     /// Deleting entries, with the open designs that hold unsaved work among them.
     Delete { paths: Vec<PathBuf>, dirty: Vec<String> },
     /// The trash is not usable here; deleting for good needs another, explicit answer.
     Permanent { paths: Vec<PathBuf>, reason: String },
     /// Reloading an open design would throw away its unsaved edits.
     DiscardReload { path: String },
-    /// Replacing a file that an open design with unsaved work owns.
-    ReplaceOpen { sources: Vec<PathBuf>, destination: PathBuf, cut: bool, dirty: Vec<String> },
+    /// Replacing a file that an open design with unsaved work owns. `replaceable` is carried
+    /// through from the conflict answer so the same destinations stay the only replacements.
+    ReplaceOpen { sources: Vec<PathBuf>, destination: PathBuf, cut: bool, dirty: Vec<String>, replaceable: Vec<PathBuf> },
 }
 
 /// What a finished batch is reported as, under the tree until dismissed.
@@ -845,17 +849,44 @@ impl FileTree {
     /// Copy or move `sources` into `destination`. With no `conflict` chosen, a destination that
     /// already holds one of the names opens the conflict question first.
     pub(crate) fn place(&mut self, sources: Vec<PathBuf>, destination: &Path, cut: bool, conflict: Option<Conflict>) {
+        self.place_with(sources, destination, cut, conflict, &[]);
+    }
+
+    /// [`FileTree::place`], with the sources whose existing destination the person specifically
+    /// agreed to replace. An item outside `replaceable` keeps both entries even when the batch
+    /// answer is Replace: a name that appears after the question, or a second source for the
+    /// same destination as an earlier item, was not that consent.
+    fn place_with(&mut self, sources: Vec<PathBuf>, destination: &Path, cut: bool, conflict: Option<Conflict>, replaceable: &[PathBuf]) {
         let mut items = Vec::new();
         let mut conflicts = Vec::new();
         let mut files_only = true;
+        let mut asked_replacements = Vec::new();
+        let mut replacing: Vec<PathBuf> = Vec::new();
         for source in sources {
             let Some(name) = source.file_name().and_then(|n| n.to_str()).map(str::to_owned) else { continue };
             let target = destination.join(&name);
             if target.exists() {
                 conflicts.push(name.clone());
-                files_only &= source.is_file() && target.is_file();
+                let files = source.is_file() && target.is_file();
+                files_only &= files;
+                if files {
+                    asked_replacements.push(source.clone());
+                }
             }
-            items.push(OpItem { source, destination: destination.to_path_buf(), conflict: conflict.unwrap_or(Conflict::KeepBoth) });
+            let item_conflict = match conflict {
+                Some(Conflict::Replace) => {
+                    let allowed = replaceable.iter().any(|allowed| same_source(allowed, &source));
+                    if allowed && !replacing.iter().any(|earlier| same_destination(earlier, &target)) {
+                        replacing.push(target.clone());
+                        Conflict::Replace
+                    } else {
+                        Conflict::KeepBoth
+                    }
+                }
+                Some(chosen) => chosen,
+                None => Conflict::KeepBoth,
+            };
+            items.push(OpItem { source, destination: destination.to_path_buf(), conflict: item_conflict });
         }
         if items.is_empty() {
             return;
@@ -873,18 +904,16 @@ impl FileTree {
         match conflict {
             None if !conflicts.is_empty() => {
                 let sources = items.iter().map(|i| i.source.clone()).collect();
-                self.modal = Some(Modal::Conflict { sources, destination: destination.to_path_buf(), cut, names: conflicts, files_only });
+                self.modal = Some(Modal::Conflict {
+                    sources,
+                    destination: destination.to_path_buf(),
+                    cut,
+                    names: conflicts,
+                    files_only,
+                    replaceable: asked_replacements,
+                });
             }
-            Some(chosen) => {
-                for item in &mut items {
-                    item.conflict = chosen;
-                }
-                self.submit(action, items);
-                if cut {
-                    self.clip = None;
-                }
-            }
-            None => {
+            Some(_) | None => {
                 self.submit(action, items);
                 if cut {
                     self.clip = None;
@@ -1061,8 +1090,10 @@ impl FileTree {
         self.submit(Action::Delete, items);
     }
 
-    /// Answer the conflict question: the chosen policy applies to every item of the batch.
-    pub(crate) fn resolve_conflict(&mut self, sources: Vec<PathBuf>, destination: PathBuf, cut: bool, conflict: Conflict) {
+    /// Answer the conflict question. A Replace answer replaces only `replaceable`, the sources
+    /// whose destination was named when the question opened; every other item keeps both entries.
+    /// The policy for the rest of the batch (Keep Both or Skip) applies to every item as before.
+    pub(crate) fn resolve_conflict(&mut self, sources: Vec<PathBuf>, destination: PathBuf, cut: bool, conflict: Conflict, replaceable: &[PathBuf]) {
         if conflict == Conflict::Replace {
             let dirty: Vec<String> = sources
                 .iter()
@@ -1073,11 +1104,11 @@ impl FileTree {
                 })
                 .collect();
             if !dirty.is_empty() {
-                self.modal = Some(Modal::ReplaceOpen { sources, destination, cut, dirty });
+                self.modal = Some(Modal::ReplaceOpen { sources, destination, cut, dirty, replaceable: replaceable.to_vec() });
                 return;
             }
         }
-        self.place(sources, &destination, cut, Some(conflict));
+        self.place_with(sources, &destination, cut, Some(conflict), replaceable);
     }
 
     /// Keep every open design's file and unsaved state, for the copy warning and the delete
@@ -1284,6 +1315,33 @@ impl FileTree {
         self.last_watch = now;
         true
     }
+}
+
+/// Is `b` the source the person allowed? Canonical identity keeps a symlink alias, a redundant
+/// separator or a file system's case folding from losing an answer that was already given.
+fn same_source(a: &Path, b: &Path) -> bool {
+    a == b || crate::documents::same_path(&a.to_string_lossy(), &b.to_string_lossy())
+}
+
+/// Do two items of one batch write the same destination? An existing path is resolved by the
+/// file system, so a case-insensitive volume's aliases compare equal. A name that does not exist
+/// yet cannot be resolved that way; names differing only in case are treated as one because the
+/// first item may create the other spelling's entry. Keeping the second item under a free name is
+/// safer than replacing the first item's output. Distinct names stay distinct.
+fn same_destination(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        return a == b;
+    }
+    let (Some(a_parent), Some(b_parent)) = (a.parent(), b.parent()) else { return false };
+    if a_parent != b_parent {
+        return false;
+    }
+    let (Some(a_name), Some(b_name)) = (a.file_name(), b.file_name()) else { return false };
+    let (a, b) = (a_name.to_string_lossy(), b_name.to_string_lossy());
+    a.to_lowercase() == b.to_lowercase()
 }
 
 fn placeholder(dir: &Path, depth: usize, state: RowState) -> Row {
