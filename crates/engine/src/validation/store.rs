@@ -4,7 +4,9 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +33,19 @@ pub(super) struct SubmissionRecord {
     pub profile: ProfileRef,
     pub owner: String,
     pub created_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+/// A retired run whose admission/state retention removed. It keeps the durable terminal outcome
+/// until the submission key expires, so replaying a still-valid key cannot resurrect the run as
+/// a new Queued job.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct TombstoneRecord {
+    pub schema_version: String,
+    pub run_id: String,
+    pub submission_key: String,
+    pub state: ValidationState,
     pub expires_at_ms: u64,
 }
 
@@ -88,7 +103,55 @@ pub(super) struct Store {
     pub root: PathBuf,
 }
 
+/// Independent open-file description per transaction. Closing releases the native lock,
+/// including after process death. The stable name is never replaced or retained-run cleanup.
+pub(super) struct TransactionGuard {
+    _file: fs::File,
+}
+
 impl Store {
+    fn transaction_file(&self) -> Result<fs::File, ValidationError> {
+        let path = self.root.join("transaction.lock");
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
+            return Err(ValidationError::internal("validation transaction lock is not a regular file"));
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| ValidationError::internal(format!("validation transaction lock: {error}")))?;
+        if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+            return Err(ValidationError::internal("validation transaction lock is not a regular file"));
+        }
+        Ok(file)
+    }
+
+    pub fn transaction(&self) -> Result<TransactionGuard, ValidationError> {
+        let file = self.transaction_file()?;
+        file.lock().map_err(|error| ValidationError::internal(format!("validation transaction lock: {error}")))?;
+        Ok(TransactionGuard { _file: file })
+    }
+
+    pub fn transaction_until(&self, deadline: Instant, stop: &AtomicBool) -> Result<TransactionGuard, ValidationError> {
+        let file = self.transaction_file()?;
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Err(ValidationError::cancelled("validation cancellation control stopped before storage admission"));
+            }
+            if Instant::now() >= deadline {
+                return Err(ValidationError::timeout("validation cancellation could not acquire its storage transaction before the deadline"));
+            }
+            match file.try_lock() {
+                Ok(()) => return Ok(TransactionGuard { _file: file }),
+                Err(fs::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(2)),
+                Err(fs::TryLockError::Error(error)) => {
+                    return Err(ValidationError::internal(format!("validation transaction lock: {error}")));
+                }
+            }
+        }
+    }
     pub fn open(root: PathBuf) -> Result<Self, ValidationError> {
         let store = Store { root };
         store.ensure_dirs()?;
@@ -96,7 +159,7 @@ impl Store {
     }
 
     fn ensure_dirs(&self) -> Result<(), ValidationError> {
-        for dir in [self.runs_dir(), self.keys_dir(), self.evidence_root()] {
+        for dir in [self.runs_dir(), self.keys_dir(), self.retired_dir(), self.evidence_root()] {
             fs::create_dir_all(&dir).map_err(|error| ValidationError::internal(format!("validation store: {error}")))?;
         }
         Ok(())
@@ -104,6 +167,14 @@ impl Store {
 
     pub fn runs_dir(&self) -> PathBuf {
         self.root.join("runs")
+    }
+
+    pub fn retired_dir(&self) -> PathBuf {
+        self.root.join("retired")
+    }
+
+    pub fn tombstone_path(&self, run_id: &str) -> PathBuf {
+        self.retired_dir().join(format!("{run_id}.json"))
     }
 
     pub fn keys_dir(&self) -> PathBuf {
@@ -368,11 +439,20 @@ impl Store {
     /// Remove every record for a completed run older than the retention window. Active
     /// (nonterminal) runs are never touched; an orphaned admission older than the window is
     /// removed too.
-    pub fn purge_older_than(&self, now_ms: u64, retention_ms: u64) -> Vec<(String, Option<String>)> {
+    pub fn purge_older_than(&self, now_ms: u64, retention_ms: u64, _transaction: &TransactionGuard) -> Vec<(String, Option<String>)> {
         let mut removed: Vec<(String, Option<String>)> = Vec::new();
         for run_id in self.all_run_ids() {
-            let state = self.read_optional_json::<StateRecord>(&self.state_path(&run_id), 64 << 10).ok().flatten();
-            let admission = self.read_optional_json::<AdmissionRecord>(&self.admission_path(&run_id), 1 << 20).ok().flatten();
+            // A present record that cannot be read is not an absent record. Keep the run until a
+            // later cleanup can prove its age and terminal outcome; deleting fail-open would let
+            // a still-valid key recreate Queued.
+            let state = match self.read_optional_json::<StateRecord>(&self.state_path(&run_id), 64 << 10) {
+                Ok(state) => state,
+                Err(_) => continue,
+            };
+            let admission = match self.read_optional_json::<AdmissionRecord>(&self.admission_path(&run_id), 1 << 20) {
+                Ok(admission) => admission,
+                Err(_) => continue,
+            };
             let (terminal_old, candidate_id) = match (state.as_ref(), admission.as_ref()) {
                 (Some(state), _) if state.state.is_terminal() => {
                     (now_ms.saturating_sub(state.updated_at_ms) >= retention_ms, admission.as_ref().map(|a| a.candidate.candidate_id.clone()))
@@ -386,6 +466,54 @@ impl Store {
             if !terminal_old {
                 continue;
             }
+            if let Some(state) = state.as_ref().filter(|state| state.state.is_terminal()) {
+                // A missing admission is reachable from legacy partial retention or a previous
+                // interrupted sweep. The key record can still remain. Write the tombstone from
+                // the key before deleting anything; when that cannot be proved, keep the records.
+                let tombstone = match admission.as_ref() {
+                    Some(admission) => self.remember_tombstone(&run_id, state.state, &admission.submission_key),
+                    None => self.remember_tombstone_from_key(&run_id, state.state),
+                };
+                if !tombstone {
+                    // Keep the terminal records when the tombstone cannot be written; the next
+                    // cleanup retries. Deleting them would let a still-valid key recreate Queued.
+                    continue;
+                }
+                if self.tombstone_path(&run_id).is_file() {
+                    // Never delete around a conflicting, malformed or unreadable retirement
+                    // record. The existing record remains authority even when the key path was
+                    // unavailable. When an admission still names the submission key, the
+                    // tombstone must name that exact key; a valid record for another key is not
+                    // evidence that this run's key was retired.
+                    match self.read_valid_tombstone(&run_id) {
+                        Ok(Some(existing))
+                            if existing.state == state.state
+                                && admission.as_ref().is_none_or(|admission| existing.submission_key == admission.submission_key) => {}
+                        _ => continue,
+                    }
+                }
+            } else if let Some(admission) = admission.as_ref()
+                && self.tombstone_path(&run_id).is_file()
+            {
+                // An admission with no state never wrote a tombstone itself. A tombstone can
+                // only come from an earlier terminal retirement; unless it is valid and names
+                // this admission's submission key it is not evidence that the key was retired.
+                // Keep the admission, profile and evidence rather than let a replay rebuild
+                // Queued.
+                match self.read_valid_tombstone(&run_id) {
+                    Ok(Some(existing)) if existing.submission_key == admission.submission_key => {}
+                    _ => continue,
+                }
+            }
+            // With no tombstone, remove the admission before the state and require that removal
+            // to succeed. A crash then cannot leave an admission-only record that status or
+            // reconcile would repair into Queued. This ordering is not a tombstone substitute.
+            if !self.tombstone_path(&run_id).is_file()
+                && self.admission_path(&run_id).is_file()
+                && fs::remove_file(self.admission_path(&run_id)).is_err()
+            {
+                continue;
+            }
             for path in [
                 self.admission_path(&run_id),
                 self.profile_path(&run_id),
@@ -397,6 +525,11 @@ impl Store {
                 let _ = fs::remove_file(path);
             }
             let _ = fs::remove_dir_all(self.evidence_dir(&run_id));
+            // Reclaim only after the durable records that can drive recovery are actually gone.
+            // A failed removal leaves the run for the next cleanup, without unpinning or credit.
+            if self.admission_path(&run_id).is_file() || self.state_path(&run_id).is_file() {
+                continue;
+            }
             if let Some(candidate_id) = &candidate_id {
                 let _ = self.remove_run_pin(candidate_id, &run_id);
             }
@@ -415,7 +548,120 @@ impl Store {
             removed.push((run_id, Some(candidate_id)));
         }
         self.purge_keys(now_ms, retention_ms);
+        self.purge_tombstones(now_ms);
         removed
+    }
+
+    /// Every submission key record that names this run. `Ok(None)` is returned only after the
+    /// keys directory and every entry were read successfully and no entry names this run. A
+    /// listing failure, an entry iteration failure, or an unreadable/parse-failed key is an
+    /// error: the caller must not delete a terminal run while a key that could replay it may
+    /// still be present.
+    fn submission_for_run(&self, run_id: &str) -> Result<Option<SubmissionRecord>, ValidationError> {
+        let entries = fs::read_dir(self.keys_dir()).map_err(|error| ValidationError::internal(format!("validation key directory: {error}")))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| ValidationError::internal(format!("validation key directory entry: {error}")))?;
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let bytes = self.read_bounded(&path, 64 << 10).map_err(|error| ValidationError::internal(format!("validation key record: {error}")))?;
+            let submission: SubmissionRecord =
+                serde_json::from_slice(&bytes).map_err(|_| ValidationError::internal("validation key record is not valid JSON"))?;
+            if submission.run_id == run_id {
+                return Ok(Some(submission));
+            }
+        }
+        Ok(None)
+    }
+
+    fn validate_tombstone(&self, run_id: &str, record: &TombstoneRecord) -> Result<(), ValidationError> {
+        if record.schema_version != RECORD_SCHEMA || record.run_id != run_id || !record.state.is_terminal() {
+            return Err(ValidationError::internal("the validation tombstone is not readable and internally consistent"));
+        }
+        let timestamp = record.submission_key.split_once(':').and_then(|(milliseconds, _)| milliseconds.parse::<u64>().ok());
+        let key = timestamp.and_then(|timestamp| super::keys::SubmissionKey::parse(&record.submission_key, timestamp).ok());
+        if key.as_ref().is_none_or(|key| key.expires_at_ms() != record.expires_at_ms) {
+            return Err(ValidationError::internal("the validation tombstone is not readable and internally consistent"));
+        }
+        Ok(())
+    }
+
+    /// The one defensive retirement policy shared by the port, cleanup and all tombstone writes.
+    pub(super) fn read_valid_tombstone(&self, run_id: &str) -> Result<Option<TombstoneRecord>, ValidationError> {
+        let Some(record) = self.read_tombstone(run_id)? else { return Ok(None) };
+        self.validate_tombstone(run_id, &record)?;
+        Ok(Some(record))
+    }
+
+    fn write_tombstone(&self, run_id: &str, state: ValidationState, submission_key: &str, expires_at_ms: u64) -> bool {
+        let path = self.tombstone_path(run_id);
+        match self.read_optional_json::<TombstoneRecord>(&path, 64 << 10) {
+            Ok(Some(existing)) => {
+                return self.validate_tombstone(run_id, &existing).is_ok()
+                    && existing.submission_key == submission_key
+                    && existing.state == state
+                    && existing.expires_at_ms == expires_at_ms;
+            }
+            Ok(None) => {}
+            // An existing retirement record we cannot read is authority to keep, not to replace.
+            Err(_) => return false,
+        }
+        let tombstone = TombstoneRecord {
+            schema_version: RECORD_SCHEMA.into(),
+            run_id: run_id.into(),
+            submission_key: submission_key.into(),
+            state,
+            expires_at_ms,
+        };
+        self.validate_tombstone(run_id, &tombstone).is_ok() && self.write_json_replace(&path, &tombstone).is_ok()
+    }
+
+    /// Keep the terminal outcome for a still-valid key. Returns `false` when the key exists but
+    /// the tombstone could not be written, so the caller keeps the terminal records instead.
+    fn remember_tombstone(&self, run_id: &str, state: ValidationState, submission_key: &str) -> bool {
+        let key_path = self.key_path(&solidcraft_io::candidate::digest_hex(submission_key.as_bytes()));
+        let submission = match self.read_optional_json::<SubmissionRecord>(&key_path, 1 << 20) {
+            Ok(Some(submission)) => submission,
+            Ok(None) => return true,
+            // A present key we cannot read must not be discarded with the run records.
+            Err(_) => return false,
+        };
+        self.write_tombstone(run_id, state, submission_key, submission.expires_at_ms)
+    }
+
+    /// The admission is already gone. Find its key record by run id and preserve the terminal
+    /// outcome from it. No key record means a later replay has no key to find; an unreadable
+    /// key record fails closed and keeps the state for a later cleanup.
+    ///
+    /// A pre-tombstone store where both admission and state were already removed has no record
+    /// for cleanup to inspect. That legacy state is indistinguishable from the documented
+    /// crash-after-key recovery; no migration or revival semantics are added here, and the key
+    /// remains until its normal expiry.
+    fn remember_tombstone_from_key(&self, run_id: &str, state: ValidationState) -> bool {
+        let submission = match self.submission_for_run(run_id) {
+            Ok(Some(submission)) => submission,
+            Ok(None) => return true,
+            Err(_) => return false,
+        };
+        self.write_tombstone(run_id, state, &submission.submission_key, submission.expires_at_ms)
+    }
+
+    pub fn read_tombstone(&self, run_id: &str) -> Result<Option<TombstoneRecord>, ValidationError> {
+        self.read_optional_json(&self.tombstone_path(run_id), 64 << 10)
+    }
+
+    fn purge_tombstones(&self, now_ms: u64) {
+        let Ok(entries) = fs::read_dir(self.retired_dir()) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(run_id) = path.file_stem().and_then(|stem| stem.to_str()) else { continue };
+            let Ok(record) = self.read_valid_tombstone(run_id) else { continue };
+            let Some(record) = record else { continue };
+            if record.expires_at_ms <= now_ms && !self.admission_path(&record.run_id).is_file() && !self.state_path(&record.run_id).is_file() {
+                let _ = fs::remove_file(path);
+            }
+        }
     }
 
     fn purge_keys(&self, now_ms: u64, retention_ms: u64) {
@@ -427,14 +673,34 @@ impl Store {
             if record.expires_at_ms.saturating_add(retention_ms) > now_ms {
                 continue;
             }
+            let tombstone = if self.tombstone_path(&record.run_id).is_file() {
+                match self.read_valid_tombstone(&record.run_id) {
+                    // A validated tombstone is authority only for the exact key it names,
+                    // including that key's expiry. A record for another key or with a
+                    // conflicting expiry is not permission to collect this key, and it must
+                    // not be deleted on this key's separate retention window.
+                    Ok(Some(existing)) if existing.submission_key == record.submission_key && existing.expires_at_ms == record.expires_at_ms => {
+                        Some(existing)
+                    }
+                    _ => continue,
+                }
+            } else {
+                None
+            };
             let run_terminal_old = self
                 .read_optional_json::<StateRecord>(&self.state_path(&record.run_id), 64 << 10)
                 .ok()
                 .flatten()
                 .is_some_and(|state| state.state.is_terminal() && now_ms.saturating_sub(state.updated_at_ms) >= retention_ms);
             let admission_exists = self.admission_path(&record.run_id).is_file();
-            if run_terminal_old || (!self.state_path(&record.run_id).is_file() && !admission_exists) {
+            let state_exists = self.state_path(&record.run_id).is_file();
+            if run_terminal_old || (!state_exists && !admission_exists) {
                 let _ = fs::remove_file(path);
+                if !state_exists && !admission_exists && tombstone.is_some_and(|tombstone| tombstone.expires_at_ms <= now_ms) {
+                    // Remove retirement evidence only on its own expiry, never because a
+                    // separate key record reached the assisted retention window.
+                    let _ = fs::remove_file(self.tombstone_path(&record.run_id));
+                }
             }
         }
     }

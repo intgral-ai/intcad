@@ -161,6 +161,106 @@ fn native_reference(port: &ValidationPort) -> ProfileRef {
     port.native_basic_reference().unwrap()
 }
 
+struct TerminalKeyFixture {
+    root: PathBuf,
+    port: Arc<ValidationPort>,
+    clock: Arc<ManualClock>,
+    candidate: crate::schema::snapshot::CandidateRef,
+    reference: ProfileRef,
+    key: String,
+    run_id: String,
+    terminal: ValidationState,
+}
+
+fn terminal_run_with_key(name: &str) -> TerminalKeyFixture {
+    const NOW: u64 = 1_760_000_000_000;
+    let root = scratch(name);
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-terminal-key", analytic_design());
+    let clock = Arc::new(ManualClock::new(NOW));
+    let profile = native_basic_profile();
+    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
+    let port = Arc::new(port_with(&store, &candidates, runner_with(pass_checks(&profile)), limits, clock.clone()));
+    let reference = native_reference(&port);
+    let key = generate_submission_key(NOW);
+    let submitted = port.submit(&candidate, &reference, &key).unwrap();
+    port.pump().unwrap();
+    let terminal = port.status(&submitted.run_id).unwrap().state;
+    assert!(terminal.is_terminal(), "the fixture starts from a durable terminal run");
+    TerminalKeyFixture { root, port, clock, candidate, reference, key, run_id: submitted.run_id, terminal }
+}
+
+fn retire_with_admission_residue(name: &str) -> TerminalKeyFixture {
+    let fixture = terminal_run_with_key(name);
+    let admission = std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file());
+    std::fs::write(fixture.port.store.admission_path(&fixture.run_id), admission).unwrap();
+    fixture
+}
+
+fn write_state(fixture: &TerminalKeyFixture, state: ValidationState, updated_at_ms: u64) {
+    let record =
+        store::StateRecord { schema_version: RECORD_SCHEMA.into(), run_id: fixture.run_id.clone(), state, updated_at_ms, report_available: false };
+    fixture.port.store.write_json_replace(&fixture.port.store.state_path(&fixture.run_id), &record).unwrap();
+}
+
+fn tombstone_record(fixture: &TerminalKeyFixture, state: ValidationState) -> store::TombstoneRecord {
+    let expires_at_ms = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap().expires_at_ms();
+    store::TombstoneRecord {
+        schema_version: RECORD_SCHEMA.into(),
+        run_id: fixture.run_id.clone(),
+        submission_key: fixture.key.clone(),
+        state,
+        expires_at_ms,
+    }
+}
+
+fn write_tombstone_record(fixture: &TerminalKeyFixture, record: &store::TombstoneRecord) {
+    fixture.port.store.write_json_replace(&fixture.port.store.tombstone_path(&fixture.run_id), record).unwrap();
+}
+
+fn write_tombstone(fixture: &TerminalKeyFixture, state: ValidationState) {
+    write_tombstone_record(fixture, &tombstone_record(fixture, state));
+}
+
+fn key_expiry(fixture: &TerminalKeyFixture) -> u64 {
+    SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap().expires_at_ms()
+}
+
+struct AdmittedUnpinnedRun {
+    root: PathBuf,
+    candidates: PathBuf,
+    port: Arc<ValidationPort>,
+    run_id: String,
+}
+
+/// A live admitted run with its candidate, but no pin yet.
+///
+/// Production writes the key, profile, admission and state before it pins a candidate
+/// (`submit_for`). A run pin with no admission or state is the crash window that
+/// `a_pin_only_orphan_is_garbage_collected_after_retention` says cleanup must sweep.
+/// Pinning a bare run id here would therefore test a lifecycle production never creates:
+/// cleanup would retire the orphan pin and then correctly remove its candidate.
+fn admitted_unpinned_run(name: &str, now: u64) -> AdmittedUnpinnedRun {
+    let root = scratch(name);
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-pin-cleanup", analytic_design());
+    let clock = Arc::new(ManualClock::new(now));
+    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
+    let port = Arc::new(port_with(&store, &candidates, runner_with(Vec::new()), limits, clock));
+    let reference = native_reference(&port);
+    let submitted = port.submit(&candidate, &reference, &generate_submission_key(now)).unwrap();
+    port.unpin_run(&submitted.run_id, "cand-pin-cleanup").unwrap();
+    assert!(port.store.admission_path(&submitted.run_id).is_file(), "the fixture starts from an admitted run");
+    assert!(port.store.state_path(&submitted.run_id).is_file(), "the admitted run has a visible state");
+    assert!(candidate::lookup(&candidates, "cand-pin-cleanup").is_ok(), "the admitted run's candidate is present");
+    assert!(!candidate::is_pinned(&candidates, "cand-pin-cleanup"), "the race starts from a live, unpinned run");
+    AdmittedUnpinnedRun { root, candidates, port, run_id: submitted.run_id }
+}
+
 #[test]
 fn native_basic_is_stable_and_carries_the_two_required_checks() {
     let profile = native_basic_profile();
@@ -537,9 +637,379 @@ fn a_second_report_for_the_same_terminal_state_is_idempotent() {
         ValidationState::Cancelled,
         Some(ValidationError::cancelled("a second observer cancelled the job")),
     );
-    assert!(port.commit_report(&run.run_id, second, ValidationState::Cancelled).is_ok());
+    {
+        let transaction = port.store.transaction().unwrap();
+        assert_eq!(port.commit_report(&run.run_id, second, ValidationState::Cancelled, &transaction).unwrap(), ValidationState::Cancelled);
+    }
     assert_eq!(port.report(&run.run_id).unwrap().report.state, ValidationState::Cancelled);
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// A report is published before its state record. Both public terminal writers must recover
+/// that decision rather than publish different bytes (even when a legacy marker also exists).
+#[test]
+fn terminal_writers_recover_the_verified_report_before_state_and_marker() {
+    for cancelled in [false, true] {
+        let root = scratch("terminal-transaction-gap");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-transaction-gap", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let profile = native_basic_profile();
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        let job = port.start_next().unwrap().unwrap();
+        let running = port.load_state(&run.run_id).unwrap();
+        let winner = if cancelled {
+            port.cancel(&run.run_id).unwrap().state
+        } else {
+            port.complete(&job.run_id, RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) }).unwrap()
+        };
+        let bytes = std::fs::read(port.store.report_path(&run.run_id)).unwrap();
+        // Simulate interruption between atomic report and state publication.
+        port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+        if !port.store.marker_exists(&run.run_id) {
+            port.store.write_bytes_new(&port.store.cancel_path(&run.run_id), b"cancelled\n").unwrap();
+        }
+        let observer = read_port(&store, &candidates, clock.clone());
+        assert_eq!(observer.cancel(&run.run_id).unwrap().state, winner);
+        assert_eq!(port.complete(&job.run_id, RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() }).unwrap(), winner);
+        assert_eq!(std::fs::read(port.store.report_path(&run.run_id)).unwrap(), bytes);
+        assert_eq!(observer.report(&run.run_id).unwrap().report.state, winner);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn adoption_never_accepts_a_report_incompatible_with_an_existing_terminal_state() {
+    let root = scratch("incompatible-adoption");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-incompatible", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&native_basic_profile())), Limits::default(), clock.clone());
+    let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    let mut state = port.load_state(&run.run_id).unwrap();
+    state.state = ValidationState::Cancelled;
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &state).unwrap();
+    {
+        let transaction = port.store.transaction().unwrap();
+        assert!(!port.adopt_report(&run.run_id, &port.load_admission(&run.run_id).unwrap(), &transaction).unwrap());
+    }
+    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    assert!(!port.status(&run.run_id).unwrap().report_available);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Real child-process caller for the transaction fixtures. No global test ordering or timing.
+pub(super) fn persisted(step: &str) {
+    use std::io::Write;
+    if std::env::var("INTCAD_TRANSACTION_STOP").as_deref() == Ok(step) {
+        std::process::exit(71);
+    }
+    if std::env::var("INTCAD_TRANSACTION_PAUSE").as_deref() == Ok(step) {
+        println!("PERSISTED {step}");
+        std::io::stdout().flush().unwrap();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "CONTINUE");
+    }
+}
+
+#[test]
+fn terminal_transaction_child() {
+    use std::io::Write;
+    let Some(root) = std::env::var_os("INTCAD_TRANSACTION_CHILD_ROOT") else { return };
+    let run_id = std::env::var("INTCAD_TRANSACTION_CHILD_RUN").unwrap();
+    let root = PathBuf::from(root);
+    // The child must judge queue deadlines against the same clock as the parent fixture. The
+    // system clock is years ahead of the fixed test clock, which expired the queued job before
+    // the transaction barrier the fixture is about.
+    let port = ValidationPort::open_read_only_with(
+        root.join("validation"),
+        root.join("candidates"),
+        Limits::default(),
+        Arc::new(ManualClock::new(1_760_000_000_000)),
+    )
+    .unwrap();
+    println!("CALLING");
+    std::io::stdout().flush().unwrap();
+    match std::env::var("INTCAD_TRANSACTION_CHILD_OPERATION").unwrap().as_str() {
+        "cancel" => assert!(port.cancel(&run_id).is_ok()),
+        "pass" => {
+            let profile = port.store.read_profile(&run_id).unwrap();
+            let outcome = RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: pass_checks(&profile) };
+            assert_eq!(port.complete(&run_id, outcome).unwrap(), ValidationState::Passed);
+        }
+        "cleanup" => assert_eq!(port.cleanup(u64::MAX), 1),
+        "start" => {
+            let _ = port.start_next().unwrap();
+        }
+        _ => {
+            let outcome = RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() };
+            assert!(port.complete(&run_id, outcome).is_ok());
+        }
+    }
+}
+
+fn transaction_child(root: &Path, run_id: &str, operation: &str) -> std::process::Command {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", "validation::tests::terminal_transaction_child", "--nocapture"])
+        .env("INTCAD_TRANSACTION_CHILD_ROOT", root)
+        .env("INTCAD_TRANSACTION_CHILD_RUN", run_id)
+        .env("INTCAD_TRANSACTION_CHILD_OPERATION", operation);
+    child
+}
+
+fn child_message(reader: &mut impl std::io::BufRead, message: &str) {
+    loop {
+        let mut line = String::new();
+        assert_ne!(reader.read_line(&mut line).unwrap(), 0, "child ended before {message}");
+        if line.trim() == message {
+            return;
+        }
+    }
+}
+
+/// The first process is paused *inside* the report/state gap with the native lock held.
+/// The second caller announces its entry before release. No sleep chooses the winner.
+#[test]
+fn native_transaction_excludes_process_writers_in_both_orders_and_retention() {
+    use std::io::{BufReader, Write};
+    use std::process::Stdio;
+    for first in ["cancel", "pass", "retention", "claim", "cancel-before-claim"] {
+        let root = scratch("native-transaction-orders");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-native-orders", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&native_basic_profile())), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        if !matches!(first, "claim" | "cancel-before-claim") {
+            port.start_next().unwrap().unwrap();
+        }
+        let cancellation_first = first.starts_with("cancel");
+        let step = if first == "claim" { "running" } else { "report" };
+        let mut winner = transaction_child(
+            &root,
+            &run.run_id,
+            if cancellation_first {
+                "cancel"
+            } else if first == "claim" {
+                "start"
+            } else {
+                "pass"
+            },
+        )
+        .env("INTCAD_TRANSACTION_PAUSE", step)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+        let mut winner_out = BufReader::new(winner.stdout.take().unwrap());
+        child_message(&mut winner_out, &format!("PERSISTED {step}"));
+        let bytes = std::fs::read(port.store.report_path(&run.run_id)).ok();
+        let probe = std::fs::OpenOptions::new().read(true).write(true).open(store.join("transaction.lock")).unwrap();
+        assert!(matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock)), "the report/state gap must remain exclusively locked");
+        let mut loser = transaction_child(
+            &root,
+            &run.run_id,
+            if first == "retention" {
+                "cleanup"
+            } else if first == "cancel-before-claim" {
+                "start"
+            } else if first == "cancel" {
+                "complete"
+            } else {
+                "cancel"
+            },
+        )
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+        let mut loser_out = BufReader::new(loser.stdout.take().unwrap());
+        child_message(&mut loser_out, "CALLING");
+        winner.stdin.take().unwrap().write_all(b"CONTINUE\n").unwrap();
+        assert!(winner.wait().unwrap().success());
+        assert!(loser.wait().unwrap().success());
+        if first == "retention" {
+            assert!(!port.store.admission_path(&run.run_id).exists());
+            assert_eq!(
+                port.complete(&run.run_id, RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() }).unwrap_err().code,
+                ErrorCode::NotFound
+            );
+            assert!(!port.store.state_path(&run.run_id).exists());
+            assert!(!port.store.report_path(&run.run_id).exists());
+        } else {
+            let expected = if cancellation_first || first == "claim" { ValidationState::Cancelled } else { ValidationState::Passed };
+            assert_eq!(port.status(&run.run_id).unwrap().state, expected);
+            assert_eq!(port.report(&run.run_id).unwrap().report.state, expected);
+            if let Some(bytes) = bytes {
+                assert_eq!(std::fs::read(port.store.report_path(&run.run_id)).unwrap(), bytes);
+            }
+        }
+        assert!(store.join("transaction.lock").is_file(), "retention never deletes the stable lock");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn simultaneous_cancellations_from_independent_ports_keep_one_report() {
+    let root = scratch("simultaneous-cancellation");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-simultaneous", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let first = Arc::new(port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone()));
+    let run = first.submit(&candidate, &native_reference(&first), &generate_submission_key(clock.now_ms())).unwrap();
+    let second = Arc::new(read_port(&store, &candidates, Arc::new(ManualClock::new(clock.now_ms() + 1000))));
+    let barrier = Arc::new(Barrier::new(3));
+    let spawn = |port: Arc<ValidationPort>| {
+        let id = run.run_id.clone();
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            port.cancel(&id).unwrap().state
+        })
+    };
+    let a = spawn(Arc::clone(&first));
+    let b = spawn(Arc::clone(&second));
+    barrier.wait();
+    assert_eq!(a.join().unwrap(), ValidationState::Cancelled);
+    assert_eq!(b.join().unwrap(), ValidationState::Cancelled);
+    let report = first.report(&run.run_id).unwrap();
+    assert_eq!(second.cancel(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    assert_eq!(second.report(&run.run_id).unwrap(), report);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn native_transaction_is_released_after_each_terminal_crash_window() {
+    for step in ["marker", "report", "state", "unpin"] {
+        let root = scratch("native-transaction-crash");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-native-crash", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&native_basic_profile())), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        port.start_next().unwrap().unwrap();
+        mark_host_dead(&store, &run.run_id);
+        let status = transaction_child(&root, &run.run_id, "cancel").env("INTCAD_TRANSACTION_STOP", step).status().unwrap();
+        assert_eq!(status.code(), Some(71), "child must stop at {step}");
+        let stop = AtomicBool::new(false);
+        drop(port.store.transaction_until(Instant::now() + Duration::from_secs(2), &stop).unwrap());
+        let recovered = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+        assert_eq!(recovered.status(&run.run_id).unwrap().state, ValidationState::Cancelled, "{step}");
+        assert_eq!(recovered.report(&run.run_id).unwrap().report.state, ValidationState::Cancelled);
+        assert!(!candidate::is_pinned(&candidates, "cand-native-crash"), "{step}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn cancelled_storage_admission_and_deadline_do_not_publish_a_marker() {
+    let root = scratch("cancel-control-deadline");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-control-deadline", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(Vec::new()), Limits::default(), clock.clone());
+    let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+    let _transaction = port.store.transaction().unwrap();
+    let stopped = AtomicBool::new(true);
+    assert_eq!(port.cancel_until(&run.run_id, Instant::now() + Duration::from_secs(1), &stopped).unwrap_err().code, ErrorCode::Cancelled);
+    assert_eq!(port.cancel_until(&run.run_id, Instant::now(), &AtomicBool::new(false)).unwrap_err().code, ErrorCode::Timeout);
+    assert!(!port.store.marker_exists(&run.run_id));
+    drop(_transaction);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn separate_process_terminal_writers_recover_both_report_orders() {
+    for cancelled in [false, true] {
+        let root = scratch("process-terminal-gap");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-process-gap", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let profile = native_basic_profile();
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        let job = port.start_next().unwrap().unwrap();
+        let running = port.load_state(&run.run_id).unwrap();
+        let winner = if cancelled {
+            port.cancel(&run.run_id).unwrap().state
+        } else {
+            port.complete(&job.run_id, RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) }).unwrap()
+        };
+        let bytes = std::fs::read(port.store.report_path(&run.run_id)).unwrap();
+        port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+        let spawn = |operation: &str| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "validation::tests::terminal_transaction_child", "--nocapture"])
+                .env("INTCAD_TRANSACTION_CHILD_ROOT", &root)
+                .env("INTCAD_TRANSACTION_CHILD_RUN", &run.run_id)
+                .env("INTCAD_TRANSACTION_CHILD_OPERATION", operation)
+                .spawn()
+                .unwrap()
+        };
+        let mut cancel = spawn("cancel");
+        let mut complete = spawn("complete");
+        assert!(cancel.wait().unwrap().success());
+        assert!(complete.wait().unwrap().success());
+        assert_eq!(port.status(&run.run_id).unwrap().state, winner);
+        assert_eq!(std::fs::read(port.store.report_path(&run.run_id)).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn pending_reports_with_changed_bindings_or_evidence_are_never_adopted() {
+    for corrupt in ["json", "run", "candidate", "profile", "runner", "coverage", "evidence"] {
+        let root = scratch("pending-report-rejection");
+        let candidates = root.join("candidates");
+        let store = root.join("validation");
+        let candidate = write_candidate(&candidates, "cand-pending-rejection", analytic_design());
+        let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+        let profile = native_basic_profile();
+        let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+        let run = port.submit(&candidate, &native_reference(&port), &generate_submission_key(clock.now_ms())).unwrap();
+        port.start_next().unwrap().unwrap();
+        let running = port.load_state(&run.run_id).unwrap();
+        port.complete(&run.run_id, RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) }).unwrap();
+        let path = port.store.report_path(&run.run_id);
+        let mut report: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        match corrupt {
+            "json" => std::fs::write(&path, b"{").unwrap(),
+            "evidence" => {
+                let artifact = report["checks"][0]["evidence"][0]["artifactId"].as_str().unwrap();
+                std::fs::write(port.store.evidence_path(&run.run_id, artifact), b"changed").unwrap();
+            }
+            _ => {
+                match corrupt {
+                    "run" => report["runId"] = json!("another-run"),
+                    "candidate" => report["candidateDigest"] = json!(format!("sha256:{}", "0".repeat(64))),
+                    "profile" => report["profile"]["version"] = json!("foreign"),
+                    "runner" => report["runner"]["version"] = json!("foreign"),
+                    "coverage" => report["checks"] = json!([]),
+                    // "json" and "evidence" are handled above; nothing else rewrites JSON.
+                    _ => {}
+                }
+                std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+            }
+        }
+        port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+        {
+            let transaction = port.store.transaction().unwrap();
+            assert!(!port.adopt_report(&run.run_id, &port.load_admission(&run.run_id).unwrap(), &transaction).unwrap(), "{corrupt}");
+        }
+        assert!(!port.status(&run.run_id).unwrap().report_available, "{corrupt}");
+        assert_eq!(port.load_state(&run.run_id).unwrap().state, ValidationState::Running);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[test]
@@ -726,6 +1196,472 @@ fn retention_removes_only_finished_jobs() {
     assert!(port.status(&done.run_id).is_err());
     assert_eq!(port.status(&active.run_id).unwrap().state, ValidationState::Queued);
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// Retention may retire a terminal run while its submission key is still valid for idempotency.
+/// Replaying that key must return the durable terminal outcome; it must never recreate the
+/// admission/state as a new Queued run after the retention sweep deleted them.
+#[test]
+fn a_retired_terminal_key_replays_its_outcome_without_resurrecting_a_queued_run() {
+    let root = scratch("retired-key-replay");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-retired-key", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let limits = Limits { retention: std::time::Duration::from_millis(10), ..Limits::default() };
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), limits, clock.clone());
+    let key = generate_submission_key(clock.now_ms());
+    let run = port.submit(&candidate, &reference, &key).unwrap();
+    port.pump().unwrap();
+    let terminal = port.status(&run.run_id).unwrap().state;
+    assert!(terminal.is_terminal(), "the fixture starts from a durable terminal run");
+    clock.advance(1000);
+    assert_eq!(port.cleanup(clock.now_ms()), 1);
+    assert!(!port.store.admission_path(&run.run_id).exists(), "retention removed the job admission");
+    assert!(!port.store.state_path(&run.run_id).exists(), "retention removed the current state");
+
+    let replay = port.submit(&candidate, &reference, &key).unwrap();
+    assert_eq!(replay.run_id, run.run_id, "the same key names the same retired run");
+    assert_eq!(replay.state, terminal, "the retired key must replay the durable outcome, not a new Queued run");
+    assert!(!port.store.admission_path(&run.run_id).exists(), "replay must not recreate the retired admission");
+    assert!(!port.store.state_path(&run.run_id).exists(), "replay must not recreate a live state for the retired run");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_terminal_state_without_admission_keeps_its_key_from_recreating_queued() {
+    let fixture = terminal_run_with_key("terminal-state-only");
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    assert!(fixture.port.store.key_path(&parsed.file_name()).is_file());
+    std::fs::remove_file(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup must keep the terminal outcome for the live key");
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key).unwrap();
+    assert_eq!(replay.state, fixture.terminal, "a same-key replay must not recreate Queued");
+    assert!(!fixture.port.store.admission_path(&fixture.run_id).is_file(), "the replay must not recreate the admission");
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file(), "the replay must not recreate live state");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn an_unreadable_admission_keeps_the_terminal_state_fail_closed() {
+    let fixture = terminal_run_with_key("terminal-admission-read-failure");
+    std::fs::write(fixture.port.store.admission_path(&fixture.run_id), b"{").unwrap();
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file(), "an unreadable admission must not delete the terminal state");
+
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key);
+    assert!(replay.is_err(), "an unreadable admission must not recreate Queued");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn an_unreadable_key_keeps_the_terminal_state_fail_closed() {
+    let fixture = terminal_run_with_key("terminal-key-read-failure");
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    std::fs::remove_file(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    std::fs::write(fixture.port.store.key_path(&parsed.file_name()), b"{").unwrap();
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file(), "an unreadable key must not delete the terminal state");
+
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key);
+    assert!(replay.is_err(), "an unreadable key must not recreate Queued");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn a_key_directory_listing_failure_keeps_the_terminal_state_fail_closed() {
+    let fixture = terminal_run_with_key("terminal-key-listing-failure");
+    std::fs::remove_file(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    let keys = fixture.port.store.keys_dir();
+    std::fs::remove_dir_all(&keys).unwrap();
+    std::fs::write(&keys, b"not a directory").unwrap();
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file());
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file(), "a failed key listing is not proof that no replay key exists");
+
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key);
+    assert!(replay.is_err(), "a failed key listing must not recreate Queued");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn a_terminal_state_without_admission_or_key_is_retired() {
+    let fixture = terminal_run_with_key("terminal-no-key");
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    std::fs::remove_file(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    std::fs::remove_file(fixture.port.store.key_path(&parsed.file_name())).unwrap();
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file(), "without a replay key the terminal state can be retired");
+    assert!(!fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "no key means no tombstone is needed");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn authoritative_tombstone_blocks_both_replay_routes_with_admission_residue() {
+    let fixture = retire_with_admission_residue("authority-replay-routes");
+    let admission = std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key).unwrap();
+    assert_eq!(replay.state, fixture.terminal, "the key route returns the durable terminal outcome");
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file(), "the key route does not recreate state");
+    assert!(fixture.port.store.admission_path(&fixture.run_id).is_file());
+
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    std::fs::remove_file(fixture.port.store.key_path(&parsed.file_name())).unwrap();
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key).unwrap();
+    assert_eq!(replay.state, fixture.terminal, "the admission route returns the durable terminal outcome");
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file(), "the admission route does not recreate state");
+    assert_eq!(std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap(), admission);
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn authoritative_tombstone_returns_not_found_without_mutation() {
+    let fixture = retire_with_admission_residue("authority-not-found");
+    write_state(&fixture, ValidationState::Queued, 1_760_000_000_000);
+    let state_bytes = std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap();
+    let admission_bytes = std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    assert_eq!(fixture.port.status(&fixture.run_id).unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(fixture.port.report(&fixture.run_id).unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(fixture.port.evidence(&fixture.run_id, "missing").unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(fixture.port.cancel(&fixture.run_id).unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(
+        fixture.port.cancel_until(&fixture.run_id, Instant::now() + Duration::from_secs(1), &AtomicBool::new(false)).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        fixture.port.complete(&fixture.run_id, RunnerOutcome::Finished { started_at_ms: 3, finished_at_ms: 4, checks: Vec::new() }).unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap(), state_bytes);
+    assert_eq!(std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap(), admission_bytes);
+    assert!(!fixture.port.store.worker_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.cancel_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.evidence_dir(&fixture.run_id).is_dir());
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn authoritative_tombstone_blocks_selection_and_reconcile_repair() {
+    let fixture = retire_with_admission_residue("authority-selection");
+    write_state(&fixture, ValidationState::Queued, 1_760_000_000_000);
+    let state_bytes = std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap();
+    assert!(fixture.port.start_next().unwrap().is_none(), "a retired live-looking state is never selected");
+    assert_eq!(std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap(), state_bytes);
+    assert!(!fixture.port.store.worker_path(&fixture.run_id).is_file());
+    assert!(fixture.port.status(&fixture.run_id).is_err());
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn authoritative_tombstone_blocks_reconcile_repair() {
+    let fixture = retire_with_admission_residue("authority-reconcile");
+    let candidates = fixture.root.join("candidates");
+    let reopened =
+        port_with(&fixture.port.store.root, &candidates, runner_with(Vec::new()), Limits::default(), Arc::new(ManualClock::new(1_760_000_000_000)));
+    assert!(!reopened.store.state_path(&fixture.run_id).is_file(), "reconcile must not repair a retired run");
+    assert!(!reopened.store.worker_path(&fixture.run_id).is_file());
+    assert_eq!(reopened.status(&fixture.run_id).unwrap_err().code, ErrorCode::NotFound);
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn authoritative_tombstone_expiry_ends_replay_but_not_selection_or_gc_with_residue() {
+    let fixture = retire_with_admission_residue("authority-expiry");
+    let expiry = key_expiry(&fixture);
+    fixture.clock.advance(expiry - 1_760_000_000_000);
+    write_state(&fixture, ValidationState::Queued, expiry);
+    let state_bytes = std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap();
+    assert!(fixture.port.start_next().unwrap().is_none(), "expiry does not end the scheduling barrier");
+    assert_eq!(std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap(), state_bytes);
+    assert_eq!(fixture.port.status(&fixture.run_id).unwrap_err().code, ErrorCode::NotFound);
+    let replay = fixture.port.submit(&fixture.candidate, &fixture.reference, &fixture.key).unwrap_err();
+    assert_eq!(replay.code, ErrorCode::RequestExpired);
+
+    let candidates = fixture.root.join("candidates");
+    let cleaner = port_with(&fixture.port.store.root, &candidates, runner_with(Vec::new()), Limits::default(), Arc::new(ManualClock::new(expiry)));
+    cleaner.cleanup(expiry);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup keeps the expired tombstone while a live-looking state exists");
+
+    std::fs::remove_file(fixture.port.store.state_path(&fixture.run_id)).unwrap();
+    let mut admission: store::AdmissionRecord = fixture.port.store.read_json(&fixture.port.store.admission_path(&fixture.run_id), 1 << 20).unwrap();
+    admission.created_at_ms = expiry;
+    fixture.port.store.write_json_replace(&fixture.port.store.admission_path(&fixture.run_id), &admission).unwrap();
+    cleaner.cleanup(expiry);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup keeps the expired tombstone while admission residue exists");
+
+    let later = port_with(
+        &fixture.port.store.root,
+        &candidates,
+        runner_with(Vec::new()),
+        Limits::default(),
+        Arc::new(ManualClock::new(expiry + 8 * 24 * 60 * 60 * 1000)),
+    );
+    later.cleanup(expiry + 8 * 24 * 60 * 60 * 1000);
+    assert!(!fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup collects the expired tombstone after the residue is gone");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn an_unreadable_tombstone_is_not_absence_and_cleanup_keeps_records() {
+    let fixture = terminal_run_with_key("authority-unreadable");
+    std::fs::write(fixture.port.store.tombstone_path(&fixture.run_id), b"{").unwrap();
+    assert!(fixture.port.status(&fixture.run_id).is_err(), "an unreadable tombstone fails closed");
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file(), "cleanup does not delete terminal records");
+    assert!(fixture.port.store.admission_path(&fixture.run_id).is_file());
+    assert_eq!(std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap(), b"{");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_never_overwrites_a_conflicting_valid_tombstone() {
+    let fixture = terminal_run_with_key("authority-conflict");
+    write_tombstone(&fixture, ValidationState::Cancelled);
+    let tombstone = std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap();
+    fixture.port.cleanup(1_760_000_000_000);
+    assert_eq!(std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap(), tombstone, "the existing tombstone wins");
+    assert!(fixture.port.store.state_path(&fixture.run_id).is_file(), "conflicting retirement keeps the records for retry");
+    assert!(fixture.port.store.admission_path(&fixture.run_id).is_file());
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn authoritative_tombstone_does_not_consume_live_capacity_or_beat_unrelated_work() {
+    let fixture = retire_with_admission_residue("authority-capacity");
+    write_state(&fixture, ValidationState::Queued, 1_760_000_000_000);
+    let retired_state = std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap();
+    let mut admission: store::AdmissionRecord = fixture.port.store.read_json(&fixture.port.store.admission_path(&fixture.run_id), 1 << 20).unwrap();
+    admission.created_at_ms = 1;
+    fixture.port.store.write_json_replace(&fixture.port.store.admission_path(&fixture.run_id), &admission).unwrap();
+
+    let candidates = fixture.root.join("candidates");
+    let live = write_candidate(&candidates, "cand-live-authority", analytic_design());
+    let live = fixture.port.submit(&live, &fixture.reference, &generate_submission_key(1_760_000_000_000)).unwrap();
+    let selected = fixture.port.start_next().unwrap().expect("the unrelated live run is selected");
+    assert_eq!(selected.run_id, live.run_id, "the retired admission does not beat live work");
+    assert_eq!(std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap(), retired_state, "the retired state is not written");
+    assert!(!fixture.port.store.report_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.worker_path(&fixture.run_id).is_file());
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+fn retire_to_tombstone_only(name: &str) -> TerminalKeyFixture {
+    let fixture = terminal_run_with_key(name);
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.admission_path(&fixture.run_id).is_file());
+    fixture
+}
+
+#[test]
+fn cleanup_preserves_a_schema_invalid_tombstone_and_its_records() {
+    let fixture = terminal_run_with_key("authority-schema-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.schema_version = "0.9".into();
+    write_tombstone_record(&fixture, &record);
+    let tombstone = std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap();
+    let state = std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap();
+    let admission = std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    fixture.port.cleanup(1_760_000_000_000);
+    assert_eq!(
+        std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap(),
+        tombstone,
+        "invalid retirement evidence is kept unchanged"
+    );
+    assert_eq!(std::fs::read(fixture.port.store.state_path(&fixture.run_id)).unwrap(), state);
+    assert_eq!(std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap(), admission);
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_preserves_an_expiry_invalid_tombstone_and_its_key() {
+    let fixture = retire_to_tombstone_only("authority-expiry-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.expires_at_ms = key_expiry(&fixture) + 1;
+    write_tombstone_record(&fixture, &record);
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    let key = std::fs::read(fixture.port.store.key_path(&parsed.file_name())).unwrap();
+    fixture.clock.advance(key_expiry(&fixture) + 2 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 2);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "invalid expiry is not retirement evidence");
+    assert_eq!(std::fs::read(fixture.port.store.key_path(&parsed.file_name())).unwrap(), key, "the binding key is preserved with the invalid record");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_preserves_a_run_binding_invalid_tombstone() {
+    let fixture = retire_to_tombstone_only("authority-run-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.run_id = "run-other-binding".into();
+    write_tombstone_record(&fixture, &record);
+    fixture.clock.advance(key_expiry(&fixture) + 2 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 2);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "a record naming another run is not retirement evidence");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_preserves_a_nonterminal_tombstone() {
+    let fixture = retire_to_tombstone_only("authority-state-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.state = ValidationState::Queued;
+    write_tombstone_record(&fixture, &record);
+    fixture.clock.advance(key_expiry(&fixture) + 2 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 2);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "a nonterminal tombstone is not retirement evidence");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_preserves_a_key_invalid_tombstone_and_its_key() {
+    let fixture = retire_to_tombstone_only("authority-key-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.submission_key = "not-a-key".into();
+    write_tombstone_record(&fixture, &record);
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    fixture.clock.advance(key_expiry(&fixture) + 2 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 2);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "a key-invalid tombstone is not retirement evidence");
+    assert!(fixture.port.store.key_path(&parsed.file_name()).is_file(), "the binding key is preserved with the invalid record");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_collects_a_valid_expired_tombstone_and_key_when_no_residue_exists() {
+    let fixture = retire_to_tombstone_only("authority-valid-gc");
+    let parsed = SubmissionKey::parse(&fixture.key, 1_760_000_000_000).unwrap();
+    fixture.clock.advance(key_expiry(&fixture) + 8 * 24 * 60 * 60 * 1000 - 1_760_000_000_000);
+    fixture.port.cleanup(key_expiry(&fixture) + 8 * 24 * 60 * 60 * 1000);
+    assert!(!fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "valid expired evidence is collected");
+    assert!(!fixture.port.store.key_path(&parsed.file_name()).is_file());
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+/// A validated tombstone proves retirement only for the key it names. A key record for the
+/// same run that names another submission key is conflicting evidence: collecting it from a
+/// foreign tombstone would delete a key the retirement decision never covered.
+#[test]
+fn cleanup_keeps_a_key_when_the_tombstone_names_another_submission_key() {
+    const NOW: u64 = 1_760_000_000_000;
+    let fixture = retire_to_tombstone_only("authority-key-mismatch");
+    let original = SubmissionKey::parse(&fixture.key, NOW).unwrap();
+    let other_timestamp = NOW - 2 * 24 * 60 * 60 * 1000;
+    let other_key = generate_submission_key(other_timestamp);
+    let other_name = solidcraft_io::candidate::digest_hex(other_key.as_bytes());
+    let other_expiry = other_timestamp + 7 * 24 * 60 * 60 * 1000;
+    let mut record: store::SubmissionRecord = fixture.port.store.read_json(&fixture.port.store.key_path(&original.file_name()), 1 << 20).unwrap();
+    record.submission_key = other_key;
+    record.created_at_ms = other_timestamp;
+    record.expires_at_ms = other_expiry;
+    fixture.port.store.write_json_replace(&fixture.port.store.key_path(&other_name), &record).unwrap();
+
+    fixture.port.cleanup(other_expiry + 1);
+    assert!(fixture.port.store.key_path(&other_name).is_file(), "a foreign tombstone is not permission to collect another submission key");
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "the retirement record is still authority");
+    assert!(fixture.port.store.key_path(&original.file_name()).is_file(), "the bound key is untouched");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+/// The collector must consult the tombstone's own expiry, not the key record's retention
+/// window. A key record whose expiry conflicts with a still-unexpired tombstone is conflicting
+/// evidence; deleting either would end authority before the bound key has expired.
+#[test]
+fn cleanup_keeps_a_tombstone_that_has_not_reached_its_own_expiry() {
+    const NOW: u64 = 1_760_000_000_000;
+    let fixture = retire_to_tombstone_only("authority-independent-expiry");
+    let parsed = SubmissionKey::parse(&fixture.key, NOW).unwrap();
+    let key_path = fixture.port.store.key_path(&parsed.file_name());
+    let mut record: store::SubmissionRecord = fixture.port.store.read_json(&key_path, 1 << 20).unwrap();
+    let early_expiry = parsed.timestamp_ms + 1000;
+    record.expires_at_ms = early_expiry;
+    fixture.port.store.write_json_replace(&key_path, &record).unwrap();
+
+    fixture.port.cleanup(early_expiry + 1);
+    assert!(fixture.port.store.key_path(&parsed.file_name()).is_file(), "conflicting key evidence is preserved");
+    assert!(
+        fixture.port.store.tombstone_path(&fixture.run_id).is_file(),
+        "an unexpired tombstone is not collected with a key record's earlier expiry"
+    );
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+/// Retire the run to a tombstone, then restore the admission, profile and an evidence file so
+/// cleanup sees an admission-only run. The state stays absent, as after a crash between the
+/// admission and state writes.
+fn retire_with_admission_records(name: &str) -> (TerminalKeyFixture, Vec<u8>, Vec<u8>) {
+    let fixture = terminal_run_with_key(name);
+    let admission = std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    let profile = std::fs::read(fixture.port.store.profile_path(&fixture.run_id)).unwrap();
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file());
+    std::fs::write(fixture.port.store.admission_path(&fixture.run_id), &admission).unwrap();
+    std::fs::write(fixture.port.store.profile_path(&fixture.run_id), &profile).unwrap();
+    (fixture, admission, profile)
+}
+
+/// An admission with no state still needs valid retirement evidence before its associated
+/// records can be removed. Otherwise deleting the admission lets a live key rebuild Queued.
+#[test]
+fn cleanup_preserves_admission_only_records_with_invalid_retirement_evidence() {
+    let (fixture, admission, profile) = retire_with_admission_records("authority-admission-only-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.schema_version = "0.9".into();
+    write_tombstone_record(&fixture, &record);
+    let tombstone = std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap();
+    let marker = fixture.port.store.evidence_dir(&fixture.run_id).join("marker.json");
+    std::fs::create_dir_all(fixture.port.store.evidence_dir(&fixture.run_id)).unwrap();
+    std::fs::write(&marker, b"{}").unwrap();
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert_eq!(
+        std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap(),
+        admission,
+        "invalid retirement evidence preserves the admission"
+    );
+    assert_eq!(
+        std::fs::read(fixture.port.store.profile_path(&fixture.run_id)).unwrap(),
+        profile,
+        "invalid retirement evidence preserves the frozen profile"
+    );
+    assert!(marker.is_file(), "invalid retirement evidence preserves the associated evidence");
+    assert_eq!(
+        std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap(),
+        tombstone,
+        "the invalid retirement record is kept unchanged"
+    );
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+/// The valid control: an admission-only run with a tombstone naming its key can be collected
+/// once its admission is old enough. The tombstone stays until its own expiry.
+#[test]
+fn cleanup_collects_admission_only_records_with_valid_associated_evidence() {
+    let (fixture, _, _) = retire_with_admission_records("authority-admission-only-valid");
+    let marker = fixture.port.store.evidence_dir(&fixture.run_id).join("marker.json");
+    std::fs::create_dir_all(fixture.port.store.evidence_dir(&fixture.run_id)).unwrap();
+    std::fs::write(&marker, b"{}").unwrap();
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(!fixture.port.store.admission_path(&fixture.run_id).is_file(), "valid associated evidence permits collection");
+    assert!(!fixture.port.store.profile_path(&fixture.run_id).is_file());
+    assert!(!marker.is_file());
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "the unexpired tombstone still blocks replay");
+    let _ = std::fs::remove_dir_all(fixture.root);
 }
 
 #[test]
@@ -1311,28 +2247,47 @@ fn a_pin_only_orphan_is_garbage_collected_after_retention() {
 }
 
 #[test]
-fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
-    let root = scratch("pin-cleanup-race");
-    let candidates = root.join("candidates");
-    let store = root.join("validation");
-    let _candidate = write_candidate(&candidates, "cand-pin-cleanup", analytic_design());
+fn pin_before_cleanup_keeps_a_real_runs_candidate_and_pin() {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let clock = Arc::new(ManualClock::new(now));
-    let limits = Limits { retention: std::time::Duration::ZERO, ..Limits::default() };
-    let port = Arc::new(port_with(&store, &candidates, runner_with(Vec::new()), limits, clock.clone()));
+    let fixture = admitted_unpinned_run("pin-before-cleanup", now);
+    fixture.port.pin_run(&fixture.run_id, "cand-pin-cleanup").unwrap();
+    assert!(candidate::is_pinned(&fixture.candidates, "cand-pin-cleanup"));
+    assert!(candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_ok());
+    fixture.port.cleanup(now);
+    assert!(candidate::is_pinned(&fixture.candidates, "cand-pin-cleanup"), "cleanup must keep a live run's pin");
+    assert!(candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_ok(), "cleanup must keep a pinned candidate");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn cleanup_before_pin_leaves_no_pin_on_the_removed_candidate() {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let fixture = admitted_unpinned_run("cleanup-before-pin", now);
+    fixture.port.cleanup(now);
+    assert!(candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_err(), "cleanup removed the unpinned candidate");
+    let error = fixture.port.pin_run(&fixture.run_id, "cand-pin-cleanup").unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidCandidate, "a removed candidate cannot be pinned");
+    assert!(!candidate::is_pinned(&fixture.candidates, "cand-pin-cleanup"));
+    assert!(candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_err());
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let fixture = admitted_unpinned_run("pin-cleanup-race", now);
     let barrier = Arc::new(Barrier::new(2));
-    let run_id = generate_run_id(now);
     let pin = {
-        let port = Arc::clone(&port);
+        let port = Arc::clone(&fixture.port);
         let barrier = Arc::clone(&barrier);
-        let run_id = run_id.clone();
+        let run_id = fixture.run_id.clone();
         thread::spawn(move || {
             barrier.wait();
             port.pin_run(&run_id, "cand-pin-cleanup")
         })
     };
     let cleanup = {
-        let port = Arc::clone(&port);
+        let port = Arc::clone(&fixture.port);
         let barrier = Arc::clone(&barrier);
         thread::spawn(move || {
             barrier.wait();
@@ -1341,10 +2296,10 @@ fn pin_run_and_cleanup_never_leave_a_pin_on_a_removed_candidate() {
     };
     let pinned = pin.join().unwrap();
     let _ = cleanup.join().unwrap();
-    let lookup_ok = candidate::lookup(&candidates, "cand-pin-cleanup").is_ok();
+    let lookup_ok = candidate::lookup(&fixture.candidates, "cand-pin-cleanup").is_ok();
     assert_eq!(pinned.is_ok(), lookup_ok, "a pin exists exactly when the candidate still exists");
-    assert_eq!(candidate::is_pinned(&candidates, "cand-pin-cleanup"), lookup_ok);
-    let _ = std::fs::remove_dir_all(root);
+    assert_eq!(candidate::is_pinned(&fixture.candidates, "cand-pin-cleanup"), lookup_ok);
+    let _ = std::fs::remove_dir_all(fixture.root);
 }
 
 #[test]

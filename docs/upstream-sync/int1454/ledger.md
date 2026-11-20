@@ -1,5 +1,44 @@
 # INT-1454 upstream-sync ledger
 
+## Validation terminal transaction (owner-approved, 2026-11-19)
+
+The owner approved the bounded cross-process store transaction and background
+cancellation repair after Sol diagnosis and Astra architecture audit. This fixes
+an inherited cancel/completion race; it does not change protocol, authorization,
+terminal states, acceptance or verified-report-before-marker recovery precedence.
+
+Implementation: `docs/superpowers/plans/2026-11-19-validation-terminal-transaction.md`.
+Base: `c5f2f42fe`. Task branch: `fix/int1454-validation-transaction`.
+Status: Integration candidate includes Validation delivery
+`b5158b766f8dde9124cd5543b01f1366cb53b082`. Independent task review and scoped L3
+follow-up closed F1; F2–F5 were closed separately. F1 GREEN run `44781640539` at
+`74de1fa7db574437369f3174dc2cc119dff916a3` passed 89 Engine tests, Clippy and
+format checks. Delivery only removed the temporary diagnostic workflow.
+RED run `44778668866` recorded three expected failures and two passing controls.
+This is task evidence, not combined-candidate CI, platform acceptance or merge
+approval. Conflicting or unreadable retirement records remain coverage advisories
+for the specific cleanup variants noted in task review.
+Recovery 2026-11-19: worker recovered at clean `fa12cfe47`; the prior "GREEN"
+attempt `44599155675` actually failed (native transaction child clock, unrelated
+stacked-base CLI corpus test, and a clippy `unreachable!` in the test module).
+Clock corrected first so race evidence is valid. Independent L3 findings F1-F5
+verified against the source call chain; deterministic RED tests added at `9a2a25ebf`
+before the fixes. F1 is reachable whenever a host lowers retention below the key's
+seven-day validity. F2 needs the owner carried on the card and the panel routing it.
+F3 and F4 are the mutex and monotonic-merge races described in their tests.
+Local baseline/builds NOT_RUN under the disk-growth gate. Use remote CI.
+Stop all validation participants before upgrade or rollback. Keep the stable
+transaction lock file and run records; mixed old/new concurrent writers are not supported.
+Legacy limitation: if a pre-tombstone store already removed both admission and
+state, cleanup has no record to inspect; a same-key replay cannot be distinguished
+from the documented crash-after-key recovery. No migration or revival semantics are
+added; the key remains until its normal expiry. Key-directory listing or entry read
+failures are fail-closed and never count as proof that no replay key exists.
+Wire `validation.status` and `validation.cancel` publish through the same monotone
+state merge as the control lane; a delayed snapshot cannot overwrite a settled
+terminal state. The real status publication path is parked by a test barrier while
+the real control lane persists, with no sleep used as ordering evidence.
+
 Upstream: SolidCraft **v0.44.1** = `e151d5ea6866fb055e011379153fb1cae0566f22`
 IntCAD baseline: `origin/develop` = `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f`
 Range: `06749ac464e16357d0375b78e6b3cac214066493..v0.44.1` — **4,994 commits, 4,939 non-merge**.

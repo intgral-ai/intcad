@@ -819,5 +819,27 @@ fn cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit() 
         .unwrap();
     let final_status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(final_status["state"], "cancelled", "{final_status:#}");
+    let read_report = || {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
+            .args(["validate", "report", &run_id, "--candidate-dir"])
+            .arg(&candidates)
+            .args(["--validation-dir"])
+            .arg(&validation)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    let first_report = read_report();
+    assert_eq!(first_report["report"]["state"], "cancelled");
+    let again = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
+        .args(["validate", "cancel", &run_id, "--candidate-dir"])
+        .arg(&candidates)
+        .args(["--validation-dir"])
+        .arg(&validation)
+        .output()
+        .unwrap();
+    assert!(again.status.success(), "{}", String::from_utf8_lossy(&again.stderr));
+    assert_eq!(read_report(), first_report, "repeat cancel must preserve the exact persisted report reference");
     let _ = std::fs::remove_dir_all(dir);
 }
