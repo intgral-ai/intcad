@@ -1,0 +1,14 @@
+[package]
+name = "solidcraft-account-native"
+description = "Native account adapters: the durable operation ledger (no wasm)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+solidcraft-engine = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

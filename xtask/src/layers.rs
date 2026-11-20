@@ -66,6 +66,9 @@ pub const TABLE: &[(&str, Class)] = &[
     ("gpu", Class::Layer(5)),
     ("mcp", Class::Layer(5)),
     ("testkit", Class::Testkit),
+    // native account adapters (durable ledger, credential store, HTTP); native-only, never in the
+    // wasm closure, and only apps compose it
+    ("account-native", Class::Exempt),
     // apps and tooling
     ("solidcraft", Class::Exempt),
     ("cli", Class::Exempt),
