@@ -40,8 +40,9 @@ pub static COMMANDS: &[CommandSpec] = &[
              pulls out)}]; supports: [{face, type?: fixed|roller|symmetry|slider}] (fixed: held still, the default; roller, symmetry, \
              slider: a flat face facing along X, Y or Z held only along that axis, free to slide in its plane); face: a name or index from \
              model.faces, a point [x,y,z] within 1 mm of it, or a list; direction: any length; picking one half of a hole takes the whole hole); material: a grade by name (6061-T6, \
-             6082-T6, 5052-H32, S235, S355, 304, 304L: sourced, at the standard's minimum yield) or {name, youngs_modulus: MPa, poisson_ratio, \
-             yield_strength: MPa, source}; body?; thickness?: mm (sheet metal: its rule's); mesh_size?: mm; elements?: \
+             6082-T6, 5052-H32, S235, S355, 304, 304L: sourced, at the standard's minimum yield for the part's thickness band) or {name, \
+             youngs_modulus: MPa, poisson_ratio, yield_strength: MPa, source}; body?; thickness?: mm (sheet metal: its rule's; a solid \
+             body's is not checked); mesh_size?: mm; elements?: \
              shell|solid|both (default: shell for sheet metal, solid otherwise); show?: stress|deflection; scale?: yield|auto; mesh_check?: \
              bool (default true: the first model is solved again with a 1.5x finer mesh, and each number is reported settled (moved 2.5% or \
              less) or still changing, with how far off it may still be; the finer result is shown. Skipped, with the reason, when the finer mesh would need more memory than \
@@ -592,6 +593,8 @@ struct Plan {
     probes: Vec<Probe>,
     notes: Vec<String>,
     setup: Vec<String>,
+    /// The warning when the part is outside every band of its grade's standard (PIL-294 A11).
+    grade_warning: Option<String>,
 }
 
 /// A point to read the stress and strain at, checked.
@@ -823,7 +826,8 @@ pub(crate) fn section_size(elements: Elements, sheet: bool, thickness: f64, volu
     }
 }
 
-fn plan(p: &Value, faces: &BodyFaces, body: &solidcraft_doc::ModelBody, sheet_t: Option<f64>, body_material: &str) -> Result<Plan> {
+/// `smallest`: the thinnest side of the body's bounding box, mm.
+fn plan(p: &Value, faces: &BodyFaces, body: &solidcraft_doc::ModelBody, sheet_t: Option<f64>, body_material: &str, smallest: f64) -> Result<Plan> {
     let mut notes = Vec::new();
     // Supports and loads: refused before anything runs when missing.
     let supports_v = p.get("supports").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -953,6 +957,11 @@ fn plan(p: &Value, faces: &BodyFaces, body: &solidcraft_doc::ModelBody, sheet_t:
         ),
         None => None,
     };
+    // A grade's yield is its standard's minimum for the band the part's thickness falls in
+    // (PIL-294 A11): a sheet's or shell's thickness, or a solid's thinnest side across, the
+    // least its stock can have been.
+    let solid_stock = !sheet && runs.contains(&Elements::Solid);
+    let (material, grade_warning) = grade_at(material, if solid_stock { smallest } else { thickness }, solid_stock);
     let keep_files = p.get("keep_files").and_then(Value::as_bool).unwrap_or(false);
     let mesh_check = match p.get("mesh_check") {
         None | Some(Value::Null) => true,
@@ -1009,6 +1018,7 @@ fn plan(p: &Value, faces: &BodyFaces, body: &solidcraft_doc::ModelBody, sheet_t:
         probes,
         notes,
         setup,
+        grade_warning,
     })
 }
 
@@ -1128,7 +1138,6 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         display: Faces { positions: &positions, triangles: &mesh.triangles, tri_face: &mesh.tri_face },
         vertex_normals: &normals,
     };
-    let plan = plan(p, &faces, body, sheet_t, &s.doc.body_material(&body.name))?;
     let (lo, hi) = positions.iter().fold(([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]), |(mut lo, mut hi), p| {
         for k in 0..3 {
             lo[k] = lo[k].min(p[k]);
@@ -1137,11 +1146,12 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         (lo, hi)
     });
     let extent = fea::model::sub(hi, lo);
+    let smallest = extent.iter().copied().fold(f64::INFINITY, f64::min).max(1e-3);
+    let plan = plan(p, &faces, body, sheet_t, &s.doc.body_material(&body.name), smallest)?;
     let diag = fea::model::len(extent);
     if !(diag.is_finite() && diag > 0.0) {
         return Err(bad(CMD, format!("`{}` has nothing to mesh", body.name)));
     }
-    let smallest = extent.iter().copied().fold(f64::INFINITY, f64::min).max(1e-3);
     // A probe off the part is refused before anything runs; one inside its box is read in the
     // solve, or named in a warning when no element is within reach of it.
     let reach = fea::probe::REACH;
@@ -1182,10 +1192,13 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
     {
         warnings.push(w);
     }
-    // A grade's yield holds up to a thickness (PIL-294 D10). A solid's stock was at least as thick
-    // as its bounding box's thinnest side.
-    let stock = if plan.sheet || !plan.runs.contains(&Elements::Solid) { plan.thickness } else { smallest };
-    warnings.extend(grade_thickness_warning(&plan.material, stock, plan.sheet || !plan.runs.contains(&Elements::Solid)));
+    // A solid's own thickness is not measured yet, so the shells' is taken on trust (PIL-294 A12,
+    // decision 15).
+    if !plan.sheet && plan.runs.contains(&Elements::Shell) {
+        warnings.push(thickness_not_checked(plan.thickness));
+    }
+    // A part outside every band of its grade's standard (PIL-294 D10, A11).
+    warnings.extend(plan.grade_warning.clone());
     if p.get("dry_run").and_then(Value::as_bool).unwrap_or(false) {
         // Drawn on the model until the estimate runs or is declined: the user sees the faces.
         let (loads, supports) = markers_of(&plan, &faces);
@@ -2164,22 +2177,52 @@ pub(crate) struct Outcome<'a> {
     pub check: &'a Check,
 }
 
-/// The warning when the part is thicker than its grade's yield is specified for (PIL-294 D10):
-/// thicker stock is specified lower, or not at all. `thickness`: a sheet's or shell's thickness
-/// (`sheet`), or a solid's thinnest side across, the least its stock can have been. Only for a
-/// grade from the table; numbers given with the request are the user's.
-pub(crate) fn grade_thickness_warning(material: &Material, thickness: f64, sheet: bool) -> Option<String> {
-    let g = fea::materials::GRADES.iter().find(|g| g.name == material.name && g.source == material.source)?;
-    let limit = g.up_to_mm?;
-    (thickness > limit * 1.001).then(|| {
-        let part = if sheet { format!("The part is {} mm thick", sig(thickness)) } else { format!("The part is {} mm across its thinnest side", sig(thickness)) };
-        format!(
-            "{part}, but {}'s yield ({} MPa) is specified only up to {} mm: thicker material is specified lower or not at all, so the              yield used may be too high; take it from the material's certificate (`material` with `yield_strength` and its `source`)",
-            g.name,
-            sig(g.yield_mpa),
-            limit
-        )
-    })
+/// A table grade at the part's thickness (PIL-294 A11): the yield of the band of its standard the
+/// thickness falls in, with the band named at the end of the source; when it is outside every
+/// band, the nearest band's yield and a warning. `thickness`: a sheet's or shell's thickness, or
+/// a solid's thinnest side across (`solid`), the least its stock can have been; a solid's
+/// source also says when thicker stock is specified lower. Numbers given with the request are the
+/// user's and come back as they are.
+pub(crate) fn grade_at(material: Material, thickness: f64, solid: bool) -> (Material, Option<String>) {
+    use fea::materials::Fit;
+    let Some(g) = fea::materials::of(&material) else { return (material, None) };
+    let Some(fit) = g.band_at(thickness) else { return (material, None) };
+    let (Fit::In(band) | Fit::Thinner(band) | Fit::Thicker(band)) = fit;
+    if band.over_mm <= 0.0 && band.up_to_mm.is_infinite() {
+        // One minimum for every thickness: nothing to say.
+        return (material, None);
+    }
+    let size = if solid { format!("{} mm across its thinnest side", sig(thickness)) } else { format!("{} mm thick", sig(thickness)) };
+    let minimum = format!("{} MPa, {}'s minimum for {}", sig(band.yield_mpa), g.standard, g.words(band));
+    let (basis, warning) = match fit {
+        Fit::In(_) => {
+            let thicker = match g.lower_after(band) {
+                Some(next) if solid => format!(
+                    "; if it was cut from stock over {} mm thick, the minimum is lower ({} MPa for {})",
+                    band.up_to_mm,
+                    sig(next.yield_mpa),
+                    g.words(next)
+                ),
+                _ => String::new(),
+            };
+            (format!("For this part, {size}: {minimum}{thicker}"), None)
+        }
+        Fit::Thinner(_) | Fit::Thicker(_) => {
+            let (side, may) = if matches!(fit, Fit::Thicker(_)) { ("thicker", "may be lower") } else { ("thinner", "may differ") };
+            (
+                format!("For this part, {size}: {minimum}, the nearest band; {} specifies it only {}", g.standard, g.range_words()),
+                Some(format!(
+                    "The part is {size}, but {} specifies {} only {}: the yield used is {minimum}, and {side} material {may}. Take the \
+                     yield from the material's certificate (`material` with `yield_strength` and its `source`)",
+                    g.standard,
+                    g.name,
+                    g.range_words()
+                )),
+            )
+        }
+    };
+    let source = format!("{}. {basis}", material.source);
+    (Material { yield_mpa: band.yield_mpa, source, ..material }, warning)
 }
 
 /// The warning when the `thickness` asked for is not the sheet's own (PIL-294 D11): more than 5 %
@@ -2199,6 +2242,17 @@ pub(crate) fn thickness_mismatch(given: f64, own: f64, solid_run: bool) -> Optio
         sig(own),
         sig(given)
     ))
+}
+
+/// The warning when shells model a body that is not sheet metal (PIL-294 A12, decision 15): only a
+/// sheet's own thickness is known, so the `thickness` given is not checked against the part.
+pub(crate) fn thickness_not_checked(given: f64) -> String {
+    format!(
+        "The thickness given ({} mm) was not checked: only a sheet-metal body's own thickness is known, and this body is a solid. The \
+         shells are of a {} mm sheet, so check that the part is that thick",
+        sig(given),
+        sig(given)
+    )
 }
 
 /// The stress the summary leads with, and the one `fraction_of_yield` shares (PIL-294 D8): the
@@ -2260,7 +2314,7 @@ pub(crate) fn wording(
 ) -> (String, Vec<String>, Option<String>) {
     let shown = outcome.shown;
     // A grade of the estimate's own table, or numbers that came with the request.
-    let from_table = fea::materials::GRADES.iter().any(|g| g.name == material.name && g.source == material.source);
+    let from_table = fea::materials::of(material).is_some();
     let origin = if from_table { "the estimate's grade table (the standard's minimum yield)" } else { "values given with the request" };
     let mut assumptions = vec![
         format!(
