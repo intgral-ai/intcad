@@ -779,6 +779,7 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
                 && visible.iter().any(|p| p == parent)
             {
                 app.file_tree.select_only(parent);
+                note_target_moved(app);
             }
         }
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
@@ -798,7 +799,14 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
         app.file_tree.selection = visible.iter().cloned().collect();
         app.file_tree.focus = visible.first().cloned();
         app.file_tree.anchor = visible.first().cloned();
+        note_target_moved(app);
     }
+}
+
+/// The tree actually handled a key that moved the row the clipboard would act on. `finish_input`
+/// reads this after layout; entry-frame focus cannot know that an accepted click gave the keys.
+fn note_target_moved(app: &mut SolveApp) {
+    app.clipboard_input.files_moved_target = true;
 }
 
 fn move_focus(app: &mut SolveApp, visible: &[std::path::PathBuf], delta: isize, extend: bool) {
@@ -826,6 +834,7 @@ fn select_at(app: &mut SolveApp, visible: &[std::path::PathBuf], index: usize, e
         app.file_tree.select_only(path);
     }
     app.file_tree.scroll_to = Some(path.clone());
+    note_target_moved(app);
 }
 
 fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {

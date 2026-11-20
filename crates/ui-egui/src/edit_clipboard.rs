@@ -747,6 +747,10 @@ pub(crate) struct InputBatch {
     pub(crate) files_rendered: bool,
     pub(crate) entry_keyboard_owned: bool,
     ambiguous: bool,
+    /// A clipboard command appears before a tree target-moving key in this batch.
+    command_then_tree_key: bool,
+    /// The focused tree actually moved its row selection while laying out this batch.
+    pub(crate) files_moved_target: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -811,24 +815,23 @@ pub(crate) fn begin_input(app: &mut SolveApp, ctx: &egui::Context) {
     let frame = ctx.cumulative_frame_nr();
     if app.clipboard_input.frame != Some(frame) {
         let entry_keyboard_owned = keyboard_owned(app, ctx);
-        // The focused tree consumes a later arrow before `finish_input` applies the command,
-        // so the command would otherwise land on the row the arrow moved to. Only the tree's
-        // own keys are retargets: with CAD focused, an arrow is view navigation, not selection.
-        let tree_keys = app.file_tree.focused
-            && app.shell.right_rail_panel.is_some()
-            && crate::right_rail::shown(app)
-            && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files)
-            && ctx.content_rect().width() >= crate::right_rail::MIN_VIEW + crate::right_rail::MIN_PANEL;
-        let ambiguous = ctx.input(|i| {
+        // A later pointer or focus loss leaves both owners uncertain. A later tree key is not
+        // decided here: whether it moves the target depends on the tree actually handling it
+        // during layout (`files_moved_target`), not on entry-frame focus.
+        let (ambiguous, command_then_tree_key) = ctx.input(|i| {
             let mut command_seen = false;
-            i.events.iter().any(|event| {
+            let mut ambiguous = false;
+            let mut command_then_tree_key = false;
+            for event in &i.events {
                 command_seen |= clipboard_command(event).is_some();
-                command_seen
-                    && (matches!(event, egui::Event::PointerButton { .. } | egui::Event::WindowFocused(false))
-                        || (tree_keys && tree_retargets(event)))
-            })
+                if command_seen {
+                    ambiguous |= matches!(event, egui::Event::PointerButton { .. } | egui::Event::WindowFocused(false));
+                    command_then_tree_key |= tree_retargets(event);
+                }
+            }
+            (ambiguous, command_then_tree_key)
         });
-        app.clipboard_input = InputBatch { frame: Some(frame), entry_keyboard_owned, ambiguous, ..Default::default() };
+        app.clipboard_input = InputBatch { frame: Some(frame), entry_keyboard_owned, ambiguous, command_then_tree_key, ..Default::default() };
     }
     app.clipboard_input.files_rendered = false;
     if !ctx.input(|i| i.focused) {
@@ -867,19 +870,27 @@ pub(crate) fn finish_input(app: &mut SolveApp, ctx: &egui::Context) {
         // A theme on the Appearance page precedes CAD/Files. Retire replay input below too.
         crate::prefs::take_theme_paste(app, ctx);
         if rendered && app.file_tree.focused {
-            let commands: Vec<_> = ctx.input(|i| {
-                i.events
-                    .iter()
-                    .filter_map(|event| if matches!(event, egui::Event::Paste(_)) && middle_navigation(i) { None } else { clipboard_command(event) })
-                    .collect()
-            });
-            for command in commands {
-                match command {
-                    ClipboardCommand::Copy => app.file_tree.copy_selection(false),
-                    ClipboardCommand::Cut => app.file_tree.copy_selection(true),
-                    ClipboardCommand::Paste => {
-                        if let Some(folder) = app.file_tree.target_folder() {
-                            app.file_tree.paste(&folder);
+            // The tree consumed a key after the command and moved its target before this
+            // handler ran. Its command is retired for both owners rather than applied to the
+            // row the person did not select when pressing it.
+            let retargeted = app.clipboard_input.command_then_tree_key && app.clipboard_input.files_moved_target;
+            if !retargeted {
+                let commands: Vec<_> = ctx.input(|i| {
+                    i.events
+                        .iter()
+                        .filter_map(
+                            |event| if matches!(event, egui::Event::Paste(_)) && middle_navigation(i) { None } else { clipboard_command(event) },
+                        )
+                        .collect()
+                });
+                for command in commands {
+                    match command {
+                        ClipboardCommand::Copy => app.file_tree.copy_selection(false),
+                        ClipboardCommand::Cut => app.file_tree.copy_selection(true),
+                        ClipboardCommand::Paste => {
+                            if let Some(folder) = app.file_tree.target_folder() {
+                                app.file_tree.paste(&folder);
+                            }
                         }
                     }
                 }
