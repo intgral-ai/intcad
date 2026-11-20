@@ -11,6 +11,8 @@ mod http;
 mod ledger;
 
 #[cfg(test)]
+mod http_tests;
+#[cfg(test)]
 mod ledger_tests;
 
 pub use http::{
