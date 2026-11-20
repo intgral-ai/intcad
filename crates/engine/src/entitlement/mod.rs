@@ -9,6 +9,9 @@ mod clock;
 mod ports;
 mod types;
 
+#[cfg(test)]
+mod tests;
+
 pub use budget::BudgetTable;
 pub use clock::{ConservativeDeadline, DeadlineError, FakeMonotonicClock, MonotonicClock, MonotonicInstant, RenewalAttempt};
 pub use ports::{AccountService, BillingPort, CountingBilling, CredentialStore, FakeAccountService, InMemoryOperationStore, OperationStore};
