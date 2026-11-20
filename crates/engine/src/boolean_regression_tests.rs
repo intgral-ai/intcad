@@ -2217,15 +2217,24 @@ fn front_triangle_tool(distance: f64) -> Session {
 
 fn assert_front_triangle_names_exact(body: &solidcraft_doc::ModelBody) {
     let names = solidcraft_doc::naming::face_names(body);
-    for (i, name) in names.iter().enumerate() {
-        assert!(solidcraft_doc::naming::face_name_exact(body, i), "face {i} {name:?} is not exact");
-    }
+    let unverified: Vec<(usize, String)> =
+        (0..names.len()).filter(|&i| !solidcraft_doc::naming::face_name_exact(body, i)).map(|i| (i, names.get(i).cloned().unwrap_or_default())).collect();
+    assert!(unverified.is_empty(), "unverified faces {unverified:?}");
+}
+
+fn unverified_names(body: &solidcraft_doc::ModelBody) -> Vec<(usize, String)> {
+    let names = solidcraft_doc::naming::face_names(body);
+    (0..names.len()).filter(|&i| !solidcraft_doc::naming::face_name_exact(body, i)).map(|i| (i, names.get(i).cloned().unwrap_or_default())).collect()
 }
 
 #[test]
 fn front_triangle_face_join_keeps_exact_history_and_names() {
     let target = front_triangle();
     let target_body = target.model.state().body("FrontTriangle").unwrap().body.clone();
+    let target_unverified = {
+        let state = target.model.state();
+        unverified_names(state.body("FrontTriangle").unwrap())
+    };
     let target_names = solidcraft_doc::naming::face_names(target.model.state().body("FrontTriangle").unwrap());
     let contact = solidcore_record::Vec3::from(FRONT_TRIANGLE_FACE);
     let (target_index, target_point) = target_body
@@ -2240,6 +2249,10 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
     let target_name = target_names.get(target_index).cloned().expect("the target face's name");
     let tool = front_triangle_tool(5.0);
     let tool_body = tool.model.state().body("Body1").unwrap().body.clone();
+    let tool_unverified = {
+        let state = tool.model.state();
+        unverified_names(state.body("Body1").unwrap())
+    };
     let tool_point = tool_body
         .faces(1e-4)
         .unwrap()
@@ -2270,6 +2283,14 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
         )
         .unwrap();
     assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap());
+    let joined_unverified = {
+        let state = s.model.state();
+        unverified_names(state.body("FrontTriangle").unwrap())
+    };
+    assert!(
+        joined_unverified.is_empty(),
+        "unverified {joined_unverified:?}; target before {target_unverified:?}; tool before {tool_unverified:?}; history {history:?}"
+    );
     let (target_after, tool_after) = {
         let state = s.model.state();
         (solidcraft_doc::naming::face_names_at(&state, &[target_point]), solidcraft_doc::naming::face_names_at(&state, &[tool_point]))
@@ -2287,8 +2308,16 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
 fn front_triangle_press_pull_keeps_exact_history_and_names() {
     let target = front_triangle();
     let target_body = target.model.state().body("FrontTriangle").unwrap().body.clone();
+    let target_unverified = {
+        let state = target.model.state();
+        unverified_names(state.body("FrontTriangle").unwrap())
+    };
     let tool = front_triangle_tool(5.0);
     let tool_body = tool.model.state().body("Body1").unwrap().body.clone();
+    let tool_unverified = {
+        let state = tool.model.state();
+        unverified_names(state.body("Body1").unwrap())
+    };
     let expected = volume(&target, "FrontTriangle") + volume(&tool, "Body1");
 
     let mut s = front_triangle();
@@ -2311,6 +2340,14 @@ fn front_triangle_press_pull_keeps_exact_history_and_names() {
         )
         .unwrap();
     assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap());
+    let joined_unverified = {
+        let state = s.model.state();
+        unverified_names(state.body("FrontTriangle").unwrap())
+    };
+    assert!(
+        joined_unverified.is_empty(),
+        "unverified {joined_unverified:?}; target before {target_unverified:?}; tool before {tool_unverified:?}; history {history:?}"
+    );
 }
 
 /// The removal audit: the unpatched ordinary order still fails with the exact fingerprint, while

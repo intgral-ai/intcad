@@ -603,8 +603,8 @@ fn swapped_history_maps_every_origin_back() {
     assert_eq!(
         swapped.edges[1].origins,
         vec![EdgeOrigin::meet(
-            Side::new([FaceOrigin::Face { operand: 0, face: 7 }]).unwrap(),
-            Side::new([FaceOrigin::Face { operand: 1, face: 3 }]).unwrap()
+            Side::new([FaceOrigin::Face { operand: 1, face: 3 }]).unwrap(),
+            Side::new([FaceOrigin::Offset { operand: 0, face: 7 }]).unwrap()
         )]
     );
     let mut one = history.clone();
