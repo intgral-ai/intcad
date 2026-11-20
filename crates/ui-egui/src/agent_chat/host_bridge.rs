@@ -186,9 +186,11 @@ struct ChatBackend {
     /// Host-minted provenance, `None` keeps the bridge closed until Task 11 composes a real
     /// authority. It is never read from the runtime's wire messages.
     provenance: Option<HostProvenance>,
-    /// The logical call the server announced for the current `tools/call`. Replaced on every
-    /// call, so it cannot leak into the next one.
+    /// The logical call the server announced for the current request. Replaced on every call
+    /// and cleared at [`Backend::end_tool_call`], so protocol/resource paths cannot inherit it.
     forwarded: Option<ToolCallContext>,
+    /// This request is a host-selected free helper or protocol read. It never mints or bills.
+    helper: bool,
 }
 
 impl ChatBackend {
@@ -211,10 +213,20 @@ impl ChatBackend {
             let trusted = context.trusted().cloned();
             (trusted, context.deadline().cloned(), context.now())
         });
-        let (mut request, reply) = match forwarded {
-            Some((Some(trusted), deadline, now)) => ControlRequest::trusted_bridge_forwarded(method, params, trusted, deadline, now),
-            // Free helpers and any direct/local call still use the same trusted bridge entry.
-            _ => ControlRequest::trusted_bridge(method, params),
+        let (mut request, reply) = if self.helper {
+            // A published free helper or resource read: no operation, no billing.
+            ControlRequest::trusted_bridge_helper(method, params)
+        } else {
+            match forwarded {
+                Some((Some(trusted), deadline, now)) => ControlRequest::trusted_bridge_forwarded(method, params, trusted, deadline, now),
+                // A charged call through an authenticated bridge must have its host context.
+                // Nothing else may quietly mint a substitute operation.
+                Some((None, ..)) | None if self.provenance.is_some() => {
+                    push_event(&self.events, bridge_result(&id, method, false, "not run: this call has no host operation context"));
+                    return Err("not run: this call has no host operation context".into());
+                }
+                _ => ControlRequest::trusted_bridge(method, params),
+            }
         };
         request.chat_turn = Some(turn.active);
         if self.tools.send(request).is_err() {
@@ -276,8 +288,14 @@ impl Backend for ChatBackend {
         provenance.begin_logical_call(EntryCategory::GuiBridgeMcp, tool).ok().map(|call| call.context())
     }
 
-    fn begin_tool_call(&mut self, context: Option<&ToolCallContext>) {
+    fn begin_tool_call(&mut self, context: Option<&ToolCallContext>, helper: bool) {
         self.forwarded = context.cloned();
+        self.helper = helper;
+    }
+
+    fn end_tool_call(&mut self) {
+        self.forwarded = None;
+        self.helper = false;
     }
 }
 
@@ -324,6 +342,7 @@ impl HostBridge {
                 next_call: Arc::new(AtomicU64::new(0)),
                 provenance: provenance.clone(),
                 forwarded: None,
+                helper: false,
             };
             let reported = Arc::clone(&error);
             let close_state = Arc::clone(&state);

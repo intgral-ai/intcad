@@ -254,9 +254,14 @@ pub fn call_tool_with(
     billing: &mut dyn BillingPort,
 ) -> MeteredReply {
     let operation = context.operation.clone();
-    if tool_is_free(name) || context.entry.is_free() {
+    if tool_is_free(name) {
         let value = crate::tools::call_tool(backend, name, args);
         return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
+    }
+    // A charged tool cannot borrow a free human/web origin to skip admission. Only the free
+    // helper catalog above is free; everything else needs a host-minted operation.
+    if context.entry.is_free() {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::CapabilityDenied, "a charged tool cannot run from a free origin"));
     }
     if context.nested {
         if !context.has_active_parent() {
@@ -325,9 +330,12 @@ pub fn call_tool_with(
 /// cannot be billed twice.
 pub fn call_tool_forwarded(backend: &mut dyn Backend, name: &str, args: &Value, context: &ToolCallContext) -> MeteredReply {
     let operation = context.operation.clone();
-    if tool_is_free(name) || context.entry.is_free() {
+    if tool_is_free(name) {
         let value = crate::tools::call_tool(backend, name, args);
         return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
+    }
+    if context.entry.is_free() {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::CapabilityDenied, "a charged tool cannot run from a free origin"));
     }
     if !context.is_host_bound() || context.entry == EntryCategory::Unknown {
         return MeteredReply::refused(context, Refusal::new(RefusalCode::CapabilityDenied, "this forwarded call has no authenticated host context"));
@@ -343,6 +351,26 @@ pub fn call_tool_forwarded(backend: &mut dyn Backend, name: &str, args: &Value, 
     let value = crate::tools::call_tool(backend, name, args);
     let outcome = classify_reply(&value);
     MeteredReply { value, operation, outcome, context: context.clone() }
+}
+
+/// Whether this charged tool would need more than one controlled backend call, which the
+/// forwarded bridge cannot yet settle against one durable parent admission.
+///
+/// The forwarding layer reuses the same operation id, but the current control seam can only
+/// admit a fresh request. Expectation checks, parameter trials and topology inspection therefore
+/// refuse before work until Task 9 carries the validated parent admission into substeps.
+pub fn forwarded_substeps_unsupported(tool: &str, args: &Value) -> bool {
+    if args.get("expect").is_some() {
+        return true;
+    }
+    match tool {
+        "check_parameters" | "body_topology" => true,
+        // `inspect_design` makes one document read and optional per-sketch/joint reads.
+        "inspect_design" => {
+            args.get("sketches").and_then(Value::as_bool).unwrap_or(true) || args.get("joints").and_then(Value::as_bool).unwrap_or(true)
+        }
+        _ => false,
+    }
 }
 
 /// Fields that only describe host provenance, never a tool's own parameters.

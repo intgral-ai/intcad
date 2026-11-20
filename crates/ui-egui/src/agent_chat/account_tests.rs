@@ -237,6 +237,8 @@ fn mastra_own_tool_is_free_intcad_tool_bills() {
     write_wire(&mut child, &free_call);
     let free_req = rx.recv_timeout(Duration::from_secs(5)).expect("the free helper reaches the control queue");
     assert!(free_req.trusted().is_none(), "a free helper carries no billed operation context");
+    assert!(free_req.helper, "a published free helper is marked as a helper");
+    assert!(free_req.operation().is_none(), "a free helper mints no billable operation");
     reply_to(free_req, true, json!({"commands":[]}));
     let free = read_wire(&mut child);
     assert_eq!(free["result"]["isError"], Value::Null, "{free}");
@@ -251,6 +253,98 @@ fn mastra_own_tool_is_free_intcad_tool_bills() {
     let charged = read_wire(&mut child);
     assert_eq!(charged["result"]["isError"], Value::Null, "{charged}");
     assert_eq!(bridge.minted_operations(), 1, "one Intcad tool call mints one billed operation");
+}
+
+#[test]
+fn free_helpers_use_no_credits_and_only_narrow_host_methods() {
+    let (helper, _rx) = ControlRequest::trusted_bridge_helper("engine.commands", json!({}));
+    let mut billing = CountingBilling::default();
+    assert!(matches!(admit_control_request(&helper, &bridge_budget(), &mut billing), Admission::Allowed));
+    assert_eq!(billing.admits(), 0, "a published helper consumes no credits");
+    assert!(helper.operation().is_none(), "a published helper mints no operation");
+
+    let (generic, _rx) = ControlRequest::trusted_bridge_helper("engine.execute", json!({"command":"solid.box","params":{"length":10}}));
+    let mut billing = CountingBilling::default();
+    let admission = admit_control_request(&generic, &bridge_budget(), &mut billing);
+    assert!(matches!(admission, Admission::Refused(refusal) if refusal.code == RefusalCode::CapabilityDenied));
+    assert_eq!(billing.admits(), 0, "a generic command cannot be made free by the helper origin");
+}
+
+#[test]
+fn forwarded_expectation_substep_is_refused_before_work() {
+    let (mut bridge, rx, _active) = authorized_bridge();
+    let mut child = child(&mut bridge);
+    let call = tools_call(1, "execute", json!({"command":"solid.box","params":{"length":10},"expect":{"bodies":1}}), Value::Null);
+    let reply = wire(&mut child, call);
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    assert_eq!(reply["result"]["structuredContent"]["errorDetails"]["reason"], "UNSAFE_TO_START", "{reply}");
+    assert!(rx.try_recv().is_err(), "the expectation substep is refused before the control queue");
+    assert_eq!(bridge.minted_operations(), 0, "nothing was minted or sent");
+}
+
+#[test]
+fn unsupported_multi_substep_tool_is_refused_before_work() {
+    let (mut bridge, rx, _active) = authorized_bridge();
+    let mut child = child(&mut bridge);
+    let default_call = tools_call(1, "inspect_design", json!({}), Value::Null);
+    let refused = wire(&mut child, default_call);
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert_eq!(refused["result"]["structuredContent"]["errorDetails"]["reason"], "UNSAFE_TO_START", "{refused}");
+    assert!(rx.try_recv().is_err(), "the multi-substep call is refused before the control queue");
+    assert_eq!(bridge.minted_operations(), 0, "nothing was minted or sent");
+
+    let single_call = tools_call(2, "inspect_design", json!({"sketches":false,"joints":false}), Value::Null);
+    write_wire(&mut child, &single_call);
+    let request = rx.recv_timeout(Duration::from_secs(5)).expect("the single-read inspection reaches control");
+    assert!(request.trusted().is_some(), "the allowed inspection is a charged host call");
+    reply_to(request, true, json!({"bodies":[]}));
+    let reply = read_wire(&mut child);
+    assert_eq!(reply["result"]["isError"], Value::Null, "{reply}");
+    assert_eq!(bridge.minted_operations(), 1);
+}
+
+#[test]
+fn multiple_tool_calls_and_a_resource_read_keep_context_per_request() {
+    let (mut bridge, rx, _active) = authorized_bridge();
+    let mut child = child(&mut bridge);
+    let first_call = tools_call(1, "execute", json!({"command":"engine.commands"}), Value::Null);
+    write_wire(&mut child, &first_call);
+    let first = rx.recv_timeout(Duration::from_secs(5)).expect("the first charged call");
+    let first_operation = first.operation().expect("the first operation").clone();
+    assert!(first.trusted().is_some());
+    reply_to(first, true, json!({}));
+    let first_reply = read_wire(&mut child);
+    assert_eq!(first_reply["result"]["isError"], Value::Null, "{first_reply}");
+
+    let second_call = tools_call(2, "execute", json!({"command":"engine.commands"}), Value::Null);
+    write_wire(&mut child, &second_call);
+    let second = rx.recv_timeout(Duration::from_secs(5)).expect("the second charged call");
+    let second_operation = second.operation().expect("the second operation").clone();
+    assert_ne!(first_operation, second_operation, "two tool calls are two operations");
+    reply_to(second, true, json!({}));
+    let second_reply = read_wire(&mut child);
+    assert_eq!(second_reply["result"]["isError"], Value::Null, "{second_reply}");
+
+    let resource = json!({"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"solidcraft://design"}});
+    write_wire(&mut child, &resource);
+    let resource_request = rx.recv_timeout(Duration::from_secs(5)).expect("the resource read reaches the control queue");
+    assert!(resource_request.helper, "a resource read is a host helper");
+    assert!(resource_request.trusted().is_none(), "a resource read carries no tool context");
+    assert!(resource_request.operation().is_none(), "a resource read mints no operation");
+    reply_to(resource_request, true, json!({"bodies":[]}));
+    let resource_reply = read_wire(&mut child);
+    assert_eq!(resource_reply["result"]["contents"][0]["uri"], "solidcraft://design", "{resource_reply}");
+
+    let third_call = tools_call(4, "execute", json!({"command":"engine.commands"}), Value::Null);
+    write_wire(&mut child, &third_call);
+    let third = rx.recv_timeout(Duration::from_secs(5)).expect("the call after the resource read");
+    let third_operation = third.operation().expect("the third operation").clone();
+    assert_ne!(third_operation, first_operation);
+    assert_ne!(third_operation, second_operation);
+    reply_to(third, true, json!({}));
+    let third_reply = read_wire(&mut child);
+    assert_eq!(third_reply["result"]["isError"], Value::Null, "{third_reply}");
+    assert_eq!(bridge.minted_operations(), 3, "only the three charged tool calls minted operations");
 }
 
 #[test]

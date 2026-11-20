@@ -288,13 +288,23 @@ impl Server {
                 let open = self.backend.design_path();
                 self.scope = self.scope.take().map(|s| s.with_design(open.as_deref()));
                 let scope = self.scope.clone();
-                let context = self.backend.tool_context(name);
-                // The bridge tells its backend about this logical call before dispatch. The
-                // backend forwards that same operation to the host control seam; a later or
-                // different call replaces it instead of inheriting it.
-                if matches!(self.authority, Authority::Forwarded) {
-                    self.backend.begin_tool_call(context.as_ref());
+                let forwarded = matches!(self.authority, Authority::Forwarded);
+                let helper = crate::account::tool_is_free(name);
+                // A tool that would make more than one controlled backend call cannot yet carry
+                // the parent's validated admission into its substeps. Refuse it before any work;
+                // Task 9 replaces this with safe parent-admission reuse.
+                if forwarded && !helper && crate::account::forwarded_substeps_unsupported(name, &args) {
+                    return Ok(crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
+                        solidcraft_engine::entitlement::RefusalCode::UnsafeToStart,
+                        "this multi-substep call needs the durable parent admission that Task 9 adds; nothing was sent",
+                    )));
                 }
+                let context = self.backend.tool_context(name);
+                // The bridge tells its backend which one logical call this is before dispatch.
+                // A free helper or protocol request carries no operation; a charged forwarded
+                // call carries the host-minted context. It is cleared after the result.
+                let begin_context = if forwarded { context.as_ref() } else { None };
+                self.backend.begin_tool_call(begin_context, helper);
                 let authority = &mut self.authority;
                 let backend = self.backend.as_mut();
                 let mut result = vfs::scoped(scope, || match authority {
@@ -341,6 +351,7 @@ impl Server {
                 {
                     content.push(json!({"type": "text", "text": note}));
                 }
+                self.backend.end_tool_call();
                 Ok(result)
             }
             "resources/list" => Ok(json!({"resources": [
@@ -351,14 +362,24 @@ impl Server {
             "prompts/list" => Ok(json!({"prompts": []})),
             "resources/read" => {
                 let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+                // Resource reads are protocol helpers: they carry no logical operation and must
+                // not inherit the previous tool call's context.
+                self.backend.begin_tool_call(None, true);
                 let v = match uri {
                     // The solvecraft:// URIs are what earlier releases listed (compatibility shim,
                     // docs/compatibility.md); clients that saved them still read the resource.
                     "solidcraft://design" | "solvecraft://design" => self.backend.call("document.inspect", json!({"measure": true})),
                     "solidcraft://commands" | "solvecraft://commands" => self.backend.call("engine.commands", json!({})),
-                    _ => return Err((RESOURCE_NOT_FOUND, format!("unknown resource `{uri}`"))),
+                    _ => {
+                        self.backend.end_tool_call();
+                        return Err((RESOURCE_NOT_FOUND, format!("unknown resource `{uri}`")));
+                    }
                 }
-                .map_err(|e| (INTERNAL_ERROR, e))?;
+                .map_err(|e| {
+                    self.backend.end_tool_call();
+                    (INTERNAL_ERROR, e)
+                })?;
+                self.backend.end_tool_call();
                 Ok(json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": v.to_string()}]}))
             }
             _ => Err((METHOD_NOT_FOUND, format!("method `{method}` not found"))),

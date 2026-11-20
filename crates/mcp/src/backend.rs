@@ -56,11 +56,14 @@ pub trait Backend {
     fn tool_context(&self, _tool: &str) -> Option<crate::ToolCallContext> {
         None
     }
-    /// Told by a forwarded host bridge which logical operation this tool call belongs to.
+    /// Told by the host which logical operation (if any) this tool call belongs to.
     ///
-    /// It is called once per `tools/call`, including with `None` for a free helper, so a backend
-    /// never reuses the previous call's operation. Only the forwarding authority installs this.
-    fn begin_tool_call(&mut self, _context: Option<&crate::ToolCallContext>) {}
+    /// `helper` is true only for the published free-helper catalog or a protocol/resource read.
+    /// The backend must keep the context for this one request and clear it at
+    /// [`Backend::end_tool_call`], so protocol and resource paths never inherit it.
+    fn begin_tool_call(&mut self, _context: Option<&crate::ToolCallContext>, _helper: bool) {}
+    /// The request using this context has ended. A backend must not forward it again.
+    fn end_tool_call(&mut self) {}
 }
 
 /// Longest reply line accepted from the app.

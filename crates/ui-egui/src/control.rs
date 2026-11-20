@@ -95,6 +95,9 @@ pub struct ControlRequest {
     pub(crate) deadline: Option<ConservativeDeadline>,
     /// The host's monotonic reading at which the forwarded call was minted.
     pub(crate) now: Option<MonotonicInstant>,
+    /// A published free helper or protocol read chosen by the host. It never mints an operation
+    /// or consumes credits, and only the exact helper methods below are allowed.
+    pub(crate) helper: bool,
 }
 
 /// Entries whose human host path is free even when it shares command dispatch.
@@ -134,6 +137,49 @@ fn auxiliary_method(method: &str) -> bool {
             | "ui.icon_audit"
             | "ui.resize"
     )
+}
+
+/// The exact control methods a published MCP free helper or resource read may use. Everything
+/// else, including generic `engine.execute`, needs a host-minted operation and admission.
+fn mcp_helper_method(method: &str, params: &Value) -> bool {
+    match method {
+        "control.running"
+        | "control.pending"
+        | "control.capabilities"
+        | "control.subscribe"
+        | "engine.commands"
+        | "document.inspect"
+        | "ui.inspect"
+        | "ui.rects"
+        | "ui.screenshot"
+        | "ui.render" => true,
+        // These MCP free helpers run one fixed read-only command each; no arbitrary command id
+        // is free.
+        "engine.execute" => matches!(
+            params.get("command").and_then(Value::as_str),
+            Some("engine.describe" | "diagnostics.crash_reports" | "diagnostics.crash_report" | "inspect.compare_picture")
+        ),
+        _ => false,
+    }
+}
+
+/// A host-marked helper must be one of the exact free methods and must not carry a billable
+/// operation, trusted context or stale admission. Otherwise it is a controlled request and is
+/// refused here rather than being dispatched for free.
+fn helper_refusal(req: &ControlRequest) -> Option<Refusal> {
+    if !req.helper {
+        return None;
+    }
+    if !matches!(req.entry, EntryCategory::GuiBridgeMcp | EntryCategory::HeadlessMcp | EntryCategory::ExternalAcpMcp) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "a free helper cannot use this request entry"));
+    }
+    if req.operation.is_some() || req.trusted.is_some() || req.admission.as_ref().is_some_and(|admission| !matches!(admission, Admission::Allowed)) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "a free helper cannot carry operation authority"));
+    }
+    if !mcp_helper_method(&req.method, &req.params) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "this method is not a published free helper"));
+    }
+    None
 }
 
 /// Methods that start a native file operation answered later by a worker/save path, outside
@@ -188,6 +234,7 @@ impl ControlRequest {
             trusted: None,
             deadline: None,
             now: None,
+            helper: false,
         };
         (request, rx)
     }
@@ -238,6 +285,30 @@ impl ControlRequest {
             trusted: Some(trusted),
             deadline,
             now,
+            helper: false,
+        };
+        (request, rx)
+    }
+
+    /// A free helper or protocol/resource read chosen by the host bridge. It carries no
+    /// operation and no trusted context; control admits it only when its method is in the exact
+    /// helper set.
+    pub(crate) fn trusted_bridge_helper(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = Self {
+            method: method.into(),
+            params,
+            reply: tx,
+            started: Default::default(),
+            chat_turn: None,
+            guarded: None,
+            entry: EntryCategory::GuiBridgeMcp,
+            operation: None,
+            admission: None,
+            trusted: None,
+            deadline: None,
+            now: None,
+            helper: true,
         };
         (request, rx)
     }
@@ -289,6 +360,7 @@ impl ControlRequest {
             trusted: None,
             deadline: None,
             now: None,
+            helper: false,
         }
     }
 
@@ -328,6 +400,7 @@ pub(crate) struct Reissue {
     trusted: Option<TrustedContext>,
     deadline: Option<ConservativeDeadline>,
     now: Option<MonotonicInstant>,
+    helper: bool,
 }
 
 impl Reissue {
@@ -339,6 +412,7 @@ impl Reissue {
             trusted: req.trusted.clone(),
             deadline: req.deadline.clone(),
             now: req.now,
+            helper: req.helper,
         }
     }
 }
@@ -348,7 +422,7 @@ impl Reissue {
 ///
 /// The origin is not chosen here; it comes only from [`Reissue::from_request`].
 pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
-    let Reissue { entry, operation, admission, trusted, deadline, now } = parts;
+    let Reissue { entry, operation, admission, trusted, deadline, now, helper } = parts;
     let (tx, rx) = std::sync::mpsc::channel();
     let request = ControlRequest {
         method: method.into(),
@@ -363,6 +437,7 @@ pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) 
         trusted,
         deadline,
         now,
+        helper,
     };
     (request, rx)
 }
@@ -404,6 +479,12 @@ impl BillingPort for NoAuthorityBilling {
 /// a host-minted operation and a server-issued grant from the host's [`BillingPort`]; the local
 /// port never turns a balance check into authority.
 pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing: &mut dyn BillingPort) -> Admission {
+    if let Some(refusal) = helper_refusal(req) {
+        return Admission::Refused(refusal);
+    }
+    if req.helper {
+        return Admission::Allowed;
+    }
     if let Some(refusal) = trusted_refusal(req) {
         return Admission::Refused(refusal);
     }
@@ -416,17 +497,7 @@ pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing
     let Some(capability) = entry_capability(req.entry) else {
         return Admission::Refused(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"));
     };
-    // Protocol, navigation and render helpers are free for every MCP entry, as the MCP tool
-    // catalog already declares. Their arguments cannot choose an operation or account.
-    if matches!(
-        req.entry,
-        EntryCategory::DirectControl
-            | EntryCategory::ExternalUiAutomation
-            | EntryCategory::GuiBridgeMcp
-            | EntryCategory::HeadlessMcp
-            | EntryCategory::ExternalAcpMcp
-    ) && auxiliary_method(&req.method)
-    {
+    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
         return Admission::Allowed;
     }
     if let Some(refusal) = async_native_refusal(req) {
@@ -532,6 +603,9 @@ fn admission_refusal(reason: &Refusal) -> Outcome {
 /// The origin-only fail-closed check: no method, parameter or local task gate may run before an
 /// unclassified request is refused, or before a forwarded host context is checked for binding.
 fn entry_refusal(req: &ControlRequest) -> Option<Refusal> {
+    if let Some(refusal) = helper_refusal(req) {
+        return Some(refusal);
+    }
     if let Some(refusal) = trusted_refusal(req) {
         return Some(refusal);
     }

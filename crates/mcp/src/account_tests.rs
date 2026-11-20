@@ -89,6 +89,19 @@ fn reply_body(reply: &MeteredReply) -> Value {
 }
 
 #[test]
+fn charged_tool_with_a_free_origin_is_refused_before_dispatch() {
+    let mut backend = Headless::default();
+    let mut billing = CountingBilling::default();
+    let free = ToolCallContext::new(operation("op_mcp_free_origin_0001"), Capability::Mcp, EntryCategory::HumanGuiFree);
+    let reply =
+        call_tool_with(&mut backend, "execute", &json!({"command":"solid.box","params":{"length":10}}), &free, &verified_budget(), &mut billing);
+    assert!(reply.is_error(), "{}", reply.value());
+    assert_eq!(reply_body(&reply)["errorDetails"]["reason"], "CAPABILITY_DENIED");
+    assert_eq!(billing.admits, 0, "a free origin takes no grant");
+    assert!(backend.session.doc.features.is_empty(), "nothing was executed");
+}
+
+#[test]
 fn one_batch_of_n_steps_admits_once() {
     let mut backend = Headless::default();
     let mut billing = CountingBilling::default();
@@ -705,14 +718,14 @@ fn server_metered_free_helper_runs_without_context_or_billing() {
 }
 
 #[test]
-fn free_human_entry_tool_is_never_charged_or_admitted() {
+fn free_human_entry_does_not_make_a_charged_tool_free() {
     let mut backend = Headless::default();
     let mut billing = CountingBilling::default();
     let free =
         ToolCallContext::new(operation("op_mcp_human_0001"), Capability::Mcp, EntryCategory::HumanGuiFree).with_safe_stop(Duration::from_secs(30));
     let reply = call_tool_with(&mut backend, "measure", &json!({}), &free, &verified_budget(), &mut billing);
-    assert!(!reply.is_error(), "{}", reply.value());
-    assert_eq!(reply.outcome(), &CallOutcome::Free);
+    assert!(reply.is_error(), "{}", reply.value());
+    assert_eq!(reply.outcome(), &CallOutcome::Refused(RefusalCode::CapabilityDenied));
     assert_eq!((billing.admits, billing.commits, billing.releases), (0, 0, 0));
 }
 
