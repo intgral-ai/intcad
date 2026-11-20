@@ -53,8 +53,8 @@ Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and p
 - [x] Move all persistence mutation decisions under the guard, including retention eligibility/deletion and state repair.
 - [x] Make verified-report recovery compatible with current terminal state; reject unverified/foreign reports.
 - [x] Remove live report remove/recreate; choose marker before publishing; propagate actual state.
-- [ ] Verify deterministic native tests in remote CI; inspect source diff and lightweight formatting.
-- [ ] Commit recoverable engine checkpoint.
+- [x] Verify deterministic native tests in remote CI; inspect source diff and lightweight formatting.
+- [x] Commit recoverable engine checkpoint.
 
 ### Task 3: Background cancellation control
 
@@ -66,13 +66,13 @@ Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and p
 - [x] Process cancellation outside book/queue locks; bounded deadline and shutdown interrupt lock acquisition.
 - [x] Keep wire cancellation authorized and off-thread, returning actual persisted result.
 - [x] Keep UI event state truthful: queued cancellation is historical/cancelled presentation, not persisted Cancelled.
-- [ ] Verify remote UI/engine/CLI suite and commit.
+- [x] Verify remote UI/engine/CLI suite and commit.
 
 ### Task 4: Evidence and delivery
 
 - [x] Document upgrade/rollback coordination, stable lock lifetime, failures and resource limits.
-- [ ] Dispatch GREEN CI on final task revision; retain exact RED/GREEN commands, runs and raw evidence paths.
-- [ ] Record tests NOT_RUN or BLOCKED rather than infer passing.
+- [ ] Dispatch the full GREEN `ci.yml` on the final task revision; the matched diagnostic lane has passed but is not the required full gate.
+- [x] Record tests NOT_RUN or BLOCKED rather than infer passing.
 - [ ] Hand off branch/diff/ledger to controller for independent review; no integration or merge.
 
 ## Execution ledger
@@ -91,3 +91,7 @@ Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and p
 - RED source tracked files were unchanged; raw dirty metadata includes only the generated `evidence/` directory. GREEN records dirtiness before generating evidence.
 - Ruling: 64 outstanding control requests matches bounded run history; 5 s lock-admission deadline follows contract §4. A 4,096-entry retirement ledger closes admission on exhaustion rather than evicting a possible in-flight binding.
 - Verification pending: native Windows/macOS lock behavior, full required CI and GUI evidence. No local compilation or new target; direct Rust 1.99.1 rustfmt parsing and `git diff --check` only.
+- Matched diagnostic run `44682474490` at `76167a5d7` passed engine 66/0, UI 11/0 plus retired card 1/0, CLI 1/0, Clippy 0 and fmt 0. The temporary diagnostic workflow is not part of the delivered source diff; its run and artifact remain review provenance.
+- Review follow-up: cleanup now keeps terminal records when state or admission is unreadable, and writes a tombstone from the surviving key record before retiring a state whose admission is already gone. A same-key replay therefore returns the durable terminal outcome rather than recreating Queued.
+- Review follow-up: wire `validation.status`, wire `validation.cancel` and the control worker share one monotone state merge; a delayed Queued/Running snapshot cannot overwrite a settled terminal state. Wire calls remain on the `mastra-host-call` thread, `cancel_turn` remains memory-only plus the control queue, and no storage wait was added to the window thread.
+- Final matched diagnostic and its artifact are regenerated in the ignored review package; full required CI, independent review and GUI evidence remain outstanding.
