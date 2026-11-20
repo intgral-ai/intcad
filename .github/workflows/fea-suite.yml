@@ -15,10 +15,6 @@ on:
     - cron: "30 3 * * *"
   workflow_dispatch:
   workflow_call:
-  # TEMPORARY: proves the job on its own branch before the file reaches the default branch
-  # (workflow_dispatch needs that). Removed before review.
-  push:
-    branches: [tianwei/fea-12-ci-linux-e15e1d]
 
 permissions:
   contents: read
@@ -40,6 +36,8 @@ jobs:
     # A standard public-repository runner: 4 vCPUs, 16 GB. The suite runs one test and one solver
     # thread at a time; the mesh check's finer runs stop at 6 GB (MEMORY_CEILING), and R2's needs
     # about 8 GB available, so 16 GB holds the largest solve (about 100,000 nodes).
+    # Measured 2026-11-20 (run 44754532657, cold cache): 35 min in all, 17 min building and
+    # 14 min for 18 tests, 14.8 GB available. The rest leaves room for A6's third mesh.
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:
