@@ -44,6 +44,22 @@ pub fn run_document_steps<C>(
     history: fn(&mut C, &str, Value) -> Result<Value, String>,
     checkpoint_policy: CheckpointPolicy,
 ) -> Value {
+    run_document_steps_gated(context, steps, options, execute, history, checkpoint_policy, None)
+}
+
+/// The same runner with a host gate consulted before every step applies. The gate receives the
+/// first step index of the run about to apply; returning `Err` stops before that run, restores the
+/// checkpoint when possible and reports truthfully whether effects were retained. A host uses this
+/// to recheck live authorization and remaining safe-stop time between steps; it is never a retry.
+pub fn run_document_steps_gated<C>(
+    context: &mut C,
+    steps: &[Value],
+    options: &Value,
+    execute: fn(&mut C, &str, Value) -> Result<Value, String>,
+    history: fn(&mut C, &str, Value) -> Result<Value, String>,
+    checkpoint_policy: CheckpointPolicy,
+    mut gate: Option<&mut dyn FnMut(&mut C, usize) -> Result<(), String>>,
+) -> Value {
     let p = options;
     let rollback = p.get("rollback").and_then(Value::as_bool).unwrap_or(true);
     let profile = p.get("profile").and_then(Value::as_bool).unwrap_or(false);
@@ -74,11 +90,21 @@ pub fn run_document_steps<C>(
         let singles = match run {
             batch_params::BatchRun::Step(i) => vec![i],
             batch_params::BatchRun::Params { steps: indices, changes } => {
+                let first = indices.first().copied().unwrap_or(0);
+                if let Some(gate) = gate.as_mut()
+                    && let Err(error) = gate(context, first)
+                {
+                    let restored = checkpoint.is_some_and(|id| history(context, "edit.restore_checkpoint", json!({"checkpoint": id})).is_ok());
+                    let reply = json!({"completed":results.len(),"results":results,"undone":if restored { results.len() } else { 0 },
+                        "rolled_back":restored,"stopped":true,"not_run":(first..steps.len()).collect::<Vec<_>>(),
+                        "failed":{"index":first,"command":"parameters.change","stage":"safe_stop","error":error}});
+                    return with_timings(reply, timed, rows, clock.ms());
+                }
                 let (r, took) = timing::time(profile, || execute(context, "parameters.change", batch_params::combined_params(&changes)));
                 match r {
                     Ok(v) => {
                         if timed {
-                            rows.push(took.to_json(indices.first().copied().unwrap_or(0), "parameters.change"));
+                            rows.push(took.to_json(first, "parameters.change"));
                         }
                         results.extend(batch_params::step_results(steps, &indices, &v));
                         continue;
@@ -89,6 +115,15 @@ pub fn run_document_steps<C>(
         };
         for i in singles {
             let Some(step) = steps.get(i) else { continue };
+            if let Some(gate) = gate.as_mut()
+                && let Err(error) = gate(context, i)
+            {
+                let restored = checkpoint.is_some_and(|id| history(context, "edit.restore_checkpoint", json!({"checkpoint": id})).is_ok());
+                let reply = json!({"completed":results.len(),"results":results,"undone":if restored { results.len() } else { 0 },
+                    "rolled_back":restored,"stopped":true,"not_run":(i..steps.len()).collect::<Vec<_>>(),
+                    "failed":{"index":i,"command":command(step),"stage":"safe_stop","error":error}});
+                return with_timings(reply, timed, rows, clock.ms());
+            }
             let (r, took) = timing::time(profile, || match command(step) {
                 Some(id) => execute(context, id, step.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}))),
                 None => Err("missing `command`".to_string()),
