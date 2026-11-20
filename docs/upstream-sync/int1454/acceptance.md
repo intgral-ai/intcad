@@ -497,6 +497,9 @@ for continuation of the original patch; no reply is recorded as of this revision
 clearance or licence pass exists.** Do not invent one, and do not read the prohibited external code
 again.
 
+Later disposition: see §11.12 (2026-11-20T00:14Z). The blocked status above remains the historical
+state at this checkpoint; it is not erased.
+
 ### 11.8 Other active work — no completion claim
 
 - Union fallback worktree `int1454-union-fallback`: active per the controller snapshot at
@@ -571,3 +574,20 @@ in this document. Earlier sections remain unchanged.
   ignored review package. §11.2 now distinguishes the passed
   (16/16) job from the failed (2/16)/(8/16) shards, and §11.7 no longer implies only two files were
   fetched. No state poll, build, CI or source edit was made.
+
+### 11.12 Owner disposition update (2026-11-20T00:14Z)
+
+Superseding entry for §11.7 only. The owner replied **“接受”** (accept) to the explicit proposal to
+record the LGPL source-consultation breach and allow this original no-copied-code Flatpak patch to
+continue acceptance.
+
+This closes only the pending owner disposition for this incident. It is **not** a waiver for future
+reading of prohibited source, **not** legal or cleanroom clearance, and **not** merge, release or
+sign-off approval. The §11.7 blocked status remains accurate as the historical state at that
+checkpoint, and the original incident evidence is preserved.
+
+Technical status recorded with this disposition: source `eee67717f5c79248f00a2232ae3a6f41dfc0a605`
+has a scoped task PASS (controller record); matched CI run `44640487050` succeeded with **23 tests
+OK**, and the controller directly checked raw log lines 378/380. Installed Flatpak acceptance is
+**NOT_RUN**; the combined candidate review and CI are pending. No source consultation, build, CI or
+other worktree change was made for this entry.
