@@ -455,6 +455,10 @@ impl<T: Transport> HttpAccountService<T> {
 
     fn push_auth(&self, request: &mut WireRequest, name: &str, secret: Option<Secret>) -> Result<(), Refusal> {
         let secret = secret.filter(|value| !value.is_empty()).ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
+        // A credential is host-owned, but it still must not be able to inject a header.
+        if secret.expose_secret().bytes().any(|byte| byte == b'\r' || byte == b'\n' || byte == 0) {
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
         request.headers.push((name.to_owned(), secret.expose_secret().to_owned()));
         Ok(())
     }
@@ -590,6 +594,8 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
         }
         let eligible = value.get("eligible").and_then(Value::as_bool).ok_or_else(unavailable)?;
         let version_supported = value.pointer("/client/supported").and_then(Value::as_bool).ok_or_else(unavailable)?;
+        let protocol_supported = value.pointer("/protocol/supported").and_then(Value::as_bool).ok_or_else(unavailable)?;
+        let email_verified = value.pointer("/account/email_verified").and_then(Value::as_bool).ok_or_else(unavailable)?;
         let model_available = value.pointer("/capabilities/chat").and_then(Value::as_bool).ok_or_else(unavailable)?;
         let mut reasons = Vec::new();
         for reason in value.get("reasons").and_then(Value::as_array).ok_or_else(unavailable)? {
@@ -599,7 +605,13 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
                 Err(_) => return Err(unavailable()),
             }
         }
-        if !eligible && reasons.is_empty() {
+        // The flags and reasons are one server snapshot. An inconsistent snapshot is not a grant.
+        if (!eligible && reasons.is_empty())
+            || (eligible && !reasons.is_empty())
+            || (!version_supported && !reasons.contains(&RefusalCode::VersionUnsupported))
+            || (!protocol_supported && !reasons.contains(&RefusalCode::ProtocolUnsupported))
+            || (!email_verified && !reasons.contains(&RefusalCode::EmailUnverified))
+        {
             return Err(unavailable());
         }
         Ok(Availability { online: true, version_supported, model_available, balance, held, reasons })

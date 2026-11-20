@@ -321,6 +321,10 @@ fn missing_credentials_fail_closed_without_a_request() {
     let service = scripted_with(FixedCredentials::none(), vec![ok(200, status_body(1000, 0, 1000))]);
     assert_eq!(service.status().unwrap_err().code, RefusalCode::AuthRequired);
     assert!(service.transport().take_requests().is_empty());
+
+    let injected = scripted_with(FixedCredentials::none().with_product_session("token\r\nX-Evil: 1"), vec![ok(200, status_body(1000, 0, 1000))]);
+    assert_eq!(injected.status().unwrap_err().code, RefusalCode::AuthRequired);
+    assert!(injected.transport().take_requests().is_empty());
 }
 
 #[test]
@@ -333,6 +337,10 @@ fn transport_and_integrity_failures_are_auth_unavailable_and_never_grant() {
     assert_eq!(malformed.status().unwrap_err().code, RefusalCode::AuthUnavailable);
     let mismatch = scripted(vec![ok(200, status_body(1000, 1, 998))]);
     assert_eq!(mismatch.status().unwrap_err().code, RefusalCode::AuthUnavailable);
+    let mut inconsistent = status_body(1000, 0, 1000);
+    inconsistent["client"]["supported"] = Value::Bool(false);
+    let inconsistent = scripted(vec![ok(200, inconsistent)]);
+    assert_eq!(inconsistent.status().unwrap_err().code, RefusalCode::AuthUnavailable);
     let unavailable = scripted(vec![ok(503, error_body("AUTH_UNAVAILABLE"))]);
     assert_eq!(unavailable.status().unwrap_err().code, RefusalCode::AuthUnavailable);
     let internal = scripted(vec![ok(500, error_body("INTERNAL_ERROR"))]);
