@@ -291,10 +291,12 @@ fn create_producer(runtime: &CefRuntime, surface: CefSurfaceConfig, host: &HostW
 /// Bounded input queue: CEF drops input until the browser has painted its first frame.
 struct InputQueue {
     critical: VecDeque<Queued>,
-    /// The latest motion with all its owner flags, coalesced in place.
-    motion: Option<MouseEvent>,
-    /// How many queued critical events came before that motion.
-    motion_after: usize,
+    /// Ordered motion runs: each entry is the whole latest motion of a run and
+    /// the number of critical events queued before that run. Motion coalesces
+    /// only while it stays adjacent (no critical event follows it) and keeps
+    /// the same owner flags; the ticket is queue-wide and cleared by
+    /// `invalidate`.
+    motions: VecDeque<(usize, MouseEvent)>,
     /// Owned UTF-8 bytes of queued IME/paste text.
     bytes: usize,
     capacity: usize,
@@ -319,8 +321,7 @@ impl InputQueue {
     fn new(capacity: usize) -> Self {
         Self {
             critical: VecDeque::new(),
-            motion: None,
-            motion_after: 0,
+            motions: VecDeque::new(),
             bytes: 0,
             capacity,
             ready: false,
@@ -336,8 +337,19 @@ impl InputQueue {
     fn push(&mut self, event: Queued) {
         if let Queued::Mouse(mouse @ MouseEvent { action: MouseAction::Moved, .. }) = event {
             // Keep the whole event: modifiers and held buttons belong to a page drag.
-            self.motion = Some(mouse);
-            self.motion_after = self.critical.len();
+            let after = self.critical.len();
+            if let Some((index, last)) = self.motions.back_mut()
+                && *index == after
+                && same_motion_flags(&last.modifiers, &mouse.modifiers)
+            {
+                *last = mouse;
+            } else if self.motions.len() >= self.capacity {
+                self.refused = self.refused.saturating_add(1);
+                self.overflowed = true;
+                return;
+            } else {
+                self.motions.push_back((after, mouse));
+            }
             if !self.ready {
                 self.held = self.held.saturating_add(1);
             }
@@ -403,8 +415,7 @@ impl InputQueue {
 
     fn clear(&mut self) {
         self.critical.clear();
-        self.motion = None;
-        self.motion_after = 0;
+        self.motions.clear();
         self.bytes = 0;
         self.buttons.clear();
         self.keys.clear();
@@ -416,6 +427,39 @@ impl InputQueue {
         self.ready = false;
         self.ticket = None;
     }
+
+    /// One flush's delivery order. Production `flush` consumes exactly this.
+    fn drain_ordered(&mut self) -> Vec<Queued> {
+        let mut critical = std::mem::take(&mut self.critical);
+        let mut motions = std::mem::take(&mut self.motions).into_iter().peekable();
+        let mut ordered = Vec::with_capacity(critical.len() + motions.len());
+        let mut index = 0;
+        loop {
+            // A run belongs exactly after its recorded prefix of critical events.
+            while motions.peek().is_some_and(|(after, _)| *after == index) {
+                if let Some((_, motion)) = motions.next() {
+                    ordered.push(Queued::Mouse(motion));
+                }
+            }
+            let Some(event) = critical.pop_front() else { break };
+            ordered.push(event);
+            index += 1;
+        }
+        ordered
+    }
+}
+
+/// Owner flags that must match before adjacent motion may coalesce. The queue's
+/// ticket is queue-wide, so a shared queue plus these flags is the full
+/// ticket/modifiers/buttons condition.
+fn same_motion_flags(left: &EventModifiers, right: &EventModifiers) -> bool {
+    left.shift == right.shift
+        && left.ctrl == right.ctrl
+        && left.alt == right.alt
+        && left.meta == right.meta
+        && left.left_mouse_button == right.left_mouse_button
+        && left.middle_mouse_button == right.middle_mouse_button
+        && left.right_mouse_button == right.right_mouse_button
 }
 
 pub struct CefAssistant {
@@ -2040,25 +2084,8 @@ impl CefAssistant {
             self.pointer_capture = None;
             return;
         }
-        let motion = self.queue.motion.take();
-        let before = self.queue.motion_after.min(self.queue.critical.len());
-        self.queue.motion_after = 0;
-        for _ in 0..before {
-            let Some(event) = self.queue.critical.pop_front() else { break };
-            if !self.send_queued(event) {
-                return;
-            }
-        }
-        if let Some(motion) = motion
-            && let Err(error) = self.producer.send_mouse_input(motion)
-        {
-            note(&format!("CEF: motion refused: {error}"));
-            self.input_failed |= self.admission.is_some();
-            self.queue.invalidate();
-            self.pointer_capture = None;
-            return;
-        }
-        while let Some(event) = self.queue.critical.pop_front() {
+        let ordered = self.queue.drain_ordered();
+        for event in ordered {
             if !self.send_queued(event) {
                 return;
             }
@@ -2778,7 +2805,7 @@ mod tests {
         queue.invalidate();
         assert!(!queue.ready);
         assert!(queue.ticket.is_none());
-        assert!(queue.motion.is_none());
+        assert!(queue.motions.is_empty());
         queue.ready = true;
         queue.ticket = Some(admission::InputTicket { lifetime: 1, placement_revision: 3 });
         queue.push(Queued::Mouse(MouseEvent { action: MouseAction::Released, ..mouse }));
@@ -2824,50 +2851,116 @@ mod tests {
 mod w4_input_tests {
     use super::*;
 
-    fn moved() -> MouseEvent {
-        MouseEvent {
-            x: 4,
-            y: 5,
-            button: MouseButton::Left,
-            action: MouseAction::Moved,
-            modifiers: EventModifiers {
-                ctrl: true,
-                shift: true,
-                alt: true,
-                meta: true,
-                left_mouse_button: true,
-                ..Default::default()
-            },
-        }
+    fn flags(ctrl: bool, shift: bool, left: bool) -> EventModifiers {
+        EventModifiers { ctrl, shift, alt: false, meta: false, left_mouse_button: left, ..Default::default() }
+    }
+
+    fn motion(x: i32, y: i32, ctrl: bool, shift: bool, left: bool) -> Queued {
+        Queued::Mouse(MouseEvent { x, y, button: MouseButton::Left, action: MouseAction::Moved, modifiers: flags(ctrl, shift, left) })
+    }
+
+    fn button(x: i32, action: MouseAction, ctrl: bool, shift: bool, left: bool) -> Queued {
+        Queued::Mouse(MouseEvent { x, y: 7, button: MouseButton::Left, action, modifiers: flags(ctrl, shift, left) })
+    }
+
+    fn key(kind: KeyEventKind, code: i32) -> Queued {
+        Queued::Key(KeyEvent { kind, windows_key_code: code, native_key_code: 0, character: None, modifiers: EventModifiers::default() })
+    }
+
+    /// The queue's real delivery order, formatted without native types.
+    fn describe(events: &[Queued]) -> Vec<String> {
+        events
+            .iter()
+            .map(|event| match event {
+                Queued::Mouse(MouseEvent { x, y, button, action, modifiers }) => format!(
+                    "{action:?}({x},{y},{button:?},ctrl={},shift={},alt={},meta={},left={},middle={},right={})",
+                    modifiers.ctrl,
+                    modifiers.shift,
+                    modifiers.alt,
+                    modifiers.meta,
+                    modifiers.left_mouse_button,
+                    modifiers.middle_mouse_button,
+                    modifiers.right_mouse_button,
+                ),
+                Queued::Key(KeyEvent { kind, windows_key_code, .. }) => format!("{kind:?}({windows_key_code})"),
+                Queued::ImeSet(text, _) => format!("ImeSet({})", text.len()),
+                Queued::ImeCommit(text) => format!("ImeCommit({})", text.len()),
+                Queued::ImeCancel => "ImeCancel".to_owned(),
+            })
+            .collect()
     }
 
     #[test]
     fn motion_never_crosses_press_release_or_ime() {
         let mut queue = InputQueue::new(256);
         queue.ready = true;
-        queue.push(Queued::Key(KeyEvent {
-            kind: KeyEventKind::RawKeyDown,
-            windows_key_code: 0x41,
-            native_key_code: 0,
-            character: None,
-            modifiers: EventModifiers::default(),
-        }));
-        queue.push(Queued::Mouse(moved()));
-        queue.push(Queued::Key(KeyEvent {
-            kind: KeyEventKind::KeyUp,
-            windows_key_code: 0x41,
-            native_key_code: 0,
-            character: None,
-            modifiers: EventModifiers::default(),
-        }));
-        // The motion is sent after the one event that preceded it, with every
-        // modifier and held-button flag intact.
-        assert_eq!(queue.motion_after, 1);
-        assert_eq!(queue.critical.len(), 2);
-        let motion = queue.motion.expect("motion retained");
-        assert!(motion.modifiers.ctrl && motion.modifiers.shift && motion.modifiers.alt && motion.modifiers.meta);
-        assert!(motion.modifiers.left_mouse_button);
-        assert_eq!((motion.x, motion.y), (4, 5));
+        // Plan W4 RED sequence: move / down / move / up / move. Motion may
+        // coalesce only with adjacent motion of the same ticket and owner
+        // flags, never across a press, release, key or IME event.
+        queue.push(motion(1, 0, true, false, true));
+        queue.push(button(2, MouseAction::Pressed, true, false, true));
+        queue.push(motion(3, 0, true, false, true));
+        queue.push(key(KeyEventKind::RawKeyDown, 0x41));
+        queue.push(button(4, MouseAction::Released, true, false, false));
+        queue.push(motion(5, 0, false, false, false));
+        assert_eq!(
+            describe(&queue.drain_ordered()),
+            [
+                "Moved(1,0,Left,ctrl=true,shift=false,alt=false,meta=false,left=true,middle=false,right=false)",
+                "Pressed(2,7,Left,ctrl=true,shift=false,alt=false,meta=false,left=true,middle=false,right=false)",
+                "Moved(3,0,Left,ctrl=true,shift=false,alt=false,meta=false,left=true,middle=false,right=false)",
+                "RawKeyDown(65)",
+                "Released(4,7,Left,ctrl=true,shift=false,alt=false,meta=false,left=false,middle=false,right=false)",
+                "Moved(5,0,Left,ctrl=false,shift=false,alt=false,meta=false,left=false,middle=false,right=false)",
+            ],
+            "every motion must keep its position in the delivery order"
+        );
+    }
+
+    #[test]
+    fn adjacent_same_flags_motion_coalesces_but_changed_flags_do_not() {
+        let mut queue = InputQueue::new(256);
+        queue.ready = true;
+        queue.push(motion(1, 2, true, true, true));
+        queue.push(motion(3, 4, true, true, true));
+        // A press ends the run: later motion is not adjacent to the first run.
+        queue.push(button(5, MouseAction::Pressed, true, true, true));
+        queue.push(motion(6, 7, true, true, true));
+        // Changed owner flags are not coalescible with the preceding motion.
+        queue.push(motion(8, 9, true, false, true));
+        assert_eq!(
+            describe(&queue.drain_ordered()),
+            [
+                "Moved(3,4,Left,ctrl=true,shift=true,alt=false,meta=false,left=true,middle=false,right=false)",
+                "Pressed(5,7,Left,ctrl=true,shift=true,alt=false,meta=false,left=true,middle=false,right=false)",
+                "Moved(6,7,Left,ctrl=true,shift=true,alt=false,meta=false,left=true,middle=false,right=false)",
+                "Moved(8,9,Left,ctrl=true,shift=false,alt=false,meta=false,left=true,middle=false,right=false)",
+            ],
+            "coalescing keeps the latest full event and only merges identical adjacent flags"
+        );
+    }
+
+    #[test]
+    fn motion_ordering_keeps_the_critical_bound_and_overflow_resync() {
+        let mut queue = InputQueue::new(256);
+        queue.ready = true;
+        for _ in 0..256 {
+            queue.push(Queued::ImeCancel);
+        }
+        // Adjacent motion is coalesced instead of spending the critical bound.
+        queue.push(motion(1, 1, true, false, true));
+        queue.push(motion(2, 2, true, false, true));
+        assert!(!queue.overflowed);
+        // A critical release beyond the existing bound still refuses with the
+        // same overflow signal; it is never silently replayed into a new layout.
+        queue.push(button(3, MouseAction::Released, false, false, false));
+        assert!(queue.overflowed && queue.refused == 1);
+        let ordered = queue.drain_ordered();
+        assert_eq!(ordered.len(), 257, "256 critical events plus one coalesced motion");
+        assert!(matches!(ordered.last(), Some(Queued::Mouse(MouseEvent { x: 2, y: 2, action: MouseAction::Moved, .. }))));
+        assert!(queue.critical.is_empty() && queue.motions.is_empty(), "delivery drains the bounded queue");
+        queue.invalidate();
+        assert!(queue.motions.is_empty(), "invalidation discards ordered motion");
     }
 
     #[test]
