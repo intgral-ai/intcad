@@ -822,6 +822,11 @@ pub fn request_quit(app: &mut SolveApp) {
 
 /// Ask about the next design with unsaved changes, or quit when none is left.
 fn quit_step(app: &mut SolveApp) {
+    // A staged quit waits for the host barrier; finish_quit or cancel is its only next step.
+    // Drawing more frames must not reopen the prompt for an already-answered design.
+    if matches!(app.docs.quit_intent.as_ref().map(|intent| intent.stage), Some(QuitStage::Staged | QuitStage::Committed)) {
+        return;
+    }
     let Some(skip) = app.docs.quitting.clone() else { return };
     if app.docs.closing.is_some() {
         return;
@@ -2849,5 +2854,31 @@ mod barrier_tests {
         assert!(app.quit_requested, "a pending close keeps the staged quit");
         app.set_host_close_state(HostCloseState::Ready);
         assert!(finish_quit(&mut app).is_ok());
+    }
+
+    /// Approved W3/R1: once the prompts are answered and the quit is staged, the host owns the
+    /// close. Drawing more frames while it completes must not reopen the answered prompt.
+    #[test]
+    fn staged_quit_does_not_reopen_the_save_prompt_on_later_frames() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        request_quit(&mut h.app);
+        assert_eq!(h.app.docs.closing, Some(0), "the dirty design is asked about");
+        answer_prompt(&mut h.app, Answer::DontSave);
+        assert!(h.app.quit_requested, "the answer stages the quit");
+        assert_eq!(h.app.host_close_state, HostCloseState::Required, "staging asks the host to close");
+        assert_eq!(h.app.docs.quit_intent.as_ref().map(|intent| intent.stage), Some(QuitStage::Staged));
+        assert_eq!(h.app.docs.closing, None, "the answer closes the prompt");
+        for _ in 0..3 {
+            h.frames(1);
+            assert_eq!(h.app.host_close_state, HostCloseState::Required, "the host close is still pending");
+            assert_eq!(h.app.docs.quit_intent.as_ref().map(|intent| intent.stage), Some(QuitStage::Staged), "the quit stays staged");
+            assert_eq!(h.app.docs.closing, None, "a staged quit never asks the same design again");
+        }
+        assert!(h.app.session.is_dirty(), "staged, not discarded");
+        h.app.set_host_close_state(HostCloseState::Ready);
+        finish_quit(&mut h.app).expect("the unchanged staged quit commits");
+        assert!(quit_committed(&h.app) && !h.app.session.is_dirty(), "the approved discard is applied once");
     }
 }
