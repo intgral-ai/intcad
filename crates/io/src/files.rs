@@ -137,13 +137,21 @@ fn digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u128 {
     value
 }
 
+/// Is `name` one ordinary child name on the selected platform? Windows never allows `:` in a
+/// file name: after a drive letter (`C:part.sc`) it names a drive, and after a file name
+/// (`part.sc:stream`) it starts an alternate data stream. Either form is not one directory
+/// entry. Other platforms keep their existing accepted names.
+fn one_child_name(name: &str, windows: bool) -> bool {
+    !(windows && name.contains(':'))
+}
+
 /// A name a person typed, as a name for one entry: no separators, not empty, not `.` or `..`.
 pub fn valid_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("a name is needed".into());
     }
-    if name == "." || name == ".." || name.contains(['/', '\\']) || name.contains('\0') {
+    if name == "." || name == ".." || name.contains(['/', '\\']) || name.contains('\0') || !one_child_name(name, cfg!(windows)) {
         return Err(format!("“{name}” cannot be a file or folder name"));
     }
     Ok(name)
@@ -794,30 +802,81 @@ fn move_to_volume_trash(path: &Path, trash: &(PathBuf, PathBuf)) -> Result<(), S
     move_into_trash(&trash.0, &trash.1, path)
 }
 
+/// Put one item in a trash folder. A payload (`files/<name>`) and its record
+/// (`info/<name>.trashinfo`) are one pair. The operation reserves a free record exclusively
+/// first, publishes the payload under the same name with a no-replace primitive, and withdraws
+/// only the record it created when publication does not complete. No existing payload or record
+/// is adopted, truncated or replaced; a name already held by anyone is skipped.
 #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), String> {
+    use std::io::Write as _;
     let name = original.file_name().and_then(OsStr::to_str).unwrap_or("item");
-    let mut target = files.join(name);
-    let mut number = 2u32;
-    while target.exists() {
-        target = files.join(format!("{name}.{number}"));
-        number = number.saturating_add(1);
-    }
-    let target_name = target.file_name().and_then(OsStr::to_str).unwrap_or(name);
-    let info_file = info.join(format!("{target_name}.trashinfo"));
     let when = utc_now();
     let body = format!("[Trash Info]\nPath={}\nDeletionDate={when}\n", percent_encode(&original.to_string_lossy()));
-    fs::write(&info_file, body).map_err(|e| describe("write", &info_file, &e))?;
-    if let Err(e) = fs::rename(original, &target) {
-        let _ = fs::remove_file(&info_file);
-        if is_cross_device(&e) {
-            staged_copy(original, &target, false)?;
-            remove_permanent(original)?;
-            return Ok(());
+    let mut number = 1u32;
+    for _ in 0..1000 {
+        let target_name = if number == 1 { name.to_string() } else { format!("{name}.{number}") };
+        number = number.saturating_add(1);
+        let target = files.join(&target_name);
+        let info_file = info.join(format!("{target_name}.trashinfo"));
+
+        // The record is ours only when this exclusive create made it. A name another writer
+        // holds, including a dangling link, is not adopted.
+        let mut record = match fs::OpenOptions::new().write(true).create_new(true).open(&info_file) {
+            Ok(record) => record,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(describe("write", &info_file, &e)),
+        };
+        if let Err(e) = record.write_all(body.as_bytes()) {
+            drop(record);
+            let _ = fs::remove_file(&info_file);
+            return Err(describe("write", &info_file, &e));
         }
-        return Err(describe("move to the trash", original, &e));
+        drop(record);
+
+        let publication = || -> io::Result<()> {
+            #[cfg(test)]
+            tests::checkpoint("trash move", original, &target)?;
+            #[cfg(test)]
+            tests::checkpoint("trash publish", original, &target)?;
+            rename_no_replace(original, &target)
+        };
+        match publication() {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                // The payload name was taken after the record; withdraw our record and leave
+                // the other writer's entry, and try the next pair name.
+                let _ = fs::remove_file(&info_file);
+                continue;
+            }
+            Err(e) if is_cross_device(&e) => {
+                if let Err(copy) = staged_copy(original, &target, false) {
+                    // The staging copy removes its own tree; this attempt's record goes too.
+                    let _ = fs::remove_file(&info_file);
+                    return Err(copy);
+                }
+                let remove = || -> Result<(), String> {
+                    #[cfg(test)]
+                    tests::checkpoint("trash remove source", original, &target).map_err(|e| describe("remove source", original, &e))?;
+                    remove_permanent(original)
+                };
+                return match remove() {
+                    Ok(()) => Ok(()),
+                    // The complete copy and its record stay; report both so neither is lost.
+                    Err(e) => Err(format!(
+                        "the complete recovery copy is at {} with its record at {}, but the source could not be removed: {e}",
+                        target.display(),
+                        info_file.display()
+                    )),
+                };
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&info_file);
+                return Err(describe("move to the trash", original, &e));
+            }
+        }
     }
-    Ok(())
+    Err(format!("could not find a free name in the trash for {}", original.display()))
 }
 
 /// The mount point a path is on: the longest prefix of its ancestors with the same device id.

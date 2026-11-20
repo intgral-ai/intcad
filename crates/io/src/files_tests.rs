@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static COUNT: AtomicU32 = AtomicU32::new(0);
@@ -230,6 +231,36 @@ fn a_name_with_a_separator_is_not_a_file_name() {
     assert!(valid_name("a\\b").is_err());
     assert!(valid_name("a\0b").is_err());
     assert_eq!(child(Path::new("/tmp"), " part.sc ").unwrap(), PathBuf::from("/tmp/part.sc"));
+}
+
+/// A Windows child is one directory entry, not a drive and not an alternate data stream.
+/// The rule is checked for both platform answers here; the live runtime assertion is the
+/// `#[cfg(windows)]` test beside this one, so Linux can validate the rule without claiming
+/// Windows behavior.
+#[test]
+fn a_windows_child_name_is_one_component_and_refuses_colons() {
+    for name in ["part.sc:stream", "C:part.sc", ":", "a:b", ":stream", "stream:", "C:"] {
+        assert!(!one_child_name(name, true), "{name}");
+        assert!(one_child_name(name, false), "non-Windows accepted names stay unchanged: {name}");
+    }
+    for name in ["bracket.sc", "part 2.sc", "雪.sc", "a.b", "C part.sc", "$data", "name with spaces"] {
+        assert!(one_child_name(name, true), "{name}");
+        assert!(one_child_name(name, false), "{name}");
+    }
+    // The live answer still follows the platform this test binary was built for.
+    assert_eq!(valid_name("part.sc:stream").is_ok(), !cfg!(windows));
+    assert_eq!(valid_name("C:part.sc").is_ok(), !cfg!(windows));
+    assert!(valid_name("bracket.sc").is_ok());
+    assert_eq!(valid_name("  bracket.sc ").unwrap(), "bracket.sc");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_validation_refuses_drive_and_stream_names() {
+    for name in ["C:part.sc", "part.sc:stream", ":stream", "C:"] {
+        assert!(valid_name(name).is_err(), "{name}");
+    }
+    assert!(valid_name("bracket.sc").is_ok());
 }
 
 #[cfg(unix)]
@@ -855,6 +886,205 @@ fn source_removal_failure_keeps_the_complete_published_move_even_when_replacing(
         assert_eq!(fs::read(result.target).unwrap(), b"complete source");
         assert_eq!(fs::read_dir(into).unwrap().count(), 1);
     }
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn scratch_trash(scratch: &Scratch) -> (PathBuf, PathBuf) {
+    let files = scratch.path().join("Trash/files");
+    let info = scratch.path().join("Trash/info");
+    fs::create_dir_all(&files).unwrap();
+    fs::create_dir_all(&info).unwrap();
+    (files, info)
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn assert_trash_pair(files: &Path, info: &Path, name: &str, body: &[u8], original: &Path) {
+    assert_eq!(fs::read(files.join(name)).unwrap(), body, "{name}");
+    let record = fs::read_to_string(info.join(format!("{name}.trashinfo"))).unwrap();
+    assert!(record.starts_with("[Trash Info]\n"), "{record}");
+    let original = original.to_string_lossy();
+    assert!(record.contains(&format!("Path={}\n", percent_encode(&original))), "{record}");
+    assert!(record.contains("DeletionDate="), "{record}");
+}
+
+// A dangling link is an entry: `exists()` follows it and reports false, which used to let the
+// payload rename replace another writer's link. The next free name keeps both entries.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_does_not_clobber_a_dangling_payload_name() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.file("part.sc", "source");
+    let occupied = files.join("part.sc");
+    std::os::unix::fs::symlink("missing", &occupied).unwrap();
+    move_into_trash(&files, &info, &source).unwrap();
+    assert_eq!(fs::read_link(&occupied).unwrap(), Path::new("missing"));
+    assert!(!source.exists());
+    assert_trash_pair(&files, &info, "part.sc.2", b"source", &source);
+    assert!(!info.join("part.sc.trashinfo").exists(), "a withdrawn attempt leaves no record");
+}
+
+// The payload and its record are one pair. Both existing entries keep their bytes, and the
+// new item takes a free pair name instead of overwriting either half.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_keeps_an_existing_record_and_payload_pair() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.file("part.sc", "new source");
+    let old_payload = files.join("part.sc");
+    let old_record = info.join("part.sc.trashinfo");
+    fs::write(&old_payload, "old payload").unwrap();
+    fs::write(&old_record, "old record").unwrap();
+    move_into_trash(&files, &info, &source).unwrap();
+    assert_eq!(fs::read(&old_payload).unwrap(), b"old payload");
+    assert_eq!(fs::read(&old_record).unwrap(), b"old record");
+    assert!(!source.exists());
+    assert_trash_pair(&files, &info, "part.sc.2", b"new source", &source);
+}
+
+// A record name another writer already holds is not adopted or truncated.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_does_not_clobber_a_dangling_record_name() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.file("part.sc", "source");
+    let occupied = info.join("part.sc.trashinfo");
+    std::os::unix::fs::symlink("missing", &occupied).unwrap();
+    move_into_trash(&files, &info, &source).unwrap();
+    assert_eq!(fs::read_link(&occupied).unwrap(), Path::new("missing"), "the other writer's entry is untouched");
+    assert!(!source.exists());
+    assert_trash_pair(&files, &info, "part.sc.2", b"source", &source);
+}
+
+// Publication is exclusive rather than a check followed by a clobbering rename. A writer that
+// takes the payload name between our metadata creation and publication wins; our withdrawn
+// record is removed and the item takes the next pair.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_retries_a_payload_name_taken_during_publication() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.file("part.sc", "source");
+    let attempts = Arc::new(AtomicU32::new(0));
+    let seen = Arc::clone(&attempts);
+    let result = with_fault(
+        move |event, _, target| {
+            if event == "trash publish" && seen.fetch_add(1, Ordering::Relaxed) == 0 {
+                fs::write(target, "other writer")?;
+            }
+            Ok(())
+        },
+        || move_into_trash(&files, &info, &source),
+    );
+    result.unwrap();
+    assert_eq!(attempts.load(Ordering::Relaxed), 2, "the first attempt was refused and retried");
+    assert_eq!(fs::read(files.join("part.sc")).unwrap(), b"other writer");
+    assert!(fs::symlink_metadata(info.join("part.sc.trashinfo")).is_err(), "our withdrawn record is gone");
+    assert!(!source.exists());
+    assert_trash_pair(&files, &info, "part.sc.2", b"source", &source);
+}
+
+// Forced EXDEV runs the real staged copy, publication and source removal on a disposable
+// fixture; the record is written before the copy and survives beside the payload.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_cross_device_copy_publishes_the_pair_and_removes_the_source() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.file("part.sc", "complete source");
+    let moves = Arc::new(AtomicU32::new(0));
+    let seen = Arc::clone(&moves);
+    let result = with_fault(
+        move |event, _, _| {
+            if event == "trash move" {
+                seen.fetch_add(1, Ordering::Relaxed);
+                return Err(exdev());
+            }
+            Ok(())
+        },
+        || move_into_trash(&files, &info, &source),
+    );
+    result.unwrap();
+    assert_eq!(moves.load(Ordering::Relaxed), 1, "the forced cross-device path ran");
+    assert!(!source.exists());
+    assert_trash_pair(&files, &info, "part.sc", b"complete source", &source);
+}
+
+// A copy that stops before completion removes its own record and keeps the source. It never
+// publishes a partial payload and never falls back to permanent deletion.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_cross_device_copy_failure_keeps_the_source_and_leaves_no_record() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.file("part.sc", "complete source");
+    let moves = Arc::new(AtomicU32::new(0));
+    let copies = Arc::new(AtomicU32::new(0));
+    let (seen_moves, seen_copies) = (Arc::clone(&moves), Arc::clone(&copies));
+    let result = with_fault(
+        move |event, _, target| match event {
+            "trash move" => {
+                seen_moves.fetch_add(1, Ordering::Relaxed);
+                Err(exdev())
+            }
+            "copy" => {
+                seen_copies.fetch_add(1, Ordering::Relaxed);
+                fs::write(target, "partial")?;
+                Err(injected())
+            }
+            _ => Ok(()),
+        },
+        || move_into_trash(&files, &info, &source),
+    );
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(moves.load(Ordering::Relaxed), 1);
+    assert_eq!(copies.load(Ordering::Relaxed), 1);
+    assert_eq!(fs::read(&source).unwrap(), b"complete source");
+    assert_eq!(fs::read_dir(&files).unwrap().count(), 0, "no partial payload or staging remains");
+    assert_eq!(fs::read_dir(&info).unwrap().count(), 0, "the record created for the failed attempt was withdrawn");
+}
+
+// Removal can fail after part of the source is gone. The complete copy and its record stay and
+// the error names both, so the person still has everything the trash holds. The call reports
+// failure; it does not claim success or delete anything for good.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+#[test]
+fn linux_trash_partial_source_removal_reports_the_retained_pair() {
+    let scratch = Scratch::new();
+    let (files, info) = scratch_trash(&scratch);
+    let source = scratch.dir("parts");
+    fs::write(source.join("a"), "first").unwrap();
+    fs::write(source.join("b"), "second").unwrap();
+    let removals = Arc::new(AtomicU32::new(0));
+    let seen = Arc::clone(&removals);
+    let source_for_fault = source.clone();
+    let result = with_fault(
+        move |event, _, _| match event {
+            "trash move" => Err(exdev()),
+            "trash remove source" => {
+                seen.fetch_add(1, Ordering::Relaxed);
+                fs::remove_file(source_for_fault.join("a"))?;
+                Err(injected())
+            }
+            _ => Ok(()),
+        },
+        || move_into_trash(&files, &info, &source),
+    );
+    let error = result.unwrap_err();
+    assert_eq!(removals.load(Ordering::Relaxed), 1);
+    let payload = files.join("parts");
+    let record = info.join("parts.trashinfo");
+    assert_eq!(fs::read(payload.join("a")).unwrap(), b"first", "the recovery copy is complete");
+    assert_eq!(fs::read(payload.join("b")).unwrap(), b"second");
+    let text = fs::read_to_string(&record).unwrap();
+    assert!(text.contains("DeletionDate="), "{text}");
+    assert!(error.contains(&payload.display().to_string()), "the error names the retained payload: {error}");
+    assert!(error.contains(&record.display().to_string()), "the error names the retained record: {error}");
+    assert!(error.contains("source could not be removed"), "{error}");
+    assert!(source.join("b").exists(), "the source is not deleted after a failed removal");
+    assert!(!source.join("a").exists(), "the injected partial removal is what the fault did");
 }
 
 #[cfg(windows)]
