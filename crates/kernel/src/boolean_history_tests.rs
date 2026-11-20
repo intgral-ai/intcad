@@ -583,16 +583,10 @@ fn swapped_history_maps_every_origin_back() {
     let tool = FaceOrigin::Offset { operand: 1, face: 7 };
     let history = History {
         operands: 2,
-        faces: vec![
-            FaceProv { origins: vec![target], change: Change::Kept },
-            FaceProv { origins: vec![tool], change: Change::Modified },
-        ],
+        faces: vec![FaceProv { origins: vec![target], change: Change::Kept }, FaceProv { origins: vec![tool], change: Change::Modified }],
         edges: vec![
             EdgeProv { faces: vec![0], origins: vec![EdgeOrigin::Edge { operand: 0, edge: 4 }] },
-            EdgeProv {
-                faces: vec![1],
-                origins: vec![EdgeOrigin::meet(Side::new([target]).unwrap(), Side::new([tool]).unwrap())],
-            },
+            EdgeProv { faces: vec![1], origins: vec![EdgeOrigin::meet(Side::new([target]).unwrap(), Side::new([tool]).unwrap())] },
         ],
     };
     let swapped = crate::history::swap_operands(&history).unwrap();
@@ -627,9 +621,8 @@ fn union_fallback_gate_is_exact_and_fails_closed() {
     assert!(!retry_applies(&a, &b, BoolOp::Intersect, &exact));
     assert!(!retry_applies(&a, &b, BoolOp::Union, &KernelError::Failed(format!("{} ", crate::ops::UNION_PROTO_EDGE))));
     assert!(!retry_applies(&a, &b, BoolOp::Union, &KernelError::Invalid(crate::ops::UNION_PROTO_EDGE.to_string())));
-    let multi = crate::ops::join_apart(&[boxed(0.0, 0.0, 40.0, 1.0, 1.0, 41.0), boxed(0.0, 0.0, 50.0, 1.0, 1.0, 51.0)])
-        .unwrap()
-        .expect("two apart pieces");
+    let multi =
+        crate::ops::join_apart(&[boxed(0.0, 0.0, 40.0, 1.0, 1.0, 41.0), boxed(0.0, 0.0, 50.0, 1.0, 1.0, 51.0)]).unwrap().expect("two apart pieces");
     assert_eq!(multi.record().material_regions().len(), 2);
     assert!(!retry_applies(&multi, &b, BoolOp::Union, &exact));
 

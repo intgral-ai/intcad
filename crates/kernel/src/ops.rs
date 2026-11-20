@@ -22,7 +22,8 @@ pub enum BoolOp {
 /// The exact SMLib union failure the temporary IntCAD fallback below is gated to. It names the
 /// vendored topology step, not a message class: any other wording, operation or a changed
 /// upstream algorithm must not retry.
-pub(crate) const UNION_PROTO_EDGE: &str = "SMLib boolean: operation: solidcore: SmApiBoolean: topology::proto_topology::p1: the proto edge is not listed";
+pub(crate) const UNION_PROTO_EDGE: &str =
+    "SMLib boolean: operation: solidcore: SmApiBoolean: topology::proto_topology::p1: the proto edge is not listed";
 
 /// Boolean of two bodies in SMLib. The result may be empty (`Ok(None)`) for a cut that removes
 /// everything or an intersection of disjoint bodies. A result SMLib's check refuses is an error.

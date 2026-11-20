@@ -2215,13 +2215,6 @@ fn front_triangle_tool(distance: f64) -> Session {
     s
 }
 
-fn assert_front_triangle_names_exact(body: &solidcraft_doc::ModelBody) {
-    let names = solidcraft_doc::naming::face_names(body);
-    let unverified: Vec<(usize, String)> =
-        (0..names.len()).filter(|&i| !solidcraft_doc::naming::face_name_exact(body, i)).map(|i| (i, names.get(i).cloned().unwrap_or_default())).collect();
-    assert!(unverified.is_empty(), "unverified faces {unverified:?}");
-}
-
 fn unverified_names(body: &solidcraft_doc::ModelBody) -> Vec<(usize, String)> {
     let names = solidcraft_doc::naming::face_names(body);
     (0..names.len()).filter(|&i| !solidcraft_doc::naming::face_name_exact(body, i)).map(|i| (i, names.get(i).cloned().unwrap_or_default())).collect()
@@ -2235,6 +2228,7 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
         let state = target.model.state();
         unverified_names(state.body("FrontTriangle").unwrap())
     };
+    eprintln!("target before join unverified: {target_unverified:?}");
     let target_names = solidcraft_doc::naming::face_names(target.model.state().body("FrontTriangle").unwrap());
     let contact = solidcore_record::Vec3::from(FRONT_TRIANGLE_FACE);
     let (target_index, target_point) = target_body
@@ -2253,6 +2247,7 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
         let state = tool.model.state();
         unverified_names(state.body("Body1").unwrap())
     };
+    eprintln!("tool before join unverified: {tool_unverified:?}");
     let tool_point = tool_body
         .faces(1e-4)
         .unwrap()
@@ -2282,14 +2277,14 @@ fn front_triangle_face_join_keeps_exact_history_and_names() {
             &[(target_body.face_count(), target_body.edge_count()), (tool_body.face_count(), tool_body.edge_count())],
         )
         .unwrap();
-    assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap());
     let joined_unverified = {
         let state = s.model.state();
         unverified_names(state.body("FrontTriangle").unwrap())
     };
+    let joined_origins: Vec<_> = joined_unverified.iter().map(|(i, _)| (*i, history.faces.get(*i).map(|f| &f.origins))).collect();
     assert!(
         joined_unverified.is_empty(),
-        "unverified {joined_unverified:?}; target before {target_unverified:?}; tool before {tool_unverified:?}; history {history:?}"
+        "unverified {joined_unverified:?}; origins {joined_origins:?}; target before {target_unverified:?}; tool before {tool_unverified:?}"
     );
     let (target_after, tool_after) = {
         let state = s.model.state();
@@ -2318,6 +2313,7 @@ fn front_triangle_press_pull_keeps_exact_history_and_names() {
         let state = tool.model.state();
         unverified_names(state.body("Body1").unwrap())
     };
+    eprintln!("press pull target before unverified: {target_unverified:?}; tool before: {tool_unverified:?}");
     let expected = volume(&target, "FrontTriangle") + volume(&tool, "Body1");
 
     let mut s = front_triangle();
@@ -2339,14 +2335,14 @@ fn front_triangle_press_pull_keeps_exact_history_and_names() {
             &[(target_body.face_count(), target_body.edge_count()), (tool_body.face_count(), tool_body.edge_count())],
         )
         .unwrap();
-    assert_front_triangle_names_exact(s.model.state().body("FrontTriangle").unwrap());
     let joined_unverified = {
         let state = s.model.state();
         unverified_names(state.body("FrontTriangle").unwrap())
     };
+    let joined_origins: Vec<_> = joined_unverified.iter().map(|(i, _)| (*i, history.faces.get(*i).map(|f| &f.origins))).collect();
     assert!(
         joined_unverified.is_empty(),
-        "unverified {joined_unverified:?}; target before {target_unverified:?}; tool before {tool_unverified:?}; history {history:?}"
+        "unverified {joined_unverified:?}; origins {joined_origins:?}; target before {target_unverified:?}; tool before {tool_unverified:?}"
     );
 }
 
