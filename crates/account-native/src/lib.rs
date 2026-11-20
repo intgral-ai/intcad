@@ -9,6 +9,9 @@
 
 mod ledger;
 
+#[cfg(test)]
+mod ledger_tests;
+
 pub use ledger::{FileOperationStore, InMemoryOperationStore};
 pub use solidcraft_engine::entitlement::{
     AuthenticatedHostScope, Capability, EntryCategory, FreshIntent, OperationId, OperationRecord, OperationStatus, OperationStore,
