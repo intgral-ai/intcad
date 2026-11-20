@@ -747,8 +747,9 @@ pub(crate) struct InputBatch {
     pub(crate) files_rendered: bool,
     pub(crate) entry_keyboard_owned: bool,
     ambiguous: bool,
-    /// Ordinals of clipboard commands a later tree key retargeted. Commands after that key,
-    /// and commands the key did not affect, keep their place in the batch's order.
+    /// Ordinals of clipboard commands a later tree key retargeted, counted in the batch the panel
+    /// saw. Commands after that key, and commands the key did not affect, keep their place in the
+    /// batch's order. The ordinal base does not change when a later step removes an event.
     pub(crate) retired_commands: Vec<usize>,
 }
 
@@ -877,6 +878,27 @@ fn retire_input(ctx: &egui::Context) {
     });
 }
 
+/// The Files commands as they stood before the Appearance page may remove a theme's Paste.
+/// The panel's retired ordinals are positions in this same list; recounting after a removal
+/// would renumber every later command and retire or apply the wrong one.
+fn captured_files_commands(events: &[egui::Event], retired: &[usize], middle_navigation: bool) -> Vec<ClipboardCommand> {
+    let mut ordinal = 0;
+    let mut commands = Vec::new();
+    for event in events {
+        let Some(command) = clipboard_command(event) else { continue };
+        let this = ordinal;
+        ordinal += 1;
+        if retired.contains(&this) {
+            continue;
+        }
+        if matches!(event, egui::Event::Paste(_)) && middle_navigation {
+            continue;
+        }
+        commands.push(command);
+    }
+    commands
+}
+
 /// One owner after real layout. Text widgets have already had first refusal, including
 /// widgets which closed or surrendered focus during this batch. Always flush menu copies.
 pub(crate) fn finish_input(app: &mut SolveApp, ctx: &egui::Context) {
@@ -898,31 +920,25 @@ pub(crate) fn finish_input(app: &mut SolveApp, ctx: &egui::Context) {
         || crate::issue_report::cad_input_blocked()
         || app.embedded;
     if !blocked {
-        // A theme on the Appearance page precedes CAD/Files. Retire replay input below too.
-        crate::prefs::take_theme_paste(app, ctx);
-        if rendered && app.file_tree.focused {
-            // The tree consumed a key and changed the target of the commands before it. Retire
-            // those commands only; a later command has already settled on the visible target and
-            // keeps its place in the batch's order.
+        let files = rendered && app.file_tree.focused;
+        // The tree consumed a key and changed the target of the commands before it. Retire
+        // those commands only; a later command has already settled on the visible target and
+        // keeps its place in the batch's order. Capture them before the theme claim removes its
+        // Paste events, so the retired ordinals still count the list the panel saw.
+        let files_commands = files.then(|| {
             let retired = app.clipboard_input.retired_commands.clone();
-            let commands: Vec<_> = ctx.input(|i| {
-                let mut ordinal = 0;
-                let mut commands = Vec::new();
-                for event in &i.events {
-                    let Some(command) = clipboard_command(event) else { continue };
-                    let this = ordinal;
-                    ordinal += 1;
-                    if retired.contains(&this) {
-                        continue;
-                    }
-                    if matches!(event, egui::Event::Paste(_)) && middle_navigation(i) {
-                        continue;
-                    }
-                    commands.push(command);
-                }
-                commands
-            });
+            ctx.input(|i| captured_files_commands(&i.events, &retired, middle_navigation(i)))
+        });
+        // A theme on the Appearance page precedes CAD/Files. Retire replay input below too.
+        let theme_claimed = crate::prefs::take_theme_paste(app, ctx);
+        if let Some(commands) = files_commands {
             for command in commands {
+                // A claimed theme removed every Paste/V/Insert event from the batch, so none of
+                // its already-captured Paste commands still belongs to Files. Ordinary or invalid
+                // text leaves them in place for Files.
+                if theme_claimed && matches!(command, ClipboardCommand::Paste) {
+                    continue;
+                }
                 match command {
                     ClipboardCommand::Copy => app.file_tree.copy_selection(false),
                     ClipboardCommand::Cut => app.file_tree.copy_selection(true),

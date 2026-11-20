@@ -483,6 +483,145 @@ fn theme_paste_on_the_interface_page_precedes_competing_cad_and_files_clipboards
     assert_eq!(fs::read(source).unwrap(), b"source");
 }
 
+/// The Appearance page claims a valid theme Paste, but the Files tree must still retire the
+/// Copy/Cut before a later Down. Removing the Paste from the batch shortens the command list,
+/// so retirement has to be decided against the commands as they were before that removal.
+#[test]
+fn theme_paste_then_tree_command_then_down_imports_the_theme_and_retires_the_command() {
+    use serde_json::json;
+    for cut in [false, true] {
+        let scratch = Scratch::new();
+        let first = scratch.file("first.txt", "1");
+        let later = scratch.file("later.txt", "2");
+        let mut h = clipboard_window(scratch.path());
+        h.call("ui.prefs", json!({"open": "Interface"}));
+        h.frames(3);
+        assert!(h.app.prefs_window.open, "Preferences stays nonmodal on the Appearance page");
+        let before = cad_mark(&h);
+        let row = crate::scenario::rect_of("files:row:first.txt").unwrap();
+        let (command, name) = if cut { (egui::Event::Cut, "Order Cut") } else { (egui::Event::Copy, "Order Copy") };
+        let theme = format!(r##"{{"format":"solidcraft-theme/1","name":"{name}","base":"dark","colors":{{"panel":"#102030"}}}}"##);
+        let mut events = pointer_click(row.center(), Modifiers::NONE);
+        events.push(egui::Event::Paste(theme));
+        events.push(command);
+        events.push(key_event(egui::Key::ArrowDown, true, Modifiers::NONE));
+        events.push(key_event(egui::Key::ArrowDown, false, Modifiers::NONE));
+        h.frame_with(events);
+        assert!(h.app.file_tree.focused, "the real row click gives the tree the keys");
+        assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down settles the later row");
+        assert!(
+            h.app.preferences.custom_themes.iter().any(|t| t.name == name),
+            "the theme paste still imports: {:?}",
+            h.app.preferences.custom_themes.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+        assert_eq!(h.app.preferences.theme, if cut { "order-cut" } else { "order-copy" });
+        assert!(h.app.file_tree.clip.is_none(), "{name}: the earlier command is retired, not applied to the later row");
+        assert_eq!(cad_mark(&h), before, "the theme and Files commands never touch CAD");
+        h.frames(30);
+        assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+        let clip = h.app.file_tree.clip.as_ref();
+        assert!(clip.is_none(), "no replay copied {first:?} or {later:?}");
+        assert_eq!(fs::read(&first).unwrap(), b"1");
+        assert_eq!(fs::read(&later).unwrap(), b"2");
+    }
+}
+
+/// The Appearance page claims the theme Paste before the tree sees the batch. A later Down into
+/// another folder retires that Paste only; the Cut after the Down keeps the settled target even
+/// though the theme removed an earlier command from the list.
+#[test]
+fn theme_paste_then_down_to_another_folder_then_cut_imports_the_theme_and_keeps_the_later_cut() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.call("ui.prefs", json!({"open": "Interface"}));
+    h.frames(3);
+    assert!(h.app.prefs_window.open, "Preferences stays nonmodal on the Appearance page");
+    let before = cad_mark(&h);
+    let row = crate::scenario::rect_of("files:row:first").unwrap();
+    let theme = r##"{"format":"solidcraft-theme/1","name":"Folder Order","base":"dark","colors":{"panel":"#203040"}}"##.to_string();
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(egui::Event::Paste(theme));
+    events.push(key_event(egui::Key::ArrowDown, true, Modifiers::NONE));
+    events.push(key_event(egui::Key::ArrowDown, false, Modifiers::NONE));
+    events.push(egui::Event::Cut);
+    h.frame_with(events);
+    assert!(h.app.file_tree.focused, "the real row click gives the tree the keys");
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down settles the later folder");
+    assert!(
+        h.app.preferences.custom_themes.iter().any(|t| t.name == "Folder Order"),
+        "the theme paste still imports: {:?}",
+        h.app.preferences.custom_themes.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+    assert_eq!(h.app.preferences.theme, "folder-order");
+    let clip = h.app.file_tree.clip.as_ref().expect("the later Cut is not retired with the earlier theme Paste");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later), "the Cut acts on the folder after the Down");
+    assert!(clip.cut);
+    assert!(!clip.paths.contains(&first), "the retired Paste did not cut the earlier folder");
+    assert_eq!(cad_mark(&h), before, "the theme and Files command never touch CAD");
+}
+
+/// Ordinary text on the Appearance page is not a theme, so the tree still claims the Paste. This
+/// control keeps the theme-claim result from dropping a Files paste it did not take.
+#[test]
+fn nonmodal_interface_preferences_ordinary_paste_stays_a_files_paste() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.call("ui.prefs", json!({"open": "Interface"}));
+    h.frames(3);
+    assert!(h.app.prefs_window.open, "Preferences stays nonmodal on the Appearance page");
+    let before = cad_mark(&h);
+    let row = crate::scenario::rect_of("files:row:into").unwrap();
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(egui::Event::Paste("ordinary".into()));
+    h.frame_with(events);
+    assert!(h.app.file_tree.focused, "the real row click gives the tree the keys");
+    h.frames(30);
+    assert_eq!(fs::read(into.join("source.txt")).unwrap(), b"source", "ordinary text is still a Files paste");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert_eq!(cad_mark(&h), before, "CAD must not also paste");
+    assert!(!into.join("source (copy).txt").exists(), "no replay");
+}
+
+/// A paste that names the theme format but is not a valid theme is still claimed on the
+/// Appearance page, as before: it reports the error instead of reaching Files.
+#[test]
+fn invalid_theme_paste_on_interface_page_is_claimed_before_files() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.call("ui.prefs", json!({"open": "Interface"}));
+    h.frames(3);
+    assert!(h.app.prefs_window.open, "Preferences stays nonmodal on the Appearance page");
+    let before = cad_mark(&h);
+    let row = crate::scenario::rect_of("files:row:into").unwrap();
+    let invalid = r#"{"format":"solidcraft-theme/1","name":"Broken","base":"sepia"}"#.to_string();
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(egui::Event::Paste(invalid));
+    h.frame_with(events);
+    assert!(h.app.file_tree.focused, "the real row click gives the tree the keys");
+    let (status, _, error) = h.app.status.clone().expect("the invalid theme is reported");
+    assert!(error, "the theme error is shown: {status}");
+    assert!(status.contains("Theme import"), "the message names the theme import: {status}");
+    assert!(h.app.preferences.custom_themes.is_empty(), "an invalid theme is not added");
+    assert!(!into.join("source.txt").exists(), "the claimed paste never reaches Files");
+    h.frames(30);
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "no file job runs");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+    assert!(!clip.cut);
+    assert_eq!(cad_mark(&h), before, "the invalid theme never touches CAD");
+}
+
 #[test]
 fn shortcut_recorder_keeps_escape_while_the_custom_file_menu_is_open() {
     use serde_json::json;
