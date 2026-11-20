@@ -615,3 +615,25 @@ This is not a permission change and gives no access gain.
 Scope: no code, reproduction, build, rerun, CI metadata poll, source consultation or new policy
 decision was made. Provider: official DeepSeek; Go and GOAT recorded unavailable; no quota probes.
 No Flatpak evidence was duplicated.
+
+### 11.14 U5 owner decision (2026-11-20T04:55Z)
+
+Owner reply: **“可以接受这个方案”** to the narrow U5 proposal. The accepted scope is to retain only
+the verbatim `display-units` crate extraction, preserve the functional **Already Covered** status,
+and add no new length-display behaviour. The tolerance/dimension-text API remains a separate Doc
+acceptance item.
+
+Evidence: upstream extraction `a833316f8b2e84ae44ee789f872efdd78253ae46`; local verbatim import
+`ad0262a49cb6ea81d05be2c50c9893833d0e23da`; MIT OR Apache-2.0; the four length-display functions
+and six tests are unchanged; `doc` re-exports them at `crates/doc/src/display_units.rs:14`; and
+`crates/io/build.rs:17` includes `display-units` in `EVALUATION_CRATES` for evaluation-cache-key
+recomputation. The separate `02e6a492c` tolerance/dimension-text delta is not part of this
+extraction. Fresh independent review `ses_e08e02d84ffeVX0IugS3JXn7aB` recorded technical
+equivalence PASS. The existing c5 `solidcraft-display-units` suite 6/6 is targeted suite evidence
+only.
+
+Historical scope conflict: the prior ledger wording **“Already Covered — do not import”** and the
+open scope conflict remain the historical record in the v1–v3 handoffs and
+`target/int1454-u5-review/`. This entry answers the owner disposition only for this extraction; it
+is not a waiver for other rows. No final-SHA, merge, release or sign-off approval is claimed, and no
+other disposition is changed.
