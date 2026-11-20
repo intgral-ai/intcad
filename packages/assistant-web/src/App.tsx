@@ -1599,8 +1599,11 @@ function AdapterSetup({ agent, strings, onClose }: { agent: MissingAgent; string
  */
 function ConnectionButton({ state, connect, onOpen }: { state: AssistantState; connect: Connect; onOpen: () => void }) {
   const { strings } = state;
-  // Before the agent has a model, the first connection there is stands for all of them.
-  const used = connect.connected ? (connectionOf(connect, modelChoice(state).current) ?? liveOf(connect)[0]) : undefined;
+  // Before the agent has a model, the first connection there is stands for all of them. A model
+  // that no connection serves (its key was taken away, and the user has not picked another) names
+  // none: the button then says only that there are connections.
+  const current = modelChoice(state).current;
+  const used = connect.connected ? (current ? connectionOf(connect, current) : liveOf(connect)[0]) : undefined;
   return (
     <Button type="button" variant="ghost" size="sm" aria-label={strings.connButtonTip} tooltip={strings.connButtonTip} className="max-w-full min-w-12" onClick={onOpen}>
       {used ? (
