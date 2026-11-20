@@ -479,6 +479,23 @@ impl Store {
                     // cleanup retries. Deleting them would let a still-valid key recreate Queued.
                     continue;
                 }
+                if self.tombstone_path(&run_id).is_file() {
+                    // Never delete around a conflicting or unreadable retirement record. The
+                    // existing record remains authority even when the key path was unavailable.
+                    match self.read_tombstone(&run_id) {
+                        Ok(Some(existing)) if existing.state == state.state => {}
+                        _ => continue,
+                    }
+                }
+            }
+            // With no tombstone, remove the admission before the state and require that removal
+            // to succeed. A crash then cannot leave an admission-only record that status or
+            // reconcile would repair into Queued. This ordering is not a tombstone substitute.
+            if !self.tombstone_path(&run_id).is_file()
+                && self.admission_path(&run_id).is_file()
+                && fs::remove_file(self.admission_path(&run_id)).is_err()
+            {
+                continue;
             }
             for path in [
                 self.admission_path(&run_id),
@@ -491,6 +508,11 @@ impl Store {
                 let _ = fs::remove_file(path);
             }
             let _ = fs::remove_dir_all(self.evidence_dir(&run_id));
+            // Reclaim only after the durable records that can drive recovery are actually gone.
+            // A failed removal leaves the run for the next cleanup, without unpinning or credit.
+            if self.admission_path(&run_id).is_file() || self.state_path(&run_id).is_file() {
+                continue;
+            }
             if let Some(candidate_id) = &candidate_id {
                 let _ = self.remove_run_pin(candidate_id, &run_id);
             }
@@ -537,6 +559,18 @@ impl Store {
     }
 
     fn write_tombstone(&self, run_id: &str, state: ValidationState, submission_key: &str, expires_at_ms: u64) -> bool {
+        let path = self.tombstone_path(run_id);
+        match self.read_optional_json::<TombstoneRecord>(&path, 64 << 10) {
+            Ok(Some(existing)) => {
+                return existing.run_id == run_id
+                    && existing.submission_key == submission_key
+                    && existing.state == state
+                    && existing.expires_at_ms == expires_at_ms;
+            }
+            Ok(None) => {}
+            // An existing retirement record we cannot read is authority to keep, not to replace.
+            Err(_) => return false,
+        }
         let tombstone = TombstoneRecord {
             schema_version: RECORD_SCHEMA.into(),
             run_id: run_id.into(),
@@ -544,7 +578,7 @@ impl Store {
             state,
             expires_at_ms,
         };
-        self.write_json_replace(&self.tombstone_path(run_id), &tombstone).is_ok()
+        self.write_json_replace(&path, &tombstone).is_ok()
     }
 
     /// Keep the terminal outcome for a still-valid key. Returns `false` when the key exists but
@@ -587,7 +621,7 @@ impl Store {
             let path = entry.path();
             let Ok(bytes) = self.read_bounded(&path, 64 << 10) else { continue };
             let Ok(record) = serde_json::from_slice::<TombstoneRecord>(&bytes) else { continue };
-            if record.expires_at_ms <= now_ms {
+            if record.expires_at_ms <= now_ms && !self.admission_path(&record.run_id).is_file() && !self.state_path(&record.run_id).is_file() {
                 let _ = fs::remove_file(path);
             }
         }
@@ -608,9 +642,12 @@ impl Store {
                 .flatten()
                 .is_some_and(|state| state.state.is_terminal() && now_ms.saturating_sub(state.updated_at_ms) >= retention_ms);
             let admission_exists = self.admission_path(&record.run_id).is_file();
-            if run_terminal_old || (!self.state_path(&record.run_id).is_file() && !admission_exists) {
+            let state_exists = self.state_path(&record.run_id).is_file();
+            if run_terminal_old || (!state_exists && !admission_exists) {
                 let _ = fs::remove_file(path);
-                let _ = fs::remove_file(self.tombstone_path(&record.run_id));
+                if !state_exists && !admission_exists {
+                    let _ = fs::remove_file(self.tombstone_path(&record.run_id));
+                }
             }
         }
     }

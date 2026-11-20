@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use store::{AdmissionRecord, RECORD_SCHEMA, StateRecord, Store, SubmissionRecord, TransactionGuard, WorkerRecord};
+use store::{AdmissionRecord, RECORD_SCHEMA, StateRecord, Store, SubmissionRecord, TombstoneRecord, TransactionGuard, WorkerRecord};
 
 use crate::schema::snapshot::CandidateRef;
 
@@ -334,6 +334,9 @@ impl ValidationPort {
             if admission.owner != owner {
                 return Err(ValidationError::invalid_request("this submission key belongs to another owner"));
             }
+            if let Some(retired) = self.retirement(&run_id, &transaction)? {
+                return self.retired_result(&retired, &key, &admission.candidate, &admission.profile, now);
+            }
             let record = SubmissionRecord {
                 schema_version: RECORD_SCHEMA.into(),
                 submission_key: key.text.clone(),
@@ -444,6 +447,9 @@ impl ValidationPort {
         now: u64,
         transaction: &TransactionGuard,
     ) -> Result<SubmitResult> {
+        if let Some(retired) = self.retirement(&submission.run_id, transaction)? {
+            return self.retired_result(&retired, key, &submission.candidate, &submission.profile, now);
+        }
         match self.load_admission(&submission.run_id) {
             Ok(admission) => {
                 self.repair_state(&submission.run_id, &admission, now, transaction)?;
@@ -454,23 +460,6 @@ impl ValidationPort {
                 self.submit_result(&submission.run_id, &admission.candidate, &admission.profile)
             }
             Err(error) if error.code == ErrorCode::NotFound => {
-                // Retention may have removed the run while its key is still valid for
-                // idempotency. The tombstone keeps the durable terminal outcome: never recreate
-                // the admission/state as a fresh Queued run.
-                if let Some(tombstone) = self.store.read_tombstone(&submission.run_id)? {
-                    if tombstone.submission_key != key.text || tombstone.run_id != submission.run_id {
-                        return Err(ValidationError::internal("the retired-key record names another submission"));
-                    }
-                    if now >= tombstone.expires_at_ms {
-                        return Err(ValidationError::request_expired("the retired submission key has expired"));
-                    }
-                    return Ok(SubmitResult {
-                        run_id: submission.run_id.clone(),
-                        state: tombstone.state,
-                        candidate: submission.candidate.clone(),
-                        profile: submission.profile.clone(),
-                    });
-                }
                 // The process stopped after writing the key but before the admission. Complete
                 // the admission from the key; this is the only replay that needs the profile.
                 let resolved = self.resolve_profile(profile)?;
@@ -502,7 +491,10 @@ impl ValidationPort {
     }
 
     /// Repair a lost state file from the admission (queued) or an already committed report.
-    fn repair_state(&self, run_id: &str, admission: &AdmissionRecord, now: u64, _transaction: &TransactionGuard) -> Result<()> {
+    fn repair_state(&self, run_id: &str, admission: &AdmissionRecord, now: u64, transaction: &TransactionGuard) -> Result<()> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         if self.store.state_path(run_id).is_file() {
             return Ok(());
         }
@@ -613,7 +605,7 @@ impl ValidationPort {
                 ));
             }
         }
-        let (queued, running) = self.counts()?;
+        let (queued, running) = self.counts(transaction)?;
         if queued >= self.limits.queue && running >= self.limits.workers {
             return Err(ValidationError::resource_exhausted("the validation queue is full", "validationQueue", self.limits.queue as u64));
         }
@@ -623,10 +615,13 @@ impl ValidationPort {
         Ok(())
     }
 
-    fn counts(&self) -> Result<(usize, usize)> {
+    fn counts(&self, transaction: &TransactionGuard) -> Result<(usize, usize)> {
         let mut queued = 0;
         let mut running = 0;
         for run_id in self.store.run_ids() {
+            if self.retirement(&run_id, transaction)?.is_some() {
+                continue;
+            }
             if let Ok(state) = self.load_state(&run_id) {
                 match state.state {
                     ValidationState::Queued => queued += 1,
@@ -640,11 +635,12 @@ impl ValidationPort {
 
     /// `status(runId)`.
     pub fn status(&self, run_id: &str) -> Result<RunStatus> {
+        let transaction = self.store.transaction()?;
+        if self.retirement(run_id, &transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let admission = self.load_admission(run_id)?;
         if !self.store.state_path(run_id).is_file() {
-            let transaction = self.store.transaction()?;
-            // Cleanup may have removed this run while the reader waited.
-            let admission = self.load_admission(run_id)?;
             self.repair_state(run_id, &admission, self.clock.now_ms(), &transaction)?;
         }
         let state = self.load_state(run_id)?;
@@ -685,6 +681,9 @@ impl ValidationPort {
     }
 
     fn cancel_locked(&self, run_id: &str, transaction: &TransactionGuard) -> Result<CancelResult> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let admission = self.load_admission(run_id)?;
         if !self.store.state_path(run_id).is_file() {
             self.repair_state(run_id, &admission, self.clock.now_ms(), transaction)?;
@@ -735,13 +734,16 @@ impl ValidationPort {
     /// no queued job is available.
     pub fn start_next(&self) -> Result<Option<RunJob>> {
         let transaction = self.store.transaction()?;
-        let (_, running) = self.counts()?;
+        let (_, running) = self.counts(&transaction)?;
         if running >= self.limits.workers {
             return Ok(None);
         }
         let now = self.clock.now_ms();
         let mut queued: Vec<(u64, String)> = Vec::new();
         for run_id in self.store.run_ids() {
+            if self.retirement(&run_id, &transaction)?.is_some() {
+                continue;
+            }
             let state = match self.load_state(&run_id) {
                 Ok(state) => state,
                 Err(_) => continue,
@@ -758,6 +760,9 @@ impl ValidationPort {
         }
         queued.sort();
         for (_, run_id) in queued {
+            if self.retirement(&run_id, &transaction)?.is_some() {
+                continue;
+            }
             let state = match self.load_state(&run_id) {
                 Ok(state) => state,
                 Err(_) => continue,
@@ -873,6 +878,9 @@ impl ValidationPort {
 
     pub(crate) fn complete_by(&self, run_id: &str, outcome: RunnerOutcome, runner: &RunnerIdentity) -> Result<ValidationState> {
         let transaction = self.store.transaction()?;
+        if self.retirement(run_id, &transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let admission = self.load_admission(run_id)?;
         let state = self.load_state(run_id)?;
         if state.state.is_terminal() {
@@ -986,11 +994,17 @@ impl ValidationPort {
 
     /// `report(runId)` with the persisted bytes verified and re-digested.
     pub fn report(&self, run_id: &str) -> Result<ReportResult> {
+        let transaction = self.store.transaction()?;
+        self.report_locked(run_id, &transaction)
+    }
+
+    fn report_locked(&self, run_id: &str, transaction: &TransactionGuard) -> Result<ReportResult> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let admission = self.load_admission(run_id)?;
         if !self.store.state_path(run_id).is_file() {
-            let transaction = self.store.transaction()?;
-            let admission = self.load_admission(run_id)?;
-            self.repair_state(run_id, &admission, self.clock.now_ms(), &transaction)?;
+            self.repair_state(run_id, &admission, self.clock.now_ms(), transaction)?;
         }
         let state = self.load_state(run_id)?;
         if !state.state.is_terminal() {
@@ -1021,7 +1035,8 @@ impl ValidationPort {
     /// One verified evidence artifact's bytes from a terminal run. The report is verified first,
     /// so a caller never reads bytes the report no longer binds.
     pub fn evidence(&self, run_id: &str, artifact_id: &str) -> Result<Vec<u8>> {
-        let verified = self.report(run_id)?;
+        let transaction = self.store.transaction()?;
+        let verified = self.report_locked(run_id, &transaction)?;
         let artifact = verified
             .report
             .checks
@@ -1140,6 +1155,43 @@ impl ValidationPort {
         self.store.read_json(&self.store.state_path(run_id), 1 << 20)
     }
 
+    /// One validated retirement decision for this run. A missing file is no tombstone; an
+    /// unreadable or structurally invalid file is an error, never absence. Expiry deliberately
+    /// does not erase the scheduling barrier here; only replay consults the key expiry.
+    fn retirement(&self, run_id: &str, _transaction: &TransactionGuard) -> Result<Option<TombstoneRecord>, ValidationError> {
+        if !keys::valid_run_id(run_id) {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
+        let Some(record) = self.store.read_tombstone(run_id)? else { return Ok(None) };
+        let timestamp = record.submission_key.split_once(':').and_then(|(milliseconds, _)| milliseconds.parse::<u64>().ok());
+        let key = timestamp.and_then(|timestamp| SubmissionKey::parse(&record.submission_key, timestamp).ok());
+        if record.schema_version != RECORD_SCHEMA
+            || record.run_id != run_id
+            || !record.state.is_terminal()
+            || key.as_ref().is_none_or(|key| key.expires_at_ms() != record.expires_at_ms)
+        {
+            return Err(ValidationError::internal("the validation tombstone is not readable and internally consistent"));
+        }
+        Ok(Some(record))
+    }
+
+    fn retired_result(
+        &self,
+        record: &TombstoneRecord,
+        key: &SubmissionKey,
+        candidate: &CandidateRef,
+        profile: &ProfileRef,
+        now: u64,
+    ) -> Result<SubmitResult> {
+        if record.submission_key != key.text {
+            return Err(ValidationError::internal("the validation tombstone names another submission key"));
+        }
+        if now >= record.expires_at_ms {
+            return Err(ValidationError::request_expired("the retired submission key has expired"));
+        }
+        Ok(SubmitResult { run_id: record.run_id.clone(), state: record.state, candidate: candidate.clone(), profile: profile.clone() })
+    }
+
     fn resolve_profile(&self, reference: &ProfileRef) -> Result<CheckProfile> {
         if !ids::valid_id(&reference.profile_id) || !ids::valid_digest(&reference.digest) {
             return Err(ValidationError::profile_unsupported("profileId or digest is malformed"));
@@ -1159,6 +1211,9 @@ impl ValidationPort {
         mut state: ValidationState,
         transaction: &TransactionGuard,
     ) -> Result<ValidationState> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let current = self.load_state(run_id)?;
         if current.state.is_terminal() {
             return Ok(current.state);
@@ -1206,7 +1261,10 @@ impl ValidationPort {
     /// Keep an immutable terminal state but advertise that its report is not available. A
     /// missing or invalid report is never replaced by one whose state cannot bind the terminal
     /// state.
-    fn mark_report_unavailable(&self, run_id: &str, _transaction: &TransactionGuard) -> Result<()> {
+    fn mark_report_unavailable(&self, run_id: &str, transaction: &TransactionGuard) -> Result<()> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let mut current = self.load_state(run_id)?;
         if !current.state.is_terminal() || !current.report_available {
             return Ok(());
@@ -1216,7 +1274,10 @@ impl ValidationPort {
         self.store.write_json_replace(&self.store.state_path(run_id), &current)
     }
 
-    fn write_terminal_state(&self, run_id: &str, state: ValidationState, _transaction: &TransactionGuard) -> Result<()> {
+    fn write_terminal_state(&self, run_id: &str, state: ValidationState, transaction: &TransactionGuard) -> Result<()> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let current = self.load_state(run_id)?;
         if current.state.is_terminal() && current.state != state {
             return Ok(());
@@ -1376,6 +1437,9 @@ impl ValidationPort {
         let transaction = self.store.transaction()?;
         let now = self.clock.now_ms();
         for run_id in self.store.all_run_ids() {
+            if self.retirement(&run_id, &transaction)?.is_some() {
+                continue;
+            }
             let admission = match self.load_admission(&run_id) {
                 Ok(admission) => admission,
                 // A state without an admission is not a run this host can reconcile.
@@ -1464,7 +1528,10 @@ impl ValidationPort {
 
     /// Adopt a committed terminal report only when it verifies against this run. Returns whether
     /// the state is terminal after adoption.
-    fn adopt_report(&self, run_id: &str, admission: &AdmissionRecord, _transaction: &TransactionGuard) -> Result<bool> {
+    fn adopt_report(&self, run_id: &str, admission: &AdmissionRecord, transaction: &TransactionGuard) -> Result<bool> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         if !self.store.report_exists(run_id) {
             return Ok(false);
         }
