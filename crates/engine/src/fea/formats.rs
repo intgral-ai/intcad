@@ -120,7 +120,8 @@ const ROLLER_SETS: [&str; 3] = ["ROLLX", "ROLLY", "ROLLZ"];
 const SYMMETRY_SETS: [&str; 3] = ["SYMX", "SYMY", "SYMZ"];
 
 /// A CalculiX job: linear static, mm, N, MPa. Nodes are numbered from 1 in the order given. The
-/// job also prints the total reaction force on all held nodes to its `.dat` file (equilibrium).
+/// job also prints the total reaction force on all held nodes to its `.dat` file, and writes
+/// every node's external force to its results (the reactions per support).
 pub fn write_inp(nodes: &[P], elements: &InpElements, material: &InpMaterial, holds: &InpHolds, forces: &[(usize, P)]) -> String {
     let mut s = String::with_capacity(64 * nodes.len());
     let _ = writeln!(s, "*HEADING\nIntcad stress estimate (linear static; mm, N, MPa)");
@@ -235,12 +236,14 @@ pub fn write_inp(nodes: &[P], elements: &InpElements, material: &InpMaterial, ho
     if !held.is_empty() {
         let _ = writeln!(s, "*NODE PRINT, NSET={HELD_SET}, TOTALS=ONLY\nRF");
     }
+    // The external forces too (`RF`, the `FORC` block): the reactions per support and their
+    // moments, read node by node (see `Frd::forces`).
     match elements {
         InpElements::Shell { .. } => {
-            let _ = writeln!(s, "*NODE FILE, OUTPUT=3D\nU\n*EL FILE, OUTPUT=3D\nS");
+            let _ = writeln!(s, "*NODE FILE, OUTPUT=3D\nU,RF\n*EL FILE, OUTPUT=3D\nS");
         }
         InpElements::Solid { .. } => {
-            let _ = writeln!(s, "*NODE FILE\nU\n*EL FILE\nS");
+            let _ = writeln!(s, "*NODE FILE\nU,RF\n*EL FILE\nS");
         }
     }
     let _ = writeln!(s, "*END STEP");
@@ -280,6 +283,12 @@ pub struct Frd {
     /// Each element's type number (6: a 10-node tetrahedron; 5: a 15-node wedge, a shell
     /// expanded through its thickness) and its node ids, as the file lists them.
     pub elements: Vec<(u32, Vec<u64>)>,
+    /// The external force at each node (N; the `FORC` block, `RF` in the job): the reaction at a
+    /// held node plus any load applied there. For shells these are the nodes of the expanded 3D
+    /// elements, so a clamped edge's moment is in them as a couple across the thickness (summed at
+    /// the shell's own nodes, as the `.dat` file prints them, it is lost: a strip clamped at one
+    /// end missed 720 N·mm of 720, PIL-294 A5). Empty when the job asked for none.
+    pub forces: HashMap<u64, P>,
 }
 
 /// One data line of an `.frd` block: ` -1`, the node id, then values of 12 characters each. The
@@ -304,8 +313,8 @@ fn frd_values(line: &str, count: usize) -> Option<(u64, Vec<f64>)> {
     Some((id, out))
 }
 
-/// Read an `.frd` results file (ASCII): its nodes, its elements, the `DISP` block and the `STRESS`
-/// block.
+/// Read an `.frd` results file (ASCII): its nodes, its elements, and the `DISP`, `STRESS` and
+/// `FORC` blocks.
 pub fn read_frd(text: &str) -> Result<Frd, String> {
     let mut out = Frd::default();
     #[derive(Clone, Copy, PartialEq)]
@@ -315,6 +324,7 @@ pub fn read_frd(text: &str) -> Result<Frd, String> {
         Elements,
         Disp,
         Stress,
+        Forces,
         Other,
     }
     let mut block = Block::None;
@@ -352,6 +362,7 @@ pub fn read_frd(text: &str) -> Result<Frd, String> {
             block = match name {
                 "DISP" => Block::Disp,
                 "STRESS" => Block::Stress,
+                "FORC" => Block::Forces,
                 _ => Block::Other,
             };
             continue;
@@ -383,6 +394,13 @@ pub fn read_frd(text: &str) -> Result<Frd, String> {
                     && let [a, b, c, d, e, f] = v[..]
                 {
                     out.stress.insert(id, [a, b, c, d, e, f]);
+                }
+            }
+            Block::Forces => {
+                if let Some((id, v)) = frd_values(line, 3)
+                    && let [x, y, z] = v[..]
+                {
+                    out.forces.insert(id, [x, y, z]);
                 }
             }
             Block::None | Block::Elements | Block::Other => {}

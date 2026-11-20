@@ -16,7 +16,7 @@ use crate::fea::{
 use crate::params::bad;
 use crate::schema::stress::{
     StrainComponents, StressAlong, StressComponents, StressEquilibrium, StressEstimateParams, StressEstimateResult, StressMeshCheck, StressPeak,
-    StressProbe, StressProbeRun, StressRun, StressSettling, StressShowParams, StressShowResult,
+    StressProbe, StressProbeRun, StressPrograms, StressRun, StressSettling, StressShowParams, StressShowResult, StressSupportReaction,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
@@ -52,8 +52,10 @@ pub static COMMANDS: &[CommandSpec] = &[
              `direction` the stress and strain a gauge laid that way reads, at each point, read inside the solver's element that holds \
              it, with its own mesh check; a point up to 1 mm outside the part is read at its nearest point; on shells a point on the top \
              or bottom face reads that face) → estimate: true, setup, summary, runs, fraction_of_yield (of the number the summary leads with), fraction_of_yield_overall, peak_at_support, peak_away (the highest stress \
-             away from fixed supports and loads, with its principal stresses and strains), equilibrium (supports carry vs loads applied), \
-             mesh_check, probes, warnings, assumptions, how_to_report. Meshes with gmsh and solves with CalculiX on this computer and paints the estimate on the body. Report it as \
+             away from fixed supports and loads, with its principal stresses and strains), equilibrium (supports carry vs loads applied; each \
+             support's force in N and moment in N·mm about its own middle; the moments' balance), mesh_check, probes, warnings, \
+             assumptions, how_to_report, programs (the mesher's and solver's versions; each runs on one thread, so the same request \
+             gives the same numbers). Meshes with gmsh and solves with CalculiX on this computer and paints the estimate on the body. Report it as \
              how_to_report says. skill_reference solidcraft-analysis has the workflow and worked setups",
         ),
     CommandSpec::new(SHOW, "Show Stress Estimate", crate::checked!("inspect.stress_estimate.show", show))
@@ -87,8 +89,9 @@ pub(crate) const HOW_TO_REPORT: &[&str] = &[
      `peak_away` (the highest stress away from supports and loads) and its fraction of yield, and say the value at the support depends on the \
      mesh (even when one refinement step moved it little, it can keep creeping up; say so plainly when the mesh check calls it still \
      changing).",
-    "Quote the `equilibrium` line (what the supports carry against the loads applied); if a warning says the forces do not balance, say the \
-     result is suspect before any number.",
+    "Quote the `equilibrium` line (what the supports carry against the loads applied); if a warning says the forces or their moments do \
+     not balance, say the result is suspect before any number. When the user asks what a support, clamp or bolted face holds, quote its \
+     line in `equilibrium.supports`: its force in N and its moment in N·mm about the point given.",
     "For a point in `probes`, quote the values the user asked for (von Mises, a principal stress, a strain, the value `along` a direction) \
      with that probe's own mesh check; principal stresses are positive in tension and negative in compression; strains are microstrain \
      (µε) and shear strains are engineering (γ).",
@@ -547,21 +550,29 @@ fn round_to(x: f64, digits: i32) -> f64 {
     (x * k).round() / k
 }
 
-/// A number to about three significant figures, for sentences.
+/// A number to about three significant figures, for sentences. The decimals follow the number as
+/// rounded, so 9.99999 reads "10.0", not "10.00".
 fn sig(x: f64) -> String {
     if !x.is_finite() {
         return "?".into();
     }
-    let a = x.abs();
-    if a >= 100.0 {
-        format!("{x:.0}")
-    } else if a >= 10.0 {
-        format!("{x:.1}")
-    } else if a >= 1.0 {
-        format!("{x:.2}")
-    } else {
-        format!("{x:.3}")
+    let decimals = |a: f64| {
+        if a >= 100.0 {
+            0
+        } else if a >= 10.0 {
+            1
+        } else if a >= 1.0 {
+            2
+        } else {
+            3
+        }
+    };
+    let first = format!("{x:.*}", decimals(x.abs()));
+    let rounded = first.parse::<f64>().map_or(x.abs(), f64::abs);
+    if decimals(rounded) == decimals(x.abs()) {
+        return first;
     }
+    format!("{x:.*}", decimals(rounded))
 }
 
 /// Everything the estimate needs, checked: what a dry run reports and a solve uses.
@@ -1206,6 +1217,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 assumptions: Vec::new(),
                 how_to_report: HOW_TO_REPORT.iter().map(|x| x.to_string()).collect(),
                 network: String::new(),
+                programs: None,
                 folder: None,
                 param_warnings: Vec::new(),
             },
@@ -1387,8 +1399,12 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         supports_carry_n: round_to(fea::model::len(e.reaction), 4),
         loads_applied_n: round_to(fea::model::len(e.applied), 4),
         mismatch_percent: round_to(100.0 * e.mismatch(), 3),
+        moment_mismatch_percent: e.moment.map(|m| round_to(100.0 * m.mismatch(), 3)),
+        moments_about_mm: e.moment.map(|m| m.about.map(|c| round_to(c, 3) + 0.0)),
+        supports: shown.reactions.iter().map(|r| support_json(r, diag)).collect(),
         line: equilibrium_line(&e),
     });
+    let programs = Some(StressPrograms { mesher: shown.mesher_version.clone(), solver: shown.solver_version.clone() });
     let peak_away = shown.peaks.away.map(|(v, at)| {
         // The peak is a node of the run: its own tensor.
         let tensor = shown.points.iter().position(|x| x.0 == at).and_then(|i| shown.tensors.get(i));
@@ -1458,6 +1474,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             assumptions,
             how_to_report: HOW_TO_REPORT.iter().map(|x| x.to_string()).collect(),
             network,
+            programs,
             folder,
             param_warnings: Vec::new(),
         },
@@ -1555,25 +1572,71 @@ pub(crate) fn freedom_words(f: &fea::model::Freedom) -> Option<String> {
     ))
 }
 
-/// "Supports carry 10.0 N; loads applied 10.0 N".
+/// "Supports carry 10.0 N; loads applied 10.0 N", then whether their moments balance too, when
+/// the solver gave them.
 pub(crate) fn equilibrium_line(e: &fea::Equilibrium) -> String {
-    format!("Supports carry {} N; loads applied {} N", sig(fea::model::len(e.reaction)), sig(fea::model::len(e.applied)))
+    let forces = format!("Supports carry {} N; loads applied {} N", sig(fea::model::len(e.reaction)), sig(fea::model::len(e.applied)));
+    match e.moment {
+        None => forces,
+        Some(_) if e.moments_balance() => format!("{forces}; their moments balance too"),
+        Some(m) => format!("{forces}; their moments are {}% apart", sig(100.0 * m.mismatch())),
+    }
 }
 
-/// The warning when the reaction misses the loads by more than 1 % of them; `None` when they balance.
+/// The warning when the reaction misses the loads by more than 1 % of them, or its moment misses
+/// theirs by more than 1 % of the moments; `None` when both balance.
 pub(crate) fn equilibrium_warning(e: &fea::Equilibrium) -> Option<String> {
-    if e.balances() {
-        return None;
+    const WHY: &str = "A support or load may not have reached the mesh as set up, or the solve went wrong; do not read the numbers until \
+                       that is found";
+    if !e.forces_balance() {
+        return Some(format!(
+            "The supports carry {} N but the loads applied add up to {} N, {}% apart (more than {}%): the forces do not balance, so this \
+             result is suspect. {WHY}",
+            sig(fea::model::len(e.reaction)),
+            sig(fea::model::len(e.applied)),
+            sig(100.0 * e.mismatch()),
+            sig(100.0 * fea::EQUILIBRIUM_TOLERANCE)
+        ));
     }
+    let m = e.moment.filter(|_| !e.moments_balance())?;
     Some(format!(
-        "The supports carry {} N but the loads applied add up to {} N, {}% apart (more than {}%): the forces do not balance, so this result \
-         is suspect. A support or load may not have reached the mesh as set up, or the solve went wrong; do not read the numbers until \
-         that is found",
-        sig(fea::model::len(e.reaction)),
-        sig(fea::model::len(e.applied)),
-        sig(100.0 * e.mismatch()),
+        "The supports' moment about the middle of the part ({} N·mm) does not cancel the loads' ({} N·mm): {}% of the moments apart (more \
+         than {}%), so this result is suspect. {WHY}",
+        sig(fea::model::len(m.reaction)),
+        sig(fea::model::len(m.applied)),
+        sig(100.0 * m.mismatch()),
         sig(100.0 * fea::EQUILIBRIUM_TOLERANCE)
     ))
+}
+
+/// A vector for a sentence: "(0, -720, 0)", a component under a ten-thousandth of the vector's
+/// size read as 0.
+fn vector_words(v: P) -> String {
+    let size = fea::model::len(v);
+    let c = |x: f64| if x.abs() <= 1e-4 * size { "0".to_string() } else { coord(x, 0.0) };
+    format!("({}, {}, {})", c(v[0]), c(v[1]), c(v[2]))
+}
+
+/// One support's reaction in the reply. `size`: the part's size (mm), for reading its middle.
+pub(crate) fn support_json(r: &fea::Reaction, size: f64) -> StressSupportReaction {
+    let (f, m) = (fea::model::len(r.force), fea::model::len(r.moment));
+    let at = format!("({}, {}, {})", coord(r.about[0], size), coord(r.about[1], size), coord(r.about[2], size));
+    StressSupportReaction {
+        support: r.label.clone(),
+        force_n: r.force.map(|x| round_to(x, 4) + 0.0),
+        force_size_n: round_to(f, 4),
+        moment_nmm: r.moment.map(|x| round_to(x, 2) + 0.0),
+        moment_size_nmm: round_to(m, 2),
+        about_mm: r.about.map(|x| round_to(x, 3) + 0.0),
+        line: format!(
+            "{} carries {} N {} and a moment of {} N·mm {} about {at} mm",
+            r.label,
+            sig(f),
+            vector_words(r.force),
+            sig(m),
+            vector_words(r.moment)
+        ),
+    }
 }
 
 /// The mesh check's quantities, as named in the reply.
@@ -2231,6 +2294,11 @@ pub(crate) fn wording(
         Some(e) => format!("Equilibrium: {}", equilibrium_line(e)),
         None => "Equilibrium: not checked (the solver gave no reaction totals)".to_string(),
     });
+    if let (Some(mesher), Some(solver)) = (&shown.mesher_version, &shown.solver_version) {
+        assumptions.push(format!(
+            "Programs: {mesher} meshed and {solver} solved, each on one thread, so the same request gives the same numbers with these versions"
+        ));
+    }
 
     let fraction = shown.max_stress / material.yield_mpa;
     let deflection = format!("The largest deflection is about {} mm, near {}.", sig(shown.max_disp), face_label(shown.max_disp_at));

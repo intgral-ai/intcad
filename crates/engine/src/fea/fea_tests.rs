@@ -16,8 +16,11 @@ fn run_with(points: Vec<(P, f64, P)>) -> Run {
         cells: Vec::new(),
         isolated: false,
         equilibrium: None,
+        reactions: Vec::new(),
         peaks: Peaks::default(),
         threads: 1,
+        mesher_version: None,
+        solver_version: None,
     }
 }
 
@@ -189,33 +192,150 @@ fn the_peak_away_from_supports_and_loads_skips_nodes_near_them_and_names_the_one
 /// of the forces' sizes, not zero (no division by zero, no NaN).
 #[test]
 fn equilibrium_measures_the_reaction_against_the_loads() {
-    let e = |up: f64| Equilibrium { reaction: [0.0, 0.0, up], applied: [0.0, 0.0, -10.0], scale: 10.0 };
+    let e = |up: f64| Equilibrium { reaction: [0.0, 0.0, up], applied: [0.0, 0.0, -10.0], scale: 10.0, moment: None };
     assert!(e(10.0).mismatch() < 1e-12 && e(10.0).balances());
     assert!((e(9.95).mismatch() - 0.005).abs() < 1e-12 && e(9.95).balances());
     assert!(e(9.9).balances(), "1 % is within");
     assert!((e(9.0).mismatch() - 0.1).abs() < 1e-12 && !e(9.0).balances());
-    let cancel = Equilibrium { reaction: [0.0, 0.0, 0.004], applied: [0.0; 3], scale: 20.0 };
+    let cancel = Equilibrium { reaction: [0.0, 0.0, 0.004], applied: [0.0; 3], scale: 20.0, moment: None };
     assert!((cancel.mismatch() - 0.2).abs() < 1e-12 && !cancel.balances());
-    let zero = Equilibrium { reaction: [0.0; 3], applied: [0.0; 3], scale: 0.0 };
+    let zero = Equilibrium { reaction: [0.0; 3], applied: [0.0; 3], scale: 0.0, moment: None };
     assert!(zero.mismatch().is_finite() && zero.balances());
 }
 
-/// The solver's threads, only where they are unset (a set value is left alone): OMP_NUM_THREADS
-/// gets the available parallelism; the equation solver stays on one thread, where CalculiX 2.21's
-/// SPOOLES solve is reliable (see `solver_threads`).
+/// A7: the solver runs on one thread for everything, whatever the environment says: each thread
+/// count gives its own last digits, and CalculiX 2.21's multithreaded SPOOLES solve is unreliable
+/// (see `solver_threads`). Input: none. Action: `solver_threads`. Pass: both variables set to 1,
+/// one thread reported.
 #[test]
-fn the_solver_gets_every_core_unless_the_threads_are_set_already() {
+fn the_solver_runs_on_one_thread_so_every_computer_gets_the_same_numbers() {
     let (env, used) = solver_threads();
-    let available = std::thread::available_parallelism().map_or(1, |n| n.get());
-    for (k, v) in &env {
-        match *k {
-            "OMP_NUM_THREADS" => assert_eq!(v, &available.to_string()),
-            "CCX_NPROC_EQUATION_SOLVER" => assert_eq!(v, "1"),
-            other => panic!("{other}"),
-        }
-        assert!(std::env::var(k).map_or(true, |x| x.trim().is_empty()), "{k} is set already and must be left alone");
+    let mut names: Vec<&str> = env.iter().map(|(k, _)| *k).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["CCX_NPROC_EQUATION_SOLVER", "OMP_NUM_THREADS"]);
+    assert!(env.iter().all(|(_, v)| v == "1"), "{env:?}");
+    assert_eq!(used, 1);
+}
+
+/// A7: the programs' versions, read from the first lines they write.
+/// Input: gmsh 4.12.1's first log line and CalculiX 2.21's banner, as they ran on zhikun; text
+/// without them. Action: `mesher_version`, `solver_version`. Pass: "gmsh 4.12.1" and
+/// "CalculiX 2.21"; `None` for the rest, without a panic.
+#[test]
+fn the_programs_versions_are_read_from_their_own_first_lines() {
+    let gmsh = "Info    : Running 'gmsh part.step -3 -nt 1 -order 2 -clmax 1.5 -o solid-1.msh' [Gmsh 4.12.1, 1 node, max. 1 thread]\n\
+                Info    : Started on Wed Nov 18 01:54:33 2026\n";
+    assert_eq!(mesher_version(gmsh).as_deref(), Some("gmsh 4.12.1"));
+    let ccx = "\n************************************************************\n\nCalculiX Version 2.21, Copyright(C) 1998-2023 Guido Dhondt\n";
+    assert_eq!(solver_version(ccx).as_deref(), Some("CalculiX 2.21"));
+    for junk in ["", "[Gmsh ", "CalculiX Version ", "Info : no version here", "[Gmsh é€"] {
+        assert_eq!(mesher_version(junk), None, "{junk}");
+        assert_eq!(solver_version(junk), None, "{junk}");
     }
-    assert!(used >= 1);
+}
+
+/// A5: what each support carries, and the moment balance.
+/// Input: a cantilever 100 mm long, two clamp nodes at x = 0 (z = ±0.5, so the clamp's moment is a
+/// couple between them, as an expanded shell's top and bottom carry it), 10 N down at x = 100.
+/// The solver's forces at the clamp: 5 N up each and ±1000 N along X. Action: `reactions`.
+/// Observable: the support's force, its moment about its own middle (0, 0, 0), the balance.
+/// Pass:
+/// - 10 N up and −1000 N·mm about Y (the tip load's F × L = 10 × 100), balanced;
+/// - without the couple (the `.dat` file's sums lose it) the moments miss by the whole moment;
+/// - a load on a held node is taken off that support (2 N down on a clamp node: 12 N up);
+/// - a node no support holds counts for none; a node two hold counts for the first.
+#[test]
+fn each_support_carries_its_force_and_moment_and_the_moments_balance() {
+    let nodes = [[0.0, 0.0, 0.5], [0.0, 0.0, -0.5], [100.0, 0.0, 0.0]];
+    let owner = [Some(0), Some(0), None];
+    let labels = ["root".to_string()];
+    let about = box_middle(&nodes);
+    assert_eq!(about, [50.0, 0.0, 0.0]);
+    let tip = [(2usize, [0.0, 0.0, -10.0])];
+    let solver = |couple: f64, up: [f64; 2]| {
+        vec![
+            (nodes[0], [-couple, 0.0, up[0]], 0usize),
+            (nodes[1], [couple, 0.0, up[1]], 1),
+            // The load's own node: no support's.
+            (nodes[2], [0.0, 0.0, -10.0], 2),
+        ]
+    };
+    let (r, m) = reactions(&solver(1000.0, [5.0, 5.0]), &owner, &nodes, &tip, &labels, about);
+    let near = |a: P, b: P| model::len(model::sub(a, b)) < 1e-9;
+    assert_eq!(r.len(), 1);
+    assert!(near(r[0].force, [0.0, 0.0, 10.0]), "{:?}", r[0]);
+    assert!(near(r[0].moment, [0.0, -1000.0, 0.0]), "F × L about the clamp: {:?}", r[0]);
+    assert!(near(r[0].about, [0.0, 0.0, 0.0]) && r[0].label == "root");
+    assert!(m.mismatch() < 1e-12, "{m:?}");
+    let e = Equilibrium { reaction: r[0].force, applied: [0.0, 0.0, -10.0], scale: 10.0, moment: Some(m) };
+    assert!(e.balances());
+    // The couple lost: the forces still balance, the moments miss by all of the clamp's.
+    let (_, lost) = reactions(&solver(0.0, [5.0, 5.0]), &owner, &nodes, &tip, &labels, about);
+    let e = Equilibrium { moment: Some(lost), ..e };
+    assert!(e.forces_balance() && !e.moments_balance() && !e.balances(), "{lost:?}");
+    assert!(lost.mismatch() > 0.3, "{lost:?}");
+    // 2 N down on a clamp node: the solver's force there is the reaction less it.
+    let loads = [(2usize, [0.0, 0.0, -10.0]), (0usize, [0.0, 0.0, -2.0])];
+    let (r, m) = reactions(&solver(1000.0, [5.0, 5.0]), &owner, &nodes, &loads, &labels, about);
+    assert!(near(r[0].force, [0.0, 0.0, 12.0]), "{:?}", r[0]);
+    assert!(m.mismatch() < 1e-12, "{m:?}");
+    // Two supports on one node: the first takes it; a second with no node carries nothing.
+    let labels2 = ["root".to_string(), "also root".to_string()];
+    let (r, _) = reactions(&solver(1000.0, [5.0, 5.0]), &owner, &nodes, &tip, &labels2, about);
+    assert!(near(r[0].force, [0.0, 0.0, 10.0]) && near(r[1].force, [0.0; 3]), "{r:?}");
+}
+
+/// A5: the moment balance is measured against the moments that make it up, so supports that turn
+/// the part both ways (a beam on two supports, its load in the middle: no moment about the middle
+/// at all) are not called unbalanced over round-off.
+/// Input: a 100 mm beam on two supports at its ends, 10 N down at its middle; the solver's 5 N up
+/// at each end, then with 1e-6 N of round-off, then with one end's force 10 % short.
+/// Pass: balanced, balanced, and the short one's force (and so its moment) misses.
+#[test]
+fn moments_are_measured_against_the_moments_that_make_them_up() {
+    let nodes = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [50.0, 0.0, 0.0]];
+    let owner = [Some(0), Some(1), None];
+    let labels = ["left".to_string(), "right".to_string()];
+    let about = box_middle(&nodes);
+    let load = [(2usize, [0.0, 0.0, -10.0])];
+    let at = |l: f64, r: f64| vec![(nodes[0], [0.0, 0.0, l], 0usize), (nodes[1], [0.0, 0.0, r], 1)];
+    for (l, r, balanced) in [(5.0, 5.0, true), (5.0 + 1e-6, 5.0, true), (4.5, 5.0, false)] {
+        let (_, m) = reactions(&at(l, r), &owner, &nodes, &load, &labels, about);
+        assert_eq!(m.mismatch() <= EQUILIBRIUM_TOLERANCE, balanced, "{l} {r}: {m:?}");
+    }
+}
+
+/// A5 on shells: the results' expanded nodes (top, middle and bottom, half the thickness apart)
+/// each count for the shell node they came from; on solids a results node is the job's node of
+/// the same number. Input: two shell nodes 1 mm apart, 1.5 mm thick, expanded nodes 0.75 mm above
+/// and below each; a solid's three nodes. Action: `support_forces`. Pass: each expanded node maps
+/// to its own shell node; zero forces are left out; solid ids map to index id − 1; no forces, none.
+#[test]
+fn an_expanded_shell_nodes_force_counts_for_its_own_shell_node() {
+    let fem = model::Model { nodes: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], shells: Vec::new(), tets: Vec::new(), on_face: Default::default() };
+    let mut frd = formats::Frd::default();
+    for (id, at, f) in [
+        (11u64, [0.0, 0.0, 0.75], [1.0, 0.0, 0.0]),
+        (12, [0.0, 0.0, -0.75], [-1.0, 0.0, 0.0]),
+        (13, [1.0, 0.0, 0.75], [0.0, 0.0, 2.0]),
+        (14, [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        (15, [1.0, 0.0, -0.75], [0.0, 0.0, 3.0]),
+    ] {
+        frd.nodes.insert(id, at);
+        frd.forces.insert(id, f);
+    }
+    let got = support_forces(&frd, &fem, Elements::Shell, 1.5, 1.0).unwrap_or_default();
+    let owners: Vec<usize> = got.iter().map(|x| x.2).collect();
+    assert_eq!(owners, [0, 0, 1, 1], "in id order, the zero force left out: {got:?}");
+    let solid = model::Model { nodes: vec![[0.0; 3]; 3], ..fem };
+    let mut frd = formats::Frd::default();
+    for id in [1u64, 3, 9] {
+        frd.nodes.insert(id, [0.0; 3]);
+        frd.forces.insert(id, [1.0, 0.0, 0.0]);
+    }
+    let got = support_forces(&frd, &solid, Elements::Solid, 0.0, 1.0).unwrap_or_default();
+    assert_eq!(got.iter().map(|x| x.2).collect::<Vec<_>>(), [0, 2], "id 9 is past the job's nodes");
+    assert!(support_forces(&formats::Frd::default(), &solid, Elements::Solid, 0.0, 1.0).is_none());
 }
 
 /// A2: the mesher sizes elements from curvature (24 a turn) down to a fiftieth of the largest,
@@ -226,6 +346,7 @@ fn the_mesher_sizes_from_curvature_down_to_a_fiftieth_and_straightens_curved_ele
     let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     assert_eq!(args.first().map(String::as_str), Some("part.step"));
     assert!(args.iter().any(|a| a == "-3") && !args.iter().any(|a| a == "-2"));
+    assert_eq!(after("-nt").as_deref(), Some("1"), "one thread: the same mesh every time (A7)");
     assert_eq!(after("-order").as_deref(), Some("2"));
     assert_eq!(after("-clmax").as_deref(), Some("2.5"));
     assert_eq!(after("-clmin").as_deref(), Some("0.05"));

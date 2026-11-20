@@ -168,6 +168,30 @@ pub struct Equilibrium {
     pub applied: P,
     /// The sum of the nodal forces' sizes, N: the scale when the loads cancel each other.
     pub scale: f64,
+    /// The moments, when the solver gave each node's force (see [`Frd::forces`](formats::Frd)).
+    pub moment: Option<MomentBalance>,
+}
+
+/// The moments of the reactions and of the loads about one point: they should cancel too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MomentBalance {
+    /// The point, mm: the middle of the part's bounding box.
+    pub about: P,
+    /// The reactions' moment about it, N·mm.
+    pub reaction: P,
+    /// The loads' moment about it, N·mm.
+    pub applied: P,
+    /// The sum of the sizes of every moment that adds up to those two (each load's, each
+    /// support's), N·mm: what a miss is measured against, so loads that turn the part both ways
+    /// and supports that cancel each other's turn are measured against the turns, not their sum.
+    pub scale: f64,
+}
+
+impl MomentBalance {
+    /// How far the reactions' moment misses the loads', as a fraction of [`Self::scale`].
+    pub fn mismatch(&self) -> f64 {
+        model::len(model::add(self.reaction, self.applied)) / self.scale.max(1e-12)
+    }
 }
 
 /// The most the reaction may miss the applied loads by, as a fraction of them, before the result
@@ -185,9 +209,135 @@ impl Equilibrium {
         model::len(model::add(self.reaction, self.applied)) / self.reference()
     }
     /// The forces balance within [`EQUILIBRIUM_TOLERANCE`].
-    pub fn balances(&self) -> bool {
+    pub fn forces_balance(&self) -> bool {
         self.mismatch() <= EQUILIBRIUM_TOLERANCE
     }
+    /// The moments balance within [`EQUILIBRIUM_TOLERANCE`], or were not given.
+    pub fn moments_balance(&self) -> bool {
+        self.moment.is_none_or(|m| m.mismatch() <= EQUILIBRIUM_TOLERANCE)
+    }
+    /// Both balance.
+    pub fn balances(&self) -> bool {
+        self.forces_balance() && self.moments_balance()
+    }
+}
+
+/// The middle of the points' bounding box.
+pub fn box_middle(points: &[P]) -> P {
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for p in points {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    if lo.iter().chain(hi.iter()).all(|x| x.is_finite()) { model::mid(lo, hi) } else { [0.0; 3] }
+}
+
+/// Each node of the results with a force: its position (mm), the force (N) and the model node it
+/// belongs to, in the results' node order. The same node for solids (the job numbers nodes from
+/// 1). For shells, the shell node nearest to it: an expanded node lies half the thickness from its
+/// own shell node, along the normal, and farther from every other. `None` when the results hold
+/// no forces.
+pub fn support_forces(frd: &formats::Frd, fem: &model::Model, elements: Elements, thickness: f64, h: f64) -> Option<Vec<(P, P, usize)>> {
+    if frd.forces.is_empty() {
+        return None;
+    }
+    let mut ids: Vec<u64> = frd.forces.keys().copied().collect();
+    ids.sort_unstable();
+    let grid = (elements == Elements::Shell).then(|| Grid::new(fem.nodes.clone(), (0.5 * thickness).max(0.5 * h).max(1e-3)));
+    let mut out = Vec::new();
+    for id in ids {
+        let (Some(f), Some(at)) = (frd.forces.get(&id), frd.nodes.get(&id)) else { continue };
+        if f.iter().all(|x| *x == 0.0) {
+            continue;
+        }
+        let node = match &grid {
+            Some(g) => g.nearest(*at, 4),
+            None => usize::try_from(id).ok().and_then(|i| i.checked_sub(1)).filter(|i| *i < fem.nodes.len()),
+        };
+        if let Some(node) = node {
+            out.push((*at, *f, node));
+        }
+    }
+    Some(out)
+}
+
+/// What one support carries: the solver's reaction on the nodes it holds (a node two supports
+/// hold counts for the first of them, in the order given), less any load applied on them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reaction {
+    /// The support's label.
+    pub label: String,
+    /// The total force, N.
+    pub force: P,
+    /// Its moment about `about`, N·mm: on a clamp, what the clamp resists turning by.
+    pub moment: P,
+    /// The middle of the nodes it holds, mm.
+    pub about: P,
+}
+
+/// The reactions per support and the moment balance, from the solver's force at each node.
+/// `forces` are the results' nodes with their position (mm) and external force (N) and the model
+/// node each belongs to (an expanded shell's top, middle and bottom all belong to the shell node);
+/// `owner` the support holding each model node; `loads` the nodal forces applied; `about` the
+/// point the balance is taken about. Forces are summed in the order given.
+pub fn reactions(
+    forces: &[(P, P, usize)],
+    owner: &[Option<usize>],
+    nodes: &[P],
+    loads: &[(usize, P)],
+    labels: &[String],
+    about: P,
+) -> (Vec<Reaction>, MomentBalance) {
+    let turn = |at: P, f: P| model::cross(model::sub(at, about), f);
+    let mut force = vec![[0.0; 3]; labels.len()];
+    let mut moment = vec![[0.0; 3]; labels.len()];
+    let mut add = |s: usize, at: P, f: P| {
+        if let (Some(fs), Some(ms)) = (force.get_mut(s), moment.get_mut(s)) {
+            *fs = model::add(*fs, f);
+            *ms = model::add(*ms, turn(at, f));
+        }
+    };
+    for (at, f, node) in forces {
+        if let Some(Some(s)) = owner.get(*node) {
+            add(*s, *at, *f);
+        }
+    }
+    // The solver's force at a held node includes a load applied there: the support carries the
+    // rest.
+    let mut applied = [0.0; 3];
+    let mut scale = 0.0;
+    for (node, f) in loads {
+        let Some(at) = nodes.get(*node).copied() else { continue };
+        let m = turn(at, *f);
+        applied = model::add(applied, m);
+        scale += model::len(m);
+        if let Some(Some(s)) = owner.get(*node) {
+            add(*s, at, model::mul(*f, -1.0));
+        }
+    }
+    let mut middles = vec![([0.0; 3], 0usize); labels.len()];
+    for (node, s) in owner.iter().enumerate() {
+        if let (Some(s), Some(p)) = (s, nodes.get(node))
+            && let Some((sum, n)) = middles.get_mut(*s)
+        {
+            *sum = model::add(*sum, *p);
+            *n += 1;
+        }
+    }
+    let mut reaction = [0.0; 3];
+    let mut out = Vec::with_capacity(labels.len());
+    for (s, label) in labels.iter().enumerate() {
+        let (f, m) = (force.get(s).copied().unwrap_or([0.0; 3]), moment.get(s).copied().unwrap_or([0.0; 3]));
+        reaction = model::add(reaction, m);
+        scale += model::len(m);
+        let at = middles.get(s).filter(|(_, n)| *n > 0).map_or(about, |(sum, n)| model::mul(*sum, 1.0 / *n as f64));
+        // The same force's moment about the support's own middle.
+        let own = model::sub(m, model::cross(model::sub(at, about), f));
+        out.push(Reaction { label: label.clone(), force: f, moment: own, about: at });
+    }
+    (out, MomentBalance { about, reaction, applied, scale })
 }
 
 /// One solve's outcome.
@@ -211,10 +361,32 @@ pub struct Run {
     pub isolated: bool,
     /// The reaction against the loads, when the solver printed its reaction totals.
     pub equilibrium: Option<Equilibrium>,
+    /// What each support carries, in the order the supports were given; empty when the solver
+    /// gave no node's force.
+    pub reactions: Vec<Reaction>,
     /// The highest stress's place against the supports and loads, and the peak away from them.
     pub peaks: Peaks,
     /// The solver's threads (`OMP_NUM_THREADS`; see [`solver_threads`]).
     pub threads: usize,
+    /// The mesher and solver as they named themselves ("gmsh 4.12.1", "CalculiX 2.21"), when
+    /// they did.
+    pub mesher_version: Option<String>,
+    pub solver_version: Option<String>,
+}
+
+/// "gmsh 4.12.1", from the first line gmsh writes: `Info    : Running 'gmsh …' [Gmsh 4.12.1, 1
+/// node, max. 1 thread]`.
+pub fn mesher_version(log: &str) -> Option<String> {
+    let after = log.lines().take(5).find_map(|l| l.split_once("[Gmsh ").map(|(_, v)| v))?;
+    let v: String = after.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-').collect();
+    (!v.is_empty()).then(|| format!("gmsh {v}"))
+}
+
+/// "CalculiX 2.21", from the solver's banner: `CalculiX Version 2.21, Copyright(C) …`.
+pub fn solver_version(log: &str) -> Option<String> {
+    let after = log.lines().take(20).find_map(|l| l.split_once("CalculiX Version ").map(|(_, v)| v))?;
+    let v: String = after.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-').collect();
+    (!v.is_empty()).then(|| format!("CalculiX {v}"))
 }
 
 /// What the result shows.
@@ -481,23 +653,20 @@ fn can_isolate() -> bool {
     })
 }
 
-/// The solver's thread settings, each only where it is not set already: `OMP_NUM_THREADS` (the
-/// element and result loops) to this computer's available parallelism, and
-/// `CCX_NPROC_EQUATION_SOLVER` (the SPOOLES equation solver) to 1. On CalculiX 2.21 the
-/// multithreaded SPOOLES solve returned a wrong displacement field now and then: the same 14 555
-/// node job came back wrong 4 times in 60 with both at 24 threads and 8 in 60 with the solver
-/// alone at 24, never in 60 with only OMP_NUM_THREADS at 24 or in 20 on one thread (PIL-294,
-/// measured on a 24-core Linux host). The variables to set, and the thread count used.
+/// The solver's thread settings: one thread for everything, whatever this computer's environment
+/// says, so the same job gives the same numbers on every computer (PIL-294 A7).
+/// - `CCX_NPROC_EQUATION_SOLVER` (the SPOOLES equation solver): on CalculiX 2.21 its
+///   multithreaded solve returned a wrong displacement field now and then: the same 14 555 node
+///   job came back wrong 4 times in 60 with both at 24 threads and 8 in 60 with the solver alone
+///   at 24, never in 60 with only OMP_NUM_THREADS at 24 or in 20 on one thread.
+/// - `OMP_NUM_THREADS` (the element and result loops): each thread count gives its own last
+///   digits (24 threads against 1 on an 89 786 node solid: up to 2e-9 of the stress apart, the
+///   same bits run after run at either), which can turn a rounded number in the reply; 24 threads
+///   saved 3 % of the solve (10.9 s against 11.2 s), the equation solver taking the rest.
+///
+/// Measured on a 24-core Linux host. The variables to set, and the thread count used.
 pub fn solver_threads() -> (Vec<(&'static str, String)>, usize) {
-    let available = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let set = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-    let used = set("OMP_NUM_THREADS").and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0).unwrap_or(available);
-    let env = [("OMP_NUM_THREADS", available), ("CCX_NPROC_EQUATION_SOLVER", 1)]
-        .into_iter()
-        .filter(|(k, _)| set(k).is_none())
-        .map(|(k, n)| (k, n.to_string()))
-        .collect();
-    (env, used)
+    (vec![("OMP_NUM_THREADS", "1".to_string()), ("CCX_NPROC_EQUATION_SOLVER", "1".to_string())], 1)
 }
 
 /// Elements per full turn of a curved face (gmsh `-clcurv`): a Ø1 mm hole in a part meshed at
@@ -516,11 +685,16 @@ pub const MIN_SIZE_SHARE: f64 = 50.0;
 /// The mesher's arguments for `part.step`, elements of at most `h` mm (`-clmax`), written to
 /// `out`: second order; sized from curvature down to `h / MIN_SIZE_SHARE`; second-order elements
 /// straightened where their curved edges would turn them inside out (`-optimize_ho`: alone it left
-/// 3 of the 6 bars failing; with curvature sizing it adds nothing measurable to the time).
+/// 3 of the 6 bars failing; with curvature sizing it adds nothing measurable to the time); on one
+/// thread (`-nt 1`), whatever a gmsh options file on this computer says. On one thread gmsh 4.12.1
+/// gave the same mesh, byte for byte, five times running for each of three parts (a solid bar,
+/// an L bracket and a strip as shells; PIL-294 A7).
 pub fn mesher_args(elements: Elements, h: f64, out: &str) -> Vec<String> {
     [
         "part.step",
         if elements == Elements::Solid { "-3" } else { "-2" },
+        "-nt",
+        "1",
         "-order",
         "2",
         "-clmax",
@@ -870,7 +1044,7 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     let h = setup.mesh_size;
     let msh_name = format!("{tag}.msh");
     let args = mesher_args(elements, h, &msh_name);
-    let (_, mesher_isolated) = match run_program(&gmsh, &args, &[], dir, &format!("{tag}-mesher"), 600, "mesher", ctx.generation) {
+    let (mesher_log, mesher_isolated) = match run_program(&gmsh, &args, &[], dir, &format!("{tag}-mesher"), 600, "mesher", ctx.generation) {
         Ok(done) => done,
         Err(ended) => {
             let (mut f, t) = failure(ended, "mesher", &gmsh, h);
@@ -901,10 +1075,17 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     // own plane does, so it concentrates nothing).
     let mut anchors: Vec<(P, usize)> = Vec::new();
     let mut labels: Vec<String> = Vec::new();
-    for s in &setup.supports {
+    // The support each node's reaction counts for: the first that holds it.
+    let mut owner: Vec<Option<usize>> = vec![None; fem.nodes.len()];
+    for (k, s) in setup.supports.iter().enumerate() {
         let n = model::held(&fem, &s.faces);
         if n.is_empty() {
             return Err(format!("the support on {} holds no node of the {word} mesh", s.label).into());
+        }
+        for i in &n {
+            if let Some(slot @ None) = owner.get_mut(*i) {
+                *slot = Some(k);
+            }
         }
         match s.kind {
             SupportKind::Fixed => {
@@ -1010,8 +1191,12 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     let mut points = Vec::with_capacity(frd.stress.len());
     let mut tensors = Vec::with_capacity(frd.stress.len());
     let mut index: std::collections::HashMap<u64, usize> = std::collections::HashMap::with_capacity(frd.stress.len());
-    for (id, s) in &frd.stress {
-        let (Some(p), Some(u)) = (frd.nodes.get(id), frd.disp.get(id)) else { continue };
+    // In the solver's node order, not the map's (which differs run to run): a tie for the highest
+    // stress, or for the nearest node, then falls the same way every time (A7).
+    let mut ids: Vec<u64> = frd.stress.keys().copied().collect();
+    ids.sort_unstable();
+    for id in &ids {
+        let (Some(s), Some(p), Some(u)) = (frd.stress.get(id), frd.nodes.get(id), frd.disp.get(id)) else { continue };
         index.insert(*id, points.len());
         points.push((*p, formats::von_mises(s), *u));
         tensors.push(*s);
@@ -1026,12 +1211,27 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
         .collect();
     let top = points.iter().max_by(|a, b| a.1.total_cmp(&b.1)).ok_or("the results have no stresses")?;
     let far = points.iter().max_by(|a, b| model::len(a.2).total_cmp(&model::len(b.2))).ok_or("the results have no displacements")?;
-    let reaction = std::fs::read_to_string(dir.join(format!("{job}.dat"))).ok().and_then(|t| formats::read_dat_total(&t, formats::HELD_SET));
     let found = peaks(&points, &anchors, &labels, setup.away_distance);
+    let support_labels: Vec<String> = setup.supports.iter().map(|s| s.label.clone()).collect();
+    let (reactions, equilibrium) = match support_forces(&frd, &fem, elements, setup.thickness, h) {
+        Some(at_nodes) => {
+            let (reactions, moment) = self::reactions(&at_nodes, &owner, &fem.nodes, &forces, &support_labels, box_middle(&fem.nodes));
+            let reaction = reactions.iter().fold([0.0; 3], |a, r| model::add(a, r.force));
+            (reactions, Some(Equilibrium { reaction, applied, scale, moment: Some(moment) }))
+        }
+        // No node's force in the results: the `.dat` file's total, and no moments.
+        None => {
+            let total = std::fs::read_to_string(dir.join(format!("{job}.dat"))).ok().and_then(|t| formats::read_dat_total(&t, formats::HELD_SET));
+            (Vec::new(), total.map(|rf| Equilibrium { reaction: model::sub(rf, on_held), applied, scale, moment: None }))
+        }
+    };
     Ok(Run {
-        equilibrium: reaction.map(|rf| Equilibrium { reaction: model::sub(rf, on_held), applied, scale }),
+        equilibrium,
+        reactions,
         peaks: found,
         threads,
+        mesher_version: mesher_version(&mesher_log),
+        solver_version: solver_version(&out),
         elements,
         mesh_size: h,
         nodes: fem.nodes.len(),

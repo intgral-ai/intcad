@@ -51,6 +51,17 @@ fn solver_results_read_in_short_and_long_form() {
             line(width, 1, &[10.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             line(width, 2, &[-200.0, 5.0, 0.0, 1.0, 0.0, -1.0]),
             " -3".into(),
+            // The external forces (`RF` in the job), headed as CalculiX 2.21 heads them, then a block
+            // that is not read.
+            " -4  FORC        4    1".into(),
+            " -5  F1          1    2    1    0".into(),
+            " -5  ALL         1    2    0    0    1ALL".into(),
+            line(width, 1, &[5.97022e-14, 0.0, 1.32004]),
+            line(width, 2, &[0.0, 0.0, -10.0]),
+            " -3".into(),
+            " -4  ERROR       1    1".into(),
+            line(width, 1, &[16.0905]),
+            " -3".into(),
             "9999".into(),
         ]
         .join("\n");
@@ -59,6 +70,9 @@ fn solver_results_read_in_short_and_long_form() {
         assert_eq!(r.disp.get(&2), Some(&[-1.5, 0.0, 2.0]));
         assert_eq!(r.stress.get(&2).map(|s| s[0]), Some(-200.0));
         assert_eq!(r.stress.len(), 2);
+        assert_eq!(r.forces.get(&1), Some(&[5.97022e-14, 0.0, 1.32004]));
+        assert_eq!(r.forces.get(&2), Some(&[0.0, 0.0, -10.0]));
+        assert_eq!(r.forces.len(), 2, "the error estimate's block is not a force");
     }
 }
 
@@ -118,6 +132,7 @@ fn a_shell_job_holds_rotations_and_a_solid_job_translations() {
     let shell = write_inp(&nodes, &InpElements::Shell { tris: &[[0, 1, 2, 3, 4, 5]], thickness: 1.5 }, &m, &holds, &[(1, [0.0, 0.0, -10.0])]);
     assert!(shell.contains("TYPE=S6") && shell.contains("FIXED, 1, 6") && shell.contains("2, 3, -1.0"), "{shell}");
     assert!(shell.contains("*SHELL SECTION") && shell.contains("1.5"));
+    assert!(shell.contains("*NODE FILE, OUTPUT=3D\nU,RF\n"), "every expanded node's force: {shell}");
     let solid = write_inp(
         &nodes,
         &InpElements::Solid { tets: &[[0, 1, 2, 3, 4, 5, 0, 1, 2, 3]] },
@@ -126,6 +141,7 @@ fn a_shell_job_holds_rotations_and_a_solid_job_translations() {
         &[],
     );
     assert!(solid.contains("TYPE=C3D10") && solid.contains("FIXED, 1, 3") && solid.contains("*SOLID SECTION"), "{solid}");
+    assert!(solid.contains("*NODE FILE\nU,RF\n"), "every node's force: {solid}");
 }
 
 /// D3: a shell support over an area holds translations only (PINNED, 1, 3); a node that is also
